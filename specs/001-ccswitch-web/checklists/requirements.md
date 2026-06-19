@@ -32,8 +32,15 @@
 
 ## Notes
 
-- All items pass on the first iteration. No [NEEDS CLARIFICATION] markers; reasonable defaults were
-  used and recorded in Assumptions.
+- All items pass. No [NEEDS CLARIFICATION] markers; reasonable defaults were used and recorded in
+  Assumptions.
+- Clarify session 2026-06-19 (8-persona review): resolved rotation semantics (wait-for-idle),
+  state-store ownership (split), auth (network-identity for private deployment; app-auth deferred
+  to pre-public), and token-at-rest (envelope encryption); plus several default-resolved items
+  (real-time thresholds, session-status definitions, placement reservation, scrollback bounds,
+  registration scope, mobile input, terminal a11y). These tightened testability — no regressions.
+- ⚠ Constitution caveat: the auth decision phases Principle IV; an amendment is pending operator
+  approval before the spec is fully constitution-consistent (see spec Assumptions → Governance note).
 - Constitution alignment: the spec encodes Principle I (Out of Scope: no fork), Principle II
   (FR-003 isolation), Principle III (Dependencies note + NFR-006 authoritative signals), Principle
   IV (FR-021..024, NFR-002/003), Principle V (NFR-007). To be re-checked at `/speckit-plan` via a

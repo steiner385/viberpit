@@ -19,6 +19,49 @@ A command-line foundation already exists (account capture, usage tracking, accou
 single-session auto-rotation); this specification covers the complete product, with the web
 interface as the primary surface.
 
+## Clarifications
+
+### Session 2026-06-19
+
+(Resolved via the standard 8-persona spec review.)
+
+- Q: On a usage limit mid-session, what does "no loss of work" guarantee? → A: **Wait-for-idle,
+  then rotate** — rotation waits for the session's current turn to complete (no in-flight turn is
+  interrupted), then relaunches the session on the next account with its conversation resumed;
+  the full transcript and on-screen scrollback are preserved.
+- Q: Single source of truth for state? → A: **Split, non-overlapping** — the account store owns
+  accounts/credentials/usage; the application store owns session lifecycle, login identity, and
+  display metadata; no concept is duplicated across stores.
+- Q: Authentication mechanism? → A: **Network-enforced identity for the private-network
+  (Tailscale) deployment, with no separate app login**; app-level strong authentication is REQUIRED
+  before any public/non-private exposure. (Phases Constitution Principle IV — see Governance note
+  in Assumptions; the "public-hosting-safe without rewrite" goal is therefore explicitly deferred.)
+- Q: OAuth token protection at rest? → A: **Envelope encryption** — replayable secrets (refresh
+  tokens) are encrypted with authenticated encryption using a key from the environment/secret
+  store; ciphertext at rest, credential files owner-only (0600), plaintext never written.
+
+Resolved by default during persona review (sensible defaults; no separate question needed):
+
+- Rotation trigger is the **authoritative usage signal** (exact remaining usage plus the provider's
+  limit response), not a heuristic estimate.
+- Real-time updates use **server push**; displayed session status reflects changes within 3 seconds
+  and displayed usage is never more than 60 seconds stale.
+- Session statuses are **time/event-defined**: `working` = produced output recently; `idle` = quiet
+  beyond a short threshold; `limited` = limit reached and rotation pending; `ended` = the session's
+  process exited.
+- Concurrent placement is made safe by a **reservation step** during account selection.
+- Retained per-session output for re-entry is a **bounded scrollback**; `ended` sessions stay listed
+  until dismissed and are grouped separately from live ones.
+- **Account registration** (browser/federated login) is performed on the host over the
+  private-network path; the web interface manages already-registered accounts and can trigger
+  re-login. A full remote OAuth relay is deferred (out of scope).
+- **Mobile input**: the session view provides an on-screen helper-key bar (Esc, Tab, Ctrl, arrows);
+  per-session/destructive actions meet a 44×44px touch target and are reachable without
+  swipe-only gestures.
+- **Accessibility**: management surfaces (list, accounts, controls) meet WCAG 2.1 AA in full; the
+  live terminal surface provides a screen-reader-readable recent-output region, status conveyed by
+  text+icon (not color alone), and a documented partial-conformance note for the raw stream.
+
 ## User Scenarios & Testing
 
 ### Primary user story
@@ -108,10 +151,21 @@ which account has quota left or copy credentials around.
   associated with a specific account.
 - **FR-012**: The system MUST let the user create, open, rename, and close sessions.
 - **FR-013**: The system MUST automatically move a running session to another account with headroom
-  when its current account reaches a usage limit, preserving the session's ongoing work, and MUST
-  reflect the account change in the session's displayed label.
+  when its current account reaches a usage limit. Rotation MUST **wait for the session's current
+  turn to complete** (no in-flight turn is interrupted), then relaunch the session on the next
+  account with its conversation resumed, preserving the full transcript and the on-screen
+  scrollback. The account change MUST be reflected in the session's displayed label. The limit
+  MUST be determined from an authoritative signal (exact remaining usage plus the provider's limit
+  response), not an estimate.
 - **FR-014**: The system MUST keep a session that is not currently in focus running in the
   background (its work continues; it is not suspended).
+- **FR-009a (placement safety)**: Account selection MUST include a reservation step so that two
+  sessions started near-simultaneously are not assigned the same account when another account has
+  headroom.
+- **FR-025 (single state ownership)**: Each piece of state MUST have exactly one owning store —
+  account credentials and usage are owned by the account store; session lifecycle, login identity,
+  and display metadata are owned by the application store — with no concept duplicated across
+  stores.
 - **FR-015**: The system MUST persist the set of sessions so that reopening the interface shows the
   still-running sessions and re-associates with them.
 
@@ -123,17 +177,23 @@ which account has quota left or copy credentials around.
   interact with it.
 - **FR-018**: The system MUST let the user interact with a session live from the browser, including
   on a mobile device.
-- **FR-019**: The system MUST reflect session state changes (status, usage, account rotation) in
-  near-real-time without a manual page refresh.
+- **FR-019**: The system MUST reflect session state changes (status, usage, account rotation) via
+  server push without a manual page refresh: status/account-label changes appear within 3 seconds,
+  and displayed usage is never more than 60 seconds stale.
 - **FR-020**: The interface MUST be operable on a mobile-phone screen, with all management actions
   reachable.
 
 **Access & security**
 
-- **FR-021**: The system MUST require authentication for every interface route and every data or
-  session channel; there MUST be no anonymous access.
+- **FR-021**: Every interface route and data/session channel MUST be gated by an identity control
+  appropriate to the deployment. For the private-network (Tailscale) deployment, **network-enforced
+  identity is the gate** and no separate app login is required. Before any public or non-private
+  exposure, **app-level strong authentication** (e.g. passkey/WebAuthn with signed server-side
+  sessions) MUST gate every route and channel. In no deployment is the service reachable by an
+  unidentified caller. (This phases Constitution Principle IV; see the Governance note in
+  Assumptions.)
 - **FR-022**: The system MUST NOT be reachable on a public network interface by default; the
-  default reachable surface is a private network path.
+  default reachable surface is a private network path (e.g. a personal tailnet).
 - **FR-023**: The system MUST never expose credential or token material in its interface, logs, or
   error messages.
 - **FR-024**: The system MUST be deployable to a remote host by configuration alone (no code
@@ -147,7 +207,10 @@ which account has quota left or copy credentials around.
 - **Usage Window**: a measured usage figure for an account — kind (rolling-session or weekly),
   utilization percentage, and reset time.
 - **Session**: a live Claude conversation — id, user-chosen name, the account it currently runs on,
-  status (running / working / idle / limited / ended), and recent context for re-entry.
+  status, and a bounded recent-output buffer for re-entry. Status is time/event-defined: `working`
+  (produced output recently) → `idle` (quiet beyond a short threshold) → `limited` (limit reached,
+  rotation pending) → back to `working`/`idle` after rotation, or `ended` (the underlying process
+  exited; remains listed until dismissed).
 - **User**: the authenticated operator of the interface — credential for login; the sole party
   permitted to manage accounts and sessions.
 
@@ -155,11 +218,16 @@ which account has quota left or copy credentials around.
 
 - **NFR-001 (Continuity)**: Account rotation MUST NOT lose a session's accumulated work; the user
   experiences at most a brief, recoverable interruption, not a lost session.
-- **NFR-002 (Security posture)**: The system MUST be safe to eventually host on a public platform —
-  strong authentication, transport encryption at the platform edge, and secrets supplied by the
-  environment rather than committed — without a security rewrite.
-- **NFR-003 (Credentials at rest)**: Stored credential material MUST be protected at rest (private,
-  least-exposure storage) and isolated per account.
+- **NFR-002 (Security posture)**: The architecture MUST keep public hosting reachable as a later,
+  explicitly-hardened step — secrets supplied by the environment (never committed), transport
+  encryption at the platform edge, and a defined app-level authentication path. v1 relies on
+  network-enforced identity (Tailscale); enabling app-level strong authentication is a prerequisite
+  for public exposure and is **deferred**, not delivered, in v1 (per FR-021 and the Principle IV
+  amendment).
+- **NFR-003 (Credentials at rest)**: Stored credential material MUST be protected at rest and
+  isolated per account: replayable secrets (refresh tokens) MUST be encrypted with authenticated
+  encryption using a key supplied by the environment/secret store; credential files are owner-only;
+  plaintext secrets are never written to disk.
 - **NFR-004 (Accessibility)**: User-facing surfaces MUST meet WCAG 2.1 AA — keyboard operability,
   sufficient contrast, semantic structure, visible focus, and reduced-motion support.
 - **NFR-005 (Responsiveness)**: Interactive latency MUST feel immediate on a typical mobile
@@ -207,6 +275,14 @@ which account has quota left or copy credentials around.
   backend, an SQL datastore, and a modern web frontend with an in-browser terminal, per the
   constitution's Technology & Architecture Constraints. The CLI foundation already exists in the
   repository.
+- **Concurrency/scale (v1 default)**: designed for a low number of simultaneous live sessions
+  (order of ten) on a single host; per-session output retention is a bounded scrollback to cap
+  memory. A hard session cap and tuning are configuration concerns, not v1 requirements.
+- **Governance note — Principle IV amendment required**: the v1 auth decision (network-enforced
+  identity, no app login on the private network) phases Constitution Principle IV, which currently
+  requires app-level authentication on every endpoint. Principle IV MUST be amended (to make
+  app-level auth conditional on exposure, REQUIRED before public hosting) before this spec is
+  considered constitution-consistent. Amendment pending operator approval.
 
 ## Dependencies
 
