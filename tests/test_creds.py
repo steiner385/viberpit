@@ -30,6 +30,39 @@ class TestCreds(unittest.TestCase):
         self.assertEqual(merge_keep_later(new, old)["accessToken"], "new")
         self.assertEqual(merge_keep_later(None, new)["accessToken"], "new")
 
+    def test_merge_keep_later_tie_keeps_existing(self):
+        from ccswitch.creds import merge_keep_later
+        # Equal expiresAt → existing wins (>= keeps existing, monotonic-refresh idempotency)
+        existing = {"accessToken": "existing", "expiresAt": 300}
+        incoming = {"accessToken": "incoming", "expiresAt": 300}
+        result = merge_keep_later(existing, incoming)
+        self.assertIs(result, existing)
+        self.assertEqual(result["accessToken"], "existing")
+
+    def test_merge_keep_later_empty_dict_is_real_blob(self):
+        from ccswitch.creds import merge_keep_later
+        incoming = {"accessToken": "fresh", "expiresAt": 100}
+        # Empty dict {} is NOT treated as absent — it is a real blob with expiresAt 0
+        # incoming has higher expiresAt (100 > 0), so incoming wins
+        result = merge_keep_later({}, incoming)
+        self.assertIs(result, incoming)
+        self.assertEqual(result["accessToken"], "fresh")
+
+    def test_merge_keep_later_empty_dict_higher_expiry_than_incoming(self):
+        from ccswitch.creds import merge_keep_later
+        # existing={} has expiresAt=0 (missing key defaults to 0)
+        # incoming has expiresAt=0 too → existing wins via >= (tie goes to existing)
+        result = merge_keep_later({}, {"accessToken": "x", "expiresAt": 0})
+        self.assertEqual(result, {})
+
+    def test_merge_keep_later_nonempty_existing_higher_expiry_kept(self):
+        from ccswitch.creds import merge_keep_later
+        existing = {"accessToken": "keep", "expiresAt": 500}
+        incoming = {"accessToken": "discard", "expiresAt": 100}
+        result = merge_keep_later(existing, incoming)
+        self.assertIs(result, existing)
+        self.assertEqual(result["accessToken"], "keep")
+
     def test_write_json_secure_is_0600(self):
         with temp_env():
             from ccswitch import paths
@@ -40,3 +73,5 @@ class TestCreds(unittest.TestCase):
             mode = stat.S_IMODE(os.stat(p).st_mode)
             self.assertEqual(mode, 0o600)
             self.assertEqual(read_json(p), {"k": "v"})
+            parent_mode = stat.S_IMODE(os.stat(p.parent).st_mode)
+            self.assertEqual(parent_mode, 0o700)

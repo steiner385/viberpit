@@ -38,7 +38,7 @@ def compose_credentials(claude_oauth: dict, mcp_oauth: dict) -> dict:
 
 def merge_keep_later(existing: dict | None, incoming: dict) -> dict:
     """Keep whichever claudeAiOauth blob has the later expiresAt (refresh is monotonic)."""
-    if not existing:
+    if existing is None:
         return incoming
     if existing.get("expiresAt", 0) >= incoming.get("expiresAt", 0):
         return existing
