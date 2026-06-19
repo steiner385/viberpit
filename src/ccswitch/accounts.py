@@ -106,8 +106,8 @@ def list_accounts() -> list[dict]:
     return out
 
 
-def add_account(name: str) -> None:
-    """Capture-on-login: run `claude /login` against a temp capture dir, then store the creds."""
+def add_account(name: str, email: str | None = None) -> None:
+    """Capture-on-login: run `claude auth login` against a temp capture dir, then store the creds."""
     import os
     import shlex
     import subprocess
@@ -115,10 +115,13 @@ def add_account(name: str) -> None:
     from .config import load_config
     cfg = load_config()
     claude_cmd = shlex.split(os.environ.get("CCSWITCH_CLAUDE_BIN", cfg.claude_bin))
+    login_args = ["auth", "login", "--claudeai"]
+    if email:
+        login_args += ["--email", email]
     with tempfile.TemporaryDirectory() as capture:
         env = dict(os.environ, CLAUDE_CONFIG_DIR=capture)
         print(f"Log in to the '{name}' account in the browser window that opens…")
-        subprocess.run(claude_cmd + ["/login"], env=env)
+        subprocess.run(claude_cmd + login_args, env=env)
         cred_path = os.path.join(capture, ".credentials.json")
         if not os.path.exists(cred_path):
             raise RuntimeError("login did not produce credentials; aborting")

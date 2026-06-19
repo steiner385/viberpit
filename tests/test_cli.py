@@ -14,7 +14,7 @@ class TestCli(unittest.TestCase):
             from ccswitch import cli, accounts
             with mock.patch.object(accounts, "add_account") as add:
                 self.assertEqual(cli.main(["add", "alpha"]), 0)
-                add.assert_called_once_with("alpha")
+                add.assert_called_once_with("alpha", email=None)
 
     def _seed(self, name):
         from ccswitch import paths

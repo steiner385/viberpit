@@ -21,6 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     p_list.add_argument("--no-refresh", action="store_true",
                         help="show cached usage only; skip the live /api/oauth/usage fetch")
     p_add = sub.add_parser("add"); p_add.add_argument("name")
+    p_add.add_argument("--email", default=None, help="pre-populate the login page email for this account")
     p_rm = sub.add_parser("remove"); p_rm.add_argument("name")
     p_link = sub.add_parser("link"); p_link.add_argument("name", nargs="?")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
@@ -39,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"weekly={u.get('weekly_pct', '?')}% (resets {_fmt_reset(u.get('weekly_resets_at'), cfg.timezone)})")
         return 0
     if args.cmd == "add":
-        accounts.add_account(args.name); return 0
+        accounts.add_account(args.name, email=args.email); return 0
     if args.cmd == "remove":
         accounts.remove_account(args.name); return 0
     if args.cmd == "link":
