@@ -34,8 +34,8 @@ interface as the primary surface.
   display metadata; no concept is duplicated across stores.
 - Q: Authentication mechanism? → A: **Network-enforced identity for the private-network
   (Tailscale) deployment, with no separate app login**; app-level strong authentication is REQUIRED
-  before any public/non-private exposure. (Phases Constitution Principle IV — see Governance note
-  in Assumptions; the "public-hosting-safe without rewrite" goal is therefore explicitly deferred.)
+  before any public/non-private exposure. (Consistent with Constitution Principle IV as amended in
+  v1.1.0; the "public-hosting-safe without rewrite" goal is explicitly deferred to that later step.)
 - Q: OAuth token protection at rest? → A: **Envelope encryption** — replayable secrets (refresh
   tokens) are encrypted with authenticated encryption using a key from the environment/secret
   store; ciphertext at rest, credential files owner-only (0600), plaintext never written.
@@ -278,11 +278,11 @@ which account has quota left or copy credentials around.
 - **Concurrency/scale (v1 default)**: designed for a low number of simultaneous live sessions
   (order of ten) on a single host; per-session output retention is a bounded scrollback to cap
   memory. A hard session cap and tuning are configuration concerns, not v1 requirements.
-- **Governance note — Principle IV amendment required**: the v1 auth decision (network-enforced
-  identity, no app login on the private network) phases Constitution Principle IV, which currently
-  requires app-level authentication on every endpoint. Principle IV MUST be amended (to make
-  app-level auth conditional on exposure, REQUIRED before public hosting) before this spec is
-  considered constitution-consistent. Amendment pending operator approval.
+- **Governance note — Principle IV amended (v1.1.0)**: the v1 auth decision (network-enforced
+  identity for the private-network deployment, app-level auth required before public exposure) is
+  now consistent with the constitution: Principle IV was amended in **v1.1.0** to make app-level
+  authentication exposure-conditional while preserving "no unidentified caller" and requiring an
+  enable-able app-auth path before any public exposure.
 
 ## Dependencies
 

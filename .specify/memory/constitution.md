@@ -1,8 +1,13 @@
 <!--
 SYNC IMPACT REPORT
-Version change: (none) → 1.0.0   [initial ratification]
-Bump rationale: First constitution for the project; establishes all core principles and governance.
-Modified principles: n/a (initial set)
+Version change: 1.0.0 → 1.1.0   [amendment]
+Bump rationale (MINOR): Principle IV redefined to make app-level authentication conditional on
+  exposure — network-enforced identity (e.g. Tailscale) MAY gate a private-network deployment;
+  app-level strong auth REQUIRED before any public/non-private exposure. Core guarantee ("no
+  unidentified caller; strong auth before public") is preserved and sharpened, not removed — hence
+  MINOR, not MAJOR. Driven by spec 001-ccswitch-web clarify decision.
+Modified principles: IV. Security First (auth made exposure-conditional; rationale expanded)
+Prior history: 1.0.0 (2026-06-19) initial ratification — all core principles and governance.
 Added sections:
   - Core Principles I–VII
   - Technology & Architecture Constraints
@@ -65,19 +70,26 @@ passed its mocked unit tests. Reality is the only authority on a boundary we do 
 This service executes code (via Claude's tools) across paid accounts; it is a remote-code-execution
 surface and MUST be treated as one:
 
-- Authentication is REQUIRED on every endpoint and WebSocket; there are no anonymous routes.
+- Every endpoint and WebSocket MUST be gated by an identity control appropriate to the deployment.
+  Network-enforced identity (e.g. a private tailnet) MAY be the sole gate for a private-network
+  deployment; app-level strong authentication (passkey/WebAuthn with signed server-side sessions)
+  is REQUIRED before any public or non-private exposure. No deployment is ever reachable by an
+  unidentified caller.
 - The server MUST NOT be exposed on a public interface without explicit, documented hardening
-  (auth + TLS + rate-limited login). Default exposure is loopback reached over a private network
-  (e.g. Tailscale).
+  (app-level auth + TLS + rate-limited login). Default exposure is loopback reached over a private
+  network (e.g. Tailscale).
 - Secrets (account tokens, signing keys, passwords) come from the environment or a secret store,
   are NEVER committed, and are NEVER written to logs or error messages.
 - OAuth tokens are stored with least-exposure at rest (per-account files mode 0600; hash one-time
   values, encrypt replayable secrets) and refreshed via supported endpoints only.
-- Auth MUST be strong enough for eventual public hosting from day one (hashed credentials, signed
-  sessions), so the localhost→cloud path requires no security rewrite.
+- An app-level strong-authentication path (hashed/credential-less login, signed sessions) MUST
+  exist and be enable-able from day one; turning it on is a hard prerequisite for any non-private
+  exposure, so the private→public transition is a configuration step, not a security rewrite.
 
-Rationale: an RCE-capable service bound to financial accounts has no tolerable failure mode for
-weak auth or leaked secrets.
+Rationale: an RCE-capable service bound to financial accounts has no tolerable failure mode for an
+unidentified caller or leaked secrets. Allowing network-enforced identity to gate a private-network
+deployment keeps v1 simple without ever permitting anonymous access, while the required app-auth
+path keeps public hosting reachable without a rewrite.
 
 ### V. Test-Driven Quality Gates
 
@@ -162,4 +174,4 @@ with Principles I–VII; where a spec-kit plan/spec/tasks template exists, it MU
   against Principles II (isolation), III (verification), IV (security), and V (quality gates) and
   record the result in the phase's plan or PR.
 
-**Version**: 1.0.0 | **Ratified**: 2026-06-19 | **Last Amended**: 2026-06-19
+**Version**: 1.1.0 | **Ratified**: 2026-06-19 | **Last Amended**: 2026-06-19
