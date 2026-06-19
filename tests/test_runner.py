@@ -37,3 +37,28 @@ class TestRunner(unittest.TestCase):
                 rc = runner.main(["--", "-p", "hi"])
             self.assertEqual(rc, 0)  # succeeded after retrying alpha
             os.environ.pop("CCSWITCH_FAKE_LIMITED", None)
+
+    def test_all_accounts_limited_no_wait_returns_2(self):
+        with temp_env():
+            from ccswitch import runner, accounts
+            from tests.helpers import usage
+            _seed("alpha"); _seed("beta")
+            os.environ["CCSWITCH_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
+            # Both accounts are limited; all have low utilisation so they're selectable
+            os.environ["CCSWITCH_FAKE_LIMITED"] = "alpha,beta"
+            with mock.patch.object(accounts, "usage_for", side_effect=lambda n: usage(session=5.0)):
+                rc = runner.main(["--", "-p", "hi"])
+            self.assertEqual(rc, 2)
+            os.environ.pop("CCSWITCH_FAKE_LIMITED", None)
+
+    def test_last_result_ignores_non_json_and_non_result_lines(self):
+        from ccswitch.runner import _last_result
+        stdout = "\n".join([
+            "not json at all",
+            json.dumps({"type": "text", "text": "hello"}),
+            json.dumps({"type": "result", "is_error": False, "result": "done"}),
+        ])
+        obj = _last_result(stdout)
+        self.assertIsNotNone(obj)
+        self.assertEqual(obj["type"], "result")
+        self.assertEqual(obj["result"], "done")
