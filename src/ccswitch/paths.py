@@ -42,5 +42,20 @@ def shared_mcp_path() -> Path:
     return store_dir() / "mcp.shared.json"
 
 
+def global_claude_json() -> Path:
+    """$HOME/.claude.json — the real claude binary's global config file."""
+    return Path.home() / ".claude.json"
+
+
+def store_claude_json_path(name: str) -> Path:
+    """Per-account captured .claude.json in the store (identity + caches)."""
+    return store_dir() / f"{name}.claude.json"
+
+
+def shared_claude_json_path() -> Path:
+    """Shared allowlist overlay (mcpServers, projects, allowedTools) for all accounts."""
+    return store_dir() / "claude.shared.json"
+
+
 def account_cfg_dir(name: str) -> Path:
     return cfg_root() / name

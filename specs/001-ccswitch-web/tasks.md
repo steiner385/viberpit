@@ -25,16 +25,16 @@ Paths are relative to repo root `cc-account-switcher/`.
 **Goal:** a real `claude` launches under a composed per-account config dir; tokens encrypted at rest.
 Nothing in US1/US2 works until this completes. (research.md R1, R9)
 
-- [ ] T007 [P] Test: `add_account` captures the temp-login `.claude.json` to `store/<name>.claude.json` in `tests/test_accounts_claudejson.py`
-- [ ] T008 [P] Test: `compose` writes per-account `.claude.json` = account identity ⊕ shared allowlist (`mcpServers`/`projects`/`allowedTools`) in `tests/test_configdir_claudejson.py`
-- [ ] T009 [P] Test: `reconcile_links` symlinks only the share allowlist and keeps `.credentials.json`/`.claude.json`/`daemon.*`/`sessions`/`agents`/`tasks` real-per-account in `tests/test_configdir_isolation.py`
+- [X] T007 [P] Test: `add_account` captures the temp-login `.claude.json` to `store/<name>.claude.json` in `tests/test_accounts_claudejson.py`
+- [X] T008 [P] Test: `compose` writes per-account `.claude.json` = account identity ⊕ shared allowlist (`mcpServers`/`projects`/`allowedTools`) in `tests/test_configdir_claudejson.py`
+- [X] T009 [P] Test: `reconcile_links` symlinks only the share allowlist and keeps `.credentials.json`/`.claude.json`/`daemon.*`/`sessions`/`agents`/`tasks` real-per-account in `tests/test_configdir_isolation.py`
 - [ ] T010 [P] Test: refresh token round-trips through envelope encryption (encrypt→store→read→decrypt) in `tests/test_crypto.py`
-- [ ] T011 Implement `.claude.json` capture in `ccswitch/accounts.py::add_account`
-- [ ] T012 Implement per-account `.claude.json` compose (identity base ⊕ `store/claude.shared.json` allowlist) in `ccswitch/configdir.py`
-- [ ] T013 Rewrite `reconcile_links` share/isolate set in `ccswitch/configdir.py` (delete the old symlink-everything logic — Principle VI)
+- [X] T011 Implement `.claude.json` capture in `ccswitch/accounts.py::add_account`
+- [X] T012 Implement per-account `.claude.json` compose (identity base ⊕ `store/claude.shared.json` allowlist) in `ccswitch/configdir.py`
+- [X] T013 Rewrite `reconcile_links` share/isolate set in `ccswitch/configdir.py` (delete the old symlink-everything logic — Principle VI)
 - [ ] T014 Implement envelope encryption module `server/crypto/envelope.py` (AES-256-GCM, key from `CCSWITCH_MASTER_KEY`)
 - [ ] T015 Wire envelope encryption of refresh tokens into `ccswitch/creds.py` read/write (encrypt on write, decrypt in memory on read)
-- [ ] T016 LIVE SMOKE (Principle III): `CLAUDE_CONFIG_DIR=cfg/<acct> claude -p "ok"` returns success and `ccmax`-style `--resume` works across accounts; record result in `specs/001-ccswitch-web/quickstart.md` validation log
+- [X] T016 LIVE SMOKE (Principle III): `CLAUDE_CONFIG_DIR=cfg/<acct> claude -p "ok"` returns success and `ccmax`-style `--resume` works across accounts; record result in `specs/001-ccswitch-web/quickstart.md` validation log
 
 ---
 
