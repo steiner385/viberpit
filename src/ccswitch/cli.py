@@ -1,11 +1,13 @@
-"""ccswitch: account store management (add / remove / list / link)."""
+"""ccswitch: account store management (add / remove / list / link / use)."""
 import argparse
+import shlex
 import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from . import accounts, configdir
 from .config import load_config
+from .selector import AllAccountsBusy
 
 
 def _fmt_reset(iso: str | None, tz: str) -> str:
@@ -24,6 +26,9 @@ def main(argv: list[str] | None = None) -> int:
     p_add.add_argument("--email", default=None, help="pre-populate the login page email for this account")
     p_rm = sub.add_parser("remove"); p_rm.add_argument("name")
     p_link = sub.add_parser("link"); p_link.add_argument("name", nargs="?")
+    p_use = sub.add_parser("use", help="compose a config dir for an account and print its export line")
+    p_use.add_argument("name", nargs="?", help="account to pin (default: most-headroom account)")
+    p_use.add_argument("--dir", action="store_true", help="print only the config dir path (no 'export ')")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     cfg = load_config()
 
@@ -47,5 +52,25 @@ def main(argv: list[str] | None = None) -> int:
         names = [args.name] if args.name else [a["name"] for a in accounts.list_accounts()]
         for n in names:
             configdir.reconcile_links(n)
+        return 0
+    if args.cmd == "use":
+        if args.name:
+            known = {a["name"] for a in accounts.list_accounts()}
+            if args.name not in known:
+                print(f"ccswitch: unknown account {args.name!r}", file=sys.stderr)
+                return 1
+            name = args.name
+        else:
+            try:
+                name = accounts.pick_account(cfg)  # most-headroom + soft reservation
+            except AllAccountsBusy as busy:
+                when = busy.earliest_reset.astimezone(ZoneInfo(cfg.timezone)) if busy.earliest_reset else "unknown"
+                print(f"ccswitch: all accounts at usage ceiling (earliest reset: {when})", file=sys.stderr)
+                return 2
+        cfg_dir = configdir.compose(name)
+        if args.dir:
+            print(cfg_dir)
+        else:
+            print(f"export CLAUDE_CONFIG_DIR={shlex.quote(str(cfg_dir))}  # ccswitch: {name}")
         return 0
     return 1
