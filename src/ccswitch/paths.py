@@ -7,6 +7,13 @@ def root() -> Path:
     return Path(os.environ.get("CCSWITCH_HOME", str(Path.home() / ".claude-accounts")))
 
 
+def ensure_root() -> Path:
+    r = root()
+    r.mkdir(parents=True, exist_ok=True)
+    os.chmod(r, 0o700)
+    return r
+
+
 def shared_base() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
 

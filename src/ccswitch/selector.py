@@ -25,9 +25,13 @@ def select_best(usages: dict[str, Usage | None], reserved: set[str],
     for name, u in usages.items():
         if name in exclude or name in reserved or u is None:
             continue
-        at_ceiling = u.session_pct >= ceiling or u.weekly_pct >= ceiling
-        if at_ceiling:
-            busy_resets.append(min(u.session_resets_at, u.weekly_resets_at))
+        at = []
+        if u.session_pct >= ceiling:
+            at.append(u.session_resets_at)
+        if u.weekly_pct >= ceiling:
+            at.append(u.weekly_resets_at)
+        if at:
+            busy_resets.append(min(at))
             continue
         candidates.append((u.session_pct, u.weekly_pct, name))
     if not candidates:

@@ -11,6 +11,7 @@ from .oauth import Usage
 @contextlib.contextmanager
 def locked_ledger():
     """Open ledger.json under an exclusive flock; persist the dict on exit."""
+    paths.ensure_root()
     path = paths.ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     f = open(path, "a+", encoding="utf-8")
@@ -68,4 +69,4 @@ def reserve(led: dict, name: str, until_ts: float) -> None:
 
 
 def reservation_active(led: dict, name: str, now_ts: float) -> bool:
-    return _acct(led, name).get("reservationUntil", 0) > now_ts
+    return led["accounts"].get(name, {}).get("reservationUntil", 0) > now_ts

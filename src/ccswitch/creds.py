@@ -3,13 +3,16 @@ import json
 import os
 from pathlib import Path
 
+from . import paths
+
 
 def read_json(path: Path) -> dict:
     return json.loads(Path(path).read_text())
 
 
 def write_json_secure(path: Path, data: dict) -> None:
-    """Write JSON with mode 0600 (parent dir forced to 0700)."""
+    """Write JSON with mode 0600 (store root + parent dir forced to 0700)."""
+    paths.ensure_root()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)

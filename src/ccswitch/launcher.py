@@ -6,7 +6,6 @@ import shlex
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 
 from . import accounts
 from .config import load_config
@@ -58,9 +57,22 @@ def scan_for_limit(cfg_dir: str):
     return None
 
 
-def _poll_usage_exceeds_soft(name: str, cfg) -> bool:
-    u = accounts.usage_for(name)
-    return u is not None and u.session_pct >= cfg.soft_threshold * 100.0
+def _proactive_target(name, cfg):
+    """Return a strictly-less-loaded usable account to pre-empt to, or None."""
+    active = accounts.usage_for(name)
+    if active is None or active.session_pct < cfg.soft_threshold * 100.0:
+        return None
+    ceiling = cfg.hard_ceiling * 100.0
+    best, best_pct = None, active.session_pct
+    for other in [a["name"] for a in accounts.list_accounts() if a["name"] != name]:
+        u = accounts.usage_for(other)
+        if u is None:
+            continue
+        if u.session_pct >= ceiling or u.weekly_pct >= ceiling:
+            continue
+        if u.session_pct < best_pct:
+            best, best_pct = other, u.session_pct
+    return best
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -72,6 +84,18 @@ def main(argv: list[str] | None = None) -> int:
     poll = cfg.poll_interval_sec if known.poll_interval is None else known.poll_interval
 
     from .configdir import compose
+
+    def _poll_loop(proc, cfg_dir):
+        """Block until proc exits or a switch is warranted. Returns "hard"/"proactive"/None."""
+        while proc.poll() is None:
+            if scan_for_limit(cfg_dir) is not None:
+                return "hard"
+            if _proactive_target(name, cfg) is not None:
+                return "proactive"
+            if poll:
+                time.sleep(poll)
+        return None
+
     name = accounts.pick_account(cfg)
     resume_id: str | None = None
     while True:
@@ -79,32 +103,45 @@ def main(argv: list[str] | None = None) -> int:
         env = dict(os.environ, CLAUDE_CONFIG_DIR=cfg_dir)
         cmd = _claude_cmd(cfg) + (["--resume", resume_id] if resume_id else []) + claude_args
         proc = spawn_claude(cmd, env)
-        switch = False
-        while proc.poll() is None:
-            if scan_for_limit(cfg_dir) is not None or _poll_usage_exceeds_soft(name, cfg):
-                switch = True
-                break
-            if poll:
-                time.sleep(poll)
-        if not switch:
-            proc.wait()
-            accounts.sync_back(name)
-            return 0
-        resume_id = current_session_id(cfg_dir) or resume_id
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except Exception:
-            pass
-        accounts.sync_back(name)
-        try:
-            nxt = accounts.pick_account(cfg, exclude={name})
-        except Exception as e:
-            print(f"ccmax: cannot switch ({e})", file=sys.stderr)
-            return 2
-        if known.confirm_switch:
-            print(f"ccmax: {name} hit its limit. Switch to {nxt} and resume? [Y/n] ", end="")
-            if input().strip().lower() in ("n", "no"):
+        # Inner loop: poll the SAME live process. Only re-spawn (outer loop) after an actual
+        # switch. A proactive trigger that can't secure a replacement (or a declined switch)
+        # re-enters this inner loop on the existing proc — never killing a working session.
+        switched = False
+        while not switched:
+            switch_reason = _poll_loop(proc, cfg_dir)
+            if switch_reason is None:
+                proc.wait()
+                accounts.sync_back(name)
                 return 0
-        print(f"ccmax: {name} hit its limit — switching to {nxt} and resuming…", file=sys.stderr)
-        name = nxt
+            # secure the next account BEFORE killing, so a proactive switch never strands us
+            try:
+                nxt = accounts.pick_account(cfg, exclude={name})
+            except Exception as e:
+                if switch_reason == "proactive":
+                    # no better account actually available (race) — keep running on current
+                    continue
+                # hard limit: current account is unusable; report earliest reset and stop
+                print(f"ccmax: {name} hit its limit and no other account is available ({e})", file=sys.stderr)
+                resume_id = current_session_id(cfg_dir) or resume_id
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except Exception:
+                    pass
+                accounts.sync_back(name)
+                return 2
+            if known.confirm_switch:
+                print(f"ccmax: {name} is busy. Switch to {nxt} and resume? [Y/n] ", end="")
+                if input().strip().lower() in ("n", "no"):
+                    # user declined; we have NOT killed the process — keep running on current
+                    continue
+            resume_id = current_session_id(cfg_dir) or resume_id  # newest transcript = the active session (assumes it is the most-recently-modified *.jsonl)
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                pass
+            accounts.sync_back(name)
+            print(f"ccmax: switching from {name} to {nxt} and resuming…", file=sys.stderr)
+            name = nxt
+            switched = True

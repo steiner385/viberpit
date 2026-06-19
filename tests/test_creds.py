@@ -75,3 +75,6 @@ class TestCreds(unittest.TestCase):
             self.assertEqual(read_json(p), {"k": "v"})
             parent_mode = stat.S_IMODE(os.stat(p.parent).st_mode)
             self.assertEqual(parent_mode, 0o700)
+            # write_json_secure must force the store ROOT to 0700 too (via paths.ensure_root)
+            root_mode = stat.S_IMODE(os.stat(paths.root()).st_mode)
+            self.assertEqual(root_mode, 0o700)

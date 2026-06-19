@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from tests.helpers import temp_env, usage
 
 
@@ -37,3 +37,20 @@ class TestSelector(unittest.TestCase):
         with self.assertRaises(AllAccountsBusy) as ctx:
             select_best(usages, set(), self.cfg, self.now)
         self.assertIsNotNone(ctx.exception.earliest_reset)
+
+    def test_earliest_reset_reflects_only_dimension_at_ceiling(self):
+        # Session is fine (10%, resets soon) but weekly is at ceiling (100%, resets far out).
+        # The earliest_reset must reflect the WEEKLY reset (the dimension actually at ceiling),
+        # NOT the sooner session reset — otherwise --wait sleeps until the wrong time and busy-loops.
+        from ccswitch.oauth import Usage
+        from ccswitch.selector import select_best, AllAccountsBusy
+        session_reset = self.now + timedelta(minutes=30)
+        weekly_reset = self.now + timedelta(days=2)
+        u = Usage(
+            session_pct=10.0, session_resets_at=session_reset,
+            weekly_pct=100.0, weekly_resets_at=weekly_reset,
+            extra_usage_enabled=False,
+        )
+        with self.assertRaises(AllAccountsBusy) as ctx:
+            select_best({"solo": u}, set(), self.cfg, self.now)
+        self.assertEqual(ctx.exception.earliest_reset, weekly_reset)
