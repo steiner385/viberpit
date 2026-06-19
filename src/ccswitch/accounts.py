@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 
 from . import configdir, ledger, oauth, paths
 from .config import Config, load_config
-from .creds import compose_credentials, merge_keep_later, read_json, split_credentials, write_json_secure
-from .selector import AllAccountsBusy, select_best
+from .creds import merge_keep_later, read_json, split_credentials, write_json_secure
+from .selector import select_best
 
 
 def _account_names() -> list[str]:
@@ -35,18 +35,30 @@ def usage_for(name: str) -> oauth.Usage | None:
         cached = ledger.cached_usage(led, name, cfg, now)
         if cached is not None:
             return cached
+
+    # Step 1: ensure the token is valid (may refresh if near-expiry).
+    # If the refresh token is already dead, mark needs-reauth immediately — do not retry.
     try:
         blob = ensure_valid_token(name)
+    except oauth.AuthError:
+        with ledger.locked_ledger() as led:
+            ledger.set_status(led, name, "needs-reauth")
+        return None
+
+    # Step 2: fetch usage; on 401 do exactly ONE refresh+refetch.
+    try:
         u = oauth.fetch_usage(blob["accessToken"])
     except oauth.AuthError:
         try:
-            blob = oauth.refresh_access_token(read_json(paths.slot_path(name))["refreshToken"], read_json(paths.slot_path(name)))
-            write_json_secure(paths.slot_path(name), blob)
-            u = oauth.fetch_usage(blob["accessToken"])
+            slot = read_json(paths.slot_path(name))
+            slot = oauth.refresh_access_token(slot["refreshToken"], slot)
+            write_json_secure(paths.slot_path(name), slot)
+            u = oauth.fetch_usage(slot["accessToken"])
         except oauth.AuthError:
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, name, "needs-reauth")
             return None
+
     with ledger.locked_ledger() as led:
         ledger.record_usage(led, name, u, now)
         ledger.set_status(led, name, "ok")

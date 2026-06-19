@@ -50,6 +50,20 @@ class TestAccounts(unittest.TestCase):
                 self.assertIsNone(accounts.usage_for("alpha"))
                 self.assertEqual(accounts.list_accounts()[0]["status"], "needs-reauth")
 
+    def test_usage_for_ensure_valid_token_autherror_no_double_refresh(self):
+        """Expired token + dead refresh: ensure_valid_token raises AuthError → needs-reauth,
+        fetch_usage is never called, refresh_access_token called exactly once."""
+        with temp_env():
+            from ccswitch import accounts, oauth
+            _seed_account("alpha", expires_in_ms=-1)  # force token expiry
+            fetch_spy = mock.patch.object(oauth, "fetch_usage", side_effect=AssertionError("fetch_usage must not be called"))
+            refresh_mock = mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead"))
+            with fetch_spy, refresh_mock as rm:
+                result = accounts.usage_for("alpha")
+                self.assertIsNone(result)
+                rm.assert_called_once()
+            self.assertEqual(accounts.list_accounts()[0]["status"], "needs-reauth")
+
     def test_pick_account_reserves_winner(self):
         with temp_env():
             from ccswitch import accounts, oauth
