@@ -54,3 +54,22 @@ Notes:
 - `ccmax`/`ccrun` are for a *single* session that should auto-rotate on a limit; the agent view
   is long-lived and manages many sessions, so pin it with `ccswitch use` and re-pin a new view
   to a fresher account when `ccswitch list` shows the current one running low.
+
+## Running the web backend (dev)
+
+Install server dependencies:
+```bash
+pip install -e ".[server]"
+```
+
+Set required env vars (see `.env.example`), then start the dev server:
+```bash
+uvicorn server.app:app --reload --host 127.0.0.1 --port 8787
+```
+
+Or copy and fill in `.env.example`:
+```bash
+cp .env.example .env
+# edit .env
+uvicorn server.app:app --reload
+```

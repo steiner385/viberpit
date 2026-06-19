@@ -14,5 +14,22 @@ ccswitch = "ccswitch.cli:main"
 ccrun = "ccswitch.runner:main"
 ccmax = "ccswitch.launcher:main"
 
+[project.optional-dependencies]
+server = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy[asyncio]",
+    "aiosqlite",
+    "alembic",
+    "cryptography",
+    "webauthn",
+    "httpx",
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+    "pydantic-settings",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
