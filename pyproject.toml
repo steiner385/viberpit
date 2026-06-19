@@ -7,7 +7,7 @@ name = "ccswitch"
 version = "0.1.0"
 description = "Automatic Claude Max account rotation"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["cryptography>=43"]
 
 [project.scripts]
 ccswitch = "ccswitch.cli:main"
