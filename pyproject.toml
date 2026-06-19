@@ -16,6 +16,7 @@ ccmax = "ccswitch.launcher:main"
 
 [project.optional-dependencies]
 server = [
+  "itsdangerous",
     "fastapi",
     "uvicorn[standard]",
     "sqlalchemy[asyncio]",

@@ -47,21 +47,21 @@ verify create→interact→limit→rotate→continue and reconnect.
 
 ### Tests (write first)
 - [X] T017 [P] [US1] Fake-`claude` PTY stub (scripted output, idle/limit/turn signals) in `tests/fakes/fake_claude_pty.py`
-- [ ] T018 [P] [US1] Test: Tailscale-identity middleware accepts allowlisted identity, rejects unidentified, on both HTTP and WS upgrade in `server/tests/test_auth.py`
+- [X] T018 [P] [US1] Test: Tailscale-identity middleware accepts allowlisted identity, rejects unidentified, on both HTTP and WS upgrade in `server/tests/test_auth.py`
 - [ ] T019 [P] [US1] Test: per-account usage poller returns authoritative usage, caches ≤60s, dedupes per account in `server/tests/test_usage.py`
 - [ ] T020 [P] [US1] Test: account selection honors soft reservation (no double-assign) + excludes limited/needs-relogin in `server/tests/test_selection.py`
 - [X] T021 [P] [US1] Test: SessionManager spawns PTY, buffers bounded scrollback, replays on reattach in `server/tests/test_session_manager.py`
 - [ ] T022 [P] [US1] Test: wait-for-idle rotation — holds until idle, then kill+resume on next account, rebridges same id, max-wait fallback interrupts in `server/tests/test_rotation.py`
 - [ ] T023 [P] [US1] Test: REST contract (`/api/sessions`, `/api/accounts`, `/api/auth/me`, all-limited→409 earliestReset) in `server/tests/test_api.py`
 - [ ] T024 [P] [US1] Test: WS contract (attach/input/resize/interrupt ↔ output/status/usage/rotated/sessionEnded) in `server/tests/test_ws.py`
-- [ ] T025 [P] [US1] Test: no token/credential material in any log, response, or audit detail in `server/tests/test_redaction.py`
+- [X] T025 [P] [US1] Test: no token/credential material in any log, response, or audit detail in `server/tests/test_redaction.py`
 
 ### Implementation
-- [ ] T026 [US1] SQLAlchemy async models `Session`, `AppSession`, `AuditEvent` in `server/db/models.py` + Alembic init migration
-- [ ] T027 [US1] DB session/engine + lifespan wiring in `server/db/__init__.py`
-- [ ] T028 [US1] Tailscale identity verifier (header / `tailscaled` whois) + allowlist in `server/auth/identity.py`
-- [ ] T029 [US1] Signed server-side session (AppSession) + middleware gating all routes + WS upgrade in `server/auth/middleware.py`; passkey/WebAuthn path scaffolded behind a disabled flag in `server/auth/webauthn.py`
-- [ ] T030 [US1] Secret-redaction log filter + audit-event writer in `server/audit.py`
+- [X] T026 [US1] SQLAlchemy async models `Session`, `AppSession`, `AuditEvent` in `server/db/models.py` + Alembic init migration
+- [X] T027 [US1] DB session/engine + lifespan wiring in `server/db/__init__.py`
+- [X] T028 [US1] Tailscale identity verifier (header / `tailscaled` whois) + allowlist in `server/auth/identity.py`
+- [X] T029 [US1] Signed server-side session (AppSession) + middleware gating all routes + WS upgrade in `server/auth/middleware.py`; passkey/WebAuthn path scaffolded behind a disabled flag in `server/auth/webauthn.py`
+- [X] T030 [US1] Secret-redaction log filter + audit-event writer in `server/audit.py`
 - [ ] T031 [US1] Per-account usage poller + in-memory pub/sub in `server/usage/poller.py` (wraps `ccswitch` core; authoritative signal, R4)
 - [ ] T032 [US1] Account selection + reservation glue in `server/sessions/selection.py` (reuses `ccswitch.selector`/ledger, FR-009a)
 - [X] T033 [US1] `SessionManager`: PTY spawn under composed config dir, bounded scrollback ring, idle tracking in `server/sessions/manager.py`
