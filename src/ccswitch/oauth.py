@@ -2,6 +2,7 @@
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -53,12 +54,15 @@ def parse_usage(payload: dict) -> Usage:
     session_reset = weekly_reset = None
     for entry in payload.get("limits", []) or []:
         group = entry.get("group")
+        resets_at = entry.get("resets_at")
+        if not resets_at:
+            continue
         if group == "session" and session_pct is None:
             session_pct = float(entry.get("percent", 0))
-            session_reset = _parse_iso(entry["resets_at"])
+            session_reset = _parse_iso(resets_at)
         elif group == "weekly" and weekly_pct is None:
             weekly_pct = float(entry.get("percent", 0))
-            weekly_reset = _parse_iso(entry["resets_at"])
+            weekly_reset = _parse_iso(resets_at)
     if session_pct is None:
         fh = payload.get("five_hour", {})
         session_pct = float(fh.get("utilization", 0))
@@ -84,7 +88,11 @@ def fetch_usage(access_token: str) -> Usage:
 
 
 def refresh_access_token(refresh_token: str, prior: dict) -> dict:
-    form = f"grant_type=refresh_token&refresh_token={refresh_token}&client_id={CLIENT_ID}"
+    form = urllib.parse.urlencode({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLIENT_ID,
+    })
     status, body = http_request(
         "POST", TOKEN_URL,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -100,4 +108,5 @@ def refresh_access_token(refresh_token: str, prior: dict) -> dict:
     blob["expiresAt"] = now_ms + int(resp.get("expires_in", 0)) * 1000
     if "scope" in resp:
         blob["scopes"] = resp["scope"].split()
+    blob.setdefault("scopes", [])
     return blob
