@@ -245,6 +245,37 @@ the 429 in step 4 and is retried on another account — there is no long-lived s
 - **Manual smoke:** real `ccswitch add` for one account → `ccrun -- claude -p "hi"` → confirm
   sync-back bumped `expiresAt` in that account's slot.
 
+## Compatibility with Claude Code's multi-session / agents model
+
+Verified against the v2.1.183 binary; this model is the design's **best-fit** case, not a conflict:
+
+- **Each top-level session/agent is its own OS process keyed by `CLAUDE_CONFIG_DIR`.** Claude spawns
+  via `spawnClaudeCodeProcess`/`child_process`; the config dir (and therefore the account) is read
+  from the process environment at launch. So `ccmax` launching session 1 under `cfg/alpha`, session 2
+  under `cfg/beta`, session 3 under `cfg/gamma` puts each active session on a **different account**,
+  concurrently and with zero interference — exactly the manual workflow this tool automates.
+- **The supervisor daemon is per-config-dir, not global.** All daemon artifacts resolve under the
+  config-dir helper `tr()`: `daemon.status.json`, `daemon.lock`, `daemon.scheduled.status`,
+  `daemon.log`, and the IPC pipe (`cc-daemon-<hash-of-config-dir>`). Each account's config dir gets
+  its **own** supervisor and worker pool, so background-agent workers are isolated per account too.
+  There is no single daemon multiplexing API calls across accounts — it supervises independent
+  worker processes, each of which authenticates by reading `.credentials.json` from its own config
+  dir.
+- **Account granularity is the top-level session, not the individual sub-agent.** Sub-agents (the
+  Agent tool / background workers) inherit the parent session's `CLAUDE_CONFIG_DIR` — the binary
+  explicitly warns that a subprocess whose config dir differs from its parent breaks transcript
+  mirroring. This is the correct granularity: usage limits are per-account, and a single logical
+  session's sub-agents should bill to one account, not scatter across three.
+
+**One documented limitation.** The daemon's *service-install* mode (`claude` installed as a systemd
+service) is hardcoded to the default `~/.claude` config dir — the binary refuses service install when
+`CLAUDE_CONFIG_DIR` is set. If service mode is ever installed, all service-hosted background work
+pins to whatever account occupies `~/.claude`, defeating per-process selection. **Mitigation:** do
+not install the daemon as a service (you currently have not — only an unrelated cache-cleanup timer
+exists); rely on the normal transient/on-demand daemon, which is per-config-dir. If service mode is
+genuinely needed later, the fallback is to treat the default `~/.claude` as one managed account whose
+`.credentials.json` the manager swaps — reintroducing global-file contention for that path only.
+
 ## Stack & packaging
 
 - Python 3, **stdlib only** (`json`, `fcntl` for flock, `subprocess`, `pathlib`, `argparse`,
