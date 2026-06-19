@@ -38,9 +38,9 @@ def _acct(led: dict, name: str) -> dict:
 def record_usage(led: dict, name: str, u: Usage, now: datetime) -> None:
     _acct(led, name)["usage"] = {
         "session_pct": u.session_pct,
-        "session_resets_at": u.session_resets_at.isoformat(),
+        "session_resets_at": u.session_resets_at.isoformat() if u.session_resets_at else None,
         "weekly_pct": u.weekly_pct,
-        "weekly_resets_at": u.weekly_resets_at.isoformat(),
+        "weekly_resets_at": u.weekly_resets_at.isoformat() if u.weekly_resets_at else None,
         "extra_usage_enabled": u.extra_usage_enabled,
         "fetched_at": now.isoformat(),
     }
@@ -53,9 +53,11 @@ def cached_usage(led: dict, name: str, cfg, now: datetime) -> Usage | None:
     fetched = datetime.fromisoformat(blob["fetched_at"])
     if (now - fetched).total_seconds() > cfg.usage_cache_ttl_sec:
         return None
+    sr = blob.get("session_resets_at")
+    wr = blob.get("weekly_resets_at")
     return Usage(
-        blob["session_pct"], datetime.fromisoformat(blob["session_resets_at"]),
-        blob["weekly_pct"], datetime.fromisoformat(blob["weekly_resets_at"]),
+        blob["session_pct"], datetime.fromisoformat(sr) if sr else None,
+        blob["weekly_pct"], datetime.fromisoformat(wr) if wr else None,
         blob["extra_usage_enabled"],
     )
 

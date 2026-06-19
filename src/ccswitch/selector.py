@@ -25,13 +25,17 @@ def select_best(usages: dict[str, Usage | None], reserved: set[str],
     for name, u in usages.items():
         if name in exclude or name in reserved or u is None:
             continue
-        at = []
-        if u.session_pct >= ceiling:
-            at.append(u.session_resets_at)
-        if u.weekly_pct >= ceiling:
-            at.append(u.weekly_resets_at)
-        if at:
-            busy_resets.append(min(at))
+        at_ceiling = u.session_pct >= ceiling or u.weekly_pct >= ceiling
+        if at_ceiling:
+            # only the dimension(s) actually at ceiling contribute a reset time;
+            # a reset can be None (0%/no active window) — exclude those
+            resets = []
+            if u.session_pct >= ceiling and u.session_resets_at is not None:
+                resets.append(u.session_resets_at)
+            if u.weekly_pct >= ceiling and u.weekly_resets_at is not None:
+                resets.append(u.weekly_resets_at)
+            if resets:
+                busy_resets.append(min(resets))
             continue
         candidates.append((u.session_pct, u.weekly_pct, name))
     if not candidates:

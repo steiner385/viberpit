@@ -24,9 +24,9 @@ class UsageError(Exception):
 @dataclass
 class Usage:
     session_pct: float
-    session_resets_at: datetime
+    session_resets_at: datetime | None
     weekly_pct: float
-    weekly_resets_at: datetime
+    weekly_resets_at: datetime | None
     extra_usage_enabled: bool
 
 
@@ -40,7 +40,10 @@ def http_request(method: str, url: str, headers: dict | None = None,
         return e.code, e.read()
 
 
-def _parse_iso(s: str) -> datetime:
+def _parse_iso(s: str | None) -> datetime | None:
+    # resets_at is null when a window has 0% usage (no active window to reset)
+    if not s:
+        return None
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     dt = datetime.fromisoformat(s)
@@ -64,13 +67,13 @@ def parse_usage(payload: dict) -> Usage:
             weekly_pct = float(entry.get("percent", 0))
             weekly_reset = _parse_iso(resets_at)
     if session_pct is None:
-        fh = payload.get("five_hour", {})
+        fh = payload.get("five_hour") or {}
         session_pct = float(fh.get("utilization", 0))
-        session_reset = _parse_iso(fh["resets_at"])
+        session_reset = _parse_iso(fh.get("resets_at"))
     if weekly_pct is None:
-        sd = payload.get("seven_day", {})
+        sd = payload.get("seven_day") or {}
         weekly_pct = float(sd.get("utilization", 0))
-        weekly_reset = _parse_iso(sd["resets_at"])
+        weekly_reset = _parse_iso(sd.get("resets_at"))
     extra = bool((payload.get("extra_usage") or {}).get("is_enabled", False))
     return Usage(session_pct, session_reset, weekly_pct, weekly_reset, extra)
 

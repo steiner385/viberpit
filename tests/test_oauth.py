@@ -100,3 +100,35 @@ class TestOAuth(unittest.TestCase):
         with mock.patch.object(oauth, "http_request", return_value=(200, json.dumps(resp).encode())):
             blob = oauth.refresh_access_token("tok", {})
         self.assertEqual(blob["scopes"], [])
+
+
+class TestUsageNullReset(unittest.TestCase):
+    def test_zero_usage_null_resets_at_does_not_crash(self):
+        from ccswitch.oauth import parse_usage
+        # a freshly-added account with no recent usage: utilization 0, resets_at null,
+        # and no session/weekly entry in limits[]
+        payload = {
+            "five_hour": {"utilization": 0.0, "resets_at": None},
+            "seven_day": {"utilization": 0.0, "resets_at": None},
+            "extra_usage": {"is_enabled": False},
+            "limits": [],
+        }
+        u = parse_usage(payload)
+        self.assertEqual(u.session_pct, 0.0)
+        self.assertEqual(u.weekly_pct, 0.0)
+        self.assertIsNone(u.session_resets_at)
+        self.assertIsNone(u.weekly_resets_at)
+
+    def test_limits_session_null_reset_falls_back_to_null(self):
+        from ccswitch.oauth import parse_usage
+        payload = {
+            "five_hour": {"utilization": 0.0, "resets_at": None},
+            "seven_day": {"utilization": 40.0, "resets_at": "2026-06-22T20:00:00+00:00"},
+            "limits": [{"kind": "weekly_all", "group": "weekly", "percent": 40,
+                        "resets_at": "2026-06-22T20:00:00+00:00"}],
+        }
+        u = parse_usage(payload)
+        self.assertEqual(u.session_pct, 0.0)
+        self.assertIsNone(u.session_resets_at)
+        self.assertEqual(u.weekly_pct, 40.0)
+        self.assertIsNotNone(u.weekly_resets_at)
