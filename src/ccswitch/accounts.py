@@ -104,3 +104,30 @@ def list_accounts() -> list[dict]:
             acct = led["accounts"].get(name, {})
             out.append({"name": name, "status": acct.get("status", "unknown"), "usage": acct.get("usage")})
     return out
+
+
+def add_account(name: str) -> None:
+    """Capture-on-login: run `claude /login` against a temp capture dir, then store the creds."""
+    import os
+    import shlex
+    import subprocess
+    import tempfile
+    from .config import load_config
+    cfg = load_config()
+    claude_cmd = shlex.split(os.environ.get("CCSWITCH_CLAUDE_BIN", cfg.claude_bin))
+    with tempfile.TemporaryDirectory() as capture:
+        env = dict(os.environ, CLAUDE_CONFIG_DIR=capture)
+        print(f"Log in to the '{name}' account in the browser window that opens…")
+        subprocess.run(claude_cmd + ["/login"], env=env)
+        cred_path = os.path.join(capture, ".credentials.json")
+        if not os.path.exists(cred_path):
+            raise RuntimeError("login did not produce credentials; aborting")
+        claude_oauth, mcp = split_credentials(read_json(cred_path))
+        if claude_oauth.get("subscriptionType") != "max":
+            print(f"WARNING: '{name}' is not a Max subscription (got {claude_oauth.get('subscriptionType')!r})")
+        write_json_secure(paths.slot_path(name), claude_oauth)
+        if mcp:
+            existing = read_json(paths.shared_mcp_path()) if paths.shared_mcp_path().exists() else {}
+            existing.update(mcp)
+            write_json_secure(paths.shared_mcp_path(), existing)
+    configdir.compose(name)
