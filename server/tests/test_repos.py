@@ -1,4 +1,4 @@
-"""Tests for /api/repos and /api/config endpoints."""
+"""Tests for /api/github/* and /api/config endpoints, plus session repo-clone."""
 from __future__ import annotations
 import os
 import subprocess
@@ -16,16 +16,6 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 FAKE_PTY = str(REPO_ROOT / "tests" / "fakes" / "fake_claude_pty.py")
 
 
-def _make_fake_repo(path: Path, branch: str = "main") -> None:
-    """Initialize a git repo with at least one commit and checkout branch."""
-    subprocess.run(["git", "init", str(path), "-b", branch], check=True, capture_output=True)
-    (path / "README.md").write_text("hi")
-    subprocess.run(["git", "-C", str(path), "config", "user.email", "test@test.com"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "config", "user.name", "Test"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "add", "."], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "commit", "-m", "init"], check=True, capture_output=True)
-
-
 def _make_app_and_client():
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
@@ -37,86 +27,114 @@ def _make_app_and_client():
         return app, client
 
 
-def test_list_repos_returns_git_dirs(tmp_path):
-    """GET /api/repos lists only git repos with currentBranch."""
-    repo1 = tmp_path / "repo-alpha"
-    repo2 = tmp_path / "repo-beta"
-    _make_fake_repo(repo1, branch="main")
-    _make_fake_repo(repo2, branch="develop")
-    (tmp_path / "not-a-repo").mkdir()  # should be excluded
+# ---------------------------------------------------------------------------
+# GET /api/github/repos
+# ---------------------------------------------------------------------------
+
+_REPOS = [
+    {
+        "nameWithOwner": "cairnea/KinDash",
+        "name": "KinDash",
+        "owner": "cairnea",
+        "isPrivate": True,
+        "url": "https://github.com/cairnea/KinDash",
+        "defaultBranch": "main",
+        "pushedAt": "2026-06-20T00:00:00Z",
+    },
+    {
+        "nameWithOwner": "acme/widget",
+        "name": "widget",
+        "owner": "acme",
+        "isPrivate": False,
+        "url": "https://github.com/acme/widget",
+        "defaultBranch": "main",
+        "pushedAt": "2026-06-19T00:00:00Z",
+    },
+]
+
+
+def test_list_github_repos_annotates_cloned(tmp_path):
+    """GET /api/github/repos returns repos with a 'cloned' flag, order preserved."""
+    # Pretend cairnea/KinDash is already cloned under <root>/.ccswitch/clones.
+    clone_git = tmp_path / ".ccswitch" / "clones" / "cairnea" / "KinDash" / ".git"
+    clone_git.mkdir(parents=True)
 
     with temp_env():
         with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            _, client = _make_app_and_client()
-            with client:
-                resp = client.get("/api/repos", headers=IDENTITY_HEADERS)
+            with patch("ccswitch.gitrepos.list_accessible_repos", return_value=[dict(r) for r in _REPOS]):
+                _, client = _make_app_and_client()
+                with client:
+                    resp = client.get("/api/github/repos", headers=IDENTITY_HEADERS)
 
     assert resp.status_code == 200
     data = resp.json()
-    names = [r["name"] for r in data]
-    assert "repo-alpha" in names
-    assert "repo-beta" in names
-    assert "not-a-repo" not in names
-    alpha = next(r for r in data if r["name"] == "repo-alpha")
-    assert alpha["currentBranch"] == "main"
-    assert "path" in alpha
+    # Order preserved (pushedAt-desc as returned by gitrepos).
+    assert [r["nameWithOwner"] for r in data] == ["cairnea/KinDash", "acme/widget"]
+    assert data[0]["cloned"] is True
+    assert data[1]["cloned"] is False
+    assert data[0]["isPrivate"] is True
 
 
-def test_list_repos_custom_root(tmp_path):
-    """GET /api/repos?root=<path> uses the given root."""
-    repo = tmp_path / "myrepo"
-    _make_fake_repo(repo, branch="feature")
+def test_list_github_repos_gh_error_502(tmp_path):
+    """GhError from gitrepos surfaces as HTTP 502."""
+    from ccswitch.gitrepos import GhError
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            with patch("ccswitch.gitrepos.list_accessible_repos", side_effect=GhError("not logged in")):
+                _, client = _make_app_and_client()
+                with client:
+                    resp = client.get("/api/github/repos", headers=IDENTITY_HEADERS)
+    assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# GET /api/github/branches
+# ---------------------------------------------------------------------------
+
+
+def test_list_github_branches(tmp_path):
+    """GET /api/github/branches?repo=<o>/<n> returns default + branches."""
     with temp_env():
         with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            _, client = _make_app_and_client()
-            with client:
-                resp = client.get(f"/api/repos?root={tmp_path}", headers=IDENTITY_HEADERS)
-    assert resp.status_code == 200
-    names = [r["name"] for r in resp.json()]
-    assert "myrepo" in names
-
-
-def test_list_repos_nonexistent_root():
-    """GET /api/repos with nonexistent root returns 404."""
-    with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            _, client = _make_app_and_client()
-            with client:
-                resp = client.get("/api/repos?root=/nonexistent/path/xyz", headers=IDENTITY_HEADERS)
-    assert resp.status_code == 404
-
-
-def test_list_branches(tmp_path):
-    """GET /api/repos/branches?path=<repo> returns current and list of branches."""
-    repo = tmp_path / "testrepo"
-    _make_fake_repo(repo, branch="main")
-    # create a second branch
-    subprocess.run(["git", "-C", str(repo), "checkout", "-b", "feature-x"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "checkout", "main"], check=True, capture_output=True)
-
-    with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            _, client = _make_app_and_client()
-            with client:
-                resp = client.get(f"/api/repos/branches?path={repo}", headers=IDENTITY_HEADERS)
+            with patch(
+                "ccswitch.gitrepos.list_remote_branches",
+                return_value={"default": "main", "branches": ["main", "feature-x"]},
+            ):
+                _, client = _make_app_and_client()
+                with client:
+                    resp = client.get("/api/github/branches?repo=acme/widget", headers=IDENTITY_HEADERS)
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["current"] == "main"
-    assert "main" in data["branches"]
-    assert "feature-x" in data["branches"]
+    assert data["default"] == "main"
+    assert data["branches"] == ["main", "feature-x"]
 
 
-def test_list_branches_not_a_repo(tmp_path):
-    """GET /api/repos/branches for non-git dir returns 400."""
-    not_repo = tmp_path / "notgit"
-    not_repo.mkdir()
+def test_list_github_branches_bad_name_400(tmp_path):
+    """A malformed repo name (no slash) → 400."""
+    from ccswitch.gitrepos import list_remote_branches
     with temp_env():
         with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             _, client = _make_app_and_client()
             with client:
-                resp = client.get(f"/api/repos/branches?path={not_repo}", headers=IDENTITY_HEADERS)
+                resp = client.get("/api/github/branches?repo=noslash", headers=IDENTITY_HEADERS)
     assert resp.status_code == 400
+
+
+def test_list_github_branches_gh_error_502(tmp_path):
+    from ccswitch.gitrepos import GhError
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            with patch("ccswitch.gitrepos.list_remote_branches", side_effect=GhError("404")):
+                _, client = _make_app_and_client()
+                with client:
+                    resp = client.get("/api/github/branches?repo=acme/widget", headers=IDENTITY_HEADERS)
+    assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# GET /api/config
+# ---------------------------------------------------------------------------
 
 
 def test_get_config_returns_repo_root():
@@ -132,28 +150,42 @@ def test_get_config_returns_repo_root():
     assert data["repoRoot"] == "/home/test/GitHub"
 
 
-def test_create_session_with_cwd(tmp_path):
-    """POST /api/sessions with cwd= pre-trusts the project in .claude.json."""
-    from tests.helpers import temp_env as _temp_env
-    repo_dir = tmp_path / "myproject"
-    _make_fake_repo(repo_dir, branch="main")
+# ---------------------------------------------------------------------------
+# POST /api/sessions with repo= (clone-on-select)
+# ---------------------------------------------------------------------------
 
-    with _temp_env() as d:
-        # seed a slot
-        from ccswitch import paths
+
+def test_create_session_with_repo_clones(tmp_path):
+    """POST /api/sessions with repo= clones into the ccswitch namespace and runs there."""
+    from ccswitch import paths
+    import time as _time
+
+    # A real local clone dir that ensure_clone will "return".
+    clone_dir = tmp_path / ".ccswitch" / "clones" / "acme" / "widget"
+    clone_dir.mkdir(parents=True)
+    subprocess.run(["git", "init", str(clone_dir), "-b", "main"], check=True, capture_output=True)
+
+    captured: dict = {}
+
+    def fake_ensure_clone(repo_root, name_with_owner, url):
+        captured["repo_root"] = repo_root
+        captured["name_with_owner"] = name_with_owner
+        captured["url"] = url
+        return str(clone_dir)
+
+    with temp_env():
         store = paths.store_dir()
         store.mkdir(parents=True, exist_ok=True)
-        import time as _time
-        slot = store / "account1.cred.json"
         now_ms = int(_time.time() * 1000)
+        slot = store / "account1.cred.json"
         slot.write_text(f'{{"accessToken":"tok","refreshToken":"ref","expiresAt":{now_ms+9_000_000},"subscriptionType":"max"}}')
-
         cfg_dir = paths.account_cfg_dir("account1")
         cfg_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("server.sessions.orchestrator.select_account", return_value="account1"), \
              patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
-             patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_CLAUDE_BIN": f"{sys.executable} {FAKE_PTY}"}):
+             patch("ccswitch.gitrepos.ensure_clone", side_effect=fake_ensure_clone), \
+             patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_CLAUDE_BIN": f"{sys.executable} {FAKE_PTY}"}):
 
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
@@ -165,28 +197,21 @@ def test_create_session_with_cwd(tmp_path):
             with client:
                 resp = client.post(
                     "/api/sessions",
-                    json={"name": "test", "cwd": str(repo_dir)},
+                    json={"name": "test", "repo": "acme/widget"},
                     headers=IDENTITY_HEADERS,
                 )
 
-        assert resp.status_code == 201
-
-        # The cfg_dir/.claude.json should now have the trust entry
-        import json
-        claude_json_path = cfg_dir / ".claude.json"
-        if claude_json_path.exists():
-            data = json.loads(claude_json_path.read_text())
-            projects = data.get("projects", {})
-            abs_cwd = os.path.abspath(str(repo_dir))
-            # If the compose mock doesn't write the file, trust_project may not have run
-            # but at minimum the session creation should succeed
-        # The important assertion is that the API returned 201
+    assert resp.status_code == 201
+    assert captured["name_with_owner"] == "acme/widget"
+    assert captured["url"] == "https://github.com/acme/widget.git"
 
 
-def test_create_session_invalid_cwd(tmp_path):
-    """POST /api/sessions with nonexistent cwd returns 400."""
+def test_create_session_clone_error_502(tmp_path):
+    """A CloneError from gitrepos.ensure_clone → HTTP 502."""
+    from ccswitch.gitrepos import CloneError
     with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        with patch("ccswitch.gitrepos.ensure_clone", side_effect=CloneError("boom")), \
+             patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             from fastapi.testclient import TestClient
@@ -196,7 +221,7 @@ def test_create_session_invalid_cwd(tmp_path):
             with client:
                 resp = client.post(
                     "/api/sessions",
-                    json={"name": "test", "cwd": "/nonexistent/path/xyz"},
+                    json={"name": "test", "repo": "acme/widget"},
                     headers=IDENTITY_HEADERS,
                 )
-    assert resp.status_code == 400
+    assert resp.status_code == 502

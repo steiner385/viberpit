@@ -12,9 +12,8 @@ vi.mock('@/api/hooks', () => ({
   useRenameSession: vi.fn(),
   useCloseSession: vi.fn(),
   useRefreshAccount: vi.fn(),
-  useConfig: vi.fn(),
-  useRepos: vi.fn(),
-  useBranches: vi.fn(),
+  useGithubRepos: vi.fn(),
+  useGithubBranches: vi.fn(),
 }))
 
 const NOOP_MUTATION = {
@@ -68,20 +67,16 @@ describe('SessionActions (via Dashboard)', () => {
       mutate: vi.fn(),
     } as unknown as ReturnType<typeof hooks.useRefreshAccount>)
 
-    vi.mocked(hooks.useConfig).mockReturnValue({
-      data: { repoRoot: '/home/user/GitHub' },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useConfig>)
-
-    vi.mocked(hooks.useRepos).mockReturnValue({
+    vi.mocked(hooks.useGithubRepos).mockReturnValue({
       data: [],
       isLoading: false,
-    } as ReturnType<typeof hooks.useRepos>)
+      isError: false,
+    } as ReturnType<typeof hooks.useGithubRepos>)
 
-    vi.mocked(hooks.useBranches).mockReturnValue({
-      data: { current: null, branches: [] },
+    vi.mocked(hooks.useGithubBranches).mockReturnValue({
+      data: { default: null, branches: [] },
       isLoading: false,
-    } as ReturnType<typeof hooks.useBranches>)
+    } as ReturnType<typeof hooks.useGithubBranches>)
   })
 
   it('renders the "+ New" button', () => {

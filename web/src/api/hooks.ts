@@ -7,8 +7,8 @@ export const QK = {
   accounts: ['accounts'] as const,
   sessions: ['sessions'] as const,
   config: ['config'] as const,
-  repos: (root?: string) => ['repos', root] as const,
-  branches: (path?: string) => ['branches', path] as const,
+  githubRepos: ['github-repos'] as const,
+  githubBranches: (repo?: string) => ['github-branches', repo] as const,
 }
 
 export function useAccounts() {
@@ -29,14 +29,19 @@ export function useSessions() {
   })
 }
 
-export interface RepoInfo {
+export interface GithubRepo {
+  nameWithOwner: string
   name: string
-  path: string
-  currentBranch: string | null
+  owner: string
+  isPrivate: boolean
+  url: string
+  defaultBranch: string | null
+  pushedAt: string | null
+  cloned: boolean
 }
 
-export interface BranchInfo {
-  current: string | null
+export interface GithubBranchInfo {
+  default: string | null
   branches: string[]
 }
 
@@ -52,20 +57,19 @@ export function useConfig() {
   })
 }
 
-export function useRepos(root?: string) {
-  return useQuery<RepoInfo[]>({
-    queryKey: QK.repos(root),
-    queryFn: () => api.get<RepoInfo[]>(`/repos${root ? `?root=${encodeURIComponent(root)}` : ''}`),
-    enabled: true,
-    staleTime: 10_000,
+export function useGithubRepos() {
+  return useQuery<GithubRepo[]>({
+    queryKey: QK.githubRepos,
+    queryFn: () => api.get<GithubRepo[]>('/github/repos'),
+    staleTime: 30_000,
   })
 }
 
-export function useBranches(repoPath?: string) {
-  return useQuery<BranchInfo>({
-    queryKey: QK.branches(repoPath),
-    queryFn: () => api.get<BranchInfo>(`/repos/branches?path=${encodeURIComponent(repoPath!)}`),
-    enabled: !!repoPath,
+export function useGithubBranches(repo?: string) {
+  return useQuery<GithubBranchInfo>({
+    queryKey: QK.githubBranches(repo),
+    queryFn: () => api.get<GithubBranchInfo>(`/github/branches?repo=${encodeURIComponent(repo!)}`),
+    enabled: !!repo,
     staleTime: 10_000,
   })
 }
@@ -74,7 +78,7 @@ export interface CreateSessionInput {
   name?: string
   account?: string
   initialPrompt?: string
-  cwd?: string
+  repo?: string
   branch?: string
 }
 

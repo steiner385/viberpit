@@ -13,9 +13,8 @@ import {
   useRenameSession,
   useCloseSession,
   useRefreshAccount,
-  useConfig,
-  useRepos,
-  useBranches,
+  useGithubRepos,
+  useGithubBranches,
   type CreateSessionInput,
 } from '@/api/hooks'
 import type { Account } from '@/api/types'
@@ -38,32 +37,30 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
   const firstInputRef = useRef<HTMLInputElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
 
-  // Repo/branch picker state
-  const { data: configData } = useConfig()
-  const [rootInput, setRootInput] = useState('')
-  const [selectedRepoPath, setSelectedRepoPath] = useState('')
+  // GitHub repo/branch picker state
+  const [repoFilter, setRepoFilter] = useState('')
+  const [selectedRepo, setSelectedRepo] = useState('')
   const [selectedBranch, setSelectedBranch] = useState('')
 
-  // Prefill root once config loads
+  const reposQuery = useGithubRepos()
+  const branchesQuery = useGithubBranches(selectedRepo || undefined)
+
+  const selectedRepoInfo = (reposQuery.data ?? []).find((r) => r.nameWithOwner === selectedRepo)
+
+  const filteredRepos = (reposQuery.data ?? []).filter((r) =>
+    r.nameWithOwner.toLowerCase().includes(repoFilter.trim().toLowerCase()),
+  )
+
+  // When branches load, default to the repo's default branch.
   React.useEffect(() => {
-    if (configData?.repoRoot && !rootInput) {
-      setRootInput(configData.repoRoot)
+    if (!selectedBranch && (branchesQuery.data?.default || selectedRepoInfo?.defaultBranch)) {
+      setSelectedBranch(branchesQuery.data?.default ?? selectedRepoInfo?.defaultBranch ?? '')
     }
-  }, [configData?.repoRoot])
+  }, [branchesQuery.data?.default, selectedRepoInfo?.defaultBranch])
 
-  const reposQuery = useRepos(rootInput || undefined)
-  const branchesQuery = useBranches(selectedRepoPath || undefined)
-
-  // When branches load, default to current branch
-  React.useEffect(() => {
-    if (branchesQuery.data?.current && !selectedBranch) {
-      setSelectedBranch(branchesQuery.data.current)
-    }
-  }, [branchesQuery.data?.current])
-
-  // Reset branch when repo changes
-  function handleRepoChange(path: string) {
-    setSelectedRepoPath(path)
+  // Reset branch when repo changes.
+  function handleRepoChange(nameWithOwner: string) {
+    setSelectedRepo(nameWithOwner)
     setSelectedBranch('')
   }
 
@@ -99,7 +96,7 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
       name: name.trim() || undefined,
       account: account || undefined,
       initialPrompt: initialPrompt.trim() || undefined,
-      cwd: selectedRepoPath || undefined,
+      repo: selectedRepo || undefined,
       branch: selectedBranch || undefined,
     })
   }
@@ -151,18 +148,19 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
             />
           </div>
 
-          {/* Repo root */}
+          {/* Repository filter */}
           <div className="space-y-1">
-            <label htmlFor="new-session-root" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Repo root <span className="text-gray-400">(optional)</span>
+            <label htmlFor="new-session-repo-filter" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Filter repos <span className="text-gray-400">(optional)</span>
             </label>
             <input
-              id="new-session-root"
+              id="new-session-repo-filter"
               type="text"
-              value={rootInput}
-              onChange={(e) => { setRootInput(e.target.value); setSelectedRepoPath(''); setSelectedBranch('') }}
-              placeholder="/home/user/GitHub"
+              value={repoFilter}
+              onChange={(e) => setRepoFilter(e.target.value)}
+              placeholder="owner/name…"
               className={inputClass}
+              autoComplete="off"
             />
           </div>
 
@@ -173,19 +171,35 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
             </label>
             <select
               id="new-session-repo"
-              value={selectedRepoPath}
+              value={selectedRepo}
               onChange={(e) => handleRepoChange(e.target.value)}
               className={inputClass}
               disabled={reposQuery.isLoading}
               aria-busy={reposQuery.isLoading}
             >
-              <option value="">{reposQuery.isLoading ? 'Loading…' : '— select repo —'}</option>
-              {(reposQuery.data ?? []).map((repo) => (
-                <option key={repo.path} value={repo.path}>
-                  {repo.name}{repo.currentBranch ? ` (${repo.currentBranch})` : ''}
+              <option value="">
+                {reposQuery.isLoading
+                  ? 'Loading…'
+                  : reposQuery.isError
+                    ? '— could not load repos —'
+                    : '— select repo —'}
+              </option>
+              {filteredRepos.map((repo) => (
+                <option key={repo.nameWithOwner} value={repo.nameWithOwner}>
+                  {repo.nameWithOwner}
+                  {repo.isPrivate ? ' 🔒' : ''}
+                  {repo.cloned ? ' · ✓ cloned' : ' · ↓ clones on start'}
                 </option>
               ))}
             </select>
+            {selectedRepoInfo && (
+              <p className="text-xs text-gray-400">
+                {selectedRepoInfo.isPrivate ? 'Private · ' : ''}
+                {selectedRepoInfo.cloned
+                  ? '✓ Already cloned into ~/GitHub/.ccswitch'
+                  : '↓ Will be cloned into ~/GitHub/.ccswitch on first start (one-time; may take a moment for large repos)'}
+              </p>
+            )}
           </div>
 
           {/* Branch */}
@@ -197,8 +211,8 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
               id="new-session-branch"
               value={selectedBranch}
               onChange={(e) => setSelectedBranch(e.target.value)}
-              className={cn(inputClass, !selectedRepoPath && 'opacity-50')}
-              disabled={!selectedRepoPath || branchesQuery.isLoading}
+              className={cn(inputClass, !selectedRepo && 'opacity-50')}
+              disabled={!selectedRepo || branchesQuery.isLoading}
               aria-busy={branchesQuery.isLoading}
             >
               <option value="">{branchesQuery.isLoading ? 'Loading…' : '— default —'}</option>
@@ -206,13 +220,11 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
                 <option key={b} value={b}>{b}</option>
               ))}
             </select>
-            {selectedBranch && (
-              <p className="text-xs text-gray-400">
-                Runs in an isolated git worktree — your checkout isn’t touched. If the
-                branch is already checked out, a per-session <code>ccswitch/…</code> branch
-                is used instead.
-              </p>
-            )}
+            <p className="text-xs text-gray-400">
+              Clones and worktrees live under <code>~/GitHub/.ccswitch</code> — your real
+              checkouts are never touched. Each session runs in its own isolated git
+              worktree on the selected branch.
+            </p>
           </div>
 
           {/* Account */}

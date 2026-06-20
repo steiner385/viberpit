@@ -1,58 +1,55 @@
-"""Repos API — list git repos under a root dir, list branches."""
-import os
-import subprocess
-from pathlib import Path
+"""GitHub repos API — list repos the user's gh creds can access, list branches.
+
+These replace the old local-scan ``/api/repos`` endpoints.  ccswitch no longer
+scans the user's local ``~/GitHub`` checkouts; it lists the GitHub repos the
+user's ``gh`` credentials can access and clones-on-select into a ccswitch-owned
+namespace under ``<repo_root>/.ccswitch/clones``.
+"""
+from __future__ import annotations
+
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+
+from ccswitch import gitrepos
 from server.auth.middleware import current_identity
 from server.config import get_settings
 
-router = APIRouter(prefix="/api/repos", tags=["repos"])
+router = APIRouter(prefix="/api/github", tags=["github"])
 
 
-@router.get("")
-async def list_repos(
-    root: str | None = None,
+@router.get("/repos")
+async def list_github_repos(
     _identity: str = Depends(current_identity),
 ) -> list[dict]:
+    """List GitHub repos accessible to the user's gh creds (pushedAt-desc).
+
+    Each repo is annotated with ``cloned`` — whether a ccswitch-owned clone
+    already exists under ``<repo_root>/.ccswitch/clones/<owner>/<name>``.
+    """
     settings = get_settings()
-    root_path = Path(root or settings.repo_root)
-    if not root_path.exists():
-        raise HTTPException(status_code=404, detail=f"Root not found: {root_path}")
-    repos = []
-    for child in sorted(root_path.iterdir(), key=lambda p: p.name.lower()):
-        if not child.is_dir():
-            continue
-        # Skip hidden dirs — notably ccswitch's own `.ccswitch/worktrees/...`
-        # session worktrees, which are git work trees but not pickable repos.
-        if child.name.startswith("."):
-            continue
-        if not (child / ".git").exists():
-            continue
-        result = subprocess.run(
-            ["git", "-C", str(child), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True,
-        )
-        current_branch = result.stdout.strip() if result.returncode == 0 else None
-        repos.append({"name": child.name, "path": str(child.resolve()), "currentBranch": current_branch})
+    try:
+        repos = await asyncio.to_thread(gitrepos.list_accessible_repos)
+    except gitrepos.GhError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    base = gitrepos.clones_base(settings.repo_root)
+    for repo in repos:
+        name_with_owner = repo.get("nameWithOwner") or ""
+        owner, _, name = name_with_owner.partition("/")
+        repo["cloned"] = bool(owner and name and (base / owner / name / ".git").exists())
     return repos
 
 
 @router.get("/branches")
-async def list_branches(
-    path: str = Query(...),
+async def list_github_branches(
+    repo: str = Query(..., description="nameWithOwner, e.g. owner/name"),
     _identity: str = Depends(current_identity),
 ) -> dict:
-    repo_path = Path(path)
-    if not repo_path.exists() or not (repo_path / ".git").exists():
-        raise HTTPException(status_code=400, detail=f"Not a git repo: {path}")
-    current_result = subprocess.run(
-        ["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"],
-        capture_output=True, text=True,
-    )
-    current = current_result.stdout.strip() if current_result.returncode == 0 else None
-    branches_result = subprocess.run(
-        ["git", "-C", str(repo_path), "branch", "--format=%(refname:short)"],
-        capture_output=True, text=True,
-    )
-    branches = [b.strip() for b in branches_result.stdout.splitlines() if b.strip()]
-    return {"current": current, "branches": branches}
+    """Return ``{"default": str|None, "branches": [str]}`` for a remote repo."""
+    try:
+        return await asyncio.to_thread(gitrepos.list_remote_branches, repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except gitrepos.GhError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

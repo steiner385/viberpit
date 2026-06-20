@@ -11,6 +11,7 @@ All routes require a verified identity via the ``current_identity`` dependency.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -18,8 +19,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from ccswitch import gitrepos
 from server.auth.middleware import current_identity
 from server.audit import record_audit
+from server.config import get_settings
 from server.db import get_db
 from server.sessions.orchestrator import SessionOrchestrator, BranchSwitchError
 from server.sessions.selection import AllAccountsBusy
@@ -38,7 +41,7 @@ class CreateSessionRequest(BaseModel):
     name: str | None = None
     account: str | None = None
     initialPrompt: str | None = None
-    cwd: str | None = None
+    repo: str | None = None  # nameWithOwner, e.g. "owner/name"
     branch: str | None = None
 
 
@@ -92,12 +95,34 @@ async def create_session(
     orch: SessionOrchestrator = _get_orchestrator(request)
     name = body.name or "New Session"
 
+    # Resolve the repo (nameWithOwner) into a ccswitch-owned clone path, cloning
+    # on first use.  The user's real ~/GitHub checkouts are never touched — all
+    # clone + worktree activity lives under <repo_root>/.ccswitch/.
+    cwd: str | None = None
+    if body.repo:
+        settings = get_settings()
+        url = f"https://github.com/{body.repo}.git"
+        try:
+            cwd = await asyncio.to_thread(
+                gitrepos.ensure_clone, settings.repo_root, body.repo, url
+            )
+        except (gitrepos.CloneError, gitrepos.GhError) as exc:
+            return JSONResponse(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                content={
+                    "error": {
+                        "code": "clone_failed",
+                        "message": str(exc),
+                    },
+                },
+            )
+
     try:
         record = await orch.create_session(
             name=name,
             account=body.account,
             initial_prompt=body.initialPrompt,
-            cwd=body.cwd,
+            cwd=cwd,
             branch=body.branch,
         )
     except ValueError as exc:
