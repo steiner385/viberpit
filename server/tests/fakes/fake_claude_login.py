@@ -10,15 +10,16 @@ import sys
 
 cfg = os.environ["CLAUDE_CONFIG_DIR"]
 os.makedirs(cfg, exist_ok=True)
-json.dump(
-    {
-        "claudeAiOauth": {
-            "accessToken": "fake-at",
-            "refreshToken": "fake-rt",
-            "expiresAt": 9999999999000,
-            "subscriptionType": "max",
-        }
-    },
-    open(os.path.join(cfg, ".credentials.json"), "w"),
-)
+with open(os.path.join(cfg, ".credentials.json"), "w") as f:
+    json.dump(
+        {
+            "claudeAiOauth": {
+                "accessToken": "fake-at",
+                "refreshToken": "fake-rt",
+                "expiresAt": 9999999999000,
+                "subscriptionType": "max",
+            }
+        },
+        f,
+    )
 sys.exit(0)

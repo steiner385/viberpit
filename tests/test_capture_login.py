@@ -20,6 +20,8 @@ def test_capture_login_stores_slot(tmp_path, monkeypatch):
     ok = auth_login.capture_login("primary", claude_bin=[sys.executable, FAKE])
     assert ok is True
     assert paths.slot_path("primary").exists()
+    # account cfg dir was composed
+    assert paths.account_cfg_dir("primary").exists()
     # capture dir was under reauth-tmp and is cleaned up
     leftovers = list(paths.reauth_tmp_dir().glob("*")) if paths.reauth_tmp_dir().exists() else []
     assert not any("capture" in p.name for p in leftovers)

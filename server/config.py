@@ -29,7 +29,7 @@ try:
         )
         reauth_display: str = Field(default=":0", alias="CCSWITCH_REAUTH_DISPLAY")
         chrome_profile: str = Field(
-            default="~/.config/google-chrome/Default",
+            default_factory=lambda: str(Path.home() / ".config" / "google-chrome" / "Default"),
             alias="CCSWITCH_CHROME_PROFILE",
         )
 
@@ -79,10 +79,7 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
             default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_DISPLAY", ":0")
         )
         chrome_profile: str = dataclasses.field(
-            default_factory=lambda: os.environ.get(
-                "CCSWITCH_CHROME_PROFILE",
-                "~/.config/google-chrome/Default",
-            )
+            default_factory=lambda: os.environ.get("CCSWITCH_CHROME_PROFILE") or str(Path.home() / ".config" / "google-chrome" / "Default")
         )
 
         @property

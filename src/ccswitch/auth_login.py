@@ -1,7 +1,9 @@
 """Reauth profile preparation and cleanup for the account-reauthenticator flow."""
 from __future__ import annotations
 
+import logging
 import os
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -11,6 +13,8 @@ from typing import Sequence
 
 from . import configdir, paths
 from .creds import read_json, split_credentials, write_credentials, write_json_secure
+
+log = logging.getLogger(__name__)
 
 _STRIP_SQL = "DELETE FROM cookies WHERE host_key LIKE '%claude%' OR host_key LIKE '%anthropic%'"
 
@@ -120,9 +124,8 @@ def capture_login(
 
     if claude_bin is None:
         cfg = load_config()
-        import shlex as _shlex
 
-        claude_cmd: list[str] = _shlex.split(
+        claude_cmd: list[str] = shlex.split(
             os.environ.get("CCSWITCH_CLAUDE_BIN", cfg.claude_bin)
         )
     else:
@@ -147,6 +150,11 @@ def capture_login(
 
         paths.store_dir().mkdir(parents=True, exist_ok=True)
         write_credentials(paths.slot_path(name), claude_oauth)
+
+        # Warn if not a Max subscription
+        sub_type = claude_oauth.get("subscriptionType")
+        if sub_type != "max":
+            log.warning("account %s is not a Max subscription (got %r)", name, sub_type)
 
         if mcp:
             existing = (
