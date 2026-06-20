@@ -43,6 +43,14 @@ class SessionDriver:
 
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
         turn_id = self._turn()
+        # AskUserQuestion is a read-only "ask the user" tool. The SDK gives no channel
+        # to return the chosen answer through this callback (allowing it yields a
+        # "user did not answer" tool_result — spike 2026-06-20), so prompting the user
+        # to *approve* it is pointless. Auto-allow it; the model then re-asks in plain
+        # text, which the user answers via the composer. (QuestionCard/answerQuestion
+        # stay in the frontend, dormant, ready if a future SDK exposes an answer path.)
+        if tool_name == "AskUserQuestion":
+            return PermissionResultAllow()
         perm_id, fut = await self._reg.request(
             self.session_id, turn_id, tool_name, tool_input,
             mode=self.mode, denylist=self.denylist, allowlist=True, identity=self.identity)

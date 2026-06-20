@@ -35,3 +35,10 @@ Run via `claude-agent-sdk==0.2.105` against idle accounts (`primary`, `secondary
 - Task 1.2/1.3 (fake SDK + translator): build against the **real** types above — drive text/thinking *deltas* from `StreamEvent.content_block_delta`, tool calls from `AssistantMessage` `ToolUseBlock`, tool results from `UserMessage` `ToolResultBlock`, turn end + `session_id` from `ResultMessage`/`SystemMessage(init)`. (Supersedes the placeholder `assistant_text_delta`/`tool_use` fixture shapes in the plan.)
 - `SessionDriver.start()` reads `session_id` from `ResultMessage`/`SystemMessage`, not a filesystem scan (already in plan).
 - Driver factory: `ClaudeSDKClient(options=ClaudeAgentOptions(cwd, env={...,CLAUDE_CONFIG_DIR}, permission_mode, resume, can_use_tool, include_partial_messages=True))`.
+
+## Follow-up spike (2026-06-20): AskUserQuestion answer channel — NOT available
+Triggered AskUserQuestion live and inspected the `can_use_tool` round-trip:
+- The tool arrives via `can_use_tool` with full `{questions:[{question,header,multiSelect,options:[{label,description}]}]}` in `tool_input`.
+- Returning `PermissionResultAllow()` makes the SDK auto-produce the tool_result **"The user did not answer the questions."** `PermissionResultAllow` has no answer/result field (`behavior`/`updated_input`/`updated_permissions` only) — there is NO channel to feed the chosen option back to the model through this callback.
+- The model degrades gracefully: it proceeds and re-asks in plain text (which the user answers via the composer). This matches the spec's documented fallback.
+RESOLUTION: auto-allow AskUserQuestion in the driver (don't prompt to approve a no-op tool); keep the frontend QuestionCard + `answerQuestion` plumbing DORMANT/ready in case a future SDK version exposes an answer path. Interactive question-buttons are a known SDK limitation, not a ccswitch bug.

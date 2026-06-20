@@ -300,3 +300,15 @@ def test_auto_title_first_line_only():
     title_events = [e for e in events if isinstance(e, Title)]
     assert len(title_events) == 1
     assert title_events[0].title == "First line"
+
+
+def test_askuserquestion_auto_allows_without_permission_card():
+    """AskUserQuestion is auto-allowed (no card) since the SDK exposes no answer channel."""
+    from claude_agent_sdk import PermissionResultAllow
+    async def run():
+        d = SessionDriver("sq", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        res = await d._can_use_tool("AskUserQuestion", {"questions": [{"question": "x", "options": []}]})
+        assert isinstance(res, PermissionResultAllow)
+        assert d._out.empty()   # no PermissionRequest emitted
+    asyncio.run(run())
