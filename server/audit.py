@@ -24,8 +24,14 @@ _REDACT_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"sk-ant-[A-Za-z0-9_-]+"),
     # ccswitch envelope-encrypted token prefix
     re.compile(r"ccenc1:[A-Za-z0-9+/=]+"),
-    # Generic long base64 blobs (≥40 chars of base64 alphabet) that are likely tokens
+    # Generic long base64 blobs (≥40 chars of base64 alphabet) that are likely tokens.
+    # NOTE: OAuth refresh tokens used by ccswitch (accessToken / refreshToken in the
+    # claude.ai OAuth flow) are long opaque base64 strings and are therefore already
+    # caught by this pattern — no extra prefix is needed.
     re.compile(r"[A-Za-z0-9+/]{40,}={0,2}"),
+    # itsdangerous-signed session cookie value:  <payload>.<timestamp>.<signature>
+    # Shape: base64url payload (≥16 chars) · base64url ts (≥6 chars) · sig (≥20 chars)
+    re.compile(r"\b[\w-]{16,}\.[\w-]{6,}\.[\w-]{20,}\b"),
 ]
 
 _REDACTED = "[REDACTED]"
@@ -38,21 +44,30 @@ def _redact(text: str) -> str:
     return text
 
 
+def _redact_value(value: Any) -> Any:
+    """Redact a single value (str, dict, list, or passthrough for other types)."""
+    if isinstance(value, str):
+        return _redact(value)
+    elif isinstance(value, dict):
+        return redact_detail(value)
+    elif isinstance(value, list):
+        return [_redact_value(v) for v in value]
+    return value
+
+
 def redact_detail(detail: dict[str, Any]) -> dict[str, Any]:
-    """Recursively redact string values in a detail dict."""
-    result: dict[str, Any] = {}
-    for key, value in detail.items():
-        if isinstance(value, str):
-            result[key] = _redact(value)
-        elif isinstance(value, dict):
-            result[key] = redact_detail(value)
-        elif isinstance(value, list):
-            result[key] = [
-                _redact(v) if isinstance(v, str) else v for v in value
-            ]
-        else:
-            result[key] = value
-    return result
+    """Recursively redact string values in a detail dict (including nested lists of dicts)."""
+    return {key: _redact_value(value) for key, value in detail.items()}
+
+
+def redact_event(wire: dict[str, Any]) -> dict[str, Any]:
+    """Recursively redact secret-shaped strings in an outbound WS event dict.
+
+    Reuses redact_detail which now recurses into both nested dicts and lists,
+    so this covers: plain string fields, nested dicts, and lists of events
+    (as found in ``{"type": "batch", "events": [...]}``) uniformly.
+    """
+    return redact_detail(wire)
 
 
 # ---------------------------------------------------------------------------

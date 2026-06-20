@@ -83,6 +83,11 @@ def create_worktree(repo_path: str, branch: str, session_id: str, repo_root: str
     Raises:
         WorktreeError: if `repo_path` is not a git repo, or both attempts fail.
     """
+    # Argument-injection guard: reject branch names starting with '-' so they
+    # cannot be interpreted as git options even with the '--' separator below.
+    if branch.startswith("-"):
+        raise WorktreeError(f"invalid branch name: {branch!r}")
+
     top = _run(["git", "-C", repo_path, "rev-parse", "--show-toplevel"])
     if top.returncode != 0:
         raise WorktreeError(f"not a git repo: {repo_path}")
@@ -97,14 +102,16 @@ def create_worktree(repo_path: str, branch: str, session_id: str, repo_root: str
     _run(["git", "-C", repo_top, "worktree", "prune"])
 
     # 1) Try to check out the selected branch directly.
-    r = _run(["git", "-C", repo_top, "worktree", "add", str(dest), branch])
+    # '--' separates options from the commit-ish so a crafted branch name cannot
+    # be parsed as a git option (belt-and-suspenders with the '-' prefix guard above).
+    r = _run(["git", "-C", repo_top, "worktree", "add", str(dest), "--", branch])
     if r.returncode == 0:
         log.info("worktree.create repo=%s branch=%s path=%s", repo_name, branch, dest)
         return WorktreeInfo(str(dest), branch, is_child=False, repo=repo_top)
 
     # 2) Branch is busy (checked out elsewhere) — make a session child branch off it.
     child = f"ccswitch/{branch}-{_short(session_id)}"
-    r2 = _run(["git", "-C", repo_top, "worktree", "add", "-b", child, str(dest), branch])
+    r2 = _run(["git", "-C", repo_top, "worktree", "add", "-b", child, str(dest), "--", branch])
     if r2.returncode == 0:
         log.info("worktree.create_child repo=%s base=%s child=%s path=%s",
                  repo_name, branch, child, dest)

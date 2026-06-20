@@ -89,6 +89,12 @@ class WorktreeTests(unittest.TestCase):
         with self.assertRaises(worktrees.WorktreeError):
             worktrees.create_worktree(str(plain), "main", "x-1", str(self.root))
 
+    def test_dash_branch_raises_worktree_error(self) -> None:
+        """Branch names starting with '-' are rejected before any git call (arg-injection guard)."""
+        with self.assertRaises(worktrees.WorktreeError) as ctx:
+            worktrees.create_worktree(str(self.repo), "-evil", "abc12345-0000", str(self.root))
+        self.assertIn("invalid branch name", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

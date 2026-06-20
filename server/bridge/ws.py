@@ -30,8 +30,11 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from server import audit as _audit
+from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
+from server.db import db_session
 from server.sessions.events import tool_kind
 from server.sessions.replay import replay_events
 
@@ -91,7 +94,9 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                             buf.append(out_q.get_nowait())
                         except asyncio.QueueEmpty:
                             break
-                    await _send({"type": "batch", "events": buf})
+                    # Redact each event dict before transmission.
+                    redacted_buf = [redact_event(e) for e in buf]
+                    await _send({"type": "batch", "events": redacted_buf})
             except asyncio.CancelledError:
                 return
 
@@ -130,15 +135,19 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             path = orchestrator.transcript_path(session_id)
             events = await replay_events(path) if path else []
             if events:
-                await _send({"type": "batch", "events": [e.to_wire() for e in events]})
+                redacted_replay = [redact_event(e.to_wire()) for e in events]
+                await _send({"type": "batch", "events": redacted_replay})
             await _send({"type": "replayComplete"})
 
             # 2) Re-emit any pending permission requests for this session.
             for p in orchestrator._registry.pending(session_id):
-                await _send({"type": "permissionRequest", "permId": p["permId"],
-                             "turnId": p["turn_id"], "tool": p["tool"],
-                             "toolKind": tool_kind(p["tool"]).value,
-                             "input": p["input"], "plan": False})
+                perm_frame = redact_event({
+                    "type": "permissionRequest", "permId": p["permId"],
+                    "turnId": p["turn_id"], "tool": p["tool"],
+                    "toolKind": tool_kind(p["tool"]).value,
+                    "input": p["input"], "plan": False,
+                })
+                await _send(perm_frame)
 
             # 3) Start the live stream: forward driver events into the batcher.
             async def _live() -> None:
@@ -206,11 +215,22 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                     await orchestrator.send_prompt(session_id, msg.get("text", ""))
                 elif msg_type == "interrupt":
                     await orchestrator.interrupt(session_id)
+                    async with db_session() as db:
+                        await record_audit(db, "session.interrupt", identity,
+                                           {"sessionId": session_id})
                 elif msg_type == "permissionResponse":
-                    orchestrator.resolve_permission(
-                        session_id, msg.get("permId", ""), msg.get("decision", ""), identity)
+                    decision = msg.get("decision", "")
+                    perm_id = msg.get("permId", "")
+                    orchestrator.resolve_permission(session_id, perm_id, decision, identity)
+                    async with db_session() as db:
+                        await record_audit(db, "permission." + decision, identity,
+                                           {"sessionId": session_id, "permId": perm_id})
                 elif msg_type == "setPermissionMode":
-                    await orchestrator.set_permission_mode(session_id, msg.get("mode", ""))
+                    mode = msg.get("mode", "")
+                    await orchestrator.set_permission_mode(session_id, mode)
+                    async with db_session() as db:
+                        await record_audit(db, "permission_mode.change", identity,
+                                           {"sessionId": session_id, "mode": mode})
                 elif msg_type == "answerQuestion":
                     # Accepted but not yet wired — a later task handles questions.
                     log.debug("ws.answerQuestion (no-op) session=%s", session_id)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -26,6 +27,11 @@ from server.config import get_settings
 from server.db import get_db
 from server.sessions.orchestrator import SessionOrchestrator, BranchSwitchError
 from server.sessions.selection import AllAccountsBusy
+
+# Repo nameWithOwner shape: owner/name — each segment alphanumeric + . _ -
+# No leading/trailing dots, no consecutive dots (blocks path-traversal via ../foo).
+_REPO_SEGMENT = r"(?!\.{2,})[A-Za-z0-9][A-Za-z0-9._-]*"
+_REPO_RE = re.compile(rf"^{_REPO_SEGMENT}/{_REPO_SEGMENT}$")
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +101,35 @@ async def create_session(
     """
     orch: SessionOrchestrator = _get_orchestrator(request)
     name = body.name or "New Session"
+
+    # Validate repo format (nameWithOwner) before using it in URLs or filesystem paths.
+    if body.repo is not None and not _REPO_RE.match(body.repo):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "error": {
+                    "code": "invalid_repo",
+                    "message": (
+                        f"repo must be 'owner/name' with only alphanumeric, '.', '_', '-' characters; "
+                        f"got {body.repo!r}"
+                    ),
+                },
+            },
+        )
+
+    # Validate account name — must exist in the local credential store.
+    if body.account is not None:
+        from ccswitch import paths as _paths
+        if not _paths.slot_path(body.account).exists():
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "error": {
+                        "code": "unknown_account",
+                        "message": f"account {body.account!r} not found",
+                    },
+                },
+            )
 
     # Resolve the repo (nameWithOwner) into a ccswitch-owned clone path, cloning
     # on first use.  The user's real ~/GitHub checkouts are never touched — all

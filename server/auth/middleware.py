@@ -11,6 +11,7 @@ cannot be verified.
 """
 from __future__ import annotations
 
+import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -122,16 +123,19 @@ class IdentityMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        # Set/renew cookie on response
+        # Set/renew cookie on response.
+        # secure=True by default — set CCSWITCH_DEV_INSECURE_COOKIE=1 only for
+        # plain-HTTP local dev or tests that inspect cookie attributes.
         session_id = getattr(request.state, "app_session_id", None)
         if session_id:
             signed = _sign_session_id(session_id)
+            _secure = os.environ.get("CCSWITCH_DEV_INSECURE_COOKIE") != "1"
             response.set_cookie(
                 _COOKIE_NAME,
                 signed,
                 httponly=True,
                 samesite="strict",
-                secure=False,  # flip to True when behind HTTPS/tailscale serve
+                secure=_secure,
                 max_age=int(_SESSION_TTL.total_seconds()),
             )
 

@@ -26,13 +26,22 @@ async def _lifespan(app: FastAPI):
     install_redacting_filter()
 
     # F1: the identity header is only trustworthy behind `tailscale serve` on a
-    # loopback bind. Warn loudly if neither an allowlist nor a loopback host is set.
+    # loopback bind.  Hard-fail if neither an allowlist nor a loopback host is set
+    # (unless the operator explicitly opts out with CCSWITCH_DEV=1).
     import logging as _logging
 
     from server.config import get_settings as _get_settings
 
     _s = _get_settings()
-    if not _s.tailnet_allowlist_items and _s.host not in ("127.0.0.1", "localhost", "::1"):
+    _is_loopback = _s.host in ("127.0.0.1", "localhost", "::1")
+    _is_dev = os.environ.get("CCSWITCH_DEV") == "1"
+
+    if not _s.tailnet_allowlist_items and not _is_loopback:
+        if not _is_dev:
+            raise RuntimeError(
+                "refusing to start: empty tailnet_allowlist on a non-loopback bind "
+                "(set CCSWITCH_DEV=1 to override, or set CCSWITCH_TAILNET_ALLOWLIST)."
+            )
         _logging.getLogger("server").warning(
             "SECURITY: binding to %s with an EMPTY tailnet allowlist. The "
             "Tailscale-User-Login header is trusted unconditionally — only safe "
