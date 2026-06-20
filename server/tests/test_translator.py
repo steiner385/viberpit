@@ -47,3 +47,14 @@ def test_turnstart_without_message_start_falls_back():
     msgs = [f.assistant(TextBlock(text="hi"), uuid="t9"), f.result(uuid="t9")]
     _, out = _run(msgs)
     assert isinstance(out[0], TurnStart) and out[0].turn_id == "t9"
+
+def test_second_turn_resets_state():
+    tr = Translator()
+    out1 = []
+    for m in [f.stream_start(uuid="t1"), f.tool_use("tc1", "Bash", {"command": "ls"}, uuid="t1"), f.result(uuid="t1")]:
+        out1 += tr.feed(m)
+    out2 = []
+    for m in [f.stream_start(uuid="t2"), f.tool_use("tc1", "Bash", {"command": "ls"}, uuid="t2"), f.result(uuid="t2")]:
+        out2 += tr.feed(m)
+    assert isinstance(out2[0], TurnStart) and out2[0].turn_id == "t2"
+    assert sum(1 for e in out2 if isinstance(e, ToolCall)) == 1  # not deduped across turns

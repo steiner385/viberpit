@@ -1,12 +1,20 @@
 from __future__ import annotations
+import dataclasses as _dc
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
                               ResultMessage, ToolUseBlock, ToolResultBlock)
 from . import events as ev
 
 
 def _usage_dict(u):
-    if u is None: return None
-    return u if isinstance(u, dict) else None
+    if u is None:
+        return None
+    if isinstance(u, dict):
+        return u
+    if _dc.is_dataclass(u):
+        return _dc.asdict(u)
+    if hasattr(u, "__dict__"):
+        return dict(vars(u))
+    return None
 
 
 class Translator:
@@ -52,6 +60,9 @@ class Translator:
 
         if isinstance(msg, AssistantMessage):
             out = self._ensure_turn(getattr(msg, "uuid", None))
+            # Text/thinking blocks are intentionally NOT re-emitted here — they stream live
+            # via StreamEvent content_block_delta (driver always sets include_partial_messages=True).
+            # Only tool calls (not streamed as deltas) are emitted from the consolidated message.
             for b in msg.content:
                 if isinstance(b, ToolUseBlock) and b.id not in self._seen_tools:
                     self._seen_tools.add(b.id)
