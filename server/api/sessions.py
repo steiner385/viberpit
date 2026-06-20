@@ -125,6 +125,8 @@ async def create_session(
             initial_prompt=body.initialPrompt,
             cwd=cwd,
             branch=body.branch,
+            identity=identity,
+            permission_mode=body.permissionMode or "interactive",
         )
     except ValueError as exc:
         return JSONResponse(

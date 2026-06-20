@@ -113,3 +113,35 @@ def test_branch_session_runs_in_isolated_worktree_and_cleans_up(wt_setup):
     # Closing the session removes the (clean) worktree.
     client.portal.call(lambda: orch.close_session(rec.id))
     assert not os.path.isdir(rec.cwd)
+
+
+def test_create_session_api_forwards_identity_and_permission_mode(wt_setup):
+    """POST /api/sessions must forward caller identity + permissionMode to the driver.
+
+    Regression test for the bug where create_session was called without `identity`
+    or `permission_mode`, causing every API-created driver to bind identity="system"
+    and mode="interactive" regardless of what the caller supplied.  A WS
+    permissionResponse from the real user identity would therefore never match,
+    hanging interactive permission futures indefinitely.
+    """
+    orch, client, repo, _repo_root = wt_setup
+
+    caller_identity = "alice@example.com"
+    resp = client.post(
+        "/api/sessions",
+        json={"permissionMode": "plan"},
+        headers={"Tailscale-User-Login": caller_identity},
+    )
+    assert resp.status_code == 201, resp.text
+
+    session_id = resp.json()["id"]
+    driver = orch.driver(session_id)
+    assert driver is not None, "driver not found in orchestrator after create"
+    assert driver.identity == caller_identity, (
+        f"driver.identity={driver.identity!r}, expected {caller_identity!r}; "
+        "identity was not forwarded from the API endpoint into create_session"
+    )
+    assert driver.mode == "plan", (
+        f"driver.mode={driver.mode!r}, expected 'plan'; "
+        "permissionMode was not forwarded from the API endpoint into create_session"
+    )
