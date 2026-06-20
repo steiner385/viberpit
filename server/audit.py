@@ -110,8 +110,23 @@ class RedactingFilter(logging.Filter):
 
 
 def install_redacting_filter() -> None:
-    """Install RedactingFilter on the root logger."""
+    """Install RedactingFilter on the root logger AND each of its handlers.
+
+    A filter on a Logger is only consulted for records emitted at that logger;
+    records propagated up from child loggers (e.g. ``server.*``) reach the root's
+    *handlers* without re-applying the root logger's filters. So we must also add
+    the filter to every root handler for redaction to cover module logging.
+    Idempotent — safe to call again after the logging stack (uvicorn) is set up.
+    """
+    def _has(flist) -> bool:
+        return any(isinstance(f, RedactingFilter) for f in flist)
+
     root = logging.getLogger()
-    # Avoid duplicate installs
-    if not any(isinstance(f, RedactingFilter) for f in root.filters):
+    if not _has(root.filters):
         root.addFilter(RedactingFilter())
+    if not root.handlers:
+        # Ensure at least one handler carries the filter.
+        root.addHandler(logging.StreamHandler())
+    for handler in root.handlers:
+        if not _has(handler.filters):
+            handler.addFilter(RedactingFilter())

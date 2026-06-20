@@ -34,10 +34,41 @@ _COOKIE_NAME = "ccswitch_session"
 _SESSION_TTL = timedelta(hours=24)
 
 
-def _get_signer() -> TimestampSigner:
+# Per-process random fallback so we NEVER sign with a hardcoded secret. Cookies
+# minted under this secret simply don't survive a restart (acceptable: identity is
+# re-verified from the header on every request, so the cookie is bookkeeping only).
+_PROCESS_SECRET = secrets.token_urlsafe(32)
+_warned_fallback = False
+
+
+def _signing_secret() -> str | bytes:
     settings = get_settings()
-    secret = settings.master_key or "ccswitch-dev-secret-change-me"
-    return TimestampSigner(secret)
+    if settings.session_secret:
+        return settings.session_secret
+    if settings.master_key:
+        return settings.master_key
+    # Fall back to the envelope master key (env or keyring) if configured.
+    try:
+        from ccswitch.crypto import master_key as _envelope_key  # noqa: PLC0415
+
+        k = _envelope_key()
+        if k:
+            return k
+    except Exception:
+        pass
+    global _warned_fallback
+    if not _warned_fallback:
+        import logging
+        logging.getLogger(__name__).warning(
+            "No CCSWITCH_SESSION_SECRET/MASTER_KEY configured; signing session "
+            "cookies with an ephemeral per-process secret (cookies reset on restart)."
+        )
+        _warned_fallback = True
+    return _PROCESS_SECRET
+
+
+def _get_signer() -> TimestampSigner:
+    return TimestampSigner(_signing_secret())
 
 
 def _sign_session_id(session_id: str) -> str:

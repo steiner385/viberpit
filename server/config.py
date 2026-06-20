@@ -21,6 +21,7 @@ try:
             alias="CCSWITCH_DB_URL",
         )
         master_key: str | None = Field(default=None, alias="CCSWITCH_MASTER_KEY")
+        session_secret: str | None = Field(default=None, alias="CCSWITCH_SESSION_SECRET")
         tailnet_allowlist: str = Field(default="", alias="CCSWITCH_TAILNET_ALLOWLIST")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
@@ -52,6 +53,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         master_key: str | None = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_MASTER_KEY")
+        )
+        session_secret: str | None = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_SESSION_SECRET")
         )
         tailnet_allowlist: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_TAILNET_ALLOWLIST", "")

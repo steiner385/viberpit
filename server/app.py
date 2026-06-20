@@ -21,6 +21,23 @@ from server.api.auth import router as auth_router
 async def _lifespan(app: FastAPI):
     """App startup/shutdown: init DB, install log filter, start orchestrator."""
     install_redacting_filter()
+
+    # F1: the identity header is only trustworthy behind `tailscale serve` on a
+    # loopback bind. Warn loudly if neither an allowlist nor a loopback host is set.
+    import logging as _logging
+
+    from server.config import get_settings as _get_settings
+
+    _s = _get_settings()
+    if not _s.tailnet_allowlist_items and _s.host not in ("127.0.0.1", "localhost", "::1"):
+        _logging.getLogger("server").warning(
+            "SECURITY: binding to %s with an EMPTY tailnet allowlist. The "
+            "Tailscale-User-Login header is trusted unconditionally — only safe "
+            "behind `tailscale serve` (which sets/strips it). Set "
+            "CCSWITCH_TAILNET_ALLOWLIST and/or bind 127.0.0.1.",
+            _s.host,
+        )
+
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
 
