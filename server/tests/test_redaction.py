@@ -39,9 +39,9 @@ def test_redact_scrubs_ccenc1_token():
     assert "[REDACTED]" in result
 
 
-def test_redact_scrubs_long_base64():
-    # 50-char base64-like string
-    raw = "key=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijkl"
+def test_redact_scrubs_long_padded_base64():
+    # 64-char padded base64 blob — definitely a secret
+    raw = "key=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwx=="
     result = _redact(raw)
     assert "[REDACTED]" in result
 
@@ -50,6 +50,52 @@ def test_redact_leaves_short_strings_intact():
     raw = "hello world"
     result = _redact(raw)
     assert result == "hello world"
+
+
+# ── I2: tighter redactor — benign content must NOT be redacted ───────────────
+
+def test_redact_leaves_git_sha_intact():
+    """A 40-char unpadded hex SHA must NOT be redacted (no = padding chars)."""
+    sha = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    assert len(sha) == 40
+    result = _redact(sha)
+    assert result == sha, f"Expected git SHA to be intact, got: {result!r}"
+
+
+def test_redact_leaves_long_identifier_intact():
+    """An unpadded identifier (no = chars) of arbitrary length must NOT be redacted."""
+    # 59 base64-alphabet chars, no padding — similar length to an OAuth identifier
+    # that happens to lack = padding; must not trigger the tightened rule.
+    ident = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg"
+    assert len(ident) == 59
+    result = _redact(ident)
+    assert result == ident, f"Expected unpadded identifier to be intact, got: {result!r}"
+
+
+def test_redact_keeps_sk_ant_pattern():
+    """sk-ant-* must still be redacted (explicit prefix pattern unchanged)."""
+    raw = "sk-ant-api03-shortvalue"
+    result = _redact(raw)
+    assert "sk-ant" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_keeps_ccenc1_pattern():
+    """ccenc1:* must still be redacted (explicit prefix pattern unchanged)."""
+    raw = "ccenc1:shortvalue=="
+    result = _redact(raw)
+    assert "ccenc1:" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_scrubs_padded_64char_base64_secret():
+    """A real padded 64-char base64 secret must be redacted."""
+    # 64 base64 chars + == padding
+    secret = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    padded = secret[:62] + "=="
+    assert len(padded) == 64
+    result = _redact(padded)
+    assert "[REDACTED]" in result
 
 
 def test_redact_detail_scrubs_nested():

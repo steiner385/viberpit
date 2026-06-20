@@ -35,6 +35,7 @@ class SessionDriver:
         self._client = None
         self._out: asyncio.Queue = asyncio.Queue()
         self._pump: asyncio.Task | None = None
+        self._titled: bool = False
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -58,6 +59,16 @@ class SessionDriver:
     async def send_prompt(self, text: str):
         if self._client is None:
             raise RuntimeError("SessionDriver.send_prompt called before start()")
+        # C2 — drain guard: reject a second prompt while the previous turn is still running.
+        if self._pump is not None and not self._pump.done():
+            log.warning("driver.send_prompt: drain still running for session=%s, ignoring prompt", self.session_id)
+            return
+        # C3 — auto-title: emit a Title event from the first prompt (first line, max 50 chars).
+        if not self._titled:
+            self._titled = True
+            first_line = text.splitlines()[0] if text else text
+            title_text = first_line[:50]
+            await self._out.put(ev.Title(title=title_text, source="prompt"))
         await self._out.put(ev.Status(state="working"))
         await self._client.query(text)
         self._pump = asyncio.create_task(self._drain())

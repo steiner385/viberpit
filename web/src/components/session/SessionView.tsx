@@ -12,7 +12,7 @@
 import { useEffect, useReducer, useState, useCallback, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { useSessionSocket } from '@/ws/client'
-import type { WsRotatedMsg } from '@/ws/client'
+import type { WsRotatedMsg, WsErrorMsg } from '@/ws/client'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { SessionEvent } from '@/session/events'
 import { StatusBar } from './StatusBar'
@@ -58,16 +58,22 @@ export function SessionView({ sessionId, onBack }: Props) {
     const onEvent = (e: SessionEvent) => dispatch(e)
     const onRotated = (msg: WsRotatedMsg) => {
       if (msg.sessionId !== sessionId) return
-      setRotations((prev) => [...prev, { from: msg.fromAccount, to: msg.toAccount }])
+      setRotations((prev) => [...prev, { from: msg.fromAccount, to: msg.toAccount, reason: msg.reason }])
+    }
+    // I3 — surface direct `error` frames (SESSION_NOT_FOUND, frame_too_large, etc.)
+    const onError = (msg: WsErrorMsg) => {
+      dispatch({ type: 'error', code: msg.code, message: msg.message, resetsAt: msg.resetsAt ?? null })
     }
 
     on('sessionEvent', onEvent)
     on('rotated', onRotated)
+    on('error', onError)
     attach(sessionId)
 
     return () => {
       off('sessionEvent', onEvent)
       off('rotated', onRotated)
+      off('error', onError)
       detach(sessionId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

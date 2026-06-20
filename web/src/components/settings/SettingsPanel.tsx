@@ -2,13 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useSettings, useUpdateSettings } from '@/api/hooks'
-
-const PERMISSION_MODES = [
-  { value: 'interactive', label: 'Ask each time' },
-  { value: 'auto', label: 'Auto-approve safe tools' },
-  { value: 'allowlist', label: 'Allowlist read-only, prompt the rest' },
-  { value: 'full-auto', label: 'Full auto — incl. shell ⚠' },
-] as const
+import { PERMISSION_MODES } from '@/session/permissionModes'
 
 interface SettingsPanelProps {
   onClose: () => void

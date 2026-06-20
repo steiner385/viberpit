@@ -64,6 +64,18 @@ function emitSessionEvent(event: SessionEvent) {
   }
 }
 
+function emitErrorEvent(msg: { type: 'error'; sessionId?: string; code: string; message: string; resetsAt?: string | null }) {
+  for (const handler of capturedHandlers['error'] ?? []) {
+    act(() => { handler(msg) })
+  }
+}
+
+function emitRotatedEvent(msg: { type: 'rotated'; sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean }) {
+  for (const handler of capturedHandlers['rotated'] ?? []) {
+    act(() => { handler(msg) })
+  }
+}
+
 // ── Wrapper ───────────────────────────────────────────────────────────────────
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -178,13 +190,40 @@ describe('SessionView', () => {
     })
   })
 
-  it('shows error banner when error event fires', async () => {
+  it('shows error banner when error sessionEvent fires', async () => {
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
 
     emitSessionEvent({ type: 'error', code: 'RATE_LIMITED', message: 'Too many requests' })
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent(/Too many requests/)
+    })
+  })
+
+  it('I3: shows error banner when direct WS error frame fires (SESSION_NOT_FOUND etc.)', async () => {
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+
+    // This is a direct 'error' WS message, NOT wrapped in a sessionEvent batch.
+    emitErrorEvent({ type: 'error', code: 'SESSION_NOT_FOUND', message: 'Session not found' })
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/Session not found/)
+    })
+  })
+
+  it('I5: rotation divider shows reason when WsRotatedMsg includes reason', async () => {
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+
+    emitRotatedEvent({
+      type: 'rotated',
+      sessionId: 's1',
+      fromAccount: 'alice',
+      toAccount: 'bob',
+      reason: 'rate limited',
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/switched alice → bob — rate limited/)).toBeInTheDocument()
     })
   })
 

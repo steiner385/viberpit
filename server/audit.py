@@ -24,11 +24,13 @@ _REDACT_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"sk-ant-[A-Za-z0-9_-]+"),
     # ccswitch envelope-encrypted token prefix
     re.compile(r"ccenc1:[A-Za-z0-9+/=]+"),
-    # Generic long base64 blobs (≥40 chars of base64 alphabet) that are likely tokens.
-    # NOTE: OAuth refresh tokens used by ccswitch (accessToken / refreshToken in the
-    # claude.ai OAuth flow) are long opaque base64 strings and are therefore already
-    # caught by this pattern — no extra prefix is needed.
-    re.compile(r"[A-Za-z0-9+/]{40,}={0,2}"),
+    # Generic long base64 blobs that are clearly padded secrets (≥60 chars + mandatory
+    # padding `=`).  Requiring at least one `=` pad character avoids false-positive
+    # matches on unpadded hex git SHAs, long identifiers, and minified code segments
+    # while still catching OAuth refresh tokens and other high-entropy base64 payloads.
+    # NOTE: sk-ant-* and ccenc1:* are caught by the explicit patterns above, so there
+    # is no regression risk in tightening this rule.
+    re.compile(r"[A-Za-z0-9+/]{60,}={1,2}"),
     # itsdangerous-signed session cookie value:  <payload>.<timestamp>.<signature>
     # Shape: base64url payload (≥16 chars) · base64url ts (≥6 chars) · sig (≥20 chars)
     re.compile(r"\b[\w-]{16,}\.[\w-]{6,}\.[\w-]{20,}\b"),

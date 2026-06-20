@@ -20,15 +20,9 @@ import {
   type CreateSessionInput,
 } from '@/api/hooks'
 import type { Account } from '@/api/types'
+import { PERMISSION_MODES } from '@/session/permissionModes'
 
 // ── New Session Dialog ──────────────────────────────────────────────────────
-
-const PERMISSION_MODES = [
-  { value: 'interactive', label: 'Ask each time' },
-  { value: 'auto', label: 'Auto-approve safe tools' },
-  { value: 'allowlist', label: 'Allowlist read-only, prompt the rest' },
-  { value: 'full-auto', label: 'Full auto — incl. shell ⚠' },
-] as const
 
 interface NewSessionDialogProps {
   accounts: Account[]

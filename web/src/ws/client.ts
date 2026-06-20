@@ -16,7 +16,7 @@ import { SESSION_EVENT_TYPES } from '@/session/events'
 
 export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string }
 export interface WsUsageMsg        { type: 'usage';         account: string; session: { pct: number; resetsAt: string | null }; weekly: { pct: number; resetsAt: string | null } }
-export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string }
+export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string }
 export interface WsBatchMsg        { type: 'batch';         events: SessionEvent[] }
 
