@@ -146,42 +146,15 @@ def set_nickname(name: str, nickname: str | None) -> None:
 
 def add_account(name: str, email: str | None = None) -> None:
     """Capture-on-login: run `claude auth login` against a temp capture dir, then store the creds."""
-    import os
-    import shlex
-    import subprocess
-    import tempfile
-    from .config import load_config
-    cfg = load_config()
-    claude_cmd = shlex.split(os.environ.get("CCSWITCH_CLAUDE_BIN", cfg.claude_bin))
-    login_args = ["auth", "login", "--claudeai"]
+    from . import auth_login
+
+    print(f"Log in to the '{name}' account in the browser window that opens…")
+    extra: list[str] = []
     if email:
-        login_args += ["--email", email]
-    with tempfile.TemporaryDirectory() as capture:
-        env = dict(os.environ, CLAUDE_CONFIG_DIR=capture)
-        print(f"Log in to the '{name}' account in the browser window that opens…")
-        subprocess.run(claude_cmd + login_args, env=env)
-        cred_path = os.path.join(capture, ".credentials.json")
-        if not os.path.exists(cred_path):
-            raise RuntimeError("login did not produce credentials; aborting")
-        claude_oauth, mcp = split_credentials(read_json(cred_path))
-        if claude_oauth.get("subscriptionType") != "max":
-            print(f"WARNING: '{name}' is not a Max subscription (got {claude_oauth.get('subscriptionType')!r})")
-        write_credentials(paths.slot_path(name), claude_oauth)
-        if mcp:
-            existing = read_json(paths.shared_mcp_path()) if paths.shared_mcp_path().exists() else {}
-            existing.update(mcp)
-            write_json_secure(paths.shared_mcp_path(), existing)
-
-        # T011 — capture per-account .claude.json (identity + caches)
-        captured_claude_json = os.path.join(capture, ".claude.json")
-        if os.path.exists(captured_claude_json):
-            claude_json_data = read_json(captured_claude_json)
-            # store the full per-account file (identity preserved per-account)
-            write_json_secure(paths.store_claude_json_path(name), claude_json_data)
-            # merge shareable keys into claude.shared.json
-            _merge_shared_claude_json(claude_json_data)
-
-    configdir.compose(name)
+        extra = ["--email", email]
+    ok = auth_login.capture_login(name, extra_login_args=extra if extra else None)
+    if not ok:
+        raise RuntimeError("login did not produce credentials; aborting")
 
 
 # Keys from .claude.json that are safe to share across all accounts.

@@ -27,6 +27,11 @@ try:
             default_factory=lambda: str(Path.home() / "GitHub"),
             alias="CCSWITCH_REPO_ROOT",
         )
+        reauth_display: str = Field(default=":0", alias="CCSWITCH_REAUTH_DISPLAY")
+        chrome_profile: str = Field(
+            default="~/.config/google-chrome/Default",
+            alias="CCSWITCH_CHROME_PROFILE",
+        )
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -68,6 +73,15 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
             default_factory=lambda: os.environ.get(
                 "CCSWITCH_REPO_ROOT",
                 str(Path.home() / "GitHub"),
+            )
+        )
+        reauth_display: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_DISPLAY", ":0")
+        )
+        chrome_profile: str = dataclasses.field(
+            default_factory=lambda: os.environ.get(
+                "CCSWITCH_CHROME_PROFILE",
+                "~/.config/google-chrome/Default",
             )
         )
 
