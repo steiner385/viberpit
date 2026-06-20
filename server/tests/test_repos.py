@@ -11,16 +11,16 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from tests.helpers import temp_env
+from server.tests.fakes.fake_factory import fake_sdk_factory
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
-FAKE_PTY = str(REPO_ROOT / "tests" / "fakes" / "fake_claude_pty.py")
 
 
 def _make_app_and_client():
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_CLAUDE_BIN": f"{sys.executable} {FAKE_PTY}"}):
-        orch = SessionOrchestrator(claude_bin=[sys.executable, FAKE_PTY], poll_interval=9999.0)
+    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
         app = create_app(orchestrator=orch)
         from fastapi.testclient import TestClient
         client = TestClient(app, raise_server_exceptions=False)
@@ -185,12 +185,12 @@ def test_create_session_with_repo_clones(tmp_path):
         with patch("server.sessions.orchestrator.select_account", return_value="account1"), \
              patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
              patch("ccswitch.gitrepos.ensure_clone", side_effect=fake_ensure_clone), \
-             patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_CLAUDE_BIN": f"{sys.executable} {FAKE_PTY}"}):
+             patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
 
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             from fastapi.testclient import TestClient
-            orch = SessionOrchestrator(claude_bin=[sys.executable, FAKE_PTY], poll_interval=9999.0)
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
             app = create_app(orchestrator=orch)
             client = TestClient(app, raise_server_exceptions=False)
 
@@ -215,7 +215,7 @@ def test_create_session_clone_error_502(tmp_path):
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             from fastapi.testclient import TestClient
-            orch = SessionOrchestrator(claude_bin=[sys.executable, FAKE_PTY], poll_interval=9999.0)
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
             app = create_app(orchestrator=orch)
             client = TestClient(app, raise_server_exceptions=False)
             with client:

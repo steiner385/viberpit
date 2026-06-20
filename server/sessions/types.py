@@ -12,7 +12,7 @@ from dataclasses import dataclass
 class SessionRecord:
     """In-memory view of a running session — mirrors the DB row but stays process-local."""
 
-    id: str                  # UUID, also the PTY session key in SessionManager
+    id: str                  # UUID, also the session key in SessionOrchestrator/SessionDriver
     name: str                # user-visible label
     account: str             # current account name (updated on rotation)
     claude_session_id: str   # value passed to --resume on rotation

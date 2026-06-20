@@ -1,25 +1,21 @@
-"""WebSocket bridge tests (T024).
+"""WebSocket bridge tests — normalized-event transport.
 
 Uses FastAPI's TestClient (starlette synchronous WS) against an app built with
-a real SessionOrchestrator whose CCSWITCH_CLAUDE_BIN points at the fake PTY stub.
-
-Key constraint: PTY fd readers are registered on the TestClient's anyio event loop,
-so any coroutine that touches the session manager must be called via
-``client.portal.call(coro)`` — not via ``asyncio.new_event_loop()``.
+a real SessionOrchestrator whose SDK factory builds a FakeSDKClient (no real
+`claude`, no quota).  The WS bridge ships normalized events as ``batch`` frames.
 
 Assertions:
 - WS without identity header is rejected
-- attach replays scrollback then sends replayComplete
-- input produces output echoes from the fake
-- interrupt is accepted (no crash)
-- on PTY exit the client gets sessionEnded
+- attach sends replayComplete
+- prompt streams turnStart/textDelta/turnEnd through batch frames
+- a tool needing permission emits a permissionRequest; permissionResponse lets it proceed
+- an inbound frame larger than 256KB is rejected with an error frame, socket stays open
 """
 from __future__ import annotations
 
-import base64
+import asyncio
 import json
 import os
-import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -27,16 +23,17 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from claude_agent_sdk import TextBlock
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
+from server.tests.fakes.fake_sdk import FakeSDKClient
+from server.tests.fakes import fake_sdk as f
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-FAKE_PTY = str(REPO_ROOT / "tests" / "fakes" / "fake_claude_pty.py")
-
 _IDENTITY_HEADERS = {"Tailscale-User-Login": "wstest@example.com"}
 
 
@@ -67,53 +64,53 @@ def _seed_account(name: str) -> None:
         write_json_secure(shared_mcp, {})
 
 
-def _recv_messages(ws, *, until_type: str, timeout: float = 8.0) -> list[dict]:
-    """Collect JSON messages until we see until_type or timeout."""
-    msgs: list[dict] = []
+def _factory(msgs, client_cls=None):
+    """Return an sdk_factory building a fake client over *msgs*."""
+    cls = client_cls or FakeSDKClient
+
+    def make(cwd, config_dir, can_use_tool, mode, resume):
+        return cls(list(msgs), on_can_use_tool=can_use_tool)
+
+    return make
+
+
+def _drain_events(ws, *, until_type: str, timeout: float = 8.0) -> list[dict]:
+    """Receive frames and flatten batch frames into a list of event dicts.
+
+    Stops once an event of *until_type* is seen (or timeout).
+    """
+    events: list[dict] = []
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             raw = ws.receive_text()
-            msg = json.loads(raw)
-            msgs.append(msg)
-            if msg.get("type") == until_type:
-                return msgs
         except Exception:
             break
-    return msgs
+        msg = json.loads(raw)
+        if msg.get("type") == "batch":
+            events.extend(msg.get("events", []))
+        else:
+            events.append(msg)
+        if any(e.get("type") == until_type for e in events):
+            return events
+    return events
 
 
-def _recv_type(ws, target_type: str, timeout: float = 8.0) -> dict | None:
-    msgs = _recv_messages(ws, until_type=target_type, timeout=timeout)
-    for m in msgs:
-        if m.get("type") == target_type:
-            return m
-    return None
+def _make_orch(msgs, *, client_cls=None) -> SessionOrchestrator:
+    return SessionOrchestrator(
+        sdk_factory=_factory(msgs, client_cls=client_cls),
+        work_dir=str(REPO_ROOT),
+        poll_interval=9999.0,
+        usage_fn=_fake_usage,
+    )
 
-
-def _wait_scrollback(orch: SessionOrchestrator, session_id: str, needle: bytes, timeout: float = 8.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            if needle in orch.manager.scrollback(session_id):
-                return True
-        except KeyError:
-            pass
-        time.sleep(0.05)
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Fixture
-# ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def ws_setup(tmp_path):
-    """Yield (app, orchestrator, TestClient).
+def ws_env(tmp_path):
+    """Yield a factory ``build(msgs, client_cls=None) -> (app, orch, client)``.
 
-    TestClient is already entered as a context manager so:
-    - the app lifespan ran (DB initialised, orchestrator started)
-    - client.portal is available for running coroutines on the app's event loop
+    The returned TestClient must be entered with ``with client:`` to run the
+    lifespan; the helper does this and yields the entered client.
     """
     store_home = tmp_path / "store"
     store_home.mkdir()
@@ -133,34 +130,38 @@ def ws_setup(tmp_path):
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     select_patch = patch("server.sessions.orchestrator.select_account", return_value="alpha")
 
+    created: list[TestClient] = []
+
     with env_patch, usage_patch, compose_patch, select_patch:
         _seed_account("alpha")
 
-        orch = SessionOrchestrator(
-            claude_bin=[sys.executable, FAKE_PTY],
-            work_dir=str(REPO_ROOT),
-            poll_interval=9999.0,
-            usage_fn=_fake_usage,
-        )
-        app = create_app(orchestrator=orch)
+        def build(msgs, client_cls=None):
+            orch = _make_orch(msgs, client_cls=client_cls)
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=False)
+            client.__enter__()
+            created.append(client)
+            return app, orch, client
 
-        client = TestClient(app, raise_server_exceptions=False)
-        with client:
-            # client.portal is now set — use it to call async methods
-            yield app, orch, client
+        try:
+            yield build
+        finally:
+            for c in created:
+                try:
+                    c.__exit__(None, None, None)
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------
-# T024-a: WS without identity header is rejected
+# WS without identity header is rejected
 # ---------------------------------------------------------------------------
 
-def test_ws_no_identity_rejected(ws_setup):
-    """A WebSocket upgrade without identity header must be rejected."""
-    _app, _orch, client = ws_setup
+def test_ws_no_identity_rejected(ws_env):
+    _app, _orch, client = ws_env([])
     rejected = False
     try:
         with client.websocket_connect("/ws") as ws:
-            # Server must reject immediately; any receive should fail
             ws.receive_text()
     except Exception:
         rejected = True
@@ -168,139 +169,168 @@ def test_ws_no_identity_rejected(ws_setup):
 
 
 # ---------------------------------------------------------------------------
-# T024-b: attach replays scrollback then sends replayComplete
+# replayComplete is sent on attach
 # ---------------------------------------------------------------------------
 
-def test_ws_attach_replays_scrollback_and_replay_complete(ws_setup):
-    """Create session via orchestrator, attach via WS, verify output + replayComplete."""
-    _app, orch, client = ws_setup
-
-    # Run create_session on the TestClient's event loop so the PTY fd reader
-    # is registered on the same loop that drives the WS handler.
-    session = client.portal.call(orch.create_session, "test-attach")
+def test_replayComplete_sent_on_attach(ws_env):
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-replay")
     session_id = session.id
 
-    # Wait for banner in scrollback (sync polling — fd reader is on app's loop)
-    assert _wait_scrollback(orch, session_id, b"fake-claude ready"), (
-        "fake PTY banner did not appear in scrollback"
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="replayComplete")
+        assert any(e.get("type") == "replayComplete" for e in events), (
+            f"replayComplete not in {[e.get('type') for e in events]}"
+        )
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
+# attach + prompt streams the turn live
+# ---------------------------------------------------------------------------
+
+def test_attach_replays_then_live(ws_env):
+    msgs = [
+        f.sys_init("sess-1"),
+        f.stream_start(uuid="t1"),
+        f.stream_text("Hello ", uuid="t1"),
+        f.stream_text("there", uuid="t1"),
+        f.assistant(TextBlock(text="Hello there"), uuid="t1"),
+        f.result(session_id="sess-1", uuid="t1"),
+    ]
+    _app, orch, client = ws_env(msgs)
+    session = client.portal.call(orch.create_session, "test-live")
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        # consume up to replayComplete first
+        _drain_events(ws, until_type="replayComplete")
+
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "hi"}))
+        events = _drain_events(ws, until_type="turnEnd", timeout=8.0)
+        types = [e.get("type") for e in events]
+        assert "turnStart" in types, f"no turnStart in {types}"
+        assert "textDelta" in types, f"no textDelta in {types}"
+        assert "turnEnd" in types, f"no turnEnd in {types}"
+        text = "".join(e.get("text", "") for e in events if e.get("type") == "textDelta")
+        assert "Hello there" in text, f"unexpected text: {text!r}"
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
+# Permission round-trip: tool needs permission, allow lets it proceed
+# ---------------------------------------------------------------------------
+
+class _PermissionFakeClient(FakeSDKClient):
+    """Fake client that invokes can_use_tool before streaming, simulating a
+    tool that requires interactive approval, then proceeds once approved."""
+
+    async def receive_response(self):
+        # First message announces the turn.
+        yield f.stream_start(uuid="t1")
+        # Ask for permission for a Bash tool — blocks until resolve/deny.
+        if self.on_can_use_tool is not None:
+            await self.on_can_use_tool("Bash", {"command": "ls"}, None)
+        if self.interrupted:
+            return
+        # Approved → finish the turn.
+        yield f.stream_text("done", uuid="t1")
+        yield f.result(session_id="sess-1", uuid="t1")
+
+
+def test_permission_round_trip(ws_env):
+    _app, orch, client = ws_env([], client_cls=_PermissionFakeClient)
+    # The permission must be requested AND resolved under the same identity that
+    # the WS connection presents, so create the session with the WS identity.
+    session = client.portal.call(
+        lambda: orch.create_session("test-perm", identity="wstest@example.com")
     )
+    session_id = session.id
 
     with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
         ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
 
-        msgs = _recv_messages(ws, until_type="replayComplete", timeout=8.0)
-        types = [m.get("type") for m in msgs]
-        assert "replayComplete" in types, f"replayComplete not in {types}"
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "go"}))
+        events = _drain_events(ws, until_type="permissionRequest", timeout=8.0)
+        req = next((e for e in events if e.get("type") == "permissionRequest"), None)
+        assert req is not None, f"no permissionRequest in {[e.get('type') for e in events]}"
+        assert req.get("tool") == "Bash"
+        perm_id = req["permId"]
 
-        output_msgs = [m for m in msgs if m.get("type") == "output"]
-        assert output_msgs, "expected at least one output message during attach"
-        combined = b"".join(base64.b64decode(m["data"]) for m in output_msgs)
-        assert b"fake-claude ready" in combined, f"banner not in output: {combined!r}"
+        ws.send_text(json.dumps({
+            "type": "permissionResponse", "sessionId": session_id,
+            "permId": perm_id, "decision": "allow",
+        }))
+
+        events = _drain_events(ws, until_type="turnEnd", timeout=8.0)
+        types = [e.get("type") for e in events]
+        assert "turnEnd" in types, f"turn did not proceed after allow: {types}"
 
     client.portal.call(orch.close_session, session_id)
 
 
 # ---------------------------------------------------------------------------
-# T024-c: input produces output echo from the fake
+# An unknown permId response and interrupt are handled safely
 # ---------------------------------------------------------------------------
 
-def test_ws_input_produces_output(ws_setup):
-    """Send input via WS; the fake PTY echoes it back as output."""
-    _app, orch, client = ws_setup
-
-    session = client.portal.call(orch.create_session, "test-input")
+def test_unknown_permission_and_interrupt_safe(ws_env):
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-safe")
     session_id = session.id
-    assert _wait_scrollback(orch, session_id, b"fake-claude ready"), "banner missing"
 
     with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
         ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
-        rc = _recv_type(ws, "replayComplete", timeout=8.0)
-        assert rc is not None, "did not get replayComplete"
+        _drain_events(ws, until_type="replayComplete")
 
-        payload = base64.b64encode(b"hello world\n").decode()
-        ws.send_text(json.dumps({"type": "input", "sessionId": session_id, "data": payload}))
-
-        found_echo = False
-        deadline = time.monotonic() + 8.0
-        while time.monotonic() < deadline:
-            try:
-                raw = ws.receive_text()
-                msg = json.loads(raw)
-                if msg.get("type") == "output":
-                    data = base64.b64decode(msg["data"])
-                    if b"hello world" in data or b"turn1" in data:
-                        found_echo = True
-                        break
-            except Exception:
-                break
-
-        assert found_echo, "did not receive echo of input from fake PTY"
-
-    client.portal.call(orch.close_session, session_id)
-
-
-# ---------------------------------------------------------------------------
-# T024-d: interrupt is accepted (no crash)
-# ---------------------------------------------------------------------------
-
-def test_ws_interrupt_accepted(ws_setup):
-    """Send interrupt message; verify no protocol error is returned.
-
-    Note: the fake PTY exits on SIGINT (it receives \x03 via stdin); the real
-    claude binary handles SIGINT gracefully. We only verify that the interrupt
-    message is accepted without an error response — not that the process survives.
-    """
-    _app, orch, client = ws_setup
-
-    session = client.portal.call(orch.create_session, "test-interrupt")
-    session_id = session.id
-    assert _wait_scrollback(orch, session_id, b"fake-claude ready"), "banner missing"
-
-    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
-        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
-        _recv_type(ws, "replayComplete", timeout=8.0)
-
+        # Unknown permId — must not crash, no error frame expected.
+        ws.send_text(json.dumps({
+            "type": "permissionResponse", "sessionId": session_id,
+            "permId": "does-not-exist", "decision": "allow",
+        }))
+        # interrupt is accepted.
         ws.send_text(json.dumps({"type": "interrupt", "sessionId": session_id}))
 
-        # Collect a few messages; must not see an error response to the interrupt
-        msgs: list[dict] = []
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            try:
-                raw = ws.receive_text()
-                msg = json.loads(raw)
-                msgs.append(msg)
-                # stop collecting after sessionEnded (fake exits on Ctrl-C)
-                if msg.get("type") in ("sessionEnded", "error"):
-                    break
-            except Exception:
-                break
+        # Send a benign unknown frame and confirm we get a well-formed error back.
+        ws.send_text(json.dumps({"type": "bogus", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="error", timeout=4.0)
+        err = next((e for e in events if e.get("type") == "error"), None)
+        assert err is not None and err.get("code") == "UNKNOWN_TYPE"
 
-        error_msgs = [m for m in msgs if m.get("type") == "error"]
-        assert not error_msgs, f"unexpected error after interrupt: {error_msgs}"
+    client.portal.call(orch.close_session, session_id)
 
 
 # ---------------------------------------------------------------------------
-# T024-e: sessionEnded received when PTY exits via /quit
+# Frame larger than 256KB is rejected, socket stays open
 # ---------------------------------------------------------------------------
 
-def test_ws_session_ended_on_exit(ws_setup):
-    """When the PTY exits (/quit), the WS client receives sessionEnded."""
-    _app, orch, client = ws_setup
-
-    session = client.portal.call(orch.create_session, "test-exit")
+def test_frame_too_large_rejected(ws_env):
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-big")
     session_id = session.id
-    assert _wait_scrollback(orch, session_id, b"fake-claude ready"), "banner missing"
 
     with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
         ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
-        rc = _recv_type(ws, "replayComplete", timeout=8.0)
-        assert rc is not None, "did not get replayComplete"
+        _drain_events(ws, until_type="replayComplete")
 
-        # Send /quit to cause the fake PTY to exit
-        payload = base64.b64encode(b"/quit\n").decode()
-        ws.send_text(json.dumps({"type": "input", "sessionId": session_id, "data": payload}))
+        big_text = "x" * 300_000
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": big_text}))
 
-        ended = _recv_type(ws, "sessionEnded", timeout=10.0)
-        assert ended is not None, "did not receive sessionEnded"
-        assert ended.get("sessionId") == session_id
+        events = _drain_events(ws, until_type="error", timeout=4.0)
+        err = next((e for e in events if e.get("type") == "error"), None)
+        assert err is not None and err.get("code") == "frame_too_large", (
+            f"expected frame_too_large error, got {[e.get('type') for e in events]}"
+        )
+
+        # Socket still open: a normal unknown frame still elicits a response.
+        ws.send_text(json.dumps({"type": "bogus", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="error", timeout=4.0)
+        assert any(e.get("code") == "UNKNOWN_TYPE" for e in events), (
+            "socket appears closed after frame_too_large"
+        )
+
+    client.portal.call(orch.close_session, session_id)

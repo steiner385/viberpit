@@ -2,7 +2,7 @@
 
 All requests use a valid Tailscale-User-Login identity header.
 The orchestrator is injected with:
-  - fake claude stub via CCSWITCH_CLAUDE_BIN
+  - fake SDK client via a fake sdk_factory
   - monkeypatched usage_for via a custom usage_fn
   - temp_env for isolated CCSWITCH_HOME / CLAUDE_CONFIG_DIR
   - CCSWITCH_DB_URL=sqlite+aiosqlite:///:memory: so the DB initialises cleanly
@@ -33,13 +33,13 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from tests.helpers import temp_env, usage as make_usage
+from server.tests.fakes.fake_factory import fake_sdk_factory
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
-FAKE_PTY = str(REPO_ROOT / "tests" / "fakes" / "fake_claude_pty.py")
 
 
 # ---------------------------------------------------------------------------
@@ -94,14 +94,13 @@ def _make_app_and_client(usage_fn=None, extra_env: dict | None = None):
 
     env = {
         "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-        "CCSWITCH_CLAUDE_BIN": f"{sys.executable} {FAKE_PTY}",
     }
     if extra_env:
         env.update(extra_env)
 
     with patch.dict(os.environ, env):
         orch = SessionOrchestrator(
-            claude_bin=[sys.executable, FAKE_PTY],
+            sdk_factory=fake_sdk_factory(),
             usage_fn=usage_fn,
             poll_interval=9999.0,
         )
@@ -137,7 +136,7 @@ def test_get_accounts_returns_usage_shape():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 usage_fn=usage_fn,
                 poll_interval=9999.0,
             )
@@ -182,7 +181,7 @@ def test_get_accounts_no_token_fields():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 usage_fn=usage_fn,
                 poll_interval=9999.0,
             )
@@ -216,14 +215,13 @@ def test_session_lifecycle():
              patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "account1"), \
              patch.dict(os.environ, {
                  "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-                 "CCSWITCH_CLAUDE_BIN": f"{sys.executable} {FAKE_PTY}",
              }):
             (d / "cfg" / "account1").mkdir(parents=True, exist_ok=True)
 
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 usage_fn=usage_fn,
                 poll_interval=9999.0,
             )
@@ -283,7 +281,7 @@ def test_session_get_404_for_unknown():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 poll_interval=9999.0,
             )
             app = create_app(orchestrator=orch)
@@ -315,7 +313,7 @@ def test_post_sessions_409_when_all_busy():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 poll_interval=9999.0,
             )
             app = create_app(orchestrator=orch)
@@ -348,7 +346,7 @@ def test_post_sessions_409_null_earliest_reset():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 poll_interval=9999.0,
             )
             app = create_app(orchestrator=orch)
@@ -378,7 +376,7 @@ def test_auth_me_returns_identity():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 poll_interval=9999.0,
             )
             app = create_app(orchestrator=orch)
@@ -405,7 +403,7 @@ def test_unauthenticated_returns_401():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 poll_interval=9999.0,
             )
             app = create_app(orchestrator=orch)
@@ -431,7 +429,7 @@ def test_logout_returns_204():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 poll_interval=9999.0,
             )
             app = create_app(orchestrator=orch)
@@ -458,7 +456,7 @@ def test_account_refresh_returns_usage():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 usage_fn=usage_fn,
                 poll_interval=9999.0,
             )
@@ -497,7 +495,7 @@ def test_delete_account_returns_204():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 poll_interval=9999.0,
             )
             app = create_app(orchestrator=orch)
@@ -521,7 +519,7 @@ def test_relogin_returns_202():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 poll_interval=9999.0,
             )
             app = create_app(orchestrator=orch)
@@ -547,7 +545,7 @@ def test_logout_with_cookie_revokes_session():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 poll_interval=9999.0,
             )
             app = create_app(orchestrator=orch)
@@ -570,7 +568,7 @@ def test_identity_middleware_db_unavailable_still_serves():
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
             orch = SessionOrchestrator(
-                claude_bin=[sys.executable, FAKE_PTY],
+                sdk_factory=fake_sdk_factory(),
                 poll_interval=9999.0,
             )
             app = create_app(orchestrator=orch)

@@ -1,22 +1,28 @@
-"""WebSocket bridge — T035.
+"""WebSocket bridge — normalized-event transport.
 
-Single authenticated WebSocket per client.  Multiplexes terminal I/O and
-lifecycle events per the contracts/websocket.md contract.
+Single authenticated WebSocket per client.  Ships normalized session events
+(``e.to_wire()`` dicts) coalesced into ``batch`` frames; no PTY bytes.
 
 Factory:
     router = build_ws_router(orchestrator)
     app.include_router(router)
 
 Message protocol (JSON):
-  client→server: attach, detach, input, resize, interrupt
-  server→client: output, replayComplete, status, usage, rotated, sessionEnded, error
+  client→server: attach, detach, prompt, interrupt, permissionResponse,
+                 setPermissionMode, answerQuestion
+  server→client: batch, replayComplete, permissionRequest, error
 
-NFR-005: output frames coalesced and flushed no more often than ~16 ms.
+Security:
+  - Handshake identity via the require_ws_identity dependency.
+  - Per-frame identity re-verification: a frame whose identity no longer matches
+    the handshake identity closes the socket with 1008.
+  - 256KB inbound frame cap.
+
+Outbound events are coalesced and flushed no more often than ~16 ms.
 """
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -24,15 +30,20 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
+from server.sessions.events import tool_kind
+from server.sessions.replay import replay_events
 
 if TYPE_CHECKING:
     from server.sessions.orchestrator import SessionOrchestrator
 
 log = logging.getLogger(__name__)
 
-# Output batching cadence (seconds) — ~16ms matches a 60fps display refresh
+# Outbound batching cadence (seconds) — ~16ms matches a 60fps display refresh
 _BATCH_INTERVAL = 0.016
+# Maximum inbound frame size (bytes)
+_MAX_FRAME = 262144
 
 
 def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
@@ -47,9 +58,10 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
         await websocket.accept()
         log.debug("ws.connect identity=%s", identity)
 
-        # Per-connection state
-        # attached_sessions: session_id → (output_queue, batch_task, mgr_queue)
-        attached: dict[str, tuple[asyncio.Queue, asyncio.Task, asyncio.Queue]] = {}
+        # Single outbound queue of already-wire-format dicts, drained by the batcher.
+        out_q: asyncio.Queue[dict] = asyncio.Queue()
+        # session_id → live-stream task forwarding driver events into out_q
+        live_tasks: dict[str, asyncio.Task] = {}
 
         # Subscribe to orchestrator lifecycle events (rotated, etc.)
         event_q = orchestrator.subscribe_events()
@@ -62,167 +74,94 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             except Exception:
                 pass
 
-        async def _send_error(code: str, message: str, session_id: str | None = None) -> None:
-            payload: dict = {"type": "error", "code": code, "message": message}
-            if session_id is not None:
-                payload["sessionId"] = session_id
-            await _send(payload)
-
         # ------------------------------------------------------------------
-        # Output batcher per attached session
+        # Outbound batcher — coalesces wire dicts into one batch frame / interval
         # ------------------------------------------------------------------
 
-        async def _batch_output(session_id: str, out_q: asyncio.Queue) -> None:
-            """Coalesce output chunks from out_q and flush every _BATCH_INTERVAL."""
-            buf: list[bytes] = []
-            while True:
-                try:
-                    # Drain available items without blocking
+        async def _batcher() -> None:
+            try:
+                while True:
+                    # Block for the first item, then drain everything available.
+                    first = await out_q.get()
+                    buf = [first]
+                    # Brief settle window so bursts coalesce into one frame.
+                    await asyncio.sleep(_BATCH_INTERVAL)
                     while True:
-                        chunk = out_q.get_nowait()
-                        if chunk is None:
-                            # Sentinel: process exited
-                            if buf:
-                                await _send({
-                                    "type": "output",
-                                    "sessionId": session_id,
-                                    "data": base64.b64encode(b"".join(buf)).decode(),
-                                })
-                                buf = []
-                            # Determine exit code
-                            code = orchestrator.manager.exit_code(session_id)
-                            await _send({"type": "sessionEnded", "sessionId": session_id, "code": code})
-                            return
-                        buf.append(chunk)
-                except asyncio.QueueEmpty:
-                    pass
+                        try:
+                            buf.append(out_q.get_nowait())
+                        except asyncio.QueueEmpty:
+                            break
+                    await _send({"type": "batch", "events": buf})
+            except asyncio.CancelledError:
+                return
 
-                if buf:
-                    await _send({
-                        "type": "output",
-                        "sessionId": session_id,
-                        "data": base64.b64encode(b"".join(buf)).decode(),
-                    })
-                    buf = []
-
-                # Wait one batch interval, or wake early if new data arrives
-                try:
-                    chunk = await asyncio.wait_for(out_q.get(), timeout=_BATCH_INTERVAL)
-                    if chunk is None:
-                        code = orchestrator.manager.exit_code(session_id)
-                        await _send({"type": "sessionEnded", "sessionId": session_id, "code": code})
-                        return
-                    buf.append(chunk)
-                except asyncio.TimeoutError:
-                    pass
-                except asyncio.CancelledError:
-                    return
+        batcher_task = asyncio.create_task(_batcher(), name="ws-batcher")
 
         # ------------------------------------------------------------------
-        # Lifecycle event forwarder (rotated, etc.)
+        # Lifecycle event forwarder (rotated, etc.) → batcher
         # ------------------------------------------------------------------
 
         async def _forward_events() -> None:
-            """Forward orchestrator lifecycle events to the WS client."""
             try:
                 while True:
                     event = await event_q.get()
-                    await _send(event)
+                    out_q.put_nowait(event)
             except asyncio.CancelledError:
                 pass
 
         event_task = asyncio.create_task(_forward_events(), name="ws-events")
 
         # ------------------------------------------------------------------
-        # Message handler helpers
+        # Attach / detach
         # ------------------------------------------------------------------
 
         async def _handle_attach(session_id: str) -> None:
-            if session_id in attached:
+            if session_id in live_tasks:
                 return  # already attached
 
-            mgr = orchestrator.manager
-            try:
-                scrollback = mgr.scrollback(session_id)
-            except KeyError:
-                await _send_error("SESSION_NOT_FOUND", f"Session {session_id!r} not found", session_id)
+            driver = orchestrator.driver(session_id)
+            if driver is None:
+                await _send({"type": "error", "code": "SESSION_NOT_FOUND",
+                             "message": f"Session {session_id!r} not found",
+                             "sessionId": session_id})
                 return
 
-            # Replay scrollback as output frames
-            if scrollback:
-                await _send({
-                    "type": "output",
-                    "sessionId": session_id,
-                    "data": base64.b64encode(scrollback).decode(),
-                })
+            # 1) Replay transcript (if any) as a single batch frame.
+            path = orchestrator.transcript_path(session_id)
+            events = await replay_events(path) if path else []
+            if events:
+                await _send({"type": "batch", "events": [e.to_wire() for e in events]})
+            await _send({"type": "replayComplete"})
 
-            await _send({"type": "replayComplete", "sessionId": session_id})
+            # 2) Re-emit any pending permission requests for this session.
+            for p in orchestrator._registry.pending(session_id):
+                await _send({"type": "permissionRequest", "permId": p["permId"],
+                             "turnId": p["turn_id"], "tool": p["tool"],
+                             "toolKind": tool_kind(p["tool"]).value,
+                             "input": p["input"], "plan": False})
 
-            # Subscribe to live output
-            mgr_q = mgr.subscribe(session_id)
-            out_q: asyncio.Queue = asyncio.Queue()
-
-            async def _relay() -> None:
-                """Relay from mgr_q → out_q (so the batcher drives output_q)."""
+            # 3) Start the live stream: forward driver events into the batcher.
+            async def _live() -> None:
                 try:
-                    while True:
-                        chunk = await mgr_q.get()
-                        out_q.put_nowait(chunk)
-                        if chunk is None:
-                            return
+                    async for e in driver.events():
+                        out_q.put_nowait(e.to_wire())
                 except asyncio.CancelledError:
                     pass
+                except Exception:
+                    log.exception("ws.live_stream session=%s", session_id)
 
-            relay_task = asyncio.create_task(_relay(), name=f"ws-relay-{session_id}")
-            batch_task = asyncio.create_task(
-                _batch_output(session_id, out_q), name=f"ws-batch-{session_id}"
-            )
-
-            # Store relay + batch tasks; we clean up both on detach
-            # We store (out_q, combined_cleanup_task, mgr_q) for cleanup
-            # Use a wrapper task that waits for both
-            async def _combined() -> None:
-                await asyncio.gather(relay_task, batch_task, return_exceptions=True)
-
-            combined = asyncio.create_task(_combined(), name=f"ws-combined-{session_id}")
-            attached[session_id] = (out_q, combined, mgr_q)
+            live_tasks[session_id] = asyncio.create_task(
+                _live(), name=f"ws-live-{session_id}")
 
         async def _handle_detach(session_id: str) -> None:
-            if session_id not in attached:
+            task = live_tasks.pop(session_id, None)
+            if task is None:
                 return
-            _out_q, combined, mgr_q = attached.pop(session_id)
-            combined.cancel()
+            task.cancel()
             try:
-                await asyncio.wait_for(combined, timeout=0.5)
+                await asyncio.wait_for(task, timeout=0.5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-            try:
-                orchestrator.manager.unsubscribe(session_id, mgr_q)
-            except Exception:
-                pass
-
-        async def _handle_input(session_id: str, data: str) -> None:
-            try:
-                raw = base64.b64decode(data)
-            except Exception:
-                # Accept plain text as fallback
-                raw = data.encode()
-            try:
-                await orchestrator.manager.write_input(session_id, raw)
-            except KeyError:
-                await _send_error("SESSION_NOT_FOUND", f"Session {session_id!r} not found", session_id)
-
-        async def _handle_resize(session_id: str, cols: int, rows: int) -> None:
-            try:
-                await orchestrator.manager.resize(session_id, cols, rows)
-            except KeyError:
-                await _send_error("SESSION_NOT_FOUND", f"Session {session_id!r} not found", session_id)
-
-        async def _handle_interrupt(session_id: str) -> None:
-            try:
-                await orchestrator.manager.write_input(session_id, b"\x03")
-            except KeyError:
-                await _send_error("SESSION_NOT_FOUND", f"Session {session_id!r} not found", session_id)
 
         # ------------------------------------------------------------------
         # Main receive loop
@@ -237,10 +176,23 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 except Exception:
                     break
 
+                # Per-frame identity re-verification (handshake drift / revocation).
+                ident = verify_identity(websocket)
+                if ident is None or ident != identity:
+                    await websocket.close(code=1008)
+                    return
+
+                # 256KB frame cap.
+                if len(raw) > _MAX_FRAME:
+                    await _send({"type": "error", "code": "frame_too_large",
+                                 "message": f"Frame exceeds {_MAX_FRAME} bytes"})
+                    continue
+
                 try:
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
-                    await _send_error("INVALID_JSON", "Message must be a JSON object")
+                    await _send({"type": "error", "code": "INVALID_JSON",
+                                 "message": "Message must be a JSON object"})
                     continue
 
                 msg_type = msg.get("type", "")
@@ -250,24 +202,36 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                     await _handle_attach(session_id)
                 elif msg_type == "detach":
                     await _handle_detach(session_id)
-                elif msg_type == "input":
-                    await _handle_input(session_id, msg.get("data", ""))
-                elif msg_type == "resize":
-                    await _handle_resize(session_id, int(msg.get("cols", 80)), int(msg.get("rows", 24)))
+                elif msg_type == "prompt":
+                    await orchestrator.send_prompt(session_id, msg.get("text", ""))
                 elif msg_type == "interrupt":
-                    await _handle_interrupt(session_id)
+                    await orchestrator.interrupt(session_id)
+                elif msg_type == "permissionResponse":
+                    orchestrator.resolve_permission(
+                        session_id, msg.get("permId", ""), msg.get("decision", ""), identity)
+                elif msg_type == "setPermissionMode":
+                    await orchestrator.set_permission_mode(session_id, msg.get("mode", ""))
+                elif msg_type == "answerQuestion":
+                    # Accepted but not yet wired — a later task handles questions.
+                    log.debug("ws.answerQuestion (no-op) session=%s", session_id)
                 else:
-                    await _send_error("UNKNOWN_TYPE", f"Unknown message type: {msg_type!r}")
+                    await _send({"type": "error", "code": "UNKNOWN_TYPE",
+                                 "message": f"Unknown message type: {msg_type!r}"})
 
         finally:
-            # Clean up all attached sessions
-            for sid in list(attached.keys()):
+            # Cancel live streams.
+            for sid in list(live_tasks.keys()):
                 await _handle_detach(sid)
 
-            # Stop lifecycle event forwarder
             event_task.cancel()
             try:
                 await asyncio.wait_for(event_task, timeout=0.5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+
+            batcher_task.cancel()
+            try:
+                await asyncio.wait_for(batcher_task, timeout=0.5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
 

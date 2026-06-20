@@ -1,12 +1,11 @@
 """Integration test: create_session/close_session drive the worktree lifecycle.
 
-Uses the fake claude PTY (no real account, no quota) but the REAL orchestrator
+Uses a fake SDK client (no real account, no quota) but the REAL orchestrator
 code path, so it proves the wiring: a branch-selected session runs in an isolated
 worktree, the user's real checkout is untouched, and close cleans the worktree up.
 """
 import os
 import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,9 +15,9 @@ from starlette.testclient import TestClient
 from ccswitch import worktrees
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
+from server.tests.fakes.fake_factory import fake_sdk_factory
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-FAKE_PTY = str(REPO_ROOT / "tests" / "fakes" / "fake_claude_pty.py")
 
 
 def _git(*args: str, cwd: str) -> None:
@@ -78,7 +77,7 @@ def wt_setup(tmp_path):
     with env_patch, usage_patch, compose_patch, select_patch:
         _seed_account("alpha")
         orch = SessionOrchestrator(
-            claude_bin=[sys.executable, FAKE_PTY],
+            sdk_factory=fake_sdk_factory(),
             work_dir=str(REPO_ROOT),
             poll_interval=9999.0,
             usage_fn=_fake_usage,

@@ -1,9 +1,9 @@
-"""SessionOrchestrator — ties SessionManager, UsagePoller, and rotation together.
+"""SessionOrchestrator — ties SessionDriver, UsagePoller, and rotation together.
 
 The API and WS layers call this.  One instance lives on app.state.
 
 Usage:
-    orch = SessionOrchestrator(claude_bin=[sys.executable, "fake.py"])
+    orch = SessionOrchestrator(sdk_factory=real_sdk_factory)
     await orch.start()
     record = await orch.create_session("My session")
     ...
@@ -22,8 +22,9 @@ from ccswitch import configdir, worktrees
 from ccswitch.configdir import compose
 from server.db import db_session
 from server.db.models import Session as DbSession
-from server.sessions.manager import SessionManager
-from server.sessions.rotation import RotationDeps, rotate
+from server.sessions.driver import SessionDriver
+from server.sessions.permissions import PermissionRegistry
+from server.sessions.sdk_factory import real_sdk_factory
 from server.sessions.selection import AllAccountsBusy, select_account
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
@@ -35,9 +36,6 @@ class BranchSwitchError(Exception):
     """Raised when a git branch checkout fails."""
 
 
-# Default: use load_config().claude_bin, overridden in tests
-_DEFAULT_CLAUDE_BIN: str = "claude"
-
 # Session-window utilisation ceiling that triggers rotation (100 = hard ceiling per spec)
 _ROTATION_CEILING: float = 100.0
 
@@ -46,9 +44,10 @@ class SessionOrchestrator:
     """Orchestrates session lifecycle: creation, rotation, termination.
 
     Args:
-        claude_bin: argv prefix for spawning the claude process.  Defaults to
-            ``["claude"]`` (resolved via PATH).  Override in tests:
-            ``[sys.executable, "tests/fakes/fake_claude_pty.py"]``.
+        sdk_factory: ``(cwd, config_dir, can_use_tool, mode, resume) -> SDKClientProtocol``
+            builds the SDK client backing each SessionDriver.  Defaults to
+            ``real_sdk_factory`` (a real ClaudeSDKClient); override in tests with a
+            fake-SDK factory.
         work_dir: Default cwd for new sessions.  Defaults to the process cwd.
         poll_interval: Seconds between usage-poller sweeps (default 60).
         usage_fn: Override for the usage-fetch function (testing).
@@ -56,18 +55,12 @@ class SessionOrchestrator:
 
     def __init__(
         self,
-        claude_bin: list[str] | None = None,
+        sdk_factory=None,
         work_dir: str | None = None,
         poll_interval: float = 60.0,
         usage_fn: Callable[[str], object] | None = None,
         repo_root: str | None = None,
     ) -> None:
-        if claude_bin is None:
-            # Resolve from env (matches ccswitch.accounts.add_account logic)
-            bin_str = os.environ.get("CCSWITCH_CLAUDE_BIN", _DEFAULT_CLAUDE_BIN)
-            import shlex
-            claude_bin = shlex.split(bin_str)
-        self._claude_bin: list[str] = claude_bin
         self._work_dir: str = work_dir or os.getcwd()
         # Root under which per-session worktrees are created (<root>/.ccswitch/...).
         # Defaults to the configured repo_root so worktrees sit next to the repos.
@@ -80,7 +73,10 @@ class SessionOrchestrator:
         self._repo_root: str = repo_root
         # session_id → WorktreeInfo for sessions launched in an isolated worktree
         self._worktrees: dict[str, worktrees.WorktreeInfo] = {}
-        self._manager: SessionManager = SessionManager()
+        self._sdk_factory = sdk_factory or real_sdk_factory
+        self._registry = PermissionRegistry()
+        self._drivers: dict[str, SessionDriver] = {}
+        self._last_prompt: dict[str, str] = {}
         self._poller: UsagePoller = UsagePoller(
             poll_interval=poll_interval,
             usage_fn=usage_fn,
@@ -127,8 +123,10 @@ class SessionOrchestrator:
         rows: int = 24,
         cwd: str | None = None,
         branch: str | None = None,
+        identity: str = "system",
+        permission_mode: str = "interactive",
     ) -> SessionRecord:
-        """Pick an account, spawn a claude PTY, persist a DB row, return a SessionRecord.
+        """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
 
         Raises:
             AllAccountsBusy: when no account has headroom.
@@ -172,32 +170,17 @@ class SessionOrchestrator:
         # won't prompt for trust on startup.
         configdir.trust_project(account, cwd)
 
-        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(cfg_dir)}
-        argv = list(self._claude_bin)
-
-        await self._manager.spawn(
-            session_id=session_id,
-            argv=argv,
-            env=env,
-            cwd=cwd,
-            cols=cols,
-            rows=rows,
+        # Start a SessionDriver backed by the configured SDK factory.
+        driver = SessionDriver(
+            session_id, account, cwd, str(cfg_dir),
+            mode=permission_mode, sdk_factory=self._sdk_factory,
+            registry=self._registry, identity=identity,
         )
-
-        # Best-effort: grab the pid from the internal session
-        pid: int | None = None
-        _s = self._manager._sessions.get(session_id)  # type: ignore[attr-defined]
-        if _s is not None:
-            pid = _s.pid
-
-        # Capture claude_session_id (newest *.jsonl under cfg_dir/projects/**)
-        claude_session_id: str | None = _find_claude_session_id(cfg_dir, cwd)
-
-        # Write initial_prompt to PTY
+        await driver.start()
+        self._drivers[session_id] = driver
         if initial_prompt:
-            await self._manager.write_input(session_id, initial_prompt.encode())
-            if not initial_prompt.endswith("\n"):
-                await self._manager.write_input(session_id, b"\n")
+            self._last_prompt[session_id] = initial_prompt
+            await driver.send_prompt(initial_prompt)
 
         # Persist DB row
         async with db_session() as db:
@@ -205,10 +188,11 @@ class SessionOrchestrator:
                 id=session_id,
                 name=name,
                 account_name=account,
-                claude_session_id=claude_session_id,
-                status="working",
-                pid=pid,
+                claude_session_id=None,
+                status="working" if initial_prompt else "idle",
+                pid=None,
                 cwd=cwd,
+                permission_mode=permission_mode,
             )
             db.add(row)
 
@@ -216,18 +200,21 @@ class SessionOrchestrator:
             id=session_id,
             name=name,
             account=account,
-            claude_session_id=claude_session_id or "",
+            claude_session_id="",
             cols=cols,
             rows=rows,
             cwd=cwd,
         )
         self._records[session_id] = record
-        log.info("session.create id=%s account=%s pid=%s", session_id, account, pid)
+        log.info("session.create id=%s account=%s", session_id, account)
         return record
 
     async def close_session(self, session_id: str) -> None:
-        """Terminate the PTY, clean up the session worktree, mark the row ended."""
-        await self._manager.terminate(session_id)
+        """Stop the driver, clean up the session worktree, mark the row ended."""
+        driver = self._drivers.pop(session_id, None)
+        self._last_prompt.pop(session_id, None)
+        if driver is not None:
+            await driver.aclose()
         record = self._records.pop(session_id, None)
 
         # Remove the per-session worktree if we created one (or if the session's
@@ -307,16 +294,45 @@ class SessionOrchestrator:
             q.put_nowait(event)
 
     # ------------------------------------------------------------------
-    # Accessors for the WS bridge
+    # Accessors / delegating helpers for the WS bridge
     # ------------------------------------------------------------------
-
-    @property
-    def manager(self) -> SessionManager:
-        return self._manager
 
     @property
     def poller(self) -> UsagePoller:
         return self._poller
+
+    def driver(self, session_id: str) -> SessionDriver | None:
+        """Return the live SessionDriver for session_id, or None."""
+        return self._drivers.get(session_id)
+
+    def resolve_permission(self, session_id, perm_id, decision, identity) -> bool:
+        d = self._drivers.get(session_id)
+        return d.resolve_permission(perm_id, decision, identity) if d else False
+
+    async def send_prompt(self, session_id, text):
+        d = self._drivers.get(session_id)
+        if d:
+            self._last_prompt[session_id] = text
+            await d.send_prompt(text)
+
+    async def interrupt(self, session_id):
+        d = self._drivers.get(session_id)
+        if d:
+            await d.interrupt()
+
+    async def set_permission_mode(self, session_id, mode):
+        d = self._drivers.get(session_id)
+        if d:
+            await d.set_permission_mode(mode)
+
+    def transcript_path(self, session_id) -> str | None:
+        """<config_dir>/projects/<cwd-key>/<claude_session_id>.jsonl, or None if unknown."""
+        d = self._drivers.get(session_id)
+        if not d or not d.claude_session_id:
+            return None
+        cwd_key = d.cwd.lstrip("/").replace("/", "-")
+        p = Path(d.config_dir) / "projects" / cwd_key / f"{d.claude_session_id}.jsonl"
+        return str(p) if p.exists() else None
 
     # ------------------------------------------------------------------
     # Rotation monitor (background task)
@@ -339,7 +355,7 @@ class SessionOrchestrator:
                 for record in list(self._records.values()):
                     if record.account != account:
                         continue
-                    if not self._manager.is_running(record.id):
+                    if record.id not in self._drivers:
                         continue
                     log.info(
                         "rotation.trigger session=%s account=%s pct=%.1f",
@@ -357,25 +373,30 @@ class SessionOrchestrator:
             self._poller.unsubscribe(q)
 
     async def _do_rotate(self, record: SessionRecord) -> None:
-        """Execute rotation for a single session and update the DB row."""
-        claude_bin = self._claude_bin
-
-        def _claude_argv(claude_session_id: str, config_dir: str) -> list[str]:
-            argv = list(claude_bin)
-            if claude_session_id:
-                argv += ["--resume", claude_session_id]
-            return argv
-
-        deps = RotationDeps(
-            manager=self._manager,
-            select_account=select_account,
-            compose=compose,
-            claude_argv=_claude_argv,
-        )
+        """Rotate one session to a new account, resuming the claude session inline."""
+        old_driver = self._drivers.get(record.id)
+        if old_driver is None:
+            return
+        old = record.account
+        claude_sid = old_driver.claude_session_id
         try:
-            old_account = record.account
-            new_account = await rotate(record, deps)
-            # Update DB
+            await old_driver.interrupt()
+            await old_driver.aclose()
+            new_account = select_account(exclude=frozenset({old}))
+            cfg = compose(new_account)
+            configdir.trust_project(new_account, old_driver.cwd)
+            new_driver = SessionDriver(
+                record.id, new_account, old_driver.cwd, str(cfg),
+                mode=old_driver.mode, sdk_factory=self._sdk_factory,
+                registry=self._registry, identity=old_driver.identity,
+                resume=claude_sid,
+            )
+            await new_driver.start()
+            self._drivers[record.id] = new_driver
+            record.account = new_account
+            last = self._last_prompt.get(record.id)
+            if last:
+                await new_driver.send_prompt(last)
             async with db_session() as db:
                 from sqlalchemy import update as sa_update
                 await db.execute(
@@ -383,49 +404,13 @@ class SessionOrchestrator:
                     .where(DbSession.id == record.id)
                     .values(account_name=new_account)
                 )
-            log.info(
-                "rotation.complete session=%s %s→%s",
-                record.id, old_account, new_account,
-            )
-            # Publish rotation event to WS subscribers
+            log.info("rotation.complete session=%s %s→%s", record.id, old, new_account)
             self._publish_event({
-                "type": "rotated",
-                "sessionId": record.id,
-                "fromAccount": old_account,
-                "toAccount": new_account,
+                "type": "rotated", "sessionId": record.id, "fromAccount": old,
+                "toAccount": new_account, "reason": "session limit reached",
+                "turnRestarted": bool(last),
             })
         except AllAccountsBusy:
             log.warning("rotation.all_busy session=%s", record.id)
         except Exception:
             log.exception("rotation.error session=%s", record.id)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _find_claude_session_id(cfg_dir: Path, cwd: str) -> str | None:
-    """Best-effort: find the newest *.jsonl under cfg_dir/projects/** for cwd.
-
-    Returns the stem (filename without .jsonl) — that is the claude session id
-    used with --resume on rotation.  Returns None if not found (e.g. fake stub).
-    """
-    projects_dir = cfg_dir / "projects"
-    if not projects_dir.exists():
-        return None
-    # Encode cwd as a path segment the same way claude does: replace '/' with '-'
-    # and strip the leading separator.
-    cwd_key = cwd.lstrip("/").replace("/", "-")
-    candidate_dir = projects_dir / cwd_key
-    if candidate_dir.is_dir():
-        jsonl_files = sorted(candidate_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
-        if jsonl_files:
-            return jsonl_files[-1].stem
-    # Fallback: scan all subdirs
-    all_jsonl = sorted(
-        (p for p in projects_dir.rglob("*.jsonl")),
-        key=lambda p: p.stat().st_mtime,
-    )
-    if all_jsonl:
-        return all_jsonl[-1].stem
-    return None
