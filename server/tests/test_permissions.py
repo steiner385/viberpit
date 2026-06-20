@@ -18,6 +18,9 @@ def test_auto_mode_denylist_still_round_trips_bash():
         pid, fut = await reg.request("s1", "t1", "Bash", {"command": "ls"},
                                      mode="auto", denylist=PermissionRegistry.DANGEROUS,
                                      allowlist=True, identity="me")
+        assert pid is not None
+        reg.resolve(pid, "deny", "me")
+        await fut
         return pid
     assert asyncio.run(run()) is not None
 
@@ -75,3 +78,15 @@ def test_pending_lists_open_requests_for_session():
         return reg.pending("s1")
     p = asyncio.run(run())
     assert len(p) == 1 and p[0]["tool"] == "Edit" and "permId" in p[0]
+
+def test_bash_always_grant_does_not_cover_other_commands():
+    reg = PermissionRegistry()
+    async def run():
+        pid, fut = await reg.request("s1", "t1", "Bash", {"command": "npm test", "cwd": "/r"},
+                                     mode="interactive", denylist=PermissionRegistry.DANGEROUS,
+                                     allowlist=True, identity="me")
+        reg.resolve(pid, "always", "me"); await fut
+    asyncio.run(run())
+    now = time.time()
+    assert reg.is_granted("s1", "Bash", {"command": "npm test", "cwd": "/r"}, now) is True
+    assert reg.is_granted("s1", "Bash", {"command": "npm install evil", "cwd": "/r"}, now) is False

@@ -2,6 +2,12 @@ from __future__ import annotations
 import asyncio, time, uuid as _uuid
 
 class PermissionRegistry:
+    """
+    Lifecycle invariant: pending permission Futures are resolved to False ONLY by
+    resolve(...) or deny_all(session_id). Callers MUST call deny_all on WebSocket
+    disconnect, interrupt, and session close, or a tool's can_use_tool callback awaits
+    forever. There is intentionally no timeout (human-in-the-loop approval may take a while).
+    """
     DANGEROUS = frozenset({"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch"})
     GRANT_TTL = 3600  # seconds
 
@@ -12,15 +18,23 @@ class PermissionRegistry:
     @staticmethod
     def fingerprint(tool: str, input: dict) -> str:
         if tool == "Bash":
-            cmd = (input.get("command") or "").strip().split()
-            return f"Bash:{cmd[0] if cmd else ''}:{input.get('cwd', '')}"
+            cmd = " ".join((input.get("command") or "").split())   # full normalized command, not just argv[0]
+            return f"Bash:{cmd}:{input.get('cwd', '')}"
         if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
             return f"{tool}:{input.get('file_path') or input.get('notebook_path', '')}"
+        if tool in ("WebFetch", "WebSearch"):
+            return f"{tool}:{input.get('url') or input.get('query', '')}"
         return tool
 
     def is_granted(self, session_id, tool, input, now) -> bool:
-        exp = self._grants.get((session_id, self.fingerprint(tool, input)))
-        return exp is not None and exp > now
+        key = (session_id, self.fingerprint(tool, input))
+        exp = self._grants.get(key)
+        if exp is None:
+            return False
+        if exp <= now:
+            del self._grants[key]
+            return False
+        return True
 
     async def request(self, session_id, turn_id, tool, input, *, mode, denylist, allowlist, identity):
         now = time.time()
@@ -31,7 +45,7 @@ class PermissionRegistry:
         if mode in ("auto", "allowlist") and tool not in denylist:
             return None, _resolved(True)
         pid = _uuid.uuid4().hex
-        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
                               "tool": tool, "input": input, "turn_id": turn_id}
         return pid, fut
@@ -60,6 +74,6 @@ class PermissionRegistry:
                 rec["future"].set_result(False)
 
 def _resolved(value: bool):
-    fut = asyncio.get_event_loop().create_future()
+    fut = asyncio.get_running_loop().create_future()
     fut.set_result(value)
     return fut
