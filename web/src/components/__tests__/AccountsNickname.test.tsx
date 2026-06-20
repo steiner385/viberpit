@@ -211,8 +211,7 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
 
   it('renders without throwing when account.usage is null (needs-reauth)', () => {
     vi.mocked(hooks.useAccounts).mockReturnValue({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null as any, nickname: null })],
+      data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
@@ -222,8 +221,7 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
 
   it('does not render any UsageBadge when account.usage is null', () => {
     vi.mocked(hooks.useAccounts).mockReturnValue({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null as any, nickname: null })],
+      data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
@@ -237,8 +235,7 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
 
   it('still renders the account name when usage is null', () => {
     vi.mocked(hooks.useAccounts).mockReturnValue({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null as any, nickname: null })],
+      data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 

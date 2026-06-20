@@ -238,8 +238,7 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
     const nullUsageAccount: Account = {
       name: 'kindash',
       status: 'needs-relogin',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      usage: null as any,
+      usage: null,
       nickname: null,
     }
     const session: Session = {
@@ -270,8 +269,7 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
     const nullUsageAccount: Account = {
       name: 'kindash',
       status: 'needs-relogin',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      usage: null as any,
+      usage: null,
       nickname: null,
     }
     const session: Session = {

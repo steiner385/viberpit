@@ -11,7 +11,7 @@ export interface Account {
   usage: {
     session: UsageWindow
     weekly: UsageWindow
-  }
+  } | null
   nickname?: string | null
 }
 
