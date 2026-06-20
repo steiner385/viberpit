@@ -48,3 +48,15 @@ Open the tailnet URL on the phone.
 - Backend: `pytest` (API/WS via httpx + the fake-`claude` PTY stub drives scenarios 2–6, 8-data).
 - Frontend: `npm run test` (Vitest/RTL) + `npm run test:e2e` (Playwright, mobile viewport) for 1–8.
 - Scenario 3's real-claude path is also covered by a live smoke (Constitution Principle III).
+
+## T060 live-run validation log (2026-06-20)
+
+Ran the real server (`uvicorn server.app:app`) against the 3 real accounts.
+
+**Verified live (PASS):** server serves SPA+API; `GET /api/health` 200 and 401 without identity (auth gate live); `GET /api/accounts` 200 with usage shape and NO token material in the response (FR-023 live); `needs-reauth` surfaced gracefully (no crash).
+
+**Findings (Principle III):**
+1. Headless/service server has no keyring/D-Bus access → cannot decrypt via keyring. Set `CCSWITCH_MASTER_KEY` in the server env (Railway-ready path).
+2. Refresh-token rotation desync: Anthropic refresh tokens are single-use; concurrent refreshers (CLI + server) over a long session desynced the stored tokens → all three `needs-reauth`. Live session creation blocked until accounts are re-added (`ccswitch add`). Follow-up: serialize refresh + always persist the rotated token.
+
+**Not yet verified live:** create + stream a real claude session (blocked by #2; retry after re-add).
