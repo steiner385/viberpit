@@ -117,8 +117,20 @@ async def create_session(
             },
         )
 
-    # Validate account name — must exist in the local credential store.
+    # Validate account name — must be well-formed before any filesystem access,
+    # then must exist in the local credential store.
+    _ACCOUNT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
     if body.account is not None:
+        if not _ACCOUNT_RE.match(body.account):
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "error": {
+                        "code": "unknown_account",
+                        "message": f"account {body.account!r} not found",
+                    },
+                },
+            )
         from ccswitch import paths as _paths
         if not _paths.slot_path(body.account).exists():
             return JSONResponse(

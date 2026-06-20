@@ -118,20 +118,6 @@ def test_create_worktree_rejects_dash_branch():
 # ---------------------------------------------------------------------------
 
 
-def _make_test_app_and_client(extra_env: dict | None = None):
-    """Build a minimal test app+client with the lifespan context entered."""
-    from tests.helpers import temp_env as _temp_env, usage as _usage
-    from server.tests.fakes.fake_factory import fake_sdk_factory
-    from server.sessions.orchestrator import SessionOrchestrator
-    from server.app import create_app
-    from fastapi.testclient import TestClient
-
-    env = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}
-    if extra_env:
-        env.update(extra_env)
-    return env
-
-
 _IDENTITY = {"Tailscale-User-Login": "tester@example.com"}
 
 
@@ -216,6 +202,19 @@ def test_bogus_account_returns_400(api_client):
     resp = client.post(
         "/api/sessions",
         json={"name": "test", "account": "ghost-account-that-does-not-exist"},
+        headers=_IDENTITY,
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "unknown_account"
+
+
+def test_path_traversal_account_returns_400(api_client):
+    """POST /api/sessions with an account name containing path-traversal chars → 400."""
+    client, _store = api_client
+    resp = client.post(
+        "/api/sessions",
+        json={"account": "../../etc/hostname"},
         headers=_IDENTITY,
     )
     assert resp.status_code == 400, resp.text

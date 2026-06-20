@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from server import audit as _audit
 from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
@@ -215,22 +214,34 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                     await orchestrator.send_prompt(session_id, msg.get("text", ""))
                 elif msg_type == "interrupt":
                     await orchestrator.interrupt(session_id)
-                    async with db_session() as db:
-                        await record_audit(db, "session.interrupt", identity,
-                                           {"sessionId": session_id})
+                    try:
+                        async with db_session() as db:
+                            await record_audit(db, "session.interrupt", identity,
+                                               {"sessionId": session_id})
+                    except Exception:
+                        log.warning("ws.audit_failed event=%s session=%s",
+                                    "session.interrupt", session_id, exc_info=True)
                 elif msg_type == "permissionResponse":
                     decision = msg.get("decision", "")
                     perm_id = msg.get("permId", "")
                     orchestrator.resolve_permission(session_id, perm_id, decision, identity)
-                    async with db_session() as db:
-                        await record_audit(db, "permission." + decision, identity,
-                                           {"sessionId": session_id, "permId": perm_id})
+                    try:
+                        async with db_session() as db:
+                            await record_audit(db, "permission." + decision, identity,
+                                               {"sessionId": session_id, "permId": perm_id})
+                    except Exception:
+                        log.warning("ws.audit_failed event=%s session=%s",
+                                    "permission." + decision, session_id, exc_info=True)
                 elif msg_type == "setPermissionMode":
                     mode = msg.get("mode", "")
                     await orchestrator.set_permission_mode(session_id, mode)
-                    async with db_session() as db:
-                        await record_audit(db, "permission_mode.change", identity,
-                                           {"sessionId": session_id, "mode": mode})
+                    try:
+                        async with db_session() as db:
+                            await record_audit(db, "permission_mode.change", identity,
+                                               {"sessionId": session_id, "mode": mode})
+                    except Exception:
+                        log.warning("ws.audit_failed event=%s session=%s",
+                                    "permission_mode.change", session_id, exc_info=True)
                 elif msg_type == "answerQuestion":
                     # Accepted but not yet wired — a later task handles questions.
                     log.debug("ws.answerQuestion (no-op) session=%s", session_id)
