@@ -59,3 +59,7 @@ def shared_claude_json_path() -> Path:
 
 def account_cfg_dir(name: str) -> Path:
     return cfg_root() / name
+
+
+def reauth_tmp_dir() -> Path:
+    return root() / "reauth-tmp"
