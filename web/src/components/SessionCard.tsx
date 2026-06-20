@@ -58,6 +58,7 @@ export function SessionCard({ session, account, onOpen, onRename, onClose }: Ses
       {/* Main tappable area — opens the session */}
       <button
         type="button"
+        id={`row-${session.id}`}
         className={cn(
           'flex-1 min-w-0 text-left min-h-[44px] flex flex-col justify-center gap-1',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',

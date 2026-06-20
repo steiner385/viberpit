@@ -335,7 +335,12 @@ function AccountsStrip({ accounts, onRefresh, refreshingName }: AccountsStripPro
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-export function Dashboard() {
+interface DashboardProps {
+  /** Called when the user opens a session (navigates to Terminal view). */
+  onOpenSession?: (sessionId: string) => void
+}
+
+export function Dashboard({ onOpenSession }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
 
@@ -379,8 +384,9 @@ export function Dashboard() {
   }
 
   function handleOpen(id: string) {
-    // In a real app this would navigate to the session or open a terminal
-    console.info('Open session:', id)
+    if (onOpenSession) {
+      onOpenSession(id)
+    }
   }
 
   function handleRename(id: string) {
