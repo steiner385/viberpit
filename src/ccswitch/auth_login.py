@@ -23,7 +23,7 @@ def _reauth_root() -> Path:
 def _under_reauth_tmp(path: str) -> bool:
     """Check if path is under reauth-tmp and exists."""
     try:
-        return Path(path).resolve(strict=True).is_relative_to(_reauth_root().resolve())
+        return Path(path).resolve(strict=True).is_relative_to(paths.reauth_tmp_dir().resolve())
     except (OSError, ValueError):
         return False
 
@@ -46,12 +46,14 @@ def prepare_reauth_profile(source_profile_dir: str) -> str:
         raise FileNotFoundError(f"chrome profile Cookies not found: {src_cookies}")
 
     # Create temp dir under reauth-tmp with 0700 perms
-    temp = tempfile.mkdtemp(prefix="reauth-", dir=str(_reauth_root()))
+    old_umask = os.umask(0o077)
+    try:
+        temp = tempfile.mkdtemp(prefix="reauth-", dir=str(_reauth_root()))
+        default = Path(temp) / "Default"
+        default.mkdir()
+    finally:
+        os.umask(old_umask)
     os.chmod(temp, 0o700)
-
-    # Create Default subdirectory
-    default = Path(temp) / "Default"
-    default.mkdir()
     os.chmod(default, 0o700)
 
     # Copy Cookies database (0600)

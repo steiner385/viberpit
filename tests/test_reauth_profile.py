@@ -65,3 +65,10 @@ def test_cleanup_refuses_outside_reauth_tmp(tmp_path, monkeypatch):
     victim.mkdir()
     auth_login.cleanup_reauth_profile(str(victim))  # must be a no-op, NOT delete
     assert victim.exists()
+
+
+def test_cleanup_does_not_create_reauth_tmp(tmp_path, monkeypatch):
+    """Verify cleanup_reauth_profile guard has no mkdir side effect."""
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    auth_login.cleanup_reauth_profile(str(tmp_path / "whatever"))  # outside path
+    assert not paths.reauth_tmp_dir().exists()   # guard must not have created it
