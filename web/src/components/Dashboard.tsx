@@ -443,13 +443,20 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname }: AccountR
     })
   }
 
-  // When status becomes success, invalidate accounts list so UI refreshes
+  // When status reaches a terminal state, stop polling; also invalidate on success
   const prevStatusRef = useRef<string | undefined>(undefined)
   React.useEffect(() => {
-    if (reauthStatus?.state === 'success' && prevStatusRef.current !== 'success') {
+    const state = reauthStatus?.state
+    const isTerminal = state === 'success' || state === 'error' || state === 'timeout'
+    if (isTerminal) {
+      // Stop polling — disabling the query keeps last data in cache (gcTime default 5 min)
+      // so the success ✓ / error message stays visible after polling halts.
+      setReauthStarted(false)
+    }
+    if (state === 'success' && prevStatusRef.current !== 'success') {
       qc.invalidateQueries({ queryKey: QK.accounts })
     }
-    prevStatusRef.current = reauthStatus?.state
+    prevStatusRef.current = state
   }, [reauthStatus?.state, qc])
 
   function startEdit() {

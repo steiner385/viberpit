@@ -196,7 +196,7 @@ describe('AccountRow — Re-authenticate button', () => {
     })
   })
 
-  it('shows success indicator (✓) when status is success', async () => {
+  it('shows success indicator (✓) when status is success and invalidates accounts', async () => {
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
       isLoading: false,
@@ -206,10 +206,22 @@ describe('AccountRow — Re-authenticate button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useReauthStatus>)
 
-    render(<Dashboard />, { wrapper })
+    // Use a stable QueryClient so we can spy on invalidateQueries
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const spy = vi.spyOn(queryClient, 'invalidateQueries')
+    const localWrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    )
+
+    render(<Dashboard />, { wrapper: localWrapper })
 
     // Should show a success indicator with checkmark
     expect(screen.getByText(/✓/)).toBeInTheDocument()
+
+    // Should have invalidated the accounts query to refresh account status
+    await waitFor(() => {
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['accounts'] })
+    })
   })
 
   it('shows error message when status is error', async () => {
