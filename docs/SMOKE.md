@@ -12,6 +12,42 @@
    (add a fixture to `tests/test_detect.py` if the wording differs).
 6. Interactive: `ccmax` launches on the most-headroom account; confirm the session works.
 
+## Web app smoke
+
+A quick end-to-end check of the ccswitch web UI. Full scenario coverage is in
+`specs/001-ccswitch-web/quickstart.md`.
+
+### Prerequisites
+- At least two accounts registered (`ccswitch add alpha`, `ccswitch add beta`).
+- Backend running: `CCSWITCH_MASTER_KEY=... uvicorn server.app:app --host 127.0.0.1 --port 8787`
+- Web assets built: `cd web && npm run build` (or dev server: `npm run dev`).
+- Optionally: `tailscale serve https / http://127.0.0.1:8787` to reach from a phone.
+
+### Steps
+1. Open `http://127.0.0.1:8787` (or the Tailscale HTTPS URL).
+   - Verify: the Accounts strip shows `alpha` and `beta` with session/weekly usage percentages.
+   - Verify: no "All accounts at limit" banner (if one appears, confirm reset time is in local time).
+2. Click **New** → create a session (name optional, account "Auto-select").
+   - Verify: the session appears in the Sessions list with status **Working** or **Idle**.
+3. Click the session row to open the terminal.
+   - Verify: the xterm.js terminal renders the `claude` banner/prompt.
+   - Verify: the helper-key bar (Ctrl-C, Escape, etc.) is visible on mobile/narrow viewports.
+   - Type a short prompt; confirm output appears.
+4. Press **Back** (or navigate back) to return to the dashboard.
+   - Verify: keyboard focus returns to the session row.
+5. Open the overflow menu (⋯) for the session → **Rename** → save.
+   - Verify: the new name is reflected immediately in the list.
+6. Open the overflow menu → **Close** → confirm the session is removed from the list.
+7. With all accounts at limit (or all `limited` status): click **New**.
+   - Verify: the "All accounts at limit" banner appears with the earliest reset time.
+
+### Automated equivalents
+`cd web && npm run test` covers the management surfaces (T057 a11y tests included).
+`pytest server/tests/` covers the API/WS paths. See `specs/001-ccswitch-web/quickstart.md` for
+the full scenario matrix.
+
+---
+
 ## Accounts that sign in with Google ("Continue with Google")
 
 ccswitch works unchanged with Google-federated Claude accounts. Google is only the

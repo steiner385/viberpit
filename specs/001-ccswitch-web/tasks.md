@@ -109,12 +109,12 @@ against a running US1 backend.
 
 ## Phase 5: Polish & Cross-Cutting
 
-- [ ] T056 [P] README run/deploy guide (local + Tailscale) + update `docs/SMOKE.md`
-- [ ] T057 [P] Accessibility audit pass on management surfaces (axe/manual) against WCAG 2.1 AA
-- [ ] T058 [P] Performance/backpressure validation: terminal streaming under burst + mobile-link throttle (NFR-005)
+- [X] T056 [P] README run/deploy guide (local + Tailscale) + update `docs/SMOKE.md`
+- [X] T057 [P] Accessibility audit pass on management surfaces (axe/manual) against WCAG 2.1 AA
+- [X] T058 [P] Performance/backpressure validation: terminal streaming under burst + mobile-link throttle (NFR-005)
 - [X] T059 Security self-review: auth on every route+WS, secrets never logged, refresh tokens ciphertext at rest, audit coverage (Principle IV)
 - [ ] T060 Run `quickstart.md` validation scenarios 1–9 end-to-end; record results
-- [ ] T061 Finalize `Dockerfile` + env docs for the future Railway path (no public exposure yet)
+- [X] T061 Finalize `Dockerfile` + env docs for the future Railway path (no public exposure yet)
 
 ---
 

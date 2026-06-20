@@ -44,7 +44,7 @@ export function SessionList({
 }: SessionListProps) {
   if (isLoading) {
     return (
-      <div className="space-y-2" aria-label="Loading sessions" aria-busy="true">
+      <div className="space-y-2" role="status" aria-label="Loading sessions" aria-busy="true">
         <SkeletonCard />
         <SkeletonCard />
         <SkeletonCard />
