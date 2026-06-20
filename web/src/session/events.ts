@@ -14,14 +14,15 @@ export interface EvTitle         { type: 'title';         title: string; source:
 export interface EvStatus        { type: 'status';        state: string; count: number }
 export interface EvReplayComplete { type: 'replayComplete' }
 export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null }
+export interface EvQueueUpdate   { type: 'queueUpdate';   items: string[] }
 
 export type SessionEvent =
   | EvUser | EvTurnStart | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvQuestion
-  | EvTitle | EvStatus | EvReplayComplete | EvError
+  | EvTitle | EvStatus | EvReplayComplete | EvError | EvQueueUpdate
 
 // The set of `type` strings that are session events (used by the WS fan-out).
 export const SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   'user','turnStart','turnEnd','textDelta','thinkingDelta','toolCall','toolResult',
-  'permissionRequest','question','title','status','replayComplete','error',
+  'permissionRequest','question','title','status','replayComplete','error','queueUpdate',
 ])

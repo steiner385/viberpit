@@ -43,6 +43,7 @@ export function SessionView({ sessionId, onBack }: Props) {
     permissionResponse,
     answerQuestion,
     setPermissionMode,
+    cancelQueued,
   } = useSessionSocket()
 
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
@@ -235,6 +236,8 @@ export function SessionView({ sessionId, onBack }: Props) {
           onPrompt={handlePrompt}
           onInterrupt={handleInterrupt}
           onSetMode={handleSetMode}
+          queued={state.queued}
+          onCancelQueued={(i) => cancelQueued(sessionId, i)}
         />
       </div>
 

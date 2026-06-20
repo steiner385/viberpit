@@ -288,4 +288,21 @@ describe('transcriptReducer', () => {
     const next = transcriptReducer(s, { type: 'toolCall', turnId: 't1', toolId: 'tool-x', name: 'Edit', toolKind: 'edit', input: {} })
     expect(next).toBe(s)
   })
+
+  // ── queueUpdate ────────────────────────────────────────────────────────────
+
+  it('queueUpdate sets state.queued to the provided items', () => {
+    const s = transcriptReducer(initialTranscript, { type: 'queueUpdate', items: ['prompt one', 'prompt two'] })
+    expect(s.queued).toEqual(['prompt one', 'prompt two'])
+  })
+
+  it('queueUpdate with empty array clears state.queued', () => {
+    const withQueued = transcriptReducer(initialTranscript, { type: 'queueUpdate', items: ['x', 'y'] })
+    const cleared = transcriptReducer(withQueued, { type: 'queueUpdate', items: [] })
+    expect(cleared.queued).toEqual([])
+  })
+
+  it('initialTranscript has queued as empty array', () => {
+    expect(initialTranscript.queued).toEqual([])
+  })
 })

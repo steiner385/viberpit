@@ -22,6 +22,7 @@ export interface TranscriptState {
   title: string | null
   replaying: boolean            // true until replayComplete
   error: { code: string; message: string; resetsAt?: string | null } | null
+  queued: string[]              // texts of prompts waiting in the server-side queue
 }
 
 export const initialTranscript: TranscriptState = {
@@ -31,6 +32,7 @@ export const initialTranscript: TranscriptState = {
   title: null,
   replaying: true,
   error: null,
+  queued: [],
 }
 
 // ── Local (UI-only) synthetic actions ────────────────────────────────────────
@@ -276,6 +278,11 @@ export function transcriptReducer(
     // ── error ─────────────────────────────────────────────────────────────────
     case 'error': {
       return { ...state, error: { code: ev.code, message: ev.message, resetsAt: ev.resetsAt } }
+    }
+
+    // ── queueUpdate ───────────────────────────────────────────────────────────
+    case 'queueUpdate': {
+      return { ...state, queued: ev.items }
     }
 
     // ── Local synthetic actions ────────────────────────────────────────────────

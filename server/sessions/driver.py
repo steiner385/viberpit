@@ -74,6 +74,7 @@ class SessionDriver:
             log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
                       self.session_id, len(self._queue))
             await self._out.put(ev.Status(state="working", count=len(self._queue)))
+            await self._out.put(ev.QueueUpdate(list(self._queue)))
             return
         # C3 — auto-title: emit a Title event from the first prompt (first line, max 50 chars).
         if not self._titled:
@@ -105,6 +106,7 @@ class SessionDriver:
                 next_text = self._queue.pop(0)
                 log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
                           self.session_id, len(self._queue))
+                await self._out.put(ev.QueueUpdate(list(self._queue)))
                 await self._start_turn(next_text)
             else:
                 await self._out.put(ev.Status(state="idle", count=0))
@@ -113,13 +115,13 @@ class SessionDriver:
         """Return a snapshot of the queued prompts."""
         return list(self._queue)
 
-    def cancel_queued(self, index: int) -> bool:
+    async def cancel_queued(self, index: int) -> bool:
         """Cancel a queued prompt by index. Returns True if removed, False if index invalid."""
         if index < 0 or index >= len(self._queue):
             return False
         self._queue.pop(index)
-        # Emit updated status synchronously via put_nowait (non-blocking; out queue is unbounded)
-        self._out.put_nowait(ev.Status(state="working", count=len(self._queue)))
+        await self._out.put(ev.QueueUpdate(list(self._queue)))
+        await self._out.put(ev.Status(state="working", count=len(self._queue)))
         return True
 
     async def events(self):
@@ -135,6 +137,7 @@ class SessionDriver:
         self._queue.clear()
         if self._client:
             await self._client.interrupt()
+        await self._out.put(ev.QueueUpdate([]))
         await self._out.put(ev.Status(state="idle", count=0))
 
     async def set_permission_mode(self, mode: str):

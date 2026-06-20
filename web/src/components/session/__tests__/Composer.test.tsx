@@ -132,4 +132,44 @@ describe('Composer', () => {
     await user.keyboard('{Enter}')
     expect(onPrompt).not.toHaveBeenCalled()
   })
+
+  // ── Queued strip ────────────────────────────────────────────────────────────
+
+  it('renders cancel buttons for each queued item', () => {
+    render(
+      <Composer
+        {...defaults}
+        queued={['first queued prompt', 'second queued prompt']}
+        onCancelQueued={vi.fn()}
+      />
+    )
+    const cancelButtons = screen.getAllByRole('button', { name: /cancel queued prompt/i })
+    expect(cancelButtons).toHaveLength(2)
+  })
+
+  it('clicking cancel button calls onCancelQueued with correct index', async () => {
+    const user = userEvent.setup()
+    const onCancelQueued = vi.fn()
+    render(
+      <Composer
+        {...defaults}
+        queued={['first prompt', 'second prompt']}
+        onCancelQueued={onCancelQueued}
+      />
+    )
+    const cancelButtons = screen.getAllByRole('button', { name: /cancel queued prompt/i })
+    // Click the second cancel button (index 1)
+    await user.click(cancelButtons[1])
+    expect(onCancelQueued).toHaveBeenCalledWith(1)
+  })
+
+  it('does not render queued strip when queued is empty', () => {
+    render(<Composer {...defaults} queued={[]} onCancelQueued={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: /cancel queued prompt/i })).not.toBeInTheDocument()
+  })
+
+  it('does not render queued strip when queued prop is not provided', () => {
+    render(<Composer {...defaults} />)
+    expect(screen.queryByRole('button', { name: /cancel queued prompt/i })).not.toBeInTheDocument()
+  })
 })

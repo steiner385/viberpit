@@ -156,6 +156,10 @@ export class SessionSocket {
     this._send({ type: 'setPermissionMode', sessionId, mode })
   }
 
+  cancelQueued(sessionId: string, index: number) {
+    this._send({ type: 'cancelQueued', sessionId, index })
+  }
+
   // ── Event emitter ───────────────────────────────────────────────────────────
 
   on<K extends keyof EventMap>(event: K, cb: EventMap[K]) {
@@ -316,13 +320,14 @@ export function useSessionSocket() {
   const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') => socket.permissionResponse(sessionId, permId, decision), [socket])
   const answerQuestion      = useCallback((sessionId: string, questionId: string, selected: string[]) => socket.answerQuestion(sessionId, questionId, selected), [socket])
   const setPermissionMode   = useCallback((sessionId: string, mode: string) => socket.setPermissionMode(sessionId, mode), [socket])
+  const cancelQueued        = useCallback((sessionId: string, index: number) => socket.cancelQueued(sessionId, index), [socket])
 
   const on  = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.on(event, cb), [socket])
   const off = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.off(event, cb), [socket])
 
   return {
     attach, detach, interrupt,
-    prompt, sendInterrupt, permissionResponse, answerQuestion, setPermissionMode,
+    prompt, sendInterrupt, permissionResponse, answerQuestion, setPermissionMode, cancelQueued,
     on, off,
     connectionState,
     socket,

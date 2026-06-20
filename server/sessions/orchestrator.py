@@ -325,6 +325,12 @@ class SessionOrchestrator:
         if d:
             await d.set_permission_mode(mode)
 
+    async def cancel_queued(self, session_id, index: int) -> bool:
+        d = self._drivers.get(session_id)
+        if d:
+            return await d.cancel_queued(index)
+        return False
+
     def transcript_path(self, session_id) -> str | None:
         """<config_dir>/projects/<cwd-key>/<claude_session_id>.jsonl, or None if unknown."""
         d = self._drivers.get(session_id)

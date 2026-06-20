@@ -1,7 +1,7 @@
 import asyncio
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
-from server.sessions.events import TurnStart, TextDelta, TurnEnd, Status, Title
+from server.sessions.events import TurnStart, TextDelta, TurnEnd, Status, Title, QueueUpdate
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
 from claude_agent_sdk import TextBlock
@@ -311,4 +311,137 @@ def test_askuserquestion_auto_allows_without_permission_card():
         res = await d._can_use_tool("AskUserQuestion", {"questions": [{"question": "x", "options": []}]})
         assert isinstance(res, PermissionResultAllow)
         assert d._out.empty()   # no PermissionRequest emitted
+    asyncio.run(run())
+
+
+# ── QueueUpdate event + cancel_queued ─────────────────────────────────────────
+
+def test_queue_update_emitted_when_enqueuing():
+    """Enqueuing two prompts while busy should emit QueueUpdate events with the queue contents."""
+
+    class SlowFakeSDK:
+        def __init__(self):
+            self.queries: list[str] = []
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): self.queries.append(prompt)
+        async def receive_response(self):
+            await asyncio.sleep(0.1)
+            yield f.result(uuid="t1")
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    sdk = SlowFakeSDK()
+
+    def factory(cwd, cfg, can_use_tool, mode, resume):
+        return sdk
+
+    async def run():
+        d = SessionDriver("qu1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        await d.send_prompt("first")          # starts immediately (no QueueUpdate)
+        await d.send_prompt("second")         # enqueued → QueueUpdate(["second"])
+        await d.send_prompt("third")          # enqueued → QueueUpdate(["second","third"])
+
+        # Drain what's in _out right now (non-blocking)
+        events = []
+        while not d._out.empty():
+            events.append(d._out.get_nowait())
+
+        await d.aclose()
+        return events
+
+    events = asyncio.run(run())
+    queue_updates = [e for e in events if isinstance(e, QueueUpdate)]
+    # Two enqueue operations → two QueueUpdate events
+    assert len(queue_updates) == 2
+    assert queue_updates[0].items == ["second"]
+    assert queue_updates[1].items == ["second", "third"]
+
+
+def test_cancel_queued_removes_item_and_emits_queue_update():
+    """cancel_queued(0) removes the first queued item and emits a QueueUpdate + Status."""
+
+    class SlowFakeSDK:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): pass
+        async def receive_response(self):
+            await asyncio.sleep(0.2)
+            yield f.result(uuid="t1")
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    def factory(cwd, cfg, can_use_tool, mode, resume):
+        return SlowFakeSDK()
+
+    async def run():
+        d = SessionDriver("qc1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        await d.send_prompt("first")     # running
+        await d.send_prompt("second")    # queued[0]
+        await d.send_prompt("third")     # queued[1]
+        assert d.queued() == ["second", "third"]
+
+        # Drain enqueue events emitted so far
+        while not d._out.empty():
+            d._out.get_nowait()
+
+        result = await d.cancel_queued(0)
+        assert result is True
+        assert d.queued() == ["third"]
+
+        # The QueueUpdate and Status should have been emitted
+        events = []
+        while not d._out.empty():
+            events.append(d._out.get_nowait())
+
+        queue_updates = [e for e in events if isinstance(e, QueueUpdate)]
+        statuses = [e for e in events if isinstance(e, Status)]
+        assert len(queue_updates) == 1
+        assert queue_updates[0].items == ["third"]
+        assert any(s.count == 1 for s in statuses)
+
+        await d.aclose()
+
+    asyncio.run(run())
+
+
+def test_cancel_queued_out_of_range_returns_false():
+    """cancel_queued with an out-of-range index returns False without emitting events."""
+
+    class SlowFakeSDK:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): pass
+        async def receive_response(self):
+            await asyncio.sleep(0.2)
+            yield f.result(uuid="t1")
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    def factory(cwd, cfg, can_use_tool, mode, resume):
+        return SlowFakeSDK()
+
+    async def run():
+        d = SessionDriver("qc2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        await d.send_prompt("first")
+        await d.send_prompt("second")
+        # Drain setup events
+        while not d._out.empty():
+            d._out.get_nowait()
+
+        result_neg = await d.cancel_queued(-1)
+        result_oob = await d.cancel_queued(5)
+        assert result_neg is False
+        assert result_oob is False
+        # No events emitted for invalid indices
+        assert d._out.empty()
+
+        await d.aclose()
+
     asyncio.run(run())

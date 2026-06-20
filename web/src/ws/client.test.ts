@@ -288,4 +288,17 @@ describe('SessionSocket', () => {
     expect(handler).toHaveBeenCalledOnce()
     expect(handler).toHaveBeenCalledWith({ type: 'title', title: 'My Session', source: 'auto' })
   })
+
+  // ── Outbound: cancelQueued ────────────────────────────────────────────────
+
+  it('socket.cancelQueued("s", 2) sends {type:"cancelQueued",sessionId:"s",index:2}', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+
+    sock.cancelQueued('s', 2)
+
+    const sent = parseSent(lastSock(), 0)
+    expect(sent).toEqual({ type: 'cancelQueued', sessionId: 's', index: 2 })
+  })
 })

@@ -7,9 +7,11 @@ interface Props {
   onPrompt: (text: string) => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
+  queued?: string[]
+  onCancelQueued?: (index: number) => void
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode }: Props) {
+export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued }: Props) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isWorking = status.state === 'working'
@@ -51,6 +53,35 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode }: Pro
       'border-t border-gray-200 dark:border-gray-700',
       'bg-white dark:bg-gray-900',
     )}>
+      {/* Queued strip — shown only when there are queued items */}
+      {queued && queued.length > 0 && (
+        <div className="flex flex-col gap-1">
+          {queued.map((item, index) => (
+            <div
+              key={index}
+              className={cn(
+                'flex items-center justify-between gap-2 px-2 py-1 rounded',
+                'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-xs',
+              )}
+            >
+              <span className="truncate flex-1">{item.length > 80 ? item.slice(0, 80) + '…' : item}</span>
+              <button
+                type="button"
+                aria-label="Cancel queued prompt"
+                onClick={() => onCancelQueued?.(index)}
+                className={cn(
+                  'flex-shrink-0 flex items-center justify-center min-h-[44px] min-w-[44px]',
+                  'text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+                )}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="flex items-end gap-2">
         <textarea
           ref={textareaRef}

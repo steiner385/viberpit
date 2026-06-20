@@ -245,6 +245,10 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 elif msg_type == "answerQuestion":
                     # Accepted but not yet wired — a later task handles questions.
                     log.debug("ws.answerQuestion (no-op) session=%s", session_id)
+                elif msg_type == "cancelQueued":
+                    index = msg.get("index")
+                    if isinstance(index, int):
+                        await orchestrator.cancel_queued(session_id, index)
                 else:
                     await _send({"type": "error", "code": "UNKNOWN_TYPE",
                                  "message": f"Unknown message type: {msg_type!r}"})
