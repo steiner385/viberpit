@@ -99,7 +99,8 @@ describe('SessionSocket', () => {
     sock.input('session-1', 'hello\n')
 
     const sent = parseSent(lastSock(), 0)
-    expect(sent).toEqual({ type: 'input', sessionId: 'session-1', data: 'hello\n' })
+    // input is base64-encoded on the wire (symmetric with the server's base64 output)
+    expect(sent).toEqual({ type: 'input', sessionId: 'session-1', data: btoa('hello\n') })
   })
 
   it('serializes resize message correctly', () => {

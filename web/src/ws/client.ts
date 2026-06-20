@@ -137,7 +137,13 @@ export class SessionSocket {
   }
 
   input(sessionId: string, data: string) {
-    this._send({ type: 'input', sessionId, data })
+    // Base64-encode keystrokes (symmetric with the server's base64 output) so
+    // arbitrary bytes — and plain text that happens to look like base64 — are
+    // delivered verbatim. Encode as UTF-8 first to handle multibyte input.
+    const bytes = new TextEncoder().encode(data)
+    let bin = ''
+    for (const b of bytes) bin += String.fromCharCode(b)
+    this._send({ type: 'input', sessionId, data: btoa(bin) })
   }
 
   resize(sessionId: string, cols: number, rows: number) {

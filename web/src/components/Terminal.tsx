@@ -108,9 +108,12 @@ export function Terminal({ sessionId, onBack }: TerminalProps) {
   useEffect(() => {
     const handler = (msg: WsOutputMsg) => {
       if (msg.sessionId !== sessionId) return
-      xtermRef.current?.write(msg.data)
-      // Accumulate for aria-live mirror (split on newlines, keep plain text)
-      const plain = msg.data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\r/g, '')
+      // The server base64-encodes raw PTY bytes (JSON can't carry binary). Decode
+      // to bytes and write those to xterm; decode to text for the aria-live mirror.
+      const bytes = Uint8Array.from(atob(msg.data), (c) => c.charCodeAt(0))
+      xtermRef.current?.write(bytes)
+      const text = new TextDecoder().decode(bytes)
+      const plain = text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\r/g, '')
       const newLines = plain.split('\n')
       outputLinesRef.current = [...outputLinesRef.current, ...newLines].slice(-500)
       flushAriaLive()
