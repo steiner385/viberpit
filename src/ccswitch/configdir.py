@@ -118,6 +118,26 @@ def compose_claude_json(name: str) -> dict:
     return base
 
 
+def trust_project(name: str, cwd: str) -> None:
+    """Idempotently mark a project directory as trusted in the per-account .claude.json.
+
+    Sets hasTrustDialogAccepted and hasCompletedProjectOnboarding so interactive
+    claude sessions don't prompt the user for trust on startup.
+    """
+    claude_json_path = paths.account_cfg_dir(name) / CLAUDE_JSON_NAME
+    data: dict = read_json(claude_json_path) if claude_json_path.exists() else {}
+    abs_cwd = os.path.abspath(cwd)
+    projects: dict = data.setdefault("projects", {})
+    existing_entry: dict = projects.get(abs_cwd, {})
+    projects[abs_cwd] = {
+        **existing_entry,
+        "hasTrustDialogAccepted": True,
+        "hasCompletedProjectOnboarding": True,
+        "allowedTools": existing_entry.get("allowedTools", []),
+    }
+    write_json_secure(claude_json_path, data)
+
+
 def compose(name: str) -> Path:
     """Reconcile links and write the composed .credentials.json + .claude.json.
 

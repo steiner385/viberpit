@@ -6,6 +6,9 @@ import type { Account, Session } from './types'
 export const QK = {
   accounts: ['accounts'] as const,
   sessions: ['sessions'] as const,
+  config: ['config'] as const,
+  repos: (root?: string) => ['repos', root] as const,
+  branches: (path?: string) => ['branches', path] as const,
 }
 
 export function useAccounts() {
@@ -26,10 +29,53 @@ export function useSessions() {
   })
 }
 
+export interface RepoInfo {
+  name: string
+  path: string
+  currentBranch: string | null
+}
+
+export interface BranchInfo {
+  current: string | null
+  branches: string[]
+}
+
+export interface ConfigInfo {
+  repoRoot: string
+}
+
+export function useConfig() {
+  return useQuery<ConfigInfo>({
+    queryKey: QK.config,
+    queryFn: () => api.get<ConfigInfo>('/config'),
+    staleTime: 60_000,
+  })
+}
+
+export function useRepos(root?: string) {
+  return useQuery<RepoInfo[]>({
+    queryKey: QK.repos(root),
+    queryFn: () => api.get<RepoInfo[]>(`/repos${root ? `?root=${encodeURIComponent(root)}` : ''}`),
+    enabled: true,
+    staleTime: 10_000,
+  })
+}
+
+export function useBranches(repoPath?: string) {
+  return useQuery<BranchInfo>({
+    queryKey: QK.branches(repoPath),
+    queryFn: () => api.get<BranchInfo>(`/repos/branches?path=${encodeURIComponent(repoPath!)}`),
+    enabled: !!repoPath,
+    staleTime: 10_000,
+  })
+}
+
 export interface CreateSessionInput {
   name?: string
   account?: string
   initialPrompt?: string
+  cwd?: string
+  branch?: string
 }
 
 export function useCreateSession() {

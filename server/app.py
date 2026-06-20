@@ -15,6 +15,8 @@ from server.sessions.orchestrator import SessionOrchestrator
 from server.api.sessions import router as sessions_router
 from server.api.accounts import router as accounts_router
 from server.api.auth import router as auth_router
+from server.api.config import router as config_router
+from server.api.repos import router as repos_router
 
 
 @asynccontextmanager
@@ -67,6 +69,8 @@ def create_app(orchestrator: SessionOrchestrator | None = None) -> FastAPI:
     app.include_router(sessions_router)
     app.include_router(accounts_router)
     app.include_router(auth_router)
+    app.include_router(config_router)
+    app.include_router(repos_router)
 
     # WebSocket bridge
     ws_router = build_ws_router(orchestrator)

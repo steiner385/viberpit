@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from server.auth.middleware import current_identity
 from server.audit import record_audit
 from server.db import get_db
-from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.orchestrator import SessionOrchestrator, BranchSwitchError
 from server.sessions.selection import AllAccountsBusy
 
 log = logging.getLogger(__name__)
@@ -38,6 +38,8 @@ class CreateSessionRequest(BaseModel):
     name: str | None = None
     account: str | None = None
     initialPrompt: str | None = None
+    cwd: str | None = None
+    branch: str | None = None
 
 
 class RenameSessionRequest(BaseModel):
@@ -95,6 +97,28 @@ async def create_session(
             name=name,
             account=body.account,
             initial_prompt=body.initialPrompt,
+            cwd=body.cwd,
+            branch=body.branch,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "error": {
+                    "code": "invalid_cwd",
+                    "message": str(exc),
+                },
+            },
+        )
+    except BranchSwitchError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": {
+                    "code": "branch_switch_failed",
+                    "message": str(exc),
+                },
+            },
         )
     except AllAccountsBusy as exc:
         earliest = exc.earliest_reset

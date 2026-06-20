@@ -14,10 +14,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Callable
 
+from ccswitch import configdir
 from ccswitch.configdir import compose
 from server.db import db_session
 from server.db.models import Session as DbSession
@@ -28,6 +30,11 @@ from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
 
 log = logging.getLogger(__name__)
+
+
+class BranchSwitchError(Exception):
+    """Raised when a git branch checkout fails."""
+
 
 # Default: use load_config().claude_bin, overridden in tests
 _DEFAULT_CLAUDE_BIN: str = "claude"
@@ -108,12 +115,43 @@ class SessionOrchestrator:
         cols: int = 80,
         rows: int = 24,
         cwd: str | None = None,
+        branch: str | None = None,
     ) -> SessionRecord:
         """Pick an account, spawn a claude PTY, persist a DB row, return a SessionRecord.
 
         Raises:
             AllAccountsBusy: when no account has headroom.
+            ValueError: when cwd is given but does not exist.
+            BranchSwitchError: when branch checkout fails.
         """
+        # Resolve cwd: if given, it MUST be an existing directory
+        if cwd is not None:
+            if not os.path.isdir(cwd):
+                raise ValueError(f"cwd does not exist: {cwd}")
+        else:
+            cwd = self._work_dir
+
+        # Branch switch: only if cwd is a git repo and branch differs from current
+        if branch is not None and cwd is not None:
+            current_result = subprocess.run(
+                ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+            )
+            if current_result.returncode == 0:
+                current_branch = current_result.stdout.strip()
+                if current_branch != branch:
+                    checkout_result = subprocess.run(
+                        ["git", "-C", cwd, "checkout", branch],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if checkout_result.returncode != 0:
+                        raise BranchSwitchError(
+                            f"could not switch branch: {checkout_result.stderr.strip()}"
+                        )
+            # If returncode != 0, not a git repo — skip checkout silently
+
         if account is None:
             account = select_account()
         else:
@@ -121,8 +159,11 @@ class SessionOrchestrator:
             pass
 
         cfg_dir: Path = compose(account)
+
+        # Pre-trust the project directory so claude won't prompt for trust
+        configdir.trust_project(account, cwd)
+
         session_id = str(uuid.uuid4())
-        cwd = cwd or self._work_dir
 
         env = {**os.environ, "CLAUDE_CONFIG_DIR": str(cfg_dir)}
         argv = list(self._claude_bin)

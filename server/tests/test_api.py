@@ -605,7 +605,8 @@ def test_auth_identity_no_tailscale_header_no_client_host():
 
 
 def test_whois_identity_parses_login_line():
-    """_whois_identity returns the Login line from tailscale whois output (covers lines 60-66)."""
+    """_whois_identity returns UserProfile.LoginName from `tailscale whois --json`."""
+    import json
     from unittest.mock import MagicMock, patch
     from server.auth.identity import _whois_identity
 
@@ -615,7 +616,7 @@ def test_whois_identity_parses_login_line():
 
     mock_result = MagicMock()
     mock_result.returncode = 0
-    mock_result.stdout = "Login: whoisuser@example.com\nSomethingElse: foo"
+    mock_result.stdout = json.dumps({"UserProfile": {"LoginName": "whoisuser@example.com"}})
 
     with patch("subprocess.run", return_value=mock_result):
         identity = _whois_identity(mock_request)

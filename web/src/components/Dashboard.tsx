@@ -13,6 +13,9 @@ import {
   useRenameSession,
   useCloseSession,
   useRefreshAccount,
+  useConfig,
+  useRepos,
+  useBranches,
   type CreateSessionInput,
 } from '@/api/hooks'
 import type { Account } from '@/api/types'
@@ -24,26 +27,53 @@ interface NewSessionDialogProps {
   onClose: () => void
   onSubmit: (input: CreateSessionInput) => void
   isPending: boolean
+  externalError?: string | null
 }
 
-function NewSessionDialog({ accounts, onClose, onSubmit, isPending }: NewSessionDialogProps) {
+function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalError }: NewSessionDialogProps) {
   const [name, setName] = useState('')
   const [account, setAccount] = useState('')
   const [initialPrompt, setInitialPrompt] = useState('')
+  const [inlineError, setInlineError] = useState<string | null>(null)
   const firstInputRef = useRef<HTMLInputElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
+
+  // Repo/branch picker state
+  const { data: configData } = useConfig()
+  const [rootInput, setRootInput] = useState('')
+  const [selectedRepoPath, setSelectedRepoPath] = useState('')
+  const [selectedBranch, setSelectedBranch] = useState('')
+
+  // Prefill root once config loads
+  React.useEffect(() => {
+    if (configData?.repoRoot && !rootInput) {
+      setRootInput(configData.repoRoot)
+    }
+  }, [configData?.repoRoot])
+
+  const reposQuery = useRepos(rootInput || undefined)
+  const branchesQuery = useBranches(selectedRepoPath || undefined)
+
+  // When branches load, default to current branch
+  React.useEffect(() => {
+    if (branchesQuery.data?.current && !selectedBranch) {
+      setSelectedBranch(branchesQuery.data.current)
+    }
+  }, [branchesQuery.data?.current])
+
+  // Reset branch when repo changes
+  function handleRepoChange(path: string) {
+    setSelectedRepoPath(path)
+    setSelectedBranch('')
+  }
 
   React.useEffect(() => {
     firstInputRef.current?.focus()
   }, [])
 
-  // Trap focus within dialog
   React.useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        onClose()
-        return
-      }
+      if (e.key === 'Escape') { onClose(); return }
       if (e.key === 'Tab') {
         const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
           'button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
@@ -52,15 +82,9 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending }: NewSession
         const first = focusable[0]
         const last = focusable[focusable.length - 1]
         if (e.shiftKey) {
-          if (document.activeElement === first) {
-            e.preventDefault()
-            last.focus()
-          }
+          if (document.activeElement === first) { e.preventDefault(); last.focus() }
         } else {
-          if (document.activeElement === last) {
-            e.preventDefault()
-            first.focus()
-          }
+          if (document.activeElement === last) { e.preventDefault(); first.focus() }
         }
       }
     }
@@ -70,12 +94,23 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending }: NewSession
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    setInlineError(null)
     onSubmit({
       name: name.trim() || undefined,
       account: account || undefined,
       initialPrompt: initialPrompt.trim() || undefined,
+      cwd: selectedRepoPath || undefined,
+      branch: selectedBranch || undefined,
     })
   }
+
+  const inputClass = cn(
+    'w-full rounded-md border border-gray-300 dark:border-gray-600',
+    'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
+    'px-3 py-2 text-sm min-h-[44px]',
+    'focus:outline-none focus:ring-2 focus:ring-blue-500',
+    'placeholder:text-gray-400 dark:placeholder:text-gray-500',
+  )
 
   return (
     <div
@@ -92,22 +127,17 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending }: NewSession
           'bg-white dark:bg-gray-800',
           'border border-gray-200 dark:border-gray-600',
           'shadow-xl p-6 space-y-4',
+          'max-h-[90vh] overflow-y-auto',
         )}
       >
-        <h2
-          id="new-session-dialog-title"
-          className="text-lg font-semibold text-gray-900 dark:text-gray-100"
-        >
+        <h2 id="new-session-dialog-title" className="text-lg font-semibold text-gray-900 dark:text-gray-100">
           New Session
         </h2>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Name */}
           <div className="space-y-1">
-            <label
-              htmlFor="new-session-name"
-              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
-            >
+            <label htmlFor="new-session-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Name <span className="text-gray-400">(optional)</span>
             </label>
             <input
@@ -117,50 +147,88 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending }: NewSession
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="My session"
-              className={cn(
-                'w-full rounded-md border border-gray-300 dark:border-gray-600',
-                'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
-                'px-3 py-2 text-sm min-h-[44px]',
-                'focus:outline-none focus:ring-2 focus:ring-blue-500',
-                'placeholder:text-gray-400 dark:placeholder:text-gray-500',
-              )}
+              className={inputClass}
             />
+          </div>
+
+          {/* Repo root */}
+          <div className="space-y-1">
+            <label htmlFor="new-session-root" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Repo root <span className="text-gray-400">(optional)</span>
+            </label>
+            <input
+              id="new-session-root"
+              type="text"
+              value={rootInput}
+              onChange={(e) => { setRootInput(e.target.value); setSelectedRepoPath(''); setSelectedBranch('') }}
+              placeholder="/home/user/GitHub"
+              className={inputClass}
+            />
+          </div>
+
+          {/* Repository */}
+          <div className="space-y-1">
+            <label htmlFor="new-session-repo" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Repository <span className="text-gray-400">(optional)</span>
+            </label>
+            <select
+              id="new-session-repo"
+              value={selectedRepoPath}
+              onChange={(e) => handleRepoChange(e.target.value)}
+              className={inputClass}
+              disabled={reposQuery.isLoading}
+              aria-busy={reposQuery.isLoading}
+            >
+              <option value="">{reposQuery.isLoading ? 'Loading…' : '— select repo —'}</option>
+              {(reposQuery.data ?? []).map((repo) => (
+                <option key={repo.path} value={repo.path}>
+                  {repo.name}{repo.currentBranch ? ` (${repo.currentBranch})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Branch */}
+          <div className="space-y-1">
+            <label htmlFor="new-session-branch" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Branch <span className="text-gray-400">(optional)</span>
+            </label>
+            <select
+              id="new-session-branch"
+              value={selectedBranch}
+              onChange={(e) => setSelectedBranch(e.target.value)}
+              className={cn(inputClass, !selectedRepoPath && 'opacity-50')}
+              disabled={!selectedRepoPath || branchesQuery.isLoading}
+              aria-busy={branchesQuery.isLoading}
+            >
+              <option value="">{branchesQuery.isLoading ? 'Loading…' : '— default —'}</option>
+              {(branchesQuery.data?.branches ?? []).map((b) => (
+                <option key={b} value={b}>{b}</option>
+              ))}
+            </select>
           </div>
 
           {/* Account */}
           <div className="space-y-1">
-            <label
-              htmlFor="new-session-account"
-              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
-            >
+            <label htmlFor="new-session-account" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Account <span className="text-gray-400">(optional)</span>
             </label>
             <select
               id="new-session-account"
               value={account}
               onChange={(e) => setAccount(e.target.value)}
-              className={cn(
-                'w-full rounded-md border border-gray-300 dark:border-gray-600',
-                'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
-                'px-3 py-2 text-sm min-h-[44px]',
-                'focus:outline-none focus:ring-2 focus:ring-blue-500',
-              )}
+              className={inputClass}
             >
               <option value="">Auto-select</option>
               {accounts.map((a) => (
-                <option key={a.name} value={a.name}>
-                  {a.name}
-                </option>
+                <option key={a.name} value={a.name}>{a.name}</option>
               ))}
             </select>
           </div>
 
           {/* Initial prompt */}
           <div className="space-y-1">
-            <label
-              htmlFor="new-session-prompt"
-              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
-            >
+            <label htmlFor="new-session-prompt" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Initial prompt <span className="text-gray-400">(optional)</span>
             </label>
             <textarea
@@ -179,10 +247,12 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending }: NewSession
             />
           </div>
 
+          {(inlineError || externalError) && (
+            <p role="alert" className="text-sm text-red-600 dark:text-red-400">{inlineError ?? externalError}</p>
+          )}
+
           <div className="flex gap-3 justify-end pt-2">
-            <Button type="button" variant="outline" onClick={onClose} disabled={isPending}>
-              Cancel
-            </Button>
+            <Button type="button" variant="outline" onClick={onClose} disabled={isPending}>Cancel</Button>
             <Button type="submit" disabled={isPending} className="min-h-[44px]">
               {isPending ? 'Creating…' : 'Create'}
             </Button>
@@ -353,6 +423,7 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
   const [allLimitedReset, setAllLimitedReset] = useState<string | null | undefined>(undefined)
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null)
+  const [branchError, setBranchError] = useState<string | null>(null)
 
   const newButtonRef = useRef<HTMLButtonElement>(null)
 
@@ -363,6 +434,7 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
 
   function closeNewDialog() {
     setShowNewDialog(false)
+    setBranchError(null)
     // Return focus to the button that opened the dialog
     newButtonRef.current?.focus()
   }
@@ -375,9 +447,14 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
       },
       onError: (err) => {
         if (err.status === 409) {
-          const reset = (err.body as { earliestReset?: string | null }).earliestReset ?? null
-          setAllLimitedReset(reset)
-          setShowNewDialog(false)
+          const body = err.body as { error?: { code?: string; message?: string }; earliestReset?: string | null }
+          if (body?.error?.code === 'branch_switch_failed') {
+            setBranchError(body.error.message ?? 'Could not switch branch')
+          } else {
+            const reset = body.earliestReset ?? null
+            setAllLimitedReset(reset)
+            setShowNewDialog(false)
+          }
         }
       },
     })
@@ -468,6 +545,7 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
           onClose={closeNewDialog}
           onSubmit={handleCreateSubmit}
           isPending={createSession.isPending}
+          externalError={branchError}
         />
       )}
 
