@@ -1,7 +1,6 @@
 /**
  * Tests for App.tsx view-state machine.
  *
- * xterm is mocked so it's never instantiated in jsdom.
  * The backend API is mocked so no real fetches occur.
  */
 
@@ -12,33 +11,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import App from './App'
 import type { Session, Account } from './api/types'
 
-// ── Mock @xterm/xterm and @xterm/addon-fit ────────────────────────────────────
-// These import a DOM-incompatible canvas renderer that crashes in jsdom.
-// We mock them as ES module factories so dynamic import() returns the mock.
-
-vi.mock('@xterm/xterm', () => {
-  function MockTerminal() {
-    return {
-      loadAddon: vi.fn(),
-      open: vi.fn(),
-      focus: vi.fn(),
-      write: vi.fn(),
-      dispose: vi.fn(),
-      onData: vi.fn(),
-      cols: 80,
-      rows: 24,
-    }
-  }
-  return { Terminal: MockTerminal }
-})
-
-vi.mock('@xterm/addon-fit', () => {
-  function MockFitAddon() {
-    return { fit: vi.fn() }
-  }
-  return { FitAddon: MockFitAddon }
-})
-
 // ── Mock the WebSocket singleton ──────────────────────────────────────────────
 
 vi.mock('./ws/client', async (importOriginal) => {
@@ -48,8 +20,6 @@ vi.mock('./ws/client', async (importOriginal) => {
     useSessionSocket: () => ({
       attach: vi.fn(),
       detach: vi.fn(),
-      input: vi.fn(),
-      resize: vi.fn(),
       interrupt: vi.fn(),
       prompt: vi.fn(),
       sendInterrupt: vi.fn(),

@@ -36,8 +36,6 @@ const mockOn = vi.fn().mockImplementation((event: string, cb: (...args: unknown[
 const stableMockSocket = {
   attach: mockAttach,
   detach: mockDetach,
-  input: vi.fn(),
-  resize: vi.fn(),
   interrupt: vi.fn(),
   prompt: mockPrompt,
   sendInterrupt: mockSendInterrupt,

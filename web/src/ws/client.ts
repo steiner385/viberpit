@@ -3,7 +3,7 @@
  * and control/event messages across all sessions (R7).
  *
  * Reconnect: on close/error, exponential backoff (500ms → 10s, jittered).
- * On reopen, re-sends `attach` for the active session so the server replays scrollback (SC-008).
+ * On reopen, re-sends `attach` for the active session so the server replays session history (SC-008).
  */
 
 import type { QueryClient } from '@tanstack/react-query'
@@ -14,34 +14,25 @@ import { SESSION_EVENT_TYPES } from '@/session/events'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
-export interface WsOutputMsg       { type: 'output';        sessionId: string; data: string }
-export interface WsReplayCompleteMsg { type: 'replayComplete'; sessionId: string }
 export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string }
 export interface WsUsageMsg        { type: 'usage';         account: string; session: { pct: number; resetsAt: string | null }; weekly: { pct: number; resetsAt: string | null } }
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string }
-export interface WsSessionEndedMsg { type: 'sessionEnded';  sessionId: string; code: number }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string }
 export interface WsBatchMsg        { type: 'batch';         events: SessionEvent[] }
 
 export type WsInboundMsg =
-  | WsOutputMsg
-  | WsReplayCompleteMsg
   | WsStatusMsg
   | WsUsageMsg
   | WsRotatedMsg
-  | WsSessionEndedMsg
   | WsErrorMsg
   | WsBatchMsg
 
 // ── Callback registry type ───────────────────────────────────────────────────
 
 type EventMap = {
-  output:        (msg: WsOutputMsg) => void
-  replayComplete:(msg: WsReplayCompleteMsg) => void
   status:        (msg: WsStatusMsg) => void
   usage:         (msg: WsUsageMsg) => void
   rotated:       (msg: WsRotatedMsg) => void
-  sessionEnded:  (msg: WsSessionEndedMsg) => void
   error:         (msg: WsErrorMsg) => void
   connectionStateChange: (state: ConnectionState) => void
   sessionEvent:  (e: SessionEvent) => void
@@ -93,7 +84,7 @@ export class SessionSocket {
     ws.onopen = () => {
       this._reconnectAttempt = 0
       this._setConnectionState('connected')
-      // Re-attach active session so server replays scrollback
+      // Re-attach active session so server replays session history
       if (this._activeSessionId) {
         this._send({ type: 'attach', sessionId: this._activeSessionId })
       }
@@ -139,20 +130,6 @@ export class SessionSocket {
   detach(sessionId: string) {
     if (this._activeSessionId === sessionId) this._activeSessionId = null
     this._send({ type: 'detach', sessionId })
-  }
-
-  input(sessionId: string, data: string) {
-    // Base64-encode keystrokes (symmetric with the server's base64 output) so
-    // arbitrary bytes — and plain text that happens to look like base64 — are
-    // delivered verbatim. Encode as UTF-8 first to handle multibyte input.
-    const bytes = new TextEncoder().encode(data)
-    let bin = ''
-    for (const b of bytes) bin += String.fromCharCode(b)
-    this._send({ type: 'input', sessionId, data: btoa(bin) })
-  }
-
-  resize(sessionId: string, cols: number, rows: number) {
-    this._send({ type: 'resize', sessionId, cols, rows })
   }
 
   interrupt(sessionId: string) {
@@ -231,12 +208,6 @@ export class SessionSocket {
 
   private _handleInbound(msg: WsInboundMsg) {
     switch (msg.type) {
-      case 'output':
-        this._emit('output', msg)
-        break
-      case 'replayComplete':
-        this._emit('replayComplete', msg)
-        break
       case 'status':
         this._emit('status', msg)
         this._patchSessionStatus(msg.sessionId, msg.status as Session['status'])
@@ -248,10 +219,6 @@ export class SessionSocket {
       case 'rotated':
         this._emit('rotated', msg)
         this._patchSessionAccount(msg.sessionId, msg.toAccount)
-        break
-      case 'sessionEnded':
-        this._emit('sessionEnded', msg)
-        this._patchSessionStatus(msg.sessionId, 'ended')
         break
       case 'error':
         this._emit('error', msg)
@@ -343,8 +310,6 @@ export function useSessionSocket() {
 
   const attach              = useCallback((sessionId: string) => socket.attach(sessionId), [socket])
   const detach              = useCallback((sessionId: string) => socket.detach(sessionId), [socket])
-  const input               = useCallback((sessionId: string, data: string) => socket.input(sessionId, data), [socket])
-  const resize              = useCallback((sessionId: string, cols: number, rows: number) => socket.resize(sessionId, cols, rows), [socket])
   const interrupt           = useCallback((sessionId: string) => socket.interrupt(sessionId), [socket])
   const prompt              = useCallback((sessionId: string, text: string) => socket.prompt(sessionId, text), [socket])
   const sendInterrupt       = useCallback((sessionId: string) => socket.sendInterrupt(sessionId), [socket])
@@ -356,7 +321,7 @@ export function useSessionSocket() {
   const off = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.off(event, cb), [socket])
 
   return {
-    attach, detach, input, resize, interrupt,
+    attach, detach, interrupt,
     prompt, sendInterrupt, permissionResponse, answerQuestion, setPermissionMode,
     on, off,
     connectionState,

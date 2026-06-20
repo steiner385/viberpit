@@ -91,29 +91,6 @@ describe('SessionSocket', () => {
     expect(sent).toEqual({ type: 'attach', sessionId: 'session-1' })
   })
 
-  it('serializes input message correctly', () => {
-    const sock = new SessionSocket('/ws')
-    sock.connect()
-    lastSock().simulateOpen()
-
-    sock.input('session-1', 'hello\n')
-
-    const sent = parseSent(lastSock(), 0)
-    // input is base64-encoded on the wire (symmetric with the server's base64 output)
-    expect(sent).toEqual({ type: 'input', sessionId: 'session-1', data: btoa('hello\n') })
-  })
-
-  it('serializes resize message correctly', () => {
-    const sock = new SessionSocket('/ws')
-    sock.connect()
-    lastSock().simulateOpen()
-
-    sock.resize('session-1', 80, 24)
-
-    const sent = parseSent(lastSock(), 0)
-    expect(sent).toEqual({ type: 'resize', sessionId: 'session-1', cols: 80, rows: 24 })
-  })
-
   it('serializes interrupt message correctly', () => {
     const sock = new SessionSocket('/ws')
     sock.connect()
@@ -159,21 +136,6 @@ describe('SessionSocket', () => {
   })
 
   // ── Inbound messages ─────────────────────────────────────────────────────────
-
-  it('invokes output callback with correct data', () => {
-    const sock = new SessionSocket('/ws')
-    sock.connect()
-    const ws = lastSock()
-    ws.simulateOpen()
-
-    const handler = vi.fn()
-    sock.on('output', handler)
-
-    ws.simulateMessage({ type: 'output', sessionId: 'session-1', data: 'hello' })
-
-    expect(handler).toHaveBeenCalledOnce()
-    expect(handler).toHaveBeenCalledWith({ type: 'output', sessionId: 'session-1', data: 'hello' })
-  })
 
   it('invokes status callback', () => {
     const sock = new SessionSocket('/ws')
