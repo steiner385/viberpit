@@ -4,7 +4,16 @@ from . import events as ev
 
 
 def _parse(path: str, max_turns: int) -> list:
-    lines = [json.loads(l) for l in open(path, errors="ignore") if l.strip()]
+    lines = []
+    with open(path, errors="ignore") as f:
+        for raw in f:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                lines.append(json.loads(raw))
+            except json.JSONDecodeError:
+                continue
     out: list = []
     for o in lines:
         typ = o.get("type")
@@ -24,11 +33,11 @@ def _parse(path: str, max_turns: int) -> list:
             for b in content:
                 t = b.get("type")
                 if t == "text":
-                    out.append(ev.TextDelta(uuid, b["text"], uuid))
+                    out.append(ev.TextDelta(uuid, b.get("text", ""), uuid))
                 elif t == "thinking":
                     out.append(ev.ThinkingDelta(uuid, b.get("thinking", ""), uuid))
                 elif t == "tool_use":
-                    out.append(ev.ToolCall(uuid, b["id"], b["name"], ev.tool_kind(b["name"]),
+                    out.append(ev.ToolCall(uuid, b.get("id", ""), b.get("name", ""), ev.tool_kind(b.get("name", "")),
                                            b.get("input", {}), uuid))
             out.append(ev.TurnEnd(uuid, None, uuid))
     # keep only the last max_turns assistant turns' worth — for the small fixture this is a no-op;

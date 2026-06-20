@@ -14,3 +14,15 @@ def test_replay_emits_summary_events():
     assert tc.name == "Read"
     res = next(e for e in out if isinstance(e, ToolResult))
     assert res.payload["content"] == "print(1)\n"
+
+
+def test_replay_skips_malformed_lines(tmp_path):
+    p = tmp_path / "t.jsonl"
+    p.write_text(
+        '{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}\n'
+        'this is not json\n'
+        '{"type":"assistant","uuid":"u2","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}\n'
+    )
+    out = asyncio.run(replay_events(str(p)))
+    types = [e.to_wire()["type"] for e in out]
+    assert "user" in types and "turnStart" in types and "turnEnd" in types
