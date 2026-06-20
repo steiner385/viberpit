@@ -36,6 +36,7 @@ class SessionDriver:
         self._out: asyncio.Queue = asyncio.Queue()
         self._pump: asyncio.Task | None = None
         self._titled: bool = False
+        self._queue: list[str] = []
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -59,9 +60,12 @@ class SessionDriver:
     async def send_prompt(self, text: str):
         if self._client is None:
             raise RuntimeError("SessionDriver.send_prompt called before start()")
-        # C2 — drain guard: reject a second prompt while the previous turn is still running.
+        # C2 — FIFO queue: if a pump is live, enqueue the prompt instead of rejecting.
         if self._pump is not None and not self._pump.done():
-            log.warning("driver.send_prompt: drain still running for session=%s, ignoring prompt", self.session_id)
+            self._queue.append(text)
+            log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
+                      self.session_id, len(self._queue))
+            await self._out.put(ev.Status(state="working", count=len(self._queue)))
             return
         # C3 — auto-title: emit a Title event from the first prompt (first line, max 50 chars).
         if not self._titled:
@@ -69,7 +73,11 @@ class SessionDriver:
             first_line = text.splitlines()[0] if text else text
             title_text = first_line[:50]
             await self._out.put(ev.Title(title=title_text, source="prompt"))
-        await self._out.put(ev.Status(state="working"))
+        await self._start_turn(text)
+
+    async def _start_turn(self, text: str):
+        """Start a new turn: emit working status, send query to SDK, create drain task."""
+        await self._out.put(ev.Status(state="working", count=len(self._queue)))
         await self._client.query(text)
         self._pump = asyncio.create_task(self._drain())
 
@@ -84,7 +92,27 @@ class SessionDriver:
             log.exception("driver.drain session=%s", self.session_id)
             await self._out.put(ev.ErrorEvent("driver_error", "session stream failed"))
         finally:
-            await self._out.put(ev.Status(state="idle"))
+            # If queued prompts remain, pop the front and start the next turn.
+            if self._queue:
+                next_text = self._queue.pop(0)
+                log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
+                          self.session_id, len(self._queue))
+                await self._start_turn(next_text)
+            else:
+                await self._out.put(ev.Status(state="idle", count=0))
+
+    def queued(self) -> list[str]:
+        """Return a snapshot of the queued prompts."""
+        return list(self._queue)
+
+    def cancel_queued(self, index: int) -> bool:
+        """Cancel a queued prompt by index. Returns True if removed, False if index invalid."""
+        if index < 0 or index >= len(self._queue):
+            return False
+        self._queue.pop(index)
+        # Emit updated status synchronously via put_nowait (non-blocking; out queue is unbounded)
+        self._out.put_nowait(ev.Status(state="working", count=len(self._queue)))
+        return True
 
     async def events(self):
         while True:
@@ -95,8 +123,11 @@ class SessionDriver:
 
     async def interrupt(self):
         self._reg.deny_all(self.session_id)
+        # Clear the queue so a Stop abandons all pending queued prompts.
+        self._queue.clear()
         if self._client:
             await self._client.interrupt()
+        await self._out.put(ev.Status(state="idle", count=0))
 
     async def set_permission_mode(self, mode: str):
         self.mode = mode

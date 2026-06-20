@@ -22,9 +22,10 @@ describe('Composer', () => {
     expect(screen.queryByRole('button', { name: /stop/i })).not.toBeInTheDocument()
   })
 
-  it('shows Stop button in working state', () => {
+  it('shows Stop and Queue buttons in working state', () => {
     render(<Composer {...defaults} status={{ state: 'working', count: 0 }} />)
     expect(screen.getByRole('button', { name: /stop current turn/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /queue message/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /send message/i })).not.toBeInTheDocument()
   })
 
@@ -34,6 +35,43 @@ describe('Composer', () => {
     render(<Composer {...defaults} status={{ state: 'working', count: 0 }} onInterrupt={onInterrupt} />)
     await user.click(screen.getByRole('button', { name: /stop current turn/i }))
     expect(onInterrupt).toHaveBeenCalledOnce()
+  })
+
+  it('clicking Queue while working calls onPrompt and clears input', async () => {
+    const user = userEvent.setup()
+    const onPrompt = vi.fn()
+    render(<Composer {...defaults} status={{ state: 'working', count: 0 }} onPrompt={onPrompt} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, 'upcoming task')
+    await user.click(screen.getByRole('button', { name: /queue message/i }))
+    expect(onPrompt).toHaveBeenCalledWith('upcoming task')
+    expect(textarea).toHaveValue('')
+  })
+
+  it('while working, Stop still calls onInterrupt and Queue calls onPrompt independently', async () => {
+    const user = userEvent.setup()
+    const onPrompt = vi.fn()
+    const onInterrupt = vi.fn()
+    render(<Composer {...defaults} status={{ state: 'working', count: 0 }} onPrompt={onPrompt} onInterrupt={onInterrupt} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, 'queued message')
+    // Queue it
+    await user.click(screen.getByRole('button', { name: /queue message/i }))
+    expect(onPrompt).toHaveBeenCalledWith('queued message')
+    // Stop is still available
+    await user.click(screen.getByRole('button', { name: /stop current turn/i }))
+    expect(onInterrupt).toHaveBeenCalledOnce()
+  })
+
+  it('Enter submits as Queue while working and clears textarea', async () => {
+    const user = userEvent.setup()
+    const onPrompt = vi.fn()
+    render(<Composer {...defaults} status={{ state: 'working', count: 0 }} onPrompt={onPrompt} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, 'next step')
+    await user.keyboard('{Enter}')
+    expect(onPrompt).toHaveBeenCalledWith('next step')
+    expect(textarea).toHaveValue('')
   })
 
   it('Enter submits and clears the textarea', async () => {

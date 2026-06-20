@@ -70,11 +70,11 @@ def test_events_terminates_after_aclose():
     assert asyncio.run(run()) is True
 
 
-# ── C2: drain guard ──────────────────────────────────────────────────────────
+# ── C2: FIFO queue while busy ─────────────────────────────────────────────────
 
-def test_concurrent_send_prompt_only_one_drain():
-    """Calling send_prompt a second time while drain is running does NOT start a
-    second pump task; only one query is processed."""
+def test_concurrent_send_prompt_enqueues():
+    """Calling send_prompt a second time while drain is running ENQUEUES the
+    prompt (does not reject it or start a second pump immediately)."""
     import asyncio
 
     # Use a slow fake SDK: yield results only after a short delay so the first
@@ -105,17 +105,100 @@ def test_concurrent_send_prompt_only_one_drain():
         pump_after_first = d._pump
         assert pump_after_first is not None
         assert not pump_after_first.done()
-        # Second send_prompt must be a no-op.
+        # Second send_prompt must enqueue, not create a second pump.
         await d.send_prompt("second")
         pump_after_second = d._pump
-        # Same task object — no second pump was created.
+        # Same task object — no second pump was created yet.
         assert pump_after_second is pump_after_first
+        # The second prompt is in the queue.
+        assert d.queued() == ["second"]
         await d.aclose()
-        # Only one query was actually sent.
+        # Only one query was actually sent (second is abandoned by aclose cancel).
         return sdk.queries
 
     queries = asyncio.run(run())
     assert queries == ["first"]
+
+
+def test_queued_prompt_runs_after_first_turn():
+    """After the first turn drains, the queued prompt is sent automatically.
+    Both prompts end up in sdk.queries in order. Only the final turn emits idle."""
+    import asyncio
+
+    # SDK that sends responses immediately (no delay), so both turns can complete.
+    class QuickFakeSDK:
+        def __init__(self):
+            self.queries: list[str] = []
+            self._call = 0
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): self.queries.append(prompt)
+        async def receive_response(self):
+            self._call += 1
+            yield f.result(uuid=f"t{self._call}")
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    sdk = QuickFakeSDK()
+
+    def factory(cwd, cfg, can_use_tool, mode, resume):
+        return sdk
+
+    async def run():
+        d = SessionDriver("sq1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        # Send both prompts back-to-back; the first starts immediately, the second queues.
+        await d.send_prompt("prompt-one")
+        await d.send_prompt("prompt-two")
+        # Collect events until we see the final idle status (emitted after turn 2).
+        # Turn 1 drain → start turn 2 (no idle). Turn 2 drain → idle.
+        async for e in d.events():
+            if isinstance(e, Status) and e.state == "idle":
+                break
+        await d.aclose()
+        return sdk.queries
+
+    queries = asyncio.run(run())
+    assert queries == ["prompt-one", "prompt-two"]
+
+
+def test_interrupt_clears_queue():
+    """interrupt() clears the queue and emits an idle status."""
+    import asyncio
+
+    class SlowFakeSDK:
+        def __init__(self):
+            self.queries: list[str] = []
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): self.queries.append(prompt)
+        async def receive_response(self):
+            await asyncio.sleep(0.1)
+            yield f.result(uuid="t1")
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    sdk = SlowFakeSDK()
+
+    def factory(cwd, cfg, can_use_tool, mode, resume):
+        return sdk
+
+    async def run():
+        d = SessionDriver("sq2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        await d.send_prompt("first")
+        # Queue a second prompt while first is running.
+        await d.send_prompt("queued-one")
+        await d.send_prompt("queued-two")
+        assert len(d.queued()) == 2
+        # Interrupt — should clear the queue.
+        await d.interrupt()
+        assert d.queued() == []
+        await d.aclose()
+
+    asyncio.run(run())
 
 
 # ── C3: auto-title from first prompt ────────────────────────────────────────

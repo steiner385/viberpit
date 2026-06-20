@@ -8,7 +8,7 @@ interface Props {
 function statusText(status: { state: string; count: number }): string {
   switch (status.state) {
     case 'idle':               return 'Ready'
-    case 'working':            return 'Working…'
+    case 'working':            return status.count > 0 ? `Working… (${status.count} queued)` : 'Working…'
     case 'waiting-permission': return 'Waiting for permission'
     case 'queued':             return `${status.count} queued`
     default:                   return status.state

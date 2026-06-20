@@ -8,9 +8,14 @@ describe('StatusBar', () => {
     expect(screen.getByText('Ready')).toBeInTheDocument()
   })
 
-  it('shows "Working…" for working state', () => {
+  it('shows "Working…" for working state with no queue', () => {
     render(<StatusBar status={{ state: 'working', count: 0 }} connectionState="connected" />)
     expect(screen.getByText('Working…')).toBeInTheDocument()
+  })
+
+  it('shows "Working… (N queued)" for working state with queued items', () => {
+    render(<StatusBar status={{ state: 'working', count: 2 }} connectionState="connected" />)
+    expect(screen.getByText('Working… (2 queued)')).toBeInTheDocument()
   })
 
   it('shows "Waiting for permission" for waiting-permission state', () => {

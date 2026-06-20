@@ -72,18 +72,33 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode }: Pro
         />
 
         {isWorking ? (
-          <button
-            type="button"
-            aria-label="Stop current turn"
-            onClick={onInterrupt}
-            className={cn(
-              'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-[44px]',
-              'bg-red-600 text-white hover:bg-red-700',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-            )}
-          >
-            Stop
-          </button>
+          <>
+            <button
+              type="button"
+              aria-label="Queue message"
+              title="Will send after the current turn"
+              onClick={submit}
+              className={cn(
+                'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-[44px]',
+                'bg-blue-600 text-white hover:bg-blue-700',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              )}
+            >
+              Queue
+            </button>
+            <button
+              type="button"
+              aria-label="Stop current turn"
+              onClick={onInterrupt}
+              className={cn(
+                'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-[44px]',
+                'bg-red-600 text-white hover:bg-red-700',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              )}
+            >
+              Stop
+            </button>
+          </>
         ) : (
           <button
             type="button"
