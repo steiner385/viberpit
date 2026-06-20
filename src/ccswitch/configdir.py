@@ -104,6 +104,17 @@ def compose_claude_json(name: str) -> dict:
             if key in shared:
                 base[key] = shared[key]
 
+    # Mark the account as onboarded so an INTERACTIVE `claude` session doesn't re-run
+    # the login/onboarding chooser. The account is already authenticated (it has a
+    # stored oauthAccount + credentials); the `claude auth login` capture omits these
+    # onboarding flags, which a `claude -p` run ignores but an interactive session does not.
+    base["hasCompletedOnboarding"] = True
+    g = paths.global_claude_json()
+    if g.exists():
+        gj = read_json(g)
+        if gj.get("lastOnboardingVersion") and not base.get("lastOnboardingVersion"):
+            base["lastOnboardingVersion"] = gj["lastOnboardingVersion"]
+
     return base
 
 
