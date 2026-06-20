@@ -294,3 +294,59 @@ def test_sweep_stale_removes_symlinks(tmp_path, monkeypatch):
 
     assert not sym.exists() and not sym.is_symlink(), "symlink should have been removed"
     assert real_target.exists(), "real target should not have been touched"
+
+
+# ---------------------------------------------------------------------------
+# Real DB-backed audit test (C2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_success_writes_audit_row_no_token_material():
+    """ReauthManager emits account.reauth.success to audit_events on success.
+
+    Uses a real in-memory SQLite DB (via init_db) so we can query the actual
+    audit_events table.  Asserts:
+      - exactly one account.reauth.success row is written
+      - detail contains {"account": ...}
+      - detail contains neither accessToken/refreshToken nor subscriptionType
+    """
+    from sqlalchemy import select
+    from server.db import init_db, db_session
+    from server.db.models import AuditEvent
+
+    # Initialise a fresh in-memory DB for this test
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+
+    async def fake_runner(name: str) -> bool:
+        await asyncio.sleep(0.01)
+        return True
+
+    m = ReauthManager(runner=fake_runner, key_available=lambda: True, timeout_s=5)
+    await m.start("primary", "tester@example.com")
+
+    # Wait for the background _run task to complete (success)
+    for _ in range(100):
+        if m.status("primary").state in ("success", "error", "timeout"):
+            break
+        await asyncio.sleep(0.02)
+
+    assert m.status("primary").state == "success", "manager must reach success state"
+
+    # Query the audit_events table directly
+    async with db_session() as db:
+        result = await db.execute(
+            select(AuditEvent).where(AuditEvent.type == "account.reauth.success")
+        )
+        rows = result.scalars().all()
+
+    assert len(rows) == 1, f"expected 1 account.reauth.success row, got {len(rows)}"
+    detail = rows[0].detail
+    assert "account" in detail, f"detail must contain 'account', got: {detail}"
+    assert detail["account"] == "primary"
+
+    # Verify no token/subscription material leaks into the audit row
+    detail_str = str(detail)
+    assert "accessToken" not in detail_str, "accessToken must not appear in audit detail"
+    assert "refreshToken" not in detail_str, "refreshToken must not appear in audit detail"
+    assert "subscriptionType" not in detail_str, "subscriptionType must not appear in audit detail"

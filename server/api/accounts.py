@@ -286,13 +286,15 @@ async def reauth_cancel(
     _check_name_and_slot(name)
 
     reauth = _get_reauth(request)
+    pre_cancel_state = reauth.status(name)
     state = await reauth.cancel(name)
 
-    await record_audit(
-        db=db,
-        type="account.reauth.cancel",
-        identity=identity,
-        detail={"account": name},
-    )
+    if pre_cancel_state.state != "idle":
+        await record_audit(
+            db=db,
+            type="account.reauth.cancel",
+            identity=identity,
+            detail={"account": name},
+        )
 
     return state.to_dict()

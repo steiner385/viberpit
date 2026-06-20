@@ -269,6 +269,14 @@ class ReauthManager:
                 if self._state.state == "running":
                     self._state.state = "success" if result else "error"
                     self._state.message = None if result else "runner returned False"
+            if result:
+                try:
+                    from server.db import db_session
+                    from server.audit import record_audit
+                    async with db_session() as db:
+                        await record_audit(db, "account.reauth.success", self._state.identity or "system", {"account": name})
+                except Exception:
+                    log.warning("reauth.success_audit_failed account=%s", name, exc_info=True)
         except asyncio.TimeoutError:
             async with self._lock:
                 if self._state.state == "running":

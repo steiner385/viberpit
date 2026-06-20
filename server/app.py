@@ -60,7 +60,7 @@ async def _lifespan(app: FastAPI):
     app.state.reauth.sweep_stale()
 
     # Register SIGTERM/SIGINT handlers to cleanly cancel any running reauth
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _handle_signal(sig):
         loop.create_task(app.state.reauth.shutdown())
