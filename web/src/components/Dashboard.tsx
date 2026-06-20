@@ -1,11 +1,12 @@
 import * as React from 'react'
 import { useState, useRef, useCallback } from 'react'
-import { Plus, RefreshCw } from 'lucide-react'
+import { Plus, RefreshCw, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { UsageBadge, StatusPill } from './UsageBadge'
 import { SessionList } from './SessionList'
 import { AllLimitedBanner } from './AllLimitedBanner'
+import { SettingsPanel } from './settings/SettingsPanel'
 import {
   useAccounts,
   useSessions,
@@ -15,11 +16,19 @@ import {
   useRefreshAccount,
   useGithubRepos,
   useGithubBranches,
+  useSettings,
   type CreateSessionInput,
 } from '@/api/hooks'
 import type { Account } from '@/api/types'
 
 // ── New Session Dialog ──────────────────────────────────────────────────────
+
+const PERMISSION_MODES = [
+  { value: 'interactive', label: 'Ask each time' },
+  { value: 'auto', label: 'Auto-approve safe tools' },
+  { value: 'allowlist', label: 'Allowlist read-only, prompt the rest' },
+  { value: 'full-auto', label: 'Full auto — incl. shell ⚠' },
+] as const
 
 interface NewSessionDialogProps {
   accounts: Account[]
@@ -27,12 +36,14 @@ interface NewSessionDialogProps {
   onSubmit: (input: CreateSessionInput) => void
   isPending: boolean
   externalError?: string | null
+  defaultPermissionMode?: string
 }
 
-function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalError }: NewSessionDialogProps) {
+function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalError, defaultPermissionMode }: NewSessionDialogProps) {
   const [name, setName] = useState('')
   const [account, setAccount] = useState('')
   const [initialPrompt, setInitialPrompt] = useState('')
+  const [permissionMode, setPermissionMode] = useState(defaultPermissionMode ?? 'interactive')
   const [inlineError, setInlineError] = useState<string | null>(null)
   const firstInputRef = useRef<HTMLInputElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -98,6 +109,7 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
       initialPrompt: initialPrompt.trim() || undefined,
       repo: selectedRepo || undefined,
       branch: selectedBranch || undefined,
+      permissionMode,
     })
   }
 
@@ -241,6 +253,23 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
               <option value="">Auto-select</option>
               {accounts.map((a) => (
                 <option key={a.name} value={a.name}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Tool approvals */}
+          <div className="space-y-1">
+            <label htmlFor="new-session-permission" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Tool approvals
+            </label>
+            <select
+              id="new-session-permission"
+              value={permissionMode}
+              onChange={(e) => setPermissionMode(e.target.value)}
+              className={inputClass}
+            >
+              {PERMISSION_MODES.map(({ value, label }) => (
+                <option key={value} value={value}>{label}</option>
               ))}
             </select>
           </div>
@@ -432,6 +461,7 @@ interface DashboardProps {
 export function Dashboard({ onOpenSession }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
+  const { data: settingsData } = useSettings()
 
   const createSession = useCreateSession()
   const renameSession = useRenameSession()
@@ -439,12 +469,14 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
   const refreshAccount = useRefreshAccount()
 
   const [showNewDialog, setShowNewDialog] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
   const [allLimitedReset, setAllLimitedReset] = useState<string | null | undefined>(undefined)
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null)
   const [branchError, setBranchError] = useState<string | null>(null)
 
   const newButtonRef = useRef<HTMLButtonElement>(null)
+  const settingsButtonRef = useRef<HTMLButtonElement>(null)
 
   function openNewDialog() {
     setAllLimitedReset(undefined)
@@ -534,16 +566,29 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
           <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
             Sessions
           </h2>
-          <Button
-            ref={newButtonRef}
-            size="sm"
-            className="min-h-[44px]"
-            onClick={openNewDialog}
-            aria-label="New session"
-          >
-            <Plus size={14} aria-hidden="true" className="mr-1" />
-            New
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              ref={settingsButtonRef}
+              size="sm"
+              variant="outline"
+              className="min-h-[44px]"
+              onClick={() => setShowSettings(true)}
+              aria-label="Settings"
+            >
+              <Settings size={14} aria-hidden="true" className="mr-1" />
+              Settings
+            </Button>
+            <Button
+              ref={newButtonRef}
+              size="sm"
+              className="min-h-[44px]"
+              onClick={openNewDialog}
+              aria-label="New session"
+            >
+              <Plus size={14} aria-hidden="true" className="mr-1" />
+              New
+            </Button>
+          </div>
         </div>
 
         <SessionList
@@ -565,6 +610,7 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
           onSubmit={handleCreateSubmit}
           isPending={createSession.isPending}
           externalError={branchError}
+          defaultPermissionMode={settingsData?.defaultPermissionMode}
         />
       )}
 
@@ -575,6 +621,15 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
           onClose={() => setRenameTarget(null)}
           onSubmit={handleRenameSubmit}
           isPending={renameSession.isPending}
+        />
+      )}
+
+      {showSettings && (
+        <SettingsPanel
+          onClose={() => {
+            setShowSettings(false)
+            settingsButtonRef.current?.focus()
+          }}
         />
       )}
     </div>

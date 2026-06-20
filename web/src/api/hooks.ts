@@ -9,6 +9,7 @@ export const QK = {
   config: ['config'] as const,
   githubRepos: ['github-repos'] as const,
   githubBranches: (repo?: string) => ['github-branches', repo] as const,
+  settings: ['settings'] as const,
 }
 
 export function useAccounts() {
@@ -74,12 +75,35 @@ export function useGithubBranches(repo?: string) {
   })
 }
 
+export interface AppSettings {
+  defaultPermissionMode: string
+  thinkingCollapsed: boolean
+  repoRoot: string | null
+}
+
+export function useSettings() {
+  return useQuery<AppSettings>({
+    queryKey: QK.settings,
+    queryFn: () => api.get<AppSettings>('/api/settings'),
+    staleTime: 30_000,
+  })
+}
+
+export function useUpdateSettings() {
+  const qc = useQueryClient()
+  return useMutation<AppSettings, ApiRequestError, Partial<AppSettings>>({
+    mutationFn: (body) => api.put<AppSettings>('/api/settings', body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.settings }) },
+  })
+}
+
 export interface CreateSessionInput {
   name?: string
   account?: string
   initialPrompt?: string
   repo?: string
   branch?: string
+  permissionMode?: string
 }
 
 export function useCreateSession() {
