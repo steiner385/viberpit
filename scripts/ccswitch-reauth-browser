@@ -2,10 +2,12 @@
 set -euo pipefail
 url="${1:?url required}"
 prof="${CCSWITCH_REAUTH_PROFILE:?CCSWITCH_REAUTH_PROFILE required}"
-# the profile MUST be under the ccswitch reauth-tmp dir
+# the profile MUST be under the ccswitch reauth-tmp dir.
+# Derive the root identically to paths.root(): CCSWITCH_HOME or ~/.claude-accounts.
+reauth_root="${CCSWITCH_HOME:-$HOME/.claude-accounts}/reauth-tmp/"
 case "$prof" in
-  "$HOME/.config/ccswitch/reauth-tmp/"*) : ;;
-  *) echo "ccswitch-reauth-browser: refusing profile outside reauth-tmp: $prof" >&2; exit 2 ;;
+  "$reauth_root"*) : ;;
+  *) echo "ccswitch-reauth-browser: refusing profile outside reauth-tmp: $prof (allowed: $reauth_root)" >&2; exit 2 ;;
 esac
 bin="${CCSWITCH_REAUTH_BROWSER_BIN:-}"
 if [ -z "$bin" ]; then
