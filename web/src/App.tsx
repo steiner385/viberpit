@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useState } from 'react'
 import { Dashboard } from './components/Dashboard'
-import { Terminal } from './components/Terminal'
+import { SessionView } from './components/session/SessionView'
 
 // ── View state machine ───────────────────────────────────────────────────────
 //
@@ -44,7 +44,7 @@ function App() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       {view.type === 'session' ? (
-        <Terminal sessionId={view.sessionId} onBack={handleBack} />
+        <SessionView sessionId={view.sessionId} onBack={handleBack} />
       ) : (
         <>
           <header className="p-4 border-b border-border">
