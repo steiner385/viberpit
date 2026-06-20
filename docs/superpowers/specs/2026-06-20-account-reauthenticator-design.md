@@ -30,6 +30,7 @@ A tiny shell script invoked as `BROWSER` by `claude auth login`. It receives the
 #!/usr/bin/env bash
 # $1 = url ; $CCSWITCH_REAUTH_PROFILE = temp --user-data-dir prepared by the runner
 exec google-chrome --user-data-dir="$CCSWITCH_REAUTH_PROFILE" \
+     --password-store=gnome-libsecret \
      --no-first-run --no-default-browser-check --new-window "$1"
 ```
 (Binary resolution: prefer `google-chrome`/`google-chrome-stable`, else `chromium`/`chromium-browser`; error if none. The launcher reads the prepared profile dir from `CCSWITCH_REAUTH_PROFILE` so the runner controls it.)
@@ -131,3 +132,8 @@ These are **binding** requirements that amend the sections above.
 - Phone/remote-device login (localhost callback is host-bound).
 - Re-login for `--console` (API-billing) accounts; this targets `--claudeai` Max accounts.
 - Auto-triggering reauth on `needs-reauth` (user clicks the button).
+
+## Gate outcome (2026-06-20) — feasibility PASSED, two binding corrections
+The cookie-copy gate PASSED on the host (real google-chrome 149): Google logged in + Claude logged out. Two corrections (authoritative; supersede illustrative prose above):
+1. **Strip query is `DELETE FROM cookies WHERE host_key LIKE '%claude%' OR host_key LIKE '%anthropic%'`** — Claude's cookies are on `claude.com`/`claudeusercontent.com`/`platform.claude.com`, NOT `claude.ai`.
+2. **The launcher MUST pass `--password-store=gnome-libsecret`** — otherwise Chrome uses its basic store, cannot decrypt the keyring-encrypted copied Google cookies, and Google appears logged out. (Keyring entry "Chrome Safe Storage" confirmed present.)

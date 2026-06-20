@@ -13,7 +13,7 @@
 ## Global Constraints (verbatim from spec)
 
 - **All temp dirs (cookie-copy profile AND the reauth capture `CLAUDE_CONFIG_DIR`) live under `~/.config/ccswitch/reauth-tmp/`, mode `0700`, NEVER `/tmp`.** Create via `tempfile.mkdtemp(prefix="reauth-", dir=<reauth-tmp>)`; copied secret files `chmod 0600`.
-- **Cookie strip query (verbatim):** `DELETE FROM cookies WHERE host_key LIKE '%claude.ai%' OR host_key LIKE '%anthropic%'`.
+- **Cookie strip query (verbatim):** `DELETE FROM cookies WHERE host_key LIKE '%claude%' OR host_key LIKE '%anthropic%'`.
 - **Cleanup guard:** only remove a path if `Path(p).resolve(strict=True).is_relative_to(<reauth-tmp>.resolve())`; accept only the path stored in `ReauthState`.
 - **`validate_account_name(name)`:** regex `^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$`, reject `name in {".",".."}`, assert `paths.slot_path(name).resolve().is_relative_to(paths.store_dir().resolve())`; 404 on failure. Applied to ALL `/api/accounts/{name}/*` routes.
 - **`DISPLAY`** from `Settings.reauth_display` (default `":0"`), read at startup — **no `display` request param**. **`chrome_profile`** from `Settings.chrome_profile` (default `~/.config/google-chrome/Default`). `claude_bin`/`CCSWITCH_CLAUDE_BIN` from env/config only; `subprocess` always `shell=False` with an argv list.
@@ -54,7 +54,7 @@ T=$(mktemp -d ~/.config/ccswitch/reauth-tmp/gate-XXXX 2>/dev/null || mktemp -d)
 mkdir -p "$T/Default"
 cp ~/.config/google-chrome/Default/Cookies "$T/Default/Cookies"
 cp ~/.config/google-chrome/"Local State" "$T/Local State"
-sqlite3 "$T/Default/Cookies" "DELETE FROM cookies WHERE host_key LIKE '%claude.ai%' OR host_key LIKE '%anthropic%';"
+sqlite3 "$T/Default/Cookies" "DELETE FROM cookies WHERE host_key LIKE '%claude%' OR host_key LIKE '%anthropic%';"
 ```
 - [ ] **Step 2:** Launch Chrome on it at claude.ai (and Google) and observe:
 ```bash
@@ -154,7 +154,8 @@ def _make_source(tmp_path):
     c = sqlite3.connect(db); c.execute("CREATE TABLE cookies(host_key TEXT, name TEXT)")
     c.executemany("INSERT INTO cookies VALUES(?,?)",
                   [(".google.com","SID"),("accounts.google.com","X"),
-                   (".claude.ai","sess"),("console.anthropic.com","tok")])
+                   (".claude.ai","sess"),(".claude.com","sess2"),
+                   ("platform.claude.com","p"),("console.anthropic.com","tok")])
     c.commit(); c.close()
     return str(src)
 
@@ -199,7 +200,7 @@ import os, sqlite3, shutil, tempfile
 from pathlib import Path
 from . import paths
 
-_STRIP_SQL = "DELETE FROM cookies WHERE host_key LIKE '%claude.ai%' OR host_key LIKE '%anthropic%'"
+_STRIP_SQL = "DELETE FROM cookies WHERE host_key LIKE '%claude%' OR host_key LIKE '%anthropic%'"
 
 def _reauth_root() -> Path:
     r = paths.reauth_tmp_dir()
@@ -299,7 +300,7 @@ if [ -z "$bin" ]; then
 fi
 [ -n "$bin" ] || { echo "ccswitch-reauth-browser: no supported browser found" >&2; exit 3; }
 echo $$ > "$prof/launcher.pid" 2>/dev/null || true
-exec "$bin" --user-data-dir="$prof" --no-first-run --no-default-browser-check --new-window "$url"
+exec "$bin" --user-data-dir="$prof" --password-store=gnome-libsecret --no-first-run --no-default-browser-check --new-window "$url"
 ```
 (Note: the test's fake echoes args, so `--user-data-dir=<prof>` and the url appear in stdout. The real `exec` replaces the process so `launcher.pid` becomes the Chrome PID.)
 - [ ] **Step 4: Run → PASS.**
