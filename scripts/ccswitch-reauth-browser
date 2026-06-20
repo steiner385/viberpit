@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+url="${1:?url required}"
+prof="${CCSWITCH_REAUTH_PROFILE:?CCSWITCH_REAUTH_PROFILE required}"
+# the profile MUST be under the ccswitch reauth-tmp dir
+case "$prof" in
+  "$HOME/.config/ccswitch/reauth-tmp/"*) : ;;
+  *) echo "ccswitch-reauth-browser: refusing profile outside reauth-tmp: $prof" >&2; exit 2 ;;
+esac
+bin="${CCSWITCH_REAUTH_BROWSER_BIN:-}"
+if [ -z "$bin" ]; then
+  for c in google-chrome google-chrome-stable chromium chromium-browser; do
+    if command -v "$c" >/dev/null 2>&1; then bin="$c"; break; fi
+  done
+fi
+[ -n "$bin" ] || { echo "ccswitch-reauth-browser: no supported browser found" >&2; exit 3; }
+echo $$ > "$prof/launcher.pid" 2>/dev/null || true
+exec "$bin" --user-data-dir="$prof" --password-store=gnome-libsecret --no-first-run --no-default-browser-check --new-window "$url"
