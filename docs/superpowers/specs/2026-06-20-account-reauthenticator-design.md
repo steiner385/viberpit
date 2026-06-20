@@ -98,6 +98,35 @@ UI polls `GET …/reauth` throughout.
 ## Feasibility gate (FIRST task — manual, on the host)
 Validate the cookie-copy approach end-to-end: copy `Default/Cookies` + `Local State` to a temp profile, delete Claude rows, launch `google-chrome --user-data-dir=<temp>` at `https://claude.ai`, and confirm **(a)** Google is still logged in (account chooser shows the user's Google accounts without a password prompt) and **(b)** Claude shows logged-out / the login screen. If Google does NOT carry over (keyring decryption fails for the copied DB), switch to the **dedicated-profile fallback** (a persistent `~/.config/ccswitch/login-chrome` profile, one-time Google sign-in, delete Claude cookies before each launch) — the rest of the design is unchanged.
 
+## Security hardening (mandatory-review resolutions)
+
+These are **binding** requirements that amend the sections above.
+
+**Secret-copy lifecycle (the temp profile holds a copy of live Google session cookies + the wrapped cookie key in `Local State`):**
+- Create the temp dir with `tempfile.mkdtemp(prefix="reauth-", dir=~/.config/ccswitch/reauth-tmp)` (atomically 0700); pre-create the `reauth-tmp` parent 0700 at server startup. Copy `Cookies`/`Local State` then immediately `chmod 0600`; the inner `Default/` is 0700.
+- The **capture dir** (`CLAUDE_CONFIG_DIR`) for the reauth path must also be created with `dir=~/.config/ccswitch/reauth-tmp` — **never the default `/tmp`** (it transiently holds the captured `.credentials.json` and leaks via `/proc/<pid>/environ`). (The legacy CLI `add_account` keeps its current behavior; only the server reauth path changes.)
+- `cleanup_reauth_profile(path)` guards with `Path(path).resolve(strict=True).is_relative_to(reauth-tmp.resolve())` (NOT `startswith`; resolves symlinks) and only accepts the path stored in `ReauthState` — never a caller-supplied path.
+- **Crash/reboot safety:** cleanup lives in a `try/finally` registered immediately after `prepare_reauth_profile()`. On every server startup, sweep `reauth-tmp/*` dirs older than 10 min and any not in the live `ReauthState`. Install a `SIGTERM`/`SIGINT` handler that runs cancel+cleanup synchronously. The launcher writes its post-`exec` Chrome PID to `<temp>/launcher.pid`; the timeout/cancel kills that PID (Chrome is not always a child of `claude`) so no orphan window holds the cookie copy.
+- The **dedicated-profile fallback** (if the feasibility gate fails) is a *different, weaker* posture (a long-lived Google-authed profile on disk). If we ship the fallback, this spec must be re-amended to harden it (its own access controls + Claude-cookie wipe before each launch); we do not silently inherit the cookie-copy hardening for it.
+
+**Input validation (one central helper, applied to ALL `/api/accounts/{name}/*` routes incl. existing refresh/relogin/delete/nickname):**
+- `validate_account_name(name)`: regex `^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$`, reject `name in {".", ".."}`, and assert `paths.slot_path(name).resolve().is_relative_to(paths.store_dir().resolve())`. 404 on failure. `start` also 404s if the account slot doesn't exist.
+
+**Process / launcher safety:**
+- `DISPLAY` comes from a server-side setting (`Settings.reauth_display`, default `":0"`), read at startup; **no `display` request param**. `CCSWITCH_CLAUDE_BIN`/`claude_bin` from process env / config file only; `subprocess` runs `shell=False` with an argv list.
+- The launcher script is installed read-only in the package/install dir (NOT under writable `~/.config/ccswitch/`); the runner `os.path.realpath()`s the `BROWSER=` path and refuses to spawn if it leaves the install dir. Only `$1` (URL from `claude`) and `$CCSWITCH_REAUTH_PROFILE` (from the runner) reach Chrome, as separate argv elements. The launcher validates `$CCSWITCH_REAUTH_PROFILE` is under `~/.config/ccswitch/reauth-tmp/` before `exec`.
+
+**Token handling:**
+- `ReauthManager.start` returns **503** if `crypto.key_available()` is False (otherwise the captured token would be stored *plaintext* via the silent fallback — defeating encrypted-at-rest). Message: "configure a master key first (`ccswitch crypto init`)".
+- `capture_login` MUST NOT log or audit the captured blob — only a boolean / the key names. Audit rows carry `account` + `identity` only (no `subscriptionType`); the not-Max warning goes in `ReauthState.message`. A `server/tests/test_reauth_no_token_leakage.py` runs the full path with a fake `claude` and asserts no fake-token string appears in audit rows or captured logs.
+
+**Transport / lifecycle:**
+- One reauth at a time; `start` returns 409 (with the holding identity + start time) if running. State machine adds a `cancelling` state (cancel is async; the UI must not flip to `success` on a cancelled run). Optional: a 1-per-30s/identity throttle on `start` (defense-in-depth). CSRF: rely on the existing `SameSite=strict` + HttpOnly session cookie — document that relaxing `SameSite` would re-enable CSRF-triggered reauth.
+
+## UX clarity (child-psych transferable notes)
+- Keep the "**on the host machine's screen**" wording verbatim and surface the configured `DISPLAY` (e.g. "host desktop `:0`") so a click from a phone/laptop doesn't leave the user staring at a spinner wondering where the window went.
+- Make Cancel feel immediate: optimistic UI update on click (don't wait for the ~1.5s poll) so recovery from a wrong-account click is unambiguous.
+
 ## Out of scope
 - Phone/remote-device login (localhost callback is host-bound).
 - Re-login for `--console` (API-billing) accounts; this targets `--claudeai` Max accounts.
