@@ -52,7 +52,7 @@ verify create→interact→limit→rotate→continue and reconnect.
 - [X] T020 [P] [US1] Test: account selection honors soft reservation (no double-assign) + excludes limited/needs-relogin in `server/tests/test_selection.py`
 - [X] T021 [P] [US1] Test: SessionManager spawns PTY, buffers bounded scrollback, replays on reattach in `server/tests/test_session_manager.py`
 - [X] T022 [P] [US1] Test: wait-for-idle rotation — holds until idle, then kill+resume on next account, rebridges same id, max-wait fallback interrupts in `server/tests/test_rotation.py`
-- [ ] T023 [P] [US1] Test: REST contract (`/api/sessions`, `/api/accounts`, `/api/auth/me`, all-limited→409 earliestReset) in `server/tests/test_api.py`
+- [X] T023 [P] [US1] Test: REST contract (`/api/sessions`, `/api/accounts`, `/api/auth/me`, all-limited→409 earliestReset) in `server/tests/test_api.py`
 - [X] T024 [P] [US1] Test: WS contract (attach/input/resize/interrupt ↔ output/status/usage/rotated/sessionEnded) in `server/tests/test_ws.py`
 - [X] T025 [P] [US1] Test: no token/credential material in any log, response, or audit detail in `server/tests/test_redaction.py`
 
@@ -67,11 +67,11 @@ verify create→interact→limit→rotate→continue and reconnect.
 - [X] T033 [US1] `SessionManager`: PTY spawn under composed config dir, bounded scrollback ring, idle tracking in `server/sessions/manager.py`
 - [X] T034 [US1] Wait-for-idle rotation in `server/sessions/rotation.py` (idle gate + limit trigger from poller/transcript-tail, kill+`--resume`, rebridge, repaint, max-wait fallback)
 - [X] T035 [US1] WebSocket bridge `server/bridge/ws.py` (PTY↔client, control/event channel, output batching/backpressure per NFR-005)
-- [ ] T036 [P] [US1] REST router sessions in `server/api/sessions.py` (list/create/rename/close/get; 409+earliestReset)
-- [ ] T037 [P] [US1] REST router accounts in `server/api/accounts.py` (list+refresh usage / delete / relogin)
-- [ ] T038 [P] [US1] REST router auth + health in `server/api/auth.py`, `server/api/health.py`
-- [ ] T039 [US1] FastAPI app factory + middleware wiring + static-serve in `server/app.py`
-- [ ] T040 [US1] Verify ≥85% coverage on auth/selection/credential/rotation; fix gaps
+- [X] T036 [P] [US1] REST router sessions in `server/api/sessions.py` (list/create/rename/close/get; 409+earliestReset)
+- [X] T037 [P] [US1] REST router accounts in `server/api/accounts.py` (list+refresh usage / delete / relogin)
+- [X] T038 [P] [US1] REST router auth + health in `server/api/auth.py`, `server/api/health.py`
+- [X] T039 [US1] FastAPI app factory + middleware wiring + static-serve in `server/app.py`
+- [X] T040 [US1] Verify ≥85% coverage on auth/selection/credential/rotation; fix gaps
 
 **Checkpoint:** US1 independently testable — full API + WS green against the fake-`claude` stub.
 
