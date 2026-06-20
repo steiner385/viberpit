@@ -206,6 +206,13 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
                 <option key={b} value={b}>{b}</option>
               ))}
             </select>
+            {selectedBranch && (
+              <p className="text-xs text-gray-400">
+                Runs in an isolated git worktree — your checkout isn’t touched. If the
+                branch is already checked out, a per-session <code>ccswitch/…</code> branch
+                is used instead.
+              </p>
+            )}
           </div>
 
           {/* Account */}

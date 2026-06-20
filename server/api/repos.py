@@ -22,6 +22,10 @@ async def list_repos(
     for child in sorted(root_path.iterdir(), key=lambda p: p.name.lower()):
         if not child.is_dir():
             continue
+        # Skip hidden dirs — notably ccswitch's own `.ccswitch/worktrees/...`
+        # session worktrees, which are git work trees but not pickable repos.
+        if child.name.startswith("."):
+            continue
         if not (child / ".git").exists():
             continue
         result = subprocess.run(

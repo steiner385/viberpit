@@ -14,12 +14,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import subprocess
 import uuid
 from pathlib import Path
 from typing import Callable
 
-from ccswitch import configdir
+from ccswitch import configdir, worktrees
 from ccswitch.configdir import compose
 from server.db import db_session
 from server.db.models import Session as DbSession
@@ -61,6 +60,7 @@ class SessionOrchestrator:
         work_dir: str | None = None,
         poll_interval: float = 60.0,
         usage_fn: Callable[[str], object] | None = None,
+        repo_root: str | None = None,
     ) -> None:
         if claude_bin is None:
             # Resolve from env (matches ccswitch.accounts.add_account logic)
@@ -69,6 +69,17 @@ class SessionOrchestrator:
             claude_bin = shlex.split(bin_str)
         self._claude_bin: list[str] = claude_bin
         self._work_dir: str = work_dir or os.getcwd()
+        # Root under which per-session worktrees are created (<root>/.ccswitch/...).
+        # Defaults to the configured repo_root so worktrees sit next to the repos.
+        if repo_root is None:
+            try:
+                from server.config import get_settings
+                repo_root = get_settings().repo_root
+            except Exception:
+                repo_root = os.path.expanduser("~/GitHub")
+        self._repo_root: str = repo_root
+        # session_id → WorktreeInfo for sessions launched in an isolated worktree
+        self._worktrees: dict[str, worktrees.WorktreeInfo] = {}
         self._manager: SessionManager = SessionManager()
         self._poller: UsagePoller = UsagePoller(
             poll_interval=poll_interval,
@@ -131,26 +142,23 @@ class SessionOrchestrator:
         else:
             cwd = self._work_dir
 
-        # Branch switch: only if cwd is a git repo and branch differs from current
-        if branch is not None and cwd is not None:
-            current_result = subprocess.run(
-                ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True,
-                text=True,
-            )
-            if current_result.returncode == 0:
-                current_branch = current_result.stdout.strip()
-                if current_branch != branch:
-                    checkout_result = subprocess.run(
-                        ["git", "-C", cwd, "checkout", branch],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if checkout_result.returncode != 0:
-                        raise BranchSwitchError(
-                            f"could not switch branch: {checkout_result.stderr.strip()}"
-                        )
-            # If returncode != 0, not a git repo — skip checkout silently
+        session_id = str(uuid.uuid4())
+
+        # Per-session isolation: when a branch is selected on a git repo, run the
+        # session in its OWN worktree checked out to that branch instead of doing
+        # a `git checkout` in the user's real tree. Two sessions on one repo never
+        # collide, and the real checkout is left untouched. (Falls back to a child
+        # branch if the selected branch is already checked out elsewhere.)
+        worktree_info: worktrees.WorktreeInfo | None = None
+        if branch is not None and worktrees.is_git_repo(cwd):
+            try:
+                worktree_info = await asyncio.to_thread(
+                    worktrees.create_worktree, cwd, branch, session_id, self._repo_root
+                )
+            except worktrees.WorktreeError as exc:
+                raise BranchSwitchError(str(exc)) from exc
+            cwd = worktree_info.path
+            self._worktrees[session_id] = worktree_info
 
         if account is None:
             account = select_account()
@@ -160,10 +168,9 @@ class SessionOrchestrator:
 
         cfg_dir: Path = compose(account)
 
-        # Pre-trust the project directory so claude won't prompt for trust
+        # Pre-trust the project directory (now the worktree, if any) so claude
+        # won't prompt for trust on startup.
         configdir.trust_project(account, cwd)
-
-        session_id = str(uuid.uuid4())
 
         env = {**os.environ, "CLAUDE_CONFIG_DIR": str(cfg_dir)}
         argv = list(self._claude_bin)
@@ -219,11 +226,30 @@ class SessionOrchestrator:
         return record
 
     async def close_session(self, session_id: str) -> None:
-        """Terminate the PTY and mark the DB row as ended."""
+        """Terminate the PTY, clean up the session worktree, mark the row ended."""
         await self._manager.terminate(session_id)
-        self._records.pop(session_id, None)
+        record = self._records.pop(session_id, None)
+
+        # Remove the per-session worktree if we created one (or if the session's
+        # cwd is one of our managed worktree paths — recognised even after a
+        # server restart). Dirty worktrees are kept; remove_worktree never
+        # destroys uncommitted work.
+        wt = self._worktrees.pop(session_id, None)
+        wt_path = wt.path if wt else (
+            record.cwd if record and worktrees.is_managed_path(record.cwd, self._repo_root)
+            else None
+        )
+        if wt_path:
+            try:
+                removed = await asyncio.to_thread(worktrees.remove_worktree, wt_path)
+                log.info("session.worktree id=%s removed=%s path=%s",
+                         session_id, removed, wt_path)
+            except Exception:
+                log.exception("session.worktree_cleanup_failed id=%s path=%s",
+                              session_id, wt_path)
+
         async with db_session() as db:
-            from sqlalchemy import select as sa_select, update as sa_update
+            from sqlalchemy import update as sa_update
             await db.execute(
                 sa_update(DbSession)
                 .where(DbSession.id == session_id)
