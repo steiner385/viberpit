@@ -69,46 +69,9 @@ class ReauthState:
 
 
 # ---------------------------------------------------------------------------
-# Production default runner
+# Production default runner (defined as a manager method so the runner
+# closure can record/clear _state._temp_profile for _kill_launcher)
 # ---------------------------------------------------------------------------
-
-def _make_default_runner() -> Callable[[str], bool]:
-    """Build the production runner closure.
-
-    prepare_reauth_profile(chrome_profile)
-      → env_extra {BROWSER: realpath(launcher), DISPLAY: reauth_display,
-                   CCSWITCH_REAUTH_PROFILE: temp}
-      → asyncio.to_thread(capture_login, name, env_extra=...)
-      → finally: cleanup_reauth_profile(temp)
-    """
-    async def _production_runner(name: str) -> bool:
-        from ccswitch import auth_login
-        from server.config import get_settings
-
-        settings = get_settings()
-        chrome_profile = settings.chrome_profile
-        reauth_display = settings.reauth_display
-
-        # Locate the launcher script (shipped with the package)
-        launcher = (
-            Path(__file__).parent.parent / "scripts" / "ccswitch-reauth-browser"
-        )
-        launcher_real = os.path.realpath(str(launcher))
-
-        temp = auth_login.prepare_reauth_profile(chrome_profile)
-        try:
-            env_extra = {
-                "BROWSER": launcher_real,
-                "DISPLAY": reauth_display,
-                "CCSWITCH_REAUTH_PROFILE": temp,
-            }
-            return await asyncio.to_thread(
-                auth_login.capture_login, name, env_extra=env_extra
-            )
-        finally:
-            auth_login.cleanup_reauth_profile(temp)
-
-    return _production_runner
 
 
 # ---------------------------------------------------------------------------
@@ -125,17 +88,68 @@ class ReauthManager:
         key_available: Callable[[], bool] | None = None,
         timeout_s: float = 300.0,
     ) -> None:
-        if runner is None:
-            runner = _make_default_runner()
         if key_available is None:
             from ccswitch.crypto import key_available as _ka
             key_available = _ka
 
-        self._runner = runner
         self._key_available = key_available
         self._timeout_s = timeout_s
         self._state = ReauthState()
         self._lock = asyncio.Lock()
+
+        # Wire default production runner AFTER self._state is initialised so
+        # the closure can write self._state._temp_profile.
+        if runner is None:
+            runner = self._make_default_runner()
+        self._runner = runner
+
+    def _make_default_runner(self) -> Callable[[str], bool]:
+        """Build the production runner as a closure over *self*.
+
+        Records the temp-profile path on self._state immediately after
+        prepare_reauth_profile() returns, so that _kill_launcher() can read
+        <temp>/launcher.pid and SIGTERM the Chrome window even if cancel() or
+        a timeout fires before the runner finishes.
+
+        prepare_reauth_profile(chrome_profile)
+          → env_extra {BROWSER: realpath(launcher), DISPLAY: reauth_display,
+                       CCSWITCH_REAUTH_PROFILE: temp}
+          → asyncio.to_thread(capture_login, name, env_extra=...)
+          → finally: cleanup_reauth_profile(temp)
+        """
+        manager = self
+
+        async def _production_runner(name: str) -> bool:
+            from ccswitch import auth_login
+            from server.config import get_settings
+
+            settings = get_settings()
+            chrome_profile = settings.chrome_profile
+            reauth_display = settings.reauth_display
+
+            # Locate the launcher script (shipped with the package)
+            launcher = (
+                Path(__file__).parent.parent / "scripts" / "ccswitch-reauth-browser"
+            )
+            launcher_real = os.path.realpath(str(launcher))
+
+            temp = auth_login.prepare_reauth_profile(chrome_profile)
+            # Record immediately so _kill_launcher can find <temp>/launcher.pid
+            manager._state._temp_profile = temp
+            try:
+                env_extra = {
+                    "BROWSER": launcher_real,
+                    "DISPLAY": reauth_display,
+                    "CCSWITCH_REAUTH_PROFILE": temp,
+                }
+                return await asyncio.to_thread(
+                    auth_login.capture_login, name, env_extra=env_extra
+                )
+            finally:
+                manager._state._temp_profile = None
+                auth_login.cleanup_reauth_profile(temp)
+
+        return _production_runner
 
     # ------------------------------------------------------------------
     # Public API
@@ -223,6 +237,13 @@ class ReauthManager:
 
         now = time.time()
         for child in tmp.iterdir():
+            # Symlinks are never legitimate reauth-tmp dirs — remove without
+            # following, so we can't be tricked into stat-ing or rmtree-ing
+            # arbitrary filesystem paths via a dangling or crafted symlink.
+            if child.is_symlink():
+                child.unlink(missing_ok=True)
+                log.info("sweep_stale: removed symlink %s", child)
+                continue
             try:
                 age = now - os.stat(child).st_mtime
                 if age > 600:

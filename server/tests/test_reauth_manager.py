@@ -212,3 +212,85 @@ def test_shutdown_cancels_running():
         return m.status("primary").state
 
     assert asyncio.run(run()) == "idle"
+
+
+def test_cancel_kills_via_launcher_pid_file(tmp_path, monkeypatch):
+    """cancel() reads <temp>/launcher.pid and sends SIGTERM to that PID.
+
+    Uses a fake runner that:
+      1. Writes a sentinel PID into a launcher.pid file inside a temp dir.
+      2. Sets manager._state._temp_profile to that temp dir (simulating what
+         the production runner does immediately after prepare_reauth_profile).
+      3. Then blocks until cancelled.
+
+    Monkeypatches os.kill so no real signal is sent; asserts SIGTERM was
+    attempted for the sentinel PID.
+    """
+    import os
+    import signal
+
+    SENTINEL_PID = os.getpid()  # use our own PID — guaranteed to exist
+
+    # Write the launcher.pid file
+    launcher_pid_file = tmp_path / "launcher.pid"
+    launcher_pid_file.write_text(str(SENTINEL_PID))
+
+    kill_calls: list[tuple[int, int]] = []
+
+    def fake_kill(pid: int, sig: int) -> None:
+        kill_calls.append((pid, sig))
+
+    monkeypatch.setattr(os, "kill", fake_kill)
+
+    # A runner that sets _temp_profile then blocks until cancelled
+    async def fake_runner(name: str) -> bool:
+        m._state._temp_profile = str(tmp_path)
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            pass
+        return False
+
+    m = ReauthManager(runner=fake_runner, key_available=lambda: True, timeout_s=60)
+
+    async def run():
+        await m.start("primary", "fake@example.com")
+        # Give the runner a tick to set _temp_profile before we cancel
+        await asyncio.sleep(0.05)
+        assert m._state._temp_profile == str(tmp_path), (
+            "_temp_profile must be set by the runner before cancel"
+        )
+        await m.cancel("primary")
+
+    asyncio.run(run())
+
+    # _kill_launcher should have read tmp_path/launcher.pid and called os.kill
+    sigterm_calls = [c for c in kill_calls if c == (SENTINEL_PID, signal.SIGTERM)]
+    assert sigterm_calls, (
+        f"Expected os.kill({SENTINEL_PID}, SIGTERM) but got: {kill_calls}"
+    )
+
+
+def test_sweep_stale_removes_symlinks(tmp_path, monkeypatch):
+    """sweep_stale() removes symlinks without following them."""
+    import time
+
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+
+    from ccswitch.paths import reauth_tmp_dir
+    rtd = reauth_tmp_dir()
+    rtd.mkdir(parents=True, exist_ok=True)
+
+    # A real dir to be the symlink target (outside the sweep tree)
+    real_target = tmp_path / "external-target"
+    real_target.mkdir()
+
+    # A symlink inside the sweep dir pointing to the real target
+    sym = rtd / "reauth-symlink"
+    sym.symlink_to(real_target)
+
+    m = ReauthManager(runner=lambda n: True, key_available=lambda: True, timeout_s=5)
+    m.sweep_stale()
+
+    assert not sym.exists() and not sym.is_symlink(), "symlink should have been removed"
+    assert real_target.exists(), "real target should not have been touched"
