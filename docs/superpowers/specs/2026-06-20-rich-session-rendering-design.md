@@ -153,3 +153,48 @@ SessionView
 ## Out of scope (nice-to-have follow-ups)
 
 - Interactive slash-command pickers; image paste/attach into prompts; multi-pane/split views; transcript search; exporting a session.
+
+---
+
+## Security model (added after 8-persona review)
+
+Threat model: single-user, tailnet-only — but the composer + `can_use_tool` is a **privileged remote-code-execution channel** and must be designed as one.
+
+- **Per-message WS authorization.** Identity is re-verified on *every* inbound WS frame (`prompt`, `interrupt`, `permissionResponse`, `setPermissionMode`, `answerQuestion`), not just at handshake; reject on identity change / revoked AppSession. Each `permId`/`questionId` is bound to the session creator's identity; responses from any other identity are dropped. Responses for unknown/already-resolved ids are silently dropped.
+- **Permission defaults & scoping.**
+  - **Install default = `interactive`.** `auto` and `allowlist` are opt-in; `auto` is **per-session only, never the global default**.
+  - Even in `auto`/`allowlist`, a hardcoded **dangerous-tool denylist** (`Bash`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `WebFetch`, `WebSearch`, un-whitelisted MCP tools) still round-trips — *unless* the session explicitly enables "full auto (incl. shell)", which shows a persistent banner.
+  - **`always` grants are fingerprinted**, not tool-wide: key = `(tool, fingerprint)` — for `Bash` the first token + cwd, for `Edit`/`Write` the absolute path. Grants carry a TTL (~1h), are revocable in-session (a visible "granted permissions" list), and persist in the session row so they survive driver restart/rotation.
+- **Output safety (XSS).** `react-markdown` with **no `rehype-raw` and no `dangerouslySetInnerHTML` anywhere**. Bash stdout/stderr, Read content, and `toolCall.input` render as escaped text (ANSI stripped or via an escaping converter), never markdown. Required test: inject `<img onerror>` / `[x](javascript:)` into each block type and assert no execution.
+- **Secret hygiene.** The redactor runs **server-side** over every `textDelta`/`thinkingDelta`/`toolResult.payload` *and* the JSONL replay path before anything leaves the host. Extend `_REDACT_PATTERNS` with the OAuth refresh-token + `ccswitch_session` cookie shapes. The shared `projects/` transcript dir is a credential-bearing artifact → chmod `0700`.
+- **Input validation.** `git worktree add … -- <branch>` and reject branches beginning with `-`; validate `account` against known config dirs; validate `repo` as `^[\w.-]+/[\w.-]+$`; `Path.resolve()` + assert containment in `clones_base()`/`worktrees_base()`.
+- **Transport hardening.** Cap inbound WS frame size (~256 KB); cap queued-prompt count per session; rate-limit `setPermissionMode`. Cookie `secure=True` by default (tailscale serve = HTTPS); require a non-empty `tailnet_allowlist` outside dev (refuse to boot otherwise); bind uvicorn to the tailscale/loopback interface, never `0.0.0.0`.
+- **Audit.** Emit redacted audit events for `permission.allow|deny|always` (tool + input shape + identity + sessionId), `permission_mode.change` (old→new + identity), and `interrupt`.
+
+## Review resolutions (8-persona pass, folded into the design)
+
+**Architecture**
+- **Single source of truth on attach:** tag every normalized event with the SDK message `uuid`; the JSONL replay emits the same uuids; the reducer upserts by id so a mid-turn live event that overlaps replay merges instead of duplicating. Replay skips a trailing incomplete JSONL entry and lets the live stream re-emit it.
+- **Permission state lives in the orchestrator**, not the driver, so rotation can cancel (deny) and re-emit pending requests with the *same* `permId` on the new driver.
+- **Atomic migration:** delete every `orchestrator.manager` call site in `ws.py` in the same change; no "driver for new / manager for old" hybrid, even temporarily.
+- `trust_project(new_account, cwd)` runs before starting the rotated-to driver. `claude_session_id` is read from the SDK (first system message), not the mtime scan. Tool names map to a ccswitch `toolKind` enum so SDK names never cross the seam.
+
+**Performance**
+- Reducer keeps prior `Turn` objects referentially stable; only the streaming `Turn` gets a new reference each flush; `Turn`/blocks are `React.memo` + keyed by `turnId`/`toolId` (not array index).
+- **Markdown parse + Shiki highlight run once at `turnEnd`** (plain `<pre>` while streaming). Shiki pinned to ~8 langs + one theme, lazy-loaded with a plain-text Suspense fallback.
+- **Replay = completed-turn summaries**, not historical deltas; cap to the last N turns ("load earlier" for the rest); JSONL read via `asyncio.to_thread`.
+- Backend batcher coalesces multiple events per 16 ms window into **one WS frame (array)**; client applies the array in one synchronous loop → one render. `DiffView` caps large diffs (first/last 100 lines + "show all").
+
+**Frontend contract**
+- Reducer state adds `openBlockId`: `toolCall` closes the open text/thinking block; next `textDelta` opens a new one. `permissionRequest` and `question` carry `turnId`. `status` is structured `{state, count}` (no `"queued:3"` string-parsing). The `SessionSocket` `EventMap` + `_handleInbound` switch are extended with all new events as part of this change (not deferred). Reattach re-emits open cards with their original ids; reducer upserts by id.
+
+**Accessibility**
+- `permissionRequest`/`question` arrival **moves focus** to the card's primary control (they block; aria-live alone is insufficient); focus returns to the composer on resolve. Question options use radio/checkbox semantics (single/multi). Thinking toggle is a `<button aria-expanded aria-controls>` with the region `hidden` when collapsed. aria-live mirror is suppressed during replay (announce "history loaded" on `replayComplete`). Errors → `role="alert"`. All new buttons keep the `min-h-[44px]` + focus-ring pattern (note: `ui/button.tsx` default size is 40px — bump for touch-critical cards).
+
+**UX**
+- On `replayComplete`, if a permission/question is open, force-scroll to it + show a sticky "Action needed" banner. Permission buttons stack vertically ≥48 px on narrow viewports; primary action is dominant. Queued prompts persist in the session model, render as muted bubbles, survive session-switch/reconnect, and are cancelable. Rename the toggle to "Plan mode" (distinct icon) + a permission-mode chip in the StatusBar opening a bottom sheet. `rotated` event carries `reason` + whether the turn was restarted ("no tools were committed"). Composer shows "Queue" (not "Send") while working. Empty-session and all-accounts-limited states get explicit treatments (the latter shows the reset time, calm framing, no urgency copy).
+
+**QA / testing**
+- Pin a **fake-SDK contract snapshot** (a `Protocol`/`ABC` both the real adapter and the fake implement); hand-authored JSONL fixtures in `server/tests/fixtures/` validated against the documented event union (no quota burned).
+- Each feasibility spike gets a **binary pass/fail criterion + time-box + which tests are conditional** on it (Spike 1 gates the whole driver design).
+- Required tests: permission-Future races (allow/deny/always, interrupt/disconnect → deny, double-response, response-after-resolve), multi-concurrent permissions, reconnect re-emit ordering vs `replayComplete`, queue cancel + interrupt-drains-queue, rotation-with-open-card. Enumerate reducer cases (delta into open turn, delta after `turnEnd`, orphan `toolResult`, unresolved permission on `turnEnd`, replay→live transition). Add `data-testid`s to all interactive elements; set `clearMocks: true` in `web/vitest.config.ts`.
