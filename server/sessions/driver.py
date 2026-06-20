@@ -7,6 +7,8 @@ from .permissions import PermissionRegistry
 
 log = logging.getLogger(__name__)
 
+_STREAM_DONE = object()
+
 
 class SessionDriver:
     """Drives one Claude session via an SDK client, exposing normalized events.
@@ -38,12 +40,13 @@ class SessionDriver:
         return getattr(self._tr, "_turn_id", None) or "turn"
 
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
+        turn_id = self._turn()
         perm_id, fut = await self._reg.request(
-            self.session_id, self._turn(), tool_name, tool_input,
+            self.session_id, turn_id, tool_name, tool_input,
             mode=self.mode, denylist=self.denylist, allowlist=True, identity=self.identity)
         if perm_id is not None:
             await self._out.put(ev.PermissionRequest(
-                perm_id, self._turn(), tool_name, ev.tool_kind(tool_name),
+                perm_id, turn_id, tool_name, ev.tool_kind(tool_name),
                 tool_input, plan=(tool_name == "ExitPlanMode")))
         allowed = await fut
         return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied by user")
@@ -53,6 +56,8 @@ class SessionDriver:
         await self._client.__aenter__()
 
     async def send_prompt(self, text: str):
+        if self._client is None:
+            raise RuntimeError("SessionDriver.send_prompt called before start()")
         await self._out.put(ev.Status(state="working"))
         await self._client.query(text)
         self._pump = asyncio.create_task(self._drain())
@@ -72,7 +77,10 @@ class SessionDriver:
 
     async def events(self):
         while True:
-            yield await self._out.get()
+            item = await self._out.get()
+            if item is _STREAM_DONE:
+                return
+            yield item
 
     async def interrupt(self):
         self._reg.deny_all(self.session_id)
@@ -91,5 +99,10 @@ class SessionDriver:
         self._reg.deny_all(self.session_id)
         if self._pump:
             self._pump.cancel()
+            try:
+                await self._pump
+            except asyncio.CancelledError:
+                pass
         if self._client:
             await self._client.__aexit__(None, None, None)
+        await self._out.put(_STREAM_DONE)

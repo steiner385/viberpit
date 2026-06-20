@@ -49,3 +49,20 @@ def test_interrupt_denies_pending_and_stops():
         await d.aclose()
         return await fut
     assert asyncio.run(run()) is False
+
+def test_events_terminates_after_aclose():
+    msgs = [f.result(uuid="t1")]
+    async def run():
+        d = SessionDriver("s3", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
+        await d.start(); await d.send_prompt("x")
+        got = []
+        async def consume():
+            async for e in d.events():
+                got.append(e)
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0.05)
+        await d.aclose()
+        await asyncio.wait_for(task, timeout=2)   # must terminate, not hang
+        return True
+    assert asyncio.run(run()) is True
