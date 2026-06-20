@@ -43,6 +43,7 @@ class CreateSessionRequest(BaseModel):
     initialPrompt: str | None = None
     repo: str | None = None  # nameWithOwner, e.g. "owner/name"
     branch: str | None = None
+    permissionMode: str | None = None
 
 
 class RenameSessionRequest(BaseModel):

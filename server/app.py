@@ -17,6 +17,7 @@ from server.api.accounts import router as accounts_router
 from server.api.auth import router as auth_router
 from server.api.config import router as config_router
 from server.api.repos import router as github_router
+from server.api.settings import router as settings_router
 
 
 @asynccontextmanager
@@ -71,6 +72,7 @@ def create_app(orchestrator: SessionOrchestrator | None = None) -> FastAPI:
     app.include_router(auth_router)
     app.include_router(config_router)
     app.include_router(github_router)
+    app.include_router(settings_router)
 
     # WebSocket bridge
     ws_router = build_ws_router(orchestrator)

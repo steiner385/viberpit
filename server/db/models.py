@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -34,6 +34,9 @@ class Session(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="idle")
     pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cwd: Mapped[str] = mapped_column(String, nullable=False)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    permission_mode: Mapped[str] = mapped_column(String, nullable=False, default="interactive")
+    tool_allowlist: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -64,3 +67,14 @@ class AuditEvent(Base):
     type: Mapped[str] = mapped_column(String, nullable=False)
     identity: Mapped[str] = mapped_column(String, nullable=False)
     detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class AppSettings(Base):
+    """Single-row application settings (singleton id='singleton')."""
+
+    __tablename__ = "app_settings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default="singleton")
+    default_permission_mode: Mapped[str] = mapped_column(String, nullable=False, default="interactive")
+    thinking_collapsed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    repo_root: Mapped[str | None] = mapped_column(String, nullable=True)
