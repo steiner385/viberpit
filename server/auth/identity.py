@@ -44,23 +44,23 @@ def _whois_identity(request: Request) -> str | None:
     Wraps the subprocess call in try/except so any failure returns None gracefully.
     This is a best-effort fallback; the header path is preferred.
     """
+    import json
     try:
         peer_ip = request.client.host if request.client else None
         if not peer_ip:
             return None
         result = subprocess.run(
-            ["tailscale", "whois", peer_ip],
+            ["tailscale", "whois", "--json", peer_ip],
             capture_output=True,
             text=True,
             timeout=2,
         )
         if result.returncode != 0:
             return None
-        # Parse "UserProfile: Login: user@example.com" from whois output
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if line.lower().startswith("login:"):
-                return line.split(":", 1)[1].strip()
+        # tailscale whois --json → {"UserProfile": {"LoginName": "user@example.com", ...}}
+        data = json.loads(result.stdout)
+        login = (data.get("UserProfile") or {}).get("LoginName")
+        return login or None
     except Exception:
         pass
     return None
