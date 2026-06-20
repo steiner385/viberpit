@@ -224,4 +224,73 @@ describe('SessionSocket', () => {
     })
     expect(reattach).toBeDefined()
   })
+
+  // ── Session events — batch fan-out ────────────────────────────────────────
+
+  it('a batch frame fans out N sessionEvent callbacks in order', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+
+    const received: unknown[] = []
+    sock.on('sessionEvent', (e) => received.push(e))
+
+    ws.simulateMessage({
+      type: 'batch',
+      events: [
+        { type: 'turnStart', turnId: 't1' },
+        { type: 'textDelta', turnId: 't1', text: 'Hello' },
+        { type: 'turnEnd',   turnId: 't1' },
+      ],
+    })
+
+    expect(received).toHaveLength(3)
+    expect((received[0] as { type: string }).type).toBe('turnStart')
+    expect((received[1] as { type: string }).type).toBe('textDelta')
+    expect((received[2] as { type: string }).type).toBe('turnEnd')
+  })
+
+  // ── Outbound: prompt ──────────────────────────────────────────────────────
+
+  it('socket.prompt("s","hi") sends {type:"prompt",sessionId:"s",text:"hi"}', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+
+    sock.prompt('s', 'hi')
+
+    const sent = parseSent(lastSock(), 0)
+    expect(sent).toEqual({ type: 'prompt', sessionId: 's', text: 'hi' })
+  })
+
+  // ── Outbound: permissionResponse ──────────────────────────────────────────
+
+  it('socket.permissionResponse sends the correct payload', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+
+    sock.permissionResponse('sess-1', 'perm-1', 'allow')
+
+    const sent = parseSent(lastSock(), 0)
+    expect(sent).toEqual({ type: 'permissionResponse', sessionId: 'sess-1', permId: 'perm-1', decision: 'allow' })
+  })
+
+  // ── Inbound: individual session event (non-batch) ─────────────────────────
+
+  it('a direct session event frame fires sessionEvent callback', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+
+    const handler = vi.fn()
+    sock.on('sessionEvent', handler)
+
+    ws.simulateMessage({ type: 'title', title: 'My Session', source: 'auto' })
+
+    expect(handler).toHaveBeenCalledOnce()
+    expect(handler).toHaveBeenCalledWith({ type: 'title', title: 'My Session', source: 'auto' })
+  })
 })

@@ -9,6 +9,8 @@
 import type { QueryClient } from '@tanstack/react-query'
 import type { Session } from '@/api/types'
 import { QK } from '@/api/hooks'
+import type { SessionEvent } from '@/session/events'
+import { SESSION_EVENT_TYPES } from '@/session/events'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
@@ -19,6 +21,7 @@ export interface WsUsageMsg        { type: 'usage';         account: string; ses
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string }
 export interface WsSessionEndedMsg { type: 'sessionEnded';  sessionId: string; code: number }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string }
+export interface WsBatchMsg        { type: 'batch';         events: SessionEvent[] }
 
 export type WsInboundMsg =
   | WsOutputMsg
@@ -28,6 +31,7 @@ export type WsInboundMsg =
   | WsRotatedMsg
   | WsSessionEndedMsg
   | WsErrorMsg
+  | WsBatchMsg
 
 // ── Callback registry type ───────────────────────────────────────────────────
 
@@ -40,6 +44,7 @@ type EventMap = {
   sessionEnded:  (msg: WsSessionEndedMsg) => void
   error:         (msg: WsErrorMsg) => void
   connectionStateChange: (state: ConnectionState) => void
+  sessionEvent:  (e: SessionEvent) => void
 }
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting'
@@ -154,6 +159,26 @@ export class SessionSocket {
     this._send({ type: 'interrupt', sessionId })
   }
 
+  prompt(sessionId: string, text: string) {
+    this._send({ type: 'prompt', sessionId, text })
+  }
+
+  sendInterrupt(sessionId: string) {
+    this._send({ type: 'interrupt', sessionId })
+  }
+
+  permissionResponse(sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') {
+    this._send({ type: 'permissionResponse', sessionId, permId, decision })
+  }
+
+  answerQuestion(sessionId: string, questionId: string, selected: string[]) {
+    this._send({ type: 'answerQuestion', sessionId, questionId, selected })
+  }
+
+  setPermissionMode(sessionId: string, mode: string) {
+    this._send({ type: 'setPermissionMode', sessionId, mode })
+  }
+
   // ── Event emitter ───────────────────────────────────────────────────────────
 
   on<K extends keyof EventMap>(event: K, cb: EventMap[K]) {
@@ -231,6 +256,17 @@ export class SessionSocket {
       case 'error':
         this._emit('error', msg)
         break
+      case 'batch':
+        for (const e of msg.events) {
+          this._emit('sessionEvent', e)
+        }
+        break
+      default:
+        // Fan out individual session events sent directly (not wrapped in batch)
+        if (SESSION_EVENT_TYPES.has((msg as { type: string }).type)) {
+          this._emit('sessionEvent', msg as unknown as SessionEvent)
+        }
+        break
     }
   }
 
@@ -305,14 +341,25 @@ export function useSessionSocket() {
     return () => socket.off('connectionStateChange', handler)
   }, [socket])
 
-  const attach    = useCallback((sessionId: string) => socket.attach(sessionId), [socket])
-  const detach    = useCallback((sessionId: string) => socket.detach(sessionId), [socket])
-  const input     = useCallback((sessionId: string, data: string) => socket.input(sessionId, data), [socket])
-  const resize    = useCallback((sessionId: string, cols: number, rows: number) => socket.resize(sessionId, cols, rows), [socket])
-  const interrupt = useCallback((sessionId: string) => socket.interrupt(sessionId), [socket])
+  const attach              = useCallback((sessionId: string) => socket.attach(sessionId), [socket])
+  const detach              = useCallback((sessionId: string) => socket.detach(sessionId), [socket])
+  const input               = useCallback((sessionId: string, data: string) => socket.input(sessionId, data), [socket])
+  const resize              = useCallback((sessionId: string, cols: number, rows: number) => socket.resize(sessionId, cols, rows), [socket])
+  const interrupt           = useCallback((sessionId: string) => socket.interrupt(sessionId), [socket])
+  const prompt              = useCallback((sessionId: string, text: string) => socket.prompt(sessionId, text), [socket])
+  const sendInterrupt       = useCallback((sessionId: string) => socket.sendInterrupt(sessionId), [socket])
+  const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') => socket.permissionResponse(sessionId, permId, decision), [socket])
+  const answerQuestion      = useCallback((sessionId: string, questionId: string, selected: string[]) => socket.answerQuestion(sessionId, questionId, selected), [socket])
+  const setPermissionMode   = useCallback((sessionId: string, mode: string) => socket.setPermissionMode(sessionId, mode), [socket])
 
   const on  = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.on(event, cb), [socket])
   const off = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.off(event, cb), [socket])
 
-  return { attach, detach, input, resize, interrupt, on, off, connectionState, socket }
+  return {
+    attach, detach, input, resize, interrupt,
+    prompt, sendInterrupt, permissionResponse, answerQuestion, setPermissionMode,
+    on, off,
+    connectionState,
+    socket,
+  }
 }
