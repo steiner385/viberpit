@@ -60,3 +60,19 @@ Ran the real server (`uvicorn server.app:app`) against the 3 real accounts.
 2. Refresh-token rotation desync: Anthropic refresh tokens are single-use; concurrent refreshers (CLI + server) over a long session desynced the stored tokens → all three `needs-reauth`. Live session creation blocked until accounts are re-added (`ccswitch add`). Follow-up: serialize refresh + always persist the rotated token.
 
 **Not yet verified live:** create + stream a real claude session (blocked by #2; retry after re-add).
+
+### T060 RESOLVED — full live pass (2026-06-20)
+
+After re-adding accounts and two core fixes, the full end-to-end live run PASSED 8/8:
+server+health, 401 gate, **accounts 3/3 ok**, no token leak, **POST /api/sessions 201**
+(real session on `primary`), **WS streamed real claude output**, **model produced the
+expected response (LIVEOK)**, DELETE 204. The web app creates and streams a real Claude
+session across accounts.
+
+Two fixes the live run forced (Principle III):
+- **Serialize per-account token refresh** — the server's usage poller + API requests
+  refreshed the same single-use refresh token concurrently → desync. Now locked + re-read.
+- **Composed `.claude.json` marked onboarded** — interactive `claude` showed the login
+  chooser (the `claude auth login` capture omits `hasCompletedOnboarding`, which `-p`
+  ignores but interactive honors); `compose` now sets it.
+- Operational: a headless server must get `CCSWITCH_MASTER_KEY` via env (no keyring/D-Bus).
