@@ -4,7 +4,10 @@ Routes:
   GET    /api/accounts                  → list accounts with live usage (no tokens)
   POST   /api/accounts/{name}/refresh   → refresh one account's usage
   DELETE /api/accounts/{name}           → remove account (204)
-  POST   /api/accounts/{name}/relogin   → trigger host-side re-login (202)
+  PATCH  /api/accounts/{name}           → set/clear nickname
+  POST   /api/accounts/{name}/reauth         → start re-authentication (202)
+  GET    /api/accounts/{name}/reauth         → get reauth status
+  POST   /api/accounts/{name}/reauth/cancel  → cancel a running reauth
 
 All routes require a verified identity via ``current_identity``.
 Response NEVER includes token/credential material (FR-023).
@@ -15,14 +18,15 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ccswitch.accounts import list_accounts, remove_account, set_nickname
 from ccswitch import paths
+from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
+from server.reauth import ReauthBusy, ReauthNoKey
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +70,25 @@ def _account_response(name: str, status_str: str, usage, nickname: str | None = 
 
 def _get_orchestrator(request: Request):
     return request.app.state.orchestrator
+
+
+def _get_reauth(request: Request):
+    return request.app.state.reauth
+
+
+def _check_name_and_slot(name: str) -> None:
+    """Assert the account name is valid and the slot exists.
+
+    Raises HTTPException 404 if the name is invalid (path traversal, hidden
+    file, bad chars) OR if no credential slot exists for the name.
+    """
+    try:
+        assert_valid_account_name(name)
+    except InvalidAccountName:
+        raise HTTPException(status_code=404, detail=f"Account '{name}' not found")
+
+    if not paths.slot_path(name).exists():
+        raise HTTPException(status_code=404, detail=f"Account '{name}' not found")
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +135,8 @@ async def refresh_account(
 
     Never includes token material.
     """
+    _check_name_and_slot(name)
+
     orch = _get_orchestrator(request)
 
     # Force a fresh fetch (bypasses cache by going through the poller lock)
@@ -137,6 +162,8 @@ async def delete_account(
     db=Depends(get_db),
 ):
     """Remove an account slot and its config directory. Returns 204."""
+    _check_name_and_slot(name)
+
     remove_account(name)
 
     await record_audit(
@@ -160,14 +187,9 @@ async def set_account_nickname(
     """Set or clear a display nickname for an account.
 
     A blank or whitespace-only nickname clears the existing nickname.
-    Returns 404 if the account slot does not exist.
+    Returns 404 if the account name is invalid or slot does not exist.
     """
-    # Reject malformed names (path traversal, hidden files)
-    if "/" in name or "\\" in name or name.startswith("."):
-        raise HTTPException(status_code=404, detail=f"Account '{name}' not found")
-
-    if not paths.slot_path(name).exists():
-        raise HTTPException(status_code=404, detail=f"Account '{name}' not found")
+    _check_name_and_slot(name)
 
     cleaned = (body.nickname or "").strip() or None
     set_nickname(name, cleaned)
@@ -184,21 +206,93 @@ async def set_account_nickname(
     return _account_response(name, status_str, None, stored_nickname)
 
 
-@router.post("/{name}/relogin", status_code=status.HTTP_202_ACCEPTED)
-async def relogin_account(
+# ---------------------------------------------------------------------------
+# Reauth routes
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{name}/reauth", status_code=status.HTTP_202_ACCEPTED)
+async def reauth_start(
     name: str,
+    request: Request,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Acknowledge a host-side re-login request for an account.
+    """Start a re-authentication flow for the named account.
 
-    In v1, registration is host-side (``ccswitch add``); this endpoint
-    acknowledges the intent and records an audit event.
+    Returns 202 + state dict on success.
+    Returns 409 if another reauth is already running.
+    Returns 503 if no encryption key is configured.
+    Returns 404 if the account name is invalid or the slot does not exist.
     """
+    _check_name_and_slot(name)
+
+    reauth = _get_reauth(request)
+    try:
+        state = await reauth.start(name, identity)
+    except ReauthBusy as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "reauth_busy",
+                "holdingIdentity": exc.holding_identity,
+                "startedAt": exc.started_at,
+            },
+        )
+    except ReauthNoKey:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "no_encryption_key"},
+        )
+
     await record_audit(
         db=db,
-        type="account.relogin.requested",
+        type="account.reauth.start",
         identity=identity,
         detail={"account": name},
     )
-    return {"acknowledged": True, "account": name}
+
+    return state.to_dict()
+
+
+@router.get("/{name}/reauth")
+async def reauth_status(
+    name: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Return the current reauth state for the named account.
+
+    Returns 404 if the account name is invalid or the slot does not exist.
+    """
+    _check_name_and_slot(name)
+
+    reauth = _get_reauth(request)
+    state = reauth.status(name)
+    return state.to_dict()
+
+
+@router.post("/{name}/reauth/cancel")
+async def reauth_cancel(
+    name: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Cancel a running reauth for the named account.
+
+    Returns 404 if the account name is invalid or the slot does not exist.
+    """
+    _check_name_and_slot(name)
+
+    reauth = _get_reauth(request)
+    state = await reauth.cancel(name)
+
+    await record_audit(
+        db=db,
+        type="account.reauth.cancel",
+        identity=identity,
+        detail={"account": name},
+    )
+
+    return state.to_dict()

@@ -508,12 +508,16 @@ def test_delete_account_returns_204():
 
 
 # ---------------------------------------------------------------------------
-# Test: POST /api/accounts/{name}/relogin
+# Test: POST /api/accounts/{name}/relogin — replaced by /reauth
 # ---------------------------------------------------------------------------
 
 
-def test_relogin_returns_202():
-    """POST /api/accounts/{name}/relogin acknowledges with 202."""
+def test_relogin_route_removed():
+    """POST /api/accounts/{name}/relogin is no longer registered (returns 404/405).
+
+    The placeholder relogin route was replaced by the real /reauth endpoints
+    in Task 6.  Unknown accounts return 404 from the name+slot guard.
+    """
     with temp_env():
         with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             from server.sessions.orchestrator import SessionOrchestrator
@@ -530,7 +534,8 @@ def test_relogin_returns_202():
                 "/api/accounts/anyname/relogin", headers=IDENTITY_HEADERS
             )
 
-    assert response.status_code == 202
+    # The route no longer exists; FastAPI returns 404 or 405
+    assert response.status_code in (404, 405)
 
 
 # ---------------------------------------------------------------------------

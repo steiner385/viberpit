@@ -304,9 +304,11 @@ def test_boot_gate_raises_on_non_loopback_empty_allowlist():
 
     with patch.dict(os.environ, clean_env, clear=True):
         from server.sessions.orchestrator import SessionOrchestrator
+        from server.reauth import ReauthManager
         orch = SessionOrchestrator(poll_interval=9999.0)
         app = FastAPI(lifespan=_lifespan)
         app.state.orchestrator = orch
+        app.state.reauth = ReauthManager()
 
         async def _run():
             async with _lifespan(app):
@@ -331,9 +333,11 @@ def test_boot_gate_allows_non_loopback_with_allowlist():
 
     with patch.dict(os.environ, clean_env, clear=True):
         from server.sessions.orchestrator import SessionOrchestrator
+        from server.reauth import ReauthManager
         orch = SessionOrchestrator(poll_interval=9999.0)
         app = FastAPI(lifespan=_lifespan)
         app.state.orchestrator = orch
+        app.state.reauth = ReauthManager()
 
         async def _run():
             async with _lifespan(app):
@@ -356,9 +360,11 @@ def test_boot_gate_allows_non_loopback_with_dev_flag():
     }
     with patch.dict(os.environ, env):
         from server.sessions.orchestrator import SessionOrchestrator
+        from server.reauth import ReauthManager
         orch = SessionOrchestrator(poll_interval=9999.0)
         app = FastAPI(lifespan=_lifespan)
         app.state.orchestrator = orch
+        app.state.reauth = ReauthManager()
 
         async def _run():
             async with _lifespan(app):
