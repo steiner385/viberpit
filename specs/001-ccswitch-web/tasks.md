@@ -85,18 +85,18 @@ management surfaces. **Independent test:** Playwright (mobile viewport) drives d
 against a running US1 backend.
 
 ### Tests (write first)
-- [ ] T041 [P] [US2] Test: SessionList renders cross-account rows (name/account/status/usage), selection by keyboard+click in `web/src/components/SessionList.test.tsx`
-- [ ] T042 [P] [US2] Test: status shown by text+icon (not color alone); usage badge has numeric label + AA contrast tokens in `web/src/components/UsageBadge.test.tsx`
-- [ ] T043 [P] [US2] Test: rename/close/new dialogs + 44px targets + focus returns to list on close in `web/src/components/SessionActions.test.tsx`
+- [X] T041 [P] [US2] Test: SessionList renders cross-account rows (name/account/status/usage), selection by keyboard+click in `web/src/components/SessionList.test.tsx`
+- [X] T042 [P] [US2] Test: status shown by text+icon (not color alone); usage badge has numeric label + AA contrast tokens in `web/src/components/UsageBadge.test.tsx`
+- [X] T043 [P] [US2] Test: rename/close/new dialogs + 44px targets + focus returns to list on close in `web/src/components/SessionActions.test.tsx`
 - [ ] T044 [P] [US2] Playwright: dashboard→open session→back; mobile viewport, no horizontal scroll; helper-key bar present in `web/e2e/dashboard.spec.ts`
 - [ ] T045 [P] [US2] Playwright: reconnect replays scrollback ≤10s; `rotated` event updates account badge in `web/e2e/rotation-reconnect.spec.ts`
 
 ### Implementation
 - [ ] T046 [US2] Vite/React/Tailwind/shadcn base + theme tokens (AA contrast) + router in `web/src/main.tsx`, `web/src/App.tsx`
-- [ ] T047 [US2] API client (TanStack Query hooks) in `web/src/api/` + WS client (multiplexed channel) in `web/src/ws/client.ts`
-- [ ] T048 [US2] `SessionList` + `SessionCard` + `UsageStrip`/`UsageBadge` in `web/src/components/`
+- [X] T047 [US2] API client (TanStack Query hooks) in `web/src/api/` + WS client (multiplexed channel) in `web/src/ws/client.ts`
+- [X] T048 [US2] `SessionList` + `SessionCard` + `UsageStrip`/`UsageBadge` in `web/src/components/`
 - [ ] T049 [US2] Session actions: new (optional initial prompt), rename, close (confirm) dialogs in `web/src/components/`
-- [ ] T050 [US2] Empty/first-run state + all-accounts-limited banner (earliest reset, local time) in `web/src/components/`
+- [X] T050 [US2] Empty/first-run state + all-accounts-limited banner (earliest reset, local time) in `web/src/components/`
 - [ ] T051 [US2] `Terminal` view (xterm.js + fit addon) over WS, full-screen on phone with visible "back to list" in `web/src/components/Terminal.tsx`
 - [ ] T052 [US2] Mobile `HelperKeyBar` (Esc/Tab/Ctrl/arrows, ≥44px) in `web/src/components/HelperKeyBar.tsx`
 - [ ] T053 [US2] a11y: `aria-live="polite"` recent-output region + xterm accessibility addon + focus management (R6, NFR-004)
