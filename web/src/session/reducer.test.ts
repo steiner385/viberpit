@@ -206,4 +206,86 @@ describe('transcriptReducer', () => {
     const s = transcriptReducer(initialTranscript, { type: 'error', code: 'rate_limit', message: 'Too many requests', resetsAt: '2024-01-01T00:00:00Z' })
     expect(s.error).toEqual({ code: 'rate_limit', message: 'Too many requests', resetsAt: '2024-01-01T00:00:00Z' })
   })
+
+  // ── Orphan textDelta before turnStart ──────────────────────────────────────
+
+  it('textDelta arriving BEFORE any turnStart creates the assistant turn and opens a text block', () => {
+    const s = transcriptReducer(initialTranscript, { type: 'textDelta', turnId: 't1', text: 'orphan text' })
+    expect(s.turns).toHaveLength(1)
+    expect(s.turns[0].id).toBe('t1')
+    expect(s.turns[0].role).toBe('assistant')
+    expect(s.turns[0].blocks).toHaveLength(1)
+    const textBlock = s.turns[0].blocks[0]
+    expect(textBlock.kind).toBe('text')
+    if (textBlock.kind === 'text') expect(textBlock.text).toBe('orphan text')
+    expect(s.openBlockId).toBe(textBlock.id)
+  })
+
+  // ── Duplicate permissionRequest idempotency ───────────────────────────────
+
+  it('duplicate permissionRequest with the same permId results in only one permission block', () => {
+    const req: SessionEvent = { type: 'permissionRequest', permId: 'perm-1', turnId: 't1', tool: 'Bash', toolKind: 'bash', input: { cmd: 'ls' }, plan: false }
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      req,
+      req,
+    ])
+    const permBlocks = s.turns[0].blocks.filter((b) => b.kind === 'permission')
+    expect(permBlocks).toHaveLength(1)
+  })
+
+  // ── Duplicate question idempotency ─────────────────────────────────────────
+
+  it('duplicate question with the same questionId results in only one question block', () => {
+    const q: SessionEvent = { type: 'question', questionId: 'q-1', turnId: 't1', header: 'Pick', question: 'Which?', options: [], multiSelect: false }
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      q,
+      q,
+    ])
+    const questionBlocks = s.turns[0].blocks.filter((b) => b.kind === 'question')
+    expect(questionBlocks).toHaveLength(1)
+  })
+
+  // ── Referential stability on no-ops ────────────────────────────────────────
+
+  it('_resolvePermission for an unknown permId returns the same state reference', () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'permissionRequest', permId: 'perm-1', turnId: 't1', tool: 'Bash', toolKind: 'bash', input: { cmd: 'ls' }, plan: false },
+    ])
+    const next = transcriptReducer(s, { type: '_resolvePermission', permId: 'unknown-perm' })
+    expect(next).toBe(s)
+  })
+
+  it('_resolveQuestion for an unknown questionId returns the same state reference', () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'question', questionId: 'q-1', turnId: 't1', header: 'Pick', question: 'Which?', options: [], multiSelect: false },
+    ])
+    const next = transcriptReducer(s, { type: '_resolveQuestion', questionId: 'unknown-q' })
+    expect(next).toBe(s)
+  })
+
+  it('duplicate turnStart when openBlockId is already null returns the same state reference', () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'textDelta', turnId: 't1', text: 'hello' },
+      { type: 'turnEnd', turnId: 't1' }, // openBlockId becomes null
+    ])
+    // Dispatch a duplicate turnStart for the same turn with openBlockId already null
+    const next = transcriptReducer(s, { type: 'turnStart', turnId: 't1' })
+    expect(next).toBe(s)
+  })
+
+  it('duplicate toolCall when turn already exists and openBlockId is already null returns the same state reference', () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'toolCall', turnId: 't1', toolId: 'tool-x', name: 'Edit', toolKind: 'edit', input: {} },
+      { type: 'turnEnd', turnId: 't1' }, // openBlockId becomes null
+    ])
+    // Dispatch a duplicate toolCall for the same tool with openBlockId already null
+    const next = transcriptReducer(s, { type: 'toolCall', turnId: 't1', toolId: 'tool-x', name: 'Edit', toolKind: 'edit', input: {} })
+    expect(next).toBe(s)
+  })
 })

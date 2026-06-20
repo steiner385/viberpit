@@ -98,7 +98,8 @@ export function transcriptReducer(
       const { turnId } = ev
       const idx = findTurnIdx(state.turns, turnId)
       if (idx !== -1) {
-        // Idempotent — turn already exists; just clear openBlockId
+        // Idempotent — turn already exists. If openBlockId is already null, return state unchanged.
+        if (state.openBlockId === null) return state
         return { ...state, openBlockId: null }
       }
       return {
@@ -182,8 +183,9 @@ export function transcriptReducer(
       const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
       const turn = turns[idx]
 
-      // Idempotent by toolId
+      // Idempotent by toolId. If turn already has this tool and openBlockId is already null, return state unchanged.
       if (turn.blocks.some((b) => b.kind === 'tool' && b.toolId === toolId)) {
+        if (state.openBlockId === null && turns === state.turns) return state
         return { ...state, turns, openBlockId: null }
       }
 
@@ -280,21 +282,27 @@ export function transcriptReducer(
 
     case '_resolvePermission': {
       const { permId } = ev
+      let changed = false
       const nextTurns = state.turns.map((turn) => {
         const hasIt = turn.blocks.some((b) => b.kind === 'permission' && b.permId === permId)
         if (!hasIt) return turn
+        changed = true
         return { ...turn, blocks: turn.blocks.filter((b) => !(b.kind === 'permission' && b.permId === permId)) }
       })
+      if (!changed) return state // No matching permission block found; return unchanged state
       return { ...state, turns: nextTurns }
     }
 
     case '_resolveQuestion': {
       const { questionId } = ev
+      let changed = false
       const nextTurns = state.turns.map((turn) => {
         const hasIt = turn.blocks.some((b) => b.kind === 'question' && b.questionId === questionId)
         if (!hasIt) return turn
+        changed = true
         return { ...turn, blocks: turn.blocks.filter((b) => !(b.kind === 'question' && b.questionId === questionId)) }
       })
+      if (!changed) return state // No matching question block found; return unchanged state
       return { ...state, turns: nextTurns }
     }
 

@@ -125,6 +125,39 @@ describe('SessionSocket', () => {
     expect(sent).toEqual({ type: 'interrupt', sessionId: 'session-1' })
   })
 
+  it('socket.sendInterrupt("s") sends {type:"interrupt",sessionId:"s"}', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+
+    sock.sendInterrupt('s')
+
+    const sent = parseSent(lastSock(), 0)
+    expect(sent).toEqual({ type: 'interrupt', sessionId: 's' })
+  })
+
+  it('socket.answerQuestion("s","q1",["a"]) sends {type:"answerQuestion",sessionId:"s",questionId:"q1",selected:["a"]}', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+
+    sock.answerQuestion('s', 'q1', ['a'])
+
+    const sent = parseSent(lastSock(), 0)
+    expect(sent).toEqual({ type: 'answerQuestion', sessionId: 's', questionId: 'q1', selected: ['a'] })
+  })
+
+  it('socket.setPermissionMode("s","plan") sends {type:"setPermissionMode",sessionId:"s",mode:"plan"}', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+
+    sock.setPermissionMode('s', 'plan')
+
+    const sent = parseSent(lastSock(), 0)
+    expect(sent).toEqual({ type: 'setPermissionMode', sessionId: 's', mode: 'plan' })
+  })
+
   // ── Inbound messages ─────────────────────────────────────────────────────────
 
   it('invokes output callback with correct data', () => {
