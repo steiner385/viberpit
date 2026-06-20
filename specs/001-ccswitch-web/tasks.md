@@ -92,10 +92,10 @@ against a running US1 backend.
 - [X] T045 [P] [US2] Playwright: reconnect replays scrollback ≤10s; `rotated` event updates account badge in `web/e2e/rotation-reconnect.spec.ts`
 
 ### Implementation
-- [ ] T046 [US2] Vite/React/Tailwind/shadcn base + theme tokens (AA contrast) + router in `web/src/main.tsx`, `web/src/App.tsx`
+- [X] T046 [US2] Vite/React/Tailwind/shadcn base + theme tokens (AA contrast) + router in `web/src/main.tsx`, `web/src/App.tsx`
 - [X] T047 [US2] API client (TanStack Query hooks) in `web/src/api/` + WS client (multiplexed channel) in `web/src/ws/client.ts`
 - [X] T048 [US2] `SessionList` + `SessionCard` + `UsageStrip`/`UsageBadge` in `web/src/components/`
-- [ ] T049 [US2] Session actions: new (optional initial prompt), rename, close (confirm) dialogs in `web/src/components/`
+- [X] T049 [US2] Session actions: new (optional initial prompt), rename, close (confirm) dialogs in `web/src/components/`
 - [X] T050 [US2] Empty/first-run state + all-accounts-limited banner (earliest reset, local time) in `web/src/components/`
 - [X] T051 [US2] `Terminal` view (xterm.js + fit addon) over WS, full-screen on phone with visible "back to list" in `web/src/components/Terminal.tsx`
 - [X] T052 [US2] Mobile `HelperKeyBar` (Esc/Tab/Ctrl/arrows, ≥44px) in `web/src/components/HelperKeyBar.tsx`
