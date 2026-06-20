@@ -13,7 +13,7 @@ Paths are relative to repo root `cc-account-switcher/`.
 
 - [X] T001 Create monorepo scaffold: `server/` (Python package), `web/` (Vite app), keep existing `ccswitch/`; add root `README.md` run section
 - [X] T002 [P] Backend deps + tooling in `server/pyproject.toml`: fastapi, uvicorn, sqlalchemy[asyncio], aiosqlite, alembic, cryptography, webauthn, pytest, pytest-asyncio, httpx, ruff, mypy
-- [ ] T003 [P] Frontend scaffold + deps in `web/`: Vite + React + TypeScript, Tailwind, shadcn/ui, @xterm/xterm + @xterm/addon-fit + @xterm/addon-accessibility, @tanstack/react-query, vitest, @testing-library/react, @playwright/test
+- [X] T003 [P] Frontend scaffold + deps in `web/`: Vite + React + TypeScript, Tailwind, shadcn/ui, @xterm/xterm + @xterm/addon-fit + @xterm/addon-accessibility, @tanstack/react-query, vitest, @testing-library/react, @playwright/test
 - [X] T004 [P] Config module `server/config.py` reading env (host/port, `CCSWITCH_MASTER_KEY`, db URL, tailnet allowlist); add `.env.example`
 - [X] T005 [P] `Dockerfile` (multi-stage: build `web/` static → serve from FastAPI) kept Railway-portable; `.dockerignore`
 - [X] T006 [P] CI workflow `.github/workflows/ci.yml`: run `ruff`/`mypy`/`pytest` (server) and `tsc`/`vitest` (web) on push/PR
