@@ -187,6 +187,67 @@ describe('AccountsStrip — nickname display & edit', () => {
   })
 })
 
+describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
+  // Regression: before the fix, an account with usage:null (e.g. needs-reauth) crashed
+  // the whole app with "Cannot read properties of null (reading 'session')".
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+
+    vi.mocked(hooks.useSessions).mockReturnValue({
+      data: [],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCreateSession>)
+    vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRenameSession>)
+    vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
+    vi.mocked(hooks.useRefreshAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRefreshAccount>)
+    vi.mocked(hooks.useGithubRepos).mockReturnValue({ data: [], isLoading: false, isError: false } as ReturnType<typeof hooks.useGithubRepos>)
+    vi.mocked(hooks.useGithubBranches).mockReturnValue({ data: { default: null, branches: [] }, isLoading: false } as ReturnType<typeof hooks.useGithubBranches>)
+    vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
+    vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateSettings>)
+    vi.mocked(hooks.useUpdateAccountNickname).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+  })
+
+  it('renders without throwing when account.usage is null (needs-reauth)', () => {
+    vi.mocked(hooks.useAccounts).mockReturnValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null as any, nickname: null })],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useAccounts>)
+
+    // Should not throw — previously crashed with "Cannot read properties of null"
+    expect(() => render(<Dashboard />, { wrapper })).not.toThrow()
+  })
+
+  it('does not render any UsageBadge when account.usage is null', () => {
+    vi.mocked(hooks.useAccounts).mockReturnValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null as any, nickname: null })],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useAccounts>)
+
+    render(<Dashboard />, { wrapper })
+
+    // UsageBadge renders with aria-label "session usage: N%" / "weekly usage: N%".
+    // Neither should be present when usage is null.
+    expect(screen.queryByLabelText(/session usage:/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/weekly usage:/i)).not.toBeInTheDocument()
+  })
+
+  it('still renders the account name when usage is null', () => {
+    vi.mocked(hooks.useAccounts).mockReturnValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null as any, nickname: null })],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useAccounts>)
+
+    render(<Dashboard />, { wrapper })
+
+    expect(screen.getByText('kindash')).toBeInTheDocument()
+  })
+})
+
 describe('NewSessionDialog — account select uses nickname', () => {
   beforeEach(() => {
     vi.clearAllMocks()

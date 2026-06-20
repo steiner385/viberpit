@@ -492,8 +492,12 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname }: AccountR
       {!editing && (
         <div className="flex items-center gap-3 flex-shrink-0">
           <StatusPill status={account.status} />
-          <UsageBadge pct={account.usage.session.pct} label="session" />
-          <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
+          {account.usage && (
+            <>
+              <UsageBadge pct={account.usage.session.pct} label="session" />
+              <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
+            </>
+          )}
           <button
             type="button"
             className={cn(

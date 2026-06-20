@@ -42,12 +42,12 @@ describe('useSettings', () => {
     vi.mocked(api.get).mockResolvedValue(SETTINGS)
   })
 
-  it('fetches settings from /api/settings', async () => {
+  it('fetches settings from /settings (not /api/settings — that would double-prefix to /api/api/settings)', async () => {
     const { result } = renderHook(() => useSettings(), { wrapper: makeWrapper() })
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(api.get).toHaveBeenCalledWith('/api/settings')
+    expect(api.get).toHaveBeenCalledWith('/settings')
     expect(result.current.data).toEqual(SETTINGS)
   })
 
@@ -68,14 +68,14 @@ describe('useUpdateSettings', () => {
     vi.mocked(api.get).mockResolvedValue(SETTINGS)
   })
 
-  it('calls PUT /api/settings with the given body', async () => {
+  it('calls PUT /settings with the given body (not /api/settings — that would double-prefix to /api/api/settings)', async () => {
     const { result } = renderHook(() => useUpdateSettings(), { wrapper: makeWrapper() })
 
     result.current.mutate({ thinkingCollapsed: true })
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(api.put).toHaveBeenCalledWith('/api/settings', { thinkingCollapsed: true })
+    expect(api.put).toHaveBeenCalledWith('/settings', { thinkingCollapsed: true })
   })
 
   it('invalidates the settings query key on success', async () => {

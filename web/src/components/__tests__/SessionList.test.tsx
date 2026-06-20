@@ -220,3 +220,86 @@ describe('SessionList', () => {
     expect(onClose).toHaveBeenCalledWith('sess-1')
   })
 })
+
+describe('SessionCard — null usage guard (needs-reauth account)', () => {
+  // Regression: before the fix, a session whose account has usage:null
+  // crashed SessionCard with "Cannot read properties of null (reading 'session')".
+
+  const onNew = vi.fn()
+  const onOpen = vi.fn()
+  const onRename = vi.fn()
+  const onClose = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('renders without throwing when account.usage is null', () => {
+    const nullUsageAccount: Account = {
+      name: 'kindash',
+      status: 'needs-relogin',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      usage: null as any,
+      nickname: null,
+    }
+    const session: Session = {
+      id: 'sess-nr',
+      name: 'Needs Reauth Session',
+      accountName: 'kindash',
+      status: 'idle',
+      createdAt: '2026-06-20T00:00:00Z',
+      updatedAt: '2026-06-20T00:00:00Z',
+    }
+
+    expect(() =>
+      render(
+        <SessionList
+          sessions={[session]}
+          accounts={[nullUsageAccount]}
+          onNew={onNew}
+          onOpen={onOpen}
+          onRename={onRename}
+          onClose={onClose}
+        />,
+        { wrapper },
+      ),
+    ).not.toThrow()
+  })
+
+  it('does not render UsageBadge text when account.usage is null', () => {
+    const nullUsageAccount: Account = {
+      name: 'kindash',
+      status: 'needs-relogin',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      usage: null as any,
+      nickname: null,
+    }
+    const session: Session = {
+      id: 'sess-nr',
+      name: 'Needs Reauth Session',
+      accountName: 'kindash',
+      status: 'idle',
+      createdAt: '2026-06-20T00:00:00Z',
+      updatedAt: '2026-06-20T00:00:00Z',
+    }
+
+    render(
+      <SessionList
+        sessions={[session]}
+        accounts={[nullUsageAccount]}
+        onNew={onNew}
+        onOpen={onOpen}
+        onRename={onRename}
+        onClose={onClose}
+      />,
+      { wrapper },
+    )
+
+    // UsageBadge renders with aria-label "session usage: N%" / "weekly usage: N%".
+    // Neither should be present when account.usage is null.
+    expect(screen.queryByLabelText(/session usage:/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/weekly usage:/i)).not.toBeInTheDocument()
+    // Session name still renders
+    expect(screen.getByText('Needs Reauth Session')).toBeInTheDocument()
+  })
+})

@@ -77,7 +77,7 @@ export function SessionCard({ session, account, onOpen, onRename, onClose }: Ses
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <StatusPill status={session.status} />
-          {account && (
+          {account?.usage && (
             <>
               <UsageBadge pct={account.usage.session.pct} label="session" />
               <UsageBadge pct={account.usage.weekly.pct} label="weekly" />

@@ -84,7 +84,7 @@ export interface AppSettings {
 export function useSettings() {
   return useQuery<AppSettings>({
     queryKey: QK.settings,
-    queryFn: () => api.get<AppSettings>('/api/settings'),
+    queryFn: () => api.get<AppSettings>('/settings'),
     staleTime: 30_000,
   })
 }
@@ -92,7 +92,7 @@ export function useSettings() {
 export function useUpdateSettings() {
   const qc = useQueryClient()
   return useMutation<AppSettings, ApiRequestError, Partial<AppSettings>>({
-    mutationFn: (body) => api.put<AppSettings>('/api/settings', body),
+    mutationFn: (body) => api.put<AppSettings>('/settings', body),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.settings }) },
   })
 }
