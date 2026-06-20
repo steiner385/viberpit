@@ -16,8 +16,10 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
-from ccswitch.accounts import list_accounts, remove_account
+from ccswitch.accounts import list_accounts, remove_account, set_nickname
+from ccswitch import paths
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
@@ -52,12 +54,13 @@ def _usage_to_dict(usage) -> dict[str, Any] | None:
     }
 
 
-def _account_response(name: str, status_str: str, usage) -> dict[str, Any]:
+def _account_response(name: str, status_str: str, usage, nickname: str | None = None) -> dict[str, Any]:
     """Build the account wire format — never includes tokens."""
     return {
         "name": name,
         "status": status_str,
         "usage": _usage_to_dict(usage),
+        "nickname": nickname,
     }
 
 
@@ -89,11 +92,12 @@ async def get_accounts(
     for acct in accounts_info:
         name = acct["name"]
         acct_status = acct.get("status", "unknown")
+        nickname = acct.get("nickname")
 
         # Fetch fresh usage via the poller (async, deduplicates concurrent fetches)
         usage = await orch.poller.get(name)
 
-        result.append(_account_response(name, acct_status, usage))
+        result.append(_account_response(name, acct_status, usage, nickname))
 
     return result
 
@@ -113,15 +117,17 @@ async def refresh_account(
     # Force a fresh fetch (bypasses cache by going through the poller lock)
     usage = await orch.poller.get(name)
 
-    # Determine status from the ledger
+    # Determine status and nickname from the ledger
     accounts_info = list_accounts()
     status_str = "unknown"
+    nickname = None
     for acct in accounts_info:
         if acct["name"] == name:
             status_str = acct.get("status", "unknown")
+            nickname = acct.get("nickname")
             break
 
-    return _account_response(name, status_str, usage)
+    return _account_response(name, status_str, usage, nickname)
 
 
 @router.delete("/{name}", status_code=status.HTTP_204_NO_CONTENT)
@@ -139,6 +145,39 @@ async def delete_account(
         identity=identity,
         detail={"account": name},
     )
+
+
+class NicknameBody(BaseModel):
+    nickname: str | None = None
+
+
+@router.patch("/{name}")
+async def set_account_nickname(
+    name: str,
+    body: NicknameBody,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Set or clear a display nickname for an account.
+
+    A blank or whitespace-only nickname clears the existing nickname.
+    Returns 404 if the account slot does not exist.
+    """
+    if not paths.slot_path(name).exists():
+        raise HTTPException(status_code=404, detail=f"Account '{name}' not found")
+
+    cleaned = (body.nickname or "").strip() or None
+    set_nickname(name, cleaned)
+
+    accounts_info = list_accounts()
+    status_str = "unknown"
+    stored_nickname = None
+    for acct in accounts_info:
+        if acct["name"] == name:
+            status_str = acct.get("status", "unknown")
+            stored_nickname = acct.get("nickname")
+            break
+
+    return _account_response(name, status_str, None, stored_nickname)
 
 
 @router.post("/{name}/relogin", status_code=status.HTTP_202_ACCEPTED)

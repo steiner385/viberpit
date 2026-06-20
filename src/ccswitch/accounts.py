@@ -130,8 +130,18 @@ def list_accounts() -> list[dict]:
     with ledger.locked_ledger() as led:
         for name in _account_names():
             acct = led["accounts"].get(name, {})
-            out.append({"name": name, "status": acct.get("status", "unknown"), "usage": acct.get("usage")})
+            out.append({
+                "name": name,
+                "status": acct.get("status", "unknown"),
+                "usage": acct.get("usage"),
+                "nickname": acct.get("nickname"),
+            })
     return out
+
+
+def set_nickname(name: str, nickname: str | None) -> None:
+    with ledger.locked_ledger() as led:
+        ledger.set_nickname(led, name, nickname)
 
 
 def add_account(name: str, email: str | None = None) -> None:

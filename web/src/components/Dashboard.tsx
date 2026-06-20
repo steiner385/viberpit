@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useState, useRef, useCallback } from 'react'
-import { Plus, RefreshCw, Settings } from 'lucide-react'
+import { Plus, RefreshCw, Settings, Pencil, Check, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { UsageBadge, StatusPill } from './UsageBadge'
@@ -14,6 +14,7 @@ import {
   useRenameSession,
   useCloseSession,
   useRefreshAccount,
+  useUpdateAccountNickname,
   useGithubRepos,
   useGithubBranches,
   useSettings,
@@ -246,7 +247,7 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
             >
               <option value="">Auto-select</option>
               {accounts.map((a) => (
-                <option key={a.name} value={a.name}>{a.name}</option>
+                <option key={a.name} value={a.name}>{a.nickname || a.name}</option>
               ))}
             </select>
           </div>
@@ -388,13 +389,157 @@ function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPending }: 
 
 // ── Accounts Strip ───────────────────────────────────────────────────────────
 
+interface AccountRowProps {
+  account: Account
+  onRefresh: (name: string) => void
+  refreshing: boolean
+  onSaveNickname: (name: string, nickname: string | null) => void
+}
+
+function AccountRow({ account, onRefresh, refreshing, onSaveNickname }: AccountRowProps) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  function startEdit() {
+    setDraft(account.nickname ?? '')
+    setEditing(true)
+    // Focus after render
+    setTimeout(() => inputRef.current?.focus(), 0)
+  }
+
+  function cancelEdit() {
+    setEditing(false)
+    setDraft('')
+  }
+
+  function saveEdit() {
+    onSaveNickname(account.name, draft.trim() || null)
+    setEditing(false)
+    setDraft('')
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter') { e.preventDefault(); saveEdit() }
+    if (e.key === 'Escape') { e.preventDefault(); cancelEdit() }
+  }
+
+  const displayLabel = account.nickname || account.name
+
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700',
+        'bg-white dark:bg-gray-800 px-3 py-2',
+      )}
+    >
+      {editing ? (
+        <div className="flex-1 flex items-center gap-2 min-w-0">
+          <input
+            ref={inputRef}
+            type="text"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={handleKeyDown}
+            aria-label={`Nickname for ${account.name}`}
+            placeholder={account.name}
+            className={cn(
+              'flex-1 min-w-0 rounded border border-gray-300 dark:border-gray-600',
+              'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
+              'px-2 py-1 text-sm',
+              'focus:outline-none focus:ring-2 focus:ring-blue-500',
+            )}
+          />
+          <button
+            type="button"
+            onClick={saveEdit}
+            aria-label="Save nickname"
+            className={cn(
+              'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+              'text-green-600 dark:text-green-400',
+              'hover:bg-gray-100 dark:hover:bg-gray-700',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+            )}
+          >
+            <Check size={14} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={cancelEdit}
+            aria-label="Cancel rename"
+            className={cn(
+              'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+              'text-gray-500 dark:text-gray-400',
+              'hover:bg-gray-100 dark:hover:bg-gray-700',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+            )}
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        </div>
+      ) : (
+        <div className="flex-1 min-w-0 flex flex-col">
+          <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+            {displayLabel}
+          </span>
+          {account.nickname && (
+            <span className="text-xs text-gray-400 dark:text-gray-500 truncate">
+              {account.name}
+            </span>
+          )}
+        </div>
+      )}
+      {!editing && (
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <StatusPill status={account.status} />
+          <UsageBadge pct={account.usage.session.pct} label="session" />
+          <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
+          <button
+            type="button"
+            className={cn(
+              'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+              'text-gray-500 dark:text-gray-400',
+              'hover:bg-gray-100 dark:hover:bg-gray-700',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+            )}
+            aria-label={`Rename ${account.name}`}
+            onClick={startEdit}
+          >
+            <Pencil size={14} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className={cn(
+              'h-8 w-8 flex items-center justify-center rounded',
+              'text-gray-500 dark:text-gray-400',
+              'hover:bg-gray-100 dark:hover:bg-gray-700',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+              'disabled:opacity-40',
+            )}
+            aria-label={`Refresh account ${account.name}`}
+            disabled={refreshing}
+            onClick={() => onRefresh(account.name)}
+          >
+            <RefreshCw
+              size={14}
+              aria-hidden="true"
+              className={cn(refreshing && 'animate-spin')}
+            />
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 interface AccountsStripProps {
   accounts: Account[]
   onRefresh: (name: string) => void
   refreshingName: string | null
+  onSaveNickname: (name: string, nickname: string | null) => void
 }
 
-function AccountsStrip({ accounts, onRefresh, refreshingName }: AccountsStripProps) {
+function AccountsStrip({ accounts, onRefresh, refreshingName, onSaveNickname }: AccountsStripProps) {
   if (accounts.length === 0) return null
 
   return (
@@ -404,41 +549,13 @@ function AccountsStrip({ accounts, onRefresh, refreshingName }: AccountsStripPro
       </h2>
       <div className="flex flex-col gap-2">
         {accounts.map((account) => (
-          <div
+          <AccountRow
             key={account.name}
-            className={cn(
-              'flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700',
-              'bg-white dark:bg-gray-800 px-3 py-2',
-            )}
-          >
-            <span className="flex-1 text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-              {account.name}
-            </span>
-            <div className="flex items-center gap-3 flex-shrink-0">
-              <StatusPill status={account.status} />
-              <UsageBadge pct={account.usage.session.pct} label="session" />
-              <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
-              <button
-                type="button"
-                className={cn(
-                  'h-8 w-8 flex items-center justify-center rounded',
-                  'text-gray-500 dark:text-gray-400',
-                  'hover:bg-gray-100 dark:hover:bg-gray-700',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-                  'disabled:opacity-40',
-                )}
-                aria-label={`Refresh account ${account.name}`}
-                disabled={refreshingName === account.name}
-                onClick={() => onRefresh(account.name)}
-              >
-                <RefreshCw
-                  size={14}
-                  aria-hidden="true"
-                  className={cn(refreshingName === account.name && 'animate-spin')}
-                />
-              </button>
-            </div>
-          </div>
+            account={account}
+            onRefresh={onRefresh}
+            refreshing={refreshingName === account.name}
+            onSaveNickname={onSaveNickname}
+          />
         ))}
       </div>
     </section>
@@ -461,6 +578,7 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
   const renameSession = useRenameSession()
   const closeSession = useCloseSession()
   const refreshAccount = useRefreshAccount()
+  const updateNickname = useUpdateAccountNickname()
 
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
@@ -533,6 +651,10 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
     })
   }
 
+  function handleSaveNickname(name: string, nickname: string | null) {
+    updateNickname.mutate({ name, nickname })
+  }
+
   const isLoading = accountsLoading || sessionsLoading
 
   return (
@@ -551,6 +673,7 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
           accounts={accounts}
           onRefresh={handleRefreshAccount}
           refreshingName={refreshingAccount}
+          onSaveNickname={handleSaveNickname}
         />
       )}
 

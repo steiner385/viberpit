@@ -12,6 +12,7 @@ export interface Account {
     session: UsageWindow
     weekly: UsageWindow
   }
+  nickname?: string | null
 }
 
 export type SessionStatus = 'working' | 'idle' | 'limited' | 'ended'

@@ -137,3 +137,12 @@ export function useRefreshAccount() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
   })
 }
+
+export function useUpdateAccountNickname() {
+  const qc = useQueryClient()
+  return useMutation<Account, ApiRequestError, { name: string; nickname: string | null }>({
+    mutationFn: ({ name, nickname }) =>
+      api.patch<Account>(`/accounts/${encodeURIComponent(name)}`, { nickname }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
+  })
+}

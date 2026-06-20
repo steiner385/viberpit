@@ -66,6 +66,14 @@ def set_status(led: dict, name: str, status: str) -> None:
     _acct(led, name)["status"] = status
 
 
+def set_nickname(led: dict, name: str, nickname: str | None) -> None:
+    acct = led["accounts"].setdefault(name, {})
+    if nickname:
+        acct["nickname"] = nickname
+    else:
+        acct.pop("nickname", None)
+
+
 def reserve(led: dict, name: str, until_ts: float) -> None:
     _acct(led, name)["reservationUntil"] = until_ts
 
