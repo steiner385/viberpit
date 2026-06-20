@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from . import paths
-from .creds import compose_credentials, read_json, write_json_secure
+from .creds import compose_credentials, read_credentials, read_json, write_json_secure
 
 CREDENTIALS_NAME = ".credentials.json"
 CLAUDE_JSON_NAME = ".claude.json"
@@ -104,6 +104,17 @@ def compose_claude_json(name: str) -> dict:
             if key in shared:
                 base[key] = shared[key]
 
+    # Mark the account as onboarded so an INTERACTIVE `claude` session doesn't re-run
+    # the login/onboarding chooser. The account is already authenticated (it has a
+    # stored oauthAccount + credentials); the `claude auth login` capture omits these
+    # onboarding flags, which a `claude -p` run ignores but an interactive session does not.
+    base["hasCompletedOnboarding"] = True
+    g = paths.global_claude_json()
+    if g.exists():
+        gj = read_json(g)
+        if gj.get("lastOnboardingVersion") and not base.get("lastOnboardingVersion"):
+            base["lastOnboardingVersion"] = gj["lastOnboardingVersion"]
+
     return base
 
 
@@ -115,8 +126,10 @@ def compose(name: str) -> Path:
     reconcile_links(name)
     cfg_dir = paths.account_cfg_dir(name)
 
-    # Write .credentials.json (real file, never a symlink)
-    claude_oauth = read_json(paths.slot_path(name))
+    # Write .credentials.json (real file, never a symlink).
+    # read_credentials decrypts the refreshToken in memory so the composed file
+    # that claude reads is always plaintext — we must never write ciphertext there.
+    claude_oauth = read_credentials(paths.slot_path(name))
     mcp = read_json(paths.shared_mcp_path()) if paths.shared_mcp_path().exists() else {}
     write_json_secure(cfg_dir / CREDENTIALS_NAME, compose_credentials(claude_oauth, mcp))
 

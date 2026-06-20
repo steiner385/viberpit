@@ -1,4 +1,5 @@
 """Credential file I/O and the claudeAiOauth/mcpOAuth split."""
+import copy
 import json
 import os
 from pathlib import Path
@@ -46,3 +47,53 @@ def merge_keep_later(existing: dict | None, incoming: dict) -> dict:
     if existing.get("expiresAt", 0) >= incoming.get("expiresAt", 0):
         return existing
     return incoming
+
+
+# ---------------------------------------------------------------------------
+# Encrypted credential helpers — apply ONLY to store slots, never to the
+# composed cfg/<account>/.credentials.json that claude reads directly.
+# ---------------------------------------------------------------------------
+
+def read_credentials(path: Path) -> dict:
+    """Read a store slot, decrypting refreshToken if encrypted.
+
+    Returns the in-memory dict with a PLAINTEXT refreshToken.  The on-disk file
+    is never modified.
+    """
+    data = read_json(path)
+    rt = data.get("refreshToken")
+    if rt is not None:
+        try:
+            from .crypto import decrypt, is_encrypted
+        except ImportError:
+            return data
+        if is_encrypted(rt):
+            data = dict(data)  # shallow copy — only top-level mutation
+            data["refreshToken"] = decrypt(rt)
+    return data
+
+
+def write_credentials(path: Path, data: dict) -> None:
+    """Write a store slot, encrypting refreshToken if a key is available.
+
+    If no key is configured: writes as-is (plaintext) and emits a one-time
+    stderr warning.  Never raises due to missing crypto — fail soft.
+    """
+    try:
+        from .crypto import key_available, encrypt, is_encrypted, _warn_no_key_once
+    except ImportError:
+        # cryptography not installed — plaintext fallback, no warning
+        write_json_secure(path, data)
+        return
+
+    rt = data.get("refreshToken")
+    if rt is not None and not is_encrypted(rt):
+        if key_available():
+            out = copy.deepcopy(data)
+            out["refreshToken"] = encrypt(rt)
+            write_json_secure(path, out)
+            return
+        else:
+            _warn_no_key_once()
+
+    write_json_secure(path, data)

@@ -1,4 +1,4 @@
-"""ccswitch: account store management (add / remove / list / link / use)."""
+"""ccswitch: account store management (add / remove / list / link / use / crypto)."""
 import argparse
 import shlex
 import sys
@@ -16,6 +16,110 @@ def _fmt_reset(iso: str | None, tz: str) -> str:
     return datetime.fromisoformat(iso).astimezone(ZoneInfo(tz)).strftime("%a %-I:%M %p %Z")
 
 
+def _cmd_crypto(args: argparse.Namespace) -> int:
+    """Handle the `ccswitch crypto` subcommand family."""
+    from . import paths
+    from .crypto import (
+        CryptoUnavailable,
+        generate_key,
+        is_encrypted,
+        key_available,
+        master_key,
+        store_key_in_keyring,
+    )
+    from .creds import read_credentials, write_credentials
+
+    sub = args.crypto_cmd
+
+    if sub == "status":
+        # Determine key source without printing the key.
+        import os
+        if os.environ.get("CCSWITCH_MASTER_KEY"):
+            source = "env (CCSWITCH_MASTER_KEY)"
+        elif master_key() is not None:
+            source = "keyring (secret-tool)"
+        else:
+            source = "none"
+
+        if source == "none":
+            print("ccswitch crypto: no master key configured — encryption DISABLED")
+        else:
+            print(f"ccswitch crypto: key available via {source}")
+
+        # Count encrypted vs plaintext store slots.
+        store = paths.store_dir()
+        if store.exists():
+            enc = plain = 0
+            for slot in store.glob("*.cred.json"):
+                try:
+                    from .creds import read_json
+                    data = read_json(slot)
+                    rt = data.get("refreshToken", "")
+                    if is_encrypted(rt):
+                        enc += 1
+                    else:
+                        plain += 1
+                except Exception:
+                    pass
+            print(f"ccswitch crypto: {enc} slot(s) encrypted, {plain} slot(s) plaintext")
+        else:
+            print("ccswitch crypto: no store slots found")
+        return 0
+
+    if sub == "init":
+        if key_available():
+            print("ccswitch crypto: a master key is already configured — nothing to do.")
+            return 0
+        key = generate_key()
+        try:
+            store_key_in_keyring(key)
+        except RuntimeError as exc:
+            print(f"ccswitch crypto init: failed to store key in keyring: {exc}", file=sys.stderr)
+            return 1
+        print("ccswitch crypto: master key generated and stored in keyring.")
+        print("ccswitch crypto: run `ccswitch crypto migrate` to encrypt existing slots.")
+        return 0
+
+    if sub == "migrate":
+        if not key_available():
+            print(
+                "ccswitch crypto migrate: no master key configured — cannot encrypt.\n"
+                "Run `ccswitch crypto init` first.",
+                file=sys.stderr,
+            )
+            return 1
+        store = paths.store_dir()
+        if not store.exists():
+            print("ccswitch crypto migrate: no store slots found.")
+            return 0
+        migrated = skipped = errors = 0
+        for slot in sorted(store.glob("*.cred.json")):
+            name = slot.name[: -len(".cred.json")]
+            try:
+                from .creds import read_json
+                raw = read_json(slot)
+                if is_encrypted(raw.get("refreshToken", "")):
+                    skipped += 1
+                    continue
+                # read_credentials decrypts (pass-through for plaintext)
+                data = read_credentials(slot)
+                # write_credentials re-encrypts
+                write_credentials(slot, data)
+                migrated += 1
+            except Exception as exc:
+                print(f"ccswitch crypto migrate: error on {name}: {exc}", file=sys.stderr)
+                errors += 1
+        print(
+            f"ccswitch crypto migrate: {migrated} slot(s) encrypted, "
+            f"{skipped} already encrypted, {errors} error(s)."
+        )
+        return 0 if errors == 0 else 1
+
+    # Unknown crypto sub-subcommand (shouldn't reach here due to argparse)
+    print(f"ccswitch crypto: unknown sub-command {sub!r}", file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ccswitch")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -29,6 +133,11 @@ def main(argv: list[str] | None = None) -> int:
     p_use = sub.add_parser("use", help="compose a config dir for an account and print its export line")
     p_use.add_argument("name", nargs="?", help="account to pin (default: most-headroom account)")
     p_use.add_argument("--dir", action="store_true", help="print only the config dir path (no 'export ')")
+    p_crypto = sub.add_parser("crypto", help="manage envelope encryption for the credential store")
+    crypto_sub = p_crypto.add_subparsers(dest="crypto_cmd", required=True)
+    crypto_sub.add_parser("status", help="show encryption status (key source + slot counts)")
+    crypto_sub.add_parser("init", help="generate a master key and store it in the keyring")
+    crypto_sub.add_parser("migrate", help="encrypt all plaintext store slots (idempotent)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     cfg = load_config()
 
@@ -73,4 +182,6 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"export CLAUDE_CONFIG_DIR={shlex.quote(str(cfg_dir))}  # ccswitch: {name}")
         return 0
+    if args.cmd == "crypto":
+        return _cmd_crypto(args)
     return 1

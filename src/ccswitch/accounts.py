@@ -1,11 +1,25 @@
 """Integration glue: token validity, usage caching, selection, sync-back, registry."""
+import threading
 import time
 from datetime import datetime, timezone
 
 from . import configdir, ledger, oauth, paths
 from .config import Config, load_config
-from .creds import merge_keep_later, read_json, split_credentials, write_json_secure
+from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .selector import select_best
+
+# Per-account refresh locks. Anthropic refresh tokens are single-use (rotate on
+# refresh), so two concurrent refreshers (e.g. the web server's usage poller AND
+# an API request) would race: one consumes the token, the other's refresh fails.
+# Serialize refresh+persist per account, and re-check after acquiring so the loser
+# uses the freshly-persisted token instead of refreshing again.
+_refresh_locks: dict[str, threading.Lock] = {}
+_refresh_locks_guard = threading.Lock()
+
+
+def _account_lock(name: str) -> threading.Lock:
+    with _refresh_locks_guard:
+        return _refresh_locks.setdefault(name, threading.Lock())
 
 
 def _account_names() -> list[str]:
@@ -15,16 +29,28 @@ def _account_names() -> list[str]:
     return sorted(p.name[: -len(".cred.json")] for p in d.glob("*.cred.json"))
 
 
+def _is_fresh(blob: dict, cfg: Config) -> bool:
+    return blob.get("expiresAt", 0) - int(time.time() * 1000) > cfg.expiry_skew_sec * 1000
+
+
 def ensure_valid_token(name: str) -> dict:
-    """Return a non-expired claudeAiOauth blob, refreshing + persisting if needed."""
-    blob = read_json(paths.slot_path(name))
+    """Return a non-expired claudeAiOauth blob, refreshing + persisting if needed.
+
+    Refresh is serialized per account (single-use refresh tokens); the caller that
+    loses the race re-reads the freshly-persisted token instead of double-refreshing.
+    """
     cfg = load_config()
-    now_ms = int(time.time() * 1000)
-    if blob.get("expiresAt", 0) - now_ms > cfg.expiry_skew_sec * 1000:
+    blob = read_credentials(paths.slot_path(name))
+    if _is_fresh(blob, cfg):
         return blob
-    new_blob = oauth.refresh_access_token(blob["refreshToken"], blob)
-    write_json_secure(paths.slot_path(name), new_blob)
-    return new_blob
+    with _account_lock(name):
+        # Re-read inside the lock: another caller may have just refreshed + persisted.
+        blob = read_credentials(paths.slot_path(name))
+        if _is_fresh(blob, cfg):
+            return blob
+        new_blob = oauth.refresh_access_token(blob["refreshToken"], blob)
+        write_credentials(paths.slot_path(name), new_blob)
+        return new_blob
 
 
 def usage_for(name: str) -> oauth.Usage | None:
@@ -50,9 +76,11 @@ def usage_for(name: str) -> oauth.Usage | None:
         u = oauth.fetch_usage(blob["accessToken"])
     except oauth.AuthError:
         try:
-            slot = read_json(paths.slot_path(name))
-            slot = oauth.refresh_access_token(slot["refreshToken"], slot)
-            write_json_secure(paths.slot_path(name), slot)
+            with _account_lock(name):
+                # Re-read under the lock: a concurrent caller may have refreshed.
+                slot = read_credentials(paths.slot_path(name))
+                slot = oauth.refresh_access_token(slot["refreshToken"], slot)
+                write_credentials(paths.slot_path(name), slot)
             u = oauth.fetch_usage(slot["accessToken"])
         except oauth.AuthError:
             with ledger.locked_ledger() as led:
@@ -83,8 +111,8 @@ def sync_back(name: str) -> None:
     if not live_path.exists():
         return
     claude_oauth, mcp = split_credentials(read_json(live_path))
-    existing = read_json(paths.slot_path(name)) if paths.slot_path(name).exists() else None
-    write_json_secure(paths.slot_path(name), merge_keep_later(existing, claude_oauth))
+    existing = read_credentials(paths.slot_path(name)) if paths.slot_path(name).exists() else None
+    write_credentials(paths.slot_path(name), merge_keep_later(existing, claude_oauth))
     if mcp:
         write_json_secure(paths.shared_mcp_path(), mcp)
 
@@ -128,7 +156,7 @@ def add_account(name: str, email: str | None = None) -> None:
         claude_oauth, mcp = split_credentials(read_json(cred_path))
         if claude_oauth.get("subscriptionType") != "max":
             print(f"WARNING: '{name}' is not a Max subscription (got {claude_oauth.get('subscriptionType')!r})")
-        write_json_secure(paths.slot_path(name), claude_oauth)
+        write_credentials(paths.slot_path(name), claude_oauth)
         if mcp:
             existing = read_json(paths.shared_mcp_path()) if paths.shared_mcp_path().exists() else {}
             existing.update(mcp)

@@ -89,3 +89,28 @@ class TestAccounts(unittest.TestCase):
             accounts.sync_back("alpha")
             self.assertEqual(json.loads(paths.slot_path("alpha").read_text())["accessToken"], "refreshed")
             self.assertEqual(json.loads(paths.shared_mcp_path().read_text()), {"sentry": {"t": 1}})
+
+
+class TestRefreshSerialization(unittest.TestCase):
+    def test_concurrent_refresh_happens_once(self):
+        import threading, time as _t
+        with temp_env():
+            from ccswitch import accounts, oauth, paths
+            from ccswitch.creds import write_credentials
+            now_ms = int(_t.time() * 1000)
+            write_credentials(paths.slot_path("alpha"), {
+                "accessToken": "old", "refreshToken": "r",
+                "expiresAt": now_ms - 1, "subscriptionType": "max"})
+            calls = []
+            def fake_refresh(rt, prior):
+                calls.append(rt); _t.sleep(0.05)
+                return {"accessToken": "new", "refreshToken": "r2",
+                        "expiresAt": now_ms + 10_000_000, "subscriptionType": "max"}
+            with mock.patch.object(oauth, "refresh_access_token", side_effect=fake_refresh):
+                results = []
+                def worker(): results.append(accounts.ensure_valid_token("alpha"))
+                ts = [threading.Thread(target=worker) for _ in range(2)]
+                for t in ts: t.start()
+                for t in ts: t.join()
+            self.assertEqual(len(calls), 1)  # serialized: second caller re-read the fresh token
+            self.assertTrue(all(r["accessToken"] == "new" for r in results))

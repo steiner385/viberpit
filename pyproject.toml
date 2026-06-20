@@ -7,12 +7,31 @@ name = "ccswitch"
 version = "0.1.0"
 description = "Automatic Claude Max account rotation"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["cryptography>=43"]
 
 [project.scripts]
 ccswitch = "ccswitch.cli:main"
 ccrun = "ccswitch.runner:main"
 ccmax = "ccswitch.launcher:main"
+
+[project.optional-dependencies]
+server = [
+  "itsdangerous",
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy[asyncio]",
+    "aiosqlite",
+    "alembic",
+    "cryptography",
+    "webauthn",
+    "httpx",
+    "pytest",
+    "pytest-asyncio",
+  "pytest-cov",
+    "ruff",
+    "mypy",
+    "pydantic-settings",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

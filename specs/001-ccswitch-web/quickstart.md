@@ -48,3 +48,31 @@ Open the tailnet URL on the phone.
 - Backend: `pytest` (API/WS via httpx + the fake-`claude` PTY stub drives scenarios 2–6, 8-data).
 - Frontend: `npm run test` (Vitest/RTL) + `npm run test:e2e` (Playwright, mobile viewport) for 1–8.
 - Scenario 3's real-claude path is also covered by a live smoke (Constitution Principle III).
+
+## T060 live-run validation log (2026-06-20)
+
+Ran the real server (`uvicorn server.app:app`) against the 3 real accounts.
+
+**Verified live (PASS):** server serves SPA+API; `GET /api/health` 200 and 401 without identity (auth gate live); `GET /api/accounts` 200 with usage shape and NO token material in the response (FR-023 live); `needs-reauth` surfaced gracefully (no crash).
+
+**Findings (Principle III):**
+1. Headless/service server has no keyring/D-Bus access → cannot decrypt via keyring. Set `CCSWITCH_MASTER_KEY` in the server env (Railway-ready path).
+2. Refresh-token rotation desync: Anthropic refresh tokens are single-use; concurrent refreshers (CLI + server) over a long session desynced the stored tokens → all three `needs-reauth`. Live session creation blocked until accounts are re-added (`ccswitch add`). Follow-up: serialize refresh + always persist the rotated token.
+
+**Not yet verified live:** create + stream a real claude session (blocked by #2; retry after re-add).
+
+### T060 RESOLVED — full live pass (2026-06-20)
+
+After re-adding accounts and two core fixes, the full end-to-end live run PASSED 8/8:
+server+health, 401 gate, **accounts 3/3 ok**, no token leak, **POST /api/sessions 201**
+(real session on `primary`), **WS streamed real claude output**, **model produced the
+expected response (LIVEOK)**, DELETE 204. The web app creates and streams a real Claude
+session across accounts.
+
+Two fixes the live run forced (Principle III):
+- **Serialize per-account token refresh** — the server's usage poller + API requests
+  refreshed the same single-use refresh token concurrently → desync. Now locked + re-read.
+- **Composed `.claude.json` marked onboarded** — interactive `claude` showed the login
+  chooser (the `claude auth login` capture omits `hasCompletedOnboarding`, which `-p`
+  ignores but interactive honors); `compose` now sets it.
+- Operational: a headless server must get `CCSWITCH_MASTER_KEY` via env (no keyring/D-Bus).
