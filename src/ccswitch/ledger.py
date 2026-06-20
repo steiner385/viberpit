@@ -66,6 +66,11 @@ def set_status(led: dict, name: str, status: str) -> None:
     _acct(led, name)["status"] = status
 
 
+def clear_cached_usage(led: dict, name: str) -> None:
+    """Drop any cached usage so the next read forces a fresh fetch."""
+    _acct(led, name).pop("usage", None)
+
+
 def set_nickname(led: dict, name: str, nickname: str | None) -> None:
     acct = _acct(led, name)
     if nickname:

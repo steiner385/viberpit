@@ -144,6 +144,21 @@ def set_nickname(name: str, nickname: str | None) -> None:
         ledger.set_nickname(led, name, nickname)
 
 
+def mark_reauthenticated(name: str) -> None:
+    """Clear the stale ``needs-reauth`` status after a successful reauth.
+
+    ``capture_login`` writes the fresh token to the slot but does not touch the
+    ledger, so the stored ``needs-reauth`` status and pre-death cached usage
+    would otherwise linger until the cache TTL expires. ``get_accounts`` reads
+    the stored status *before* it refreshes usage, so the correction has to be
+    synchronous: set ``ok`` and drop the cached usage so the very next fetch
+    (which the UI triggers on success) is real and re-affirms the status.
+    """
+    with ledger.locked_ledger() as led:
+        ledger.set_status(led, name, "ok")
+        ledger.clear_cached_usage(led, name)
+
+
 def add_account(name: str, email: str | None = None) -> None:
     """Capture-on-login: run `claude auth login` against a temp capture dir, then store the creds."""
     from . import auth_login

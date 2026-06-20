@@ -142,9 +142,16 @@ class ReauthManager:
                     "DISPLAY": reauth_display,
                     "CCSWITCH_REAUTH_PROFILE": temp,
                 }
-                return await asyncio.to_thread(
+                ok = await asyncio.to_thread(
                     auth_login.capture_login, name, env_extra=env_extra
                 )
+                if ok:
+                    # Clear the stale needs-reauth status synchronously so the
+                    # UI's post-success refetch shows the account as healthy.
+                    from ccswitch import accounts
+
+                    await asyncio.to_thread(accounts.mark_reauthenticated, name)
+                return ok
             finally:
                 manager._state._temp_profile = None
                 auth_login.cleanup_reauth_profile(temp)
