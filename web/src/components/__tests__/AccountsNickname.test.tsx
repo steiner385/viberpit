@@ -18,6 +18,17 @@ vi.mock('@/api/hooks', () => ({
   useGithubBranches: vi.fn(),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
+  useReauthAccount: vi.fn(),
+  useReauthStatus: vi.fn(),
+  useCancelReauth: vi.fn(),
+  QK: {
+    accounts: ['accounts'],
+    sessions: ['sessions'],
+    config: ['config'],
+    githubRepos: ['github-repos'],
+    githubBranches: (repo?: string) => ['github-branches', repo],
+    settings: ['settings'],
+  },
 }))
 
 const NOOP_MUTATION = { mutate: vi.fn(), isPending: false, isSuccess: false }
@@ -61,6 +72,9 @@ describe('AccountsStrip — nickname display & edit', () => {
       ...NOOP_MUTATION,
       mutate: nicknameMutate,
     } as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+    vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
+    vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
   })
 
   it('shows account name when no nickname is set', () => {
@@ -207,6 +221,9 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
     vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
     vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateSettings>)
     vi.mocked(hooks.useUpdateAccountNickname).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+    vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
+    vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
   })
 
   it('renders without throwing when account.usage is null (needs-reauth)', () => {
@@ -259,6 +276,9 @@ describe('NewSessionDialog — account select uses nickname', () => {
     vi.mocked(hooks.useGithubBranches).mockReturnValue({ data: { default: null, branches: [] }, isLoading: false } as ReturnType<typeof hooks.useGithubBranches>)
     vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
     vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateSettings>)
+    vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
+    vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
   })
 
   it('shows nickname as option label in account select when set', async () => {

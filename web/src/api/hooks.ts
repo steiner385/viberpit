@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiRequestError } from './client'
-import type { Account, Session } from './types'
+import type { Account, Session, ReauthState } from './types'
 
 // Query keys
 export const QK = {
@@ -144,5 +144,27 @@ export function useUpdateAccountNickname() {
     mutationFn: ({ name, nickname }) =>
       api.patch<Account>(`/accounts/${encodeURIComponent(name)}`, { nickname }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
+  })
+}
+
+export function useReauthAccount() {
+  return useMutation<ReauthState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<ReauthState>(`/accounts/${encodeURIComponent(name)}/reauth`),
+  })
+}
+
+export function useReauthStatus(name: string, enabled: boolean) {
+  return useQuery<ReauthState>({
+    queryKey: ['reauth-status', name],
+    queryFn: () => api.get<ReauthState>(`/accounts/${encodeURIComponent(name)}/reauth`),
+    enabled,
+    refetchInterval: enabled ? 1500 : false,
+    staleTime: 0,
+  })
+}
+
+export function useCancelReauth() {
+  return useMutation<ReauthState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<ReauthState>(`/accounts/${encodeURIComponent(name)}/reauth/cancel`),
   })
 }

@@ -75,6 +75,11 @@ const ACCOUNT_STATUS_MAP: Record<AccountStatus, StatusConfig> = {
     Icon: WifiOff,
     textClass: 'text-red-700 dark:text-red-400',
   },
+  'needs-reauth': {
+    label: 'Needs re-auth',
+    Icon: WifiOff,
+    textClass: 'text-red-700 dark:text-red-400',
+  },
   'not-max': {
     label: 'Not Max',
     Icon: CircleAlert,

@@ -17,6 +17,17 @@ vi.mock('@/api/hooks', () => ({
   useGithubBranches: vi.fn(),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
+  useReauthAccount: vi.fn(),
+  useReauthStatus: vi.fn(),
+  useCancelReauth: vi.fn(),
+  QK: {
+    accounts: ['accounts'],
+    sessions: ['sessions'],
+    config: ['config'],
+    githubRepos: ['github-repos'],
+    githubBranches: (repo?: string) => ['github-branches', repo],
+    settings: ['settings'],
+  },
 }))
 
 const NOOP_MUTATION = {
@@ -96,6 +107,10 @@ describe('SessionActions (via Dashboard)', () => {
       isPending: false,
       isSuccess: false,
     } as unknown as ReturnType<typeof hooks.useUpdateSettings>)
+
+    vi.mocked(hooks.useReauthAccount).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useReauthAccount>)
+    vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useCancelReauth).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useCancelReauth>)
   })
 
   it('renders the "+ New" button', () => {

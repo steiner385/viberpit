@@ -17,6 +17,17 @@ vi.mock('@/api/hooks', () => ({
   useGithubBranches: vi.fn(),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
+  useReauthAccount: vi.fn(),
+  useReauthStatus: vi.fn(),
+  useCancelReauth: vi.fn(),
+  QK: {
+    accounts: ['accounts'],
+    sessions: ['sessions'],
+    config: ['config'],
+    githubRepos: ['github-repos'],
+    githubBranches: (repo?: string) => ['github-branches', repo],
+    settings: ['settings'],
+  },
 }))
 
 const NOOP_MUTATION = {
@@ -93,6 +104,10 @@ describe('Dashboard — settings integration', () => {
       ...NOOP_MUTATION,
       mutate: vi.fn(),
     } as unknown as ReturnType<typeof hooks.useUpdateSettings>)
+
+    vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
+    vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
   })
 
   // ── Settings button ──────────────────────────────────────────────────────

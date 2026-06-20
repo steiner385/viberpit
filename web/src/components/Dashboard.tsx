@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useState, useRef, useCallback } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Plus, RefreshCw, Settings, Pencil, Check, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -15,9 +16,13 @@ import {
   useCloseSession,
   useRefreshAccount,
   useUpdateAccountNickname,
+  useReauthAccount,
+  useReauthStatus,
+  useCancelReauth,
   useGithubRepos,
   useGithubBranches,
   useSettings,
+  QK,
   type CreateSessionInput,
 } from '@/api/hooks'
 import type { Account } from '@/api/types'
@@ -401,6 +406,52 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname }: AccountR
   const [draft, setDraft] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Reauth state: track whether we've started a reauth (controls polling)
+  const [reauthStarted, setReauthStarted] = useState(false)
+  // Optimistic local idle override — set when user cancels
+  const [reauthOptimisticIdle, setReauthOptimisticIdle] = useState(false)
+
+  const qc = useQueryClient()
+  const reauthAccount = useReauthAccount()
+  const cancelReauth = useCancelReauth()
+
+  // Poll status while reauth is running (enabled when started and not optimistically idled)
+  const reauthStatusQuery = useReauthStatus(account.name, reauthStarted && !reauthOptimisticIdle)
+  const reauthStatus = reauthOptimisticIdle ? undefined : reauthStatusQuery.data
+
+  const needsReauth = account.status === 'needs-reauth' || account.status === 'needs-relogin'
+
+  function handleReauth() {
+    setReauthOptimisticIdle(false)
+    setReauthStarted(true)
+    reauthAccount.mutate(account.name, {
+      onError: () => {
+        // If start itself fails, stop polling
+        setReauthStarted(false)
+      },
+    })
+  }
+
+  function handleCancel() {
+    // Optimistically return to idle immediately, don't wait for poll
+    setReauthOptimisticIdle(true)
+    setReauthStarted(false)
+    cancelReauth.mutate(account.name, {
+      onError: () => {
+        // Even on cancel error, keep optimistic idle
+      },
+    })
+  }
+
+  // When status becomes success, invalidate accounts list so UI refreshes
+  const prevStatusRef = useRef<string | undefined>(undefined)
+  React.useEffect(() => {
+    if (reauthStatus?.state === 'success' && prevStatusRef.current !== 'success') {
+      qc.invalidateQueries({ queryKey: QK.accounts })
+    }
+    prevStatusRef.current = reauthStatus?.state
+  }, [reauthStatus?.state, qc])
+
   function startEdit() {
     setDraft(account.nickname ?? '')
     setEditing(true)
@@ -426,111 +477,167 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname }: AccountR
 
   const displayLabel = account.nickname || account.name
 
+  const isReauthRunning = reauthStatus?.state === 'running' || reauthStatus?.state === 'cancelling'
+  const isReauthSuccess = reauthStatus?.state === 'success'
+  const isReauthError = reauthStatus?.state === 'error' || reauthStatus?.state === 'timeout'
+
   return (
     <div
       className={cn(
-        'flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700',
+        'flex flex-col gap-1 rounded-lg border border-gray-200 dark:border-gray-700',
         'bg-white dark:bg-gray-800 px-3 py-2',
       )}
     >
-      {editing ? (
-        <div className="flex-1 flex items-center gap-2 min-w-0">
-          <input
-            ref={inputRef}
-            type="text"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={handleKeyDown}
-            aria-label={`Nickname for ${account.name}`}
-            placeholder={account.name}
-            className={cn(
-              'flex-1 min-w-0 rounded border border-gray-300 dark:border-gray-600',
-              'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
-              'px-2 py-1 text-sm',
-              'focus:outline-none focus:ring-2 focus:ring-blue-500',
-            )}
-          />
-          <button
-            type="button"
-            onClick={saveEdit}
-            aria-label="Save nickname"
-            className={cn(
-              'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-              'text-green-600 dark:text-green-400',
-              'hover:bg-gray-100 dark:hover:bg-gray-700',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-            )}
-          >
-            <Check size={14} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            onClick={cancelEdit}
-            aria-label="Cancel rename"
-            className={cn(
-              'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-              'text-gray-500 dark:text-gray-400',
-              'hover:bg-gray-100 dark:hover:bg-gray-700',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-            )}
-          >
-            <X size={14} aria-hidden="true" />
-          </button>
-        </div>
-      ) : (
-        <div className="flex-1 min-w-0 flex flex-col">
-          <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-            {displayLabel}
-          </span>
-          {account.nickname && (
-            <span className="text-xs text-gray-400 dark:text-gray-500 truncate">
-              {account.name}
-            </span>
-          )}
-        </div>
-      )}
-      {!editing && (
-        <div className="flex items-center gap-3 flex-shrink-0">
-          <StatusPill status={account.status} />
-          {account.usage && (
-            <>
-              <UsageBadge pct={account.usage.session.pct} label="session" />
-              <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
-            </>
-          )}
-          <button
-            type="button"
-            className={cn(
-              'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-              'text-gray-500 dark:text-gray-400',
-              'hover:bg-gray-100 dark:hover:bg-gray-700',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-            )}
-            aria-label={`Rename ${account.name}`}
-            onClick={startEdit}
-          >
-            <Pencil size={14} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className={cn(
-              'h-8 w-8 flex items-center justify-center rounded',
-              'text-gray-500 dark:text-gray-400',
-              'hover:bg-gray-100 dark:hover:bg-gray-700',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-              'disabled:opacity-40',
-            )}
-            aria-label={`Refresh account ${account.name}`}
-            disabled={refreshing}
-            onClick={() => onRefresh(account.name)}
-          >
-            <RefreshCw
-              size={14}
-              aria-hidden="true"
-              className={cn(refreshing && 'animate-spin')}
+      <div className="flex items-center gap-3">
+        {editing ? (
+          <div className="flex-1 flex items-center gap-2 min-w-0">
+            <input
+              ref={inputRef}
+              type="text"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={handleKeyDown}
+              aria-label={`Nickname for ${account.name}`}
+              placeholder={account.name}
+              className={cn(
+                'flex-1 min-w-0 rounded border border-gray-300 dark:border-gray-600',
+                'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
+                'px-2 py-1 text-sm',
+                'focus:outline-none focus:ring-2 focus:ring-blue-500',
+              )}
             />
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={saveEdit}
+              aria-label="Save nickname"
+              className={cn(
+                'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+                'text-green-600 dark:text-green-400',
+                'hover:bg-gray-100 dark:hover:bg-gray-700',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+              )}
+            >
+              <Check size={14} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={cancelEdit}
+              aria-label="Cancel rename"
+              className={cn(
+                'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+                'text-gray-500 dark:text-gray-400',
+                'hover:bg-gray-100 dark:hover:bg-gray-700',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+              )}
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
+          </div>
+        ) : (
+          <div className="flex-1 min-w-0 flex flex-col">
+            <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+              {displayLabel}
+            </span>
+            {account.nickname && (
+              <span className="text-xs text-gray-400 dark:text-gray-500 truncate">
+                {account.name}
+              </span>
+            )}
+          </div>
+        )}
+        {!editing && (
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <StatusPill status={account.status} />
+            {account.usage && (
+              <>
+                <UsageBadge pct={account.usage.session.pct} label="session" />
+                <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
+              </>
+            )}
+            {needsReauth && (
+              <button
+                type="button"
+                className={cn(
+                  'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
+                  'bg-amber-500 text-white hover:bg-amber-600',
+                  'dark:bg-amber-600 dark:hover:bg-amber-500',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
+                  'disabled:opacity-40',
+                )}
+                aria-label={`Re-authenticate ${account.name}`}
+                onClick={handleReauth}
+                disabled={isReauthRunning}
+              >
+                Re-authenticate
+              </button>
+            )}
+            {isReauthRunning && (
+              <button
+                type="button"
+                className={cn(
+                  'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
+                  'border border-gray-300 dark:border-gray-600',
+                  'text-gray-700 dark:text-gray-300',
+                  'hover:bg-gray-100 dark:hover:bg-gray-700',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                )}
+                aria-label="Cancel reauth"
+                onClick={handleCancel}
+              >
+                Cancel
+              </button>
+            )}
+            <button
+              type="button"
+              className={cn(
+                'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+                'text-gray-500 dark:text-gray-400',
+                'hover:bg-gray-100 dark:hover:bg-gray-700',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+              )}
+              aria-label={`Rename ${account.name}`}
+              onClick={startEdit}
+            >
+              <Pencil size={14} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={cn(
+                'h-8 w-8 flex items-center justify-center rounded',
+                'text-gray-500 dark:text-gray-400',
+                'hover:bg-gray-100 dark:hover:bg-gray-700',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                'disabled:opacity-40',
+              )}
+              aria-label={`Refresh account ${account.name}`}
+              disabled={refreshing}
+              onClick={() => onRefresh(account.name)}
+            >
+              <RefreshCw
+                size={14}
+                aria-hidden="true"
+                className={cn(refreshing && 'animate-spin')}
+              />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Reauth status line */}
+      {!editing && isReauthRunning && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          Opening a fresh Chrome on the host machine's screen — sign in there…
+        </p>
+      )}
+      {!editing && isReauthSuccess && (
+        <p className="text-xs text-green-600 dark:text-green-400">
+          ✓ Re-authentication successful — account refreshed.
+        </p>
+      )}
+      {!editing && isReauthError && reauthStatus?.message && (
+        <p className="text-xs text-red-600 dark:text-red-400" role="alert">
+          {reauthStatus.message}
+        </p>
       )}
     </div>
   )

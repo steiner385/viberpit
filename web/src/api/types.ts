@@ -1,4 +1,10 @@
-export type AccountStatus = 'ok' | 'limited' | 'needs-relogin' | 'not-max' | 'unknown'
+export type AccountStatus = 'ok' | 'limited' | 'needs-relogin' | 'needs-reauth' | 'not-max' | 'unknown'
+
+export interface ReauthState {
+  state: 'idle' | 'running' | 'cancelling' | 'success' | 'error' | 'timeout'
+  message?: string | null
+  startedAt?: number | null
+}
 
 export interface UsageWindow {
   pct: number        // 0–100
