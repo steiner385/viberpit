@@ -131,6 +131,21 @@ def test_patch_account_nickname_404_for_unknown():
     assert response.status_code == 404
 
 
+def test_patch_account_nickname_404_for_hidden_name_with_dot():
+    """PATCH /api/accounts/{name} rejects names starting with dot."""
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client()
+        with client:
+            response = client.patch(
+                "/api/accounts/.hidden",
+                json={"nickname": "Secret"},
+                headers=IDENTITY_HEADERS,
+            )
+
+    assert response.status_code == 404
+
+
 def test_patch_account_nickname_requires_auth():
     """PATCH /api/accounts/{name} without identity header returns 401."""
     with temp_env():

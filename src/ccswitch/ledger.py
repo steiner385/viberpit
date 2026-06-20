@@ -67,7 +67,7 @@ def set_status(led: dict, name: str, status: str) -> None:
 
 
 def set_nickname(led: dict, name: str, nickname: str | None) -> None:
-    acct = led["accounts"].setdefault(name, {})
+    acct = _acct(led, name)
     if nickname:
         acct["nickname"] = nickname
     else:

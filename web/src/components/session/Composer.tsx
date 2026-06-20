@@ -58,7 +58,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
         <div className="flex flex-col gap-1">
           {queued.map((item, index) => (
             <div
-              key={index}
+              key={`${index}-${item.slice(0, 20)}`}
               className={cn(
                 'flex items-center justify-between gap-2 px-2 py-1 rounded',
                 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-xs',

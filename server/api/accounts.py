@@ -162,6 +162,10 @@ async def set_account_nickname(
     A blank or whitespace-only nickname clears the existing nickname.
     Returns 404 if the account slot does not exist.
     """
+    # Reject malformed names (path traversal, hidden files)
+    if "/" in name or "\\" in name or name.startswith("."):
+        raise HTTPException(status_code=404, detail=f"Account '{name}' not found")
+
     if not paths.slot_path(name).exists():
         raise HTTPException(status_code=404, detail=f"Account '{name}' not found")
 

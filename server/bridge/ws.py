@@ -247,7 +247,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                     log.debug("ws.answerQuestion (no-op) session=%s", session_id)
                 elif msg_type == "cancelQueued":
                     index = msg.get("index")
-                    if isinstance(index, int):
+                    if isinstance(index, int) and not isinstance(index, bool):
                         await orchestrator.cancel_queued(session_id, index)
                 else:
                     await _send({"type": "error", "code": "UNKNOWN_TYPE",
