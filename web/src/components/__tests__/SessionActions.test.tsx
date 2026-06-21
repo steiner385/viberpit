@@ -21,9 +21,13 @@ vi.mock('@/api/hooks', () => ({
   useReauthAccount: vi.fn(),
   useReauthStatus: vi.fn(),
   useCancelReauth: vi.fn(),
+  useArchivedSessions: vi.fn(),
+  useUnarchiveSession: vi.fn(),
+  usePermanentDeleteSession: vi.fn(),
   QK: {
     accounts: ['accounts'],
     sessions: ['sessions'],
+    archived: ['archived-sessions'],
     config: ['config'],
     githubRepos: ['github-repos'],
     githubBranches: (repo?: string) => ['github-branches', repo],
@@ -117,6 +121,9 @@ describe('SessionActions (via Dashboard)', () => {
     vi.mocked(hooks.useReauthAccount).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useReauthAccount>)
     vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
     vi.mocked(hooks.useCancelReauth).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useCancelReauth>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useUnarchiveSession).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
   })
 
   it('renders the "+ New" button', () => {
