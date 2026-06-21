@@ -25,3 +25,12 @@ Tailscale-identity auth (v1) with a passkey path deferred to public hosting.
 Build phase-by-phase: P0 config-dir launch correctness → P1 backend engine+API → P2 frontend
 (dashboard+terminal) → P3 structured view → P4 public-hosting hardening.
 <!-- SPECKIT END -->
+
+## Completion workflow
+
+When a unit of work is complete and verified (tests + lint green), finish it without being asked:
+1. Branch off `master` — never commit feature work directly to `master`.
+2. Commit (end message with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`).
+3. Push and open a PR via `gh pr create` (end body with the Claude Code trailer).
+4. Merge to `master` once mergeable: `gh pr merge --merge --delete-branch`.
+Only hold off if the user said it's a prototype/WIP, or if verification is failing.
