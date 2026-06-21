@@ -22,7 +22,6 @@ import { PERMISSION_MODES } from '@/session/permissionModes'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { StatusBar } from './StatusBar'
 import { SessionMeta } from './SessionMeta'
-import { RotationDivider } from './RotationDivider'
 import { TranscriptView } from './TranscriptView'
 import { Composer } from './Composer'
 import { WorkingIndicator } from './WorkingIndicator'
@@ -40,12 +39,6 @@ function nextPermissionMode(current: string): string {
 interface Props {
   sessionId: string
   onBack: () => void
-}
-
-interface Rotation {
-  from: string
-  to: string
-  reason?: string
 }
 
 export function SessionView({ sessionId, onBack }: Props) {
@@ -66,7 +59,6 @@ export function SessionView({ sessionId, onBack }: Props) {
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
   const [mode, setMode] = useState('interactive')
   const modeRef = useRef('interactive')
-  const [rotations, setRotations] = useState<Rotation[]>([])
   const [toolDetailMode, setToolDetailMode] = useState<ToolDetailMode>('auto')
   const toggleToolDetail = useCallback(
     () => setToolDetailMode((m) =>
@@ -84,7 +76,9 @@ export function SessionView({ sessionId, onBack }: Props) {
     const onEvent = (e: SessionEvent) => dispatch(e)
     const onRotated = (msg: WsRotatedMsg) => {
       if (msg.sessionId !== sessionId) return
-      setRotations((prev) => [...prev, { from: msg.fromAccount, to: msg.toAccount, reason: msg.reason }])
+      // Route into the reducer so the rotation is anchored into the transcript
+      // timeline (the single source of ordering) and scrolls with history.
+      dispatch({ type: '_rotation', from: msg.fromAccount, to: msg.toAccount, reason: msg.reason })
     }
     // I3 — surface direct `error` frames (SESSION_NOT_FOUND, frame_too_large, etc.)
     const onError = (msg: WsErrorMsg) => {
@@ -233,7 +227,8 @@ export function SessionView({ sessionId, onBack }: Props) {
   const { data: sessions } = useSessions()
   const { data: accounts } = useAccounts()
   const sessionRecord = sessions?.find((s) => s.id === sessionId)
-  const latestRotation = rotations.length > 0 ? rotations[rotations.length - 1].to : null
+  const latestRotation =
+    state.rotations.length > 0 ? state.rotations[state.rotations.length - 1].to : null
   const account = latestRotation ?? sessionRecord?.accountName ?? '—'
 
   const accountUsage = accounts?.find((a) => a.name === account)?.usage ?? null
@@ -245,7 +240,7 @@ export function SessionView({ sessionId, onBack }: Props) {
   const subAgents = selectSubAgents(state.turns)
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-gray-950">
+    <div className="flex flex-col h-dvh bg-white dark:bg-gray-950">
       {/* Top bar */}
       <div className={cn(
         'flex items-center gap-3 px-3 py-2',
@@ -318,9 +313,10 @@ export function SessionView({ sessionId, onBack }: Props) {
         </div>
       )}
 
-      {/* Transcript */}
+      {/* Transcript — rotation dividers are interleaved inline by anchor turn */}
       <TranscriptView
         turns={state.turns}
+        rotations={state.rotations}
         permissionMode={mode}
         toolDetailMode={toolDetailMode}
         onDecision={handleDecision}
@@ -337,15 +333,6 @@ export function SessionView({ sessionId, onBack }: Props) {
           )}
         >
           <WorkingIndicator count={state.status.count} />
-        </div>
-      )}
-
-      {/* Rotation dividers (appended after transcript content) */}
-      {rotations.length > 0 && (
-        <div className="flex-shrink-0 px-4">
-          {rotations.map((r, i) => (
-            <RotationDivider key={i} from={r.from} to={r.to} reason={r.reason} />
-          ))}
         </div>
       )}
 
