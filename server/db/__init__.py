@@ -36,8 +36,10 @@ def _ddl_default_literal(column) -> str | None:
     supplied to backfill existing rows. We synthesize that DEFAULT from the model
     default: scalar (bool/int/float/str) directly, and the common *callable*
     defaults by evaluating them — an empty list/dict becomes a JSON literal and a
-    datetime-producing default becomes CURRENT_TIMESTAMP. A callable we can't map
-    returns None so the caller skips it (and the CI coverage test flags it).
+    datetime-producing default becomes a fixed epoch sentinel ('1970-01-01 00:00:00')
+    — SQLite rejects CURRENT_TIMESTAMP as a non-constant DEFAULT in ALTER TABLE ADD
+    COLUMN. A callable we can't map returns None so the caller skips it (and the CI
+    coverage test flags it).
     """
     from datetime import datetime as _dt
 

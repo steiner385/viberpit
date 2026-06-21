@@ -107,9 +107,9 @@ def test_init_db_adds_not_null_json_column_with_list_default(tmp_path):
     assert asyncio.run(_read()) == "[]"
 
 
-def test_init_db_adds_not_null_datetime_column_with_current_timestamp(tmp_path):
+def test_init_db_adds_not_null_datetime_column_with_epoch_sentinel(tmp_path):
     """An old sessions table missing the NOT NULL `created_at` (default=datetime.utcnow)
-    gains it via CURRENT_TIMESTAMP rather than being skipped."""
+    gains it via a fixed epoch sentinel ('1970-01-01 00:00:00') rather than being skipped."""
     db_file = tmp_path / "old.db"
     con = sqlite3.connect(db_file)
     con.execute(
@@ -126,4 +126,12 @@ def test_init_db_adds_not_null_datetime_column_with_current_timestamp(tmp_path):
         async with db_session() as db:
             return (await db.execute(
                 sa_text("SELECT created_at FROM sessions WHERE id='o2'"))).scalar_one()
-    assert asyncio.run(_read()) is not None   # backfilled with a real timestamp
+    assert asyncio.run(_read()) == "1970-01-01 00:00:00"   # backfilled with the epoch sentinel
+
+
+def test_ddl_default_literal_handles_dict_default():
+    """A NOT NULL column with default=dict (callable producing {}) synthesizes '{}'."""
+    from sqlalchemy import Column, JSON
+    from server.db import _ddl_default_literal
+    col = Column("x", JSON, nullable=False, default=dict)
+    assert _ddl_default_literal(col) == "'{}'"
