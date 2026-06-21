@@ -12,17 +12,27 @@ def read_json(path: Path) -> dict:
 
 
 def write_json_secure(path: Path, data: dict) -> None:
-    """Write JSON with mode 0600 (store root + parent dir forced to 0700)."""
+    """Atomically write JSON with mode 0600 (store root + parent dir forced to 0700).
+
+    Writes to a sibling temp file in the same directory, then uses os.replace()
+    (atomic rename on POSIX) to swap it in.  A crash or kill mid-write cannot
+    corrupt or truncate the existing file — os.replace is the only syscall that
+    changes the visible file.
+    """
     paths.ensure_root()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # Write to a temp file in the same directory so os.replace is same-filesystem.
+    tmp_path = path.parent / (path.name + ".tmp")
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.write(fd, json.dumps(data, indent=2).encode("utf-8"))
     finally:
         os.close(fd)
-    os.chmod(path, 0o600)
+    os.chmod(str(tmp_path), 0o600)
+    # Atomic swap: os.replace is guaranteed atomic on POSIX (rename(2)).
+    os.replace(str(tmp_path), str(path))
 
 
 def split_credentials(full: dict) -> tuple[dict, dict]:
