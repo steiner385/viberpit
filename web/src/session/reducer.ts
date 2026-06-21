@@ -15,11 +15,21 @@ export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[] 
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
+/** Latest result's token/cost footprint (consumed by lib/contextWindow helpers). */
+export interface UsageSnapshot {
+  input: number
+  output: number
+  cacheRead: number
+  costUsd: number
+}
+
 export interface TranscriptState {
   turns: Turn[]
   openBlockId: string | null    // id of the open text/thinking block in the active assistant turn
   status: { state: string; count: number }
   title: string | null
+  model: string | null          // current model id (from sessionMeta / replay)
+  usage: UsageSnapshot | null   // most recent result's token/cost snapshot
   replaying: boolean            // true until replayComplete
   error: { code: string; message: string; resetsAt?: string | null } | null
   queued: string[]              // texts of prompts waiting in the server-side queue
@@ -30,9 +40,16 @@ export const initialTranscript: TranscriptState = {
   openBlockId: null,
   status: { state: 'idle', count: 0 },
   title: null,
+  model: null,
+  usage: null,
   replaying: true,
   error: null,
   queued: [],
+}
+
+/** Coerce a possibly-missing numeric usage field to a finite number (0 when absent). */
+function num(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
 }
 
 // ── Local (UI-only) synthetic actions ────────────────────────────────────────
@@ -255,6 +272,11 @@ export function transcriptReducer(
       return { ...state, turns: nextTurns }
     }
 
+    // ── sessionMeta ───────────────────────────────────────────────────────────
+    case 'sessionMeta': {
+      return { ...state, model: ev.model }
+    }
+
     // ── title ─────────────────────────────────────────────────────────────────
     case 'title': {
       return { ...state, title: ev.title }
@@ -267,7 +289,18 @@ export function transcriptReducer(
 
     // ── turnEnd ───────────────────────────────────────────────────────────────
     case 'turnEnd': {
-      return { ...state, openBlockId: null }
+      // Snapshot the latest result's usage (token footprint of the current
+      // context) and cumulative cost. A turnEnd with no usage leaves the
+      // previous snapshot intact.
+      if (ev.usage == null) return { ...state, openBlockId: null }
+      const u = ev.usage
+      const usage: UsageSnapshot = {
+        input: num(u.input_tokens),
+        output: num(u.output_tokens),
+        cacheRead: num(u.cache_read_input_tokens),
+        costUsd: num(ev.costUsd),
+      }
+      return { ...state, openBlockId: null, usage }
     }
 
     // ── replayComplete ────────────────────────────────────────────────────────

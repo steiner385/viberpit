@@ -1,11 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiRequestError } from './client'
-import type { Account, Session, ReauthState } from './types'
+import type { Account, Session, ReauthState, ArchivedSession } from './types'
+import type { SessionEvent } from '@/session/events'
 
 // Query keys
 export const QK = {
   accounts: ['accounts'] as const,
   sessions: ['sessions'] as const,
+  archived: ['archived-sessions'] as const,
   config: ['config'] as const,
   githubRepos: ['github-repos'] as const,
   githubBranches: (repo?: string) => ['github-branches', repo] as const,
@@ -126,7 +128,10 @@ export function useCloseSession() {
   const qc = useQueryClient()
   return useMutation<void, ApiRequestError, string>({
     mutationFn: (id) => api.del<void>(`/sessions/${id}`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.sessions })
+      qc.invalidateQueries({ queryKey: QK.archived })
+    },
   })
 }
 
@@ -174,5 +179,46 @@ export function useDeleteAccount() {
   return useMutation<void, ApiRequestError, string>({
     mutationFn: (name) => api.del<void>(`/accounts/${encodeURIComponent(name)}`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
+  })
+}
+
+export function useArchivedSessions() {
+  return useQuery<ArchivedSession[]>({
+    queryKey: QK.archived,
+    queryFn: () => api.get<ArchivedSession[]>('/sessions/archived'),
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+  })
+}
+
+export function useUnarchiveSession() {
+  const qc = useQueryClient()
+  return useMutation<ArchivedSession, ApiRequestError, string>({
+    mutationFn: (id) => api.post<ArchivedSession>(`/sessions/${id}/unarchive`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.sessions })
+      qc.invalidateQueries({ queryKey: QK.archived })
+    },
+  })
+}
+
+export function usePermanentDeleteSession() {
+  const qc = useQueryClient()
+  return useMutation<void, ApiRequestError, string>({
+    mutationFn: (id) => api.del<void>(`/sessions/${id}/permanent`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.archived }) },
+  })
+}
+
+export interface SessionTranscript {
+  events: SessionEvent[]
+}
+
+export function useSessionTranscript(id: string, enabled: boolean) {
+  return useQuery<SessionTranscript>({
+    queryKey: ['session-transcript', id],
+    queryFn: () => api.get<SessionTranscript>(`/sessions/${id}/transcript`),
+    enabled,
+    staleTime: Infinity,
   })
 }

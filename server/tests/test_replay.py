@@ -28,6 +28,22 @@ def test_replay_skips_malformed_lines(tmp_path):
     assert "user" in types and "turnStart" in types and "turnEnd" in types
 
 
+def test_replay_emits_session_meta_and_usage(tmp_path):
+    """Re-attach must reconstruct the model (from the assistant message) and the
+    per-result usage so the status strip can render context/quota after replay."""
+    p = tmp_path / "m.jsonl"
+    p.write_text(
+        '{"type":"assistant","uuid":"a1","message":{"role":"assistant","model":"claude-opus-4-1",'
+        '"content":[{"type":"text","text":"ok"}],'
+        '"usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":3}}}\n'
+    )
+    out = asyncio.run(replay_events(str(p)))
+    metas = [e for e in out if e.to_wire()["type"] == "sessionMeta"]
+    assert metas and metas[0].to_wire()["model"] == "claude-opus-4-1"
+    te = next(e for e in out if e.to_wire()["type"] == "turnEnd")
+    assert te.to_wire()["usage"] == {"input_tokens": 10, "output_tokens": 2, "cache_read_input_tokens": 3}
+
+
 def test_replay_handles_string_content(tmp_path):
     """Regression: a user message whose `content` is a plain STRING (not a list of
     blocks) must parse — otherwise iterating it yields chars and b.get() raises

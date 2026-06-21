@@ -62,7 +62,9 @@ def _record_to_dict(record) -> dict[str, Any]:
         "id": record.id,
         "name": record.name,
         "accountName": record.account,
+        "repo": record.repo,
         "status": record.status,
+        "nameIsAuto": getattr(record, "name_is_auto", True),
         "detached": record.detached,
         "createdAt": record.created_at.isoformat() if record.created_at else None,
         "updatedAt": None,
@@ -101,6 +103,9 @@ async def create_session(
     Returns 409 with earliestReset if all accounts are at ceiling.
     """
     orch: SessionOrchestrator = _get_orchestrator(request)
+    # When the user supplies no name, the session is auto-named (Claude title / first
+    # prompt) and stays auto until a manual rename. A supplied name is pinned manual.
+    name_is_auto = not (body.name and body.name.strip())
     name = body.name or "New Session"
 
     # Validate repo format (nameWithOwner) before using it in URLs or filesystem paths.
@@ -173,8 +178,10 @@ async def create_session(
             initial_prompt=body.initialPrompt,
             cwd=cwd,
             branch=body.branch,
+            repo=body.repo,
             identity=identity,
             permission_mode=body.permissionMode or "interactive",
+            name_is_auto=name_is_auto,
         )
     except ValueError as exc:
         return JSONResponse(
@@ -224,6 +231,19 @@ async def create_session(
     )
 
 
+# NOTE: this static route MUST be declared before the dynamic "/{session_id}" route
+# below, or FastAPI matches "/archived" against "/{session_id}" (session_id="archived")
+# and returns 404 — which silently broke the entire archived-sessions feature.
+@router.get("/archived")
+async def list_archived_sessions(
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> list[dict]:
+    """Return all archived session metadata."""
+    orch: SessionOrchestrator = _get_orchestrator(request)
+    return await orch.list_archived()
+
+
 @router.get("/{session_id}")
 async def get_session(
     session_id: str,
@@ -269,7 +289,7 @@ async def close_session(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ):
-    """Close/terminate a session. Returns 404 if unknown."""
+    """Archive a session (moves cwd to archive, keeps DB row). Returns 404 if unknown."""
     orch: SessionOrchestrator = _get_orchestrator(request)
     record = orch.get_session(session_id)
     if record is None:
@@ -277,12 +297,95 @@ async def close_session(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
-    await orch.close_session(session_id)
+    await orch.archive_session(session_id)
 
-    # Audit: session.close
+    # Audit: session.archive
     await record_audit(
         db=db,
-        type="session.close",
+        type="session.archive",
         identity=identity,
         detail={"session_id": session_id},
     )
+
+
+@router.post("/{session_id}/unarchive")
+async def unarchive_session(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Restore an archived session to idle. Returns 404 if not found or not archived."""
+    orch: SessionOrchestrator = _get_orchestrator(request)
+    record = await orch.unarchive(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Archived session {session_id!r} not found"},
+        )
+
+    # Audit: session.unarchive
+    await record_audit(
+        db=db,
+        type="session.unarchive",
+        identity=identity,
+        detail={"session_id": session_id},
+    )
+    return _record_to_dict(record)
+
+
+@router.delete("/{session_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)
+async def permanent_delete_session(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Permanently delete a session: remove archive folder and DB row. 404 if unknown."""
+    orch: SessionOrchestrator = _get_orchestrator(request)
+    deleted = await orch.permanent_delete(session_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+
+    # Audit: session.permanent_delete
+    await record_audit(
+        db=db,
+        type="session.permanent_delete",
+        identity=identity,
+        detail={"session_id": session_id},
+    )
+
+
+@router.get("/{session_id}/transcript")
+async def get_session_transcript(
+    session_id: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Return read-only transcript events for a session (active or archived)."""
+    from server.db import db_session as _db_session
+    from server.db.models import Session as _DbSession
+    from server.audit import redact_event
+    from sqlalchemy import select as sa_select
+
+    orch: SessionOrchestrator = _get_orchestrator(request)
+
+    # Verify the session exists (in _records for active, or DB for archived).
+    record = orch.get_session(session_id)
+    if record is None:
+        async with _db_session() as _db:
+            row = (await _db.execute(
+                sa_select(_DbSession).where(_DbSession.id == session_id)
+            )).scalars().first()
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+            )
+
+    events = await orch.transcript_events(session_id)
+    wire_events = [redact_event(e.to_wire()) for e in events]
+    return {"events": wire_events}

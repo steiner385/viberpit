@@ -243,6 +243,61 @@ def test_ensure_driver_unknown_session_returns_none(tmp_path):
 
 
 # -----------------------------------------------------------------------
+# Test 4b: ensure_driver threads the attaching identity (regression)
+# -----------------------------------------------------------------------
+
+def test_ensure_driver_threads_attaching_identity(tmp_path):
+    """A resumed driver must carry the attaching user's identity, not a hardcoded
+    "system" sentinel.
+
+    Regression: AskUserQuestion / permission answers register under
+    ``driver.identity``; the WebSocket resolves them with the real Tailscale
+    identity. When ensure_driver hardcoded identity="system", the identity check
+    in the registries rejected every answer on a *resumed* session — the answer
+    was silently dropped and the agent hung forever awaiting it.
+    """
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    cwd = str(tmp_path)
+    session_id = "ident-s1"
+    user = "tony@kindash.com"
+
+    async def _run():
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(DbSession(
+                id=session_id, name="test", account_name="acct1",
+                claude_session_id="resume-me", status="idle", cwd=cwd,
+            ))
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+        await orch.rehydrate()
+
+        cfg_dir = tmp_path / "cfg" / "acct1"
+        cfg_dir.mkdir(parents=True)
+
+        with patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+             patch("server.sessions.orchestrator.configdir"):
+            driver = await orch.ensure_driver(session_id, identity=user)
+
+            # Register a pending question the way the SDK callback does — under
+            # the driver's own identity.
+            qid, fut = driver._qreg.request(
+                session_id, "t1", "H", "Q?", [{"label": "Yes"}], False, driver.identity,
+            )
+            # The user answers over the WS with their real identity.
+            resolved = orch.answer_question(session_id, qid, ["Yes"], user)
+            answer = await fut if fut.done() else None
+        return driver.identity, resolved, answer
+
+    identity, resolved, answer = asyncio.run(_run())
+
+    assert identity == user, (
+        f"resumed driver must carry the attaching identity, got {identity!r}"
+    )
+    assert resolved is True, "answer_question must resolve with the attaching identity"
+    assert answer == ["Yes"], "the pending question future must receive the answer"
+
+
+# -----------------------------------------------------------------------
 # Test 5: ensure_driver is safe under concurrent calls (TOCTOU fix)
 # -----------------------------------------------------------------------
 
@@ -329,3 +384,35 @@ def test_ensure_driver_concurrent_calls_start_driver_once(tmp_path):
         f"sdk_factory must be called exactly once; called {factory_call_count} times — "
         "two SDK processes would attach to the same Claude conversation"
     )
+
+
+def test_ensure_driver_recreates_missing_cwd(tmp_path):
+    """A rehydrated session whose cwd (scratch dir / worktree) was removed on close
+    must have it recreated, not fail with 'Working directory does not exist'."""
+    from server.tests.fakes.fake_sdk import FakeSDKClient
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    missing_cwd = str(tmp_path / "gone" / "session-cwd")  # does NOT exist
+    session_id = "s-missing-cwd"
+
+    def factory(cwd, cfg, can_use_tool, mode, resume):
+        return FakeSDKClient([], on_can_use_tool=can_use_tool)
+
+    async def _run():
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(DbSession(
+                id=session_id, name="t", account_name="acct1",
+                claude_session_id="csid", status="idle", cwd=missing_cwd,
+            ))
+        orch = SessionOrchestrator(sdk_factory=factory)
+        await orch.rehydrate()
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir(parents=True)
+        with patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+             patch("server.sessions.orchestrator.configdir"):
+            driver = await orch.ensure_driver(session_id)
+        return driver
+
+    driver = asyncio.run(_run())
+    assert driver is not None
+    assert os.path.isdir(missing_cwd), "ensure_driver must recreate the missing cwd"

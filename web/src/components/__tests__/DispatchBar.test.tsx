@@ -122,13 +122,24 @@ describe('DispatchBar', () => {
     expect(onEscape).toHaveBeenCalled()
   })
 
-  it('? opens the help overlay', async () => {
+  it('? opens the help overlay when the prompt is empty', async () => {
     const user = userEvent.setup()
     const onShowHelp = vi.fn()
     render(<DispatchBar {...makeProps({ onShowHelp })} />)
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{Shift>}/{/Shift}')
     expect(onShowHelp).toHaveBeenCalled()
+  })
+
+  it('? is typed literally (does NOT open help) when the prompt has text', async () => {
+    const user = userEvent.setup()
+    const onShowHelp = vi.fn()
+    render(<DispatchBar {...makeProps({ onShowHelp })} />)
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(box)
+    await user.type(box, 'why is the sky blue?')
+    expect(onShowHelp).not.toHaveBeenCalled()
+    expect((box as HTMLTextAreaElement).value).toBe('why is the sky blue?')
   })
 
   it('Alt+2 jumps to row index 1', async () => {

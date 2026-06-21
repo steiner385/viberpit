@@ -5,7 +5,7 @@ usage, and WS layers can import this without pulling in SQLAlchemy.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 
@@ -21,7 +21,9 @@ class SessionRecord:
     rows: int
     cwd: str
     # Fields with defaults so existing create_session constructions keep compiling
+    repo: str | None = None          # GitHub nameWithOwner this session works on (None = scratch)
     detached: bool = False           # True for rehydrated sessions with no live driver
-    status: str = "idle"             # working / idle / limited / ended
+    status: str = "idle"             # idle / in_progress / waiting_input / ready_review / done / limited / ended
+    name_is_auto: bool = True        # False once the user manually renames the session
     permission_mode: str = "interactive"
     created_at: datetime | None = None

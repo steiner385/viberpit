@@ -15,6 +15,8 @@ import asyncio
 import functools
 import logging
 import os
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Callable
@@ -28,6 +30,7 @@ from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory
 from server.sessions.selection import AllAccountsBusy, select_account
+from server.sessions.titles import read_ai_title_from_file
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
 
@@ -151,8 +154,10 @@ class SessionOrchestrator:
         rows: int = 24,
         cwd: str | None = None,
         branch: str | None = None,
+        repo: str | None = None,
         identity: str = "system",
         permission_mode: str = "interactive",
+        name_is_auto: bool = True,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
 
@@ -168,13 +173,15 @@ class SessionOrchestrator:
 
         session_id = str(uuid.uuid4())
 
-        # Per-session isolation: when a branch is selected on a git repo, run the
-        # session in its OWN worktree checked out to that branch instead of doing
-        # a `git checkout` in the user's real tree. Two sessions on one repo never
-        # collide, and the real checkout is left untouched. (Falls back to a child
-        # branch if the selected branch is already checked out elsewhere.)
+        # Per-session isolation: EVERY repo session runs in its OWN git worktree, never
+        # the shared clone or the user's real tree. With a branch, the worktree checks it
+        # out (child-branch fallback if it's busy elsewhere); without a branch, it's a
+        # detached worktree off HEAD. Either way two sessions on one repo never collide,
+        # and the user's real checkout is untouched. (No-repo sessions get a scratch dir
+        # below; this branch only applies when cwd is an actual git repo — the ccswitch
+        # clone resolved by the API.)
         worktree_info: worktrees.WorktreeInfo | None = None
-        if branch is not None and cwd is not None and worktrees.is_git_repo(cwd):
+        if cwd is not None and worktrees.is_git_repo(cwd):
             try:
                 worktree_info = await asyncio.to_thread(
                     worktrees.create_worktree, cwd, branch, session_id, self._repo_root
@@ -214,6 +221,7 @@ class SessionOrchestrator:
             registry=self._registry, identity=identity,
             on_session_id=self._persist_claude_session_id,
             on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
+            on_status=self._persist_status,
         )
         await driver.start()
         self._drivers[session_id] = driver
@@ -237,7 +245,9 @@ class SessionOrchestrator:
                 status="idle",
                 pid=None,
                 cwd=cwd,
+                repo=repo,
                 permission_mode=permission_mode,
+                name_is_auto=name_is_auto,
             )
             db.add(row)
 
@@ -249,7 +259,9 @@ class SessionOrchestrator:
             cols=cols,
             rows=rows,
             cwd=cwd,
+            repo=repo,
             status="idle",
+            name_is_auto=name_is_auto,
         )
         self._records[session_id] = record
         log.info("session.create id=%s account=%s", session_id, account)
@@ -309,16 +321,59 @@ class SessionOrchestrator:
         log.info("session.close id=%s", session_id)
 
     async def rename_session(self, session_id: str, name: str) -> None:
-        """Update the session name in the DB and in-memory record."""
+        """Update the session name in the DB and in-memory record.
+
+        A manual rename pins ``name_is_auto = False`` so auto-naming never overwrites it.
+        """
         if session_id in self._records:
             self._records[session_id].name = name
+            self._records[session_id].name_is_auto = False
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             await db.execute(
                 sa_update(DbSession)
                 .where(DbSession.id == session_id)
-                .values(name=name)
+                .values(name=name, name_is_auto=False)
             )
+
+    async def _persist_status(self, session_id: str, status: str) -> None:
+        """Driver ``on_status`` callback: persist the derived dashboard status.
+
+        Updates the in-memory record (which the dashboard's 5s poll reads) and the DB
+        row. Never downgrades a terminal ``ended`` status. When a turn finishes
+        (``done``), opportunistically refresh the auto-name from Claude's title.
+        """
+        rec = self._records.get(session_id)
+        if rec is not None and rec.status == "ended":
+            return
+        if rec is not None:
+            rec.status = status
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(status=status)
+            )
+        if status == "done":
+            await self._maybe_apply_auto_name(session_id)
+
+    async def _maybe_apply_auto_name(self, session_id: str) -> None:
+        """If the session name is still auto, adopt Claude's transcript title."""
+        rec = self._records.get(session_id)
+        if rec is None or not rec.name_is_auto:
+            return
+        path = self.transcript_path(session_id)
+        if not path:
+            return
+        title = await asyncio.to_thread(read_ai_title_from_file, path)
+        if not title or title == rec.name:
+            return
+        rec.name = title
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(name=title)
+            )
+        log.info("session.auto_name id=%s title=%r", session_id, title)
 
     async def _persist_claude_session_id(self, session_id: str, claude_session_id: str) -> None:
         """Callback fired by the driver the first time it captures the Claude session id.
@@ -346,13 +401,16 @@ class SessionOrchestrator:
         from sqlalchemy import select as sa_select
         async with db_session() as db:
             rows = (await db.execute(
-                sa_select(DbSession).where(DbSession.status != "ended")
+                sa_select(DbSession).where(
+                DbSession.status.notin_(["ended", "archived"])
+            )
             )).scalars().all()
         added = 0
         for row in rows:
             if row.id in self._records:
                 continue
-            status = "idle" if row.status == "working" else row.status
+            # A pre-crash live status has no driver anymore → normalize to idle.
+            status = "idle" if row.status in ("working", "in_progress") else row.status
             self._records[row.id] = SessionRecord(
                 id=row.id,
                 name=row.name,
@@ -361,8 +419,10 @@ class SessionOrchestrator:
                 cols=80,
                 rows=24,
                 cwd=row.cwd,
+                repo=row.repo,
                 detached=True,
                 status=status,
+                name_is_auto=row.name_is_auto,
                 permission_mode=row.permission_mode,
                 created_at=row.created_at,
             )
@@ -434,13 +494,20 @@ class SessionOrchestrator:
         """Return the live SessionDriver for session_id, or None."""
         return self._drivers.get(session_id)
 
-    async def ensure_driver(self, session_id: str) -> SessionDriver | None:
+    async def ensure_driver(self, session_id: str, identity: str = "system") -> SessionDriver | None:
         """Return the live SessionDriver for session_id, resuming from DB if detached.
 
         - If a live driver already exists, return it (idempotent).
         - If the SessionRecord exists but is detached, build a new SessionDriver with
           resume=<claude_session_id>, start it, store it, and mark the record as live.
         - If the session_id is unknown, return None.
+
+        ``identity`` is the verified identity of the caller attaching to the session
+        (the WebSocket connection's Tailscale identity). It MUST be threaded onto the
+        resumed driver: AskUserQuestion / permission answers are registered under
+        ``driver.identity`` and later resolved with the WS identity, so a resumed
+        driver built with the wrong identity rejects every answer (silently dropping
+        them and hanging the agent). Defaults to "system" for internal callers.
         """
         # Fast path: live driver already exists (no lock needed — read-only check)
         existing = self._drivers.get(session_id)
@@ -466,6 +533,12 @@ class SessionOrchestrator:
             # Build and start a new driver resuming from the stored claude_session_id
             resume = rec.claude_session_id or None
             cfg_dir = compose(rec.account)
+            # Ensure the working directory exists. A rehydrated session's cwd (a no-repo
+            # scratch dir or a git worktree) may have been removed when the session was
+            # previously closed (close_session cleans those up); without recreating it the
+            # SDK fails with "Working directory does not exist", which surfaced as a
+            # misleading "account needs re-authentication" error.
+            Path(rec.cwd).mkdir(parents=True, exist_ok=True)
             configdir.trust_project(rec.account, rec.cwd)
 
             def _build(resume_arg):
@@ -477,10 +550,11 @@ class SessionOrchestrator:
                     mode=getattr(rec, "permission_mode", "interactive"),
                     sdk_factory=self._sdk_factory,
                     registry=self._registry,
-                    identity="system",
+                    identity=identity,
                     resume=resume_arg,
                     on_session_id=self._persist_claude_session_id,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
+                    on_status=self._persist_status,
                 )
 
             driver = _build(resume)
@@ -650,6 +724,7 @@ class SessionOrchestrator:
                 resume=claude_sid,
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
+                on_status=self._persist_status,
             )
             await new_driver.start()
             self._drivers[record.id] = new_driver
@@ -674,3 +749,228 @@ class SessionOrchestrator:
             log.warning("rotation.all_busy session=%s", record.id)
         except Exception:
             log.exception("rotation.error session=%s", record.id)
+
+    # ------------------------------------------------------------------
+    # Archive / unarchive / permanent-delete
+    # ------------------------------------------------------------------
+
+    async def archive_session(self, session_id: str) -> None:
+        """Archive a session: stop driver, move cwd into archive_dir, status='archived'.
+
+        The DB row is KEPT (status='archived'). The working directory is moved to
+        archive_dir()/<session_id>/ so it can be reviewed or unarchived later.
+        If the cwd is missing (already gone), skip the move but still mark archived.
+        Git worktree registrations are pruned best-effort after the move.
+        """
+        from ccswitch.paths import archive_dir
+
+        # Stop the driver and clear in-memory state (mirrors close_session head).
+        driver = self._drivers.pop(session_id, None)
+        self._last_prompt.pop(session_id, None)
+        self._pending_initial_prompt.pop(session_id, None)
+        if driver is not None:
+            await driver.aclose()
+
+        # Remove from active records — archived sessions are NOT in _records.
+        record = self._records.pop(session_id, None)
+
+        # Clear in-memory worktree registration (we move the dir, not remove via git).
+        self._worktrees.pop(session_id, None)
+
+        # Move the cwd into the archive directory.
+        dest = archive_dir() / session_id
+        cwd_path: Path | None = Path(record.cwd) if (record and record.cwd) else None
+
+        if cwd_path and cwd_path.exists():
+            try:
+                await asyncio.to_thread(shutil.move, str(cwd_path), str(dest))
+                log.info(
+                    "session.archive id=%s moved cwd=%s to archive=%s",
+                    session_id, cwd_path, dest,
+                )
+            except Exception:
+                log.exception(
+                    "session.archive_move_failed id=%s src=%s dest=%s",
+                    session_id, cwd_path, dest,
+                )
+        else:
+            log.info("session.archive id=%s cwd missing or unknown, skip move", session_id)
+
+        # Best-effort: prune stale git worktree registrations.
+        if cwd_path:
+            def _prune_worktree() -> None:
+                try:
+                    r = subprocess.run(
+                        ["git", "-C", str(cwd_path.parent), "worktree", "prune"],
+                        capture_output=True, timeout=10,
+                    )
+                    if r.returncode != 0:
+                        log.debug(
+                            "session.archive_worktree_prune_failed id=%s stderr=%s",
+                            session_id, r.stderr,
+                        )
+                except Exception:
+                    pass
+            await asyncio.to_thread(_prune_worktree)
+
+        # Mark archived in DB.
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession)
+                .where(DbSession.id == session_id)
+                .values(status="archived")
+            )
+        log.info("session.archive id=%s done", session_id)
+
+    async def list_archived(self) -> list[dict]:
+        """Return metadata dicts for all archived sessions (reads DB, not _records)."""
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            rows = (await db.execute(
+                sa_select(DbSession).where(DbSession.status == "archived")
+            )).scalars().all()
+        return [
+            {
+                "id": row.id,
+                "name": row.name,
+                "account": row.account_name,
+                "cwd": row.cwd,
+                "claudeSessionId": row.claude_session_id,
+                "permissionMode": row.permission_mode,
+                "createdAt": row.created_at.isoformat() if row.created_at else None,
+                "archivedAt": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in rows
+        ]
+
+    async def unarchive(self, session_id: str) -> "SessionRecord | None":
+        """Move the archived cwd back and restore the session to idle.
+
+        Returns the restored SessionRecord, or None if not found / not archived.
+        Adds the record to _records so it reappears in list_sessions() without restart.
+        """
+        from ccswitch.paths import archive_dir
+        from sqlalchemy import select as sa_select
+
+        async with db_session() as db:
+            row = (await db.execute(
+                sa_select(DbSession)
+                .where(DbSession.id == session_id)
+                .where(DbSession.status == "archived")
+            )).scalars().first()
+        if row is None:
+            return None
+
+        archive_path = archive_dir() / session_id
+        original_cwd = Path(row.cwd)
+
+        def _restore() -> None:
+            if archive_path.exists():
+                original_cwd.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(archive_path), str(original_cwd))
+            else:
+                # Archive folder missing — recreate an empty cwd so SDK can start.
+                original_cwd.mkdir(parents=True, exist_ok=True)
+                log.warning(
+                    "session.unarchive id=%s archive folder missing, recreating empty cwd",
+                    session_id,
+                )
+
+        await asyncio.to_thread(_restore)
+
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession)
+                .where(DbSession.id == session_id)
+                .values(status="idle")
+            )
+
+        record = SessionRecord(
+            id=row.id,
+            name=row.name,
+            account=row.account_name,
+            claude_session_id=row.claude_session_id or "",
+            cols=80,
+            rows=24,
+            cwd=row.cwd,
+            detached=True,
+            status="idle",
+            permission_mode=row.permission_mode,
+            created_at=row.created_at,
+        )
+        self._records[session_id] = record
+        log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)
+        return record
+
+    async def permanent_delete(self, session_id: str) -> bool:
+        """Permanently delete an archived session: remove archive folder + DB row.
+
+        Returns True if deleted, False if the session was not found in DB.
+        Containment guard: only removes paths that are direct children of archive_dir().
+        """
+        from ccswitch.paths import archive_dir
+        from sqlalchemy import select as sa_select
+
+        async with db_session() as db:
+            row = (await db.execute(
+                sa_select(DbSession).where(DbSession.id == session_id)
+            )).scalars().first()
+        if row is None:
+            return False
+
+        # Containment guard: candidate must be a direct child of archive_dir().
+        archive_base = archive_dir().resolve()
+        candidate = (archive_base / session_id).resolve()
+        try:
+            candidate.relative_to(archive_base)
+        except ValueError:
+            log.error(
+                "session.permanent_delete CONTAINMENT GUARD id=%s candidate=%s",
+                session_id, candidate,
+            )
+            return False
+
+        await asyncio.to_thread(shutil.rmtree, str(candidate), True)
+        log.info("session.permanent_delete id=%s archive_path=%s", session_id, candidate)
+
+        async with db_session() as db:
+            from sqlalchemy import delete as sa_delete
+            await db.execute(
+                sa_delete(DbSession).where(DbSession.id == session_id)
+            )
+        log.info("session.permanent_delete id=%s db row removed", session_id)
+        return True
+
+    async def transcript_events(self, session_id: str) -> list:
+        """Return replayed transcript events for a session (read-only review).
+
+        Works for both active and archived sessions: transcripts live in the
+        account's config dir (not the moved cwd), so always accessible.
+        Returns [] if no transcript is found or parsing fails.
+        """
+        from server.sessions.replay import replay_events
+
+        path = self.transcript_path(session_id)
+        if path is None:
+            # For archived sessions the record is not in _records; load from DB.
+            from sqlalchemy import select as sa_select
+            import glob as _glob
+            async with db_session() as db:
+                row = (await db.execute(
+                    sa_select(DbSession).where(DbSession.id == session_id)
+                )).scalars().first()
+            if row and row.claude_session_id:
+                cfg_dir = str(compose(row.account_name))
+                matches = _glob.glob(
+                    str(Path(cfg_dir) / "projects" / "*" / f"{row.claude_session_id}.jsonl")
+                )
+                path = matches[0] if matches else None
+        if not path:
+            return []
+        try:
+            return await replay_events(path)
+        except Exception:
+            log.warning("session.transcript_events id=%s replay failed", session_id, exc_info=True)
+            return []

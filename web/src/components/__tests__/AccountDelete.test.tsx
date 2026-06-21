@@ -22,9 +22,13 @@ vi.mock('@/api/hooks', () => ({
   useReauthAccount: vi.fn(),
   useReauthStatus: vi.fn(),
   useCancelReauth: vi.fn(),
+  useArchivedSessions: vi.fn(),
+  useUnarchiveSession: vi.fn(),
+  usePermanentDeleteSession: vi.fn(),
   QK: {
     accounts: ['accounts'],
     sessions: ['sessions'],
+    archived: ['archived-sessions'],
     config: ['config'],
     githubRepos: ['github-repos'],
     githubBranches: (repo?: string) => ['github-branches', repo],
@@ -77,6 +81,9 @@ function setupDefaultMocks(deleteMutate = vi.fn()) {
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
   vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
   vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
+  vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+  vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
+  vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
 }
 
 describe('AccountRow — Delete button', () => {
@@ -189,7 +196,7 @@ describe('AccountRow — Delete button', () => {
     vi.mocked(hooks.useSessions).mockReturnValue({
       data: [
         makeSession({ id: 'sess-1', accountName: 'work', status: 'idle' }),
-        makeSession({ id: 'sess-2', accountName: 'work', status: 'working' }),
+        makeSession({ id: 'sess-2', accountName: 'work', status: 'in_progress' }),
       ],
       isLoading: false,
     } as ReturnType<typeof hooks.useSessions>)

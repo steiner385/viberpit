@@ -21,16 +21,37 @@ export interface Account {
   nickname?: string | null
 }
 
-export type SessionStatus = 'working' | 'idle' | 'limited' | 'ended'
+export type SessionStatus =
+  | 'idle'
+  | 'in_progress'
+  | 'waiting_input'
+  | 'ready_review'
+  | 'done'
+  | 'limited'
+  | 'ended'
 
 export interface Session {
   id: string
   name: string
   accountName: string
+  /** GitHub nameWithOwner ("owner/name") this session works on, or null for a scratch session. */
+  repo?: string | null
   status: SessionStatus
   createdAt: string
   updatedAt: string
   detached?: boolean
+  nameIsAuto?: boolean
+}
+
+export interface ArchivedSession {
+  id: string
+  name: string
+  account: string
+  cwd: string
+  claudeSessionId: string | null
+  permissionMode: string
+  createdAt: string
+  archivedAt: string
 }
 
 export interface ApiError {

@@ -104,9 +104,10 @@ export function DispatchBar({
       return
     }
 
-    // ? (Shift+/) → open help overlay
+    // ? (Shift+/) → open help overlay, ONLY when the prompt is empty — otherwise a
+    // literal '?' (very common in prompts, e.g. "why is the sky blue?") must type normally.
     // Handle both e.key==='?' (real browser) and e.key==='/' with shiftKey (jsdom/userEvent)
-    if (e.key === '?' || (e.key === '/' && e.shiftKey)) {
+    if (empty && (e.key === '?' || (e.key === '/' && e.shiftKey))) {
       e.preventDefault()
       onShowHelp()
       return
@@ -126,8 +127,9 @@ export function DispatchBar({
       return
     }
 
-    // ArrowRight at end of text → open highlighted session
-    if (e.key === 'ArrowRight' && caret >= text.length) {
+    // ArrowRight → open highlighted session, ONLY when the prompt is empty, so it never
+    // hijacks cursor movement / loses a draft while you're typing.
+    if (empty && e.key === 'ArrowRight') {
       e.preventDefault()
       onOpenHighlighted()
       return

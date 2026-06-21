@@ -23,9 +23,13 @@ vi.mock('@/api/hooks', () => ({
   useReauthAccount: vi.fn(),
   useReauthStatus: vi.fn(),
   useCancelReauth: vi.fn(),
+  useArchivedSessions: vi.fn(),
+  useUnarchiveSession: vi.fn(),
+  usePermanentDeleteSession: vi.fn(),
   QK: {
     accounts: ['accounts'],
     sessions: ['sessions'],
+    archived: ['archived-sessions'],
     config: ['config'],
     githubRepos: ['github-repos'],
     githubBranches: (repo?: string) => ['github-branches', repo],
@@ -82,6 +86,9 @@ function setupDefaultMocks() {
     data: makeReauthState({ state: 'idle' }),
     isLoading: false,
   } as ReturnType<typeof hooks.useReauthStatus>)
+  vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+  vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
+  vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
 }
 
 describe('AccountRow — Re-authenticate button', () => {

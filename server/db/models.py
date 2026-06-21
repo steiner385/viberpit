@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -34,8 +34,14 @@ class Session(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="idle")
     pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cwd: Mapped[str] = mapped_column(String, nullable=False)
+    # GitHub repo (nameWithOwner, e.g. "owner/name") this session works on, or NULL
+    # for a scratch / arbitrary-cwd session. Surfaced in the dashboard sessions list.
+    repo: Mapped[str | None] = mapped_column(String, nullable=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     permission_mode: Mapped[str] = mapped_column(String, nullable=False, default="interactive")
+    # True while the name is auto-derived (Claude title / first prompt); a manual
+    # rename pins this False so auto-naming never overwrites a user-chosen name.
+    name_is_auto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     tool_allowlist: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(

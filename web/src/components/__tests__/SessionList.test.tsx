@@ -10,7 +10,7 @@ const SESSIONS: Session[] = [
     id: 'sess-1',
     name: 'Work session',
     accountName: 'alice',
-    status: 'working',
+    status: 'in_progress',
     createdAt: '2026-06-19T10:00:00Z',
     updatedAt: '2026-06-19T10:00:00Z',
   },
@@ -84,7 +84,7 @@ describe('SessionList', () => {
       { wrapper },
     )
 
-    expect(screen.getByText('Working')).toBeInTheDocument()
+    expect(screen.getByText('In progress')).toBeInTheDocument()
     expect(screen.getByText('Idle')).toBeInTheDocument()
   })
 
@@ -254,6 +254,38 @@ describe('SessionList', () => {
     await user.click(screen.getByRole('button', { name: /actions for session work session/i }))
     await user.click(screen.getByRole('menuitem', { name: /close/i }))
     expect(onClose).toHaveBeenCalledWith('sess-1')
+  })
+})
+
+describe('SessionList — repo label', () => {
+  const onNew = vi.fn()
+  const onOpen = vi.fn()
+  const onRename = vi.fn()
+  const onClose = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('shows which repo each session is working on, and "Scratch" for repo-less ones', () => {
+    const sessions: Session[] = [
+      { ...SESSIONS[0], repo: 'acme/widget' },
+      { ...SESSIONS[1], repo: null },
+    ]
+    render(
+      <SessionList
+        sessions={sessions}
+        accounts={ACCOUNTS}
+        onNew={onNew}
+        onOpen={onOpen}
+        onRename={onRename}
+        onClose={onClose}
+      />,
+      { wrapper },
+    )
+
+    expect(screen.getByText('acme/widget')).toBeInTheDocument()
+    expect(screen.getByText('Scratch')).toBeInTheDocument()
   })
 })
 

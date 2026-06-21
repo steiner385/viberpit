@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils'
+import { WorkingIndicator } from './WorkingIndicator'
 
 interface Props {
   status: { state: string; count: number }
@@ -8,7 +9,6 @@ interface Props {
 function statusText(status: { state: string; count: number }): string {
   switch (status.state) {
     case 'idle':               return 'Ready'
-    case 'working':            return status.count > 0 ? `Working… (${status.count} queued)` : 'Working…'
     case 'waiting-permission': return 'Waiting for permission'
     case 'queued':             return `${status.count} queued`
     default:                   return status.state
@@ -33,7 +33,11 @@ export function StatusBar({ status, connectionState }: Props) {
         'text-gray-500 dark:text-gray-400',
       )}
     >
-      <span>{statusText(status)}</span>
+      {status.state === 'working' ? (
+        <WorkingIndicator count={status.count} />
+      ) : (
+        <span>{statusText(status)}</span>
+      )}
       {connectionNote && (
         <span className="ml-auto text-amber-600 dark:text-amber-400 font-medium">
           {connectionNote}

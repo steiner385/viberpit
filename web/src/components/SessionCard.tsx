@@ -1,7 +1,8 @@
 import * as React from 'react'
 import { useState, useRef, useEffect } from 'react'
-import { Pencil, Trash2, EllipsisVertical } from 'lucide-react'
+import { Pencil, Trash2, EllipsisVertical, FolderGit2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { formatRepoLabel } from '@/lib/repoLabel'
 import { StatusPill, UsageBadge } from './UsageBadge'
 import type { Session, Account } from '@/api/types'
 
@@ -49,6 +50,8 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
     onClose(session.id)
   }
 
+  const repoLabel = formatRepoLabel(session.repo)
+
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
@@ -86,7 +89,10 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
         aria-label={`Open session ${session.name}`}
       >
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
+          <span
+            className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate"
+            title={session.nameIsAuto ? 'Auto-named by Claude' : undefined}
+          >
             {session.name}
           </span>
           <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
@@ -94,6 +100,18 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
           </span>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
+          <span
+            className={cn(
+              'inline-flex items-center gap-1 text-xs max-w-full',
+              repoLabel.isScratch
+                ? 'text-gray-400 dark:text-gray-500 italic'
+                : 'text-gray-600 dark:text-gray-300',
+            )}
+            title={repoLabel.text}
+          >
+            <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
+            <span className="truncate">{repoLabel.text}</span>
+          </span>
           <StatusPill status={session.status} />
           {account?.usage && (
             <>

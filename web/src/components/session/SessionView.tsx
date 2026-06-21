@@ -15,12 +15,17 @@ import { useSessionSocket } from '@/ws/client'
 import type { WsRotatedMsg, WsErrorMsg } from '@/ws/client'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { SessionEvent } from '@/session/events'
+import { selectSubAgents } from '@/session/selectors'
+import { remainingContextPct } from '@/lib/contextWindow'
+import { useSessions, useAccounts } from '@/api/hooks'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { StatusBar } from './StatusBar'
+import { SessionMeta } from './SessionMeta'
 import { RotationDivider } from './RotationDivider'
 import { TranscriptView } from './TranscriptView'
 import { Composer } from './Composer'
+import { WorkingIndicator } from './WorkingIndicator'
 
 /**
  * Cycle to the next permission mode in PERMISSION_MODES order.
@@ -223,6 +228,22 @@ export function SessionView({ sessionId, onBack }: Props) {
     : toolDetailMode === 'all-closed' ? 'Expand tool calls'
     : 'Auto-fold tool calls'
 
+  // ── Status-strip derived data ──────────────────────────────────────────────
+  // Account: the session record's account, overridden by the latest rotation.
+  const { data: sessions } = useSessions()
+  const { data: accounts } = useAccounts()
+  const sessionRecord = sessions?.find((s) => s.id === sessionId)
+  const latestRotation = rotations.length > 0 ? rotations[rotations.length - 1].to : null
+  const account = latestRotation ?? sessionRecord?.accountName ?? '—'
+
+  const accountUsage = accounts?.find((a) => a.name === account)?.usage ?? null
+  const quota = accountUsage
+    ? { sessionPct: accountUsage.session.pct, weeklyPct: accountUsage.weekly.pct }
+    : null
+
+  const contextPct = remainingContextPct(state.usage, state.model)
+  const subAgents = selectSubAgents(state.turns)
+
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950">
       {/* Top bar */}
@@ -266,6 +287,17 @@ export function SessionView({ sessionId, onBack }: Props) {
         </div>
       </div>
 
+      {/* Status strip: account · model · context · quota · sub-agents */}
+      <div className="flex-shrink-0">
+        <SessionMeta
+          account={account}
+          model={state.model}
+          contextPct={contextPct}
+          quota={quota}
+          subAgents={subAgents}
+        />
+      </div>
+
       {/* Error banner */}
       {state.error && (
         <div
@@ -294,6 +326,19 @@ export function SessionView({ sessionId, onBack }: Props) {
         onDecision={handleDecision}
         onAnswer={handleAnswer}
       />
+
+      {/* Prominent "waiting for Claude" indicator shown below the last turn */}
+      {state.status.state === 'working' && (
+        <div
+          aria-hidden="true"
+          className={cn(
+            'flex-shrink-0 flex items-center px-4 py-2',
+            'text-xs text-gray-400 dark:text-gray-500',
+          )}
+        >
+          <WorkingIndicator count={state.status.count} />
+        </div>
+      )}
 
       {/* Rotation dividers (appended after transcript content) */}
       {rotations.length > 0 && (
