@@ -564,25 +564,33 @@ class SessionOrchestrator:
         return False
 
     def transcript_path(self, session_id) -> str | None:
-        """<config_dir>/projects/<cwd-key>/<claude_session_id>.jsonl, or None if unknown.
+        """Locate the Claude transcript `<config_dir>/projects/*/<claude_session_id>.jsonl`.
+
+        The transcript is found by GLOBBING for its globally-unique claude_session_id
+        across all project dirs, rather than computing the project-dir name from cwd.
+        Claude derives project-dir names by replacing BOTH '/' and '.' with '-' and
+        KEEPS the leading slash (→ leading dash) — replicating that exactly is fragile
+        (the old cwd.lstrip("/").replace("/","-") got the leading dash wrong, so replay
+        found nothing → blank history for every session). Globbing by the unique UUID is
+        robust to the naming convention AND to cwd/project mismatches (a session whose
+        recorded cwd differs from where it actually ran still resolves).
 
         Falls back to the SessionRecord + compose(account) when the driver is absent
         or has no claude_session_id (e.g. rehydrated/detached sessions).
         """
+        import glob as _glob
+
         d = self._drivers.get(session_id)
         if d and d.claude_session_id:
-            cwd_key = d.cwd.lstrip("/").replace("/", "-")
-            p = Path(d.config_dir) / "projects" / cwd_key / f"{d.claude_session_id}.jsonl"
-            return str(p) if p.exists() else None
+            config_dir, csid = d.config_dir, d.claude_session_id
+        else:
+            rec = self._records.get(session_id)
+            if rec is None or not rec.claude_session_id:
+                return None
+            config_dir, csid = str(compose(rec.account)), rec.claude_session_id
 
-        # Fall back: use the SessionRecord + compose(account)
-        rec = self._records.get(session_id)
-        if rec is None or not rec.claude_session_id:
-            return None
-        cfg_dir = compose(rec.account)
-        cwd_key = rec.cwd.lstrip("/").replace("/", "-")
-        p = Path(cfg_dir) / "projects" / cwd_key / f"{rec.claude_session_id}.jsonl"
-        return str(p) if p.exists() else None
+        matches = _glob.glob(str(Path(config_dir) / "projects" / "*" / f"{csid}.jsonl"))
+        return matches[0] if matches else None
 
     # ------------------------------------------------------------------
     # Rotation monitor (background task)

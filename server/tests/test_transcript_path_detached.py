@@ -73,3 +73,34 @@ def test_transcript_path_detached_session_file_missing(tmp_path):
         result = orch.transcript_path(session_id)
 
     assert result is None
+
+
+def test_transcript_path_found_under_nonmatching_project_dir(tmp_path):
+    """Regression: the transcript is located by globbing the unique claude_session_id,
+    so it resolves even when the project-dir name doesn't equal cwd.lstrip('/').replace('/','-').
+
+    Claude's real convention keeps the leading slash (→ leading dash) and replaces '.'
+    too, so the old hand-computed key never matched → blank history for every session.
+    A cwd/project mismatch (session recorded a different cwd than it ran in) is also
+    handled, since the UUID is globally unique across project dirs."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    cwd = "/mnt/ssk-ssd/tony/GitHub/cc-account-switcher"
+    claude_sid = "uuid-unique-regression"
+    session_id = "sess-leading-dash"
+
+    fake_config_dir = tmp_path / "cfg"
+    # Claude's REAL leading-dash convention (and an intentionally *different* project
+    # dir than cwd, to also cover the cwd-mismatch case):
+    real_project_dir = fake_config_dir / "projects" / "-mnt-ssk-ssd-tony-GitHub-pr-dashboard"
+    real_project_dir.mkdir(parents=True)
+    transcript_file = real_project_dir / f"{claude_sid}.jsonl"
+    transcript_file.write_text('{"type":"text"}\n')
+
+    orch = _seed_and_rehydrate(db_url, session_id, cwd, claude_sid)
+    with patch("server.sessions.orchestrator.compose", return_value=fake_config_dir):
+        result = orch.transcript_path(session_id)
+
+    assert result == str(transcript_file), (
+        "transcript_path must find the transcript by its unique session id regardless "
+        "of the project-dir naming or a cwd/project mismatch"
+    )
