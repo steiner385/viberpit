@@ -123,7 +123,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             if session_id in live_tasks:
                 return  # already attached
 
-            driver = orchestrator.driver(session_id)
+            driver = await orchestrator.ensure_driver(session_id)
             if driver is None:
                 await _send({"type": "error", "code": "SESSION_NOT_FOUND",
                              "message": f"Session {session_id!r} not found",

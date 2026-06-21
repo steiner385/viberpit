@@ -497,4 +497,65 @@ def test_frame_too_large_rejected(ws_env):
             "socket appears closed after frame_too_large"
         )
 
-    client.portal.call(orch.close_session, session_id)
+
+# ---------------------------------------------------------------------------
+# Attaching to a rehydrated (detached) session lazily resumes the driver
+# ---------------------------------------------------------------------------
+
+def test_attach_rehydrated_session_gets_replay_complete(tmp_path):
+    """Attaching to a rehydrated/detached session calls ensure_driver and sends replayComplete.
+
+    Uses a file-backed DB so the app can rehydrate the row on startup.
+    The session has no transcript file, so replay will be empty — but replayComplete still fires.
+    """
+    import asyncio as _asyncio
+    from server.db import init_db as _init_db, db_session as _db_session
+    from server.db.models import Session as _DbSession
+
+    db_path = tmp_path / "ccswitch.db"
+    db_url = f"sqlite+aiosqlite:///{db_path}"
+    session_id = "rehydrated-ws-s1"
+    cwd = str(tmp_path)
+
+    # Seed the DB row before the app starts
+    async def _seed():
+        await _init_db(db_url=db_url)
+        async with _db_session() as db:
+            db.add(_DbSession(
+                id=session_id, name="rehydrated-ws-session",
+                account_name="alpha", claude_session_id=None,
+                status="idle", cwd=cwd,
+            ))
+    _asyncio.run(_seed())
+
+    store_home = tmp_path / "store"
+    store_home.mkdir()
+    shared_base = tmp_path / "dot-claude"
+    shared_base.mkdir()
+    (shared_base / "settings.json").write_text("{}")
+    (shared_base / "projects").mkdir()
+    cfg_dir = tmp_path / "cfg" / "alpha"
+    cfg_dir.mkdir(parents=True)
+
+    _seed_account("alpha")
+
+    env = {
+        "CCSWITCH_HOME": str(store_home),
+        "CLAUDE_CONFIG_DIR": str(shared_base),
+        "CCSWITCH_DB_URL": db_url,
+    }
+    with patch.dict(os.environ, env), \
+         patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+         patch("server.sessions.orchestrator.configdir"), \
+         patch("server.sessions.orchestrator.select_account", return_value="alpha"), \
+         patch("ccswitch.accounts.usage_for", side_effect=_fake_usage):
+
+        orch = _make_orch([])
+        app = create_app(orchestrator=orch)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+                ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+                events = _drain_events(ws, until_type="replayComplete", timeout=8.0)
+                assert any(e.get("type") == "replayComplete" for e in events), (
+                    f"replayComplete not in {[e.get('type') for e in events]}"
+                )

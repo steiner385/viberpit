@@ -356,6 +356,47 @@ class SessionOrchestrator:
         """Return the live SessionDriver for session_id, or None."""
         return self._drivers.get(session_id)
 
+    async def ensure_driver(self, session_id: str) -> SessionDriver | None:
+        """Return the live SessionDriver for session_id, resuming from DB if detached.
+
+        - If a live driver already exists, return it (idempotent).
+        - If the SessionRecord exists but is detached, build a new SessionDriver with
+          resume=<claude_session_id>, start it, store it, and mark the record as live.
+        - If the session_id is unknown, return None.
+        """
+        # Fast path: live driver already exists
+        existing = self._drivers.get(session_id)
+        if existing is not None:
+            return existing
+
+        # Look up the in-memory record (populated by rehydrate())
+        rec = self._records.get(session_id)
+        if rec is None:
+            return None
+
+        # Build and start a new driver resuming from the stored claude_session_id
+        resume = rec.claude_session_id or None
+        cfg_dir = compose(rec.account)
+        configdir.trust_project(rec.account, rec.cwd)
+
+        driver = SessionDriver(
+            session_id,
+            rec.account,
+            rec.cwd,
+            str(cfg_dir),
+            mode=getattr(rec, "permission_mode", "interactive"),
+            sdk_factory=self._sdk_factory,
+            registry=self._registry,
+            identity="system",
+            resume=resume,
+            on_session_id=self._persist_claude_session_id,
+        )
+        await driver.start()
+        self._drivers[session_id] = driver
+        rec.detached = False
+        log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
+        return driver
+
     def resolve_permission(self, session_id, perm_id, decision, identity) -> bool:
         d = self._drivers.get(session_id)
         return d.resolve_permission(perm_id, decision, identity) if d else False
