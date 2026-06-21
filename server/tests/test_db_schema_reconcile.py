@@ -47,3 +47,38 @@ def test_init_db_adds_missing_nullable_repo_column(tmp_path):
             )).scalar_one()
 
     assert asyncio.run(_roundtrip_repo()) == "acme/widget"
+
+
+def test_init_db_adds_missing_not_null_column_with_default(tmp_path):
+    """A pre-existing, POPULATED sessions table missing the NOT NULL
+    `name_is_auto` column gains it (backfilled to the model default) after
+    init_db — the schema-drift that broke the auto-deployed server when master
+    added `name_is_auto` while the live SQLite DB predated it.
+    """
+    db_file = tmp_path / "old.db"
+
+    # OLD dev DB created before `name_is_auto` existed, with a row already in it.
+    con = sqlite3.connect(db_file)
+    con.execute(
+        "CREATE TABLE sessions ("
+        " id TEXT PRIMARY KEY, name TEXT, account_name TEXT, status TEXT, cwd TEXT"
+        ")"
+    )
+    con.execute(
+        "INSERT INTO sessions (id, name, account_name, status, cwd)"
+        " VALUES ('old1', 'n', 'acct', 'idle', '/tmp')"
+    )
+    con.commit()
+    con.close()
+
+    db_url = f"sqlite+aiosqlite:///{db_file}"
+    asyncio.run(init_db(db_url=db_url))
+
+    async def _read_name_is_auto() -> int:
+        # Pre-existing row must be backfilled with the model default (True → 1).
+        async with db_session() as db:
+            return (await db.execute(
+                sa_text("SELECT name_is_auto FROM sessions WHERE id = 'old1'")
+            )).scalar_one()
+
+    assert asyncio.run(_read_name_is_auto()) == 1

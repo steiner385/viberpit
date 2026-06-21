@@ -14,6 +14,8 @@ describe('FileContent', () => {
   it('strips ANSI escape codes', () => {
     render(<FileContent payload={{ content: '\x1b[32mgreen\x1b[0m' }} />)
     expect(screen.getByText(/green/)).toBeInTheDocument()
+    // Asserting the ESC (0x1b) control char was stripped requires matching it.
+    // eslint-disable-next-line no-control-regex
     expect(screen.queryByText(/\x1b/)).toBeNull()
   })
 
@@ -34,5 +36,21 @@ describe('FileContent', () => {
   it('falls back to JSON when content field missing', () => {
     render(<FileContent payload={{ other: 'data' }} />)
     expect(screen.getByText(/other/)).toBeInTheDocument()
+  })
+
+  it('renders list-shaped content as text, not raw JSON', () => {
+    render(<FileContent payload={{ content: [{ type: 'text', text: 'line from block' }] }} />)
+    expect(screen.getByText(/line from block/)).toBeInTheDocument()
+    expect(screen.queryByText(/"type"/)).toBeNull()
+  })
+
+  it('applies error styling when ok is false (failed read)', () => {
+    const { container } = render(<FileContent payload={{ content: 'permission denied' }} ok={false} />)
+    expect(container.querySelector('pre')).toHaveClass('bg-red-50')
+  })
+
+  it('uses neutral styling by default', () => {
+    const { container } = render(<FileContent payload={{ content: 'ok' }} />)
+    expect(container.querySelector('pre')).not.toHaveClass('bg-red-50')
   })
 })

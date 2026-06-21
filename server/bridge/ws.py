@@ -198,8 +198,10 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             #     consumer exists in driver._out.  Only fires on the first attach
             #     (pop clears the entry); reconnects fall through to live-stream only.
             pending_prompt = orchestrator.pop_pending_initial_prompt(session_id)
-            if pending_prompt is not None:
-                await orchestrator.send_prompt(session_id, pending_prompt)
+            pending_images = orchestrator.pop_pending_initial_images(session_id)
+            if pending_prompt is not None or pending_images:
+                await orchestrator.send_prompt(
+                    session_id, pending_prompt or "", pending_images)
 
             # 3) Start the live stream: forward driver events into the batcher.
             async def _live() -> None:
@@ -264,7 +266,8 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 elif msg_type == "detach":
                     await _handle_detach(session_id)
                 elif msg_type == "prompt":
-                    await orchestrator.send_prompt(session_id, msg.get("text", ""))
+                    await orchestrator.send_prompt(
+                        session_id, msg.get("text", ""), msg.get("images"))
                 elif msg_type == "interrupt":
                     await orchestrator.interrupt(session_id)
                     try:

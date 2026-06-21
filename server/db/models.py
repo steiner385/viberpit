@@ -42,6 +42,10 @@ class Session(Base):
     # True while the name is auto-derived (Claude title / first prompt); a manual
     # rename pins this False so auto-naming never overwrites a user-chosen name.
     name_is_auto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # True when this session was adopted from an untracked live process and resumed
+    # in the original cwd — a documented exception to the worktree-isolation guarantee.
+    # Nullable so init_db backfills it on the dev SQLite DB without a migration.
+    adopted_in_place: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     tool_allowlist: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
