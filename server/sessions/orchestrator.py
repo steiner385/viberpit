@@ -309,6 +309,15 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         return d.resolve_permission(perm_id, decision, identity) if d else False
 
+    def answer_question(self, session_id, question_id, selected, identity) -> bool:
+        """Resolve a pending AskUserQuestion with the user's selected answers.
+
+        Returns True if resolved, False if no driver for session_id or unknown question_id.
+        Mirrors resolve_permission.
+        """
+        d = self._drivers.get(session_id)
+        return d.answer_question(question_id, selected, identity) if d else False
+
     async def send_prompt(self, session_id, text):
         d = self._drivers.get(session_id)
         if d:

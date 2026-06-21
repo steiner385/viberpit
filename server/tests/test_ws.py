@@ -305,6 +305,70 @@ def test_unknown_permission_and_interrupt_safe(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# answerQuestion round-trip: model asks a question, user answers it
+# ---------------------------------------------------------------------------
+
+class _QuestionFakeClient(FakeSDKClient):
+    """Fake client that invokes can_use_tool with AskUserQuestion before streaming,
+    blocks until the user answers, then finishes the turn (echoing the chosen answer)."""
+
+    async def receive_response(self):
+        yield f.stream_start(uuid="t1")
+        # Trigger an AskUserQuestion — blocks until the WS bridge answers it.
+        if self.on_can_use_tool is not None:
+            await self.on_can_use_tool(
+                "AskUserQuestion",
+                {"questions": [{"header": "Pick one", "question": "What colour?",
+                                 "options": [{"label": "Red"}, {"label": "Blue"}],
+                                 "multiSelect": False}]},
+                None,
+            )
+        if self.interrupted:
+            return
+        yield f.stream_text("answered", uuid="t1")
+        yield f.result(session_id="sess-1", uuid="t1")
+
+
+def test_answer_question_round_trip(ws_env):
+    """AskUserQuestion emits a question event; answerQuestion resolves it; turn completes."""
+    _app, orch, client = ws_env([], client_cls=_QuestionFakeClient)
+    session = client.portal.call(
+        lambda: orch.create_session("test-question", identity="wstest@example.com")
+    )
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "go"}))
+        # Wait for the question event from the driver.
+        events = _drain_events(ws, until_type="question", timeout=8.0)
+        q_event = next((e for e in events if e.get("type") == "question"), None)
+        assert q_event is not None, f"no question event in {[e.get('type') for e in events]}"
+        assert q_event.get("question") == "What colour?"
+        assert q_event.get("header") == "Pick one"
+        options = q_event.get("options", [])
+        assert any(o.get("label") == "Red" for o in options)
+        question_id = q_event["questionId"]
+
+        # Send the user's answer.
+        ws.send_text(json.dumps({
+            "type": "answerQuestion",
+            "sessionId": session_id,
+            "questionId": question_id,
+            "selected": ["Red"],
+        }))
+
+        # Turn should now complete.
+        events = _drain_events(ws, until_type="turnEnd", timeout=8.0)
+        types = [e.get("type") for e in events]
+        assert "turnEnd" in types, f"turn did not complete after answer: {types}"
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
 # Frame larger than 256KB is rejected, socket stays open
 # ---------------------------------------------------------------------------
 

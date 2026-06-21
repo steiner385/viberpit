@@ -243,8 +243,17 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                         log.warning("ws.audit_failed event=%s session=%s",
                                     "permission_mode.change", session_id, exc_info=True)
                 elif msg_type == "answerQuestion":
-                    # Accepted but not yet wired — a later task handles questions.
-                    log.debug("ws.answerQuestion (no-op) session=%s", session_id)
+                    question_id = msg.get("questionId", "")
+                    selected = msg.get("selected", [])
+                    orchestrator.answer_question(session_id, question_id, selected, identity)
+                    try:
+                        async with db_session() as db:
+                            await record_audit(db, "question.answer", identity,
+                                               {"sessionId": session_id, "questionId": question_id,
+                                                "selected": selected})
+                    except Exception:
+                        log.warning("ws.audit_failed event=%s session=%s",
+                                    "question.answer", session_id, exc_info=True)
                 elif msg_type == "cancelQueued":
                     index = msg.get("index")
                     if isinstance(index, int) and not isinstance(index, bool):

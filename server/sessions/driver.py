@@ -4,6 +4,7 @@ from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from . import events as ev
 from .translator import Translator
 from .permissions import PermissionRegistry
+from .questions import QuestionRegistry
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class SessionDriver:
         self.claude_session_id: str | None = None
         self._factory = sdk_factory
         self._reg = registry
+        self._qreg = QuestionRegistry()
         self._tr = Translator()
         self._client = None
         self._out: asyncio.Queue = asyncio.Queue()
@@ -41,16 +43,80 @@ class SessionDriver:
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
 
+    @staticmethod
+    def _normalize_option(opt) -> dict:
+        """Normalize a question option to a dict with at least a 'label' key."""
+        if isinstance(opt, dict):
+            return opt
+        return {"label": str(opt)}
+
+    async def _handle_ask_user_question(self, tool_input: dict, turn_id: str) -> PermissionResultDeny:
+        """Block the SDK callback, emit ev.Question events, await user answers.
+
+        The SDK offers no channel to return an answer via PermissionResultAllow; the
+        only way to feed the answer back to the model is through PermissionResultDeny
+        whose `message` the model receives as the tool result text.
+        """
+        raw_questions = tool_input.get("questions") or []
+        if not raw_questions:
+            # Malformed call — deny immediately with a note.
+            return PermissionResultDeny(message="[User answered via the question UI] (no questions provided)")
+
+        # For each question in the tool call, register a pending entry and emit the event.
+        pending: list[tuple[dict, asyncio.Future]] = []
+        for q in raw_questions:
+            header = q.get("header") or ""
+            question_text = q.get("question") or ""
+            raw_opts = q.get("options") or []
+            options = [self._normalize_option(o) for o in raw_opts]
+            multi_select = bool(q.get("multiSelect", False))
+
+            qid, fut = self._qreg.request(self.session_id, turn_id, self.identity)
+            await self._out.put(ev.Question(
+                question_id=qid,
+                turn_id=turn_id,
+                header=header,
+                question=question_text,
+                options=options,
+                multi_select=multi_select,
+            ))
+            pending.append((q, fut))
+
+        # Await all answers concurrently (gather preserves order).
+        futs = [fut for _, fut in pending]
+        answers: list[list[str] | None] = await asyncio.gather(*futs)
+
+        # Build the deny message.
+        questions_list = [q for q, _ in pending]
+        if len(questions_list) == 1:
+            q_text = questions_list[0].get("question") or ""
+            selected = answers[0]
+            if selected is None:
+                answer_str = "(dismissed — no answer)"
+            else:
+                answer_str = ", ".join(selected)
+            msg = f"[User answered via the question UI] {q_text} → {answer_str}"
+        else:
+            lines = ["[User answered via the question UI]"]
+            for q_obj, selected in zip(questions_list, answers):
+                q_text = q_obj.get("question") or ""
+                if selected is None:
+                    answer_str = "(dismissed — no answer)"
+                else:
+                    answer_str = ", ".join(selected)
+                lines.append(f"- {q_text} → {answer_str}")
+            msg = "\n".join(lines)
+
+        return PermissionResultDeny(message=msg)
+
+    def answer_question(self, question_id: str, selected: list[str], identity: str) -> bool:
+        """Resolve a pending question with the user's selection. Mirrors resolve_permission."""
+        return self._qreg.resolve(question_id, selected, identity)
+
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
         turn_id = self._turn()
-        # AskUserQuestion is a read-only "ask the user" tool. The SDK gives no channel
-        # to return the chosen answer through this callback (allowing it yields a
-        # "user did not answer" tool_result — spike 2026-06-20), so prompting the user
-        # to *approve* it is pointless. Auto-allow it; the model then re-asks in plain
-        # text, which the user answers via the composer. (QuestionCard/answerQuestion
-        # stay in the frontend, dormant, ready if a future SDK exposes an answer path.)
         if tool_name == "AskUserQuestion":
-            return PermissionResultAllow()
+            return await self._handle_ask_user_question(tool_input, turn_id)
         perm_id, fut = await self._reg.request(
             self.session_id, turn_id, tool_name, tool_input,
             mode=self.mode, denylist=self.denylist, allowlist=True, identity=self.identity)
@@ -140,6 +206,7 @@ class SessionDriver:
 
     async def interrupt(self):
         self._reg.deny_all(self.session_id)
+        self._qreg.deny_all(self.session_id)
         # Clear the queue so a Stop abandons all pending queued prompts.
         self._queue.clear()
         if self._client:
@@ -157,6 +224,7 @@ class SessionDriver:
 
     async def aclose(self):
         self._reg.deny_all(self.session_id)
+        self._qreg.deny_all(self.session_id)
         if self._pump:
             self._pump.cancel()
             try:

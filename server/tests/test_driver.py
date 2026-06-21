@@ -306,15 +306,146 @@ def test_auto_title_first_line_only():
     assert title_events[0].title == "First line"
 
 
-def test_askuserquestion_auto_allows_without_permission_card():
-    """AskUserQuestion is auto-allowed (no card) since the SDK exposes no answer channel."""
-    from claude_agent_sdk import PermissionResultAllow
+def test_askuserquestion_blocks_emits_question_and_returns_deny_with_answer():
+    """AskUserQuestion blocks the SDK callback, emits ev.Question, returns PermissionResultDeny
+    whose message contains the user's chosen answer (the Deny channel feeds the answer to the model)."""
+    from claude_agent_sdk import PermissionResultDeny
+    from server.sessions.events import Question
+
     async def run():
         d = SessionDriver("sq", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
-        res = await d._can_use_tool("AskUserQuestion", {"questions": [{"question": "x", "options": []}]})
-        assert isinstance(res, PermissionResultAllow)
-        assert d._out.empty()   # no PermissionRequest emitted
+        # Start the can_use_tool call in a background task — it will block until answered.
+        tool_input = {"questions": [{"header": "Choose", "question": "Favourite?",
+                                     "options": [{"label": "Option A", "description": ""},
+                                                 {"label": "Option B", "description": ""}],
+                                     "multiSelect": False}]}
+        callback_task = asyncio.create_task(d._can_use_tool("AskUserQuestion", tool_input))
+
+        # Give the callback time to emit the Question event and park on the future.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # A Question event must have been placed in the output queue.
+        assert not d._out.empty(), "expected ev.Question in output queue"
+        q_event = d._out.get_nowait()
+        assert isinstance(q_event, Question), f"expected Question, got {type(q_event)}"
+        assert q_event.question == "Favourite?"
+        assert q_event.header == "Choose"
+        assert len(q_event.options) == 2
+        assert q_event.options[0]["label"] == "Option A"
+        assert q_event.multi_select is False
+
+        # Resolve the question via driver.answer_question — same API as resolve_permission.
+        answered = d.answer_question(q_event.question_id, ["Option A"], "me")
+        assert answered is True
+
+        # The callback should now return PermissionResultDeny with the formatted answer.
+        result = await asyncio.wait_for(callback_task, timeout=2.0)
+        assert isinstance(result, PermissionResultDeny)
+        assert "Option A" in result.message
+        assert "[User answered via the question UI]" in result.message
+
+    asyncio.run(run())
+
+
+def test_askuserquestion_dismiss_returns_deny_with_dismissed_text():
+    """When a question is dismissed (deny_all), the callback returns PermissionResultDeny
+    with a '(dismissed)' message so the model is informed."""
+    from claude_agent_sdk import PermissionResultDeny
+    import asyncio
+
+    async def run():
+        d = SessionDriver("sq-dismiss", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        tool_input = {"questions": [{"header": "H", "question": "Q?",
+                                     "options": [{"label": "Yes"}], "multiSelect": False}]}
+        callback_task = asyncio.create_task(d._can_use_tool("AskUserQuestion", tool_input))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        # Dismiss via interrupt (calls deny_all on the question registry).
+        await d.interrupt()
+
+        result = await asyncio.wait_for(callback_task, timeout=2.0)
+        assert isinstance(result, PermissionResultDeny)
+        assert "dismissed" in result.message.lower()
+
+    asyncio.run(run())
+
+
+def test_askuserquestion_multi_question_single_call():
+    """A tool_input with multiple questions emits one Question event per question
+    and formats all answers in the deny message."""
+    from claude_agent_sdk import PermissionResultDeny
+    from server.sessions.events import Question
+
+    async def run():
+        d = SessionDriver("sq-multi", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        tool_input = {
+            "questions": [
+                {"header": "H1", "question": "Q1?",
+                 "options": [{"label": "Yes"}, {"label": "No"}], "multiSelect": False},
+                {"header": "H2", "question": "Q2?",
+                 "options": [{"label": "A"}, {"label": "B"}], "multiSelect": True},
+            ]
+        }
+        callback_task = asyncio.create_task(d._can_use_tool("AskUserQuestion", tool_input))
+        # Give enough ticks for both Question events to be emitted.
+        for _ in range(4):
+            await asyncio.sleep(0)
+
+        # Collect Question events from the output queue.
+        q_events = []
+        while not d._out.empty():
+            ev_item = d._out.get_nowait()
+            if isinstance(ev_item, Question):
+                q_events.append(ev_item)
+
+        assert len(q_events) == 2, f"expected 2 Question events, got {len(q_events)}"
+        qids = [q.question_id for q in q_events]
+
+        # Answer both questions.
+        d.answer_question(qids[0], ["Yes"], "me")
+        d.answer_question(qids[1], ["A", "B"], "me")
+
+        result = await asyncio.wait_for(callback_task, timeout=2.0)
+        assert isinstance(result, PermissionResultDeny)
+        assert "Q1?" in result.message
+        assert "Yes" in result.message
+        assert "Q2?" in result.message
+        assert "A" in result.message
+        assert "B" in result.message
+
+    asyncio.run(run())
+
+
+def test_askuserquestion_options_normalized_from_strings():
+    """Options given as plain strings are normalized to dicts with a 'label' key."""
+    from claude_agent_sdk import PermissionResultDeny
+    from server.sessions.events import Question
+
+    async def run():
+        d = SessionDriver("sq-str-opts", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        tool_input = {"questions": [{"question": "Pick one",
+                                     "options": ["Alpha", "Beta"], "multiSelect": False}]}
+        callback_task = asyncio.create_task(d._can_use_tool("AskUserQuestion", tool_input))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert not d._out.empty()
+        q_event = d._out.get_nowait()
+        assert isinstance(q_event, Question)
+        assert q_event.options[0] == {"label": "Alpha"}
+        assert q_event.options[1] == {"label": "Beta"}
+
+        d.answer_question(q_event.question_id, ["Alpha"], "me")
+        result = await asyncio.wait_for(callback_task, timeout=2.0)
+        assert isinstance(result, PermissionResultDeny)
+        assert "Alpha" in result.message
+
     asyncio.run(run())
 
 

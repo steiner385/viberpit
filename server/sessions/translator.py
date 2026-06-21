@@ -66,6 +66,11 @@ class Translator:
             for b in msg.content:
                 if isinstance(b, ToolUseBlock) and b.id not in self._seen_tools:
                     self._seen_tools.add(b.id)
+                    # AskUserQuestion is handled by the driver (emits ev.Question);
+                    # emitting a generic ToolCall alongside it would render a raw JSON
+                    # card on top of the QuestionCard in the frontend.
+                    if b.name == "AskUserQuestion":
+                        continue
                     out.append(ev.ToolCall(self._turn_id, b.id, b.name,
                                            ev.tool_kind(b.name), b.input, getattr(msg, "uuid", None)))
             return out

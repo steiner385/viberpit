@@ -58,3 +58,18 @@ def test_second_turn_resets_state():
         out2 += tr.feed(m)
     assert isinstance(out2[0], TurnStart) and out2[0].turn_id == "t2"
     assert sum(1 for e in out2 if isinstance(e, ToolCall)) == 1  # not deduped across turns
+
+
+def test_askuserquestion_tool_use_emits_no_toolcall():
+    """AskUserQuestion tool_use blocks must NOT produce a ToolCall event.
+    The driver emits ev.Question instead; a raw ToolCall alongside it would make
+    the frontend render a generic JSON card on top of the QuestionCard."""
+    msgs = [f.stream_start(uuid="t1"),
+            f.tool_use("ask1", "AskUserQuestion",
+                       {"questions": [{"question": "Q?", "options": []}]}, uuid="t1"),
+            f.result(uuid="t1")]
+    _, out = _run(msgs)
+    tool_calls = [e for e in out if isinstance(e, ToolCall)]
+    assert tool_calls == [], (
+        f"expected no ToolCall for AskUserQuestion, got {tool_calls}"
+    )
