@@ -15,7 +15,7 @@ from server.reauth import ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
 
 # API routers (T036–T038)
-from server.api.sessions import router as sessions_router
+from server.api.sessions import router as sessions_router, uploads_router
 from server.api.accounts import router as accounts_router
 from server.api.auth import router as auth_router
 from server.api.config import router as config_router
@@ -114,6 +114,7 @@ def create_app(
 
     # REST API routers (T036–T038)
     app.include_router(sessions_router)
+    app.include_router(uploads_router)
     app.include_router(accounts_router)
     app.include_router(auth_router)
     app.include_router(config_router)

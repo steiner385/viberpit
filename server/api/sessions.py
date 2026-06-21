@@ -16,8 +16,8 @@ import logging
 import re
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from ccswitch import gitrepos
@@ -25,6 +25,7 @@ from server.auth.middleware import current_identity
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import get_db
+from server.sessions import uploads
 from server.sessions.orchestrator import SessionOrchestrator, BranchSwitchError
 from server.sessions.selection import AllAccountsBusy
 
@@ -36,6 +37,7 @@ _REPO_RE = re.compile(rf"^{_REPO_SEGMENT}/{_REPO_SEGMENT}$")
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+uploads_router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +241,22 @@ async def list_archived_sessions(
     return await orch.list_archived()
 
 
+@router.get("/{session_id}/images/{sha}")
+async def serve_session_image(
+    session_id: str,
+    sha: str,
+    _identity: str = Depends(current_identity),
+):
+    """Serve a previously uploaded image associated with a session. Returns 404 if unknown."""
+    path = uploads.image_path(session_id, sha)
+    if path is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": "image not found"},
+        )
+    return FileResponse(str(path), media_type=f"image/{path.suffix.lstrip('.')}")
+
+
 @router.get("/{session_id}")
 async def get_session(
     session_id: str,
@@ -384,3 +402,26 @@ async def get_session_transcript(
     events = await orch.transcript_events(session_id)
     wire_events = [redact_event(e.to_wire()) for e in events]
     return {"events": wire_events}
+
+
+# ---------------------------------------------------------------------------
+# Upload router (separate prefix /api/uploads)
+# ---------------------------------------------------------------------------
+
+
+@uploads_router.post("")
+async def upload_image(
+    file: UploadFile = File(...),
+    _identity: str = Depends(current_identity),
+):
+    """Accept a multipart image upload and stage it. Returns {sha, mime, name}."""
+    raw = await file.read()
+    try:
+        ref = uploads.stage_image(file.content_type or "", raw)
+    except uploads.UploadError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": {"code": "invalid_image", "message": str(exc)}},
+        )
+    ref["name"] = file.filename or ""
+    return ref
