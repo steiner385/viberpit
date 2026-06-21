@@ -11,7 +11,7 @@ import sqlite3
 from sqlalchemy import inspect as sa_inspect, text as sa_text
 
 from server.db import init_db, db_session
-from server.db.models import Base, Session
+from server.db.models import Session
 
 # The oldest sessions shape we must still upgrade from (pre-repo/title/etc.).
 _LEGACY_SESSIONS_DDL = (
@@ -49,7 +49,7 @@ def test_reconcile_upgrades_legacy_db_and_preserves_row(tmp_path):
         # (b) the pre-existing row still reads back (round-trip against real data)
         async with db_session() as db:
             row = (await db.execute(
-                sa_text("SELECT id, name, status FROM sessions WHERE id='legacy1'"))).first()
-        assert row == ("legacy1", "My Session", "idle")
+                sa_text("SELECT id, name, account_name, status, cwd FROM sessions WHERE id='legacy1'"))).first()
+        assert row == ("legacy1", "My Session", "acct1", "idle", "/home/x")
 
     asyncio.run(_check())
