@@ -69,7 +69,10 @@ export function SessionView({ sessionId, onBack }: Props) {
 
   // Track whether replay just finished so we can announce "History loaded" once.
   const prevReplayingRef = useRef(true)
-  const [ariaAnnouncement, setAriaAnnouncement] = useState('')
+  // The aria-live region is an external system (the screen reader); we write its
+  // text imperatively via this ref rather than through React state, so the effect
+  // below has no setState and triggers no extra render.
+  const liveRef = useRef<HTMLDivElement>(null)
 
   // Attach / detach + subscribe to session events
   useEffect(() => {
@@ -99,8 +102,11 @@ export function SessionView({ sessionId, onBack }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
-  // aria-live mirror: announce latest assistant text after replay completes.
+  // aria-live mirror: write the announcement into the sr-only region (an external
+  // system) imperatively, so there's no setState in this effect.
   useEffect(() => {
+    const el = liveRef.current
+    if (!el) return
     if (state.replaying) {
       prevReplayingRef.current = true
       return
@@ -108,7 +114,7 @@ export function SessionView({ sessionId, onBack }: Props) {
     // If we just finished replaying, announce that.
     if (prevReplayingRef.current) {
       prevReplayingRef.current = false
-      setAriaAnnouncement('History loaded')
+      el.textContent = 'History loaded'
       return
     }
     // Find the last assistant text block and mirror it.
@@ -117,7 +123,7 @@ export function SessionView({ sessionId, onBack }: Props) {
     const lastTextBlock = [...lastAssistantTurn.blocks].reverse().find((b) => b.kind === 'text')
     if (lastTextBlock && lastTextBlock.kind === 'text') {
       // Mirror last ~200 chars (enough for a screen reader without flooding)
-      setAriaAnnouncement(lastTextBlock.text.slice(-200))
+      el.textContent = lastTextBlock.text.slice(-200)
     }
   }, [state.turns, state.replaying])
 
@@ -375,15 +381,16 @@ export function SessionView({ sessionId, onBack }: Props) {
        * aria-live mirror (sr-only).
        * Announces the latest assistant text (debounced implicitly by state updates).
        * Suppressed while replaying; announces "History loaded" once on replayComplete.
+       * Content is written imperatively via liveRef (see the effect above) — kept
+       * childless in JSX so React doesn't clobber the imperatively-set text.
        */}
       <div
+        ref={liveRef}
         aria-live="polite"
         aria-atomic="false"
         aria-label="Session output"
         className="sr-only"
-      >
-        {ariaAnnouncement}
-      </div>
+      />
     </div>
   )
 }
