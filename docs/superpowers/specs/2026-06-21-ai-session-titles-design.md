@@ -69,21 +69,25 @@ def read_user_prompts_from_file(path: str | Path) -> list[str]
   referenced anywhere → dead code per Principle VI).
 
 ### 3. `server/sessions/orchestrator.py` — wiring + policy
-- Constructor gains an injectable `title_fn` (default: a thin wrapper over `generate_title`)
-  so orchestrator tests never spawn a real CLI.
+- Constructor gains an injectable `title_fn(prompts, *, account, cwd)` (default:
+  `_default_title_fn`, which resolves `config_dir = compose(account)` and calls
+  `generate_title`) so orchestrator tests never spawn a real CLI or touch `compose()`.
+  The orchestrator deals in **accounts** (its domain); config-dir resolution is the
+  default generator's concern.
 - `_maybe_apply_auto_name(session_id)` becomes:
-  1. Guard: `rec is not None and rec.name_is_auto` **and** account not `limited` (skip otherwise).
+  1. Guard: `rec is not None and rec.name_is_auto` **and** `not _account_limited(rec.account)`
+     (skip otherwise).
   2. Locate transcript → `read_user_prompts_from_file()`. If empty, return.
-  3. `title = await self._title_fn(prompts, config_dir=compose(rec.account), cwd=rec.cwd)`.
+  3. `title = await self._title_fn(prompts, account=rec.account, cwd=rec.cwd)`.
   4. On a non-empty title that differs from the current name: persist to `name` (in-memory
      record + DB row). On `None`/empty/unchanged: no-op (next turn retries).
 - Still fires from `_persist_status` on `status == "done"`, unchanged.
 
 ### Account-`limited` check
-Use the existing usage/poller signal the orchestrator already has access to. If a clean
-"is this account limited" predicate isn't directly available, derive it from the latest poller
-usage for the account; when in doubt, treat unknown as *not limited* (best-effort — a doomed
-query just degrades silently, matching the failure policy).
+`UsagePoller.cached(account)` (new, read-only — no network fetch) returns the last-known
+`Usage`. `_account_limited(account)` treats `session_pct >= _ROTATION_CEILING` (100) as limited;
+an unknown account (no cached usage) is *not limited* (best-effort — a doomed query just degrades
+silently, matching the failure policy).
 
 ## Data flow
 ```

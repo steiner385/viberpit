@@ -30,7 +30,8 @@ from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory
 from server.sessions.selection import AllAccountsBusy, select_account
-from server.sessions.titles import read_ai_title_from_file
+from server.sessions.title_generator import generate_title
+from server.sessions.titles import read_user_prompts_from_file
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
 
@@ -65,6 +66,7 @@ class SessionOrchestrator:
         poll_interval: float = 60.0,
         usage_fn: Callable[[str], object] | None = None,
         repo_root: str | None = None,
+        title_fn: Callable | None = None,
     ) -> None:
         # work_dir param is accepted for back-compat (used in tests to keep
         # the orchestrator anchored to the repo root), but is no longer stored
@@ -82,6 +84,9 @@ class SessionOrchestrator:
         # session_id → WorktreeInfo for sessions launched in an isolated worktree
         self._worktrees: dict[str, worktrees.WorktreeInfo] = {}
         self._sdk_factory = sdk_factory or real_sdk_factory
+        # Generates an AI session title from the conversation's user prompts.
+        # Injected in tests so no real `claude` is spawned.
+        self._title_fn = title_fn or self._default_title_fn
         self._registry = PermissionRegistry()
         self._drivers: dict[str, SessionDriver] = {}
         self._last_prompt: dict[str, str] = {}
@@ -357,15 +362,40 @@ class SessionOrchestrator:
         if status == "done":
             await self._maybe_apply_auto_name(session_id)
 
+    async def _default_title_fn(self, prompts, *, account, cwd):
+        """Default title generator: a one-shot Haiku query under the account."""
+        return await generate_title(
+            prompts, config_dir=str(compose(account)), cwd=cwd
+        )
+
+    def _account_limited(self, account: str) -> bool:
+        """True if *account*'s last-known session usage is at/above the ceiling.
+
+        Best-effort: an unknown account (no cached usage) is treated as not
+        limited — a doomed title query would just degrade silently anyway.
+        """
+        usage = self._poller.cached(account)
+        return usage is not None and getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
+
     async def _maybe_apply_auto_name(self, session_id: str) -> None:
-        """If the session name is still auto, adopt Claude's transcript title."""
+        """If the name is still auto, generate an AI title from the user prompts.
+
+        Skips manually-renamed sessions and accounts at their usage ceiling.
+        Best-effort: any miss (no transcript, no prompts, generator failure)
+        leaves the name unchanged and retries on the next completed turn.
+        """
         rec = self._records.get(session_id)
         if rec is None or not rec.name_is_auto:
+            return
+        if self._account_limited(rec.account):
             return
         path = self.transcript_path(session_id)
         if not path:
             return
-        title = await asyncio.to_thread(read_ai_title_from_file, path)
+        prompts = await asyncio.to_thread(read_user_prompts_from_file, path)
+        if not prompts:
+            return
+        title = await self._title_fn(prompts, account=rec.account, cwd=rec.cwd)
         if not title or title == rec.name:
             return
         rec.name = title
