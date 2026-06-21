@@ -192,7 +192,6 @@ class TestCryptoModule(unittest.TestCase):
 
     def test_master_key_secret_tool_missing_returns_none(self):
         self._clear_key()
-        import subprocess
         with mock.patch("subprocess.run", side_effect=FileNotFoundError()):
             from ccswitch.crypto import master_key
             self.assertIsNone(master_key())
@@ -284,7 +283,7 @@ class TestReadWriteCredentials(unittest.TestCase):
         with temp_env():
             from ccswitch import paths
             from ccswitch.creds import write_credentials, read_credentials
-            from ccswitch.crypto import encrypt, is_encrypted
+            from ccswitch.crypto import encrypt
             paths.store_dir().mkdir(parents=True, exist_ok=True)
             slot = paths.slot_path("alpha")
             already_enc = encrypt("my-rt")

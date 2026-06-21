@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 REPO_ROOT = Path(__file__).parent.parent.parent

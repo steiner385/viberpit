@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable
 
 from ccswitch.accounts import list_accounts
 from ccswitch.accounts import usage_for as _default_usage_fn

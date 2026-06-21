@@ -40,7 +40,7 @@ def test_redact_event_scrubs_nested_dict_and_list():
             "nested": f"session={cookie}"
         },
         "items": [
-            f"plain item",
+            "plain item",
             f"token inside list: {token}",
             {"deep": f"cookie in list dict: {cookie}"},
         ],
@@ -128,7 +128,6 @@ def api_client(tmp_path):
     repo_root = Path(__file__).parent.parent.parent
     sys.path.insert(0, str(repo_root / "src"))
 
-    from tests.helpers import temp_env as _temp_env
     from server.tests.fakes.fake_factory import fake_sdk_factory
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app

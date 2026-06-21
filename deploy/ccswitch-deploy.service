@@ -1,0 +1,12 @@
+[Unit]
+Description=ccswitch auto-deploy (poll master, rebuild, test-gate, restart)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tony
+WorkingDirectory=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
+# Provides PATH (git/node/npm/sudo) + the CCSWITCH_* env to the deploy run.
+EnvironmentFile=/etc/ccswitch/ccswitch.env
+ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/scripts/auto-deploy.sh

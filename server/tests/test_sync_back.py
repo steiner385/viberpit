@@ -15,7 +15,6 @@ import asyncio
 import json
 import time
 
-import pytest
 
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
@@ -126,7 +125,6 @@ def test_on_sync_back_failure_does_not_crash_session():
 
     seen, calls = asyncio.run(run())
     # The stream still completed (we got idle)
-    from server.sessions.events import Status
     assert any(isinstance(e, Status) and e.state == "idle" for e in seen)
     # sync_back was attempted
     assert "attempt" in calls
@@ -140,8 +138,6 @@ def test_on_sync_back_sdk_rotation_captured_in_slot(tmp_path):
     before the turn's _drain finally block runs (i.e. the drain coroutine does it
     at receive_response time).
     """
-    import os
-    import json
 
     config_dir = tmp_path / "cfg"
     config_dir.mkdir()

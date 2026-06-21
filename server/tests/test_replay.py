@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 from server.sessions.replay import replay_events
-from server.sessions.events import TurnStart, TextDelta, ToolCall, ToolResult, TurnEnd, UserMessage
+from server.sessions.events import ToolCall, ToolResult
 
 FIX = Path(__file__).parent / "fixtures" / "transcript.jsonl"
 

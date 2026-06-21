@@ -3,14 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 from server.db import init_db, db_session
 from server.db.models import Session as DbSession
-from server.sessions.driver import SessionDriver
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
