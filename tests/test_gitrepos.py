@@ -186,6 +186,55 @@ class GhListingTests(unittest.TestCase):
         self.assertEqual(repos[0]["defaultBranch"], "main")
         self.assertIsNone(repos[1]["defaultBranch"])
 
+    def test_list_accessible_repos_excludes_archived(self) -> None:
+        captured: dict = {}
+        repos_json = json.dumps(
+            {
+                "data": {
+                    "viewer": {
+                        "repositories": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {
+                                    "nameWithOwner": "acme/active",
+                                    "name": "active",
+                                    "owner": {"login": "acme"},
+                                    "isPrivate": False,
+                                    "isArchived": False,
+                                    "url": "https://github.com/acme/active",
+                                    "pushedAt": "2026-06-20T00:00:00Z",
+                                    "defaultBranchRef": {"name": "main"},
+                                },
+                                {
+                                    "nameWithOwner": "acme/old",
+                                    "name": "old",
+                                    "owner": {"login": "acme"},
+                                    "isPrivate": False,
+                                    "isArchived": True,
+                                    "url": "https://github.com/acme/old",
+                                    "pushedAt": "2025-01-01T00:00:00Z",
+                                    "defaultBranchRef": {"name": "main"},
+                                },
+                            ],
+                        }
+                    }
+                }
+            }
+        )
+
+        def fake_run(args, capture_output, text, env):
+            captured["args"] = args
+            return subprocess.CompletedProcess(args, 0, stdout=repos_json, stderr="")
+
+        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
+            repos = gitrepos.list_accessible_repos()
+
+        # The GraphQL query must request the archived flag, otherwise the API
+        # never returns it and nothing would ever be filtered.
+        self.assertIn("isArchived", " ".join(captured["args"]))
+        # Archived repos must not appear in the chooser.
+        self.assertEqual([r["nameWithOwner"] for r in repos], ["acme/active"])
+
     def test_list_accessible_repos_paginates(self) -> None:
         page1 = json.dumps(
             {

@@ -219,6 +219,7 @@ query($cursor: String) {
         name
         owner { login }
         isPrivate
+        isArchived
         url
         pushedAt
         defaultBranchRef { name }
@@ -231,6 +232,9 @@ query($cursor: String) {
 
 def list_accessible_repos() -> list[dict]:
     """List repos the user's gh creds can access, most-recently-pushed first.
+
+    Archived repos are excluded -- they are read-only on GitHub and should not
+    be offered in the repository chooser.
 
     Paginates over the GraphQL cursor.  Returns dicts with keys:
     ``nameWithOwner, name, owner, isPrivate, url, defaultBranch, pushedAt``.
@@ -259,6 +263,9 @@ def list_accessible_repos() -> list[dict]:
         )
         for node in conn.get("nodes", []) or []:
             if not node:
+                continue
+            # Archived repos are read-only on GitHub; never offer them in the chooser.
+            if node.get("isArchived"):
                 continue
             owner = (node.get("owner") or {}).get("login")
             default_ref = node.get("defaultBranchRef") or {}
