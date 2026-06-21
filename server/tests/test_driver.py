@@ -606,3 +606,53 @@ def test_on_status_fires_in_progress_then_done():
     asyncio.run(run())
     assert "in_progress" in seen, f"expected an 'in_progress' status, got {seen}"
     assert seen and seen[-1] == "done", f"expected to end 'done', got {seen}"
+
+
+def test_askuserquestion_freeform_framing():
+    """A freeform answer is framed as the user's own words."""
+    from claude_agent_sdk import PermissionResultDeny
+    from server.sessions.events import Question
+
+    async def run():
+        d = SessionDriver("sq-ff", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        tool_input = {"questions": [{"header": "Choose", "question": "Favourite?",
+                                     "options": [{"label": "Option A"}], "multiSelect": False}]}
+        callback_task = asyncio.create_task(d._can_use_tool("AskUserQuestion", tool_input))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        q_event = d._out.get_nowait()
+        assert isinstance(q_event, Question)
+
+        d.answer_question(q_event.question_id, ["I prefer C, actually"], "me", mode="freeform")
+        result = await asyncio.wait_for(callback_task, timeout=2.0)
+        assert isinstance(result, PermissionResultDeny)
+        assert "[User answered in their own words]" in result.message
+        assert "I prefer C, actually" in result.message
+
+    asyncio.run(run())
+
+
+def test_askuserquestion_chat_framing():
+    """A chat answer is framed as a discussion redirect, not a rigid selection."""
+    from claude_agent_sdk import PermissionResultDeny
+    from server.sessions.events import Question
+
+    async def run():
+        d = SessionDriver("sq-chat", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        tool_input = {"questions": [{"header": "Choose", "question": "Favourite?",
+                                     "options": [{"label": "Option A"}], "multiSelect": False}]}
+        callback_task = asyncio.create_task(d._can_use_tool("AskUserQuestion", tool_input))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        q_event = d._out.get_nowait()
+        assert isinstance(q_event, Question)
+
+        d.answer_question(q_event.question_id, ["why are you asking this?"], "me", mode="chat")
+        result = await asyncio.wait_for(callback_task, timeout=2.0)
+        assert isinstance(result, PermissionResultDeny)
+        assert "[User wants to discuss rather than pick an option]" in result.message
+        assert "why are you asking this?" in result.message
+
+    asyncio.run(run())

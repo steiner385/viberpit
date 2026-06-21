@@ -12,7 +12,9 @@ interface Props {
   /** Id of the live-streaming block (null when idle/replaying). */
   streamingBlockId?: string | null
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
-  onAnswer: (questionId: string, selected: string[]) => void
+  onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
+  onChat: (questionId: string) => void
+  armedQuestionId: string | null
 }
 
 /**
@@ -35,7 +37,7 @@ function groupRotationsByAnchor(rotations: RotationMarker[]) {
   return { byTurn, top }
 }
 
-export function TranscriptView({ turns, rotations = [], permissionMode, toolDetailMode, streamingBlockId = null, onDecision, onAnswer }: Props) {
+export function TranscriptView({ turns, rotations = [], permissionMode, toolDetailMode, streamingBlockId = null, onDecision, onAnswer, onChat, armedQuestionId }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
   const isNearBottomRef = useRef(true)
@@ -86,6 +88,8 @@ export function TranscriptView({ turns, rotations = [], permissionMode, toolDeta
             streamingBlockId={idx === turns.length - 1 ? streamingBlockId : null}
             onDecision={onDecision}
             onAnswer={onAnswer}
+            onChat={onChat}
+            armedQuestionId={armedQuestionId}
           />
           {(byTurn.get(turn.id) ?? []).map((r, i) => (
             <RotationDivider key={`rot-${turn.id}-${i}`} from={r.from} to={r.to} reason={r.reason} />

@@ -97,6 +97,23 @@ describe('Composer', () => {
     expect(textarea).toHaveValue('Hello\n')
   })
 
+  it('when chatArmed, shows a Reply button (not Queue) even while working', () => {
+    render(<Composer {...defaults} status={{ state: 'working', count: 0 }} chatArmed />)
+    expect(screen.getByRole('button', { name: /send reply/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /queue message/i })).not.toBeInTheDocument()
+  })
+
+  it('clicking Reply when chatArmed calls onPrompt and clears input', async () => {
+    const user = userEvent.setup()
+    const onPrompt = vi.fn()
+    render(<Composer {...defaults} status={{ state: 'working', count: 0 }} chatArmed onPrompt={onPrompt} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, 'lets chat')
+    await user.click(screen.getByRole('button', { name: /send reply/i }))
+    expect(onPrompt).toHaveBeenCalledWith('lets chat', [])
+    expect(textarea).toHaveValue('')
+  })
+
   it('plan mode toggle shows aria-checked=false when not in plan mode', () => {
     render(<Composer {...defaults} mode="interactive" />)
     const toggle = screen.getByRole('switch', { name: /plan mode/i })

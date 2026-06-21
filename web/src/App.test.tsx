@@ -166,4 +166,21 @@ describe('App routing', () => {
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
     expect(screen.getByTestId('pathname')).toHaveTextContent('/accounts')
   })
+
+  it('renders the DesktopShell side-by-side layout at lg and up', async () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({
+      matches: true, media: q,
+      addEventListener: () => {}, removeEventListener: () => {},
+      addListener: () => {}, removeListener: () => {}, onchange: null, dispatchEvent: () => false,
+    }))
+    // At lg+, App ignores routing and renders the DesktopShell. The New Session
+    // slot is a selectable sidebar entry (data-selected) — the mobile/routed
+    // layout's "New session" button has no data-selected attribute, so this
+    // assertion is true only when the DesktopShell is rendered.
+    renderAt('/sessions')
+    await waitFor(() => {
+      expect(screen.getByLabelText('New session')).toHaveAttribute('data-selected', 'true')
+    })
+    vi.unstubAllGlobals()
+  })
 })

@@ -18,11 +18,14 @@ interface Props {
    *  null/absent means every text block is finalized and rendered as markdown. */
   streamingBlockId?: string | null
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
-  onAnswer: (questionId: string, selected: string[]) => void
+  onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
+  onChat: (questionId: string) => void
+  armedQuestionId: string | null
 }
 
 export const Turn = memo(function Turn({
-  turn, permissionMode, isLastTurn, toolDetailMode, streamingBlockId = null, onDecision, onAnswer,
+  turn, permissionMode, isLastTurn, toolDetailMode, streamingBlockId = null,
+  onDecision, onAnswer, onChat, armedQuestionId,
 }: Props) {
   const isUser = turn.role === 'user'
   const items = groupBlocks(turn.blocks)
@@ -62,7 +65,15 @@ export const Turn = memo(function Turn({
           case 'permission':
             return <PermissionCard key={block.id} block={block} mode={permissionMode} onDecision={onDecision} />
           case 'question':
-            return <QuestionCard key={block.id} block={block} onAnswer={onAnswer} />
+            return (
+              <QuestionCard
+                key={block.id}
+                block={block}
+                onAnswer={onAnswer}
+                onChat={onChat}
+                armedForChat={block.questionId === armedQuestionId}
+              />
+            )
           default:
             return null
         }

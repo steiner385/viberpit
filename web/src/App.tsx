@@ -1,7 +1,9 @@
 import { Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Dashboard, type TabId } from './components/Dashboard'
+import { DesktopShell } from './components/DesktopShell'
 import { SessionView } from './components/session/SessionView'
 import { ReviewView } from './components/ReviewView'
+import { useMediaQuery } from './lib/useMediaQuery'
 
 // Routing is the source of truth for which view is shown:
 //   /sessions | /accounts | /archived  → dashboard with that tab active
@@ -63,6 +65,14 @@ function ReviewRoute() {
 }
 
 function App() {
+  // Wide screens get the master-detail DesktopShell; narrow screens keep the
+  // routed full-screen views below. useMediaQuery returns false when matchMedia
+  // is unavailable (jsdom), so tests default to the mobile/routed branch.
+  const isWide = useMediaQuery('(min-width: 1024px)')
+  if (isWide) {
+    return <DesktopShell />
+  }
+
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/sessions" replace />} />

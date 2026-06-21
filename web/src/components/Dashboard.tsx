@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { UsageBadge, StatusPill } from './UsageBadge'
 import { SessionList } from './SessionList'
+import { AdoptPanel } from './AdoptPanel'
 import { AllLimitedBanner } from './AllLimitedBanner'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { DispatchBar } from './DispatchBar'
@@ -1449,6 +1450,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             onRename={handleRename}
             onClose={handleClose}
           />
+
+          <AdoptPanel />
 
           <DispatchBar
             repos={reposQuery.data ?? []}

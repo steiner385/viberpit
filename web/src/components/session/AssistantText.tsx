@@ -1,7 +1,6 @@
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import rehypeHighlight from 'rehype-highlight'
-import 'highlight.js/styles/github-dark.css'
+import { parseInsights } from './insights'
+import { InsightCallout } from './InsightCallout'
+import { Markdown } from './Markdown'
 
 interface Props { text: string; streaming: boolean }
 
@@ -13,23 +12,17 @@ export function AssistantText({ text, streaming }: Props) {
       </div>
     )
   }
+
+  const segments = parseInsights(text)
   return (
-    <div className="prose prose-sm dark:prose-invert max-w-none">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
-        components={{
-          // Open links in a new tab and sever the opener relationship so a
-          // session link can't navigate the transcript tab away or reach
-          // window.opener.
-          a: ({ node, ...props }) => {
-            void node // hast node — drop it rather than forward to the DOM
-            return <a {...props} target="_blank" rel="noopener noreferrer" />
-          },
-        }}
-      >
-        {text}
-      </ReactMarkdown>
-    </div>
+    <>
+      {segments.map((seg, i) =>
+        seg.kind === 'insight' ? (
+          <InsightCallout key={i} text={seg.text} />
+        ) : (
+          <Markdown key={i}>{seg.text}</Markdown>
+        ),
+      )}
+    </>
   )
 }
