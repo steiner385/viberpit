@@ -15,6 +15,7 @@ vi.mock('@/api/hooks', () => ({
   useCloseSession: vi.fn(),
   useRefreshAccount: vi.fn(),
   useUpdateAccountNickname: vi.fn(),
+  useDeleteAccount: vi.fn(),
   useGithubRepos: vi.fn(),
   useGithubBranches: vi.fn(),
   useSettings: vi.fn(),
@@ -57,6 +58,11 @@ function wrapper({ children }: { children: React.ReactNode }) {
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 }
 
+/** Accounts are now behind a tab — switch to it before asserting account content. */
+async function switchToAccountsTab(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('tab', { name: /accounts/i }))
+}
+
 function setupDefaultMocks() {
   vi.mocked(hooks.useSessions).mockReturnValue({
     data: [],
@@ -67,6 +73,7 @@ function setupDefaultMocks() {
   vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
   vi.mocked(hooks.useRefreshAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRefreshAccount>)
   vi.mocked(hooks.useUpdateAccountNickname).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+  vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
   vi.mocked(hooks.useGithubRepos).mockReturnValue({ data: [], isLoading: false, isError: false } as ReturnType<typeof hooks.useGithubRepos>)
   vi.mocked(hooks.useGithubBranches).mockReturnValue({ data: { default: null, branches: [] }, isLoading: false } as ReturnType<typeof hooks.useGithubBranches>)
   vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
@@ -96,35 +103,41 @@ describe('AccountRow — Re-authenticate button', () => {
     } as unknown as ReturnType<typeof hooks.useCancelReauth>)
   })
 
-  it('shows "Re-authenticate" button for needs-relogin account', () => {
+  it('shows "Re-authenticate" button for needs-relogin account', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     expect(screen.getByRole('button', { name: /re-authenticate kindash/i })).toBeInTheDocument()
   })
 
-  it('shows "Re-authenticate" button for needs-reauth account', () => {
+  it('shows "Re-authenticate" button for needs-reauth account', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'needs-reauth' })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     expect(screen.getByRole('button', { name: /re-authenticate kindash/i })).toBeInTheDocument()
   })
 
-  it('does not show "Re-authenticate" button for ok account', () => {
+  it('does not show "Re-authenticate" button for ok account', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     expect(screen.queryByRole('button', { name: /re-authenticate kindash/i })).not.toBeInTheDocument()
   })
@@ -137,6 +150,7 @@ describe('AccountRow — Re-authenticate button', () => {
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /re-authenticate kindash/i }))
 
@@ -144,6 +158,7 @@ describe('AccountRow — Re-authenticate button', () => {
   })
 
   it('shows "on the host machine" in the status line when running', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
       isLoading: false,
@@ -154,11 +169,13 @@ describe('AccountRow — Re-authenticate button', () => {
     } as ReturnType<typeof hooks.useReauthStatus>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     expect(screen.getByText(/on the host machine/i)).toBeInTheDocument()
   })
 
   it('shows Cancel button while running', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
       isLoading: false,
@@ -169,6 +186,7 @@ describe('AccountRow — Re-authenticate button', () => {
     } as ReturnType<typeof hooks.useReauthStatus>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     expect(screen.getByRole('button', { name: /cancel reauth/i })).toBeInTheDocument()
   })
@@ -185,6 +203,7 @@ describe('AccountRow — Re-authenticate button', () => {
     } as ReturnType<typeof hooks.useReauthStatus>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /cancel reauth/i }))
 
@@ -197,6 +216,7 @@ describe('AccountRow — Re-authenticate button', () => {
   })
 
   it('shows success indicator (✓) when status is success and invalidates accounts', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
       isLoading: false,
@@ -214,6 +234,7 @@ describe('AccountRow — Re-authenticate button', () => {
     )
 
     render(<Dashboard />, { wrapper: localWrapper })
+    await switchToAccountsTab(user)
 
     // Should show a success indicator with checkmark
     expect(screen.getByText(/✓/)).toBeInTheDocument()
@@ -225,6 +246,7 @@ describe('AccountRow — Re-authenticate button', () => {
   })
 
   it('shows error message when status is error', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
       isLoading: false,
@@ -235,11 +257,13 @@ describe('AccountRow — Re-authenticate button', () => {
     } as ReturnType<typeof hooks.useReauthStatus>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     expect(screen.getByText(/Login failed: timeout/i)).toBeInTheDocument()
   })
 
   it('shows error message when status is timeout', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
       isLoading: false,
@@ -250,6 +274,7 @@ describe('AccountRow — Re-authenticate button', () => {
     } as ReturnType<typeof hooks.useReauthStatus>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     expect(screen.getByText(/timed out/i)).toBeInTheDocument()
   })

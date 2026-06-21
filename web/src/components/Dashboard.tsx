@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useState, useRef, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Plus, RefreshCw, Settings, Pencil, Check, X } from 'lucide-react'
+import { Plus, RefreshCw, Settings, Pencil, Check, X, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { UsageBadge, StatusPill } from './UsageBadge'
@@ -16,6 +16,7 @@ import {
   useCloseSession,
   useRefreshAccount,
   useUpdateAccountNickname,
+  useDeleteAccount,
   useReauthAccount,
   useReauthStatus,
   useCancelReauth,
@@ -25,7 +26,7 @@ import {
   QK,
   type CreateSessionInput,
 } from '@/api/hooks'
-import type { Account } from '@/api/types'
+import type { Account, Session } from '@/api/types'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 
 // ── New Session Dialog ──────────────────────────────────────────────────────
@@ -392,6 +393,111 @@ function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPending }: 
   )
 }
 
+// ── Delete Account Dialog ────────────────────────────────────────────────────
+
+interface DeleteAccountDialogProps {
+  account: Account
+  activeSessions: Session[]
+  onClose: () => void
+  onConfirm: () => void
+  isPending: boolean
+}
+
+function DeleteAccountDialog({ account, activeSessions, onClose, onConfirm, isPending }: DeleteAccountDialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const displayLabel = account.nickname || account.name
+
+  React.useEffect(() => {
+    cancelRef.current?.focus()
+  }, [])
+
+  React.useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') { onClose(); return }
+      if (e.key === 'Tab') {
+        const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        )
+        if (!focusable || focusable.length === 0) return
+        const first = focusable[0]
+        const last = focusable[focusable.length - 1]
+        if (e.shiftKey) {
+          if (document.activeElement === first) { e.preventDefault(); last.focus() }
+        } else {
+          if (document.activeElement === last) { e.preventDefault(); first.focus() }
+        }
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="delete-account-dialog-title"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div
+        ref={dialogRef}
+        className={cn(
+          'w-full max-w-sm rounded-xl',
+          'bg-white dark:bg-gray-800',
+          'border border-gray-200 dark:border-gray-600',
+          'shadow-xl p-6 space-y-4',
+        )}
+      >
+        <h2
+          id="delete-account-dialog-title"
+          className="text-lg font-semibold text-gray-900 dark:text-gray-100"
+        >
+          Delete account
+        </h2>
+
+        <p className="text-sm text-gray-700 dark:text-gray-300">
+          Delete account <span className="font-medium">'{displayLabel}'</span>? This permanently
+          removes its stored credentials and config directory. This can't be undone.
+        </p>
+
+        {activeSessions.length > 0 && (
+          <p className="text-sm text-amber-700 dark:text-amber-400" role="alert">
+            {activeSessions.length} active session{activeSessions.length === 1 ? '' : 's'} use this
+            account and will lose access.
+          </p>
+        )}
+
+        <div className="flex gap-3 justify-end pt-2">
+          <Button
+            ref={cancelRef}
+            type="button"
+            variant="outline"
+            onClick={onClose}
+            disabled={isPending}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={onConfirm}
+            disabled={isPending}
+            className={cn(
+              'min-h-[44px]',
+              'bg-red-600 hover:bg-red-700 text-white',
+              'dark:bg-red-700 dark:hover:bg-red-600',
+              'focus-visible:ring-red-500',
+            )}
+          >
+            {isPending ? 'Deleting…' : 'Delete'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Accounts Strip ───────────────────────────────────────────────────────────
 
 interface AccountRowProps {
@@ -399,9 +505,10 @@ interface AccountRowProps {
   onRefresh: (name: string) => void
   refreshing: boolean
   onSaveNickname: (name: string, nickname: string | null) => void
+  onDelete: (account: Account) => void
 }
 
-function AccountRow({ account, onRefresh, refreshing, onSaveNickname }: AccountRowProps) {
+function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }: AccountRowProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -610,6 +717,19 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname }: AccountR
             <button
               type="button"
               className={cn(
+                'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+                'text-red-500 dark:text-red-400',
+                'hover:bg-red-50 dark:hover:bg-red-900/30',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500',
+              )}
+              aria-label={`Delete account ${account.name}`}
+              onClick={() => onDelete(account)}
+            >
+              <Trash2 size={14} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={cn(
                 'h-8 w-8 flex items-center justify-center rounded',
                 'text-gray-500 dark:text-gray-400',
                 'hover:bg-gray-100 dark:hover:bg-gray-700',
@@ -655,32 +775,31 @@ interface AccountsStripProps {
   onRefresh: (name: string) => void
   refreshingName: string | null
   onSaveNickname: (name: string, nickname: string | null) => void
+  onDelete: (account: Account) => void
 }
 
-function AccountsStrip({ accounts, onRefresh, refreshingName, onSaveNickname }: AccountsStripProps) {
+function AccountsStrip({ accounts, onRefresh, refreshingName, onSaveNickname, onDelete }: AccountsStripProps) {
   if (accounts.length === 0) return null
 
   return (
-    <section aria-label="Account status" className="space-y-2">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-        Accounts
-      </h2>
-      <div className="flex flex-col gap-2">
-        {accounts.map((account) => (
-          <AccountRow
-            key={account.name}
-            account={account}
-            onRefresh={onRefresh}
-            refreshing={refreshingName === account.name}
-            onSaveNickname={onSaveNickname}
-          />
-        ))}
-      </div>
-    </section>
+    <div className="flex flex-col gap-2">
+      {accounts.map((account) => (
+        <AccountRow
+          key={account.name}
+          account={account}
+          onRefresh={onRefresh}
+          refreshing={refreshingName === account.name}
+          onSaveNickname={onSaveNickname}
+          onDelete={onDelete}
+        />
+      ))}
+    </div>
   )
 }
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
+
+type TabId = 'sessions' | 'accounts'
 
 interface DashboardProps {
   /** Called when the user opens a session (navigates to Terminal view). */
@@ -697,16 +816,42 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
   const closeSession = useCloseSession()
   const refreshAccount = useRefreshAccount()
   const updateNickname = useUpdateAccountNickname()
+  const deleteAccount = useDeleteAccount()
 
+  const [activeTab, setActiveTab] = useState<TabId>('sessions')
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
   const [allLimitedReset, setAllLimitedReset] = useState<string | null | undefined>(undefined)
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null)
   const [branchError, setBranchError] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
 
   const newButtonRef = useRef<HTMLButtonElement>(null)
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
+  const sessionsTabRef = useRef<HTMLButtonElement>(null)
+  const accountsTabRef = useRef<HTMLButtonElement>(null)
+
+  const tabRefs: Record<TabId, React.RefObject<HTMLButtonElement | null>> = {
+    sessions: sessionsTabRef,
+    accounts: accountsTabRef,
+  }
+  const TAB_ORDER: TabId[] = ['sessions', 'accounts']
+
+  function handleTabKeyDown(e: React.KeyboardEvent, current: TabId) {
+    const idx = TAB_ORDER.indexOf(current)
+    if (e.key === 'ArrowRight') {
+      const next = TAB_ORDER[(idx + 1) % TAB_ORDER.length]
+      tabRefs[next].current?.focus()
+    } else if (e.key === 'ArrowLeft') {
+      const prev = TAB_ORDER[(idx - 1 + TAB_ORDER.length) % TAB_ORDER.length]
+      tabRefs[prev].current?.focus()
+    }
+  }
+
+  const hasNeedsReauth = accounts.some(
+    (a) => a.status === 'needs-reauth' || a.status === 'needs-relogin',
+  )
 
   function openNewDialog() {
     setAllLimitedReset(undefined)
@@ -716,7 +861,6 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
   function closeNewDialog() {
     setShowNewDialog(false)
     setBranchError(null)
-    // Return focus to the button that opened the dialog
     newButtonRef.current?.focus()
   }
 
@@ -742,9 +886,7 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
   }
 
   function handleOpen(id: string) {
-    if (onOpenSession) {
-      onOpenSession(id)
-    }
+    if (onOpenSession) onOpenSession(id)
   }
 
   function handleRename(id: string) {
@@ -773,11 +915,28 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
     updateNickname.mutate({ name, nickname })
   }
 
+  function handleDeleteAccount(account: Account) {
+    setDeleteTarget(account)
+  }
+
+  function confirmDelete() {
+    if (!deleteTarget) return
+    deleteAccount.mutate(deleteTarget.name, {
+      onSuccess: () => setDeleteTarget(null),
+      onError: () => setDeleteTarget(null),
+    })
+  }
+
   const isLoading = accountsLoading || sessionsLoading
 
+  // Sessions that reference the account being deleted
+  const deleteTargetSessions = deleteTarget
+    ? sessions.filter((s) => s.accountName === deleteTarget.name)
+    : []
+
   return (
-    <div className="space-y-6">
-      {/* All-limited banner */}
+    <div className="space-y-4">
+      {/* All-limited banner — global, above tabs */}
       {allLimitedReset !== undefined && (
         <AllLimitedBanner
           earliestReset={allLimitedReset}
@@ -785,57 +944,133 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
         />
       )}
 
-      {/* Accounts strip */}
-      {!accountsLoading && (
-        <AccountsStrip
-          accounts={accounts}
-          onRefresh={handleRefreshAccount}
-          refreshingName={refreshingAccount}
-          onSaveNickname={handleSaveNickname}
-        />
+      {/* Tab bar */}
+      <div
+        role="tablist"
+        aria-label="Dashboard sections"
+        className="flex gap-1 border-b border-gray-200 dark:border-gray-700"
+      >
+        {/* Sessions tab */}
+        <button
+          ref={sessionsTabRef}
+          role="tab"
+          id="tab-sessions"
+          aria-selected={activeTab === 'sessions'}
+          aria-controls="tabpanel-sessions"
+          tabIndex={activeTab === 'sessions' ? 0 : -1}
+          onKeyDown={(e) => handleTabKeyDown(e, 'sessions')}
+          onClick={() => setActiveTab('sessions')}
+          className={cn(
+            'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
+            activeTab === 'sessions'
+              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
+          )}
+        >
+          Sessions
+        </button>
+
+        {/* Accounts tab */}
+        <button
+          ref={accountsTabRef}
+          role="tab"
+          id="tab-accounts"
+          aria-selected={activeTab === 'accounts'}
+          aria-controls="tabpanel-accounts"
+          tabIndex={activeTab === 'accounts' ? 0 : -1}
+          onKeyDown={(e) => handleTabKeyDown(e, 'accounts')}
+          onClick={() => setActiveTab('accounts')}
+          aria-label={hasNeedsReauth ? 'Accounts (needs attention)' : 'Accounts'}
+          className={cn(
+            'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
+            activeTab === 'accounts'
+              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
+          )}
+        >
+          Accounts
+          {hasNeedsReauth && (
+            <span
+              aria-hidden="true"
+              className="inline-block w-2 h-2 rounded-full bg-amber-500 dark:bg-amber-400"
+            />
+          )}
+        </button>
+      </div>
+
+      {/* Sessions panel */}
+      {activeTab === 'sessions' && (
+        <div
+          id="tabpanel-sessions"
+          role="tabpanel"
+          aria-labelledby="tab-sessions"
+          className="space-y-3"
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Sessions
+            </h2>
+            <div className="flex items-center gap-2">
+              <Button
+                ref={settingsButtonRef}
+                size="sm"
+                variant="outline"
+                className="min-h-[44px]"
+                onClick={() => setShowSettings(true)}
+                aria-label="Settings"
+              >
+                <Settings size={14} aria-hidden="true" className="mr-1" />
+                Settings
+              </Button>
+              <Button
+                ref={newButtonRef}
+                size="sm"
+                className="min-h-[44px]"
+                onClick={openNewDialog}
+                aria-label="New session"
+              >
+                <Plus size={14} aria-hidden="true" className="mr-1" />
+                New
+              </Button>
+            </div>
+          </div>
+
+          <SessionList
+            sessions={sessions}
+            accounts={accounts}
+            isLoading={isLoading}
+            onNew={openNewDialog}
+            onOpen={handleOpen}
+            onRename={handleRename}
+            onClose={handleClose}
+          />
+        </div>
       )}
 
-      {/* Sessions section */}
-      <section aria-label="Sessions">
-        <div className="flex items-center justify-between mb-3">
+      {/* Accounts panel */}
+      {activeTab === 'accounts' && (
+        <div
+          id="tabpanel-accounts"
+          role="tabpanel"
+          aria-labelledby="tab-accounts"
+          className="space-y-2"
+        >
           <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            Sessions
+            Accounts
           </h2>
-          <div className="flex items-center gap-2">
-            <Button
-              ref={settingsButtonRef}
-              size="sm"
-              variant="outline"
-              className="min-h-[44px]"
-              onClick={() => setShowSettings(true)}
-              aria-label="Settings"
-            >
-              <Settings size={14} aria-hidden="true" className="mr-1" />
-              Settings
-            </Button>
-            <Button
-              ref={newButtonRef}
-              size="sm"
-              className="min-h-[44px]"
-              onClick={openNewDialog}
-              aria-label="New session"
-            >
-              <Plus size={14} aria-hidden="true" className="mr-1" />
-              New
-            </Button>
-          </div>
+          {!accountsLoading && (
+            <AccountsStrip
+              accounts={accounts}
+              onRefresh={handleRefreshAccount}
+              refreshingName={refreshingAccount}
+              onSaveNickname={handleSaveNickname}
+              onDelete={handleDeleteAccount}
+            />
+          )}
         </div>
-
-        <SessionList
-          sessions={sessions}
-          accounts={accounts}
-          isLoading={isLoading}
-          onNew={openNewDialog}
-          onOpen={handleOpen}
-          onRename={handleRename}
-          onClose={handleClose}
-        />
-      </section>
+      )}
 
       {/* Dialogs */}
       {showNewDialog && (
@@ -856,6 +1091,16 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
           onClose={() => setRenameTarget(null)}
           onSubmit={handleRenameSubmit}
           isPending={renameSession.isPending}
+        />
+      )}
+
+      {deleteTarget && (
+        <DeleteAccountDialog
+          account={deleteTarget}
+          activeSessions={deleteTargetSessions}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={confirmDelete}
+          isPending={deleteAccount.isPending}
         />
       )}
 

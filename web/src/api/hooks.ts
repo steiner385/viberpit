@@ -168,3 +168,11 @@ export function useCancelReauth() {
     mutationFn: (name) => api.post<ReauthState>(`/accounts/${encodeURIComponent(name)}/reauth/cancel`),
   })
 }
+
+export function useDeleteAccount() {
+  const qc = useQueryClient()
+  return useMutation<void, ApiRequestError, string>({
+    mutationFn: (name) => api.del<void>(`/accounts/${encodeURIComponent(name)}`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
+  })
+}

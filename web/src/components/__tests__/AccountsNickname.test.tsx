@@ -14,6 +14,7 @@ vi.mock('@/api/hooks', () => ({
   useCloseSession: vi.fn(),
   useRefreshAccount: vi.fn(),
   useUpdateAccountNickname: vi.fn(),
+  useDeleteAccount: vi.fn(),
   useGithubRepos: vi.fn(),
   useGithubBranches: vi.fn(),
   useSettings: vi.fn(),
@@ -50,6 +51,11 @@ function wrapper({ children }: { children: React.ReactNode }) {
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 }
 
+/** Accounts are now behind a tab — switch to it before asserting account content. */
+async function switchToAccountsTab(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('tab', { name: /accounts/i }))
+}
+
 describe('AccountsStrip — nickname display & edit', () => {
   const nicknameMutate = vi.fn()
 
@@ -72,42 +78,49 @@ describe('AccountsStrip — nickname display & edit', () => {
       ...NOOP_MUTATION,
       mutate: nicknameMutate,
     } as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+    vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
     vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
     vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
     vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
   })
 
-  it('shows account name when no nickname is set', () => {
+  it('shows account name when no nickname is set', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'work', nickname: null })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     expect(screen.getByText('work')).toBeInTheDocument()
   })
 
-  it('shows nickname as primary label when set, with name as sub-label', () => {
+  it('shows nickname as primary label when set, with name as sub-label', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'work', nickname: 'My Work Account' })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     expect(screen.getByText('My Work Account')).toBeInTheDocument()
     // The real name should still appear as sub-label
     expect(screen.getByText('work')).toBeInTheDocument()
   })
 
-  it('shows pencil edit button with aria-label "Rename {name}"', () => {
+  it('shows pencil edit button with aria-label "Rename {name}"', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'work' })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     expect(screen.getByRole('button', { name: /rename work/i })).toBeInTheDocument()
   })
@@ -120,6 +133,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
 
@@ -136,6 +150,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     const input = screen.getByRole('textbox', { name: /nickname for work/i })
@@ -154,6 +169,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     const input = screen.getByRole('textbox', { name: /nickname for work/i })
@@ -171,6 +187,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     const input = screen.getByRole('textbox', { name: /nickname for work/i })
@@ -191,6 +208,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     const input = screen.getByRole('textbox', { name: /nickname for work/i })
@@ -221,6 +239,7 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
     vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
     vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateSettings>)
     vi.mocked(hooks.useUpdateAccountNickname).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+    vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
     vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
     vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
     vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
@@ -236,13 +255,15 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
     expect(() => render(<Dashboard />, { wrapper })).not.toThrow()
   })
 
-  it('does not render any UsageBadge when account.usage is null', () => {
+  it('does not render any UsageBadge when account.usage is null', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     // UsageBadge renders with aria-label "session usage: N%" / "weekly usage: N%".
     // Neither should be present when usage is null.
@@ -250,13 +271,15 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
     expect(screen.queryByLabelText(/weekly usage:/i)).not.toBeInTheDocument()
   })
 
-  it('still renders the account name when usage is null', () => {
+  it('still renders the account name when usage is null', async () => {
+    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
 
     expect(screen.getByText('kindash')).toBeInTheDocument()
   })
@@ -272,6 +295,7 @@ describe('NewSessionDialog — account select uses nickname', () => {
     vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
     vi.mocked(hooks.useRefreshAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRefreshAccount>)
     vi.mocked(hooks.useUpdateAccountNickname).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+    vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
     vi.mocked(hooks.useGithubRepos).mockReturnValue({ data: [], isLoading: false, isError: false } as ReturnType<typeof hooks.useGithubRepos>)
     vi.mocked(hooks.useGithubBranches).mockReturnValue({ data: { default: null, branches: [] }, isLoading: false } as ReturnType<typeof hooks.useGithubBranches>)
     vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
