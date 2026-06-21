@@ -149,13 +149,30 @@ def pick_account(cfg: Config, exclude: set[str] = frozenset()) -> str:
 
 
 def sync_back(name: str) -> None:
-    """Split the live config-dir creds back into the per-account slot + shared mcp store."""
+    """Split the live config-dir creds back into the per-account slot + shared mcp store.
+
+    The slot read-modify-write is serialised with _account_lock to prevent a
+    race between the driver's sync_back (called via asyncio.to_thread after each
+    turn) and the poller's sync_back (called via usage_for(allow_refresh=False)
+    in a threadpool).  Without the lock a poller sync_back that read a STALE
+    config dir could overwrite the slot with an older (consumed) token *after*
+    the driver had already written the fresh rotated one — recreating the
+    needs-reauth bug the caller was trying to fix.
+
+    The config-dir read (split_credentials / read_json) stays OUTSIDE the lock:
+    it touches the live cfgdir, not the shared slot, so it does not need
+    serialisation and keeping it outside reduces contention.
+    """
     live_path = paths.account_cfg_dir(name) / ".credentials.json"
     if not live_path.exists():
         return
+    # Read the config-dir OUTSIDE the lock (touches live cfgdir only).
     claude_oauth, mcp = split_credentials(read_json(live_path))
-    existing = read_credentials(paths.slot_path(name)) if paths.slot_path(name).exists() else None
-    write_credentials(paths.slot_path(name), merge_keep_later(existing, claude_oauth))
+    # Serialise the slot read-modify-write so concurrent calls cannot interleave.
+    with _account_lock(name):
+        existing = read_credentials(paths.slot_path(name)) if paths.slot_path(name).exists() else None
+        write_credentials(paths.slot_path(name), merge_keep_later(existing, claude_oauth))
+    # MCP write is separate from the slot and uses its own atomic write primitive.
     if mcp:
         write_json_secure(paths.shared_mcp_path(), mcp)
 

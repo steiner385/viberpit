@@ -423,7 +423,12 @@ class SessionOrchestrator:
         family (live session), only the SDK must refresh so we avoid
         single-use-token reuse-detection.
         """
-        return any(d.account == account for d in self._drivers.values())
+        # Snapshot values() before iterating: _drivers is mutated by the event
+        # loop (create_session / close_session / _do_rotate) while this method
+        # can be called from a threadpool thread (the poller's usage_fn closure).
+        # Iterating the live dict while the event loop mutates it raises
+        # RuntimeError: dictionary changed size during iteration.
+        return any(d.account == account for d in list(self._drivers.values()))
 
     def driver(self, session_id: str) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, or None."""
