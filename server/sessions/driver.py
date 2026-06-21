@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, logging
+import asyncio, logging, uuid
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from . import events as ev
 from .translator import Translator
@@ -85,8 +85,15 @@ class SessionDriver:
         await self._start_turn(text)
 
     async def _start_turn(self, text: str):
-        """Start a new turn: emit working status, send query to SDK, create drain task."""
+        """Start a new turn: echo the user prompt, emit working status, query SDK, drain."""
         await self._out.put(ev.Status(state="working", count=len(self._queue)))
+        # Echo the user's prompt as a session event. The SDK never sends the human's
+        # prompt text back through receive_response (only transcript-replay reconstructs
+        # it on re-attach), so without this the live stream shows only responses. The
+        # user message is its own turn, keyed by a fresh id distinct from the assistant
+        # turn the Translator assigns from the SDK's message_start uuid.
+        user_turn = uuid.uuid4().hex
+        await self._out.put(ev.UserMessage(turn_id=user_turn, text=text, src_uuid=user_turn))
         await self._client.query(text)
         self._pump = asyncio.create_task(self._drain())
 

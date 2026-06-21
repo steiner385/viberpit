@@ -1,7 +1,7 @@
 import asyncio
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
-from server.sessions.events import TurnStart, TextDelta, TurnEnd, Status, Title, QueueUpdate
+from server.sessions.events import TurnStart, TextDelta, TurnEnd, Status, Title, QueueUpdate, UserMessage
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
 from claude_agent_sdk import TextBlock
@@ -32,7 +32,11 @@ def test_driver_streams_turn_and_sets_session_id():
     # C3: first event is now Title (auto-title from first prompt)
     assert names[0] == "Title"
     assert names[1] == "Status"  # working
-    assert [n for n in names if n not in ("Status", "Title")] == ["TurnStart", "TextDelta", "TextDelta", "TurnEnd"]
+    # The user's prompt is echoed as a UserMessage before the assistant turn.
+    assert [n for n in names if n not in ("Status", "Title")] == [
+        "UserMessage", "TurnStart", "TextDelta", "TextDelta", "TurnEnd"]
+    user_ev = next(e for e in seen if isinstance(e, UserMessage))
+    assert user_ev.text == "hi"
     assert sid == "sess-1"
 
 def test_interrupt_denies_pending_and_stops():
