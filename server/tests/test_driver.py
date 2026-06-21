@@ -580,3 +580,24 @@ def test_cancel_queued_out_of_range_returns_false():
         await d.aclose()
 
     asyncio.run(run())
+
+
+def test_on_status_fires_working_then_idle():
+    """The driver notifies on_status('working') when a turn starts and ('idle') when it
+    finishes, so the orchestrator can keep the session LIST's status in sync."""
+    msgs = [f.stream_start(uuid="t1"), f.stream_text("hi", uuid="t1"),
+            f.assistant(TextBlock(text="hi"), uuid="t1"), f.result(uuid="t1")]
+    seen: list[str] = []
+    async def run():
+        d = SessionDriver("sx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(),
+                          identity="me", on_status=lambda s: seen.append(s))
+        await d.start()
+        await d.send_prompt("hi")
+        async for e in d.events():
+            if isinstance(e, Status) and e.state == "idle":
+                break
+        await d.aclose()
+    asyncio.run(run())
+    assert "working" in seen, f"expected a 'working' status, got {seen}"
+    assert seen and seen[-1] == "idle", f"expected to end 'idle', got {seen}"
