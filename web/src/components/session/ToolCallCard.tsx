@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, FileEdit, FileText, Terminal, List, Search, 
 import type { Block } from '@/session/reducer'
 import type { ToolKind } from '@/session/events'
 import { ToolResult } from './ToolResult'
+import { sizeHint } from '@/lib/toolContent'
 import { cn } from '@/lib/utils'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
@@ -32,41 +33,6 @@ function keyArg(kind: ToolKind, input: Record<string, unknown>): string {
   if ((kind === 'edit' || kind === 'write' || kind === 'read') && typeof input.file_path === 'string') {
     return input.file_path
   }
-  return ''
-}
-
-/** Derive a size hint string from the result payload (e.g. "42 lines", "+3 −2"). */
-function sizeHint(kind: ToolKind, payload: Record<string, unknown>): string {
-  if (kind === 'edit' || kind === 'write') {
-    // Count added and removed lines from diff payload
-    const oldLines =
-      typeof payload.old_string === 'string' ? payload.old_string.split('\n').length : 0
-    const newLines =
-      typeof payload.new_string === 'string'
-        ? payload.new_string.split('\n').length
-        : typeof payload.content === 'string'
-          ? payload.content.split('\n').length
-          : 0
-    if (oldLines === 0 && newLines > 0) return `+${newLines}`
-    if (newLines === 0 && oldLines > 0) return `−${oldLines}`
-    return `+${newLines} −${oldLines}`
-  }
-
-  // For bash and read: count lines in the text content
-  let text: string | null = null
-  if (typeof payload.content === 'string') {
-    text = payload.content
-  } else if (typeof payload.stdout === 'string' || typeof payload.stderr === 'string') {
-    const parts: string[] = []
-    if (typeof payload.stdout === 'string' && payload.stdout) parts.push(payload.stdout)
-    if (typeof payload.stderr === 'string' && payload.stderr) parts.push(payload.stderr)
-    text = parts.join('\n')
-  }
-  if (text !== null) {
-    const count = text === '' ? 0 : text.split('\n').length
-    return `${count} ${count === 1 ? 'line' : 'lines'}`
-  }
-
   return ''
 }
 
@@ -113,7 +79,7 @@ export function ToolCallCard({ block, defaultResultOpen = false }: Props) {
 
       {/* Result section */}
       {block.result && (() => {
-        const hint = sizeHint(block.toolKind, block.result.payload)
+        const hint = sizeHint(block.toolKind, block.input, block.result.payload)
         const ok = block.result.ok
         return (
           <>
@@ -155,7 +121,7 @@ export function ToolCallCard({ block, defaultResultOpen = false }: Props) {
 
             {/* Result panel */}
             <div id={resultRegionId} hidden={!resultOpen} className="border-t border-gray-200 dark:border-gray-700 px-3 py-2">
-              <ToolResult kind={block.toolKind} ok={block.result.ok} payload={block.result.payload} />
+              <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} />
             </div>
           </>
         )

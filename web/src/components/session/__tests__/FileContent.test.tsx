@@ -35,4 +35,10 @@ describe('FileContent', () => {
     render(<FileContent payload={{ other: 'data' }} />)
     expect(screen.getByText(/other/)).toBeInTheDocument()
   })
+
+  it('renders list-shaped content as text, not raw JSON', () => {
+    render(<FileContent payload={{ content: [{ type: 'text', text: 'line from block' }] }} />)
+    expect(screen.getByText(/line from block/)).toBeInTheDocument()
+    expect(screen.queryByText(/"type"/)).toBeNull()
+  })
 })

@@ -1,16 +1,14 @@
 import { useState } from 'react'
+import { stripAnsi, coerceText } from '@/lib/toolContent'
 
 interface Props { payload: Record<string, unknown> }
 
 const MAX_LINES = 300
 
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, '')
-}
-
 export function FileContent({ payload }: Props) {
   const [showAll, setShowAll] = useState(false)
-  const raw = typeof payload.content === 'string' ? payload.content : JSON.stringify(payload, null, 2)
+  // `content` may be a string OR a list of content blocks — normalize both.
+  const raw = payload.content != null ? coerceText(payload.content) : JSON.stringify(payload, null, 2)
   const cleaned = stripAnsi(raw)
   const allLines = cleaned.split('\n')
   const visible = showAll ? allLines : allLines.slice(0, MAX_LINES)
