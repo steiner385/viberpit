@@ -249,7 +249,7 @@ async def serve_session_image(
 ):
     """Serve a previously uploaded image associated with a session. Returns 404 if unknown."""
     path = uploads.image_path(session_id, sha)
-    if path is None:
+    if path is None or not path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": "image not found"},

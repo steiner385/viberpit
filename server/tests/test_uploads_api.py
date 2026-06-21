@@ -11,8 +11,7 @@ def _client(tmp_path):
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
     from fastapi.testclient import TestClient
-    os.environ["CCSWITCH_HOME"] = str(tmp_path)
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_HOME": str(tmp_path)}):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
         app = create_app(orchestrator=orch)
         return TestClient(app, raise_server_exceptions=False)
@@ -37,6 +36,7 @@ def test_upload_rejects_non_image(tmp_path):
         r = client.post("/api/uploads", headers=IDENT,
                         files={"file": ("x.png", b"nope", "image/png")})
         assert r.status_code == 400
+        assert r.json()["error"]["code"] == "invalid_image"
 
 def test_serve_unknown_404(tmp_path):
     client = _client(tmp_path)
