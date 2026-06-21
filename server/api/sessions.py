@@ -64,6 +64,7 @@ def _record_to_dict(record) -> dict[str, Any]:
         "accountName": record.account,
         "repo": record.repo,
         "status": record.status,
+        "nameIsAuto": getattr(record, "name_is_auto", True),
         "detached": record.detached,
         "createdAt": record.created_at.isoformat() if record.created_at else None,
         "updatedAt": None,
@@ -102,6 +103,9 @@ async def create_session(
     Returns 409 with earliestReset if all accounts are at ceiling.
     """
     orch: SessionOrchestrator = _get_orchestrator(request)
+    # When the user supplies no name, the session is auto-named (Claude title / first
+    # prompt) and stays auto until a manual rename. A supplied name is pinned manual.
+    name_is_auto = not (body.name and body.name.strip())
     name = body.name or "New Session"
 
     # Validate repo format (nameWithOwner) before using it in URLs or filesystem paths.
@@ -177,6 +181,7 @@ async def create_session(
             repo=body.repo,
             identity=identity,
             permission_mode=body.permissionMode or "interactive",
+            name_is_auto=name_is_auto,
         )
     except ValueError as exc:
         return JSONResponse(

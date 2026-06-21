@@ -16,6 +16,46 @@ _CUSTOM_KEYS = ("customTitle",)
 _AUTO_KEYS = ("ai-title", "aiTitle", "summary")
 
 
+def _scan_text(text: str) -> tuple[str | None, str | None]:
+    """Scan transcript JSONL text; return (customTitle, autoTitle) — last non-empty wins."""
+    custom: str | None = None
+    auto: str | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        for k in _CUSTOM_KEYS:
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                custom = v.strip()
+        for k in _AUTO_KEYS:
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                auto = v.strip()
+    return custom, auto
+
+
+def read_ai_title_from_file(path: str | Path) -> str | None:
+    """Read the best title from a single transcript file path, or ``None``. Never raises."""
+    if not path:
+        return None
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    except Exception:  # never raise into the session loop
+        log.warning("read_ai_title_from_file failed for %s", path, exc_info=True)
+        return None
+    custom, auto = _scan_text(text)
+    return custom or auto
+
+
 def read_ai_title(projects_root: str | Path, claude_session_id: str) -> str | None:
     """Return the best available title for a session, or ``None``.
 
@@ -37,24 +77,11 @@ def read_ai_title(projects_root: str | Path, claude_session_id: str) -> str | No
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            for line in text.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except (ValueError, TypeError):
-                    continue
-                if not isinstance(obj, dict):
-                    continue
-                for k in _CUSTOM_KEYS:
-                    v = obj.get(k)
-                    if isinstance(v, str) and v.strip():
-                        custom = v.strip()
-                for k in _AUTO_KEYS:
-                    v = obj.get(k)
-                    if isinstance(v, str) and v.strip():
-                        auto = v.strip()
+            c, a = _scan_text(text)
+            if c:
+                custom = c
+            if a:
+                auto = a
         return custom or auto
     except Exception:  # never raise into the session loop
         log.warning("read_ai_title failed for %s", claude_session_id, exc_info=True)
