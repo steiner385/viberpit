@@ -15,10 +15,21 @@ import { useSessionSocket } from '@/ws/client'
 import type { WsRotatedMsg, WsErrorMsg } from '@/ws/client'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { SessionEvent } from '@/session/events'
+import { PERMISSION_MODES } from '@/session/permissionModes'
 import { StatusBar } from './StatusBar'
 import { RotationDivider } from './RotationDivider'
 import { TranscriptView } from './TranscriptView'
 import { Composer } from './Composer'
+
+/**
+ * Cycle to the next permission mode in PERMISSION_MODES order.
+ * Wraps around: full-auto → interactive.
+ */
+function nextPermissionMode(current: string): string {
+  const values = PERMISSION_MODES.map((m) => m.value)
+  const i = values.indexOf(current)
+  return values[(i + 1) % values.length]
+}
 
 interface Props {
   sessionId: string
@@ -48,6 +59,7 @@ export function SessionView({ sessionId, onBack }: Props) {
 
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
   const [mode, setMode] = useState('interactive')
+  const modeRef = useRef('interactive')
   const [rotations, setRotations] = useState<Rotation[]>([])
 
   // Track whether replay just finished so we can announce "History loaded" once.
@@ -141,6 +153,40 @@ export function SessionView({ sessionId, onBack }: Props) {
     detach(sessionId)
     onBack()
   }
+
+  // Keep modeRef current so the keydown handler reads the latest mode without
+  // needing to re-register the listener on every mode change.
+  useEffect(() => {
+    modeRef.current = mode
+  }, [mode])
+
+  // In-session keyboard shortcuts (Task 7):
+  //   Esc  → back to session list (guard: skip if composer textarea has text mid-draft)
+  //   Shift+Tab → cycle permission mode through PERMISSION_MODES
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Tab' && e.shiftKey) {
+        e.preventDefault()
+        const next = nextPermissionMode(modeRef.current)
+        handleSetMode(next)
+      } else if (e.key === 'Escape') {
+        // Guard: if the composer textarea (aria-label="Message") is focused and
+        // has non-empty text, Escape is for the composer (clearing a draft) — do
+        // NOT navigate back. Navigate back only when the textarea is empty or
+        // focus is elsewhere.
+        const ae = document.activeElement as HTMLTextAreaElement | null
+        const inComposerWithText =
+          ae?.getAttribute('aria-label') === 'Message' && (ae?.value ?? '') !== ''
+        if (!inComposerWithText) {
+          handleBack()
+        }
+      }
+    }
+
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handleSetMode])
 
   // Determine if any open permission/question block exists
   const hasOpenAction = state.turns.some((t) =>

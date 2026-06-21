@@ -1,0 +1,129 @@
+/**
+ * Task 7 — In-session keyboard shortcuts:
+ *   Esc → back to session list
+ *   Shift+Tab → cycle permission mode via setPermissionMode
+ *
+ * Mocks useSessionSocket the same way SessionView.test.tsx does — importOriginal +
+ * override just the hook. The stable mock object lets us assert on spies after render.
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { SessionView } from '../SessionView'
+
+// ── Stable mock socket ────────────────────────────────────────────────────────
+
+let capturedHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
+
+const mockSetPermissionMode = vi.fn()
+const mockAttach = vi.fn()
+const mockDetach = vi.fn()
+const mockOff = vi.fn()
+const mockOn = vi.fn().mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+  if (!capturedHandlers[event]) capturedHandlers[event] = []
+  capturedHandlers[event].push(cb)
+})
+
+const stableMockSocket = {
+  attach: mockAttach,
+  detach: mockDetach,
+  interrupt: vi.fn(),
+  prompt: vi.fn(),
+  sendInterrupt: vi.fn(),
+  permissionResponse: vi.fn(),
+  answerQuestion: vi.fn(),
+  setPermissionMode: mockSetPermissionMode,
+  on: mockOn,
+  off: mockOff,
+  connectionState: 'connected' as const,
+  socket: null,
+}
+
+vi.mock('@/ws/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/ws/client')>()
+  return {
+    ...actual,
+    useSessionSocket: () => stableMockSocket,
+  }
+})
+
+// ── Wrapper ───────────────────────────────────────────────────────────────────
+
+function wrapper({ children }: { children: React.ReactNode }) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe('SessionView keyboard shortcuts (Task 7)', () => {
+  beforeEach(() => {
+    capturedHandlers = {}
+    mockSetPermissionMode.mockClear()
+    mockAttach.mockClear()
+    mockDetach.mockClear()
+    mockOff.mockClear()
+    mockOn.mockClear()
+    mockOn.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+      if (!capturedHandlers[event]) capturedHandlers[event] = []
+      capturedHandlers[event].push(cb)
+    })
+  })
+
+  it('Escape calls onBack when focus is NOT in the composer textarea', async () => {
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    // Focus something other than the composer (the Back button)
+    screen.getByRole('button', { name: /back to session list/i }).focus()
+    await user.keyboard('{Escape}')
+    expect(onBack).toHaveBeenCalledOnce()
+  })
+
+  it('Escape calls onBack when the composer textarea is empty', async () => {
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    // Click the textarea (leaving it empty) then press Escape
+    await user.click(screen.getByRole('textbox', { name: /message/i }))
+    await user.keyboard('{Escape}')
+    expect(onBack).toHaveBeenCalledOnce()
+  })
+
+  it('Escape does NOT call onBack when the composer textarea has text (mid-draft guard)', async () => {
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    const box = screen.getByRole('textbox', { name: /message/i })
+    await user.click(box)
+    await user.type(box, 'wip')
+    await user.keyboard('{Escape}')
+    expect(onBack).not.toHaveBeenCalled()
+  })
+
+  it('Shift+Tab cycles the permission mode: interactive → auto', async () => {
+    const user = userEvent.setup()
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    await user.keyboard('{Shift>}{Tab}{/Shift}')
+    // Initial mode is 'interactive'; cycling once should call setPermissionMode with 'auto'
+    expect(mockSetPermissionMode).toHaveBeenCalledWith('s1', 'auto')
+  })
+
+  it('Shift+Tab cycles through all modes in order', async () => {
+    const user = userEvent.setup()
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    // interactive → auto → allowlist → full-auto → interactive
+    await user.keyboard('{Shift>}{Tab}{/Shift}')
+    expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'auto')
+    await user.keyboard('{Shift>}{Tab}{/Shift}')
+    expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'allowlist')
+    await user.keyboard('{Shift>}{Tab}{/Shift}')
+    expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'full-auto')
+    await user.keyboard('{Shift>}{Tab}{/Shift}')
+    expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'interactive')
+  })
+})
