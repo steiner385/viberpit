@@ -124,7 +124,10 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 return  # already attached
 
             try:
-                driver = await orchestrator.ensure_driver(session_id)
+                # Thread the connection's verified identity onto the resumed driver so
+                # that AskUserQuestion / permission answers (registered under
+                # driver.identity, resolved with this WS identity) actually match.
+                driver = await orchestrator.ensure_driver(session_id, identity)
             except Exception:
                 # A resumed/rehydrated session can fail to start its SDK subprocess —
                 # most commonly because the account's token is dead (needs re-auth) or
