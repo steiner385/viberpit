@@ -27,6 +27,9 @@ from server.auth.identity import verify_identity
 from server.config import get_settings
 from server.db.models import AppSession
 
+# Paths that bypass identity enforcement (unauthenticated probes).
+_EXEMPT_PATHS = frozenset({"/healthz"})
+
 # Cookie name
 _COOKIE_NAME = "ccswitch_session"
 # Session lifetime
@@ -94,7 +97,9 @@ class IdentityMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
-        # Skip internal paths that don't need auth (none currently, but future-proof)
+        # Unauthenticated liveness/schema probe (used by auto-deploy health-check).
+        if request.url.path in _EXEMPT_PATHS:
+            return await call_next(request)
         identity = verify_identity(request)
         if identity is None:
             return JSONResponse(
