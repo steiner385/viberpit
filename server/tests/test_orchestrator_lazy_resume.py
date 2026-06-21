@@ -92,6 +92,51 @@ def test_ensure_driver_resumes_detached_session(tmp_path):
     assert rec.detached is False
 
 
+def test_ensure_driver_falls_back_to_fresh_when_resume_fails(tmp_path):
+    """If resuming the stored claude_session_id fails (e.g. the session lived under a
+    different cwd/project, or was pruned), ensure_driver retries with resume=None so
+    the session stays USABLE rather than erroring out."""
+    from server.tests.fakes.fake_sdk import FakeSDKClient
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    cwd = str(tmp_path)
+    session_id = "s-fallback"
+    resume_calls = []
+
+    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume):
+        resume_calls.append(resume)
+        c = FakeSDKClient([], on_can_use_tool=can_use_tool)
+        if resume is not None:
+            # Simulate `claude --resume <id>` failing to find the session.
+            async def _boom():
+                raise RuntimeError("Command failed with exit code 1")
+            c.__aenter__ = lambda: _boom()
+        return c
+
+    async def _run():
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(DbSession(
+                id=session_id, name="t", account_name="acct1",
+                claude_session_id="stale-unresumable-id", status="idle", cwd=cwd,
+            ))
+        orch = SessionOrchestrator(sdk_factory=factory)
+        await orch.rehydrate()
+        cfg_dir = tmp_path / "cfg" / "acct1"
+        cfg_dir.mkdir(parents=True)
+        with patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+             patch("server.sessions.orchestrator.configdir"):
+            driver = await orch.ensure_driver(session_id)
+        return orch, driver, resume_calls
+
+    orch, driver, resume_calls = asyncio.run(_run())
+    assert driver is not None, "resume failure should fall back to a usable fresh driver"
+    assert resume_calls == ["stale-unresumable-id", None], (
+        f"expected a resume attempt then a fresh retry, got {resume_calls}"
+    )
+    assert orch.driver(session_id) is driver
+    assert orch.get_session(session_id).detached is False
+
+
 # -----------------------------------------------------------------------
 # Test 2: ensure_driver handles claude_session_id=None (fresh start)
 # -----------------------------------------------------------------------

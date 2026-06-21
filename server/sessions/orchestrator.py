@@ -468,20 +468,43 @@ class SessionOrchestrator:
             cfg_dir = compose(rec.account)
             configdir.trust_project(rec.account, rec.cwd)
 
-            driver = SessionDriver(
-                session_id,
-                rec.account,
-                rec.cwd,
-                str(cfg_dir),
-                mode=getattr(rec, "permission_mode", "interactive"),
-                sdk_factory=self._sdk_factory,
-                registry=self._registry,
-                identity="system",
-                resume=resume,
-                on_session_id=self._persist_claude_session_id,
-                on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
-            )
-            await driver.start()
+            def _build(resume_arg):
+                return SessionDriver(
+                    session_id,
+                    rec.account,
+                    rec.cwd,
+                    str(cfg_dir),
+                    mode=getattr(rec, "permission_mode", "interactive"),
+                    sdk_factory=self._sdk_factory,
+                    registry=self._registry,
+                    identity="system",
+                    resume=resume_arg,
+                    on_session_id=self._persist_claude_session_id,
+                    on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
+                )
+
+            driver = _build(resume)
+            try:
+                await driver.start()
+            except Exception:
+                if resume is None:
+                    # No resume to blame — the SDK genuinely can't start (e.g. a
+                    # truly dead account token / system problem). Surface it.
+                    raise
+                # Resume failed — almost always because the stored claude_session_id
+                # can't be resumed from rec.cwd (the original session lived under a
+                # different project dir, or the claude session was pruned). Fall back
+                # to a FRESH session so the record stays usable: the prior transcript
+                # still shows via replay, and new turns get (and persist) a new
+                # claude_session_id. Only if the fresh start ALSO fails do we error.
+                log.warning("session.resume id=%s could not resume claude_sid=%s; starting fresh",
+                            session_id, resume, exc_info=True)
+                try:
+                    await driver.aclose()
+                except Exception:
+                    pass
+                driver = _build(None)
+                await driver.start()
             self._drivers[session_id] = driver
             rec.detached = False
             log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
