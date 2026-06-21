@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import asyncio
+import logging
 import os
 import signal
 from pathlib import Path
@@ -138,9 +139,8 @@ def create_app(
                 await db.execute(_sa_select(_SessionModel).limit(1))
             return JSONResponse({"status": "ok"})
         except Exception as exc:  # noqa: BLE001 — any DB/schema failure is unhealthy
-            return JSONResponse(
-                {"status": "schema_error", "detail": str(exc)}, status_code=500
-            )
+            logging.getLogger("server").warning("healthz schema check failed", exc_info=exc)
+            return JSONResponse({"status": "schema_error"}, status_code=500)
 
     # REST API routers (T036–T038)
     app.include_router(sessions_router)

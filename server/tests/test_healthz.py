@@ -7,8 +7,7 @@ def _client(tmp_path):
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
     from fastapi.testclient import TestClient
-    os.environ["CCSWITCH_HOME"] = str(tmp_path)
-    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_HOME": str(tmp_path)}):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
         app = create_app(orchestrator=orch)
         return TestClient(app, raise_server_exceptions=False)

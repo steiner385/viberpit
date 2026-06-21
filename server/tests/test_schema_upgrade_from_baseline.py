@@ -52,4 +52,13 @@ def test_reconcile_upgrades_legacy_db_and_preserves_row(tmp_path):
                 sa_text("SELECT id, name, account_name, status, cwd FROM sessions WHERE id='legacy1'"))).first()
         assert row == ("legacy1", "My Session", "acct1", "idle", "/home/x")
 
+        # (c) the ORM can load the row — the EXACT incident query shape — and the
+        # reconciled JSON/datetime columns deserialize correctly.
+        from sqlalchemy import select as _select
+        async with db_session() as db:
+            obj = (await db.execute(_select(Session).limit(1))).scalars().first()
+        assert obj is not None
+        assert obj.tool_allowlist == []       # JSON '[]' literal → []
+        assert obj.created_at is not None      # epoch sentinel datetime
+
     asyncio.run(_check())
