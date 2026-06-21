@@ -318,6 +318,15 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         return d.answer_question(question_id, selected, identity) if d else False
 
+    def pending_questions(self, session_id: str) -> list[dict]:
+        """Return still-pending question payloads for session_id ([] if no driver).
+
+        Each entry has: question_id, turn_id, header, question, options, multi_select.
+        Mirrors the _registry.pending(session_id) pattern used for permissions in _handle_attach.
+        """
+        d = self._drivers.get(session_id)
+        return d.pending_questions() if d else []
+
     async def send_prompt(self, session_id, text):
         d = self._drivers.get(session_id)
         if d:

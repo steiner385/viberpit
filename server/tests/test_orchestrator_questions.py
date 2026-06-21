@@ -91,7 +91,9 @@ def test_answer_question_delegates_to_driver(orch_env):
 
     # Register a question directly on the driver's question registry.
     async def _register():
-        qid, fut = driver._qreg.request(session_id, "t1", "me")
+        qid, fut = driver._qreg.request(
+            session_id, "t1", "H", "Q?", [{"label": "Option X"}], False, "me"
+        )
         return qid, fut
 
     qid, fut = client.portal.call(_register)
@@ -106,5 +108,47 @@ def test_answer_question_delegates_to_driver(orch_env):
 
     resolved = client.portal.call(_check)
     assert resolved == ["Option X"]
+
+    client.portal.call(orch.close_session, session_id)
+
+
+def test_pending_questions_unknown_session_returns_empty(orch_env):
+    """pending_questions on a non-existent session returns [] without crashing."""
+    orch, _client = orch_env
+    assert orch.pending_questions("no-such-session") == []
+
+
+def test_pending_questions_delegates_to_driver(orch_env):
+    """pending_questions returns the full payload for each still-pending question."""
+    orch, client = orch_env
+
+    session = client.portal.call(lambda: orch.create_session("q-pending-test", identity="me"))
+    session_id = session.id
+    driver = orch.driver(session_id)
+    assert driver is not None
+
+    opts = [{"label": "Yes"}, {"label": "No"}]
+
+    async def _register():
+        qid, fut = driver._qreg.request(
+            session_id, "turn-42", "My Header", "Is this right?", opts, True, "me"
+        )
+        return qid, fut
+
+    qid, fut = client.portal.call(_register)
+
+    pendings = orch.pending_questions(session_id)
+    assert len(pendings) == 1
+    p = pendings[0]
+    assert p["question_id"] == qid
+    assert p["turn_id"] == "turn-42"
+    assert p["header"] == "My Header"
+    assert p["question"] == "Is this right?"
+    assert p["options"] == opts
+    assert p["multi_select"] is True
+
+    # After resolving, pending_questions must return [].
+    orch.answer_question(session_id, qid, ["Yes"], "me")
+    assert orch.pending_questions(session_id) == []
 
     client.portal.call(orch.close_session, session_id)

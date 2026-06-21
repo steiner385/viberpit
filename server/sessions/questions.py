@@ -11,18 +11,57 @@ class QuestionRegistry:
     """
 
     def __init__(self):
-        # question_id -> {future, session_id, identity}
+        # question_id -> {future, session_id, identity, turn_id, header, question, options, multi_select}
         self._pending: dict[str, dict] = {}
 
-    def request(self, session_id: str, turn_id: str, identity: str) -> tuple[str, asyncio.Future]:
+    def request(
+        self,
+        session_id: str,
+        turn_id: str,
+        header: str,
+        question: str,
+        options: list[dict],
+        multi_select: bool,
+        identity: str,
+    ) -> tuple[str, asyncio.Future]:
         """Register a pending question; return (question_id, future).
 
+        The full question payload (turn_id, header, question, options, multi_select) is stored
+        so that pending() can rebuild ev.Question events on reattach without data loss.
         The future resolves to list[str] (user's selected labels) or None (dismissed).
         """
         qid = _uuid.uuid4().hex
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._pending[qid] = {"future": fut, "session_id": session_id, "identity": identity}
+        self._pending[qid] = {
+            "future": fut,
+            "session_id": session_id,
+            "identity": identity,
+            "turn_id": turn_id,
+            "header": header,
+            "question": question,
+            "options": options,
+            "multi_select": multi_select,
+        }
         return qid, fut
+
+    def pending(self, session_id: str) -> list[dict]:
+        """Return, in registration order, one dict per still-pending question for session_id.
+
+        Each dict has keys: question_id, turn_id, header, question, options, multi_select.
+        Already-resolved or denied questions are excluded (they have been removed from _pending).
+        """
+        return [
+            {
+                "question_id": qid,
+                "turn_id": r["turn_id"],
+                "header": r["header"],
+                "question": r["question"],
+                "options": r["options"],
+                "multi_select": r["multi_select"],
+            }
+            for qid, r in self._pending.items()
+            if r["session_id"] == session_id
+        ]
 
     def resolve(self, question_id: str, selected: list[str], identity: str) -> bool:
         """Resolve a pending question with the user's selection.

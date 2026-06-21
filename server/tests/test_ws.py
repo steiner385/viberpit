@@ -369,6 +369,106 @@ def test_answer_question_round_trip(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# Reattach re-emits pending questions (the critical reattach gap fix)
+# ---------------------------------------------------------------------------
+
+class _QuestionBlockingFakeClient(FakeSDKClient):
+    """Fake client that triggers AskUserQuestion and stays blocked until answered.
+
+    Unlike _QuestionFakeClient it does NOT yield a result after the question — it just
+    blocks on the can_use_tool future.  This lets the test detach mid-question and
+    re-attach to verify that the pending question is re-emitted on the fresh attach.
+    """
+
+    async def receive_response(self):
+        yield f.stream_start(uuid="t2")
+        if self.on_can_use_tool is not None:
+            await self.on_can_use_tool(
+                "AskUserQuestion",
+                {"questions": [{"header": "Reattach header", "question": "Still here?",
+                                 "options": [{"label": "Yes"}, {"label": "No"}],
+                                 "multiSelect": False}]},
+                None,
+            )
+        if self.interrupted:
+            return
+        yield f.stream_text("done after reattach", uuid="t2")
+        yield f.result(session_id="sess-2", uuid="t2")
+
+
+def test_reattach_reemits_pending_question(ws_env):
+    """After a detach+reattach while a question is pending, a fresh attach re-emits
+    the question event so the user (and SDK callback) are never left hanging."""
+    _app, orch, client = ws_env([], client_cls=_QuestionBlockingFakeClient)
+    session = client.portal.call(
+        lambda: orch.create_session("test-reattach-q", identity="wstest@example.com")
+    )
+    session_id = session.id
+
+    saved_question_id = None
+
+    # --- First connection: attach, prompt, see the question, then disconnect. ---
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "go"}))
+        events = _drain_events(ws, until_type="question", timeout=8.0)
+        q_event = next((e for e in events if e.get("type") == "question"), None)
+        assert q_event is not None, (
+            f"first attach: no question event received — {[e.get('type') for e in events]}"
+        )
+        assert q_event.get("question") == "Still here?"
+        saved_question_id = q_event["questionId"]
+        # Detach (disconnect this WS) while the question is still pending.
+        ws.send_text(json.dumps({"type": "detach", "sessionId": session_id}))
+
+    # The question future must still be pending in the registry (detach does NOT deny).
+    pending = orch.pending_questions(session_id)
+    assert len(pending) == 1, (
+        f"question must remain pending after detach, got {pending}"
+    )
+    assert pending[0]["question_id"] == saved_question_id
+
+    # --- Second connection: reattach — the pending question must be re-emitted. ---
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        # Drain up to either replayComplete or the question re-emit (whichever comes last).
+        all_events: list[dict] = []
+        all_events.extend(_drain_events(ws, until_type="replayComplete"))
+        # Give the bridge a moment to send the question re-emit (comes after replayComplete).
+        all_events.extend(_drain_events(ws, until_type="question", timeout=4.0))
+
+        q_reemit = next((e for e in all_events if e.get("type") == "question"), None)
+        assert q_reemit is not None, (
+            f"reattach: pending question was NOT re-emitted — "
+            f"{[e.get('type') for e in all_events]}"
+        )
+        assert q_reemit.get("questionId") == saved_question_id, (
+            "re-emitted question must carry the same questionId as the original"
+        )
+        assert q_reemit.get("question") == "Still here?"
+        assert q_reemit.get("header") == "Reattach header"
+        options = q_reemit.get("options", [])
+        assert any(o.get("label") == "Yes" for o in options)
+
+        # Now answer the question — the driver callback should unblock and the turn complete.
+        ws.send_text(json.dumps({
+            "type": "answerQuestion",
+            "sessionId": session_id,
+            "questionId": saved_question_id,
+            "selected": ["Yes"],
+        }))
+        events = _drain_events(ws, until_type="turnEnd", timeout=8.0)
+        types = [e.get("type") for e in events]
+        assert "turnEnd" in types, (
+            f"turn did not complete after answering the re-emitted question: {types}"
+        )
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
 # Frame larger than 256KB is rejected, socket stays open
 # ---------------------------------------------------------------------------
 

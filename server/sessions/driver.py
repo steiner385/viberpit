@@ -71,7 +71,10 @@ class SessionDriver:
             options = [self._normalize_option(o) for o in raw_opts]
             multi_select = bool(q.get("multiSelect", False))
 
-            qid, fut = self._qreg.request(self.session_id, turn_id, self.identity)
+            qid, fut = self._qreg.request(
+                self.session_id, turn_id, header, question_text, options, multi_select,
+                self.identity,
+            )
             await self._out.put(ev.Question(
                 question_id=qid,
                 turn_id=turn_id,
@@ -88,20 +91,23 @@ class SessionDriver:
 
         # Build the deny message.
         questions_list = [q for q, _ in pending]
+        all_dismissed = all(a is None for a in answers)
         if len(questions_list) == 1:
             q_text = questions_list[0].get("question") or ""
             selected = answers[0]
             if selected is None:
-                answer_str = "(dismissed — no answer)"
+                prefix = "[User dismissed the question UI]"
+                msg = f"{prefix} {q_text} → (dismissed — user did not answer)"
             else:
                 answer_str = ", ".join(selected)
-            msg = f"[User answered via the question UI] {q_text} → {answer_str}"
+                msg = f"[User answered via the question UI] {q_text} → {answer_str}"
         else:
-            lines = ["[User answered via the question UI]"]
+            prefix = "[User dismissed the question UI]" if all_dismissed else "[User answered via the question UI]"
+            lines = [prefix]
             for q_obj, selected in zip(questions_list, answers):
                 q_text = q_obj.get("question") or ""
                 if selected is None:
-                    answer_str = "(dismissed — no answer)"
+                    answer_str = "(dismissed — user did not answer)"
                 else:
                     answer_str = ", ".join(selected)
                 lines.append(f"- {q_text} → {answer_str}")
@@ -112,6 +118,14 @@ class SessionDriver:
     def answer_question(self, question_id: str, selected: list[str], identity: str) -> bool:
         """Resolve a pending question with the user's selection. Mirrors resolve_permission."""
         return self._qreg.resolve(question_id, selected, identity)
+
+    def pending_questions(self) -> list[dict]:
+        """Return still-pending question payloads for this session (parallel to pending permissions).
+
+        Each entry has: question_id, turn_id, header, question, options, multi_select.
+        Used by the WS bridge to re-emit question events on client reattach.
+        """
+        return self._qreg.pending(self.session_id)
 
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
         turn_id = self._turn()

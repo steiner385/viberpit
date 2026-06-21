@@ -148,6 +148,21 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 })
                 await _send(perm_frame)
 
+            # 2b) Re-emit any pending AskUserQuestion events for this session.
+            #     Mirrors the permission re-emit above so a refresh/reattach while the
+            #     model is blocked in _handle_ask_user_question never silently hangs.
+            from server.sessions import events as ev
+            for q in orchestrator.pending_questions(session_id):
+                q_wire = redact_event(ev.Question(
+                    question_id=q["question_id"],
+                    turn_id=q["turn_id"],
+                    header=q["header"],
+                    question=q["question"],
+                    options=q["options"],
+                    multi_select=q["multi_select"],
+                ).to_wire())
+                await _send(q_wire)
+
             # 3) Start the live stream: forward driver events into the batcher.
             async def _live() -> None:
                 try:
