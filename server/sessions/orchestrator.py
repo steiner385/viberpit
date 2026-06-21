@@ -24,8 +24,10 @@ from typing import Callable
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, worktrees
 from ccswitch.configdir import compose
+from server.audit import record_audit
 from server.db import db_session
 from server.db.models import Session as DbSession
+from server.sessions import adopt as _adopt
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory
@@ -585,6 +587,104 @@ class SessionOrchestrator:
             rec.detached = False
             log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
             return driver
+
+    # ------------------------------------------------------------------
+    # Adoption — bring an untracked live claude session under management
+    # ------------------------------------------------------------------
+
+    def _resolve_candidate(self, claude_session_id: str):
+        """Re-run discovery and return the AdoptionCandidate for this sid, or None.
+
+        Re-resolving (rather than trusting a stale list) is deliberate: processes
+        churn fast, so the candidate may have died or changed between the dashboard
+        scan and the adopt call. Anchored to the transcript, which persists.
+        """
+        known = [a["name"] for a in ccswitch_accounts.list_accounts()]
+        tracked = {r.claude_session_id for r in self._records.values() if r.claude_session_id}
+        for cand in _adopt.discover_candidates(known, tracked):
+            if cand.claude_session_id == claude_session_id:
+                return cand
+        return None
+
+    async def adopt_session(self, claude_session_id: str, identity: str, killer=os.kill):
+        """Force-take-over an untracked live session: terminate it, resume in place.
+
+        Returns ``(SessionRecord, {"resumed": bool, "terminatedPid": int|None})``.
+        Raises KeyError if the session is no longer adoptable (gone, unmapped, or
+        already tracked). The conversation is resumed in its ORIGINAL cwd with no
+        worktree (documented isolation exception, flagged adopted_in_place=True).
+        """
+        cand = self._resolve_candidate(claude_session_id)
+        if cand is None or not cand.mapped or cand.tracked:
+            raise KeyError(claude_session_id)
+
+        # Terminate the original process tree (best-effort; a dead PID is fine).
+        terminated_pid: int | None = None
+        if cand.pid is not None:
+            sent = await asyncio.to_thread(_adopt.terminate_process_tree, cand.pid, killer)
+            if sent:
+                terminated_pid = cand.pid
+                async with db_session() as db:
+                    await record_audit(
+                        db, "process.terminate", identity,
+                        {"pid": cand.pid, "claudeSessionId": claude_session_id},
+                    )
+
+        session_id = str(uuid.uuid4())
+        cfg_dir = compose(cand.account)
+        Path(cand.cwd).mkdir(parents=True, exist_ok=True)
+        configdir.trust_project(cand.account, cand.cwd)
+
+        def _build(resume_arg):
+            return SessionDriver(
+                session_id, cand.account, cand.cwd, str(cfg_dir),
+                mode="interactive", sdk_factory=self._sdk_factory, registry=self._registry,
+                identity=identity, resume=resume_arg,
+                on_session_id=self._persist_claude_session_id,
+                on_sync_back=functools.partial(ccswitch_accounts.sync_back, cand.account),
+                on_status=self._persist_status,
+            )
+
+        # Resume the conversation; fall back to a fresh session if resume fails so
+        # the adopted record stays usable (prior transcript still shows via replay).
+        resumed = True
+        driver = _build(claude_session_id)
+        try:
+            await driver.start()
+        except Exception:
+            log.warning("adopt.resume_failed sid=%s; starting fresh",
+                        claude_session_id, exc_info=True)
+            try:
+                await driver.aclose()
+            except Exception:
+                pass
+            driver = _build(None)
+            await driver.start()
+            resumed = False
+        self._drivers[session_id] = driver
+
+        async with db_session() as db:
+            db.add(DbSession(
+                id=session_id, name=cand.name, account_name=cand.account,
+                claude_session_id=claude_session_id, status="idle", pid=None,
+                cwd=cand.cwd, repo=None, permission_mode="interactive",
+                name_is_auto=True, adopted_in_place=True,
+            ))
+            await record_audit(
+                db, "session.adopt", identity,
+                {"sessionId": session_id, "account": cand.account,
+                 "claudeSessionId": claude_session_id, "resumed": resumed},
+            )
+
+        rec = SessionRecord(
+            id=session_id, name=cand.name, account=cand.account,
+            claude_session_id=claude_session_id, cols=80, rows=24,
+            cwd=cand.cwd, repo=None, status="idle", adopted_in_place=True,
+        )
+        self._records[session_id] = rec
+        log.info("session.adopt id=%s sid=%s resumed=%s killed=%s",
+                 session_id, claude_session_id, resumed, terminated_pid)
+        return rec, {"resumed": resumed, "terminatedPid": terminated_pid}
 
     def resolve_permission(self, session_id, perm_id, decision, identity) -> bool:
         d = self._drivers.get(session_id)
