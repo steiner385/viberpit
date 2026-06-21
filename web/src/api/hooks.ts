@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiRequestError } from './client'
-import type { Account, Session, ReauthState, ArchivedSession } from './types'
+import type {
+  Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome,
+} from './types'
 import type { SessionEvent } from '@/session/events'
 
 // Query keys
@@ -8,6 +10,7 @@ export const QK = {
   accounts: ['accounts'] as const,
   sessions: ['sessions'] as const,
   archived: ['archived-sessions'] as const,
+  adoptable: ['adoptable-sessions'] as const,
   config: ['config'] as const,
   githubRepos: ['github-repos'] as const,
   githubBranches: (repo?: string) => ['github-branches', repo] as const,
@@ -207,6 +210,29 @@ export function usePermanentDeleteSession() {
   return useMutation<void, ApiRequestError, string>({
     mutationFn: (id) => api.del<void>(`/sessions/${id}/permanent`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.archived }) },
+  })
+}
+
+/** Live untracked claude sessions eligible for adoption. Polled while the panel is open. */
+export function useAdoptable() {
+  return useQuery<{ candidates: AdoptionCandidate[] }>({
+    queryKey: QK.adoptable,
+    queryFn: () => api.get<{ candidates: AdoptionCandidate[] }>('/sessions/adoptable'),
+    staleTime: 3_000,
+    refetchInterval: 5_000,
+  })
+}
+
+/** Force-take-over an untracked session, then refresh both the sessions list and candidates. */
+export function useAdoptSession() {
+  const qc = useQueryClient()
+  return useMutation<AdoptOutcome, ApiRequestError, string>({
+    mutationFn: (claudeSessionId) =>
+      api.post<AdoptOutcome>('/sessions/adopt', { claudeSessionId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.sessions })
+      qc.invalidateQueries({ queryKey: QK.adoptable })
+    },
   })
 }
 
