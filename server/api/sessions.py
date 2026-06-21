@@ -52,6 +52,7 @@ class CreateSessionRequest(BaseModel):
     repo: str | None = None  # nameWithOwner, e.g. "owner/name"
     branch: str | None = None
     permissionMode: str | None = None
+    images: list[dict] | None = None
 
 
 class RenameSessionRequest(BaseModel):
@@ -179,6 +180,7 @@ async def create_session(
             repo=body.repo,
             identity=identity,
             permission_mode=body.permissionMode or "interactive",
+            images=body.images,
         )
     except ValueError as exc:
         return JSONResponse(
