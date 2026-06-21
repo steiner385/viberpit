@@ -46,7 +46,7 @@ column.nullable
 
 On failure, the message names the offending `table.column` and the remedy: "give it a scalar/list/dict default, or add it via a real migration and list it in `RECONCILE_EXEMPT`."
 
-`RECONCILE_EXEMPT: set[str]` (keyed `"table.column"`) is the documented escape hatch for columns intentionally handled by a real migration rather than reconcile. Starts empty.
+`RECONCILE_EXEMPT: set[str]` (keyed `"table.column"`) lists the original-schema required columns that are NOT NULL with **no default** and so can't be reconciled but never need to be (present since `CREATE TABLE`): `sessions.name`/`account_name`/`cwd`, `app_sessions.identity`/`expires_at`, `audit_events.type`/`identity`. It is **not** for new columns — a genuinely new NOT NULL column with no default must instead get a synthesizable default (the live deploy runs no Alembic, so there is no migration path to lean on; the startup self-check and baseline-upgrade test backstop misuse).
 
 ### 3. CI test — baseline upgrade (end-to-end)
 `server/tests/test_schema_upgrade_from_baseline.py` + `server/tests/fixtures/legacy_sessions.sql`.

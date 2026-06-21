@@ -12,7 +12,7 @@
 
 - Reconcilable column ⇔ `column.nullable OR column.primary_key OR _ddl_default_literal(column) is not None OR "<table>.<col>" in RECONCILE_EXEMPT`.
 - Callable-default synthesis (via `default.arg(None)`): `== []` → `'[]'`; `== {}` → `'{}'`; `datetime` instance → `'1970-01-01 00:00:00'` (a **constant** epoch literal — SQLite rejects `CURRENT_TIMESTAMP` as a non-constant DEFAULT in `ALTER TABLE ADD COLUMN`); else `None`.
-- After Task 1, **every** current model column must be reconcilable with `RECONCILE_EXEMPT` empty.
+- `RECONCILE_EXEMPT` holds the original-schema required columns that are NOT NULL with **no default** (`sessions.name`/`account_name`/`cwd`, `app_sessions.identity`/`expires_at`, `audit_events.type`/`identity`) — present since `CREATE TABLE`, never ALTER-added, so they need no reconcile. Every **other** column must be reconcilable. A genuinely **new** NOT NULL column with no default must be given a synthesizable default — NOT added to `RECONCILE_EXEMPT` (the deploy has no Alembic, and the Task 4 startup self-check + Task 3 baseline test would catch it anyway).
 - `/healthz` is **unauthenticated** (exempt from `IdentityMiddleware`), runs `select(Session).limit(1)`, returns `200 {"status":"ok"}` or `500 {"status":"schema_error","detail":...}`.
 - Startup raises `SchemaDriftError` (subclass of `RuntimeError`) only on the SQLite path, after reconcile.
 - Deploy host/port come from `$CCSWITCH_HOST` / `$CCSWITCH_PORT` (in `/etc/ccswitch/ccswitch.env`).
