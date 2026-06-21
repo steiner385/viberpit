@@ -85,8 +85,8 @@ class ReplayComplete:
 
 @dataclass
 class UserMessage:
-    turn_id: str; text: str; src_uuid: str | None = None
-    def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid}
+    turn_id: str; text: str; src_uuid: str | None = None; images: list[dict] | None = None
+    def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid, "images": self.images or []}
 
 @dataclass
 class QueueUpdate:
