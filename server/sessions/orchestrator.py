@@ -274,6 +274,39 @@ class SessionOrchestrator:
                 .values(claude_session_id=claude_session_id)
             )
 
+    async def rehydrate(self) -> int:
+        """Rebuild detached SessionRecords from non-ended DB rows (lazy: no drivers).
+
+        Idempotent: skips ids already present in _records. Normalizes a pre-crash
+        'working' status to 'idle' (the process is gone). Returns the count of rows added.
+        """
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            rows = (await db.execute(
+                sa_select(DbSession).where(DbSession.status != "ended")
+            )).scalars().all()
+        added = 0
+        for row in rows:
+            if row.id in self._records:
+                continue
+            status = "idle" if row.status == "working" else row.status
+            self._records[row.id] = SessionRecord(
+                id=row.id,
+                name=row.name,
+                account=row.account_name,
+                claude_session_id=row.claude_session_id or "",
+                cols=80,
+                rows=24,
+                cwd=row.cwd,
+                detached=True,
+                status=status,
+                permission_mode=row.permission_mode,
+                created_at=row.created_at,
+            )
+            added += 1
+        log.info("rehydrate: %d session(s) restored", added)
+        return added
+
     def list_sessions(self) -> list[SessionRecord]:
         """Return all in-memory SessionRecords."""
         return list(self._records.values())
