@@ -16,10 +16,12 @@ interface Props {
   turn: TurnType
   permissionMode: string
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
-  onAnswer: (questionId: string, selected: string[]) => void
+  onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
+  onChat: (questionId: string) => void
+  armedQuestionId: string | null
 }
 
-export const Turn = memo(function Turn({ turn, permissionMode, onDecision, onAnswer }: Props) {
+export const Turn = memo(function Turn({ turn, permissionMode, onDecision, onAnswer, onChat, armedQuestionId }: Props) {
   const isUser = turn.role === 'user'
 
   return (
@@ -41,7 +43,15 @@ export const Turn = memo(function Turn({ turn, permissionMode, onDecision, onAns
             return <PermissionCard key={block.id} block={block} mode={permissionMode} onDecision={onDecision} />
 
           case 'question':
-            return <QuestionCard key={block.id} block={block} onAnswer={onAnswer} />
+            return (
+              <QuestionCard
+                key={block.id}
+                block={block}
+                onAnswer={onAnswer}
+                onChat={onChat}
+                armedForChat={block.questionId === armedQuestionId}
+              />
+            )
 
           default:
             return null

@@ -66,6 +66,7 @@ export function SessionView({ sessionId, onBack }: Props) {
   const [mode, setMode] = useState('interactive')
   const modeRef = useRef('interactive')
   const [rotations, setRotations] = useState<Rotation[]>([])
+  const [armedQuestionId, setArmedQuestionId] = useState<string | null>(null)
 
   // Track whether replay just finished so we can announce "History loaded" once.
   const prevReplayingRef = useRef(true)
@@ -128,22 +129,44 @@ export function SessionView({ sessionId, onBack }: Props) {
     [sessionId, permissionResponse],
   )
 
-  // Answer handler for question cards
+  // Answer handler for question cards (option clicks and inline free-form)
   const handleAnswer = useCallback(
-    (questionId: string, selected: string[]) => {
-      answerQuestion(sessionId, questionId, selected)
+    (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => {
+      answerQuestion(sessionId, questionId, selected, mode)
       dispatch({ type: '_resolveQuestion', questionId })
+      setArmedQuestionId((cur) => (cur === questionId ? null : cur))
     },
     [sessionId, answerQuestion],
   )
 
-  // Composer handlers
+  // Toggle "armed for chat" for a question: the next composer send becomes its answer.
+  const handleChat = useCallback(
+    (questionId: string) => {
+      setArmedQuestionId((cur) => (cur === questionId ? null : questionId))
+    },
+    [],
+  )
+
+  // Composer handlers — when a question is armed for chat, the next message
+  // answers that question (mode='chat') and unblocks the turn; otherwise it's a
+  // normal prompt.
   const handlePrompt = useCallback(
-    (text: string) => prompt(sessionId, text),
-    [sessionId, prompt],
+    (text: string) => {
+      if (armedQuestionId) {
+        answerQuestion(sessionId, armedQuestionId, [text], 'chat')
+        dispatch({ type: '_resolveQuestion', questionId: armedQuestionId })
+        setArmedQuestionId(null)
+        return
+      }
+      prompt(sessionId, text)
+    },
+    [sessionId, prompt, answerQuestion, armedQuestionId],
   )
   const handleInterrupt = useCallback(
-    () => sendInterrupt(sessionId),
+    () => {
+      setArmedQuestionId(null)
+      sendInterrupt(sessionId)
+    },
     [sessionId, sendInterrupt],
   )
   const handleSetMode = useCallback(
@@ -170,6 +193,16 @@ export function SessionView({ sessionId, onBack }: Props) {
   const hasOpenAction = state.turns.some((t) =>
     t.blocks.some((b) => b.kind === 'permission' || b.kind === 'question'),
   )
+
+  // If the armed question is no longer present (resolved/replaced), disarm.
+  useEffect(() => {
+    if (!armedQuestionId) return
+    const stillOpen = state.turns.some((t) =>
+      t.blocks.some((b) => b.kind === 'question' && b.questionId === armedQuestionId),
+    )
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- disarm in sync with transcript changes (mirrors the aria-live effect above)
+    if (!stillOpen) setArmedQuestionId(null)
+  }, [state.turns, armedQuestionId])
 
   // In-session keyboard shortcuts (Task 7):
   //   Esc  → back to session list (guard: skip if composer textarea has text mid-draft,
@@ -285,6 +318,8 @@ export function SessionView({ sessionId, onBack }: Props) {
         permissionMode={mode}
         onDecision={handleDecision}
         onAnswer={handleAnswer}
+        onChat={handleChat}
+        armedQuestionId={armedQuestionId}
       />
 
       {/* Prominent "waiting for Claude" indicator shown below the last turn */}
@@ -333,6 +368,7 @@ export function SessionView({ sessionId, onBack }: Props) {
           onSetMode={handleSetMode}
           queued={state.queued}
           onCancelQueued={(i) => cancelQueued(sessionId, i)}
+          chatArmed={armedQuestionId !== null}
         />
       </div>
 

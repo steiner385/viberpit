@@ -240,3 +240,63 @@ describe('SessionView', () => {
     expect(onBack).toHaveBeenCalledOnce()
   })
 })
+
+describe('SessionView question escape hatches', () => {
+  beforeEach(() => {
+    capturedHandlers = {}
+    mockPermissionResponse.mockClear()
+    mockAnswerQuestion.mockClear()
+    mockPrompt.mockClear()
+    mockSendInterrupt.mockClear()
+    mockSetPermissionMode.mockClear()
+    mockAttach.mockClear()
+    mockDetach.mockClear()
+    mockOff.mockClear()
+    mockOn.mockClear()
+    mockOn.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+      if (!capturedHandlers[event]) capturedHandlers[event] = []
+      capturedHandlers[event].push(cb)
+    })
+  })
+
+  function renderAndAskQuestion() {
+    const utils = render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    emitSessionEvent({ type: 'turnStart', turnId: 't1' })
+    emitSessionEvent({
+      type: 'question', questionId: 'q-9', turnId: 't1', header: 'H',
+      question: 'Pick one', options: [{ label: 'A' }], multiSelect: false,
+    })
+    return utils
+  }
+
+  it('chat: arming routes the next composer message to answerQuestion(mode=chat)', async () => {
+    const user = userEvent.setup()
+    renderAndAskQuestion()
+    await user.click(screen.getByRole('button', { name: /chat about this/i }))
+    // Card collapsed to banner.
+    expect(screen.getByText(/replying in chat/i)).toBeInTheDocument()
+    // Type in the composer and send.
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'lets talk instead')
+    await user.click(screen.getByRole('button', { name: /send message/i }))
+    expect(mockAnswerQuestion).toHaveBeenCalledWith('s1', 'q-9', ['lets talk instead'], 'chat')
+    expect(mockPrompt).not.toHaveBeenCalled()
+  })
+
+  it('free-form: inline response calls answerQuestion(mode=freeform)', async () => {
+    const user = userEvent.setup()
+    renderAndAskQuestion()
+    await user.click(screen.getByRole('button', { name: /write a response/i }))
+    await user.type(screen.getByRole('textbox', { name: /write a response/i }), 'my words')
+    await user.click(screen.getByRole('button', { name: /send response/i }))
+    expect(mockAnswerQuestion).toHaveBeenCalledWith('s1', 'q-9', ['my words'], 'freeform')
+  })
+
+  it('normal prompt is unaffected when no question is armed', async () => {
+    const user = userEvent.setup()
+    renderAndAskQuestion()
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'normal message')
+    await user.click(screen.getByRole('button', { name: /send message/i }))
+    expect(mockPrompt).toHaveBeenCalledWith('s1', 'normal message')
+    expect(mockAnswerQuestion).not.toHaveBeenCalled()
+  })
+})

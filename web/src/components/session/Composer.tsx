@@ -9,9 +9,10 @@ interface Props {
   onSetMode: (mode: string) => void
   queued?: string[]
   onCancelQueued?: (index: number) => void
+  chatArmed?: boolean
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued }: Props) {
+export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed }: Props) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isWorking = status.state === 'working'
@@ -90,7 +91,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           rows={1}
-          placeholder="Send a message…"
+          placeholder={chatArmed ? 'Reply in chat…' : 'Send a message…'}
           className={cn(
             'flex-1 resize-none rounded-md border border-gray-300 dark:border-gray-600',
             'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',

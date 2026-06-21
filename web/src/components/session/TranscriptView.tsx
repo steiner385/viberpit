@@ -6,10 +6,12 @@ interface Props {
   turns: TurnType[]
   permissionMode: string
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
-  onAnswer: (questionId: string, selected: string[]) => void
+  onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
+  onChat: (questionId: string) => void
+  armedQuestionId: string | null
 }
 
-export function TranscriptView({ turns, permissionMode, onDecision, onAnswer }: Props) {
+export function TranscriptView({ turns, permissionMode, onDecision, onAnswer, onChat, armedQuestionId }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
@@ -45,6 +47,8 @@ export function TranscriptView({ turns, permissionMode, onDecision, onAnswer }: 
           permissionMode={permissionMode}
           onDecision={onDecision}
           onAnswer={onAnswer}
+          onChat={onChat}
+          armedQuestionId={armedQuestionId}
         />
       ))}
       {/* Bottom sentinel for future IntersectionObserver use */}
