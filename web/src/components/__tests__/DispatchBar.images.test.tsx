@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { it, expect, vi, beforeEach } from 'vitest'
 import { DispatchBar } from '../DispatchBar'
 
 beforeEach(() => {
@@ -22,4 +22,32 @@ it('dispatch includes pasted image refs', async () => {
   await waitFor(() => expect(onDispatch).toHaveBeenCalledWith(expect.objectContaining({
     initialPrompt: 'start with this',
     images: [{ sha: 'abc', mime: 'image/png', name: 'x.png' }] })))
+})
+
+it('dispatch with image-only (empty prompt) calls onDispatch not onOpenHighlighted', async () => {
+  const onDispatch = vi.fn()
+  const onOpenHighlighted = vi.fn()
+  render(
+    <DispatchBar
+      repos={[]}
+      reposLoading={false}
+      reposError={false}
+      onDispatch={onDispatch}
+      onOpenHighlighted={onOpenHighlighted}
+      onNavigate={vi.fn()}
+      onRowAction={vi.fn()}
+      onShowHelp={vi.fn()}
+      onEscape={vi.fn()}
+      isPending={false}
+    />,
+  )
+  const ta = screen.getByRole('textbox')
+  fireEvent.paste(ta, { clipboardData: {
+    files: [new File([new Uint8Array(10)], 'x.png', { type: 'image/png' })] } })
+  await waitFor(() => screen.getByTestId('attachment-chips'))
+  fireEvent.keyDown(ta, { key: 'Enter' })
+  await waitFor(() => expect(onDispatch).toHaveBeenCalledWith(expect.objectContaining({
+    initialPrompt: '',
+    images: [{ sha: 'abc', mime: 'image/png', name: 'x.png' }] })))
+  expect(onOpenHighlighted).not.toHaveBeenCalled()
 })
