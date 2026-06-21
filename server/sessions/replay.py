@@ -33,8 +33,17 @@ def _parse(path: str, max_turns: int) -> list:
         if typ == "user":
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
             results = [b for b in content if b.get("type") == "tool_result"]
-            if text:
-                out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid))
+            imgs = []
+            for b in content:
+                if b.get("type") == "image":
+                    src = b.get("source") or {}
+                    if src.get("type") == "base64":
+                        mt = src.get("media_type", "image/png")
+                        imgs.append({"url": f"data:{mt};base64,{src.get('data', '')}",
+                                     "mime": mt, "name": ""})
+            if text or imgs:
+                out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
+                                          images=imgs or None))
             for r in results:
                 out.append(ev.ToolResult(r["tool_use_id"], not r.get("is_error", False),
                                          {"content": r.get("content")}, uuid))
