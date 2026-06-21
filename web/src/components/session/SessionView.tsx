@@ -20,6 +20,7 @@ import { StatusBar } from './StatusBar'
 import { RotationDivider } from './RotationDivider'
 import { TranscriptView } from './TranscriptView'
 import { Composer } from './Composer'
+import { WorkingIndicator } from './WorkingIndicator'
 
 /**
  * Cycle to the next permission mode in PERMISSION_MODES order.
@@ -254,6 +255,19 @@ export function SessionView({ sessionId, onBack }: Props) {
         onDecision={handleDecision}
         onAnswer={handleAnswer}
       />
+
+      {/* Prominent "waiting for Claude" indicator shown below the last turn */}
+      {state.status.state === 'working' && (
+        <div
+          aria-hidden="true"
+          className={cn(
+            'flex-shrink-0 flex items-center px-4 py-2',
+            'text-xs text-gray-400 dark:text-gray-500',
+          )}
+        >
+          <WorkingIndicator count={state.status.count} />
+        </div>
+      )}
 
       {/* Rotation dividers (appended after transcript content) */}
       {rotations.length > 0 && (

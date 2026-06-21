@@ -1,6 +1,24 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { StatusBar } from '../StatusBar'
+
+// Stub matchMedia so WorkingIndicator works in jsdom
+beforeEach(() => {
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    configurable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  })
+})
 
 describe('StatusBar', () => {
   it('shows "Ready" for idle state', () => {
@@ -8,14 +26,19 @@ describe('StatusBar', () => {
     expect(screen.getByText('Ready')).toBeInTheDocument()
   })
 
-  it('shows "Working…" for working state with no queue', () => {
+  it('renders the WorkingIndicator for working state with no queue', () => {
     render(<StatusBar status={{ state: 'working', count: 0 }} connectionState="connected" />)
-    expect(screen.getByText('Working…')).toBeInTheDocument()
+    // WorkingIndicator always provides a sr-only "Working…" label
+    const srEl = document.querySelector('.sr-only')
+    expect(srEl).not.toBeNull()
+    expect(srEl?.textContent).toBe('Working…')
   })
 
-  it('shows "Working… (N queued)" for working state with queued items', () => {
+  it('renders WorkingIndicator with queued label for working state with queued items', () => {
     render(<StatusBar status={{ state: 'working', count: 2 }} connectionState="connected" />)
-    expect(screen.getByText('Working… (2 queued)')).toBeInTheDocument()
+    const srEl = document.querySelector('.sr-only')
+    expect(srEl).not.toBeNull()
+    expect(srEl?.textContent).toBe('Working, 2 queued')
   })
 
   it('shows "Waiting for permission" for waiting-permission state', () => {
