@@ -30,6 +30,7 @@ export interface Session {
   status: SessionStatus
   createdAt: string
   updatedAt: string
+  detached?: boolean
 }
 
 export interface ApiError {

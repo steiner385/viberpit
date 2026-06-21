@@ -87,6 +87,11 @@ class SessionOrchestrator:
         self._rotation_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
+        # Serialises the check-build-register critical section in ensure_driver
+        # so that two concurrent WS attaches to the same detached session cannot
+        # each see no driver, each build+start one, and both register → two SDK
+        # processes attached to the same Claude conversation (TOCTOU fix).
+        self._ensure_lock: asyncio.Lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -365,7 +370,7 @@ class SessionOrchestrator:
           resume=<claude_session_id>, start it, store it, and mark the record as live.
         - If the session_id is unknown, return None.
         """
-        # Fast path: live driver already exists
+        # Fast path: live driver already exists (no lock needed — read-only check)
         existing = self._drivers.get(session_id)
         if existing is not None:
             return existing
@@ -375,28 +380,39 @@ class SessionOrchestrator:
         if rec is None:
             return None
 
-        # Build and start a new driver resuming from the stored claude_session_id
-        resume = rec.claude_session_id or None
-        cfg_dir = compose(rec.account)
-        configdir.trust_project(rec.account, rec.cwd)
+        # Serialise the check-build-register section so that two concurrent WS
+        # attaches to the same detached session cannot both pass the "no driver"
+        # gate, each build+start a driver, and both register — which would attach
+        # two SDK processes to the same Claude conversation (TOCTOU fix).
+        async with self._ensure_lock:
+            # Re-check inside the lock: another coroutine may have built the
+            # driver while we were waiting.
+            existing = self._drivers.get(session_id)
+            if existing is not None:
+                return existing
 
-        driver = SessionDriver(
-            session_id,
-            rec.account,
-            rec.cwd,
-            str(cfg_dir),
-            mode=getattr(rec, "permission_mode", "interactive"),
-            sdk_factory=self._sdk_factory,
-            registry=self._registry,
-            identity="system",
-            resume=resume,
-            on_session_id=self._persist_claude_session_id,
-        )
-        await driver.start()
-        self._drivers[session_id] = driver
-        rec.detached = False
-        log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
-        return driver
+            # Build and start a new driver resuming from the stored claude_session_id
+            resume = rec.claude_session_id or None
+            cfg_dir = compose(rec.account)
+            configdir.trust_project(rec.account, rec.cwd)
+
+            driver = SessionDriver(
+                session_id,
+                rec.account,
+                rec.cwd,
+                str(cfg_dir),
+                mode=getattr(rec, "permission_mode", "interactive"),
+                sdk_factory=self._sdk_factory,
+                registry=self._registry,
+                identity="system",
+                resume=resume,
+                on_session_id=self._persist_claude_session_id,
+            )
+            await driver.start()
+            self._drivers[session_id] = driver
+            rec.detached = False
+            log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
+            return driver
 
     def resolve_permission(self, session_id, perm_id, decision, identity) -> bool:
         d = self._drivers.get(session_id)

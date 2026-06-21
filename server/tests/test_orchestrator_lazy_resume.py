@@ -195,3 +195,92 @@ def test_ensure_driver_unknown_session_returns_none(tmp_path):
 
     result = asyncio.run(_run())
     assert result is None
+
+
+# -----------------------------------------------------------------------
+# Test 5: ensure_driver is safe under concurrent calls (TOCTOU fix)
+# -----------------------------------------------------------------------
+
+def test_ensure_driver_concurrent_calls_start_driver_once(tmp_path):
+    """Two concurrent ensure_driver calls for the same detached session must:
+    - return the SAME driver object (identity check)
+    - start only ONE SDK process (factory called exactly once)
+
+    The factory used here wraps FakeSDKClient with a yielding __aenter__ so
+    that the asyncio event loop actually suspends between the _drivers.get()
+    check and the _drivers[session_id] = driver registration.  That artificial
+    yield makes the TOCTOU race observable: without the asyncio.Lock both
+    coroutines pass the "no driver yet" gate before either registers its
+    driver, then both build+start one.  With the lock the re-check inside the
+    critical section makes the second coroutine reuse the first driver.
+    """
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    cwd = str(tmp_path)
+    session_id = "concurrent-s1"
+    claude_resume_id = "claude-concurrent-resume"
+
+    factory_call_count = 0
+
+    class _YieldingFakeClient:
+        """FakeSDKClient wrapper whose __aenter__ yields to the event loop,
+        making the TOCTOU window in ensure_driver observable to asyncio.gather."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def __aenter__(self):
+            # Yield control so a concurrent ensure_driver can slip through the
+            # _drivers.get() check before we reach _drivers[session_id] = driver.
+            await asyncio.sleep(0)
+            return await self._inner.__aenter__()
+
+        async def __aexit__(self, *exc):
+            return await self._inner.__aexit__(*exc)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def yielding_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume):
+        nonlocal factory_call_count
+        factory_call_count += 1
+        from server.tests.fakes.fake_sdk import FakeSDKClient
+        return _YieldingFakeClient(FakeSDKClient([], on_can_use_tool=can_use_tool))
+
+    async def _run():
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(DbSession(
+                id=session_id,
+                name="concurrent-test",
+                account_name="acct1",
+                claude_session_id=claude_resume_id,
+                status="idle",
+                cwd=cwd,
+            ))
+        orch = SessionOrchestrator(sdk_factory=yielding_factory)
+        await orch.rehydrate()
+
+        cfg_dir = tmp_path / "cfg" / "acct1"
+        cfg_dir.mkdir(parents=True)
+
+        with patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+             patch("server.sessions.orchestrator.configdir"):
+            driver_a, driver_b = await asyncio.gather(
+                orch.ensure_driver(session_id),
+                orch.ensure_driver(session_id),
+            )
+
+        return driver_a, driver_b
+
+    driver_a, driver_b = asyncio.run(_run())
+
+    assert driver_a is not None, "first concurrent call returned None"
+    assert driver_b is not None, "second concurrent call returned None"
+    assert driver_a is driver_b, (
+        "concurrent ensure_driver calls must return the SAME driver object; "
+        "got two distinct drivers — TOCTOU race detected"
+    )
+    assert factory_call_count == 1, (
+        f"sdk_factory must be called exactly once; called {factory_call_count} times — "
+        "two SDK processes would attach to the same Claude conversation"
+    )

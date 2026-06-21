@@ -35,8 +35,8 @@ def test_rehydrated_session_reports_real_status_and_created_at(tmp_path):
                 claude_session_id=None,
                 status="idle",
                 cwd=cwd,
+                created_at=created_at,
             )
-            row.created_at = created_at
             db.add(row)
 
     asyncio.run(_seed())
