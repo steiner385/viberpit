@@ -18,7 +18,7 @@ export function FileContent({ payload }: Props) {
 
   return (
     <div>
-      <pre className="overflow-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-xs font-mono text-gray-800 dark:text-gray-200">
+      <pre className="max-h-64 overflow-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-xs font-mono text-gray-800 dark:text-gray-200 md:max-h-96">
         {visible.join('\n')}
       </pre>
       {hidden > 0 && (

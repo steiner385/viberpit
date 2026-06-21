@@ -21,7 +21,7 @@ export function BashResult({ payload, ok = true }: Props) {
   return (
     <pre
       className={cn(
-        'overflow-auto rounded p-2 text-xs font-mono',
+        'max-h-64 overflow-auto rounded p-2 text-xs font-mono md:max-h-96',
         ok
           ? 'bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200'
           : 'bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-300',

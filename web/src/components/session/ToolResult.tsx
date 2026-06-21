@@ -23,7 +23,7 @@ export function ToolResult({ kind, ok, payload }: Props) {
       return <TodoList payload={payload} />
     default:
       return (
-        <pre className="overflow-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-xs font-mono text-gray-800 dark:text-gray-200">
+        <pre className="max-h-64 overflow-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-xs font-mono text-gray-800 dark:text-gray-200 md:max-h-96">
           {JSON.stringify(payload, null, 2)}
         </pre>
       )

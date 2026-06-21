@@ -36,7 +36,7 @@ export function DiffView({ payload }: Props) {
   const hidden = allLines.length - visible.length
 
   return (
-    <div className="overflow-auto rounded bg-gray-50 dark:bg-gray-900 text-xs font-mono">
+    <div className="max-h-64 overflow-auto rounded bg-gray-50 dark:bg-gray-900 text-xs font-mono md:max-h-96">
       <pre className="p-2">
         {visible.map((l, i) => (
           <div
