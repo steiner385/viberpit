@@ -1,6 +1,93 @@
 import asyncio, time
 from server.sessions.permissions import PermissionRegistry
 
+# ---------------------------------------------------------------------------
+# Regression tests for issue #5 — "Ask each time" mode must prompt for
+# Write/Edit/Bash even after an "always" grant, and must not auto-allow them
+# in interactive mode.  These tests are written to FAIL before the fix.
+# ---------------------------------------------------------------------------
+
+def test_interactive_write_always_prompts():
+    """interactive mode must prompt for Write even after a prior 'always' grant."""
+    reg = PermissionRegistry()
+    async def run():
+        # First call: approve with "always" to seed the grant cache.
+        pid1, fut1 = await reg.request("s1", "t1", "Write", {"file_path": "/tmp/out.txt"},
+                                       mode="interactive", denylist=PermissionRegistry.DANGEROUS,
+                                       allowlist=True, identity="me")
+        assert pid1 is not None, "first Write should prompt in interactive mode"
+        reg.resolve(pid1, "always", "me")
+        await fut1
+
+        # Second call with same fingerprint: interactive mode must still prompt.
+        pid2, fut2 = await reg.request("s1", "t2", "Write", {"file_path": "/tmp/out.txt"},
+                                       mode="interactive", denylist=PermissionRegistry.DANGEROUS,
+                                       allowlist=True, identity="me")
+        assert pid2 is not None, "Write must prompt again in interactive mode even after 'always'"
+        reg.resolve(pid2, "allow", "me")
+        return await fut2
+    assert asyncio.run(run()) is True
+
+
+def test_interactive_bash_always_prompts():
+    """interactive mode must prompt for Bash even after a prior 'always' grant."""
+    reg = PermissionRegistry()
+    async def run():
+        cmd = "echo hello"
+        # Seed "always" grant.
+        pid1, fut1 = await reg.request("s1", "t1", "Bash", {"command": cmd, "cwd": "/tmp"},
+                                       mode="interactive", denylist=PermissionRegistry.DANGEROUS,
+                                       allowlist=True, identity="me")
+        assert pid1 is not None
+        reg.resolve(pid1, "always", "me")
+        await fut1
+
+        # Must still prompt on the next call.
+        pid2, fut2 = await reg.request("s1", "t2", "Bash", {"command": cmd, "cwd": "/tmp"},
+                                       mode="interactive", denylist=PermissionRegistry.DANGEROUS,
+                                       allowlist=True, identity="me")
+        assert pid2 is not None, "Bash must prompt again in interactive mode even after 'always'"
+        reg.resolve(pid2, "allow", "me")
+        return await fut2
+    assert asyncio.run(run()) is True
+
+
+
+def test_allowlist_mode_prompts_for_todoswrite():
+    """allowlist mode ('Allowlist read-only, prompt the rest') must prompt for TodoWrite."""
+    reg = PermissionRegistry()
+    async def run():
+        pid, fut = await reg.request("s1", "t1", "TodoWrite", {"todos": []},
+                                     mode="allowlist", denylist=PermissionRegistry.DANGEROUS,
+                                     allowlist=True, identity="me")
+        if pid is not None:
+            reg.resolve(pid, "allow", "me")
+            await fut
+        return pid
+    pid = asyncio.run(run())
+    assert pid is not None, "TodoWrite must prompt in allowlist mode (not read-only)"
+
+
+def test_allowlist_mode_auto_allows_read_only():
+    """allowlist mode auto-allows strictly read-only tools (Read, Grep, Glob, LS)."""
+    reg = PermissionRegistry()
+    async def run():
+        results = {}
+        for tool, inp in [("Read", {"file_path": "/a"}),
+                          ("Grep", {"pattern": "x", "path": "/"}),
+                          ("Glob", {"pattern": "*.py"}),
+                          ("LS", {"path": "/"})]:
+            pid, fut = await reg.request("s1", "t1", tool, inp,
+                                         mode="allowlist", denylist=PermissionRegistry.DANGEROUS,
+                                         allowlist=True, identity="me")
+            results[tool] = (pid, await fut)
+        return results
+    results = asyncio.run(run())
+    for tool, (pid, allowed) in results.items():
+        assert pid is None, f"{tool} should be auto-allowed in allowlist mode"
+        assert allowed is True
+
+
 def test_interactive_mode_round_trips_then_allow():
     reg = PermissionRegistry()
     async def run():

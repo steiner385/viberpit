@@ -9,6 +9,10 @@ class PermissionRegistry:
     forever. There is intentionally no timeout (human-in-the-loop approval may take a while).
     """
     DANGEROUS = frozenset({"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch"})
+    # Tools that only read filesystem/index state and produce no side-effects.
+    # Used by the "allowlist" mode ("Allowlist read-only, prompt the rest") to decide
+    # which tools to auto-approve; everything else — including TodoWrite — must prompt.
+    READ_ONLY = frozenset({"Read", "Grep", "Glob", "LS"})
     GRANT_TTL = 3600  # seconds
 
     def __init__(self):
@@ -39,10 +43,20 @@ class PermissionRegistry:
     async def request(self, session_id, turn_id, tool, input, *, mode, denylist, allowlist, identity):
         now = time.time()
         if mode == "full-auto":
+            # Full auto — incl. shell: approve everything without a prompt.
             return None, _resolved(True)
-        if allowlist and self.is_granted(session_id, tool, input, now):
+        # Grant-cache bypass ("Always allow this exact command/file") is honoured in all
+        # modes EXCEPT "interactive" ("Ask each time").  A user who chose interactive
+        # explicitly wants approval every time, so previous "always" grants are ignored.
+        if mode != "interactive" and allowlist and self.is_granted(session_id, tool, input, now):
             return None, _resolved(True)
-        if mode in ("auto", "allowlist") and tool not in denylist:
+        if mode == "auto" and tool not in denylist:
+            # Auto-approve safe tools: approve anything not on the dangerous denylist.
+            return None, _resolved(True)
+        if mode == "allowlist" and tool in self.READ_ONLY:
+            # Allowlist read-only, prompt the rest: only strictly read-only tools are
+            # auto-approved; write-capable tools (TodoWrite, etc.) must prompt even if
+            # they are not on the DANGEROUS denylist.
             return None, _resolved(True)
         pid = _uuid.uuid4().hex
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
