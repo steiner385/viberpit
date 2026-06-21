@@ -458,13 +458,20 @@ class SessionOrchestrator:
         """Return the live SessionDriver for session_id, or None."""
         return self._drivers.get(session_id)
 
-    async def ensure_driver(self, session_id: str) -> SessionDriver | None:
+    async def ensure_driver(self, session_id: str, identity: str = "system") -> SessionDriver | None:
         """Return the live SessionDriver for session_id, resuming from DB if detached.
 
         - If a live driver already exists, return it (idempotent).
         - If the SessionRecord exists but is detached, build a new SessionDriver with
           resume=<claude_session_id>, start it, store it, and mark the record as live.
         - If the session_id is unknown, return None.
+
+        ``identity`` is the verified identity of the caller attaching to the session
+        (the WebSocket connection's Tailscale identity). It MUST be threaded onto the
+        resumed driver: AskUserQuestion / permission answers are registered under
+        ``driver.identity`` and later resolved with the WS identity, so a resumed
+        driver built with the wrong identity rejects every answer (silently dropping
+        them and hanging the agent). Defaults to "system" for internal callers.
         """
         # Fast path: live driver already exists (no lock needed — read-only check)
         existing = self._drivers.get(session_id)
@@ -507,7 +514,7 @@ class SessionOrchestrator:
                     mode=getattr(rec, "permission_mode", "interactive"),
                     sdk_factory=self._sdk_factory,
                     registry=self._registry,
-                    identity="system",
+                    identity=identity,
                     resume=resume_arg,
                     on_session_id=self._persist_claude_session_id,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
