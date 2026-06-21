@@ -145,3 +145,23 @@ def test_create_session_api_forwards_identity_and_permission_mode(wt_setup):
         f"driver.mode={driver.mode!r}, expected 'plan'; "
         "permissionMode was not forwarded from the API endpoint into create_session"
     )
+
+
+def test_repo_session_without_branch_gets_own_detached_worktree(wt_setup):
+    """A repo session with NO branch (e.g. from the bottom dispatch slot) must still
+    run in its own isolated worktree — never the shared clone — and two such sessions
+    on the same repo must get DIFFERENT working directories."""
+    orch, client, repo, repo_root = wt_setup
+
+    rec1 = client.portal.call(lambda: orch.create_session("nb-1", cwd=str(repo)))
+    rec2 = client.portal.call(lambda: orch.create_session("nb-2", cwd=str(repo)))
+
+    # Each runs in a ccswitch-managed worktree, NOT the shared repo/clone dir.
+    assert worktrees.is_managed_path(rec1.cwd, str(repo_root))
+    assert worktrees.is_managed_path(rec2.cwd, str(repo_root))
+    assert rec1.cwd != str(repo) and rec2.cwd != str(repo)
+    assert os.path.isdir(rec1.cwd) and os.path.isdir(rec2.cwd)
+    # Two no-branch sessions on the same repo never collide.
+    assert rec1.cwd != rec2.cwd
+    # The user's real checkout was never switched.
+    assert _branch_of(str(repo)) == "main"

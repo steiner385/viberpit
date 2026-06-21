@@ -170,13 +170,15 @@ class SessionOrchestrator:
 
         session_id = str(uuid.uuid4())
 
-        # Per-session isolation: when a branch is selected on a git repo, run the
-        # session in its OWN worktree checked out to that branch instead of doing
-        # a `git checkout` in the user's real tree. Two sessions on one repo never
-        # collide, and the real checkout is left untouched. (Falls back to a child
-        # branch if the selected branch is already checked out elsewhere.)
+        # Per-session isolation: EVERY repo session runs in its OWN git worktree, never
+        # the shared clone or the user's real tree. With a branch, the worktree checks it
+        # out (child-branch fallback if it's busy elsewhere); without a branch, it's a
+        # detached worktree off HEAD. Either way two sessions on one repo never collide,
+        # and the user's real checkout is untouched. (No-repo sessions get a scratch dir
+        # below; this branch only applies when cwd is an actual git repo — the ccswitch
+        # clone resolved by the API.)
         worktree_info: worktrees.WorktreeInfo | None = None
-        if branch is not None and cwd is not None and worktrees.is_git_repo(cwd):
+        if cwd is not None and worktrees.is_git_repo(cwd):
             try:
                 worktree_info = await asyncio.to_thread(
                     worktrees.create_worktree, cwd, branch, session_id, self._repo_root

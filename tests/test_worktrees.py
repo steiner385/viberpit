@@ -33,6 +33,27 @@ class WorktreeTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def test_no_branch_creates_detached_worktree(self) -> None:
+        """branch=None → a detached per-session worktree (its own dir), so repo
+        sessions without a selected branch still get isolated working directories."""
+        info = worktrees.create_worktree(str(self.repo), None, "no00branch-2222", str(self.root))
+        self.assertIsNone(info.branch)
+        self.assertFalse(info.is_child)
+        self.assertTrue(os.path.isdir(info.path))
+        self.assertTrue(worktrees.is_managed_path(info.path, str(self.root)))
+        # The worktree is on a DETACHED HEAD (symbolic-ref fails when detached).
+        sym = subprocess.run(
+            ["git", "-C", info.path, "symbolic-ref", "-q", "HEAD"],
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(sym.returncode, 0, "expected a detached HEAD in the worktree")
+
+    def test_two_detached_worktrees_are_distinct(self) -> None:
+        a = worktrees.create_worktree(str(self.repo), None, "aaaaaaaa-0001", str(self.root))
+        b = worktrees.create_worktree(str(self.repo), None, "bbbbbbbb-0002", str(self.root))
+        self.assertNotEqual(a.path, b.path)
+        self.assertTrue(os.path.isdir(a.path) and os.path.isdir(b.path))
+
     def test_checks_out_selected_branch_directly(self) -> None:
         info = worktrees.create_worktree(str(self.repo), "feature", "abc12345-0000", str(self.root))
         self.assertFalse(info.is_child)

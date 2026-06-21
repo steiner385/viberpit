@@ -35,10 +35,10 @@ class WorktreeError(Exception):
 
 @dataclass
 class WorktreeInfo:
-    path: str        # the worktree directory — use this as the session cwd
-    branch: str      # the branch actually checked out in the worktree
-    is_child: bool   # True if we created a child branch (selected branch was busy)
-    repo: str        # absolute toplevel of the main repo the worktree belongs to
+    path: str             # the worktree directory — use this as the session cwd
+    branch: str | None    # the branch checked out, or None for a detached worktree
+    is_child: bool        # True if we created a child branch (selected branch was busy)
+    repo: str             # absolute toplevel of the main repo the worktree belongs to
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -74,18 +74,21 @@ def _short(session_id: str) -> str:
     return session_id.split("-")[0] or session_id
 
 
-def create_worktree(repo_path: str, branch: str, session_id: str, repo_root: str) -> WorktreeInfo:
-    """Create an isolated worktree for `branch` and return its info.
+def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_root: str) -> WorktreeInfo:
+    """Create an isolated per-session worktree and return its info.
 
-    Tries to check out `branch` directly; if it is already checked out elsewhere,
-    creates a child branch ``ccswitch/<branch>-<short>`` based on it instead.
+    When `branch` is given, checks it out directly; if it is already checked out
+    elsewhere, creates a child branch ``ccswitch/<branch>-<short>`` instead. When
+    `branch` is None, creates a DETACHED worktree off the repo's current HEAD — used
+    for repo sessions that didn't pick a branch, so every session still gets its own
+    isolated working directory (never sharing the clone) without needing a branch.
 
     Raises:
-        WorktreeError: if `repo_path` is not a git repo, or both attempts fail.
+        WorktreeError: if `repo_path` is not a git repo, or worktree creation fails.
     """
     # Argument-injection guard: reject branch names starting with '-' so they
     # cannot be interpreted as git options even with the '--' separator below.
-    if branch.startswith("-"):
+    if branch is not None and branch.startswith("-"):
         raise WorktreeError(f"invalid branch name: {branch!r}")
 
     top = _run(["git", "-C", repo_path, "rev-parse", "--show-toplevel"])
@@ -100,6 +103,16 @@ def create_worktree(repo_path: str, branch: str, session_id: str, repo_root: str
     # Drop admin records for any worktree dirs that were deleted out from under git
     # (e.g. a previous crash) so a reused path doesn't collide.
     _run(["git", "-C", repo_top, "worktree", "prune"])
+
+    # 0) No branch selected → detached worktree off the current HEAD. This gives the
+    # session its own working directory (per-session isolation) with no branch
+    # collisions between concurrent sessions on the same repo.
+    if branch is None:
+        rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach", str(dest)])
+        if rd.returncode == 0:
+            log.info("worktree.create_detached repo=%s path=%s", repo_name, dest)
+            return WorktreeInfo(str(dest), None, is_child=False, repo=repo_top)
+        raise WorktreeError(f"git worktree add --detach failed: {rd.stderr.strip()}")
 
     # 1) Try to check out the selected branch directly.
     # '--' separates options from the commit-ish so a crafted branch name cannot
