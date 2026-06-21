@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { DispatchBar, caretLineEdges } from '../DispatchBar'
+import { DispatchBar } from '../DispatchBar'
+import { caretLineEdges } from '@/lib/caretLineEdges'
 import type { GithubRepo } from '@/api/hooks'
 
 const REPOS: GithubRepo[] = [

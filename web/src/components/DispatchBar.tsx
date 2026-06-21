@@ -2,22 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import type { GithubRepo } from '@/api/hooks'
 import { getLastRepo, setLastRepo } from '@/lib/lastRepo'
-
-/**
- * Returns whether the caret is on the first and/or last line of a textarea value.
- * Used for boundary-aware ↑/↓ navigation: we only navigate the session list when
- * moving the cursor would be a no-op (already at the line edge).
- */
-export function caretLineEdges(
-  value: string,
-  caret: number,
-): { atFirstLine: boolean; atLastLine: boolean } {
-  const firstNewline = value.indexOf('\n')
-  const atFirstLine = firstNewline === -1 || caret <= firstNewline
-  const lastNewline = value.lastIndexOf('\n')
-  const atLastLine = lastNewline === -1 || caret > lastNewline
-  return { atFirstLine, atLastLine }
-}
+import { caretLineEdges } from '@/lib/caretLineEdges'
 
 export interface DispatchBarProps {
   repos: GithubRepo[]
@@ -37,6 +22,8 @@ export interface DispatchBarProps {
   onShowHelp: () => void
   /** Esc — also clears highlight in the parent. */
   onEscape: () => void
+  /** When set, show a "press Delete again to close '<name>'" hint. */
+  confirmDeleteName?: string | null
   /** id of the highlighted row's button, e.g. "row-<id>", for aria-activedescendant. */
   activeDescendantId?: string
   /** Auto-focus the textarea when this changes / on mount. */
@@ -54,6 +41,7 @@ export function DispatchBar({
   onRowAction,
   onShowHelp,
   onEscape,
+  confirmDeleteName,
   activeDescendantId,
   autoFocusKey,
   isPending,
@@ -227,6 +215,17 @@ export function DispatchBar({
           )}
         </select>
       </div>
+
+      {/* Press-twice delete confirmation hint */}
+      {confirmDeleteName && (
+        <p
+          role="status"
+          aria-live="polite"
+          className="text-xs text-amber-700 dark:text-amber-400 px-1"
+        >
+          Press Delete again to close &lsquo;{confirmDeleteName}&rsquo;
+        </p>
+      )}
 
       {/* Prompt textarea */}
       <textarea

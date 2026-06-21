@@ -126,4 +126,34 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
     await user.keyboard('{Shift>}{Tab}{/Shift}')
     expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'interactive')
   })
+
+  it('Escape does NOT call onBack when a permission card is pending (Fix 6)', async () => {
+    const { act } = await import('@testing-library/react')
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    // Simulate a permissionRequest arriving so hasOpenAction becomes true
+    await act(async () => {
+      capturedHandlers['sessionEvent']?.forEach((cb) =>
+        cb({
+          type: 'turnStart',
+          turnId: 't1',
+        }),
+      )
+      capturedHandlers['sessionEvent']?.forEach((cb) =>
+        cb({
+          type: 'permissionRequest',
+          permId: 'perm-1',
+          turnId: 't1',
+          tool: 'bash',
+          toolKind: 'bash',
+          input: { command: 'ls' },
+          plan: false,
+        }),
+      )
+    })
+    // Escape should be a no-op while the card is pending
+    await user.keyboard('{Escape}')
+    expect(onBack).not.toHaveBeenCalled()
+  })
 })

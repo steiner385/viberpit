@@ -149,10 +149,10 @@ export function SessionView({ sessionId, onBack }: Props) {
     [sessionId, setPermissionMode],
   )
 
-  function handleBack() {
+  const handleBack = useCallback(() => {
     detach(sessionId)
     onBack()
-  }
+  }, [sessionId, onBack, detach])
 
   // Keep modeRef current so the keydown handler reads the latest mode without
   // needing to re-register the listener on every mode change.
@@ -160,8 +160,15 @@ export function SessionView({ sessionId, onBack }: Props) {
     modeRef.current = mode
   }, [mode])
 
+  // Determine if any open permission/question block exists.
+  // Declared before the keydown effect so the effect closure captures the current value.
+  const hasOpenAction = state.turns.some((t) =>
+    t.blocks.some((b) => b.kind === 'permission' || b.kind === 'question'),
+  )
+
   // In-session keyboard shortcuts (Task 7):
-  //   Esc  → back to session list (guard: skip if composer textarea has text mid-draft)
+  //   Esc  → back to session list (guard: skip if composer textarea has text mid-draft,
+  //           or if a permission/question card is pending — let user act on the card first)
   //   Shift+Tab → cycle permission mode through PERMISSION_MODES
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -170,28 +177,24 @@ export function SessionView({ sessionId, onBack }: Props) {
         const next = nextPermissionMode(modeRef.current)
         handleSetMode(next)
       } else if (e.key === 'Escape') {
-        // Guard: if the composer textarea (aria-label="Message") is focused and
+        // Guard 1: if the composer textarea (aria-label="Message") is focused and
         // has non-empty text, Escape is for the composer (clearing a draft) — do
         // NOT navigate back. Navigate back only when the textarea is empty or
         // focus is elsewhere.
         const ae = document.activeElement as HTMLTextAreaElement | null
         const inComposerWithText =
           ae?.getAttribute('aria-label') === 'Message' && (ae?.value ?? '') !== ''
-        if (!inComposerWithText) {
-          handleBack()
-        }
+        if (inComposerWithText) return
+        // Guard 2: if a permission/question card is pending, Escape is a no-op —
+        // the user must respond to the card before navigating away.
+        if (hasOpenAction) return
+        handleBack()
       }
     }
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handleSetMode])
-
-  // Determine if any open permission/question block exists
-  const hasOpenAction = state.turns.some((t) =>
-    t.blocks.some((b) => b.kind === 'permission' || b.kind === 'question'),
-  )
+  }, [handleSetMode, handleBack, hasOpenAction])
 
   const title = state.title ?? sessionId.slice(0, 8)
 
