@@ -40,6 +40,28 @@ def test_launcher_execs_browser_with_profile_and_url(tmp_path):
     assert "https://claude.ai/x" in out.stdout
 
 
+def test_launcher_passes_anti_throttling_flags(tmp_path):
+    """Regression: without these flags an unfocused/occluded window has its JS timers
+    throttled to ~1/min, so claude.com's Authorize button takes minutes to enable."""
+    fake = _fake_browser(tmp_path)
+    prof = tmp_path / "home" / "reauth-tmp" / "reauth-y"
+    prof.mkdir(parents=True)
+    out = subprocess.run(
+        [str(SCRIPT), "https://claude.ai/x"],
+        env=_env(tmp_path, prof, fake),
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 0, out.stderr
+    for flag in (
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-background-timer-throttling",
+        "--disable-features=CalculateNativeWinOcclusion",
+    ):
+        assert flag in out.stdout, f"missing {flag}"
+
+
 def test_launcher_accepts_real_reauth_tmp_dir(tmp_path):
     """Regression: the launcher's allowed root must match ccswitch.paths.reauth_tmp_dir().
 
