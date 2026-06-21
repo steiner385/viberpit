@@ -20,7 +20,8 @@ class SessionDriver:
     """
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
-                 identity, denylist=PermissionRegistry.DANGEROUS, resume=None):
+                 identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
+                 on_session_id=None):
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -30,6 +31,7 @@ class SessionDriver:
         self.denylist = denylist
         self.resume = resume
         self.claude_session_id: str | None = None
+        self._on_session_id = on_session_id
         self._factory = sdk_factory
         self._reg = registry
         self._qreg = QuestionRegistry()
@@ -184,6 +186,11 @@ class SessionDriver:
                     await self._out.put(e)
                 if self.claude_session_id is None and self._tr.session_id:
                     self.claude_session_id = self._tr.session_id
+                    if self._on_session_id is not None:
+                        try:
+                            await self._on_session_id(self.session_id, self.claude_session_id)
+                        except Exception:
+                            log.exception("driver.on_session_id session=%s", self.session_id)
         except Exception:
             log.exception("driver.drain session=%s", self.session_id)
             await self._out.put(ev.ErrorEvent("driver_error", "session stream failed"))

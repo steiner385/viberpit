@@ -175,6 +175,7 @@ class SessionOrchestrator:
             session_id, account, cwd, str(cfg_dir),
             mode=permission_mode, sdk_factory=self._sdk_factory,
             registry=self._registry, identity=identity,
+            on_session_id=self._persist_claude_session_id,
         )
         await driver.start()
         self._drivers[session_id] = driver
@@ -254,6 +255,23 @@ class SessionOrchestrator:
                 sa_update(DbSession)
                 .where(DbSession.id == session_id)
                 .values(name=name)
+            )
+
+    async def _persist_claude_session_id(self, session_id: str, claude_session_id: str) -> None:
+        """Callback fired by the driver the first time it captures the Claude session id.
+
+        Keeps the in-memory record in sync and immediately persists to the DB so the id
+        survives a restart without waiting for rotation.
+        """
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.claude_session_id = claude_session_id
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession)
+                .where(DbSession.id == session_id)
+                .values(claude_session_id=claude_session_id)
             )
 
     def list_sessions(self) -> list[SessionRecord]:
@@ -414,6 +432,7 @@ class SessionOrchestrator:
                 mode=old_driver.mode, sdk_factory=self._sdk_factory,
                 registry=self._registry, identity=old_driver.identity,
                 resume=claude_sid,
+                on_session_id=self._persist_claude_session_id,
             )
             await new_driver.start()
             self._drivers[record.id] = new_driver
