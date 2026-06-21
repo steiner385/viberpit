@@ -20,8 +20,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
+from server.sessions import adopt as _adopt
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import get_db
@@ -56,6 +58,10 @@ class RenameSessionRequest(BaseModel):
     name: str
 
 
+class AdoptRequest(BaseModel):
+    claudeSessionId: str
+
+
 def _record_to_dict(record) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict."""
     return {
@@ -69,6 +75,22 @@ def _record_to_dict(record) -> dict[str, Any]:
         "adoptedInPlace": getattr(record, "adopted_in_place", False),
         "createdAt": record.created_at.isoformat() if record.created_at else None,
         "updatedAt": None,
+    }
+
+
+def _candidate_to_dict(c) -> dict[str, Any]:
+    """Convert an AdoptionCandidate to the wire-format dict for the dashboard."""
+    return {
+        "pid": c.pid,
+        "account": c.account,
+        "cwd": c.cwd,
+        "claudeSessionId": c.claude_session_id,
+        "name": c.name,
+        "mapped": c.mapped,
+        "tracked": c.tracked,
+        "skipReason": c.skip_reason,
+        "lastActivity": c.last_activity.isoformat() if c.last_activity else None,
+        "pidAlive": c.pid_alive,
     }
 
 
@@ -230,6 +252,49 @@ async def create_session(
         status_code=status.HTTP_201_CREATED,
         content=_record_to_dict(record),
     )
+
+
+# NOTE: like /archived below, these static routes MUST precede the dynamic
+# "/{session_id}" route or FastAPI captures "adoptable"/"adopt" as a session_id.
+@router.get("/adoptable")
+async def list_adoptable(
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Discover live claude sessions running outside ccswitch.
+
+    Returns ALL session candidates (mapped, unmapped, already-tracked), each
+    flagged with a skipReason where applicable — the dashboard renders adoptable
+    ones with a force-takeover action and groups the rest as "not adoptable".
+    """
+    orch: SessionOrchestrator = _get_orchestrator(request)
+    known = [a["name"] for a in _accounts.list_accounts()]
+    tracked = {r.claude_session_id for r in orch.list_sessions() if r.claude_session_id}
+    cands = await asyncio.to_thread(_adopt.discover_candidates, known, tracked)
+    return {"candidates": [_candidate_to_dict(c) for c in cands]}
+
+
+@router.post("/adopt", status_code=status.HTTP_201_CREATED)
+async def adopt_session_route(
+    body: AdoptRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> dict:
+    """Force-take-over an untracked live session: terminate it, resume in place.
+
+    409 when the session is no longer adoptable (process gone, unmapped, or
+    already tracked) — an expected outcome given processes churn fast, so the
+    dashboard should re-scan rather than treat it as a hard error.
+    """
+    orch: SessionOrchestrator = _get_orchestrator(request)
+    try:
+        rec, outcome = await orch.adopt_session(body.claudeSessionId, identity=identity)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="session no longer adoptable",
+        )
+    return {"session": _record_to_dict(rec), **outcome}
 
 
 # NOTE: this static route MUST be declared before the dynamic "/{session_id}" route
