@@ -35,10 +35,15 @@ sudo systemctl restart ccswitch.service
 # Post-restart health gate: the new process must answer /healthz (schema OK)
 # within ~30s, else roll back to the previous commit. /healthz is unauthenticated
 # and runs a schema-touching query, so a schema-drift boot fails this check.
+#
+# We assert the JSON body ("status":"ok"), NOT just a 200 — the SPA static mount
+# serves index.html (HTTP 200) for ANY unmatched path, so a process running OLD
+# code without the /healthz route (or a stale server squatting the port) would
+# pass a bare status-code check. Matching the body proves THIS code is answering.
 HEALTH_URL="http://${CCSWITCH_HOST:-127.0.0.1}:${CCSWITCH_PORT:-8787}/healthz"
 healthy=0
 for _ in $(seq 1 15); do
-  if curl -fsS -m 3 "$HEALTH_URL" >/dev/null 2>&1; then healthy=1; break; fi
+  if curl -fsS -m 3 "$HEALTH_URL" 2>/dev/null | grep -q '"status":"ok"'; then healthy=1; break; fi
   sleep 2
 done
 
