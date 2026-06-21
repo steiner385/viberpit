@@ -142,8 +142,6 @@ class SessionOrchestrator:
         if cwd is not None:
             if not os.path.isdir(cwd):
                 raise ValueError(f"cwd does not exist: {cwd}")
-        else:
-            cwd = self._work_dir
 
         session_id = str(uuid.uuid4())
 
@@ -153,7 +151,7 @@ class SessionOrchestrator:
         # collide, and the real checkout is left untouched. (Falls back to a child
         # branch if the selected branch is already checked out elsewhere.)
         worktree_info: worktrees.WorktreeInfo | None = None
-        if branch is not None and worktrees.is_git_repo(cwd):
+        if branch is not None and cwd is not None and worktrees.is_git_repo(cwd):
             try:
                 worktree_info = await asyncio.to_thread(
                     worktrees.create_worktree, cwd, branch, session_id, self._repo_root
@@ -162,6 +160,17 @@ class SessionOrchestrator:
                 raise BranchSwitchError(str(exc)) from exc
             cwd = worktree_info.path
             self._worktrees[session_id] = worktree_info
+
+        # Resolve final cwd: an explicit cwd was already validated above; a
+        # branch-selected session already has cwd=worktree path.  For a no-repo
+        # session (no explicit cwd, no worktree) we create an isolated scratch dir
+        # under the ccswitch base so the agent never runs in the server's own
+        # checkout.  This is the safety guarantee stated in the New Session dialog:
+        # "your real checkouts are never touched."
+        if cwd is None:
+            scratch_dir = Path(worktrees.worktrees_base(self._repo_root)).parent / "scratch" / session_id
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+            cwd = str(scratch_dir)
 
         if account is None:
             account = select_account()
