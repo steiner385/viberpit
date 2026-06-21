@@ -591,8 +591,13 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         if not d:
             return
+        _raw = list(images or [])
+        if len(_raw) > uploads.MAX_IMAGES:
+            log.warning("send_prompt: truncating images from %d to %d session=%s",
+                        len(_raw), uploads.MAX_IMAGES, session_id)
+        images = _raw[:uploads.MAX_IMAGES]
         resolved: list[dict] = []
-        for ref in (images or []):
+        for ref in images:
             try:
                 path = uploads.associate(session_id, ref["sha"], ref["mime"])
             except Exception:

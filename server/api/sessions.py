@@ -250,13 +250,21 @@ async def serve_session_image(
     _identity: str = Depends(current_identity),
 ):
     """Serve a previously uploaded image associated with a session. Returns 404 if unknown."""
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": "image not found"},
+        )
     path = uploads.image_path(session_id, sha)
     if path is None or not path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": "image not found"},
         )
-    return FileResponse(str(path), media_type=f"image/{path.suffix.lstrip('.')}")
+    # Map extension back to canonical MIME (e.g. .jpg → image/jpeg, not image/jpg)
+    _ext_to_mime = {ext: mime for mime, ext in uploads.ALLOWED.items()}
+    media_type = _ext_to_mime.get(path.suffix.lstrip('.'), f"image/{path.suffix.lstrip('.')}")
+    return FileResponse(str(path), media_type=media_type)
 
 
 @router.get("/{session_id}")

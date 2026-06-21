@@ -1,5 +1,5 @@
 from __future__ import annotations
-import base64, hashlib, logging, time
+import hashlib, logging, shutil, time
 from pathlib import Path
 from ccswitch import paths
 
@@ -77,12 +77,8 @@ def associate(session_id: str, sha: str, mime: str) -> Path:
     base = paths.uploads_dir() / session_id
     base.mkdir(parents=True, exist_ok=True)
     dest = base / f"{sha}.{ALLOWED.get(mime, src.suffix.lstrip('.'))}"
-    src.replace(dest)
+    shutil.copyfile(src, dest)
     return dest
-
-
-def read_b64(path: Path) -> str:
-    return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
 def sweep_staging(max_age_h: float = 6.0) -> int:

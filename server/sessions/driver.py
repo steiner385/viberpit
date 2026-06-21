@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, logging, uuid
+import asyncio, base64, logging, uuid
 from typing import Callable
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from . import events as ev
@@ -190,7 +190,6 @@ class SessionDriver:
 
     async def _start_turn(self, text: str, images: list[dict] | None = None):
         """Echo the user prompt, emit working status, query the SDK, drain."""
-        import base64
         images = images or []
         await self._put_status("working", len(self._queue))
         # Build the live UserMessage image refs (url/mime/name only).

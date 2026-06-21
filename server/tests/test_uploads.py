@@ -23,8 +23,20 @@ def test_stage_then_associate_then_read():
     assert uploads.staging_path(ref["sha"]).exists()
     dest = uploads.associate("sess1", ref["sha"], ref["mime"])
     assert dest.exists() and dest.parent.name == "sess1"
-    assert uploads.staging_path(ref["sha"]) is None  # moved out of staging
-    assert base64.b64decode(uploads.read_b64(dest)) == PNG
+    # staged file remains (copy semantics — same image can attach to multiple sessions)
+    assert uploads.staging_path(ref["sha"]) is not None
+    assert dest.read_bytes() == PNG
+
+
+def test_associate_copies_to_multiple_sessions():
+    """associate() must COPY (not move) so the same staged image can attach to several sessions."""
+    ref = uploads.stage_image("image/png", PNG)
+    d1 = uploads.associate("sessA", ref["sha"], ref["mime"])
+    d2 = uploads.associate("sessB", ref["sha"], ref["mime"])
+    assert d1.exists() and d1.parent.name == "sessA"
+    assert d2.exists() and d2.parent.name == "sessB"
+    assert d1.read_bytes() == PNG
+    assert d2.read_bytes() == PNG
 
 def test_associate_idempotent():
     ref = uploads.stage_image("image/png", PNG)
