@@ -48,6 +48,16 @@ def test_clamps_to_60_chars():
     assert out is not None and len(out) <= 60
 
 
+def test_clamps_at_word_boundary():
+    full = "Add dark mode toggle and persist the user preference across many sessions"
+    qf = _fake_query([_assistant(full)])
+    out = _run(["x"], query_fn=qf)
+    assert out is not None and len(out) <= 60
+    # the cut lands on a word boundary, not mid-word
+    assert full.startswith(out)
+    assert len(full) == len(out) or full[len(out)] == " "
+
+
 def test_empty_output_returns_none():
     qf = _fake_query([_assistant("   ")])
     assert _run(["nothing"], query_fn=qf) is None
@@ -84,5 +94,11 @@ def test_passes_model_and_config_dir_through_options():
     opts = capture["options"]
     assert opts.model == "haiku"
     assert opts.env.get("CLAUDE_CONFIG_DIR") == "/cfg/acct1"
-    # all user prompts feed the prompt body
+    # A tool-free text query must NOT cap turns at 1 — the agent SDK treats
+    # hitting max_turns as an error result, which would lose the reply.
+    assert opts.max_turns != 1
+    # the prompt frames the messages as material to summarize into a title,
+    # not a task to perform — and embeds the user prompts
+    body = capture["prompt"].lower()
+    assert "title" in body
     assert "p1" in capture["prompt"]
