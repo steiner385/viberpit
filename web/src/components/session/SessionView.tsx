@@ -64,7 +64,9 @@ export function SessionView({ sessionId, onBack }: Props) {
   const [rotations, setRotations] = useState<Rotation[]>([])
   const [toolDetailMode, setToolDetailMode] = useState<ToolDetailMode>('auto')
   const toggleToolDetail = useCallback(
-    () => setToolDetailMode((m) => (m === 'all-closed' ? 'all-open' : 'all-closed')),
+    () => setToolDetailMode((m) =>
+      m === 'auto' ? 'all-closed' : m === 'all-closed' ? 'all-open' : 'auto',
+    ),
     [],
   )
 
@@ -212,6 +214,15 @@ export function SessionView({ sessionId, onBack }: Props) {
 
   const title = state.title ?? sessionId.slice(0, 8)
 
+  const toolToggleText =
+    toolDetailMode === 'auto' ? 'Collapse tools'
+    : toolDetailMode === 'all-closed' ? 'Expand tools'
+    : 'Auto-fold'
+  const toolToggleAria =
+    toolDetailMode === 'auto' ? 'Collapse tool calls'
+    : toolDetailMode === 'all-closed' ? 'Expand tool calls'
+    : 'Auto-fold tool calls'
+
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950">
       {/* Top bar */}
@@ -239,7 +250,7 @@ export function SessionView({ sessionId, onBack }: Props) {
         <button
           type="button"
           onClick={toggleToolDetail}
-          aria-label={toolDetailMode === 'all-closed' ? 'Expand tool calls' : 'Collapse tool calls'}
+          aria-label={toolToggleAria}
           className={cn(
             'ml-auto flex items-center gap-1.5 px-3 py-2 rounded-md min-h-[44px]',
             'text-sm font-medium text-gray-200',
@@ -247,7 +258,7 @@ export function SessionView({ sessionId, onBack }: Props) {
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
           )}
         >
-          {toolDetailMode === 'all-closed' ? 'Expand tools' : 'Collapse tools'}
+          {toolToggleText}
         </button>
 
         <div>

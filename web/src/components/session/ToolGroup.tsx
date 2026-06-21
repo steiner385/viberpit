@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react'
+import { useId, useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { ToolBlock, ToolDetailMode } from '@/session/groupBlocks'
@@ -16,10 +16,13 @@ interface ToolGroupProps {
 export function ToolGroup({ tools, isLiveTail, toolDetailMode, threshold = 4 }: ToolGroupProps) {
   const regionId = useId()
   const [userExpanded, setUserExpanded] = useState(false)
-
-  // Reset per-group override whenever the global mode changes so the global
-  // expand/collapse-all toggle produces a uniform state.
-  useEffect(() => { setUserExpanded(false) }, [toolDetailMode])
+  // Reset the per-group override when the global mode changes so the global
+  // expand/collapse-all toggle produces a uniform state (during-render reset).
+  const [prevMode, setPrevMode] = useState(toolDetailMode)
+  if (prevMode !== toolDetailMode) {
+    setPrevMode(toolDetailMode)
+    setUserExpanded(false)
+  }
 
   const allComplete = tools.every((t) => t.result !== undefined)
   const autoFold = allComplete && !isLiveTail && tools.length >= threshold
