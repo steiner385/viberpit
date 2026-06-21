@@ -12,7 +12,6 @@ import base64
 import os
 import subprocess
 import sys
-import warnings
 
 
 class CryptoError(Exception):

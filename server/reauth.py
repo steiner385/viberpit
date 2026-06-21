@@ -21,7 +21,7 @@ import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ class ReauthManager:
     def __init__(
         self,
         *,
-        runner: Callable[[str], bool] | None = None,
+        runner: Callable[[str], Awaitable[bool]] | None = None,
         key_available: Callable[[], bool] | None = None,
         timeout_s: float = 900.0,
     ) -> None:
@@ -103,7 +103,7 @@ class ReauthManager:
             runner = self._make_default_runner()
         self._runner = runner
 
-    def _make_default_runner(self) -> Callable[[str], bool]:
+    def _make_default_runner(self) -> Callable[[str], Awaitable[bool]]:
         """Build the production runner as a closure over *self*.
 
         Records the temp-profile path on self._state immediately after

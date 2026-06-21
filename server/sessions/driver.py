@@ -229,6 +229,7 @@ class SessionDriver:
         # turn the Translator assigns from the SDK's message_start uuid.
         user_turn = uuid.uuid4().hex
         await self._out.put(ev.UserMessage(turn_id=user_turn, text=text, src_uuid=user_turn))
+        assert self._client is not None  # _start_turn only runs once the client is connected
         await self._client.query(text)
         self._pump = asyncio.create_task(self._drain())
 

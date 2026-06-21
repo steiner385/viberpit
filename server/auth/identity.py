@@ -11,12 +11,17 @@ from __future__ import annotations
 
 import subprocess
 from starlette.requests import Request
+from starlette.websockets import WebSocket
 
 from server.config import get_settings
 
 
-def verify_identity(request: Request) -> str | None:
-    """Return the verified identity string, or None if unverifiable/denied."""
+def verify_identity(request: Request | WebSocket) -> str | None:
+    """Return the verified identity string, or None if unverifiable/denied.
+
+    Accepts a ``Request`` or a ``WebSocket`` — only ``.headers`` is read, which
+    both expose, so the same identity check covers HTTP and WS handshakes.
+    """
     identity = (
         request.headers.get("Tailscale-User-Login")
         or request.headers.get("X-Tailscale-User-Login")
@@ -38,7 +43,7 @@ def verify_identity(request: Request) -> str | None:
     return identity
 
 
-def _whois_identity(request: Request) -> str | None:
+def _whois_identity(request: Request | WebSocket) -> str | None:
     """Try to resolve identity via `tailscale whois <peer-ip>`.
 
     Wraps the subprocess call in try/except so any failure returns None gracefully.

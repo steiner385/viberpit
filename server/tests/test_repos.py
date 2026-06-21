@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
-import pytest
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -112,7 +111,6 @@ def test_list_github_branches(tmp_path):
 
 def test_list_github_branches_bad_name_400(tmp_path):
     """A malformed repo name (no slash) → 400."""
-    from ccswitch.gitrepos import list_remote_branches
     with temp_env():
         with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             _, client = _make_app_and_client()

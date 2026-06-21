@@ -2,7 +2,7 @@
 Lets the translator/driver be tested without spawning `claude` or spending quota."""
 from __future__ import annotations
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
-                              ResultMessage, TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock)
+                              ResultMessage, ToolUseBlock, ToolResultBlock)
 
 # ---- builders (construct real SDK objects) -------------------------------------
 def sys_init(session_id: str = "sess-1", model: str | None = None) -> SystemMessage:

@@ -35,3 +35,22 @@ server = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff.lint]
+# The codebase deliberately uses a compact, single-line style for small
+# dataclasses and wire serializers (e.g. `field: str; field2: int` and
+# `def to_wire(self): return {...}`) and occasional combined imports. Ignore the
+# style rules that flag that intent; keep the pyflakes correctness rules (F-codes)
+# active so real dead code is still caught and fixed (constitution principle VI).
+ignore = [
+    "E701",  # multiple statements on one line (colon) — intentional compact defs
+    "E702",  # multiple statements on one line (semicolon) — intentional
+    "E401",  # multiple imports on one line — intentional
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test modules import after per-test env / sys.path setup (E402) and frequently
+# bind names they don't use in scaffolding such as context managers and tuple
+# unpacking (F841). Neither is a defect in test code.
+"**/tests/**" = ["E402", "F841"]
+"tests/**" = ["E402", "F841"]

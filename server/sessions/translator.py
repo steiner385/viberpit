@@ -20,7 +20,8 @@ def _usage_dict(u):
 class Translator:
     def __init__(self):
         self.session_id: str | None = None
-        self._turn_id: str | None = None
+        # Always a string: "" before the first turn opens, a real id after.
+        self._turn_id: str = ""
         self._started = False
         self._seen_tools: set[str] = set()
 
@@ -33,7 +34,7 @@ class Translator:
 
     def _reset(self):
         self._started = False
-        self._turn_id = None
+        self._turn_id = ""
         self._seen_tools = set()
 
     def feed(self, msg) -> list:
@@ -81,10 +82,10 @@ class Translator:
 
         if isinstance(msg, UserMessage):
             out = []
-            for b in msg.content:
-                if isinstance(b, ToolResultBlock):
-                    out.append(ev.ToolResult(b.tool_use_id, not bool(b.is_error),
-                                             {"content": b.content}, getattr(msg, "uuid", None)))
+            for rb in msg.content:
+                if isinstance(rb, ToolResultBlock):
+                    out.append(ev.ToolResult(rb.tool_use_id, not bool(rb.is_error),
+                                             {"content": rb.content}, getattr(msg, "uuid", None)))
             return out
 
         if isinstance(msg, ResultMessage):

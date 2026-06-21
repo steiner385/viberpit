@@ -1,7 +1,7 @@
 import json
 import unittest
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import timezone
 from unittest import mock
 
 

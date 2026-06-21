@@ -188,6 +188,7 @@ class SessionOrchestrator:
                 )
             except worktrees.WorktreeError as exc:
                 raise BranchSwitchError(str(exc)) from exc
+            assert worktree_info is not None  # create_worktree returns a value or raises
             cwd = worktree_info.path
             self._worktrees[session_id] = worktree_info
 
