@@ -17,6 +17,8 @@ export function SessionRuntimeProvider({
   return <Ctx.Provider value={rt}>{children}</Ctx.Provider>
 }
 
+// Colocating the context hook with its provider is the conventional pattern.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useSessionRuntimeContext(): SessionRuntime {
   const v = useContext(Ctx)
   if (!v) throw new Error('useSessionRuntimeContext must be used within SessionRuntimeProvider')

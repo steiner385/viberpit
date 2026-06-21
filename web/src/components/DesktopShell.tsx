@@ -20,7 +20,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Plus, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
 import { SessionList } from './SessionList'
 import { DispatchBar } from './DispatchBar'
 import { AllLimitedBanner } from './AllLimitedBanner'
