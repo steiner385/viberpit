@@ -187,6 +187,32 @@ def test_replayComplete_sent_on_attach(ws_env):
     client.portal.call(orch.close_session, session_id)
 
 
+def test_attach_resume_failure_reports_error_and_keeps_ws_alive(ws_env):
+    """A rehydrated/resumed session whose SDK can't start (e.g. dead account token)
+    must report a SESSION_START_FAILED error and KEEP the WS open — not crash it,
+    which would make the client reconnect-loop forever on a blank screen."""
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-resume-fail")
+    session_id = session.id
+
+    async def _boom(_sid):
+        raise RuntimeError("Command failed with exit code 1")
+    orch.ensure_driver = _boom
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="replayComplete")
+        errs = [e for e in events if e.get("type") == "error"]
+        assert any(e.get("code") == "SESSION_START_FAILED" for e in errs), (
+            f"no SESSION_START_FAILED in {[e.get('type') for e in events]}"
+        )
+        assert any(e.get("type") == "replayComplete" for e in events)
+        # WS must still be alive — a follow-up frame must not raise/close.
+        ws.send_text(json.dumps({"type": "detach", "sessionId": session_id}))
+
+    client.portal.call(orch.close_session, session_id)
+
+
 # ---------------------------------------------------------------------------
 # attach + prompt streams the turn live
 # ---------------------------------------------------------------------------

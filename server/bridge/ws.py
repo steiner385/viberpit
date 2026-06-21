@@ -123,11 +123,30 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             if session_id in live_tasks:
                 return  # already attached
 
-            driver = await orchestrator.ensure_driver(session_id)
+            try:
+                driver = await orchestrator.ensure_driver(session_id)
+            except Exception:
+                # A resumed/rehydrated session can fail to start its SDK subprocess —
+                # most commonly because the account's token is dead (needs re-auth) or
+                # the stored claude_session_id can no longer be resumed. Letting that
+                # propagate would crash the WS handler, closing the socket and making
+                # the client reconnect-loop forever on a blank screen. Report it and
+                # keep the socket alive (replayComplete clears the loading state).
+                log.warning("ws.attach: ensure_driver failed for %s", session_id, exc_info=True)
+                rec = orchestrator.get_session(session_id)
+                acct = rec.account if rec else None
+                hint = (f" Its account '{acct}' may need re-authentication — check the Accounts tab."
+                        if acct else "")
+                await _send({"type": "error", "code": "SESSION_START_FAILED",
+                             "message": f"Couldn't resume this session.{hint}",
+                             "sessionId": session_id})
+                await _send({"type": "replayComplete"})
+                return
             if driver is None:
                 await _send({"type": "error", "code": "SESSION_NOT_FOUND",
                              "message": f"Session {session_id!r} not found",
                              "sessionId": session_id})
+                await _send({"type": "replayComplete"})
                 return
 
             # 1) Replay transcript (if any) as a single batch frame.
