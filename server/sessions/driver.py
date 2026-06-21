@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio, logging, uuid
+from typing import Callable
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from . import events as ev
 from .translator import Translator
@@ -21,7 +22,7 @@ class SessionDriver:
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
-                 on_session_id=None):
+                 on_session_id=None, on_sync_back: Callable[[], None] | None = None):
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -32,6 +33,7 @@ class SessionDriver:
         self.resume = resume
         self.claude_session_id: str | None = None
         self._on_session_id = on_session_id
+        self._on_sync_back = on_sync_back
         self._factory = sdk_factory
         self._reg = registry
         self._qreg = QuestionRegistry()
@@ -179,6 +181,17 @@ class SessionDriver:
         await self._client.query(text)
         self._pump = asyncio.create_task(self._drain())
 
+    async def _call_sync_back(self) -> None:
+        """Run on_sync_back off the event loop; swallow any exception so the
+        session/stream is never broken by a sync_back failure."""
+        if self._on_sync_back is None:
+            return
+        try:
+            await asyncio.to_thread(self._on_sync_back)
+        except Exception:
+            log.warning("driver.sync_back failed (non-fatal) session=%s", self.session_id,
+                        exc_info=True)
+
     async def _drain(self):
         try:
             async for msg in self._client.receive_response():
@@ -195,6 +208,8 @@ class SessionDriver:
             log.exception("driver.drain session=%s", self.session_id)
             await self._out.put(ev.ErrorEvent("driver_error", "session stream failed"))
         finally:
+            # Capture any token rotation the SDK performed during this turn.
+            await self._call_sync_back()
             # If queued prompts remain, pop the front and start the next turn.
             if self._queue:
                 next_text = self._queue.pop(0)
@@ -254,4 +269,8 @@ class SessionDriver:
                 pass
         if self._client:
             await self._client.__aexit__(None, None, None)
+        # Final sync_back: capture any token rotation that occurred during the
+        # session (e.g. a long-running session where the SDK refreshed but the
+        # drain's finally sync_back already ran before the close was requested).
+        await self._call_sync_back()
         await self._out.put(_STREAM_DONE)

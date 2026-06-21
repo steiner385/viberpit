@@ -12,12 +12,14 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import uuid
 from pathlib import Path
 from typing import Callable
 
+from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, worktrees
 from ccswitch.configdir import compose
 from server.db import db_session
@@ -83,9 +85,24 @@ class SessionOrchestrator:
         # initial_prompt deferred until first WS attach so the client is watching
         # when the turn runs — avoids losing events before any consumer exists.
         self._pending_initial_prompt: dict[str, str] = {}
+
+        # Build a live-session-aware usage_fn: when an account has a live session
+        # the SDK owns its token family, so the poller must not independently
+        # refresh.  Pass allow_refresh=False for those accounts so the poller
+        # calls sync_back first and returns None on an expired-but-owned token
+        # (the SDK will refresh on its next request).
+        if usage_fn is not None:
+            _poller_usage_fn = usage_fn
+        else:
+            def _poller_usage_fn(name: str):
+                return ccswitch_accounts.usage_for(
+                    name,
+                    allow_refresh=not self.has_live_session(name),
+                )
+
         self._poller: UsagePoller = UsagePoller(
             poll_interval=poll_interval,
-            usage_fn=usage_fn,
+            usage_fn=_poller_usage_fn,
         )
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
@@ -196,6 +213,7 @@ class SessionOrchestrator:
             mode=permission_mode, sdk_factory=self._sdk_factory,
             registry=self._registry, identity=identity,
             on_session_id=self._persist_claude_session_id,
+            on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
         )
         await driver.start()
         self._drivers[session_id] = driver
@@ -397,6 +415,16 @@ class SessionOrchestrator:
     def poller(self) -> UsagePoller:
         return self._poller
 
+    def has_live_session(self, account: str) -> bool:
+        """Return True if any live SessionDriver is currently running on *account*.
+
+        Used by the poller's usage_fn to decide whether it is safe to call
+        oauth.refresh_access_token: while the SDK subprocess owns the token
+        family (live session), only the SDK must refresh so we avoid
+        single-use-token reuse-detection.
+        """
+        return any(d.account == account for d in self._drivers.values())
+
     def driver(self, session_id: str) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, or None."""
         return self._drivers.get(session_id)
@@ -446,6 +474,7 @@ class SessionOrchestrator:
                 identity="system",
                 resume=resume,
                 on_session_id=self._persist_claude_session_id,
+                on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
             )
             await driver.start()
             self._drivers[session_id] = driver
@@ -584,6 +613,7 @@ class SessionOrchestrator:
                 registry=self._registry, identity=old_driver.identity,
                 resume=claude_sid,
                 on_session_id=self._persist_claude_session_id,
+                on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
             )
             await new_driver.start()
             self._drivers[record.id] = new_driver
