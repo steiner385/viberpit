@@ -163,6 +163,16 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 ).to_wire())
                 await _send(q_wire)
 
+            # 2c) Send the deferred initial prompt (if any) now that the client is
+            #     watching.  The prompt was stored in create_session instead of being
+            #     sent immediately so that its events stream live to this first attach
+            #     rather than racing the transcript-file write or arriving before any
+            #     consumer exists in driver._out.  Only fires on the first attach
+            #     (pop clears the entry); reconnects fall through to live-stream only.
+            pending_prompt = orchestrator.pop_pending_initial_prompt(session_id)
+            if pending_prompt is not None:
+                await orchestrator.send_prompt(session_id, pending_prompt)
+
             # 3) Start the live stream: forward driver events into the batcher.
             async def _live() -> None:
                 try:

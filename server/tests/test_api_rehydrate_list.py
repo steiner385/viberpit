@@ -58,7 +58,13 @@ def test_rehydrated_session_reports_real_status_and_created_at(tmp_path):
 
 
 def test_create_session_status_reflects_initial_prompt(tmp_path):
-    """POST /api/sessions: status='working' when initialPrompt given, 'idle' otherwise."""
+    """POST /api/sessions: status='idle' in both cases.
+
+    With the deferred-initial-prompt design (issue #4 fix), the initial prompt is
+    not sent until the first WS client attaches.  So the session always starts
+    'idle' at creation time — it becomes 'working' only after attach triggers the
+    prompt.  Both with and without initialPrompt return 'idle' from the create API.
+    """
     import time as _time
     from ccswitch import paths
     from ccswitch.creds import write_json_secure
@@ -106,7 +112,7 @@ def test_create_session_status_reflects_initial_prompt(tmp_path):
         app = create_app(orchestrator=orch)
 
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Session WITH initial_prompt → status should be "working"
+            # Session WITH initial_prompt → status is "idle" (prompt deferred until first attach)
             resp_with = client.post(
                 "/api/sessions",
                 json={"name": "With prompt", "initialPrompt": "hello there"},
@@ -114,11 +120,12 @@ def test_create_session_status_reflects_initial_prompt(tmp_path):
             )
             assert resp_with.status_code == 201, resp_with.text
             data_with = resp_with.json()
-            assert data_with["status"] == "working", (
-                f"expected status=working with initialPrompt, got {data_with['status']!r}"
+            assert data_with["status"] == "idle", (
+                f"expected status=idle with initialPrompt (prompt deferred until first attach), "
+                f"got {data_with['status']!r}"
             )
 
-            # Session WITHOUT initial_prompt → status should be "idle"
+            # Session WITHOUT initial_prompt → status should also be "idle"
             resp_without = client.post(
                 "/api/sessions",
                 json={"name": "No prompt"},

@@ -41,6 +41,11 @@ def test_driver_fires_on_session_id_once_when_captured():
 
 
 def test_orchestrator_persists_claude_session_id_to_db(tmp_path):
+    """The orchestrator persists claude_session_id once the driver captures it.
+
+    Uses send_prompt (not initial_prompt) because initial_prompt is now deferred
+    until first WS attach — the on_session_id callback fires once the turn drains.
+    """
     from sqlalchemy import select
     from server.db import init_db, db_session
     from server.db.models import Session as DbSession
@@ -63,7 +68,9 @@ def test_orchestrator_persists_claude_session_id_to_db(tmp_path):
              patch("server.sessions.orchestrator.select_account", return_value="alpha"):
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(msgs),
                                        work_dir=str(tmp_path))
-            rec = await orch.create_session("s", initial_prompt="hi")
+            rec = await orch.create_session("s")
+            # Send the prompt explicitly (initial_prompt is now deferred until first attach)
+            await orch.send_prompt(rec.id, "hi")
             # let the turn drain so the id is captured + persisted
             row = None
             for _ in range(50):

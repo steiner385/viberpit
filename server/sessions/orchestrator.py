@@ -77,6 +77,9 @@ class SessionOrchestrator:
         self._registry = PermissionRegistry()
         self._drivers: dict[str, SessionDriver] = {}
         self._last_prompt: dict[str, str] = {}
+        # initial_prompt deferred until first WS attach so the client is watching
+        # when the turn runs — avoids losing events before any consumer exists.
+        self._pending_initial_prompt: dict[str, str] = {}
         self._poller: UsagePoller = UsagePoller(
             poll_interval=poll_interval,
             usage_fn=usage_fn,
@@ -194,8 +197,14 @@ class SessionOrchestrator:
         await driver.start()
         self._drivers[session_id] = driver
         if initial_prompt:
-            self._last_prompt[session_id] = initial_prompt
-            await driver.send_prompt(initial_prompt)
+            # Defer sending the initial prompt until the first WebSocket client
+            # attaches.  Sending it here (before any consumer exists) causes the
+            # turn's events to accumulate in driver._out with no guarantee they
+            # will be visible: the transcript file may not be flushed yet, and
+            # buffered _out events can race the client's replay.  Deferring means
+            # the client is already watching when the turn runs — events stream
+            # live, so nothing is lost.
+            self._pending_initial_prompt[session_id] = initial_prompt
 
         # Persist DB row
         async with db_session() as db:
@@ -204,7 +213,7 @@ class SessionOrchestrator:
                 name=name,
                 account_name=account,
                 claude_session_id=None,
-                status="working" if initial_prompt else "idle",
+                status="idle",
                 pid=None,
                 cwd=cwd,
                 permission_mode=permission_mode,
@@ -219,7 +228,7 @@ class SessionOrchestrator:
             cols=cols,
             rows=rows,
             cwd=cwd,
-            status="working" if initial_prompt else "idle",
+            status="idle",
         )
         self._records[session_id] = record
         log.info("session.create id=%s account=%s", session_id, account)
@@ -229,6 +238,7 @@ class SessionOrchestrator:
         """Stop the driver, clean up the session worktree, mark the row ended."""
         driver = self._drivers.pop(session_id, None)
         self._last_prompt.pop(session_id, None)
+        self._pending_initial_prompt.pop(session_id, None)
         if driver is not None:
             await driver.aclose()
         record = self._records.pop(session_id, None)
@@ -444,6 +454,15 @@ class SessionOrchestrator:
         """
         d = self._drivers.get(session_id)
         return d.pending_questions() if d else []
+
+    def pop_pending_initial_prompt(self, session_id: str) -> str | None:
+        """Return and remove the deferred initial prompt for session_id, or None.
+
+        Called by the WS bridge on the first attach so the initial prompt is sent
+        while a client is already watching.  Clears the entry so subsequent attaches
+        (reconnects) do not re-send it.
+        """
+        return self._pending_initial_prompt.pop(session_id, None)
 
     async def send_prompt(self, session_id, text):
         d = self._drivers.get(session_id)
