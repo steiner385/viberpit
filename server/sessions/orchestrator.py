@@ -219,6 +219,7 @@ class SessionOrchestrator:
             registry=self._registry, identity=identity,
             on_session_id=self._persist_claude_session_id,
             on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
+            on_status=functools.partial(self._set_record_status, session_id),
         )
         await driver.start()
         self._drivers[session_id] = driver
@@ -326,6 +327,14 @@ class SessionOrchestrator:
                 .where(DbSession.id == session_id)
                 .values(name=name)
             )
+
+    def _set_record_status(self, session_id: str, state: str) -> None:
+        """Sync a session's live working/idle state (from the driver) into its in-memory
+        SessionRecord, so the session LIST (which reads record.status) reflects reality
+        instead of being stuck on the create-time value."""
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.status = state
 
     async def _persist_claude_session_id(self, session_id: str, claude_session_id: str) -> None:
         """Callback fired by the driver the first time it captures the Claude session id.
@@ -497,6 +506,7 @@ class SessionOrchestrator:
                     resume=resume_arg,
                     on_session_id=self._persist_claude_session_id,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
+                    on_status=functools.partial(self._set_record_status, session_id),
                 )
 
             driver = _build(resume)
@@ -666,6 +676,7 @@ class SessionOrchestrator:
                 resume=claude_sid,
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
+                on_status=functools.partial(self._set_record_status, session_id),
             )
             await new_driver.start()
             self._drivers[record.id] = new_driver
