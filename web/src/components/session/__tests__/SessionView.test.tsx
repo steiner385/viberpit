@@ -113,6 +113,18 @@ describe('SessionView', () => {
     expect(screen.getByRole('button', { name: /back to session list/i })).toBeInTheDocument()
   })
 
+  it('uses dynamic viewport height (h-dvh) so the top bar and composer stay pinned on mobile', () => {
+    // Regression guard: `h-screen` (=100vh) is the *large* viewport on mobile, so
+    // while the browser toolbar is shown the composer is pushed behind it and the
+    // whole document scrolls — dragging the "static" top bar off-screen. `h-dvh`
+    // tracks the currently-visible viewport, keeping top/bottom pinned and only the
+    // transcript scrollable.
+    const { container } = render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    const root = container.firstChild as HTMLElement
+    expect(root.className).toContain('h-dvh')
+    expect(root.className).not.toContain('h-screen')
+  })
+
   it('shows the sessionId prefix as title when no title event received', () => {
     render(<SessionView sessionId="abcd1234efgh" onBack={vi.fn()} />, { wrapper })
     // Title should be the first 8 chars of the sessionId
@@ -225,6 +237,47 @@ describe('SessionView', () => {
     await waitFor(() => {
       expect(screen.getByText(/switched alice → bob — rate limited/)).toBeInTheDocument()
     })
+  })
+
+  it('interleaves the rotation divider inline between the turns it occurred between', async () => {
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+
+    // Turn 1, then a rotation, then turn 2.
+    emitSessionEvent({ type: 'turnStart', turnId: 't1' })
+    emitSessionEvent({ type: 'textDelta', turnId: 't1', text: 'before rotation' })
+    emitSessionEvent({ type: 'turnEnd', turnId: 't1' })
+    emitRotatedEvent({ type: 'rotated', sessionId: 's1', fromAccount: 'alice', toAccount: 'bob' })
+    emitSessionEvent({ type: 'turnStart', turnId: 't2' })
+    emitSessionEvent({ type: 'textDelta', turnId: 't2', text: 'after rotation' })
+    emitSessionEvent({ type: 'turnEnd', turnId: 't2' })
+
+    const divider = await screen.findByRole('separator', { name: /account switched from alice to bob/i })
+    const before = screen.getByText(/before rotation/)
+    const after = screen.getByText(/after rotation/)
+
+    // DOM order: before-turn → divider → after-turn.
+    // Node.DOCUMENT_POSITION_FOLLOWING (4) means the argument follows the node.
+    expect(before.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(divider.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('aria-live region announces "History loaded" once replay completes', async () => {
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    const live = screen.getByLabelText('Session output')
+    // Suppressed while replaying (initial state).
+    expect(live).toHaveTextContent('')
+    emitSessionEvent({ type: 'replayComplete' })
+    await waitFor(() => expect(live).toHaveTextContent('History loaded'))
+  })
+
+  it('aria-live region mirrors the latest assistant text after replay completes', async () => {
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    const live = screen.getByLabelText('Session output')
+    emitSessionEvent({ type: 'replayComplete' })
+    emitSessionEvent({ type: 'turnStart', turnId: 't1' })
+    emitSessionEvent({ type: 'textDelta', turnId: 't1', text: 'the latest reply' })
+    emitSessionEvent({ type: 'turnEnd', turnId: 't1' })
+    await waitFor(() => expect(live).toHaveTextContent('the latest reply'))
   })
 
   it('renders StatusBar with Ready for idle state', () => {

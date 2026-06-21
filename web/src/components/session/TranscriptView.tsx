@@ -1,17 +1,39 @@
-import { useRef, useEffect } from 'react'
-import type { Turn as TurnType } from '@/session/reducer'
+import { useRef, useEffect, Fragment } from 'react'
+import type { Turn as TurnType, RotationMarker } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { Turn } from './Turn'
+import { RotationDivider } from './RotationDivider'
 
 interface Props {
   turns: TurnType[]
+  rotations?: RotationMarker[]
   permissionMode: string
   toolDetailMode: ToolDetailMode
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[]) => void
 }
 
-export function TranscriptView({ turns, permissionMode, toolDetailMode, onDecision, onAnswer }: Props) {
+/**
+ * Group rotations by their anchor turn id so each can be rendered immediately
+ * after the turn it followed. Rotations with a null anchor (they arrived before
+ * any turn) are returned separately and render at the very top.
+ */
+function groupRotationsByAnchor(rotations: RotationMarker[]) {
+  const byTurn = new Map<string, RotationMarker[]>()
+  const top: RotationMarker[] = []
+  for (const r of rotations) {
+    if (r.afterTurnId === null) {
+      top.push(r)
+      continue
+    }
+    const list = byTurn.get(r.afterTurnId) ?? []
+    list.push(r)
+    byTurn.set(r.afterTurnId, list)
+  }
+  return { byTurn, top }
+}
+
+export function TranscriptView({ turns, rotations = [], permissionMode, toolDetailMode, onDecision, onAnswer }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
@@ -25,28 +47,52 @@ export function TranscriptView({ turns, permissionMode, toolDetailMode, onDecisi
     isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
   }
 
-  // Auto-scroll the container (not the sentinel node) when turns change
+  // Auto-scroll the container (not the sentinel node) when turns OR rotations change
   useEffect(() => {
     if (!isNearBottomRef.current) return
     const el = containerRef.current
     if (el) {
       el.scrollTop = el.scrollHeight
     }
-  }, [turns])
+  }, [turns, rotations])
+
+  const { byTurn, top } = groupRotationsByAnchor(rotations)
+  // Defensive: rotations anchored to a turn that isn't present (shouldn't happen
+  // in normal flow) are surfaced after the transcript rather than silently lost.
+  const knownIds = new Set(turns.map((t) => t.id))
+  const orphans = rotations.filter((r) => r.afterTurnId !== null && !knownIds.has(r.afterTurnId))
 
   return (
-    <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto">
-      {turns.map((turn, idx) => (
-        <Turn
-          key={turn.id}
-          turn={turn}
-          permissionMode={permissionMode}
-          isLastTurn={idx === turns.length - 1}
-          toolDetailMode={toolDetailMode}
-          onDecision={onDecision}
-          onAnswer={onAnswer}
-        />
+    <div
+      ref={containerRef}
+      onScroll={handleScroll}
+      className="flex-1 overflow-y-auto"
+    >
+      {/* Rotations that occurred before any turn arrived */}
+      {top.map((r, i) => (
+        <RotationDivider key={`rot-top-${i}`} from={r.from} to={r.to} reason={r.reason} />
       ))}
+
+      {turns.map((turn, idx) => (
+        <Fragment key={turn.id}>
+          <Turn
+            turn={turn}
+            permissionMode={permissionMode}
+            isLastTurn={idx === turns.length - 1}
+            toolDetailMode={toolDetailMode}
+            onDecision={onDecision}
+            onAnswer={onAnswer}
+          />
+          {(byTurn.get(turn.id) ?? []).map((r, i) => (
+            <RotationDivider key={`rot-${turn.id}-${i}`} from={r.from} to={r.to} reason={r.reason} />
+          ))}
+        </Fragment>
+      ))}
+
+      {orphans.map((r, i) => (
+        <RotationDivider key={`rot-orphan-${i}`} from={r.from} to={r.to} reason={r.reason} />
+      ))}
+
       {/* Bottom sentinel for future IntersectionObserver use */}
       <div ref={endRef} className="h-1" aria-hidden="true" />
     </div>
