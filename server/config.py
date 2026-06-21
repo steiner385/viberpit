@@ -32,6 +32,10 @@ try:
             default_factory=lambda: str(Path.home() / ".config" / "google-chrome" / "Default"),
             alias="CCSWITCH_CHROME_PROFILE",
         )
+        # A human doing a fresh Google login on a cold browser can take several
+        # minutes; the timeout must outlast that or it tears down the localhost
+        # callback listener mid-login (zombie consent page).
+        reauth_timeout_s: float = Field(default=900.0, alias="CCSWITCH_REAUTH_TIMEOUT_S")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -80,6 +84,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         chrome_profile: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_CHROME_PROFILE") or str(Path.home() / ".config" / "google-chrome" / "Default")
+        )
+        reauth_timeout_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_REAUTH_TIMEOUT_S", "900"))
         )
 
         @property

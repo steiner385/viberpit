@@ -86,7 +86,7 @@ class ReauthManager:
         *,
         runner: Callable[[str], bool] | None = None,
         key_available: Callable[[], bool] | None = None,
-        timeout_s: float = 300.0,
+        timeout_s: float = 900.0,
     ) -> None:
         if key_available is None:
             from ccswitch.crypto import key_available as _ka

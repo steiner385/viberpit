@@ -93,7 +93,8 @@ def create_app(
 
     # Attach the ReauthManager (allows tests to inject a fake)
     if reauth_manager is None:
-        reauth_manager = ReauthManager()
+        from server.config import get_settings
+        reauth_manager = ReauthManager(timeout_s=get_settings().reauth_timeout_s)
     app.state.reauth = reauth_manager
 
     # Identity middleware — wraps all routes
