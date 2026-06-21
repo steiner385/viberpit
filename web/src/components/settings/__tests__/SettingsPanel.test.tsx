@@ -6,6 +6,8 @@ import { SettingsPanel } from '../SettingsPanel'
 import * as hooks from '@/api/hooks'
 
 vi.mock('@/api/hooks', () => ({
+  useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
+  useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
 }))
