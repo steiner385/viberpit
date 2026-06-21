@@ -61,3 +61,52 @@ describe('Turn tool grouping', () => {
     expect(screen.getByText('hello world')).toBeInTheDocument()
   })
 })
+
+describe('Turn rendering edge cases', () => {
+  it('renders nothing for a turn with no blocks (no stray padded gap)', () => {
+    const { container } = render(
+      <Turn
+        turn={makeTurn([])}
+        permissionMode="interactive"
+        isLastTurn
+        toolDetailMode="auto"
+        onDecision={noop}
+        onAnswer={noop}
+      />,
+    )
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('renders the open assistant block as raw text while it is streaming', () => {
+    const blocks: Block[] = [{ kind: 'text', id: 't1', text: '**bold**' }]
+    render(
+      <Turn
+        turn={makeTurn(blocks)}
+        permissionMode="interactive"
+        isLastTurn
+        toolDetailMode="auto"
+        streamingBlockId="t1"
+        onDecision={noop}
+        onAnswer={noop}
+      />,
+    )
+    expect(screen.getByText('**bold**')).toBeInTheDocument()
+    expect(document.querySelector('strong')).toBeNull()
+  })
+
+  it('renders a finalized (non-streaming) assistant block as markdown', () => {
+    const blocks: Block[] = [{ kind: 'text', id: 't1', text: '**bold**' }]
+    render(
+      <Turn
+        turn={makeTurn(blocks)}
+        permissionMode="interactive"
+        isLastTurn
+        toolDetailMode="auto"
+        streamingBlockId={null}
+        onDecision={noop}
+        onAnswer={noop}
+      />,
+    )
+    expect(document.querySelector('strong')).not.toBeNull()
+  })
+})

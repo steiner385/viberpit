@@ -5,18 +5,24 @@ import { buildLines } from '@/lib/toolContent'
 // `input` is the tool's call arguments (Edit: old_string/new_string, Write:
 // content). The result payload carries only the success/error message, so the
 // diff MUST be reconstructed from the input.
-interface Props { input: Record<string, unknown> }
+interface Props { input: Record<string, unknown>; ok?: boolean }
 
 const MAX_LINES = 200
 
-export function DiffView({ input }: Props) {
+export function DiffView({ input, ok = true }: Props) {
   const [showAll, setShowAll] = useState(false)
   const allLines = buildLines(input)
   const visible = showAll ? allLines : allLines.slice(0, MAX_LINES)
   const hidden = allLines.length - visible.length
 
   return (
-    <div className="max-h-64 overflow-auto rounded bg-gray-50 dark:bg-gray-900 text-xs font-mono md:max-h-96">
+    <div
+      className={cn(
+        'max-h-64 overflow-auto rounded bg-gray-50 dark:bg-gray-900 text-xs font-mono md:max-h-96',
+        // A failed edit/write didn't apply — flag the attempted diff in red.
+        !ok && 'border border-red-400 dark:border-red-700',
+      )}
+    >
       <pre className="p-2">
         {visible.map((l, i) => (
           <div

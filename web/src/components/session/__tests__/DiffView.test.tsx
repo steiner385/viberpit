@@ -34,4 +34,14 @@ describe('DiffView', () => {
     await user.click(screen.getByRole('button', { name: /show all/i }))
     expect(screen.queryByRole('button', { name: /show all/i })).toBeNull()
   })
+
+  it('applies error styling when the edit failed (ok=false)', () => {
+    const { container } = render(<DiffView input={{ old_string: 'a', new_string: 'b' }} ok={false} />)
+    expect(container.firstChild).toHaveClass('border-red-400')
+  })
+
+  it('has no error border by default', () => {
+    const { container } = render(<DiffView input={{ old_string: 'a', new_string: 'b' }} />)
+    expect(container.firstChild).not.toHaveClass('border-red-400')
+  })
 })

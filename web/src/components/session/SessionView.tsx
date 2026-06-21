@@ -333,6 +333,9 @@ export function SessionView({ sessionId, onBack }: Props) {
         rotations={state.rotations}
         permissionMode={mode}
         toolDetailMode={toolDetailMode}
+        // Only the live-open block streams as plain text; during replay the open
+        // id is meaningless, so suppress it and render everything as markdown.
+        streamingBlockId={state.replaying ? null : state.openBlockId}
         onDecision={handleDecision}
         onAnswer={handleAnswer}
       />

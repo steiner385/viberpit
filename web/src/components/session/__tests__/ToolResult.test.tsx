@@ -49,4 +49,21 @@ describe('ToolResult', () => {
     render(<ToolResult kind="search" ok={true} input={{}} payload={{ results: [] }} />)
     expect(screen.getByText(/results/)).toBeInTheDocument()
   })
+
+  it('styles the JSON fallback as an error when ok is false', () => {
+    const { container } = render(<ToolResult kind="unknown" ok={false} input={{}} payload={{ foo: 'bar' }} />)
+    expect(container.querySelector('pre')).toHaveClass('bg-red-50')
+  })
+
+  it('passes ok through to read → FileContent', () => {
+    const { container } = render(<ToolResult kind="read" ok={false} input={{}} payload={{ content: 'denied' }} />)
+    expect(container.querySelector('pre')).toHaveClass('bg-red-50')
+  })
+
+  it('passes ok through to edit → DiffView', () => {
+    const { container } = render(
+      <ToolResult kind="edit" ok={false} input={{ old_string: 'a', new_string: 'b' }} payload={{ content: 'failed' }} />,
+    )
+    expect(container.firstChild).toHaveClass('border-red-400')
+  })
 })
