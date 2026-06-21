@@ -1,5 +1,4 @@
 import asyncio, base64, os
-from unittest.mock import patch
 import pytest
 from server.tests.fakes.fake_factory import fake_sdk_factory
 

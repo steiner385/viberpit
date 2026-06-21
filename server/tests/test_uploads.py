@@ -1,5 +1,4 @@
 import base64, os
-from pathlib import Path
 import pytest
 from server.sessions import uploads
 
