@@ -73,6 +73,8 @@ export function ReviewView({ sessionId, onBack }: Props) {
             toolDetailMode="auto"
             onDecision={() => {/* read-only */}}
             onAnswer={() => {/* read-only */}}
+            onChat={() => {/* read-only */}}
+            armedQuestionId={null}
           />
         )}
       </main>

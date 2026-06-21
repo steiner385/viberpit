@@ -329,7 +329,7 @@ interface RenameDialogProps {
   isPending: boolean
 }
 
-function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPending }: RenameDialogProps) {
+export function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPending }: RenameDialogProps) {
   const [name, setName] = useState(currentName)
   const inputRef = useRef<HTMLInputElement>(null)
 
