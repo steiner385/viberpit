@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Plus, RefreshCw, Settings, Pencil, Check, X, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -8,6 +8,8 @@ import { UsageBadge, StatusPill } from './UsageBadge'
 import { SessionList } from './SessionList'
 import { AllLimitedBanner } from './AllLimitedBanner'
 import { SettingsPanel } from './settings/SettingsPanel'
+import { DispatchBar } from './DispatchBar'
+import { ShortcutsHelp } from './ShortcutsHelp'
 import {
   useAccounts,
   useSessions,
@@ -28,6 +30,7 @@ import {
 } from '@/api/hooks'
 import type { Account, Session } from '@/api/types'
 import { PERMISSION_MODES } from '@/session/permissionModes'
+import { setLastRepo } from '@/lib/lastRepo'
 
 // ── New Session Dialog ──────────────────────────────────────────────────────
 
@@ -804,12 +807,15 @@ type TabId = 'sessions' | 'accounts'
 interface DashboardProps {
   /** Called when the user opens a session (navigates to Terminal view). */
   onOpenSession?: (sessionId: string) => void
+  /** Bump this to re-focus the dispatch bar (e.g. after returning from a session). */
+  focusDispatchSignal?: unknown
 }
 
-export function Dashboard({ onOpenSession }: DashboardProps) {
+export function Dashboard({ onOpenSession, focusDispatchSignal }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const { data: settingsData } = useSettings()
+  const reposQuery = useGithubRepos()
 
   const createSession = useCreateSession()
   const renameSession = useRenameSession()
@@ -821,11 +827,24 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<TabId>('sessions')
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
   const [allLimitedReset, setAllLimitedReset] = useState<string | null | undefined>(undefined)
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null)
   const [branchError, setBranchError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
+
+  // ── Keyboard selection state ─────────────────────────────────────────────────
+  const [highlightedIndex, setHighlightedIndex] = useState(-1)
+  const selectedSession = highlightedIndex >= 0 ? sessions[highlightedIndex] : undefined
+  const selectedId = selectedSession?.id ?? null
+
+  // Clamp highlighted index when sessions list shrinks
+  useEffect(() => {
+    setHighlightedIndex((i) =>
+      sessions.length === 0 ? -1 : Math.min(i, sessions.length - 1),
+    )
+  }, [sessions.length])
 
   const newButtonRef = useRef<HTMLButtonElement>(null)
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
@@ -903,6 +922,53 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
   const handleClose = useCallback((id: string) => {
     closeSession.mutate(id)
   }, [closeSession])
+
+  // ── DispatchBar handlers ─────────────────────────────────────────────────────
+
+  function handleNavigate(dir: 'up' | 'down') {
+    if (sessions.length === 0) return
+    setHighlightedIndex((i) => {
+      if (dir === 'up') return i <= 0 ? 0 : i - 1
+      return Math.min(sessions.length - 1, i + 1)
+    })
+  }
+
+  function handleOpenHighlighted() {
+    if (selectedSession) handleOpen(selectedSession.id)
+  }
+
+  function handleRowAction(
+    action: { type: 'rename' } | { type: 'delete' } | { type: 'jump'; index: number },
+  ) {
+    if (action.type === 'rename') {
+      if (selectedSession) handleRename(selectedSession.id)
+    } else if (action.type === 'delete') {
+      if (selectedSession) handleClose(selectedSession.id)
+    } else if (action.type === 'jump') {
+      const s = sessions[action.index]
+      if (s) {
+        setHighlightedIndex(action.index)
+        handleOpen(s.id)
+      }
+    }
+  }
+
+  function handleDispatch({ initialPrompt, repo }: { initialPrompt: string; repo: string | null }) {
+    const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
+    createSession.mutate(
+      {
+        initialPrompt,
+        repo: repo ?? undefined,
+        branch: repoInfo?.defaultBranch ?? undefined,
+      },
+      {
+        onSuccess: (session) => {
+          if (repo) setLastRepo(repo)
+          if (onOpenSession) onOpenSession(session.id)
+        },
+      },
+    )
+  }
 
   function handleRefreshAccount(name: string) {
     setRefreshingAccount(name)
@@ -1041,10 +1107,26 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
             sessions={sessions}
             accounts={accounts}
             isLoading={isLoading}
+            selectedId={selectedId}
             onNew={openNewDialog}
             onOpen={handleOpen}
             onRename={handleRename}
             onClose={handleClose}
+          />
+
+          <DispatchBar
+            repos={reposQuery.data ?? []}
+            reposLoading={reposQuery.isLoading}
+            reposError={reposQuery.isError}
+            onDispatch={handleDispatch}
+            onNavigate={handleNavigate}
+            onOpenHighlighted={handleOpenHighlighted}
+            onRowAction={handleRowAction}
+            onShowHelp={() => setShowHelp(true)}
+            onEscape={() => setHighlightedIndex(-1)}
+            activeDescendantId={selectedId ? `row-${selectedId}` : undefined}
+            autoFocusKey={focusDispatchSignal}
+            isPending={createSession.isPending}
           />
         </div>
       )}
@@ -1102,6 +1184,10 @@ export function Dashboard({ onOpenSession }: DashboardProps) {
           onConfirm={confirmDelete}
           isPending={deleteAccount.isPending}
         />
+      )}
+
+      {showHelp && (
+        <ShortcutsHelp onClose={() => setShowHelp(false)} />
       )}
 
       {showSettings && (
