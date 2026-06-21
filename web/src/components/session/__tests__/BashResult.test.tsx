@@ -21,6 +21,13 @@ describe('BashResult', () => {
     expect(screen.getByText(/red/)).toBeInTheDocument()
   })
 
+  it('renders list-shaped content as text, not raw JSON', () => {
+    // A tool_result whose content is a list of blocks (common from the SDK).
+    render(<BashResult payload={{ content: [{ type: 'text', text: 'block output' }] }} />)
+    expect(screen.getByText(/block output/)).toBeInTheDocument()
+    expect(screen.queryByText(/"type"/)).toBeNull()
+  })
+
   it('renders script tag content as literal text (no execution)', () => {
     const xss = '<script>window.__XSS_TEST__ = true</script>'
     render(<BashResult payload={{ content: xss }} />)

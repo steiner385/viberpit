@@ -10,6 +10,7 @@ resolver are injectable so the logic is unit-testable without a real /proc.
 from __future__ import annotations
 
 import glob
+import json
 import os
 import signal as _signal
 import time as _time
@@ -17,7 +18,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ccswitch import paths as _paths
-from server.sessions.titles import read_ai_title_from_file
 
 _HELPER_FLAGS = ("--bg-pty-host", "--bg-spare")
 
@@ -125,6 +125,34 @@ def _proc_lister() -> list[ProcInfo]:
 # ---------------------------------------------------------------------------
 
 
+def _read_transcript_title(path: str) -> str | None:
+    """Best-effort read of a human-friendly title embedded in the transcript.
+
+    Claude writes ``summary`` / ``title`` / ``customTitle`` entries into the jsonl;
+    we return the last such value. Self-contained (no dependency on the title
+    module) so discovery stays robust to auto-naming changes. Returns None on any
+    parse error — the caller falls back to the cwd basename.
+    """
+    title: str | None = None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                for key in ("summary", "customTitle", "title"):
+                    val = obj.get(key) if isinstance(obj, dict) else None
+                    if isinstance(val, str) and val.strip():
+                        title = val.strip()
+    except OSError:
+        return None
+    return title
+
+
 def _map_account(config_dir: str, known_accounts: list[str], account_cfg) -> str | None:
     """Reverse-map a CLAUDE_CONFIG_DIR to a managed account by realpath equality."""
     target = os.path.realpath(config_dir)
@@ -192,7 +220,7 @@ def discover_candidates(
             skip_reason = "tracked"
         else:
             skip_reason = "unmapped"
-        title = read_ai_title_from_file(tpath) or os.path.basename(cwd.rstrip("/")) or "session"
+        title = _read_transcript_title(tpath) or os.path.basename(cwd.rstrip("/")) or "session"
         out.append(
             AdoptionCandidate(
                 pid=proc.pid,

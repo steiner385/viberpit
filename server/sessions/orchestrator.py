@@ -28,11 +28,13 @@ from server.audit import record_audit
 from server.db import db_session
 from server.db.models import Session as DbSession
 from server.sessions import adopt as _adopt
+from server.sessions import uploads
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory
 from server.sessions.selection import AllAccountsBusy, select_account
-from server.sessions.titles import read_ai_title_from_file
+from server.sessions.title_generator import generate_title
+from server.sessions.titles import read_user_prompts_from_file
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
 
@@ -67,6 +69,7 @@ class SessionOrchestrator:
         poll_interval: float = 60.0,
         usage_fn: Callable[[str], object] | None = None,
         repo_root: str | None = None,
+        title_fn: Callable | None = None,
     ) -> None:
         # work_dir param is accepted for back-compat (used in tests to keep
         # the orchestrator anchored to the repo root), but is no longer stored
@@ -84,12 +87,16 @@ class SessionOrchestrator:
         # session_id → WorktreeInfo for sessions launched in an isolated worktree
         self._worktrees: dict[str, worktrees.WorktreeInfo] = {}
         self._sdk_factory = sdk_factory or real_sdk_factory
+        # Generates an AI session title from the conversation's user prompts.
+        # Injected in tests so no real `claude` is spawned.
+        self._title_fn = title_fn or self._default_title_fn
         self._registry = PermissionRegistry()
         self._drivers: dict[str, SessionDriver] = {}
         self._last_prompt: dict[str, str] = {}
         # initial_prompt deferred until first WS attach so the client is watching
         # when the turn runs — avoids losing events before any consumer exists.
         self._pending_initial_prompt: dict[str, str] = {}
+        self._pending_initial_images: dict[str, list] = {}
 
         # Build a live-session-aware usage_fn: when an account has a live session
         # the SDK owns its token family, so the poller must not independently
@@ -159,6 +166,7 @@ class SessionOrchestrator:
         repo: str | None = None,
         identity: str = "system",
         permission_mode: str = "interactive",
+        images: list[dict] | None = None,
         name_is_auto: bool = True,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
@@ -237,6 +245,8 @@ class SessionOrchestrator:
             # the client is already watching when the turn runs — events stream
             # live, so nothing is lost.
             self._pending_initial_prompt[session_id] = initial_prompt
+        if images:
+            self._pending_initial_images[session_id] = images
 
         # Persist DB row
         async with db_session() as db:
@@ -359,15 +369,40 @@ class SessionOrchestrator:
         if status == "done":
             await self._maybe_apply_auto_name(session_id)
 
+    async def _default_title_fn(self, prompts, *, account, cwd):
+        """Default title generator: a one-shot Haiku query under the account."""
+        return await generate_title(
+            prompts, config_dir=str(compose(account)), cwd=cwd
+        )
+
+    def _account_limited(self, account: str) -> bool:
+        """True if *account*'s last-known session usage is at/above the ceiling.
+
+        Best-effort: an unknown account (no cached usage) is treated as not
+        limited — a doomed title query would just degrade silently anyway.
+        """
+        usage = self._poller.cached(account)
+        return usage is not None and getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
+
     async def _maybe_apply_auto_name(self, session_id: str) -> None:
-        """If the session name is still auto, adopt Claude's transcript title."""
+        """If the name is still auto, generate an AI title from the user prompts.
+
+        Skips manually-renamed sessions and accounts at their usage ceiling.
+        Best-effort: any miss (no transcript, no prompts, generator failure)
+        leaves the name unchanged and retries on the next completed turn.
+        """
         rec = self._records.get(session_id)
         if rec is None or not rec.name_is_auto:
+            return
+        if self._account_limited(rec.account):
             return
         path = self.transcript_path(session_id)
         if not path:
             return
-        title = await asyncio.to_thread(read_ai_title_from_file, path)
+        prompts = await asyncio.to_thread(read_user_prompts_from_file, path)
+        if not prompts:
+            return
+        title = await self._title_fn(prompts, account=rec.account, cwd=rec.cwd)
         if not title or title == rec.name:
             return
         rec.name = title
@@ -717,11 +752,36 @@ class SessionOrchestrator:
         """
         return self._pending_initial_prompt.pop(session_id, None)
 
-    async def send_prompt(self, session_id, text):
+    def pop_pending_initial_images(self, session_id: str) -> list | None:
+        """Return and remove the deferred initial images for session_id, or None.
+
+        Called by the WS bridge on the first attach alongside pop_pending_initial_prompt.
+        Clears the entry so subsequent attaches (reconnects) do not re-send them.
+        """
+        return self._pending_initial_images.pop(session_id, None)
+
+    async def send_prompt(self, session_id, text, images=None):
         d = self._drivers.get(session_id)
-        if d:
-            self._last_prompt[session_id] = text
-            await d.send_prompt(text)
+        if not d:
+            return
+        _raw = list(images or [])
+        if len(_raw) > uploads.MAX_IMAGES:
+            log.warning("send_prompt: truncating images from %d to %d session=%s",
+                        len(_raw), uploads.MAX_IMAGES, session_id)
+        images = _raw[:uploads.MAX_IMAGES]
+        resolved: list[dict] = []
+        for ref in images:
+            try:
+                path = uploads.associate(session_id, ref["sha"], ref["mime"])
+            except Exception:
+                log.warning("send_prompt: dropping image sha=%s (associate failed) session=%s",
+                            ref.get("sha"), session_id, exc_info=True)
+                continue
+            resolved.append({
+                "sha": ref["sha"], "mime": ref["mime"], "name": ref.get("name", ""),
+                "path": str(path), "url": f"/api/sessions/{session_id}/images/{ref['sha']}"})
+        self._last_prompt[session_id] = text
+        await d.send_prompt(text, resolved)
 
     async def interrupt(self, session_id):
         d = self._drivers.get(session_id)

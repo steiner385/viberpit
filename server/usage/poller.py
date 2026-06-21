@@ -80,6 +80,15 @@ class UsagePoller:
                 self._publish(account, result)
             return result
 
+    def cached(self, account: str) -> Usage | None:
+        """Return the last-known usage for *account* without fetching, or ``None``.
+
+        A read-only accessor over the poller's cache — used by callers (e.g. the
+        title generator's account-`limited` guard) that want the most recent
+        usage without triggering a network request.
+        """
+        return self._cache.get(account)
+
     async def all(self) -> dict[str, Usage | None]:
         """Fetch usage for every registered account and return the full mapping."""
         names = [a["name"] for a in list_accounts()]

@@ -109,6 +109,7 @@ export interface CreateSessionInput {
   repo?: string
   branch?: string
   permissionMode?: string
+  images?: { sha: string; mime: string; name: string }[]
 }
 
 export function useCreateSession() {
@@ -166,7 +167,14 @@ export function useReauthStatus(name: string, enabled: boolean) {
     queryKey: ['reauth-status', name],
     queryFn: () => api.get<ReauthState>(`/accounts/${encodeURIComponent(name)}/reauth`),
     enabled,
-    refetchInterval: enabled ? 1500 : false,
+    // Poll while a reauth is in flight; stop automatically once the status
+    // reaches a terminal state. Keeping the polling-stop here (instead of a
+    // setState-in-effect in the component) lets the last status stay visible.
+    refetchInterval: (query) => {
+      const s = query.state.data?.state
+      return s === 'success' || s === 'error' || s === 'timeout' ? false : 1500
+    },
+    refetchOnWindowFocus: false,
     staleTime: 0,
   })
 }
