@@ -126,6 +126,42 @@ describe('SessionList', () => {
     expect(onOpen).toHaveBeenCalledWith('sess-1')
   })
 
+  it('marks the selected session row with data-selected', () => {
+    render(
+      <SessionList
+        sessions={SESSIONS}
+        accounts={ACCOUNTS}
+        selectedId="sess-2"
+        onNew={onNew}
+        onOpen={onOpen}
+        onRename={onRename}
+        onClose={onClose}
+      />,
+      { wrapper },
+    )
+    const selected = screen.getByLabelText(/open session research/i)
+    expect(selected).toHaveAttribute('data-selected', 'true')
+    const other = screen.getByLabelText(/open session work session/i)
+    expect(other).toHaveAttribute('data-selected', 'false')
+  })
+
+  it('session container has aria-activedescendant when a session is selected', () => {
+    render(
+      <SessionList
+        sessions={SESSIONS}
+        accounts={ACCOUNTS}
+        selectedId="sess-1"
+        onNew={onNew}
+        onOpen={onOpen}
+        onRename={onRename}
+        onClose={onClose}
+      />,
+      { wrapper },
+    )
+    const container = document.getElementById('session-listbox')!
+    expect(container).toHaveAttribute('aria-activedescendant', 'row-sess-1')
+  })
+
   it('shows EmptyState when sessions list is empty', () => {
     render(
       <SessionList

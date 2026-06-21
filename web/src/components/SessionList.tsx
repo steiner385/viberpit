@@ -7,6 +7,7 @@ interface SessionListProps {
   sessions: Session[]
   accounts: Account[]
   isLoading?: boolean
+  selectedId?: string | null
   onNew: () => void
   onOpen: (id: string) => void
   onRename: (id: string) => void
@@ -37,6 +38,7 @@ export function SessionList({
   sessions,
   accounts,
   isLoading,
+  selectedId,
   onNew,
   onOpen,
   onRename,
@@ -59,18 +61,29 @@ export function SessionList({
   const accountMap = new Map(accounts.map((a) => [a.name, a]))
 
   return (
-    <ul className="space-y-2" aria-label="Sessions">
+    // id="session-listbox" is referenced by DispatchBar's aria-controls.
+    // aria-activedescendant on the container tells assistive tech which row is
+    // "virtually focused" while real keyboard focus stays in the textarea below.
+    // We deliberately do NOT set role="listbox" here because the rows contain
+    // interactive buttons (overflow menus) which would violate the aria-required-children
+    // and nested-interactive ARIA rules for listbox/option.
+    <div
+      id="session-listbox"
+      aria-label="Sessions"
+      aria-activedescendant={selectedId ? `row-${selectedId}` : undefined}
+      className="space-y-2"
+    >
       {sessions.map((session) => (
-        <li key={session.id}>
-          <SessionCard
-            session={session}
-            account={accountMap.get(session.accountName)}
-            onOpen={onOpen}
-            onRename={onRename}
-            onClose={onClose}
-          />
-        </li>
+        <SessionCard
+          key={session.id}
+          session={session}
+          account={accountMap.get(session.accountName)}
+          selected={session.id === selectedId}
+          onOpen={onOpen}
+          onRename={onRename}
+          onClose={onClose}
+        />
       ))}
-    </ul>
+    </div>
   )
 }

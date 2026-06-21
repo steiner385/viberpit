@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Pencil, Trash2, EllipsisVertical } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { StatusPill, UsageBadge } from './UsageBadge'
@@ -8,15 +8,24 @@ import type { Session, Account } from '@/api/types'
 interface SessionCardProps {
   session: Session
   account: Account | undefined
+  selected?: boolean
   onOpen: (id: string) => void
   onRename: (id: string) => void
   onClose: (id: string) => void
 }
 
-export function SessionCard({ session, account, onOpen, onRename, onClose }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, onOpen, onRename, onClose }: SessionCardProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const menuButtonRef = useRef<HTMLButtonElement>(null)
+  const articleRef = useRef<HTMLElement>(null)
+
+  // Scroll selected row into view when selection changes (jsdom doesn't implement scrollIntoView)
+  useEffect(() => {
+    if (selected && articleRef.current?.scrollIntoView) {
+      articleRef.current.scrollIntoView({ block: 'nearest' })
+    }
+  }, [selected])
 
   // Close menu on outside click
   React.useEffect(() => {
@@ -49,16 +58,25 @@ export function SessionCard({ session, account, onOpen, onRename, onClose }: Ses
 
   return (
     <article
+      ref={articleRef}
       className={cn(
         'flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700',
         'bg-white dark:bg-gray-800 p-3 min-h-[44px]',
         'focus-within:ring-2 focus-within:ring-blue-500',
+        selected && 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-950/30',
       )}
     >
-      {/* Main tappable area — opens the session */}
+      {/* Main tappable area — opens the session.
+          id is used by DispatchBar's aria-activedescendant to signal the highlighted
+          row to assistive technologies without moving DOM focus.
+          data-selected is used for CSS + testing; aria-selected is omitted on a plain
+          button because axe rejects it without role="option". The AT announcement
+          comes from the textarea's aria-activedescendant pointing to this id. */}
       <button
         type="button"
         id={`row-${session.id}`}
+        tabIndex={selected ? 0 : -1}
+        data-selected={selected}
         className={cn(
           'flex-1 min-w-0 text-left min-h-[44px] flex flex-col justify-center gap-1',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
