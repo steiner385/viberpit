@@ -69,12 +69,12 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
     r.nameWithOwner.toLowerCase().includes(repoFilter.trim().toLowerCase()),
   )
 
-  // When branches load, default to the repo's default branch.
-  React.useEffect(() => {
-    if (!selectedBranch && (branchesQuery.data?.default || selectedRepoInfo?.defaultBranch)) {
-      setSelectedBranch(branchesQuery.data?.default ?? selectedRepoInfo?.defaultBranch ?? '')
-    }
-  }, [branchesQuery.data?.default, selectedRepoInfo?.defaultBranch])
+  // Effective branch, derived during render (no setState-in-effect): the user's
+  // explicit pick wins; otherwise fall back to the loaded default branch, then
+  // the repo's known default. Clearing the select (empty value) re-applies the
+  // default, matching the previous effect-driven behavior.
+  const effectiveBranch =
+    selectedBranch || branchesQuery.data?.default || selectedRepoInfo?.defaultBranch || ''
 
   // Reset branch when repo changes.
   function handleRepoChange(nameWithOwner: string) {
@@ -115,7 +115,7 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
       account: account || undefined,
       initialPrompt: initialPrompt.trim() || undefined,
       repo: selectedRepo || undefined,
-      branch: selectedBranch || undefined,
+      branch: effectiveBranch || undefined,
       permissionMode,
     })
   }
@@ -228,7 +228,7 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
             </label>
             <select
               id="new-session-branch"
-              value={selectedBranch}
+              value={effectiveBranch}
               onChange={(e) => setSelectedBranch(e.target.value)}
               className={cn(inputClass, !selectedRepo && 'opacity-50')}
               disabled={!selectedRepo || branchesQuery.isLoading}
@@ -538,6 +538,11 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
     setReauthOptimisticIdle(false)
     setReauthStarted(true)
     reauthAccount.mutate(account.name, {
+      onSuccess: () => {
+        // A previous attempt may have left terminal status cached, which stops
+        // polling. Refetch to pick up the new in-flight status and resume polling.
+        void reauthStatusQuery.refetch()
+      },
       onError: () => {
         // If start itself fails, stop polling
         setReauthStarted(false)
@@ -556,16 +561,12 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
     })
   }
 
-  // When status reaches a terminal state, stop polling; also invalidate on success
+  // Refresh the accounts list when reauth transitions into success. Polling stops
+  // on its own once the status is terminal (see useReauthStatus.refetchInterval),
+  // so this effect only reacts to the external query state — no setState here.
   const prevStatusRef = useRef<string | undefined>(undefined)
   React.useEffect(() => {
     const state = reauthStatus?.state
-    const isTerminal = state === 'success' || state === 'error' || state === 'timeout'
-    if (isTerminal) {
-      // Stop polling — disabling the query keeps last data in cache (gcTime default 5 min)
-      // so the success ✓ / error message stays visible after polling halts.
-      setReauthStarted(false)
-    }
     if (state === 'success' && prevStatusRef.current !== 'success') {
       qc.invalidateQueries({ queryKey: QK.accounts })
     }
@@ -994,7 +995,7 @@ function ArchivedList({ sessions, onReview, onUnarchive, onPermanentDelete, unar
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-type TabId = 'sessions' | 'accounts' | 'archived'
+export type TabId = 'sessions' | 'accounts' | 'archived'
 
 interface DashboardProps {
   /** Called when the user opens a session (navigates to Terminal view). */
@@ -1003,11 +1004,19 @@ interface DashboardProps {
   focusDispatchSignal?: unknown
   /** Called when the user wants to review an archived session. */
   onReviewSession?: (sessionId: string) => void
-  /** If set, the archived tab is selected on mount. */
+  /** If set, the archived tab is selected on mount (uncontrolled fallback only). */
   initialTab?: TabId
+  /** Controlled active tab. When provided with onTabChange, the route owns the tab. */
+  activeTab?: TabId
+  /** Called when the user selects a tab. Presence switches the component to controlled mode. */
+  onTabChange?: (tab: TabId) => void
+  /** Controlled dialog state. Presence of onDialogChange switches to controlled mode. */
+  dialog?: 'new' | 'settings' | null
+  /** Called to open/close a URL-addressable dialog. */
+  onDialogChange?: (dialog: 'new' | 'settings' | null) => void
 }
 
-export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab }: DashboardProps) {
+export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab, activeTab: activeTabProp, onTabChange, dialog, onDialogChange }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const { data: archivedSessions = [] } = useArchivedSessions()
@@ -1023,9 +1032,21 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const unarchiveSession = useUnarchiveSession()
   const permanentDeleteSession = usePermanentDeleteSession()
 
-  const [activeTab, setActiveTab] = useState<TabId>(initialTab ?? 'sessions')
+  const [internalTab, setInternalTab] = useState<TabId>(activeTabProp ?? initialTab ?? 'sessions')
+  const activeTab = activeTabProp ?? internalTab
+  const setActiveTab = (tab: TabId) => {
+    if (onTabChange) onTabChange(tab)
+    else setInternalTab(tab)
+  }
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const dialogControlled = !!onDialogChange
+  const newDialogOpen = dialogControlled ? dialog === 'new' : showNewDialog
+  const settingsOpen = dialogControlled ? dialog === 'settings' : showSettings
+  function dismissNewDialog() {
+    if (dialogControlled) onDialogChange!(null)
+    else setShowNewDialog(false)
+  }
   const [showHelp, setShowHelp] = useState(false)
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
   const [allLimitedReset, setAllLimitedReset] = useState<string | null | undefined>(undefined)
@@ -1091,19 +1112,20 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   function openNewDialog() {
     setAllLimitedReset(undefined)
-    setShowNewDialog(true)
+    if (dialogControlled) onDialogChange!('new')
+    else setShowNewDialog(true)
   }
 
   function closeNewDialog() {
-    setShowNewDialog(false)
     setBranchError(null)
+    dismissNewDialog()
     newButtonRef.current?.focus()
   }
 
   function handleCreateSubmit(input: CreateSessionInput) {
     createSession.mutate(input, {
       onSuccess: () => {
-        setShowNewDialog(false)
+        dismissNewDialog()
         newButtonRef.current?.focus()
       },
       onError: (err) => {
@@ -1114,7 +1136,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           } else {
             const reset = body.earliestReset ?? null
             setAllLimitedReset(reset)
-            setShowNewDialog(false)
+            dismissNewDialog()
           }
         }
       },
@@ -1397,7 +1419,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
                 size="sm"
                 variant="outline"
                 className="min-h-[44px]"
-                onClick={() => setShowSettings(true)}
+                onClick={() => { if (dialogControlled) onDialogChange!('settings'); else setShowSettings(true) }}
                 aria-label="Settings"
               >
                 <Settings size={14} aria-hidden="true" className="mr-1" />
@@ -1494,7 +1516,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       )}
 
       {/* Dialogs */}
-      {showNewDialog && (
+      {newDialogOpen && (
         <NewSessionDialog
           accounts={accounts}
           onClose={closeNewDialog}
@@ -1538,10 +1560,11 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         <ShortcutsHelp onClose={() => setShowHelp(false)} />
       )}
 
-      {showSettings && (
+      {settingsOpen && (
         <SettingsPanel
           onClose={() => {
-            setShowSettings(false)
+            if (dialogControlled) onDialogChange!(null)
+            else setShowSettings(false)
             settingsButtonRef.current?.focus()
           }}
         />

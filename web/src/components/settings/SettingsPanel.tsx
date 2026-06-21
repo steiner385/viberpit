@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { useSettings, useUpdateSettings } from '@/api/hooks'
+import { useSettings, useUpdateSettings, type AppSettings } from '@/api/hooks'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 
 interface SettingsPanelProps {
@@ -10,6 +10,21 @@ interface SettingsPanelProps {
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const { data: settings } = useSettings()
+  // Remount the form when the loaded settings transition from absent → present
+  // so it initializes from server values via useState, not a setState-in-effect
+  // sync. Keying on load state (not content) preserves in-progress edits across
+  // background refetches.
+  return (
+    <SettingsForm key={settings ? 'loaded' : 'loading'} settings={settings} onClose={onClose} />
+  )
+}
+
+interface SettingsFormProps {
+  settings: AppSettings | undefined
+  onClose: () => void
+}
+
+function SettingsForm({ settings, onClose }: SettingsFormProps) {
   const updateSettings = useUpdateSettings()
   const dialogRef = useRef<HTMLDivElement>(null)
 
@@ -20,15 +35,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     settings?.thinkingCollapsed ?? false,
   )
   const [repoRoot, setRepoRoot] = useState(settings?.repoRoot ?? '')
-
-  // Sync state when settings data loads
-  useEffect(() => {
-    if (settings) {
-      setPermissionMode(settings.defaultPermissionMode)
-      setThinkingCollapsed(settings.thinkingCollapsed)
-      setRepoRoot(settings.repoRoot ?? '')
-    }
-  }, [settings])
 
   // Escape to close
   useEffect(() => {

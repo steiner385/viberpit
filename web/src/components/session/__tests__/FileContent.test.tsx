@@ -14,6 +14,8 @@ describe('FileContent', () => {
   it('strips ANSI escape codes', () => {
     render(<FileContent payload={{ content: '\x1b[32mgreen\x1b[0m' }} />)
     expect(screen.getByText(/green/)).toBeInTheDocument()
+    // Asserting the ESC (0x1b) control char was stripped requires matching it.
+    // eslint-disable-next-line no-control-regex
     expect(screen.queryByText(/\x1b/)).toBeNull()
   })
 
