@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Dashboard } from './components/Dashboard'
 import { SessionView } from './components/session/SessionView'
 
@@ -17,6 +16,8 @@ type View =
 function App() {
   const [view, setView] = useState<View>({ type: 'dashboard' })
   const prevViewRef = useRef<View>({ type: 'dashboard' })
+  // Bumped on every back-navigation to re-focus the DispatchBar
+  const [focusDispatchNonce, setFocusDispatchNonce] = useState(0)
 
   // Track previous view so we can restore focus on back navigation
   useEffect(() => {
@@ -29,16 +30,10 @@ function App() {
   }, [])
 
   const handleBack = useCallback(() => {
-    const prev = prevViewRef.current
     setView({ type: 'dashboard' })
-    // Restore focus to the originating element after the re-render
-    if (prev.type === 'session' && prev.originElementId) {
-      const id = prev.originElementId
-      // Use requestAnimationFrame to ensure the DOM is ready
-      requestAnimationFrame(() => {
-        document.getElementById(id)?.focus()
-      })
-    }
+    // Bump the nonce to re-focus the DispatchBar after the dashboard mounts.
+    // For keyboard-first users the prompt is always the right place to return to.
+    setFocusDispatchNonce((n) => n + 1)
   }, [])
 
   return (
@@ -51,7 +46,10 @@ function App() {
             <h1 className="text-2xl font-bold tracking-tight">ccswitch</h1>
           </header>
           <main className="p-4">
-            <Dashboard onOpenSession={handleOpenSession} />
+            <Dashboard
+              onOpenSession={handleOpenSession}
+              focusDispatchSignal={focusDispatchNonce}
+            />
           </main>
         </>
       )}

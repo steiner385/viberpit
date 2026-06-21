@@ -132,7 +132,7 @@ describe('App view-state machine', () => {
     expect(screen.getByRole('heading', { name: /ccswitch/i })).toBeInTheDocument()
   })
 
-  it('restores focus to the originating button after Back', async () => {
+  it('focuses the dispatch prompt after returning from a session', async () => {
     const user = userEvent.setup()
     render(<App />, { wrapper })
 
@@ -141,17 +141,16 @@ describe('App view-state machine', () => {
     })
 
     // Click to open session
-    const openButton = screen.getByLabelText(/open session work/i)
-    await user.click(openButton)
+    await user.click(screen.getByLabelText(/open session work/i))
 
     // Click Back
     await user.click(screen.getByRole('button', { name: /back to session list/i }))
 
-    // Focus should return to the originating button (id="row-sess-1")
+    // Focus should go to the dispatch prompt (keyboard-first experience)
     await waitFor(() => {
-      const el = document.getElementById('row-sess-1')
-      expect(el).not.toBeNull()
-      expect(document.activeElement).toBe(el)
+      expect(document.activeElement).toBe(
+        screen.getByRole('textbox', { name: /new session prompt/i }),
+      )
     })
   })
 })
