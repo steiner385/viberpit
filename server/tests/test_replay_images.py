@@ -15,3 +15,18 @@ def test_user_image_block_becomes_usermessage_images(tmp_path):
     um = next(e for e in out if isinstance(e, ev.UserMessage))
     assert um.text == "see this"
     assert um.images and um.images[0]["mime"] == "image/png"
+    assert um.images[0]["url"] == "data:image/png;base64,QUJD"
+    assert um.images[0]["name"] == ""
+
+
+def test_user_image_only_turn_emits_usermessage(tmp_path):
+    # Image-only turn: content is purely an image block, no text block.
+    line = {"type": "user", "uuid": "u2", "message": {"role": "user", "content": [
+        {"type": "image", "source": {"type": "base64",
+            "media_type": "image/png", "data": "QUJD"}},
+    ]}}
+    p = tmp_path / "img_only.jsonl"; p.write_text(json.dumps(line) + "\n")
+    out = _parse(str(p), max_turns=20)
+    um = next(e for e in out if isinstance(e, ev.UserMessage))
+    assert um.text == ""
+    assert um.images and um.images[0]["mime"] == "image/png"
