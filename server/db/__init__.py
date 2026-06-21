@@ -17,6 +17,12 @@ from server.db.models import Base
 
 log = logging.getLogger(__name__)
 
+
+class SchemaDriftError(RuntimeError):
+    """Raised at startup when the live DB is missing model columns that reconcile
+    could not add — a drifted server must refuse to start, not serve empty."""
+
+
 # Module-level singletons — replaced by init_db() at app startup.
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -113,6 +119,29 @@ def _reconcile_sqlite_columns(sync_conn) -> None:
             ))
 
 
+def _assert_no_schema_drift(sync_conn) -> None:
+    """After reconcile, verify every model column exists in its table.
+
+    A residual gap (a column reconcile could not synthesize) means queries
+    selecting it will raise at runtime — so fail fast and loud here instead.
+    """
+    inspector = sa_inspect(sync_conn)
+    existing_tables = set(inspector.get_table_names())
+    drift: dict[str, list[str]] = {}
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue  # create_all just made it — fully formed
+        present = {col["name"] for col in inspector.get_columns(table.name)}
+        missing = [c.name for c in table.columns if c.name not in present]
+        if missing:
+            drift[table.name] = missing
+    if drift:
+        raise SchemaDriftError(
+            f"DB is missing model columns reconcile could not add: {drift}. "
+            "Add a synthesizable default or a real migration."
+        )
+
+
 async def init_db(db_url: str | None = None) -> None:
     """Create tables (SQLite dev path) and initialise the session factory."""
     global _engine, _session_factory
@@ -124,6 +153,7 @@ async def init_db(db_url: str | None = None) -> None:
         await conn.run_sync(Base.metadata.create_all)
         if url.startswith("sqlite"):
             await conn.run_sync(_reconcile_sqlite_columns)
+            await conn.run_sync(_assert_no_schema_drift)
 
 
 @asynccontextmanager

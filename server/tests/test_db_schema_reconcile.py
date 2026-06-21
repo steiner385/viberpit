@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 
+import pytest
 from sqlalchemy import text as sa_text
 
 from server.db import db_session, init_db
@@ -135,3 +136,20 @@ def test_ddl_default_literal_handles_dict_default():
     from server.db import _ddl_default_literal
     col = Column("x", JSON, nullable=False, default=dict)
     assert _ddl_default_literal(col) == "'{}'"
+
+
+def test_init_db_raises_schema_drift_when_reconcile_cannot_fix(tmp_path, monkeypatch):
+    """If reconcile fails to add a model column, init_db must fail LOUD (raise
+    SchemaDriftError) rather than letting the server start and serve empty."""
+    from server.db import SchemaDriftError
+    db_file = tmp_path / "drift.db"
+    con = sqlite3.connect(db_file)
+    # Old table missing several NOT NULL model columns.
+    con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT, cwd TEXT)")
+    con.commit(); con.close()
+
+    # Disable reconcile so the drift is NOT healed → the self-check must catch it.
+    monkeypatch.setattr("server.db._reconcile_sqlite_columns", lambda sync_conn: None)
+
+    with pytest.raises(SchemaDriftError):
+        asyncio.run(init_db(db_url=f"sqlite+aiosqlite:///{db_file}"))
