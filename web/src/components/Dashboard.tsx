@@ -69,12 +69,12 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
     r.nameWithOwner.toLowerCase().includes(repoFilter.trim().toLowerCase()),
   )
 
-  // When branches load, default to the repo's default branch.
-  React.useEffect(() => {
-    if (!selectedBranch && (branchesQuery.data?.default || selectedRepoInfo?.defaultBranch)) {
-      setSelectedBranch(branchesQuery.data?.default ?? selectedRepoInfo?.defaultBranch ?? '')
-    }
-  }, [branchesQuery.data?.default, selectedRepoInfo?.defaultBranch])
+  // Effective branch, derived during render (no setState-in-effect): the user's
+  // explicit pick wins; otherwise fall back to the loaded default branch, then
+  // the repo's known default. Clearing the select (empty value) re-applies the
+  // default, matching the previous effect-driven behavior.
+  const effectiveBranch =
+    selectedBranch || branchesQuery.data?.default || selectedRepoInfo?.defaultBranch || ''
 
   // Reset branch when repo changes.
   function handleRepoChange(nameWithOwner: string) {
@@ -115,7 +115,7 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
       account: account || undefined,
       initialPrompt: initialPrompt.trim() || undefined,
       repo: selectedRepo || undefined,
-      branch: selectedBranch || undefined,
+      branch: effectiveBranch || undefined,
       permissionMode,
     })
   }
@@ -228,7 +228,7 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
             </label>
             <select
               id="new-session-branch"
-              value={selectedBranch}
+              value={effectiveBranch}
               onChange={(e) => setSelectedBranch(e.target.value)}
               className={cn(inputClass, !selectedRepo && 'opacity-50')}
               disabled={!selectedRepo || branchesQuery.isLoading}
@@ -538,6 +538,11 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
     setReauthOptimisticIdle(false)
     setReauthStarted(true)
     reauthAccount.mutate(account.name, {
+      onSuccess: () => {
+        // A previous attempt may have left terminal status cached, which stops
+        // polling. Refetch to pick up the new in-flight status and resume polling.
+        void reauthStatusQuery.refetch()
+      },
       onError: () => {
         // If start itself fails, stop polling
         setReauthStarted(false)
@@ -556,16 +561,12 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
     })
   }
 
-  // When status reaches a terminal state, stop polling; also invalidate on success
+  // Refresh the accounts list when reauth transitions into success. Polling stops
+  // on its own once the status is terminal (see useReauthStatus.refetchInterval),
+  // so this effect only reacts to the external query state — no setState here.
   const prevStatusRef = useRef<string | undefined>(undefined)
   React.useEffect(() => {
     const state = reauthStatus?.state
-    const isTerminal = state === 'success' || state === 'error' || state === 'timeout'
-    if (isTerminal) {
-      // Stop polling — disabling the query keeps last data in cache (gcTime default 5 min)
-      // so the success ✓ / error message stays visible after polling halts.
-      setReauthStarted(false)
-    }
     if (state === 'success' && prevStatusRef.current !== 'success') {
       qc.invalidateQueries({ queryKey: QK.accounts })
     }

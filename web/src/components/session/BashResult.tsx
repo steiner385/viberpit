@@ -3,6 +3,9 @@ import { cn } from '@/lib/utils'
 interface Props { payload: Record<string, unknown>; ok?: boolean }
 
 function stripAnsi(s: string): string {
+  // ANSI escape sequences start with ESC (0x1b); matching them legitimately
+  // requires the control character.
+  // eslint-disable-next-line no-control-regex
   return s.replace(/\x1b\[[0-9;]*m/g, '')
 }
 
