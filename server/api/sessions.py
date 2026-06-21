@@ -66,6 +66,7 @@ def _record_to_dict(record) -> dict[str, Any]:
         "status": record.status,
         "nameIsAuto": getattr(record, "name_is_auto", True),
         "detached": record.detached,
+        "adoptedInPlace": getattr(record, "adopted_in_place", False),
         "createdAt": record.created_at.isoformat() if record.created_at else None,
         "updatedAt": None,
     }

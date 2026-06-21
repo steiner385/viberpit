@@ -426,6 +426,7 @@ class SessionOrchestrator:
                 name_is_auto=row.name_is_auto,
                 permission_mode=row.permission_mode,
                 created_at=row.created_at,
+                adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
             )
             added += 1
         log.info("rehydrate: %d session(s) restored", added)
