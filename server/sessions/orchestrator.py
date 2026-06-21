@@ -401,12 +401,24 @@ class SessionOrchestrator:
         return False
 
     def transcript_path(self, session_id) -> str | None:
-        """<config_dir>/projects/<cwd-key>/<claude_session_id>.jsonl, or None if unknown."""
+        """<config_dir>/projects/<cwd-key>/<claude_session_id>.jsonl, or None if unknown.
+
+        Falls back to the SessionRecord + compose(account) when the driver is absent
+        or has no claude_session_id (e.g. rehydrated/detached sessions).
+        """
         d = self._drivers.get(session_id)
-        if not d or not d.claude_session_id:
+        if d and d.claude_session_id:
+            cwd_key = d.cwd.lstrip("/").replace("/", "-")
+            p = Path(d.config_dir) / "projects" / cwd_key / f"{d.claude_session_id}.jsonl"
+            return str(p) if p.exists() else None
+
+        # Fall back: use the SessionRecord + compose(account)
+        rec = self._records.get(session_id)
+        if rec is None or not rec.claude_session_id:
             return None
-        cwd_key = d.cwd.lstrip("/").replace("/", "-")
-        p = Path(d.config_dir) / "projects" / cwd_key / f"{d.claude_session_id}.jsonl"
+        cfg_dir = compose(rec.account)
+        cwd_key = rec.cwd.lstrip("/").replace("/", "-")
+        p = Path(cfg_dir) / "projects" / cwd_key / f"{rec.claude_session_id}.jsonl"
         return str(p) if p.exists() else None
 
     # ------------------------------------------------------------------
