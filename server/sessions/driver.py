@@ -71,6 +71,26 @@ class SessionDriver:
             return opt
         return {"label": str(opt)}
 
+    @staticmethod
+    def _format_answer_message(q_text: str, selected: list[str], mode: str) -> str:
+        """Single-question deny-message body, framed by answer mode."""
+        answer_str = ", ".join(selected)
+        if mode == "chat":
+            return f"[User wants to discuss rather than pick an option] {answer_str}"
+        if mode == "freeform":
+            return f"[User answered in their own words] {q_text} → {answer_str}"
+        return f"[User answered via the question UI] {q_text} → {answer_str}"
+
+    @staticmethod
+    def _format_answer_line(q_text: str, selected: list[str], mode: str) -> str:
+        """Per-question line for the multi-question deny message, framed by mode."""
+        answer_str = ", ".join(selected)
+        if mode == "chat":
+            return f"- {q_text} → (discussing) {answer_str}"
+        if mode == "freeform":
+            return f"- {q_text} → (in their own words) {answer_str}"
+        return f"- {q_text} → {answer_str}"
+
     async def _handle_ask_user_question(self, tool_input: dict, turn_id: str) -> PermissionResultDeny:
         """Block the SDK callback, emit ev.Question events, await user answers.
 
@@ -110,41 +130,42 @@ class SessionDriver:
         await self._emit_dashboard_status()
 
         # Await all answers concurrently (gather preserves order).
+        # Each future resolves to (selected, mode) or None (dismissed).
         futs = [fut for _, fut in pending]
-        answers: list[list[str] | None] = await asyncio.gather(*futs)
+        answers: list[tuple[list[str], str] | None] = await asyncio.gather(*futs)
 
         # Question(s) resolved → back to in_progress.
         await self._emit_dashboard_status()
 
         # Build the deny message.
         questions_list = [q for q, _ in pending]
-        all_dismissed = all(a is None for a in answers)
         if len(questions_list) == 1:
             q_text = questions_list[0].get("question") or ""
-            selected = answers[0]
-            if selected is None:
-                prefix = "[User dismissed the question UI]"
-                msg = f"{prefix} {q_text} → (dismissed — user did not answer)"
+            answer = answers[0]
+            if answer is None:
+                msg = f"[User dismissed the question UI] {q_text} → (dismissed — user did not answer)"
             else:
-                answer_str = ", ".join(selected)
-                msg = f"[User answered via the question UI] {q_text} → {answer_str}"
+                selected, mode = answer
+                msg = self._format_answer_message(q_text, selected, mode)
         else:
+            all_dismissed = all(a is None for a in answers)
             prefix = "[User dismissed the question UI]" if all_dismissed else "[User answered via the question UI]"
             lines = [prefix]
-            for q_obj, selected in zip(questions_list, answers):
+            for q_obj, answer in zip(questions_list, answers):
                 q_text = q_obj.get("question") or ""
-                if selected is None:
-                    answer_str = "(dismissed — user did not answer)"
+                if answer is None:
+                    lines.append(f"- {q_text} → (dismissed — user did not answer)")
                 else:
-                    answer_str = ", ".join(selected)
-                lines.append(f"- {q_text} → {answer_str}")
+                    selected, mode = answer
+                    lines.append(self._format_answer_line(q_text, selected, mode))
             msg = "\n".join(lines)
 
         return PermissionResultDeny(message=msg)
 
-    def answer_question(self, question_id: str, selected: list[str], identity: str) -> bool:
-        """Resolve a pending question with the user's selection. Mirrors resolve_permission."""
-        return self._qreg.resolve(question_id, selected, identity)
+    def answer_question(self, question_id: str, selected: list[str], identity: str,
+                        mode: str = "option") -> bool:
+        """Resolve a pending question with the user's selection and mode. Mirrors resolve_permission."""
+        return self._qreg.resolve(question_id, selected, identity, mode)
 
     def pending_questions(self) -> list[dict]:
         """Return still-pending question payloads for this session (parallel to pending permissions).

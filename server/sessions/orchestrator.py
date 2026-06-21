@@ -589,14 +589,14 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         return d.resolve_permission(perm_id, decision, identity) if d else False
 
-    def answer_question(self, session_id, question_id, selected, identity) -> bool:
-        """Resolve a pending AskUserQuestion with the user's selected answers.
+    def answer_question(self, session_id, question_id, selected, identity, mode="option") -> bool:
+        """Resolve a pending AskUserQuestion with the user's selected answers and mode.
 
         Returns True if resolved, False if no driver for session_id or unknown question_id.
         Mirrors resolve_permission.
         """
         d = self._drivers.get(session_id)
-        return d.answer_question(question_id, selected, identity) if d else False
+        return d.answer_question(question_id, selected, identity, mode) if d else False
 
     def pending_questions(self, session_id: str) -> list[dict]:
         """Return still-pending question payloads for session_id ([] if no driver).
