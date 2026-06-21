@@ -130,11 +130,19 @@ export function SessionView({ sessionId, onBack }: Props) {
     [sessionId, permissionResponse],
   )
 
-  // Answer handler for question cards
+  // Answer handler for question cards.
+  // The answer is delivered to the model as a tool result, NOT a user prompt, so the
+  // server never echoes it back. Optimistically echo the chosen labels into the
+  // transcript as a user bubble so the user immediately sees their response register
+  // (the card is removed at the same time, and status stays "Working…" until the
+  // agent's next output streams in).
   const handleAnswer = useCallback(
     (questionId: string, selected: string[]) => {
       answerQuestion(sessionId, questionId, selected)
       dispatch({ type: '_resolveQuestion', questionId })
+      if (selected.length > 0) {
+        dispatch({ type: 'user', turnId: `answer:${questionId}`, text: selected.join(', ') })
+      }
     },
     [sessionId, answerQuestion],
   )
