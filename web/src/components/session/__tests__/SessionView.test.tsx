@@ -277,7 +277,8 @@ describe('SessionView question escape hatches', () => {
     expect(screen.getByText(/replying in chat/i)).toBeInTheDocument()
     // Type in the composer and send.
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'lets talk instead')
-    await user.click(screen.getByRole('button', { name: /send message/i }))
+    // While armed for chat the composer offers a "Reply" affordance (not Queue/Send).
+    await user.click(screen.getByRole('button', { name: /send reply/i }))
     expect(mockAnswerQuestion).toHaveBeenCalledWith('s1', 'q-9', ['lets talk instead'], 'chat')
     expect(mockPrompt).not.toHaveBeenCalled()
   })
