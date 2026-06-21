@@ -50,4 +50,12 @@ describe('AssistantText', () => {
     expect(screen.getByText('just prose')).toBeInTheDocument()
     expect(screen.queryByText('Insight')).toBeNull()
   })
+
+  it('opens markdown links in a new tab with a safe rel', async () => {
+    render(<AssistantText text="[example](https://example.com)" streaming={false} />)
+    const link = await screen.findByRole('link', { name: 'example' })
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link.getAttribute('rel') ?? '').toContain('noopener')
+    expect(link.getAttribute('rel') ?? '').toContain('noreferrer')
+  })
 })

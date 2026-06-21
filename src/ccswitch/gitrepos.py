@@ -122,6 +122,30 @@ def _normalize_remote_url(url: str) -> str:
     return normalized
 
 
+def repo_at_path(path: str) -> str | None:
+    """Return the GitHub ``owner/name`` for the checkout at ``path``, else None.
+
+    Reads the live git state of a session's working directory — runs
+    ``git -C <path> remote get-url origin`` and normalizes the result — so the
+    sessions screen's repo indicator reflects what's actually on disk (a
+    worktree resolves to its clone's origin) rather than a stored field.
+
+    Returns None when ``path`` is empty, is not a git working tree, or has no
+    ``origin`` remote (e.g. a scratch session's isolated temp dir).
+    """
+    if not path:
+        return None
+    r = _run_git(["-C", path, "remote", "get-url", "origin"])
+    if r.returncode != 0:
+        return None
+    # _normalize_remote_url yields "host/owner/name"; keep the trailing owner/name.
+    normalized = _normalize_remote_url(r.stdout)
+    parts = [p for p in normalized.split("/") if p]
+    if len(parts) < 3:
+        return None
+    return f"{parts[-2]}/{parts[-1]}"
+
+
 def find_local_reference(repo_root: str, clone_url: str) -> str | None:
     """Return a local repo dir whose origin matches ``clone_url``, else None.
 
