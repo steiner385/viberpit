@@ -1,0 +1,19 @@
+[Unit]
+Description=ccswitch web — multi-account Claude session manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tony
+WorkingDirectory=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
+# Runtime secrets/config (DB url, signing keys, tailnet allowlist) + PATH/HOME so
+# the server can find git/node/claude. Created out-of-band; NOT in the repo.
+EnvironmentFile=/etc/ccswitch/ccswitch.env
+ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/uvicorn server.app:app --host 100.102.11.121 --port 8787
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
