@@ -33,6 +33,17 @@ export interface Session {
   detached?: boolean
 }
 
+export interface ArchivedSession {
+  id: string
+  name: string
+  account: string
+  cwd: string
+  claudeSessionId: string | null
+  permissionMode: string
+  createdAt: string
+  archivedAt: string
+}
+
 export interface ApiError {
   status: number
   error: { code: string; message: string }
