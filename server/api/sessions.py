@@ -62,6 +62,7 @@ def _record_to_dict(record) -> dict[str, Any]:
         "id": record.id,
         "name": record.name,
         "accountName": record.account,
+        "repo": record.repo,
         "status": record.status,
         "detached": record.detached,
         "createdAt": record.created_at.isoformat() if record.created_at else None,
@@ -173,6 +174,7 @@ async def create_session(
             initial_prompt=body.initialPrompt,
             cwd=cwd,
             branch=body.branch,
+            repo=body.repo,
             identity=identity,
             permission_mode=body.permissionMode or "interactive",
         )

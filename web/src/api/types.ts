@@ -27,6 +27,8 @@ export interface Session {
   id: string
   name: string
   accountName: string
+  /** GitHub nameWithOwner ("owner/name") this session works on, or null for a scratch session. */
+  repo?: string | null
   status: SessionStatus
   createdAt: string
   updatedAt: string
