@@ -29,6 +29,8 @@ vi.mock('@/ws/client', async (importOriginal) => {
 })
 
 vi.mock('@/api/hooks', () => ({
+  useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
+  useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessions: () => ({ data: [{ id: 's1', name: 'S', accountName: 'work-max', status: 'idle', createdAt: '', updatedAt: '' }] }),
   useAccounts: () => ({ data: [{ name: 'work-max', status: 'ok', usage: { session: { pct: 42, resetsAt: null }, weekly: { pct: 18, resetsAt: null } } }] }),
 }))

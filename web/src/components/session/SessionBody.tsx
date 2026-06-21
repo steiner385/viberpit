@@ -1,16 +1,17 @@
 /**
  * SessionBody — the scrollable main content of a session: status strip, error
- * banner, transcript, working indicator, rotation dividers, action-needed banner,
- * and the sr-only aria-live mirror. Rendered by both the mobile SessionView and
- * the desktop master-detail main pane. Does NOT render the top bar or composer.
+ * banner, transcript (with inline rotation dividers), working indicator,
+ * action-needed banner, and the sr-only aria-live mirror. Rendered by both the
+ * mobile SessionView and the desktop master-detail main pane. Does NOT render the
+ * top bar or composer.
  */
 
 import { cn } from '@/lib/utils'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SessionMeta } from './SessionMeta'
-import { RotationDivider } from './RotationDivider'
 import { TranscriptView } from './TranscriptView'
 import { WorkingIndicator } from './WorkingIndicator'
+import { SessionAriaLive } from './SessionAriaLive'
 
 export function SessionBody({ rt }: { rt: SessionRuntime }) {
   return (
@@ -46,10 +47,15 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
         </div>
       )}
 
-      {/* Transcript */}
+      {/* Transcript — rotation dividers are interleaved inline by anchor turn */}
       <TranscriptView
         turns={rt.state.turns}
+        rotations={rt.state.rotations}
         permissionMode={rt.mode}
+        toolDetailMode={rt.toolDetailMode}
+        // Only the live-open block streams as plain text; during replay the open
+        // id is meaningless, so suppress it and render everything as markdown.
+        streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
         onDecision={rt.onDecision}
         onAnswer={rt.onAnswer}
       />
@@ -67,15 +73,6 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
         </div>
       )}
 
-      {/* Rotation dividers (appended after transcript content) */}
-      {rt.rotations.length > 0 && (
-        <div className="flex-shrink-0 px-4">
-          {rt.rotations.map((r, i) => (
-            <RotationDivider key={i} from={r.from} to={r.to} reason={r.reason} />
-          ))}
-        </div>
-      )}
-
       {/* "Action needed" sticky banner when permission/question is pending */}
       {rt.hasOpenAction && (
         <div
@@ -90,19 +87,8 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
         </div>
       )}
 
-      {/*
-       * aria-live mirror (sr-only).
-       * Announces the latest assistant text (debounced implicitly by state updates).
-       * Suppressed while replaying; announces "History loaded" once on replayComplete.
-       */}
-      <div
-        aria-live="polite"
-        aria-atomic="false"
-        aria-label="Session output"
-        className="sr-only"
-      >
-        {rt.ariaAnnouncement}
-      </div>
+      {/* sr-only aria-live mirror (owns its own ref + effect) */}
+      <SessionAriaLive turns={rt.state.turns} replaying={rt.state.replaying} />
     </>
   )
 }

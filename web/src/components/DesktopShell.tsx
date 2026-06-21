@@ -51,6 +51,14 @@ type Target = { type: 'new' } | { type: 'session'; id: string }
 
 function MainPaneSession() {
   const rt = useSessionRuntimeContext()
+  const toolToggleText =
+    rt.toolDetailMode === 'auto' ? 'Collapse tools'
+    : rt.toolDetailMode === 'all-closed' ? 'Expand tools'
+    : 'Auto-fold'
+  const toolToggleAria =
+    rt.toolDetailMode === 'auto' ? 'Collapse tool calls'
+    : rt.toolDetailMode === 'all-closed' ? 'Expand tool calls'
+    : 'Auto-fold tool calls'
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className={cn(
@@ -58,7 +66,20 @@ function MainPaneSession() {
         'bg-gray-900 border-b border-gray-700',
       )}>
         <span className="text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
-        <div className="ml-auto">
+        <button
+          type="button"
+          onClick={rt.toggleToolDetail}
+          aria-label={toolToggleAria}
+          className={cn(
+            'ml-auto flex items-center gap-1.5 px-3 py-2 rounded-md min-h-[44px]',
+            'text-sm font-medium text-gray-200',
+            'hover:bg-gray-700 active:bg-gray-600',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+          )}
+        >
+          {toolToggleText}
+        </button>
+        <div>
           <StatusBar status={rt.state.status} connectionState={rt.connectionState} />
         </div>
       </div>
@@ -215,11 +236,16 @@ export function DesktopShell() {
     }
   }
 
-  function handleDispatch({ initialPrompt, repo }: { initialPrompt: string; repo: string | null }) {
+  function handleDispatch({ initialPrompt, repo, images }: { initialPrompt: string; repo: string | null; images: { sha: string; mime: string; name: string }[] }) {
     clearPendingDelete()
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     createSession.mutate(
-      { initialPrompt, repo: repo ?? undefined, branch: repoInfo?.defaultBranch ?? undefined },
+      {
+        initialPrompt,
+        repo: repo ?? undefined,
+        branch: repoInfo?.defaultBranch ?? undefined,
+        images: images.length ? images : undefined,
+      },
       {
         onSuccess: (session) => {
           if (repo) setLastRepo(repo)

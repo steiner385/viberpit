@@ -182,14 +182,12 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
     })
   }
 
-  // When status reaches a terminal state, stop polling; also invalidate on success
+  // Refresh the accounts list when reauth transitions into success. Polling stops
+  // on its own once the status is terminal (see useReauthStatus.refetchInterval),
+  // so this effect only reacts to the external query state — no setState here.
   const prevStatusRef = useRef<string | undefined>(undefined)
   React.useEffect(() => {
     const state = reauthStatus?.state
-    const isTerminal = state === 'success' || state === 'error' || state === 'timeout'
-    if (isTerminal) {
-      setReauthStarted(false)
-    }
     if (state === 'success' && prevStatusRef.current !== 'success') {
       qc.invalidateQueries({ queryKey: QK.accounts })
     }

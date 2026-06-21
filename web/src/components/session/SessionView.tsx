@@ -4,7 +4,8 @@
  * The live session runtime (socket wiring, transcript reducer, derived status,
  * action handlers) lives in useSessionRuntime so it can be shared with the desktop
  * master-detail layout. SessionView owns only the full-screen chrome: the top bar
- * with Back, the Esc/Shift+Tab keyboard shortcuts, and the composer.
+ * (Back, title, tool-detail toggle, status), the Esc/Shift+Tab/c keyboard
+ * shortcuts, and the composer.
  *
  * Accessibility note:
  *   - An `aria-live="polite"` sr-only region (rendered by SessionBody) mirrors the
@@ -53,12 +54,20 @@ export function SessionView({ sessionId, onBack }: Props) {
   }, [sessionId, onBack, detach])
 
   // In-session keyboard shortcuts:
-  //   Esc  → back to session list (guarded: skip if composer textarea has text mid-draft,
+  //   Esc  → back to session list (guard: skip if composer textarea has text mid-draft,
   //           or if a permission/question card is pending — let user act on the card first)
   //   Shift+Tab → cycle permission mode through PERMISSION_MODES
-  const { hasOpenAction, onSetMode } = rt
+  //   c/C → toggle tool-detail mode (collapse/expand all tool calls)
+  const { hasOpenAction, onSetMode, toggleToolDetail } = rt
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      const ae = document.activeElement as HTMLElement | null
+      const typing = !!ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.isContentEditable)
+      if (!typing && (e.key === 'c' || e.key === 'C') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault()
+        toggleToolDetail()
+        return
+      }
       if (e.key === 'Tab' && e.shiftKey) {
         e.preventDefault()
         const next = nextPermissionMode(modeRef.current)
@@ -67,9 +76,9 @@ export function SessionView({ sessionId, onBack }: Props) {
         // Guard 1: if the composer textarea (aria-label="Message") is focused and
         // has non-empty text, Escape is for the composer (clearing a draft) — do
         // NOT navigate back.
-        const ae = document.activeElement as HTMLTextAreaElement | null
+        const ae2 = document.activeElement as HTMLTextAreaElement | null
         const inComposerWithText =
-          ae?.getAttribute('aria-label') === 'Message' && (ae?.value ?? '') !== ''
+          ae2?.getAttribute('aria-label') === 'Message' && (ae2?.value ?? '') !== ''
         if (inComposerWithText) return
         // Guard 2: if a permission/question card is pending, Escape is a no-op.
         if (hasOpenAction) return
@@ -79,10 +88,19 @@ export function SessionView({ sessionId, onBack }: Props) {
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onSetMode, handleBack, hasOpenAction])
+  }, [onSetMode, handleBack, hasOpenAction, toggleToolDetail])
+
+  const toolToggleText =
+    rt.toolDetailMode === 'auto' ? 'Collapse tools'
+    : rt.toolDetailMode === 'all-closed' ? 'Expand tools'
+    : 'Auto-fold'
+  const toolToggleAria =
+    rt.toolDetailMode === 'auto' ? 'Collapse tool calls'
+    : rt.toolDetailMode === 'all-closed' ? 'Expand tool calls'
+    : 'Auto-fold tool calls'
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-gray-950">
+    <div className="flex flex-col h-dvh bg-white dark:bg-gray-950">
       {/* Top bar */}
       <div className={cn(
         'flex items-center gap-3 px-3 py-2',
@@ -105,7 +123,21 @@ export function SessionView({ sessionId, onBack }: Props) {
 
         <span className="text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
 
-        <div className="ml-auto">
+        <button
+          type="button"
+          onClick={toggleToolDetail}
+          aria-label={toolToggleAria}
+          className={cn(
+            'ml-auto flex items-center gap-1.5 px-3 py-2 rounded-md min-h-[44px]',
+            'text-sm font-medium text-gray-200',
+            'hover:bg-gray-700 active:bg-gray-600',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+          )}
+        >
+          {toolToggleText}
+        </button>
+
+        <div>
           <StatusBar status={rt.state.status} connectionState={rt.connectionState} />
         </div>
       </div>

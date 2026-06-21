@@ -1,46 +1,62 @@
+"""Tests for extracting user prompts from a Claude transcript JSONL.
+
+These feed the AI title generator (highest-signal, lowest-token input).
+"""
 import json
 from pathlib import Path
 
-from server.sessions.titles import read_ai_title
+from server.sessions.titles import read_user_prompts_from_file
 
 
-def _write(root: Path, sid: str, lines: list[dict], sub: str = "encoded-cwd"):
-    d = root / "projects" / sub
-    d.mkdir(parents=True, exist_ok=True)
-    (d / f"{sid}.jsonl").write_text("\n".join(json.dumps(x) for x in lines))
+def _write(path: Path, lines: list[dict]) -> None:
+    path.write_text("\n".join(json.dumps(x) for x in lines))
 
 
-def test_reads_ai_title(tmp_path):
-    _write(tmp_path, "sid1", [
-        {"type": "user", "message": {"content": "hi"}},
-        {"ai-title": "Fix the login bug"},
+def test_collects_string_content_user_prompts(tmp_path):
+    p = tmp_path / "t.jsonl"
+    _write(p, [
+        {"type": "user", "message": {"content": "fix the login bug"}},
+        {"type": "user", "message": {"content": "now add tests"}},
     ])
-    assert read_ai_title(tmp_path, "sid1") == "Fix the login bug"
+    assert read_user_prompts_from_file(p) == ["fix the login bug", "now add tests"]
 
 
-def test_custom_title_wins_over_ai_title(tmp_path):
-    _write(tmp_path, "sid2", [
-        {"ai-title": "auto title"},
-        {"customTitle": "My Renamed Session"},
+def test_collects_block_content_user_prompts(tmp_path):
+    p = tmp_path / "t.jsonl"
+    _write(p, [
+        {"type": "user", "message": {"content": [{"type": "text", "text": "hello there"}]}},
     ])
-    assert read_ai_title(tmp_path, "sid2") == "My Renamed Session"
+    assert read_user_prompts_from_file(p) == ["hello there"]
 
 
-def test_summary_key_supported(tmp_path):
-    _write(tmp_path, "sid4", [{"type": "summary", "summary": "Refactor parser"}])
-    assert read_ai_title(tmp_path, "sid4") == "Refactor parser"
+def test_skips_tool_result_user_entries(tmp_path):
+    p = tmp_path / "t.jsonl"
+    _write(p, [
+        {"type": "user", "message": {"content": "real prompt"}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "abc", "content": "output"}]}},
+    ])
+    assert read_user_prompts_from_file(p) == ["real prompt"]
 
 
-def test_missing_file_returns_none(tmp_path):
-    assert read_ai_title(tmp_path, "nope") is None
+def test_skips_assistant_messages(tmp_path):
+    p = tmp_path / "t.jsonl"
+    _write(p, [
+        {"type": "user", "message": {"content": "the question"}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "the answer"}]}},
+    ])
+    assert read_user_prompts_from_file(p) == ["the question"]
 
 
-def test_empty_session_id_returns_none(tmp_path):
-    assert read_ai_title(tmp_path, "") is None
+def test_missing_file_returns_empty(tmp_path):
+    assert read_user_prompts_from_file(tmp_path / "nope.jsonl") == []
+
+
+def test_empty_path_returns_empty(tmp_path):
+    assert read_user_prompts_from_file("") == []
 
 
 def test_malformed_lines_do_not_raise(tmp_path):
-    d = tmp_path / "projects" / "x"
-    d.mkdir(parents=True)
-    (d / "sid3.jsonl").write_text('{not json\n{"ai-title": "ok"}\n')
-    assert read_ai_title(tmp_path, "sid3") == "ok"
+    p = tmp_path / "t.jsonl"
+    p.write_text('{not json\n{"type": "user", "message": {"content": "ok"}}\n')
+    assert read_user_prompts_from_file(p) == ["ok"]
