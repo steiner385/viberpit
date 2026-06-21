@@ -1,17 +1,16 @@
 /**
- * Tests for App.tsx view-state machine.
- *
- * The backend API is mocked so no real fetches occur.
+ * Tests for App routing. The backend API and WebSocket are mocked so no real
+ * network access occurs. The app is rendered inside a MemoryRouter so each test
+ * can deep-link to a specific URL.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import App from './App'
 import type { Session, Account } from './api/types'
-
-// ── Mock the WebSocket singleton ──────────────────────────────────────────────
 
 vi.mock('./ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./ws/client')>()
@@ -33,8 +32,6 @@ vi.mock('./ws/client', async (importOriginal) => {
     }),
   }
 })
-
-// ── Mock the REST API calls ───────────────────────────────────────────────────
 
 const MOCK_SESSIONS: Session[] = [
   {
@@ -70,87 +67,103 @@ vi.mock('./api/client', () => ({
       if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
       return Promise.resolve([])
     }),
-    post:  vi.fn(),
+    post: vi.fn(),
     patch: vi.fn(),
-    del:   vi.fn(),
+    del: vi.fn(),
   },
 }))
 
-// ── Test wrapper ──────────────────────────────────────────────────────────────
-
-function wrapper({ children }: { children: React.ReactNode }) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+// Test helper: surfaces the current pathname so assertions can read the URL.
+function LocationProbe() {
+  const location = useLocation()
+  return <div data-testid="pathname">{location.pathname}</div>
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+function renderAt(initialPath: string) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <App />
+        <LocationProbe />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
 
-describe('App view-state machine', () => {
+describe('App routing', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('renders the ccswitch heading in dashboard view', () => {
-    render(<App />, { wrapper })
+  it('renders the dashboard heading at /sessions', () => {
+    renderAt('/sessions')
     expect(screen.getByRole('heading', { name: /ccswitch/i })).toBeInTheDocument()
   })
 
-  it('switches to Terminal view when a session is opened', async () => {
-    const user = userEvent.setup()
-    render(<App />, { wrapper })
+  it('redirects / to /sessions', () => {
+    renderAt('/')
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/sessions')
+    expect(screen.getByRole('heading', { name: /ccswitch/i })).toBeInTheDocument()
+  })
 
-    // Wait for the session list to load
-    await waitFor(() => {
-      expect(screen.getByLabelText(/open session work/i)).toBeInTheDocument()
-    })
+  it('redirects an unknown path to /sessions', () => {
+    renderAt('/nonsense/path')
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/sessions')
+  })
 
-    // Click the session open button
-    await user.click(screen.getByLabelText(/open session work/i))
-
-    // Should now show the Terminal (Back button visible, heading gone)
+  it('deep-links to a session view at /session/:id', () => {
+    renderAt('/session/sess-1')
     expect(screen.getByRole('button', { name: /back to session list/i })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /ccswitch/i })).not.toBeInTheDocument()
   })
 
-  it('returns to Dashboard view when Back is clicked', async () => {
-    const user = userEvent.setup()
-    render(<App />, { wrapper })
+  it('deep-links to the archived review view at /review/:id', () => {
+    renderAt('/review/sess-1')
+    expect(screen.getByRole('button', { name: /back to dashboard/i })).toBeInTheDocument()
+  })
 
+  it('opens a session from the list and updates the URL', async () => {
+    const user = userEvent.setup()
+    renderAt('/sessions')
     await waitFor(() => {
       expect(screen.getByLabelText(/open session work/i)).toBeInTheDocument()
     })
-
-    // Navigate to session
     await user.click(screen.getByLabelText(/open session work/i))
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/session/sess-1')
+    expect(screen.getByRole('button', { name: /back to session list/i })).toBeInTheDocument()
+  })
 
-    // Navigate back
+  it('navigates back to /sessions from a session', async () => {
+    const user = userEvent.setup()
+    renderAt('/session/sess-1')
     await user.click(screen.getByRole('button', { name: /back to session list/i }))
-
-    // Should be back on dashboard
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/sessions')
     expect(screen.getByRole('heading', { name: /ccswitch/i })).toBeInTheDocument()
   })
 
-  it('focuses the dispatch prompt after returning from a session', async () => {
+  it('focuses the dispatch prompt after returning to the dashboard', async () => {
     const user = userEvent.setup()
-    render(<App />, { wrapper })
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/open session work/i)).toBeInTheDocument()
-    })
-
-    // Click to open session
-    await user.click(screen.getByLabelText(/open session work/i))
-
-    // Click Back
+    renderAt('/session/sess-1')
     await user.click(screen.getByRole('button', { name: /back to session list/i }))
-
-    // Focus should go to the dispatch prompt (keyboard-first experience)
     await waitFor(() => {
       expect(document.activeElement).toBe(
         screen.getByRole('textbox', { name: /new session prompt/i }),
       )
     })
+  })
+
+  it('deep-links to the accounts tab at /accounts', async () => {
+    renderAt('/accounts')
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /accounts/i })).toHaveAttribute('aria-selected', 'true')
+    })
+  })
+
+  it('clicking the Accounts tab updates the URL to /accounts', async () => {
+    const user = userEvent.setup()
+    renderAt('/sessions')
+    await user.click(screen.getByRole('tab', { name: /accounts/i }))
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/accounts')
   })
 })
