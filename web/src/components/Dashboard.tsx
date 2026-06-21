@@ -1009,9 +1009,13 @@ interface DashboardProps {
   activeTab?: TabId
   /** Called when the user selects a tab. Presence switches the component to controlled mode. */
   onTabChange?: (tab: TabId) => void
+  /** Controlled dialog state. Presence of onDialogChange switches to controlled mode. */
+  dialog?: 'new' | 'settings' | null
+  /** Called to open/close a URL-addressable dialog. */
+  onDialogChange?: (dialog: 'new' | 'settings' | null) => void
 }
 
-export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab, activeTab: activeTabProp, onTabChange }: DashboardProps) {
+export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab, activeTab: activeTabProp, onTabChange, dialog, onDialogChange }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const { data: archivedSessions = [] } = useArchivedSessions()
@@ -1035,6 +1039,13 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   }
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const dialogControlled = !!onDialogChange
+  const newDialogOpen = dialogControlled ? dialog === 'new' : showNewDialog
+  const settingsOpen = dialogControlled ? dialog === 'settings' : showSettings
+  function dismissNewDialog() {
+    if (dialogControlled) onDialogChange!(null)
+    else setShowNewDialog(false)
+  }
   const [showHelp, setShowHelp] = useState(false)
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
   const [allLimitedReset, setAllLimitedReset] = useState<string | null | undefined>(undefined)
@@ -1100,19 +1111,20 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   function openNewDialog() {
     setAllLimitedReset(undefined)
-    setShowNewDialog(true)
+    if (dialogControlled) onDialogChange!('new')
+    else setShowNewDialog(true)
   }
 
   function closeNewDialog() {
-    setShowNewDialog(false)
     setBranchError(null)
+    dismissNewDialog()
     newButtonRef.current?.focus()
   }
 
   function handleCreateSubmit(input: CreateSessionInput) {
     createSession.mutate(input, {
       onSuccess: () => {
-        setShowNewDialog(false)
+        dismissNewDialog()
         newButtonRef.current?.focus()
       },
       onError: (err) => {
@@ -1123,7 +1135,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           } else {
             const reset = body.earliestReset ?? null
             setAllLimitedReset(reset)
-            setShowNewDialog(false)
+            dismissNewDialog()
           }
         }
       },
@@ -1406,7 +1418,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
                 size="sm"
                 variant="outline"
                 className="min-h-[44px]"
-                onClick={() => setShowSettings(true)}
+                onClick={() => { if (dialogControlled) onDialogChange!('settings'); else setShowSettings(true) }}
                 aria-label="Settings"
               >
                 <Settings size={14} aria-hidden="true" className="mr-1" />
@@ -1503,7 +1515,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       )}
 
       {/* Dialogs */}
-      {showNewDialog && (
+      {newDialogOpen && (
         <NewSessionDialog
           accounts={accounts}
           onClose={closeNewDialog}
@@ -1547,10 +1559,11 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         <ShortcutsHelp onClose={() => setShowHelp(false)} />
       )}
 
-      {showSettings && (
+      {settingsOpen && (
         <SettingsPanel
           onClose={() => {
-            setShowSettings(false)
+            if (dialogControlled) onDialogChange!(null)
+            else setShowSettings(false)
             settingsButtonRef.current?.focus()
           }}
         />

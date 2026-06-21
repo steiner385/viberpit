@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
+import { Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Dashboard, type TabId } from './components/Dashboard'
 import { SessionView } from './components/session/SessionView'
 import { ReviewView } from './components/ReviewView'
@@ -11,6 +11,9 @@ import { ReviewView } from './components/ReviewView'
 
 function DashboardRoute({ tab }: { tab: TabId }) {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawDialog = searchParams.get('dialog')
+  const dialog = rawDialog === 'new' || rawDialog === 'settings' ? rawDialog : null
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="p-4 border-b border-border">
@@ -22,6 +25,15 @@ function DashboardRoute({ tab }: { tab: TabId }) {
           onTabChange={(next) => navigate(next === 'sessions' ? '/sessions' : `/${next}`)}
           onOpenSession={(id) => navigate(`/session/${id}`)}
           onReviewSession={(id) => navigate(`/review/${id}`)}
+          dialog={dialog}
+          onDialogChange={(next) => {
+            setSearchParams((prev) => {
+              const params = new URLSearchParams(prev)
+              if (next) params.set('dialog', next)
+              else params.delete('dialog')
+              return params
+            })
+          }}
         />
       </main>
     </div>
