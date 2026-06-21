@@ -34,6 +34,9 @@ class Session(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="idle")
     pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cwd: Mapped[str] = mapped_column(String, nullable=False)
+    # GitHub repo (nameWithOwner, e.g. "owner/name") this session works on, or NULL
+    # for a scratch / arbitrary-cwd session. Surfaced in the dashboard sessions list.
+    repo: Mapped[str | None] = mapped_column(String, nullable=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     permission_mode: Mapped[str] = mapped_column(String, nullable=False, default="interactive")
     tool_allowlist: Mapped[list] = mapped_column(JSON, nullable=False, default=list)

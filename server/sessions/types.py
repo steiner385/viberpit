@@ -21,6 +21,7 @@ class SessionRecord:
     rows: int
     cwd: str
     # Fields with defaults so existing create_session constructions keep compiling
+    repo: str | None = None          # GitHub nameWithOwner this session works on (None = scratch)
     detached: bool = False           # True for rehydrated sessions with no live driver
     status: str = "idle"             # working / idle / limited / ended
     permission_mode: str = "interactive"

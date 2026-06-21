@@ -257,6 +257,38 @@ describe('SessionList', () => {
   })
 })
 
+describe('SessionList — repo label', () => {
+  const onNew = vi.fn()
+  const onOpen = vi.fn()
+  const onRename = vi.fn()
+  const onClose = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('shows which repo each session is working on, and "Scratch" for repo-less ones', () => {
+    const sessions: Session[] = [
+      { ...SESSIONS[0], repo: 'acme/widget' },
+      { ...SESSIONS[1], repo: null },
+    ]
+    render(
+      <SessionList
+        sessions={sessions}
+        accounts={ACCOUNTS}
+        onNew={onNew}
+        onOpen={onOpen}
+        onRename={onRename}
+        onClose={onClose}
+      />,
+      { wrapper },
+    )
+
+    expect(screen.getByText('acme/widget')).toBeInTheDocument()
+    expect(screen.getByText('Scratch')).toBeInTheDocument()
+  })
+})
+
 describe('SessionCard — null usage guard (needs-reauth account)', () => {
   // Regression: before the fix, a session whose account has usage:null
   // crashed SessionCard with "Cannot read properties of null (reading 'session')".

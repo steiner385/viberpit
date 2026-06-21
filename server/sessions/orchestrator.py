@@ -151,6 +151,7 @@ class SessionOrchestrator:
         rows: int = 24,
         cwd: str | None = None,
         branch: str | None = None,
+        repo: str | None = None,
         identity: str = "system",
         permission_mode: str = "interactive",
     ) -> SessionRecord:
@@ -237,6 +238,7 @@ class SessionOrchestrator:
                 status="idle",
                 pid=None,
                 cwd=cwd,
+                repo=repo,
                 permission_mode=permission_mode,
             )
             db.add(row)
@@ -249,6 +251,7 @@ class SessionOrchestrator:
             cols=cols,
             rows=rows,
             cwd=cwd,
+            repo=repo,
             status="idle",
         )
         self._records[session_id] = record
@@ -361,6 +364,7 @@ class SessionOrchestrator:
                 cols=80,
                 rows=24,
                 cwd=row.cwd,
+                repo=row.repo,
                 detached=True,
                 status=status,
                 permission_mode=row.permission_mode,
