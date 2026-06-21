@@ -155,7 +155,7 @@ export function SessionView({ sessionId, onBack }: Props) {
 
   // Composer handlers
   const handlePrompt = useCallback(
-    (text: string) => prompt(sessionId, text),
+    (text: string, images: { sha: string; mime: string; name: string }[]) => prompt(sessionId, text, images),
     [sessionId, prompt],
   )
   const handleInterrupt = useCallback(
