@@ -18,7 +18,17 @@ def _parse(path: str, max_turns: int) -> list:
     for o in lines:
         typ = o.get("type")
         msg = o.get("message") or {}
-        content = msg.get("content") or []
+        # Claude transcripts use TWO shapes for `content`: a plain string (common for
+        # user turns, e.g. "content": "tell me a lullaby") OR a list of content blocks.
+        # Normalize to a list of dict blocks so the iterators below never choke on a
+        # str (which would iterate characters → b.get() AttributeError → blank replay).
+        content = msg.get("content")
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+        elif isinstance(content, list):
+            content = [b for b in content if isinstance(b, dict)]
+        else:
+            content = []
         uuid = o.get("uuid")
         if typ == "user":
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")

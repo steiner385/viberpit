@@ -26,3 +26,18 @@ def test_replay_skips_malformed_lines(tmp_path):
     out = asyncio.run(replay_events(str(p)))
     types = [e.to_wire()["type"] for e in out]
     assert "user" in types and "turnStart" in types and "turnEnd" in types
+
+
+def test_replay_handles_string_content(tmp_path):
+    """Regression: a user message whose `content` is a plain STRING (not a list of
+    blocks) must parse — otherwise iterating it yields chars and b.get() raises
+    AttributeError, crashing replay → blank history."""
+    p = tmp_path / "s.jsonl"
+    p.write_text(
+        '{"type":"user","uuid":"u1","message":{"role":"user","content":"tell me a lullaby"}}\n'
+        '{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}\n'
+    )
+    out = asyncio.run(replay_events(str(p)))
+    user_evs = [e for e in out if e.to_wire()["type"] == "user"]
+    assert user_evs, "string-content user message should produce a user event"
+    assert user_evs[0].to_wire()["text"] == "tell me a lullaby"

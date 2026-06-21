@@ -149,12 +149,18 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 await _send({"type": "replayComplete"})
                 return
 
-            # 1) Replay transcript (if any) as a single batch frame.
-            path = orchestrator.transcript_path(session_id)
-            events = await replay_events(path) if path else []
-            if events:
-                redacted_replay = [redact_event(e.to_wire()) for e in events]
-                await _send({"type": "batch", "events": redacted_replay})
+            # 1) Replay transcript (if any) as a single batch frame. A transcript that
+            #    can't be located or parsed must NOT crash the WS (which would close the
+            #    socket → client reconnect-loop on a blank screen) — skip the history and
+            #    continue; the live session still works.
+            try:
+                path = orchestrator.transcript_path(session_id)
+                events = await replay_events(path) if path else []
+                if events:
+                    redacted_replay = [redact_event(e.to_wire()) for e in events]
+                    await _send({"type": "batch", "events": redacted_replay})
+            except Exception:
+                log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
             await _send({"type": "replayComplete"})
 
             # 2) Re-emit any pending permission requests for this session.
