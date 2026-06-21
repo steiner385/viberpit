@@ -43,4 +43,14 @@ describe('FileContent', () => {
     expect(screen.getByText(/line from block/)).toBeInTheDocument()
     expect(screen.queryByText(/"type"/)).toBeNull()
   })
+
+  it('applies error styling when ok is false (failed read)', () => {
+    const { container } = render(<FileContent payload={{ content: 'permission denied' }} ok={false} />)
+    expect(container.querySelector('pre')).toHaveClass('bg-red-50')
+  })
+
+  it('uses neutral styling by default', () => {
+    const { container } = render(<FileContent payload={{ content: 'ok' }} />)
+    expect(container.querySelector('pre')).not.toHaveClass('bg-red-50')
+  })
 })

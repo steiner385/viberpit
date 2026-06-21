@@ -14,16 +14,23 @@ interface Props {
   permissionMode: string
   isLastTurn: boolean
   toolDetailMode: ToolDetailMode
+  /** Id of the block currently being streamed live (renders as plain text);
+   *  null/absent means every text block is finalized and rendered as markdown. */
+  streamingBlockId?: string | null
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[]) => void
 }
 
 export const Turn = memo(function Turn({
-  turn, permissionMode, isLastTurn, toolDetailMode, onDecision, onAnswer,
+  turn, permissionMode, isLastTurn, toolDetailMode, streamingBlockId = null, onDecision, onAnswer,
 }: Props) {
   const isUser = turn.role === 'user'
   const items = groupBlocks(turn.blocks)
   const lastIdx = items.length - 1
+
+  // An empty turn (e.g. a turnStart with no content yet, or a turn whose only
+  // tool was a skipped AskUserQuestion) must not render a padded gap.
+  if (items.length === 0) return null
 
   return (
     <div className="px-4 py-2">
@@ -46,7 +53,7 @@ export const Turn = memo(function Turn({
           case 'text':
             return isUser
               ? <UserBubble key={block.id} text={block.text} />
-              : <AssistantText key={block.id} text={block.text} streaming={false} />
+              : <AssistantText key={block.id} text={block.text} streaming={block.id === streamingBlockId} />
           case 'thinking':
             return <ThinkingBlock key={block.id} text={block.text} />
           case 'tool':

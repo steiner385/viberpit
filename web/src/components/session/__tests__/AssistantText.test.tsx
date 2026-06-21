@@ -30,4 +30,12 @@ describe('AssistantText', () => {
     const code = document.querySelector('code')
     expect(code).not.toBeNull()
   })
+
+  it('opens markdown links in a new tab with a safe rel', async () => {
+    render(<AssistantText text="[example](https://example.com)" streaming={false} />)
+    const link = await screen.findByRole('link', { name: 'example' })
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link.getAttribute('rel') ?? '').toContain('noopener')
+    expect(link.getAttribute('rel') ?? '').toContain('noreferrer')
+  })
 })

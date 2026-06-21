@@ -1,11 +1,12 @@
 import { useState } from 'react'
+import { cn } from '@/lib/utils'
 import { stripAnsi, coerceText } from '@/lib/toolContent'
 
-interface Props { payload: Record<string, unknown> }
+interface Props { payload: Record<string, unknown>; ok?: boolean }
 
 const MAX_LINES = 300
 
-export function FileContent({ payload }: Props) {
+export function FileContent({ payload, ok = true }: Props) {
   const [showAll, setShowAll] = useState(false)
   // `content` may be a string OR a list of content blocks — normalize both.
   const raw = payload.content != null ? coerceText(payload.content) : JSON.stringify(payload, null, 2)
@@ -16,7 +17,14 @@ export function FileContent({ payload }: Props) {
 
   return (
     <div>
-      <pre className="max-h-64 overflow-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-xs font-mono text-gray-800 dark:text-gray-200 md:max-h-96">
+      <pre
+        className={cn(
+          'max-h-64 overflow-auto rounded p-2 text-xs font-mono md:max-h-96',
+          ok
+            ? 'bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200'
+            : 'bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-300',
+        )}
+      >
         {visible.join('\n')}
       </pre>
       {hidden > 0 && (
