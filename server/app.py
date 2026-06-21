@@ -57,7 +57,12 @@ async def _lifespan(app: FastAPI):
     await init_db(db_url=db_url)
 
     # Rehydrate persisted sessions (lazy — drivers are created on attach, not here).
-    await app.state.orchestrator.rehydrate()
+    try:
+        await app.state.orchestrator.rehydrate()
+    except Exception:
+        _logging.getLogger("server").error(
+            "rehydrate() failed — starting with no sessions restored", exc_info=True
+        )
 
     # Sweep stale reauth-tmp dirs (from crashed previous runs)
     app.state.reauth.sweep_stale()

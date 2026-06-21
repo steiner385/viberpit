@@ -1,7 +1,7 @@
 """Tests for Task 3: app startup rehydrates persisted sessions via orchestrator.rehydrate()."""
 import asyncio
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -34,3 +34,17 @@ def test_startup_rehydrates_sessions_into_list(tmp_path):
         assert resp.status_code == 200, resp.text
         ids = [s["id"] for s in resp.json()]
         assert "restored" in ids
+
+
+def test_rehydrate_error_does_not_brick_startup(tmp_path):
+    """If rehydrate() raises, startup should log an error and continue — /api/health must return 200."""
+    orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+    # Replace rehydrate with a coroutine that always raises
+    orch.rehydrate = AsyncMock(side_effect=RuntimeError("bad row"))
+
+    app = create_app(orchestrator=orch)
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+         TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.get("/api/health", headers=_IDENT)
+        assert resp.status_code == 200, resp.text
