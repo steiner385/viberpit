@@ -58,7 +58,7 @@ describe('SessionActions (via Dashboard)', () => {
           id: 'sess-1',
           name: 'Alpha session',
           accountName: 'alice',
-          status: 'working' as const,
+          status: 'in_progress' as const,
           createdAt: '2026-06-19T10:00:00Z',
           updatedAt: '2026-06-19T10:00:00Z',
         },
