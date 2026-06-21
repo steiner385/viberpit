@@ -224,6 +224,19 @@ async def create_session(
     )
 
 
+# NOTE: this static route MUST be declared before the dynamic "/{session_id}" route
+# below, or FastAPI matches "/archived" against "/{session_id}" (session_id="archived")
+# and returns 404 — which silently broke the entire archived-sessions feature.
+@router.get("/archived")
+async def list_archived_sessions(
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> list[dict]:
+    """Return all archived session metadata."""
+    orch: SessionOrchestrator = _get_orchestrator(request)
+    return await orch.list_archived()
+
+
 @router.get("/{session_id}")
 async def get_session(
     session_id: str,
@@ -260,16 +273,6 @@ async def rename_session(
     # Re-fetch (rename_session updates in place)
     updated = orch.get_session(session_id)
     return _record_to_dict(updated or record)
-
-
-@router.get("/archived")
-async def list_archived_sessions(
-    request: Request,
-    _identity: str = Depends(current_identity),
-) -> list[dict]:
-    """Return all archived session metadata."""
-    orch: SessionOrchestrator = _get_orchestrator(request)
-    return await orch.list_archived()
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)

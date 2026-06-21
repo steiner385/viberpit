@@ -659,3 +659,16 @@ def test_whois_identity_subprocess_exception_returns_none():
         identity = _whois_identity(mock_request)
 
     assert identity is None
+
+
+def test_get_archived_route_not_shadowed_by_session_id():
+    """Regression: GET /api/sessions/archived must resolve to the archived-list route,
+    NOT be captured by the dynamic /{session_id} route (which would 404 with
+    session_id='archived'). Route declaration order matters in FastAPI."""
+    app, client = _make_app_and_client()
+    with client:
+        resp = client.get("/api/sessions/archived", headers=IDENTITY_HEADERS)
+    assert resp.status_code == 200, (
+        f"/sessions/archived returned {resp.status_code} (shadowed by /{{session_id}}?): {resp.text}"
+    )
+    assert isinstance(resp.json(), list)
