@@ -5,8 +5,11 @@ from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, User
                               ResultMessage, TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock)
 
 # ---- builders (construct real SDK objects) -------------------------------------
-def sys_init(session_id: str = "sess-1") -> SystemMessage:
-    return SystemMessage(subtype="init", data={"session_id": session_id})
+def sys_init(session_id: str = "sess-1", model: str | None = None) -> SystemMessage:
+    data: dict = {"session_id": session_id}
+    if model is not None:
+        data["model"] = model
+    return SystemMessage(subtype="init", data=data)
 
 def stream_start(uuid: str = "u1", sid: str = "sess-1") -> StreamEvent:
     return StreamEvent(uuid=uuid, session_id=sid, event={"type": "message_start"})
@@ -32,9 +35,11 @@ def user_tool_result(tool_id: str, content, is_error: bool = False, uuid: str = 
     return UserMessage(content=[ToolResultBlock(tool_use_id=tool_id, content=content, is_error=is_error)],
                        uuid=uuid)
 
-def result(session_id: str = "sess-1", usage: dict | None = None, uuid: str = "u9") -> ResultMessage:
+def result(session_id: str = "sess-1", usage: dict | None = None, uuid: str = "u9",
+           cost: float | None = None) -> ResultMessage:
     return ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
-                         num_turns=1, session_id=session_id, usage=usage, uuid=uuid)
+                         num_turns=1, session_id=session_id, usage=usage, uuid=uuid,
+                         total_cost_usd=cost)
 
 # ---- fake client --------------------------------------------------------------
 class FakeSDKClient:

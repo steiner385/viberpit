@@ -39,7 +39,11 @@ class Translator:
     def feed(self, msg) -> list:
         if isinstance(msg, SystemMessage):
             if msg.subtype == "init":
-                self.session_id = (msg.data or {}).get("session_id") or self.session_id
+                data = msg.data or {}
+                self.session_id = data.get("session_id") or self.session_id
+                model = data.get("model")
+                if model:
+                    return [ev.SessionMeta(model=model, session_id=self.session_id or "")]
             return []
 
         if isinstance(msg, StreamEvent):
@@ -87,6 +91,7 @@ class Translator:
             self.session_id = msg.session_id or self.session_id
             tid = self._turn_id or "turn"
             self._reset()
-            return [ev.TurnEnd(tid, _usage_dict(msg.usage), getattr(msg, "uuid", None))]
+            return [ev.TurnEnd(tid, _usage_dict(msg.usage),
+                               getattr(msg, "total_cost_usd", None), getattr(msg, "uuid", None))]
 
         return []
