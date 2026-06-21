@@ -16,19 +16,22 @@ export function useImageAttachments() {
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
     const list = Array.from(files)
+    let accepted = attachments.length
     for (const file of list) {
-      if (attachments.length >= MAX_IMAGES) break
+      if (accepted >= MAX_IMAGES) break
       const previewUrl = URL.createObjectURL(file)
       if (!ALLOWED.includes(file.type)) {
         setAttachments((a) => [...a, {
           sha: `err-${_tmpId++}`, mime: file.type, name: file.name,
           previewUrl, error: 'Unsupported file type' }])
+        accepted++
         continue
       }
       if (file.size > MAX_BYTES) {
         setAttachments((a) => [...a, {
           sha: `err-${_tmpId++}`, mime: file.type, name: file.name,
           previewUrl, error: 'Image too large (max 5 MB)' }])
+        accepted++
         continue
       }
       try {
@@ -39,10 +42,12 @@ export function useImageAttachments() {
         const ref = await resp.json()
         setAttachments((a) => [...a, {
           sha: ref.sha, mime: ref.mime, name: ref.name || file.name, previewUrl }])
+        accepted++
       } catch {
         setAttachments((a) => [...a, {
           sha: `err-${_tmpId++}`, mime: file.type, name: file.name,
           previewUrl, error: 'Upload failed' }])
+        accepted++
       }
     }
   }, [attachments.length])

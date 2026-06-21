@@ -22,7 +22,7 @@ export function AttachmentChips({ attachments, onRemove }: Props) {
           <button type="button" aria-label={`Remove ${a.name}`}
                   onClick={() => onRemove(a.sha)}
                   className="flex min-h-[44px] min-w-[44px] items-center justify-center text-gray-500 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400">
-            ✕
+            <span aria-hidden="true">✕</span>
           </button>
         </div>
       ))}

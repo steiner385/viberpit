@@ -47,4 +47,31 @@ describe('useImageAttachments', () => {
     act(() => result.current.remove('abc'))
     expect(result.current.attachments).toHaveLength(0)
   })
+
+  it('clear() empties attachments', async () => {
+    const { result } = renderHook(() => useImageAttachments())
+    await act(async () => { await result.current.addFiles([pngFile()]) })
+    await waitFor(() => expect(result.current.attachments).toHaveLength(1))
+    act(() => result.current.clear())
+    expect(result.current.attachments).toHaveLength(0)
+  })
+
+  it('upload failure creates error chip', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({ ok: false, json: async () => ({}) })))
+    const { result } = renderHook(() => useImageAttachments())
+    await act(async () => { await result.current.addFiles([pngFile()]) })
+    await waitFor(() => expect(result.current.attachments).toHaveLength(1))
+    expect(result.current.attachments[0].error).toMatch(/upload failed/i)
+    expect(result.current.refs()).toHaveLength(0)
+  })
+
+  it('caps multi-file batch at MAX_IMAGES', async () => {
+    const { result } = renderHook(() => useImageAttachments())
+    const files = Array.from({ length: 9 }, (_, i) =>
+      new File([new Uint8Array(10)], `img${i}.png`, { type: 'image/png' }))
+    await act(async () => { await result.current.addFiles(files) })
+    await waitFor(() => expect(result.current.attachments).toHaveLength(8))
+    expect(result.current.refs()).toHaveLength(8)
+  })
 })
