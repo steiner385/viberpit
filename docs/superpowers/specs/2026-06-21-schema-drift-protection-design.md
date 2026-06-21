@@ -28,11 +28,11 @@ Rejected alternatives:
 ## Components
 
 ### 1. Reconcile enhancement (close the gap)
-Extend `_ddl_default_literal` in `server/db/__init__.py` to handle callable container defaults:
-- `default.arg is list` (or a callable returning `[]`) → `'[]'`
-- `default.arg is dict` (or a callable returning `{}`) → `'{}'`
+Extend `_ddl_default_literal` in `server/db/__init__.py` to synthesize literals for the common **callable** defaults (detected by evaluating `default.arg(None)` — SQLAlchemy's `CallableColumnDefault` passes an exec context, and `None` suffices for these):
+- result `== []` → `'[]'`, result `== {}` → `'{}'` (valid SQLite defaults for a JSON-as-TEXT column; SQLAlchemy deserializes `'[]'`→`[]`).
+- result is a `datetime` (e.g. `default=datetime.utcnow`) → `CURRENT_TIMESTAMP`.
 
-These are valid SQLite defaults for a JSON column (stored as TEXT; SQLAlchemy deserializes `'[]'`→`[]`). This makes `tool_allowlist` and future JSON list/dict columns reconcilable. Scalar handling (bool/int/float/str) is unchanged. A genuinely non-synthesizable default still returns `None`.
+This is required, not optional: introspection shows **three** NOT NULL columns with callable defaults today — `tool_allowlist` (`list`→`[]`) **and** `created_at`/`updated_at` (`datetime.utcnow`→`CURRENT_TIMESTAMP`). Without the datetime case the coverage test (component 2) would flag the timestamp columns. After this enhancement, every current column is reconcilable with **no exemptions needed**. Scalar handling (bool/int/float/str) is unchanged. A genuinely non-synthesizable callable still returns `None`.
 
 ### 2. CI test — reconcile coverage
 `server/tests/test_schema_reconcile_coverage.py`. Iterate every `Base.metadata` table and column; assert each column is reconcilable:
