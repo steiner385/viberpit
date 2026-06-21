@@ -15,6 +15,7 @@ def _parse(path: str, max_turns: int) -> list:
             except json.JSONDecodeError:
                 continue
     out: list = []
+    meta_emitted = False
     for o in lines:
         typ = o.get("type")
         msg = o.get("message") or {}
@@ -39,6 +40,11 @@ def _parse(path: str, max_turns: int) -> list:
                 out.append(ev.ToolResult(r["tool_use_id"], not r.get("is_error", False),
                                          {"content": r.get("content")}, uuid))
         elif typ == "assistant":
+            # Reconstruct the model once (status strip needs it after re-attach).
+            model = msg.get("model")
+            if model and not meta_emitted:
+                meta_emitted = True
+                out.append(ev.SessionMeta(model=model, session_id=o.get("sessionId") or ""))
             out.append(ev.TurnStart(turn_id=uuid, src_uuid=uuid))
             for b in content:
                 t = b.get("type")
@@ -49,7 +55,8 @@ def _parse(path: str, max_turns: int) -> list:
                 elif t == "tool_use":
                     out.append(ev.ToolCall(uuid, b.get("id", ""), b.get("name", ""), ev.tool_kind(b.get("name", "")),
                                            b.get("input", {}), uuid))
-            out.append(ev.TurnEnd(uuid, None, uuid))
+            usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
+            out.append(ev.TurnEnd(uuid, usage, None, uuid))
     # keep only the last max_turns assistant turns' worth — for the small fixture this is a no-op;
     # a turn boundary is a TurnStart. Trim from the front to the start of the (max_turns)-th-from-last turn.
     starts = [i for i, e in enumerate(out) if isinstance(e, ev.TurnStart)]

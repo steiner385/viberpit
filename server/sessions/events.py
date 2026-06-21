@@ -21,9 +21,15 @@ class TurnStart:
     def to_wire(self): return {"type": "turnStart", "turnId": self.turn_id, "srcUuid": self.src_uuid}
 
 @dataclass
+class SessionMeta:
+    model: str; session_id: str
+    def to_wire(self): return {"type": "sessionMeta", "model": self.model, "sessionId": self.session_id}
+
+@dataclass
 class TurnEnd:
-    turn_id: str; usage: dict | None = None; src_uuid: str | None = None
-    def to_wire(self): return {"type": "turnEnd", "turnId": self.turn_id, "usage": self.usage, "srcUuid": self.src_uuid}
+    turn_id: str; usage: dict | None = None; cost_usd: float | None = None; src_uuid: str | None = None
+    def to_wire(self): return {"type": "turnEnd", "turnId": self.turn_id, "usage": self.usage,
+                               "costUsd": self.cost_usd, "srcUuid": self.src_uuid}
 
 @dataclass
 class TextDelta:

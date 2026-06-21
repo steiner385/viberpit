@@ -15,8 +15,12 @@ import { useSessionSocket } from '@/ws/client'
 import type { WsRotatedMsg, WsErrorMsg } from '@/ws/client'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { SessionEvent } from '@/session/events'
+import { selectSubAgents } from '@/session/selectors'
+import { remainingContextPct } from '@/lib/contextWindow'
+import { useSessions, useAccounts } from '@/api/hooks'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { StatusBar } from './StatusBar'
+import { SessionMeta } from './SessionMeta'
 import { RotationDivider } from './RotationDivider'
 import { TranscriptView } from './TranscriptView'
 import { Composer } from './Composer'
@@ -199,6 +203,22 @@ export function SessionView({ sessionId, onBack }: Props) {
 
   const title = state.title ?? sessionId.slice(0, 8)
 
+  // ── Status-strip derived data ──────────────────────────────────────────────
+  // Account: the session record's account, overridden by the latest rotation.
+  const { data: sessions } = useSessions()
+  const { data: accounts } = useAccounts()
+  const sessionRecord = sessions?.find((s) => s.id === sessionId)
+  const latestRotation = rotations.length > 0 ? rotations[rotations.length - 1].to : null
+  const account = latestRotation ?? sessionRecord?.accountName ?? '—'
+
+  const accountUsage = accounts?.find((a) => a.name === account)?.usage ?? null
+  const quota = accountUsage
+    ? { sessionPct: accountUsage.session.pct, weeklyPct: accountUsage.weekly.pct }
+    : null
+
+  const contextPct = remainingContextPct(state.usage, state.model)
+  const subAgents = selectSubAgents(state.turns)
+
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950">
       {/* Top bar */}
@@ -226,6 +246,17 @@ export function SessionView({ sessionId, onBack }: Props) {
         <div className="ml-auto">
           <StatusBar status={state.status} connectionState={connectionState} />
         </div>
+      </div>
+
+      {/* Status strip: account · model · context · quota · sub-agents */}
+      <div className="flex-shrink-0">
+        <SessionMeta
+          account={account}
+          model={state.model}
+          contextPct={contextPct}
+          quota={quota}
+          subAgents={subAgents}
+        />
       </div>
 
       {/* Error banner */}
