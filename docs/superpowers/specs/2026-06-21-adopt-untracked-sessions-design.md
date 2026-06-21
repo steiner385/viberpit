@@ -65,7 +65,13 @@ class AdoptionCandidate:
     name: str                    # from transcript ai-title, else basename(cwd)
     mapped: bool                 # account is not None
     tracked: bool                # claude_session_id already in ccswitch DB
-    skip_reason: str | None      # "unmapped config dir" | "already tracked" | None
+    skip_reason: str | None      # machine code: "unmapped" | "tracked" | None
+    # UX MUST-FIX #2 — informed-consent risk signal. The whole danger of
+    # force-takeover is unsaved/in-flight work; the user cannot judge that risk
+    # without knowing how recently the session did anything. Computed from the
+    # transcript .jsonl mtime at discovery time.
+    last_activity: datetime      # transcript mtime (UTC)
+    pid_alive: bool              # process still present at discovery (re-checked at adopt time)
 
 def discover_candidates(
     known_accounts: list[str],
@@ -84,12 +90,17 @@ Algorithm:
    `/proc/<pid>/{environ,cwd}`.
 4. **Map config dir → account:** compare the realpath of `CLAUDE_CONFIG_DIR` against
    `paths.account_cfg_dir(name)` for each known account. No match → `mapped=False`,
-   `skip_reason="unmapped config dir"`.
+   `skip_reason="unmapped"`.
 5. **Resolve `claude_session_id`:** glob `<cfg>/projects/*/<*>.jsonl`, restrict to the project dir
-   matching `cwd`, pick the **most-recently-modified** transcript. Unresolvable → exclude with
-   reason.
+   matching `cwd`, pick the **most-recently-modified** transcript. Record its **mtime as
+   `last_activity`** (UX MUST-FIX #2). Unresolvable → exclude with reason.
 6. **Dedup:** if the `claude_session_id` is already in `tracked_sids`, set `tracked=True`,
-   `skip_reason="already tracked"`.
+   `skip_reason="tracked"`.
+
+`skip_reason` is a machine code; the UI maps it to plain-language copy (UX SHOULD #5):
+`"unmapped"` → **"Not a managed account"** (subtext: running under an unmanaged config dir such
+as `~/.claude`; move it to a managed account to adopt) · `"tracked"` → **"Already managed by
+ccswitch"** (with a jump-to-session link).
 7. Return *all* candidates (mapped + unmapped + tracked), each flagged. Nothing silently dropped —
    the dashboard shows skip reasons; a silent cap would read as "covered everything" when it isn't.
 
@@ -105,7 +116,8 @@ async def adopt_session(self, claude_session_id: str, identity: str) -> SessionR
 1. **Re-resolve** the candidate from the transcript (the PID may have died since discovery —
    tolerated).
 2. **Terminate** the original process tree if still alive: SIGTERM the candidate + its helper
-   children (pty-host/spare), wait a bounded grace period, escalate to SIGKILL. A vanished PID is
+   children (pty-host/spare), wait a **bounded grace period** (gives the TUI a chance to flush —
+   exposed to the UI as a visible countdown, UX MUST-FIX #3), escalate to SIGKILL. A vanished PID is
    treated as success. Audit-logged (`process.terminate`).
 3. **Register**: write a `Session` DB row + in-memory `SessionRecord` in the **original cwd**, no
    worktree, `status="idle"`, `adopted_in_place=True`.
@@ -118,7 +130,12 @@ async def adopt_session(self, claude_session_id: str, identity: str) -> SessionR
 
 - `GET  /api/sessions/adoptable` → `{ candidates: [...] }` (mapped, unmapped, tracked, with reasons).
 - `POST /api/sessions/adopt` `{ "claudeSessionId": "..." }` → `201` with the new session record;
-  `409`/`404` if the candidate is no longer adoptable.
+  `409`/`404` if the candidate is no longer adoptable. The `201` body reports the **outcome** so the
+  UI can be honest (UX MUST-FIX #3): `resumed: bool` (true = resumed the transcript, false = resume
+  failed and a fresh session was started) and `terminatedPid: int | null` (null = process had
+  already exited, nothing was killed).
+- The endpoint **re-verifies liveness** before terminating, so the confirm dialog and the action
+  agree on whether a kill will actually happen.
 - Both `Depends(current_identity)`; both write `AuditEvent`s (`session.adopt`, `process.terminate`).
 
 ### 4. Data model — `server/db/models.Session`
@@ -129,10 +146,53 @@ dev SQLite DB without a migration (per the project's create_all/backfill rule). 
 
 ### 5. Frontend — dashboard
 
-An "Adoptable sessions" panel:
-- **Mapped + untracked** candidates: "Adopt (force-takeover)" button behind a confirm dialog that
-  **explicitly warns it will terminate the running process** (risk of losing unsaved TUI state).
-- **Unmapped / already-tracked** candidates: shown greyed with the skip reason.
+An "Untracked sessions" panel (plainer than "Adoptable"). Inline list, **modal confirm**.
+- **Mapped + untracked** candidates show: **name** (primary), human-friendly **repo/cwd**
+  (basename + middle-elided path, full on hover), **account**, **last activity** ("3s ago" /
+  "20m ago"), and **PID** (secondary). `claude_session_id` is demoted to a tooltip — a UUID
+  identifies nothing to a human (UX SHOULD #4).
+- The action is **risk-scaled** (UX MUST-FIX #1 + #2):
+  - *Recently active* (last_activity within a small window, or `pid_alive`): button **"Stop & take
+    over"** (destructive/red); confirm modal **names what dies** and requires a checkbox — *"I
+    understand this will stop PID {pid} and may lose unsaved work."*
+  - *Idle*: button **"Manage this session"**; a lighter named confirm (no checkbox).
+- **Confirm modal copy:** *"ccswitch will stop the `claude` process running in **{repo}** (PID
+  {pid}, under **{account}**) and resume the conversation **"{name}"** here. Any unsaved work in
+  that terminal will be lost. This can't be undone."* Primary action red; **Cancel** focused/default.
+- **Post-adoption (MUST-FIX #3):** success toast reflects the real outcome — *"Took over "{name}"
+  under {account}. It's now in your sessions list."* or, on resume-fallback, *"Couldn't resume the
+  previous conversation — started a fresh session instead."*
+- **Unmapped / already-tracked** candidates go in a collapsed **"Not adoptable (N)"** subsection so
+  greyed dead-ends don't dilute or get mis-clicked; each shows plain-language skip copy (#5), and
+  tracked ones link to their existing session row.
+
+## UX requirements (from UX review, 2026-06-21)
+
+MUST-FIX #1–#3 are folded into the sections above (risk-scaled consent, `last_activity` signal,
+honest post-adoption outcome). The remaining findings the implementation plan MUST honor:
+
+- **Candidate legibility (#4):** lead with name + human-friendly repo/cwd + account + last-activity;
+  PID secondary; `claude_session_id` in a tooltip only. *Nice:* a 1–2 line transcript-tail preview
+  (last user/assistant turn) as the strongest "yes, this is the one" signal, if cheaply readable.
+- **Staleness (#6):** panel shows **"scanned Ns ago"** + a **Refresh** button; auto-refresh on open.
+  `409`/`404` on adopt is a **normal, expected** outcome (the PID may die between render and click),
+  not a red error — re-verify liveness and adjust the dialog ("This process already exited — adopting
+  will just resume the conversation, nothing will be killed").
+- **Empty / error states (#7):**
+  - *Empty:* "No untracked sessions found. ccswitch is managing everything that's running."
+  - *Stale adopt (409/404):* "That session changed since the last scan" + auto-refresh; if the
+    process died but the transcript survived, offer to resume it anyway.
+  - *Discovery failure (can't read `/proc`):* "Couldn't scan running sessions. Retry." — not a blank
+    panel that reads as "nothing to adopt."
+- **Information architecture (#8):** collapse the panel to a quiet line when empty in steady state
+  ("All running sessions are managed"); surface prominently only when candidates exist; keep
+  adoptable rows separate from the collapsed "Not adoptable (N)" subsection; inline list + modal
+  confirm.
+- **Microcopy (#9):** panel title "Untracked sessions"; idle button "Manage this session"; active
+  button "Stop & take over" (red); confirm title "Take over this session?"; primary "Stop & take
+  over"; Cancel as focused/default; success toast links to the new session row.
+- **Visible isolation exception (#10):** an adopted-in-place session shows a small badge in its row —
+  **"running in original dir — no worktree"** — so a non-isolated session is never a later surprise.
 
 ## Data flow
 
@@ -163,17 +223,21 @@ session now appears in list_sessions, usage-aware, rotation-eligible
 Discovery (`adopt.py`) with a **fake `/proc` lister**:
 - Each bucket classified correctly: SDK-owned (excluded), TUI (candidate), helpers (excluded).
 - Account mapping incl. default-`~/.claude` → `mapped=False`, correct `skip_reason`.
-- `claude_session_id` resolution picks most-recently-modified transcript for the cwd's project dir.
-- Dedup against `tracked_sids` sets `tracked=True`.
+- `claude_session_id` resolution picks most-recently-modified transcript for the cwd's project dir,
+  and sets `last_activity` to that transcript's mtime (UX MUST-FIX #2).
+- Dedup against `tracked_sids` sets `tracked=True`, `skip_reason="tracked"`.
 
 Takeover (`adopt_session`) with a **fake process-killer + fake SDK**:
 - Resume-in-place: cwd == original, **no worktree created**, `adopted_in_place=True`.
 - `process.terminate` + `session.adopt` audit rows written.
-- Dead-PID path: no termination attempted, resume still happens.
+- Dead-PID path: no termination attempted, resume still happens, outcome reports
+  `terminatedPid=None` (UX MUST-FIX #3).
+- Resume-failure path: outcome reports `resumed=False` (fresh session started), not a silent swap.
 
 API:
-- `GET /adoptable` shape + flags; `401` without identity.
-- `POST /adopt` happy path `201`; `409` when no longer adoptable; `401` without identity.
+- `GET /adoptable` shape + flags incl. `last_activity` / `pid_alive`; `401` without identity.
+- `POST /adopt` happy path `201` with outcome (`resumed`, `terminatedPid`); `409` when no longer
+  adoptable; `401` without identity.
 
 ## Scope / non-goals
 
