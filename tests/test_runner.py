@@ -18,7 +18,7 @@ def _seed(name):
 class TestRunner(unittest.TestCase):
     def test_runs_on_selected_account(self):
         with temp_env():
-            from ccswitch import runner, accounts, oauth
+            from ccswitch import runner, accounts
             from tests.helpers import usage
             _seed("alpha"); _seed("beta")
             os.environ["CCSWITCH_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"

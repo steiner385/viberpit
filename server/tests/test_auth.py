@@ -8,7 +8,6 @@ Tests:
 """
 from __future__ import annotations
 
-import os
 import pytest
 from httpx import AsyncClient, ASGITransport
 from fastapi import FastAPI, WebSocket

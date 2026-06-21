@@ -118,7 +118,7 @@ def test_redact_detail_scrubs_nested():
 @pytest.mark.asyncio
 async def test_record_audit_stores_redacted_detail():
     """record_audit() should not persist raw token material in detail."""
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
 
     mock_db = MagicMock()
     mock_db.add = MagicMock()

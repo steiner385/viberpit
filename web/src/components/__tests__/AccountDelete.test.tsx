@@ -196,7 +196,7 @@ describe('AccountRow — Delete button', () => {
     vi.mocked(hooks.useSessions).mockReturnValue({
       data: [
         makeSession({ id: 'sess-1', accountName: 'work', status: 'idle' }),
-        makeSession({ id: 'sess-2', accountName: 'work', status: 'working' }),
+        makeSession({ id: 'sess-2', accountName: 'work', status: 'in_progress' }),
       ],
       isLoading: false,
     } as ReturnType<typeof hooks.useSessions>)

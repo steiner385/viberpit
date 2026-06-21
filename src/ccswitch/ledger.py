@@ -2,7 +2,7 @@
 import contextlib
 import fcntl
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 
 from . import paths
 from .oauth import Usage

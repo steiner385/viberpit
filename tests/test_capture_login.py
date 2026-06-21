@@ -3,7 +3,6 @@
 The fake claude binary writes a dummy .credentials.json into $CLAUDE_CONFIG_DIR
 and exits 0, so no real claude binary or network is needed.
 """
-import os
 import sys
 from pathlib import Path
 

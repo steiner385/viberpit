@@ -2,11 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-import os
-from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from server.db import init_db, db_session
 from server.db.models import Session as DbSession

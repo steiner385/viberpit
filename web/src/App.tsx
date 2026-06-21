@@ -15,7 +15,7 @@ function DashboardRoute({ tab }: { tab: TabId }) {
   const rawDialog = searchParams.get('dialog')
   const dialog = rawDialog === 'new' || rawDialog === 'settings' ? rawDialog : null
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="min-h-dvh bg-background text-foreground">
       <header className="p-4 border-b border-border">
         <h1 className="text-2xl font-bold tracking-tight">ccswitch</h1>
       </header>
@@ -45,7 +45,7 @@ function SessionRoute() {
   const navigate = useNavigate()
   if (!sessionId) return <Navigate to="/sessions" replace />
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="min-h-dvh bg-background text-foreground">
       <SessionView sessionId={sessionId} onBack={() => navigate('/sessions')} />
     </div>
   )
@@ -56,7 +56,7 @@ function ReviewRoute() {
   const navigate = useNavigate()
   if (!sessionId) return <Navigate to="/sessions" replace />
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="min-h-dvh bg-background text-foreground">
       <ReviewView sessionId={sessionId} onBack={() => navigate('/sessions')} />
     </div>
   )

@@ -89,7 +89,10 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
         aria-label={`Open session ${session.name}`}
       >
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
+          <span
+            className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate"
+            title={session.nameIsAuto ? 'Auto-named by Claude' : undefined}
+          >
             {session.name}
           </span>
           <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">

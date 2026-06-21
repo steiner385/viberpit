@@ -122,6 +122,30 @@ def _normalize_remote_url(url: str) -> str:
     return normalized
 
 
+def repo_at_path(path: str) -> str | None:
+    """Return the GitHub ``owner/name`` for the checkout at ``path``, else None.
+
+    Reads the live git state of a session's working directory — runs
+    ``git -C <path> remote get-url origin`` and normalizes the result — so the
+    sessions screen's repo indicator reflects what's actually on disk (a
+    worktree resolves to its clone's origin) rather than a stored field.
+
+    Returns None when ``path`` is empty, is not a git working tree, or has no
+    ``origin`` remote (e.g. a scratch session's isolated temp dir).
+    """
+    if not path:
+        return None
+    r = _run_git(["-C", path, "remote", "get-url", "origin"])
+    if r.returncode != 0:
+        return None
+    # _normalize_remote_url yields "host/owner/name"; keep the trailing owner/name.
+    normalized = _normalize_remote_url(r.stdout)
+    parts = [p for p in normalized.split("/") if p]
+    if len(parts) < 3:
+        return None
+    return f"{parts[-2]}/{parts[-1]}"
+
+
 def find_local_reference(repo_root: str, clone_url: str) -> str | None:
     """Return a local repo dir whose origin matches ``clone_url``, else None.
 
@@ -219,6 +243,7 @@ query($cursor: String) {
         name
         owner { login }
         isPrivate
+        isArchived
         url
         pushedAt
         defaultBranchRef { name }
@@ -231,6 +256,9 @@ query($cursor: String) {
 
 def list_accessible_repos() -> list[dict]:
     """List repos the user's gh creds can access, most-recently-pushed first.
+
+    Archived repos are excluded -- they are read-only on GitHub and should not
+    be offered in the repository chooser.
 
     Paginates over the GraphQL cursor.  Returns dicts with keys:
     ``nameWithOwner, name, owner, isPrivate, url, defaultBranch, pushedAt``.
@@ -259,6 +287,9 @@ def list_accessible_repos() -> list[dict]:
         )
         for node in conn.get("nodes", []) or []:
             if not node:
+                continue
+            # Archived repos are read-only on GitHub; never offer them in the chooser.
+            if node.get("isArchived"):
                 continue
             owner = (node.get("owner") or {}).get("login")
             default_ref = node.get("defaultBranchRef") or {}

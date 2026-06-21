@@ -15,9 +15,13 @@ import { useSessionSocket } from '@/ws/client'
 import type { WsRotatedMsg, WsErrorMsg } from '@/ws/client'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { SessionEvent } from '@/session/events'
+import { selectSubAgents } from '@/session/selectors'
+import { remainingContextPct } from '@/lib/contextWindow'
+import { useSessions, useAccounts } from '@/api/hooks'
 import { PERMISSION_MODES } from '@/session/permissionModes'
+import type { ToolDetailMode } from '@/session/groupBlocks'
 import { StatusBar } from './StatusBar'
-import { RotationDivider } from './RotationDivider'
+import { SessionMeta } from './SessionMeta'
 import { TranscriptView } from './TranscriptView'
 import { Composer } from './Composer'
 import { WorkingIndicator } from './WorkingIndicator'
@@ -35,12 +39,6 @@ function nextPermissionMode(current: string): string {
 interface Props {
   sessionId: string
   onBack: () => void
-}
-
-interface Rotation {
-  from: string
-  to: string
-  reason?: string
 }
 
 export function SessionView({ sessionId, onBack }: Props) {
@@ -61,18 +59,29 @@ export function SessionView({ sessionId, onBack }: Props) {
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
   const [mode, setMode] = useState('interactive')
   const modeRef = useRef('interactive')
-  const [rotations, setRotations] = useState<Rotation[]>([])
+  const [toolDetailMode, setToolDetailMode] = useState<ToolDetailMode>('auto')
+  const toggleToolDetail = useCallback(
+    () => setToolDetailMode((m) =>
+      m === 'auto' ? 'all-closed' : m === 'all-closed' ? 'all-open' : 'auto',
+    ),
+    [],
+  )
 
   // Track whether replay just finished so we can announce "History loaded" once.
   const prevReplayingRef = useRef(true)
-  const [ariaAnnouncement, setAriaAnnouncement] = useState('')
+  // The aria-live region is an external system (the screen reader); we write its
+  // text imperatively via this ref rather than through React state, so the effect
+  // below has no setState and triggers no extra render.
+  const liveRef = useRef<HTMLDivElement>(null)
 
   // Attach / detach + subscribe to session events
   useEffect(() => {
     const onEvent = (e: SessionEvent) => dispatch(e)
     const onRotated = (msg: WsRotatedMsg) => {
       if (msg.sessionId !== sessionId) return
-      setRotations((prev) => [...prev, { from: msg.fromAccount, to: msg.toAccount, reason: msg.reason }])
+      // Route into the reducer so the rotation is anchored into the transcript
+      // timeline (the single source of ordering) and scrolls with history.
+      dispatch({ type: '_rotation', from: msg.fromAccount, to: msg.toAccount, reason: msg.reason })
     }
     // I3 — surface direct `error` frames (SESSION_NOT_FOUND, frame_too_large, etc.)
     const onError = (msg: WsErrorMsg) => {
@@ -93,8 +102,11 @@ export function SessionView({ sessionId, onBack }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
-  // aria-live mirror: announce latest assistant text after replay completes.
+  // aria-live mirror: write the announcement into the sr-only region (an external
+  // system) imperatively, so there's no setState in this effect.
   useEffect(() => {
+    const el = liveRef.current
+    if (!el) return
     if (state.replaying) {
       prevReplayingRef.current = true
       return
@@ -102,7 +114,7 @@ export function SessionView({ sessionId, onBack }: Props) {
     // If we just finished replaying, announce that.
     if (prevReplayingRef.current) {
       prevReplayingRef.current = false
-      setAriaAnnouncement('History loaded')
+      el.textContent = 'History loaded'
       return
     }
     // Find the last assistant text block and mirror it.
@@ -111,7 +123,7 @@ export function SessionView({ sessionId, onBack }: Props) {
     const lastTextBlock = [...lastAssistantTurn.blocks].reverse().find((b) => b.kind === 'text')
     if (lastTextBlock && lastTextBlock.kind === 'text') {
       // Mirror last ~200 chars (enough for a screen reader without flooding)
-      setAriaAnnouncement(lastTextBlock.text.slice(-200))
+      el.textContent = lastTextBlock.text.slice(-200)
     }
   }, [state.turns, state.replaying])
 
@@ -124,11 +136,19 @@ export function SessionView({ sessionId, onBack }: Props) {
     [sessionId, permissionResponse],
   )
 
-  // Answer handler for question cards
+  // Answer handler for question cards.
+  // The answer is delivered to the model as a tool result, NOT a user prompt, so the
+  // server never echoes it back. Optimistically echo the chosen labels into the
+  // transcript as a user bubble so the user immediately sees their response register
+  // (the card is removed at the same time, and status stays "Working…" until the
+  // agent's next output streams in).
   const handleAnswer = useCallback(
     (questionId: string, selected: string[]) => {
       answerQuestion(sessionId, questionId, selected)
       dispatch({ type: '_resolveQuestion', questionId })
+      if (selected.length > 0) {
+        dispatch({ type: 'user', turnId: `answer:${questionId}`, text: selected.join(', ') })
+      }
     },
     [sessionId, answerQuestion],
   )
@@ -171,8 +191,16 @@ export function SessionView({ sessionId, onBack }: Props) {
   //   Esc  → back to session list (guard: skip if composer textarea has text mid-draft,
   //           or if a permission/question card is pending — let user act on the card first)
   //   Shift+Tab → cycle permission mode through PERMISSION_MODES
+  //   c/C → toggle tool-detail mode (collapse/expand all tool calls)
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      const ae = document.activeElement as HTMLElement | null
+      const typing = !!ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.isContentEditable)
+      if (!typing && (e.key === 'c' || e.key === 'C') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault()
+        toggleToolDetail()
+        return
+      }
       if (e.key === 'Tab' && e.shiftKey) {
         e.preventDefault()
         const next = nextPermissionMode(modeRef.current)
@@ -182,9 +210,9 @@ export function SessionView({ sessionId, onBack }: Props) {
         // has non-empty text, Escape is for the composer (clearing a draft) — do
         // NOT navigate back. Navigate back only when the textarea is empty or
         // focus is elsewhere.
-        const ae = document.activeElement as HTMLTextAreaElement | null
+        const ae2 = document.activeElement as HTMLTextAreaElement | null
         const inComposerWithText =
-          ae?.getAttribute('aria-label') === 'Message' && (ae?.value ?? '') !== ''
+          ae2?.getAttribute('aria-label') === 'Message' && (ae2?.value ?? '') !== ''
         if (inComposerWithText) return
         // Guard 2: if a permission/question card is pending, Escape is a no-op —
         // the user must respond to the card before navigating away.
@@ -195,12 +223,38 @@ export function SessionView({ sessionId, onBack }: Props) {
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleSetMode, handleBack, hasOpenAction])
+  }, [handleSetMode, handleBack, hasOpenAction, toggleToolDetail])
 
   const title = state.title ?? sessionId.slice(0, 8)
 
+  const toolToggleText =
+    toolDetailMode === 'auto' ? 'Collapse tools'
+    : toolDetailMode === 'all-closed' ? 'Expand tools'
+    : 'Auto-fold'
+  const toolToggleAria =
+    toolDetailMode === 'auto' ? 'Collapse tool calls'
+    : toolDetailMode === 'all-closed' ? 'Expand tool calls'
+    : 'Auto-fold tool calls'
+
+  // ── Status-strip derived data ──────────────────────────────────────────────
+  // Account: the session record's account, overridden by the latest rotation.
+  const { data: sessions } = useSessions()
+  const { data: accounts } = useAccounts()
+  const sessionRecord = sessions?.find((s) => s.id === sessionId)
+  const latestRotation =
+    state.rotations.length > 0 ? state.rotations[state.rotations.length - 1].to : null
+  const account = latestRotation ?? sessionRecord?.accountName ?? '—'
+
+  const accountUsage = accounts?.find((a) => a.name === account)?.usage ?? null
+  const quota = accountUsage
+    ? { sessionPct: accountUsage.session.pct, weeklyPct: accountUsage.weekly.pct }
+    : null
+
+  const contextPct = remainingContextPct(state.usage, state.model)
+  const subAgents = selectSubAgents(state.turns)
+
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-gray-950">
+    <div className="flex flex-col h-dvh bg-white dark:bg-gray-950">
       {/* Top bar */}
       <div className={cn(
         'flex items-center gap-3 px-3 py-2',
@@ -223,9 +277,34 @@ export function SessionView({ sessionId, onBack }: Props) {
 
         <span className="text-sm font-semibold text-gray-100 truncate">{title}</span>
 
-        <div className="ml-auto">
+        <button
+          type="button"
+          onClick={toggleToolDetail}
+          aria-label={toolToggleAria}
+          className={cn(
+            'ml-auto flex items-center gap-1.5 px-3 py-2 rounded-md min-h-[44px]',
+            'text-sm font-medium text-gray-200',
+            'hover:bg-gray-700 active:bg-gray-600',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+          )}
+        >
+          {toolToggleText}
+        </button>
+
+        <div>
           <StatusBar status={state.status} connectionState={connectionState} />
         </div>
+      </div>
+
+      {/* Status strip: account · model · context · quota · sub-agents */}
+      <div className="flex-shrink-0">
+        <SessionMeta
+          account={account}
+          model={state.model}
+          contextPct={contextPct}
+          quota={quota}
+          subAgents={subAgents}
+        />
       </div>
 
       {/* Error banner */}
@@ -248,10 +327,12 @@ export function SessionView({ sessionId, onBack }: Props) {
         </div>
       )}
 
-      {/* Transcript */}
+      {/* Transcript — rotation dividers are interleaved inline by anchor turn */}
       <TranscriptView
         turns={state.turns}
+        rotations={state.rotations}
         permissionMode={mode}
+        toolDetailMode={toolDetailMode}
         onDecision={handleDecision}
         onAnswer={handleAnswer}
       />
@@ -266,15 +347,6 @@ export function SessionView({ sessionId, onBack }: Props) {
           )}
         >
           <WorkingIndicator count={state.status.count} />
-        </div>
-      )}
-
-      {/* Rotation dividers (appended after transcript content) */}
-      {rotations.length > 0 && (
-        <div className="flex-shrink-0 px-4">
-          {rotations.map((r, i) => (
-            <RotationDivider key={i} from={r.from} to={r.to} reason={r.reason} />
-          ))}
         </div>
       )}
 
@@ -309,15 +381,16 @@ export function SessionView({ sessionId, onBack }: Props) {
        * aria-live mirror (sr-only).
        * Announces the latest assistant text (debounced implicitly by state updates).
        * Suppressed while replaying; announces "History loaded" once on replayComplete.
+       * Content is written imperatively via liveRef (see the effect above) — kept
+       * childless in JSX so React doesn't clobber the imperatively-set text.
        */}
       <div
+        ref={liveRef}
         aria-live="polite"
         aria-atomic="false"
         aria-label="Session output"
         className="sr-only"
-      >
-        {ariaAnnouncement}
-      </div>
+      />
     </div>
   )
 }

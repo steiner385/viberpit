@@ -8,10 +8,7 @@ Tests:
   3. When neither store nor global file exists, compose() produces a valid (empty) .claude.json.
 """
 import json
-import os
-import tempfile
 import unittest
-from pathlib import Path
 from tests.helpers import temp_env
 
 
@@ -110,8 +107,7 @@ class TestComposeClaudioJson(unittest.TestCase):
     def test_compose_falls_back_to_global_claude_json_when_no_store(self):
         """Migration path: if no store/<name>.claude.json, use global HOME/.claude.json."""
         with temp_env() as d:
-            from ccswitch import configdir, paths
-            from ccswitch.creds import write_json_secure
+            from ccswitch import configdir
             self._seed_slot("alpha")
             # Write a fake global .claude.json by monkeypatching global_claude_json()
             global_data = {
@@ -175,7 +171,6 @@ class TestComposeClaudioJson(unittest.TestCase):
         """compose() removes a pre-existing backups/ dir inside the cfg dir."""
         with temp_env():
             from ccswitch import configdir, paths
-            from ccswitch.creds import write_json_secure
             self._seed_slot("alpha")
             # pre-create the cfg dir with a backups/ subdirectory
             cfg_dir = paths.account_cfg_dir("alpha")

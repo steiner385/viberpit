@@ -56,18 +56,41 @@ class RenameSessionRequest(BaseModel):
     name: str
 
 
-def _record_to_dict(record) -> dict[str, Any]:
-    """Convert an in-memory SessionRecord to the wire-format dict."""
+_UNSET = object()
+
+
+def _record_to_dict(record, repo: Any = _UNSET) -> dict[str, Any]:
+    """Convert an in-memory SessionRecord to the wire-format dict.
+
+    ``repo`` lets callers inject a value read live from the session's working
+    directory (see :func:`_resolve_repo`); when omitted, the stored
+    ``record.repo`` is used as a fallback.
+    """
     return {
         "id": record.id,
         "name": record.name,
         "accountName": record.account,
-        "repo": record.repo,
+        "repo": record.repo if repo is _UNSET else repo,
         "status": record.status,
+        "nameIsAuto": getattr(record, "name_is_auto", True),
         "detached": record.detached,
         "createdAt": record.created_at.isoformat() if record.created_at else None,
         "updatedAt": None,
     }
+
+
+async def _resolve_repo(record) -> str | None:
+    """Read the repo indicator live from the session's working dir.
+
+    Runs git in ``record.cwd`` (off the event loop) so the sessions screen shows
+    what's actually checked out — a worktree resolves to its clone's origin, and
+    a scratch dir with no git remote reports None ("Scratch"). Falls back to the
+    stored ``record.repo`` only when the session has no working directory.
+    """
+    cwd = getattr(record, "cwd", None)
+    if not cwd:
+        return record.repo
+    return await asyncio.to_thread(gitrepos.repo_at_path, cwd)
 
 
 def _get_orchestrator(request: Request) -> SessionOrchestrator:
@@ -87,7 +110,9 @@ async def list_sessions(
     """Return all in-memory session records."""
     orch: SessionOrchestrator = _get_orchestrator(request)
     records = orch.list_sessions()
-    return [_record_to_dict(r) for r in records]
+    # Read each session's repo live from its working dir, all in parallel.
+    repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
+    return [_record_to_dict(r, repo=repo) for r, repo in zip(records, repos)]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -102,6 +127,9 @@ async def create_session(
     Returns 409 with earliestReset if all accounts are at ceiling.
     """
     orch: SessionOrchestrator = _get_orchestrator(request)
+    # When the user supplies no name, the session is auto-named (Claude title / first
+    # prompt) and stays auto until a manual rename. A supplied name is pinned manual.
+    name_is_auto = not (body.name and body.name.strip())
     name = body.name or "New Session"
 
     # Validate repo format (nameWithOwner) before using it in URLs or filesystem paths.
@@ -177,6 +205,7 @@ async def create_session(
             repo=body.repo,
             identity=identity,
             permission_mode=body.permissionMode or "interactive",
+            name_is_auto=name_is_auto,
         )
     except ValueError as exc:
         return JSONResponse(
@@ -222,7 +251,7 @@ async def create_session(
 
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
-        content=_record_to_dict(record),
+        content=_record_to_dict(record, repo=await _resolve_repo(record)),
     )
 
 
@@ -253,7 +282,7 @@ async def get_session(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
-    return _record_to_dict(record)
+    return _record_to_dict(record, repo=await _resolve_repo(record))
 
 
 @router.patch("/{session_id}")
@@ -274,7 +303,8 @@ async def rename_session(
     await orch.rename_session(session_id, body.name)
     # Re-fetch (rename_session updates in place)
     updated = orch.get_session(session_id)
-    return _record_to_dict(updated or record)
+    final = updated or record
+    return _record_to_dict(final, repo=await _resolve_repo(final))
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -326,7 +356,7 @@ async def unarchive_session(
         identity=identity,
         detail={"session_id": session_id},
     )
-    return _record_to_dict(record)
+    return _record_to_dict(record, repo=await _resolve_repo(record))
 
 
 @router.delete("/{session_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)

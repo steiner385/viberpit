@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
-import pytest
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -112,7 +111,6 @@ def test_list_github_branches(tmp_path):
 
 def test_list_github_branches_bad_name_400(tmp_path):
     """A malformed repo name (no slash) → 400."""
-    from ccswitch.gitrepos import list_remote_branches
     with temp_env():
         with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
             _, client = _make_app_and_client()
@@ -160,10 +158,17 @@ def test_create_session_with_repo_clones(tmp_path):
     from ccswitch import paths
     import time as _time
 
-    # A real local clone dir that ensure_clone will "return".
+    # A real local clone dir that ensure_clone will "return". It needs at least one
+    # commit so that the per-session worktree (git worktree add --detach off HEAD,
+    # created for every repo session now) has a commit to detach from.
     clone_dir = tmp_path / ".ccswitch" / "clones" / "acme" / "widget"
     clone_dir.mkdir(parents=True)
     subprocess.run(["git", "init", str(clone_dir), "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(clone_dir), "config", "user.email", "t@example.com"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(clone_dir), "config", "user.name", "Test"], check=True, capture_output=True)
+    (clone_dir / "README.md").write_text("x\n")
+    subprocess.run(["git", "-C", str(clone_dir), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(clone_dir), "commit", "-m", "init"], check=True, capture_output=True)
 
     captured: dict = {}
 

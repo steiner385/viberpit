@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, update
+from sqlalchemy import update
 
 from server.auth.middleware import current_identity, _COOKIE_NAME, _unsign_session_id
 from server.db import get_db

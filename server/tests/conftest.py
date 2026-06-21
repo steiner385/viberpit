@@ -1,4 +1,3 @@
-import pytest
 
 
 # Enable asyncio mode for all tests in this package

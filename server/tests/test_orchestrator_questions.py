@@ -1,5 +1,4 @@
 """Tests for orchestrator.answer_question — mirrors resolve_permission pattern."""
-import asyncio
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -9,7 +8,6 @@ from starlette.testclient import TestClient
 
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
-from server.tests.fakes import fake_sdk as f
 from server.tests.fakes.fake_sdk import FakeSDKClient
 
 REPO_ROOT = Path(__file__).parent.parent.parent

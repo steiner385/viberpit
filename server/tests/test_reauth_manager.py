@@ -157,7 +157,7 @@ def test_runner_exception_marks_error():
 
 def test_sweep_stale_removes_old_dirs(tmp_path, monkeypatch):
     """sweep_stale() removes dirs older than 600s and leaves fresh ones."""
-    import os, time, shutil
+    import os, time
 
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
 
@@ -273,7 +273,6 @@ def test_cancel_kills_via_launcher_pid_file(tmp_path, monkeypatch):
 
 def test_sweep_stale_removes_symlinks(tmp_path, monkeypatch):
     """sweep_stale() removes symlinks without following them."""
-    import time
 
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
 

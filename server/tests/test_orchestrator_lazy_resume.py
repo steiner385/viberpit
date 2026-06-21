@@ -3,14 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 from server.db import init_db, db_session
 from server.db.models import Session as DbSession
-from server.sessions.driver import SessionDriver
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -240,6 +237,61 @@ def test_ensure_driver_unknown_session_returns_none(tmp_path):
 
     result = asyncio.run(_run())
     assert result is None
+
+
+# -----------------------------------------------------------------------
+# Test 4b: ensure_driver threads the attaching identity (regression)
+# -----------------------------------------------------------------------
+
+def test_ensure_driver_threads_attaching_identity(tmp_path):
+    """A resumed driver must carry the attaching user's identity, not a hardcoded
+    "system" sentinel.
+
+    Regression: AskUserQuestion / permission answers register under
+    ``driver.identity``; the WebSocket resolves them with the real Tailscale
+    identity. When ensure_driver hardcoded identity="system", the identity check
+    in the registries rejected every answer on a *resumed* session — the answer
+    was silently dropped and the agent hung forever awaiting it.
+    """
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    cwd = str(tmp_path)
+    session_id = "ident-s1"
+    user = "tony@kindash.com"
+
+    async def _run():
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(DbSession(
+                id=session_id, name="test", account_name="acct1",
+                claude_session_id="resume-me", status="idle", cwd=cwd,
+            ))
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+        await orch.rehydrate()
+
+        cfg_dir = tmp_path / "cfg" / "acct1"
+        cfg_dir.mkdir(parents=True)
+
+        with patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+             patch("server.sessions.orchestrator.configdir"):
+            driver = await orch.ensure_driver(session_id, identity=user)
+
+            # Register a pending question the way the SDK callback does — under
+            # the driver's own identity.
+            qid, fut = driver._qreg.request(
+                session_id, "t1", "H", "Q?", [{"label": "Yes"}], False, driver.identity,
+            )
+            # The user answers over the WS with their real identity.
+            resolved = orch.answer_question(session_id, qid, ["Yes"], user)
+            answer = await fut if fut.done() else None
+        return driver.identity, resolved, answer
+
+    identity, resolved, answer = asyncio.run(_run())
+
+    assert identity == user, (
+        f"resumed driver must carry the attaching identity, got {identity!r}"
+    )
+    assert resolved is True, "answer_question must resolve with the attaching identity"
+    assert answer == ["Yes"], "the pending question future must receive the answer"
 
 
 # -----------------------------------------------------------------------
