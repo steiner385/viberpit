@@ -63,3 +63,10 @@ def account_cfg_dir(name: str) -> Path:
 
 def reauth_tmp_dir() -> Path:
     return root() / "reauth-tmp"
+
+
+def archive_dir() -> Path:
+    """Directory where archived session working directories are stored."""
+    d = root() / "archive"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
