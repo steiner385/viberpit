@@ -192,6 +192,43 @@ describe('SessionView', () => {
     })
   })
 
+  it('echoes the chosen answer into the transcript when a question is answered', async () => {
+    const user = userEvent.setup()
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+
+    emitSessionEvent({ type: 'turnStart', turnId: 't1' })
+    emitSessionEvent({
+      type: 'question',
+      questionId: 'q-1',
+      turnId: 't1',
+      header: 'Pick one',
+      question: 'Which color?',
+      options: [{ label: 'Red' }, { label: 'Blue' }],
+      multiSelect: false,
+    })
+
+    await waitFor(() => {
+      expect(screen.getByRole('radio', { name: 'Blue' })).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByRole('radio', { name: 'Blue' }))
+
+    // Answer is sent to the server.
+    expect(mockAnswerQuestion).toHaveBeenCalledWith('s1', 'q-1', ['Blue'])
+
+    // The question card is removed…
+    await waitFor(() => {
+      expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
+    })
+
+    // …and the chosen answer is echoed into the transcript as immediate feedback,
+    // so the user sees their response register (the card label is gone by now, so
+    // a remaining "Blue" can only be the echoed user bubble).
+    await waitFor(() => {
+      expect(screen.getByText('Blue')).toBeInTheDocument()
+    })
+  })
+
   it('shows title when title event fires', async () => {
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
 
