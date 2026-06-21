@@ -1,15 +1,17 @@
 import { useRef, useEffect } from 'react'
 import type { Turn as TurnType } from '@/session/reducer'
+import type { ToolDetailMode } from '@/session/groupBlocks'
 import { Turn } from './Turn'
 
 interface Props {
   turns: TurnType[]
   permissionMode: string
+  toolDetailMode: ToolDetailMode
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[]) => void
 }
 
-export function TranscriptView({ turns, permissionMode, onDecision, onAnswer }: Props) {
+export function TranscriptView({ turns, permissionMode, toolDetailMode, onDecision, onAnswer }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
@@ -33,16 +35,14 @@ export function TranscriptView({ turns, permissionMode, onDecision, onAnswer }: 
   }, [turns])
 
   return (
-    <div
-      ref={containerRef}
-      onScroll={handleScroll}
-      className="flex-1 overflow-y-auto"
-    >
-      {turns.map((turn) => (
+    <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto">
+      {turns.map((turn, idx) => (
         <Turn
           key={turn.id}
           turn={turn}
           permissionMode={permissionMode}
+          isLastTurn={idx === turns.length - 1}
+          toolDetailMode={toolDetailMode}
           onDecision={onDecision}
           onAnswer={onAnswer}
         />
