@@ -50,6 +50,20 @@ class TestAccounts(unittest.TestCase):
                 self.assertIsNone(accounts.usage_for("alpha"))
                 self.assertEqual(accounts.list_accounts()[0]["status"], "needs-reauth")
 
+    def test_usage_for_usageerror_returns_none_without_changing_status(self):
+        """A transient usage-endpoint error (429/5xx) returns None and leaves status
+        unchanged — it must NOT mark needs-reauth or propagate (which 500s the list)."""
+        with temp_env():
+            from ccswitch import accounts, oauth, ledger
+            _seed_account("alpha")
+            with ledger.locked_ledger() as led:
+                ledger.set_status(led, "alpha", "ok")
+            with mock.patch.object(oauth, "fetch_usage", side_effect=oauth.UsageError("usage endpoint returned 429")):
+                # Returns None rather than raising — no 500.
+                self.assertIsNone(accounts.usage_for("alpha"))
+            # Status stays "ok" (a rate-limit is not an auth failure).
+            self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
+
     def test_usage_for_ensure_valid_token_autherror_no_double_refresh(self):
         """Expired token + dead refresh: ensure_valid_token raises AuthError → needs-reauth,
         fetch_usage is never called, refresh_access_token called exactly once."""

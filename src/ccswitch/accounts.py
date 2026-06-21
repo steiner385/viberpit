@@ -1,9 +1,12 @@
 """Integration glue: token validity, usage caching, selection, sync-back, registry."""
+import logging
 import threading
 import time
 from datetime import datetime, timezone
 
 from . import configdir, ledger, oauth, paths
+
+log = logging.getLogger(__name__)
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .selector import select_best
@@ -74,6 +77,13 @@ def usage_for(name: str) -> oauth.Usage | None:
     # Step 2: fetch usage; on 401 do exactly ONE refresh+refetch.
     try:
         u = oauth.fetch_usage(blob["accessToken"])
+    except oauth.UsageError as e:
+        # Transient usage-endpoint failure (429 rate-limit / 5xx). The token is
+        # valid — only the usage API is unavailable. Return None (no usage) WITHOUT
+        # marking needs-reauth, so callers (the accounts list) degrade gracefully
+        # instead of 500-ing the whole dashboard.
+        log.warning("usage_for(%s): transient usage error, leaving status unchanged: %s", name, e)
+        return None
     except oauth.AuthError:
         try:
             with _account_lock(name):
@@ -82,6 +92,9 @@ def usage_for(name: str) -> oauth.Usage | None:
                 slot = oauth.refresh_access_token(slot["refreshToken"], slot)
                 write_credentials(paths.slot_path(name), slot)
             u = oauth.fetch_usage(slot["accessToken"])
+        except oauth.UsageError as e:
+            log.warning("usage_for(%s): transient usage error after refresh: %s", name, e)
+            return None
         except oauth.AuthError:
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, name, "needs-reauth")
