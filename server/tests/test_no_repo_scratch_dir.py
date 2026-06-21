@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from ccswitch.worktrees import worktrees_base
 from server.db import init_db

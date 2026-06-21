@@ -1,5 +1,3 @@
-import os
-import sys
 import time
 import unittest
 from unittest import mock

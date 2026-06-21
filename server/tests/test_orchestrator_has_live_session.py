@@ -11,7 +11,6 @@ Finding 2b (poller closure wiring): the _poller_usage_fn closure in
 """
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import MagicMock, patch
 
 from server.sessions.orchestrator import SessionOrchestrator

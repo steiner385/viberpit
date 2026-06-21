@@ -16,17 +16,15 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, HTTPException, Request, WebSocket, status
+from fastapi import HTTPException, Request, WebSocket, status
 from itsdangerous import BadSignature, TimestampSigner
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
-from starlette.websockets import WebSocketState
 
 from server.auth.identity import verify_identity
 from server.config import get_settings
-from server.db import get_db
 from server.db.models import AppSession
 
 # Cookie name

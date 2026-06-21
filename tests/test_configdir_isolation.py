@@ -7,7 +7,6 @@ Verifies:
   - Non-allowlisted entries (e.g. sessions/, agents/, tasks/) are NOT symlinked.
   - Behavior is idempotent (calling twice raises no error, symlinks stable).
 """
-import json
 import os
 import unittest
 from pathlib import Path
@@ -132,7 +131,7 @@ class TestReconcileLinks(unittest.TestCase):
     def test_reconcile_links_is_idempotent(self):
         """Calling reconcile_links multiple times must not raise and must leave stable links."""
         with temp_env():
-            from ccswitch import configdir, paths
+            from ccswitch import configdir
             self._seed_slot("alpha")
             cfg_dir = configdir.compose("alpha")
             # call reconcile again

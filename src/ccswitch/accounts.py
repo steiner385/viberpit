@@ -4,12 +4,12 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from . import configdir, ledger, oauth, paths
-
-log = logging.getLogger(__name__)
+from . import ledger, oauth, paths
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .selector import select_best
+
+log = logging.getLogger(__name__)
 
 # Per-account refresh locks. Anthropic refresh tokens are single-use (rotate on
 # refresh), so two concurrent refreshers (e.g. the web server's usage poller AND

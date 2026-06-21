@@ -20,7 +20,6 @@ def _cmd_crypto(args: argparse.Namespace) -> int:
     """Handle the `ccswitch crypto` subcommand family."""
     from . import paths
     from .crypto import (
-        CryptoUnavailable,
         generate_key,
         is_encrypted,
         key_available,
