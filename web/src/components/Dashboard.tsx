@@ -25,10 +25,13 @@ import {
   useGithubRepos,
   useGithubBranches,
   useSettings,
+  useArchivedSessions,
+  useUnarchiveSession,
+  usePermanentDeleteSession,
   QK,
   type CreateSessionInput,
 } from '@/api/hooks'
-import type { Account, Session } from '@/api/types'
+import type { Account, Session, ArchivedSession } from '@/api/types'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { setLastRepo } from '@/lib/lastRepo'
 
@@ -800,20 +803,214 @@ function AccountsStrip({ accounts, onRefresh, refreshingName, onSaveNickname, on
   )
 }
 
+// ── Permanent Delete Dialog ───────────────────────────────────────────────────
+
+interface PermanentDeleteDialogProps {
+  sessionName: string
+  onClose: () => void
+  onConfirm: () => void
+  isPending: boolean
+}
+
+function PermanentDeleteDialog({ sessionName, onClose, onConfirm, isPending }: PermanentDeleteDialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+
+  React.useEffect(() => {
+    cancelRef.current?.focus()
+  }, [])
+
+  React.useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') { onClose(); return }
+      if (e.key === 'Tab') {
+        const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        )
+        if (!focusable || focusable.length === 0) return
+        const first = focusable[0]
+        const last = focusable[focusable.length - 1]
+        if (e.shiftKey) {
+          if (document.activeElement === first) { e.preventDefault(); last.focus() }
+        } else {
+          if (document.activeElement === last) { e.preventDefault(); first.focus() }
+        }
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="perm-delete-dialog-title"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div
+        ref={dialogRef}
+        className={cn(
+          'w-full max-w-sm rounded-xl',
+          'bg-white dark:bg-gray-800',
+          'border border-gray-200 dark:border-gray-600',
+          'shadow-xl p-6 space-y-4',
+        )}
+      >
+        <h2
+          id="perm-delete-dialog-title"
+          className="text-lg font-semibold text-gray-900 dark:text-gray-100"
+        >
+          Permanently delete session
+        </h2>
+
+        <p className="text-sm text-gray-700 dark:text-gray-300">
+          Permanently delete <span className="font-medium">'{sessionName}'</span>? This removes the
+          session folder and all its data. This can't be undone.
+        </p>
+
+        <div className="flex gap-3 justify-end pt-2">
+          <Button
+            ref={cancelRef}
+            type="button"
+            variant="outline"
+            onClick={onClose}
+            disabled={isPending}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={onConfirm}
+            disabled={isPending}
+            className={cn(
+              'min-h-[44px]',
+              'bg-red-600 hover:bg-red-700 text-white',
+              'dark:bg-red-700 dark:hover:bg-red-600',
+              'focus-visible:ring-red-500',
+            )}
+          >
+            {isPending ? 'Deleting…' : 'Delete permanently'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Archived List ──────────────────────────────────────────────────────────────
+
+interface ArchivedListProps {
+  sessions: ArchivedSession[]
+  onReview: (id: string) => void
+  onUnarchive: (id: string) => void
+  onPermanentDelete: (session: ArchivedSession) => void
+  unarchivingId: string | null
+}
+
+function ArchivedList({ sessions, onReview, onUnarchive, onPermanentDelete, unarchivingId }: ArchivedListProps) {
+  if (sessions.length === 0) {
+    return (
+      <p className="text-sm text-gray-500 dark:text-gray-400 py-6 text-center">
+        No archived sessions.
+      </p>
+    )
+  }
+
+  return (
+    <ul className="space-y-2" aria-label="Archived sessions">
+      {sessions.map((s) => {
+        const displayName = s.name || s.id.slice(0, 8)
+        const archivedDate = new Date(s.archivedAt).toLocaleDateString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+        })
+        return (
+          <li
+            key={s.id}
+            className={cn(
+              'flex flex-col gap-2 rounded-lg border border-gray-200 dark:border-gray-700',
+              'bg-white dark:bg-gray-800 px-3 py-2',
+            )}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{displayName}</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                  {s.account} · Archived {archivedDate}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => onReview(s.id)}
+                  className={cn(
+                    'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
+                    'border border-gray-300 dark:border-gray-600',
+                    'text-gray-700 dark:text-gray-300',
+                    'hover:bg-gray-100 dark:hover:bg-gray-700',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                  )}
+                  aria-label={`Review ${displayName}`}
+                >
+                  Review
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onUnarchive(s.id)}
+                  disabled={unarchivingId === s.id}
+                  className={cn(
+                    'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
+                    'bg-blue-600 hover:bg-blue-700 text-white',
+                    'dark:bg-blue-700 dark:hover:bg-blue-600',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                    'disabled:opacity-40',
+                  )}
+                  aria-label={`Unarchive ${displayName}`}
+                >
+                  {unarchivingId === s.id ? 'Restoring…' : 'Unarchive'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onPermanentDelete(s)}
+                  className={cn(
+                    'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+                    'text-red-500 dark:text-red-400',
+                    'hover:bg-red-50 dark:hover:bg-red-900/30',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500',
+                  )}
+                  aria-label={`Delete ${displayName} permanently`}
+                >
+                  <Trash2 size={14} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-type TabId = 'sessions' | 'accounts'
+type TabId = 'sessions' | 'accounts' | 'archived'
 
 interface DashboardProps {
   /** Called when the user opens a session (navigates to Terminal view). */
   onOpenSession?: (sessionId: string) => void
   /** Bump this to re-focus the dispatch bar (e.g. after returning from a session). */
   focusDispatchSignal?: unknown
+  /** Called when the user wants to review an archived session. */
+  onReviewSession?: (sessionId: string) => void
+  /** If set, the archived tab is selected on mount. */
+  initialTab?: TabId
 }
 
-export function Dashboard({ onOpenSession, focusDispatchSignal }: DashboardProps) {
+export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
+  const { data: archivedSessions = [] } = useArchivedSessions()
   const { data: settingsData } = useSettings()
   const reposQuery = useGithubRepos()
 
@@ -823,8 +1020,10 @@ export function Dashboard({ onOpenSession, focusDispatchSignal }: DashboardProps
   const refreshAccount = useRefreshAccount()
   const updateNickname = useUpdateAccountNickname()
   const deleteAccount = useDeleteAccount()
+  const unarchiveSession = useUnarchiveSession()
+  const permanentDeleteSession = usePermanentDeleteSession()
 
-  const [activeTab, setActiveTab] = useState<TabId>('sessions')
+  const [activeTab, setActiveTab] = useState<TabId>(initialTab ?? 'sessions')
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
@@ -833,6 +1032,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal }: DashboardProps
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null)
   const [branchError, setBranchError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
+  const [permDeleteTarget, setPermDeleteTarget] = useState<ArchivedSession | null>(null)
+  const [unarchivingId, setUnarchivingId] = useState<string | null>(null)
 
   // ── Keyboard selection state ─────────────────────────────────────────────────
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
@@ -864,12 +1065,14 @@ export function Dashboard({ onOpenSession, focusDispatchSignal }: DashboardProps
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
   const sessionsTabRef = useRef<HTMLButtonElement>(null)
   const accountsTabRef = useRef<HTMLButtonElement>(null)
+  const archivedTabRef = useRef<HTMLButtonElement>(null)
 
   const tabRefs: Record<TabId, React.RefObject<HTMLButtonElement | null>> = {
     sessions: sessionsTabRef,
     accounts: accountsTabRef,
+    archived: archivedTabRef,
   }
-  const TAB_ORDER: TabId[] = ['sessions', 'accounts']
+  const TAB_ORDER: TabId[] = ['sessions', 'accounts', 'archived']
 
   function handleTabKeyDown(e: React.KeyboardEvent, current: TabId) {
     const idx = TAB_ORDER.indexOf(current)
@@ -1053,6 +1256,29 @@ export function Dashboard({ onOpenSession, focusDispatchSignal }: DashboardProps
     })
   }
 
+  function handleUnarchive(id: string) {
+    setUnarchivingId(id)
+    unarchiveSession.mutate(id, {
+      onSettled: () => setUnarchivingId(null),
+    })
+  }
+
+  function handlePermanentDelete(session: ArchivedSession) {
+    setPermDeleteTarget(session)
+  }
+
+  function confirmPermanentDelete() {
+    if (!permDeleteTarget) return
+    permanentDeleteSession.mutate(permDeleteTarget.id, {
+      onSuccess: () => setPermDeleteTarget(null),
+      onError: () => setPermDeleteTarget(null),
+    })
+  }
+
+  function handleReview(id: string) {
+    if (onReviewSession) onReviewSession(id)
+  }
+
   const isLoading = accountsLoading || sessionsLoading
 
   // Sessions that reference the account being deleted
@@ -1122,6 +1348,33 @@ export function Dashboard({ onOpenSession, focusDispatchSignal }: DashboardProps
               aria-hidden="true"
               className="inline-block w-2 h-2 rounded-full bg-amber-500 dark:bg-amber-400"
             />
+          )}
+        </button>
+
+        {/* Archived tab */}
+        <button
+          ref={archivedTabRef}
+          role="tab"
+          id="tab-archived"
+          aria-selected={activeTab === 'archived'}
+          aria-controls="tabpanel-archived"
+          tabIndex={activeTab === 'archived' ? 0 : -1}
+          onKeyDown={(e) => handleTabKeyDown(e, 'archived')}
+          onClick={() => setActiveTab('archived')}
+          aria-label={archivedSessions.length > 0 ? `Archived (${archivedSessions.length})` : 'Archived'}
+          className={cn(
+            'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
+            activeTab === 'archived'
+              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
+          )}
+        >
+          Archived
+          {archivedSessions.length > 0 && (
+            <span className="text-xs tabular-nums bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-full px-1.5 py-0.5 leading-none">
+              {archivedSessions.length}
+            </span>
           )}
         </button>
       </div>
@@ -1219,6 +1472,27 @@ export function Dashboard({ onOpenSession, focusDispatchSignal }: DashboardProps
         </div>
       )}
 
+      {/* Archived panel */}
+      {activeTab === 'archived' && (
+        <div
+          id="tabpanel-archived"
+          role="tabpanel"
+          aria-labelledby="tab-archived"
+          className="space-y-3"
+        >
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            Archived Sessions
+          </h2>
+          <ArchivedList
+            sessions={archivedSessions}
+            onReview={handleReview}
+            onUnarchive={handleUnarchive}
+            onPermanentDelete={handlePermanentDelete}
+            unarchivingId={unarchivingId}
+          />
+        </div>
+      )}
+
       {/* Dialogs */}
       {showNewDialog && (
         <NewSessionDialog
@@ -1248,6 +1522,15 @@ export function Dashboard({ onOpenSession, focusDispatchSignal }: DashboardProps
           onClose={() => setDeleteTarget(null)}
           onConfirm={confirmDelete}
           isPending={deleteAccount.isPending}
+        />
+      )}
+
+      {permDeleteTarget && (
+        <PermanentDeleteDialog
+          sessionName={permDeleteTarget.name || permDeleteTarget.id.slice(0, 8)}
+          onClose={() => setPermDeleteTarget(null)}
+          onConfirm={confirmPermanentDelete}
+          isPending={permanentDeleteSession.isPending}
         />
       )}
 
