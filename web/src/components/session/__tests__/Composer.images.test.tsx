@@ -28,4 +28,24 @@ describe('Composer image paste', () => {
     await waitFor(() => expect(onPrompt).toHaveBeenCalledWith('what is this',
       [{ sha: 'abc', mime: 'image/png', name: 'x.png' }]))
   })
+
+  it('image-only send fires onPrompt with empty text and image ref', async () => {
+    const onPrompt = vi.fn()
+    render(<Composer status={{ state: 'idle', count: 0 }} mode="default"
+      onPrompt={onPrompt} onInterrupt={() => {}} onSetMode={() => {}} />)
+    const ta = screen.getByLabelText('Message')
+    paste(ta, new File([new Uint8Array(10)], 'x.png', { type: 'image/png' }))
+    await waitFor(() => screen.getByTestId('attachment-chips'))
+    fireEvent.click(screen.getByLabelText('Send message'))
+    await waitFor(() => expect(onPrompt).toHaveBeenCalledWith('',
+      [{ sha: 'abc', mime: 'image/png', name: 'x.png' }]))
+  })
+
+  it('empty send (no text, no images) does not fire onPrompt', async () => {
+    const onPrompt = vi.fn()
+    render(<Composer status={{ state: 'idle', count: 0 }} mode="default"
+      onPrompt={onPrompt} onInterrupt={() => {}} onSetMode={() => {}} />)
+    fireEvent.click(screen.getByLabelText('Send message'))
+    expect(onPrompt).not.toHaveBeenCalled()
+  })
 })
