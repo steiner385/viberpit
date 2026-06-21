@@ -56,7 +56,10 @@
   width: 1126px;
   max-width: 100%;
   margin: 0 auto;
-  text-align: center;
+  /* Left-aligned, not centered: `text-align: center` here was a leftover Vite
+     scaffold default that center-justified all text app-wide (chat prompts,
+     responses, headings, account rows). */
+  text-align: left;
   border-inline: 1px solid var(--border);
   min-height: 100svh;
   display: flex;
