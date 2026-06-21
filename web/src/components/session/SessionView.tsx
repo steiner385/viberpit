@@ -26,7 +26,7 @@ import { Composer } from './Composer'
  * Wraps around: full-auto → interactive.
  */
 function nextPermissionMode(current: string): string {
-  const values = PERMISSION_MODES.map((m) => m.value)
+  const values: string[] = PERMISSION_MODES.map((m) => m.value)
   const i = values.indexOf(current)
   return values[(i + 1) % values.length]
 }
