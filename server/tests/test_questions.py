@@ -31,7 +31,7 @@ def test_request_resolve_sets_future_to_selected_list():
         reg.resolve(qid, ["Option A"], "me")
         return await fut
     result = asyncio.run(run())
-    assert result == ["Option A"]
+    assert result == (["Option A"], "option")
 
 
 def test_request_resolve_multi_select():
@@ -41,7 +41,7 @@ def test_request_resolve_multi_select():
         reg.resolve(qid, ["A", "B"], "me")
         return await fut
     result = asyncio.run(run())
-    assert result == ["A", "B"]
+    assert result == (["A", "B"], "option")
 
 
 def test_resolve_wrong_identity_returns_false():
@@ -126,8 +126,8 @@ def test_multiple_questions_same_session():
         reg.resolve(qid2, ["Second"], "me")
         return await fut1, await fut2
     r1, r2 = asyncio.run(run())
-    assert r1 == ["First"]
-    assert r2 == ["Second"]
+    assert r1 == (["First"], "option")
+    assert r2 == (["Second"], "option")
 
 
 # ---------------------------------------------------------------------------
@@ -212,3 +212,15 @@ def test_pending_empty_when_no_questions():
     """pending() on a session with no registered questions returns []."""
     reg = QuestionRegistry()
     assert reg.pending("no-such-session") == []
+
+
+def test_resolve_carries_mode_to_future():
+    """resolve(..., mode='chat') resolves the future to (selected, mode)."""
+    reg = QuestionRegistry()
+    async def run():
+        qid, fut = _req(reg)
+        ok = reg.resolve(qid, ["typed text"], "me", mode="chat")
+        return ok, await fut
+    ok, result = asyncio.run(run())
+    assert ok is True
+    assert result == (["typed text"], "chat")

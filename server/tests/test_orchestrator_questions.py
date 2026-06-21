@@ -105,7 +105,7 @@ def test_answer_question_delegates_to_driver(orch_env):
         return fut.done() and await fut
 
     resolved = client.portal.call(_check)
-    assert resolved == ["Option X"]
+    assert resolved == (["Option X"], "option")
 
     client.portal.call(orch.close_session, session_id)
 
