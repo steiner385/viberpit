@@ -994,7 +994,7 @@ function ArchivedList({ sessions, onReview, onUnarchive, onPermanentDelete, unar
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-type TabId = 'sessions' | 'accounts' | 'archived'
+export type TabId = 'sessions' | 'accounts' | 'archived'
 
 interface DashboardProps {
   /** Called when the user opens a session (navigates to Terminal view). */
@@ -1003,11 +1003,15 @@ interface DashboardProps {
   focusDispatchSignal?: unknown
   /** Called when the user wants to review an archived session. */
   onReviewSession?: (sessionId: string) => void
-  /** If set, the archived tab is selected on mount. */
+  /** If set, the archived tab is selected on mount (uncontrolled fallback only). */
   initialTab?: TabId
+  /** Controlled active tab. When provided with onTabChange, the route owns the tab. */
+  activeTab?: TabId
+  /** Called when the user selects a tab. Presence switches the component to controlled mode. */
+  onTabChange?: (tab: TabId) => void
 }
 
-export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab }: DashboardProps) {
+export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab, activeTab: activeTabProp, onTabChange }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const { data: archivedSessions = [] } = useArchivedSessions()
@@ -1023,7 +1027,12 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const unarchiveSession = useUnarchiveSession()
   const permanentDeleteSession = usePermanentDeleteSession()
 
-  const [activeTab, setActiveTab] = useState<TabId>(initialTab ?? 'sessions')
+  const [internalTab, setInternalTab] = useState<TabId>(activeTabProp ?? initialTab ?? 'sessions')
+  const activeTab = activeTabProp ?? internalTab
+  const setActiveTab = (tab: TabId) => {
+    if (onTabChange) onTabChange(tab)
+    else setInternalTab(tab)
+  }
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
