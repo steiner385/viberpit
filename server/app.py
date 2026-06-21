@@ -82,6 +82,20 @@ async def _lifespan(app: FastAPI):
 
     # Start the singleton orchestrator (usage poller + rotation monitor)
     await app.state.orchestrator.start()
+
+    # Sweep stale staged uploads left over from a previous crashed run
+    from server.sessions import uploads
+    try:
+        n = uploads.sweep_staging()
+        if n:
+            _logging.getLogger("server").info(
+                "startup: swept %d stale staged upload(s)", n
+            )
+    except Exception:
+        _logging.getLogger("server").warning(
+            "startup: staging sweep failed", exc_info=True
+        )
+
     yield
     # Shutdown
     await app.state.reauth.shutdown()
