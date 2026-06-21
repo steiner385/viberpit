@@ -34,6 +34,23 @@ describe('PermissionCard', () => {
     expect(screen.getByRole('button', { name: /^Always allow Bash/i })).toBeInTheDocument()
   })
 
+  it('hides "Yes, always" button in interactive mode', () => {
+    render(<PermissionCard block={bashPerm} mode="interactive" onDecision={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /^Allow Bash/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Deny Bash/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Always allow Bash/i })).toBeNull()
+  })
+
+  it('shows "Yes, always" button in auto mode', () => {
+    render(<PermissionCard block={bashPerm} mode="auto" onDecision={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /^Always allow Bash/i })).toBeInTheDocument()
+  })
+
+  it('shows "Yes, always" button when mode is undefined (default)', () => {
+    render(<PermissionCard block={bashPerm} onDecision={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /^Always allow Bash/i })).toBeInTheDocument()
+  })
+
   it('renders plan variant buttons when block.plan is true', () => {
     render(<PermissionCard block={planPerm} onDecision={vi.fn()} />)
     expect(screen.getByRole('button', { name: /approve.*run/i })).toBeInTheDocument()

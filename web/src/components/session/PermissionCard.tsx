@@ -6,6 +6,8 @@ type PermBlock = Extract<Block, { kind: 'permission' }>
 
 interface Props {
   block: PermBlock
+  /** The session permission mode (e.g. 'interactive', 'auto', 'plan'). */
+  mode?: string
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
 }
 
@@ -16,7 +18,7 @@ function keyArgSummary(block: PermBlock): string {
   return ''
 }
 
-export function PermissionCard({ block, onDecision }: Props) {
+export function PermissionCard({ block, mode, onDecision }: Props) {
   const primaryRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -25,6 +27,7 @@ export function PermissionCard({ block, onDecision }: Props) {
 
   const summary = keyArgSummary(block)
   const toolLabel = summary ? `${block.tool}: ${summary}` : block.tool
+  const isInteractive = mode === 'interactive'
 
   return (
     <div
@@ -97,18 +100,20 @@ export function PermissionCard({ block, onDecision }: Props) {
             >
               No
             </button>
-            <button
-              type="button"
-              onClick={() => onDecision(block.permId, 'always')}
-              aria-label={`Always allow ${toolLabel}`}
-              className={cn(
-                'min-h-[48px] rounded px-4 py-2 text-sm font-semibold',
-                'bg-blue-600 text-white hover:bg-blue-700',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-              )}
-            >
-              Yes, always
-            </button>
+            {!isInteractive && (
+              <button
+                type="button"
+                onClick={() => onDecision(block.permId, 'always')}
+                aria-label={`Always allow ${toolLabel}`}
+                className={cn(
+                  'min-h-[48px] rounded px-4 py-2 text-sm font-semibold',
+                  'bg-blue-600 text-white hover:bg-blue-700',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+                )}
+              >
+                Yes, always
+              </button>
+            )}
           </>
         )}
       </div>

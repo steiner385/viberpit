@@ -203,3 +203,58 @@ def test_initial_prompt_deferred_until_first_attach(ws_env_ip):
 
     client.portal.call(orch.close_session, session_id)
     client.portal.call(orch.close_session, session_id2)
+
+
+def test_initial_prompt_sent_exactly_once_across_two_attaches(ws_env_ip):
+    """Regression test for issue #4: a second attach (simulated reconnect) must NOT
+    re-send the initial prompt.
+
+    The deferred initial prompt is consumed by pop_pending_initial_prompt on the
+    FIRST attach.  A second attach should find no pending prompt (the entry was
+    already popped) and therefore the SDK must have received the prompt exactly once
+    across both attaches combined.
+    """
+    msgs = [
+        f.sys_init("sess-ip2"),
+        f.stream_start(uuid="u1"),
+        f.stream_text("Hi from initial", uuid="u1"),
+        f.assistant(TextBlock(text="Hi from initial"), uuid="u1"),
+        f.result(session_id="sess-ip2", uuid="u1"),
+    ]
+    _app, orch, client = ws_env_ip(msgs)
+
+    session = client.portal.call(
+        lambda: orch.create_session("ip-once-test", initial_prompt="Ping!")
+    )
+    session_id = session.id
+
+    # First attach — should consume and send the deferred initial prompt.
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete", timeout=5.0)
+        _drain_events(ws, until_type="user", timeout=5.0)
+
+    # Verify the pending slot is now empty (consumed on first attach).
+    assert orch.pop_pending_initial_prompt(session_id) is None, (
+        "pending initial prompt was not cleared after first attach"
+    )
+
+    # Capture how many times the SDK was called after the first attach.
+    driver = orch.driver(session_id)
+    assert driver is not None
+    sent_after_first = len(driver._client.sent)
+    assert sent_after_first >= 1, "SDK should have received the initial prompt on first attach"
+
+    # Second attach — simulates a client reconnect.
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws2:
+        ws2.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws2, until_type="replayComplete", timeout=5.0)
+
+    # No additional SDK calls should have been made (prompt was NOT re-sent).
+    sent_after_second = len(driver._client.sent)
+    assert sent_after_second == sent_after_first, (
+        f"initial prompt was re-sent on second attach: "
+        f"SDK call count went from {sent_after_first} to {sent_after_second}"
+    )
+
+    client.portal.call(orch.close_session, session_id)

@@ -61,7 +61,10 @@ class SessionOrchestrator:
         usage_fn: Callable[[str], object] | None = None,
         repo_root: str | None = None,
     ) -> None:
-        self._work_dir: str = work_dir or os.getcwd()
+        # work_dir param is accepted for back-compat (used in tests to keep
+        # the orchestrator anchored to the repo root), but is no longer stored
+        # as an instance attribute since sessions now always resolve their own cwd.
+        _ = work_dir
         # Root under which per-session worktrees are created (<root>/.ccswitch/...).
         # Defaults to the configured repo_root so worktrees sit next to the repos.
         if repo_root is None:
@@ -260,6 +263,23 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("session.worktree_cleanup_failed id=%s path=%s",
                               session_id, wt_path)
+
+        # Remove the no-repo scratch dir if this session used one.  Guard with a
+        # strict containment check so we never rm anything outside the scratch base.
+        if record and record.cwd:
+            scratch_base = Path(worktrees.worktrees_base(self._repo_root)).parent / "scratch"
+            try:
+                cwd_resolved = Path(record.cwd).resolve()
+                scratch_base_resolved = scratch_base.resolve()
+                cwd_resolved.relative_to(scratch_base_resolved)  # raises ValueError if not under base
+                if cwd_resolved.is_dir():
+                    import shutil
+                    await asyncio.to_thread(shutil.rmtree, str(cwd_resolved))
+                    log.info("session.scratch_cleanup id=%s path=%s", session_id, cwd_resolved)
+            except ValueError:
+                pass  # Not a scratch dir — nothing to do
+            except Exception:
+                log.exception("session.scratch_cleanup_failed id=%s", session_id)
 
         async with db_session() as db:
             from sqlalchemy import update as sa_update

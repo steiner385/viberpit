@@ -131,6 +131,17 @@ describe('ToolCallCard', () => {
       expect(resultToggle.textContent).toMatch(/3\s*lines?/)
     })
 
+    it('shows "0 lines" for empty bash output, not "1 lines"', () => {
+      const emptyOutputBlock: ToolBlock = {
+        ...bashBlock,
+        result: { ok: true, payload: { content: '' } },
+      }
+      render(<ToolCallCard block={emptyOutputBlock} />)
+      const resultToggle = screen.getByRole('button', { name: /result/i })
+      expect(resultToggle.textContent).toContain('0 lines')
+      expect(resultToggle.textContent).not.toContain('1 line')
+    })
+
     it('shows diff stat size hint for edit result', () => {
       render(<ToolCallCard block={editBlockWithResult} />)
       const resultToggle = screen.getByRole('button', { name: /result/i })

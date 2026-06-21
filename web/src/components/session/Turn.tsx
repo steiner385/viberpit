@@ -14,11 +14,12 @@ import { QuestionCard } from './QuestionCard'
 
 interface Props {
   turn: TurnType
+  permissionMode: string
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[]) => void
 }
 
-export const Turn = memo(function Turn({ turn, onDecision, onAnswer }: Props) {
+export const Turn = memo(function Turn({ turn, permissionMode, onDecision, onAnswer }: Props) {
   const isUser = turn.role === 'user'
 
   return (
@@ -37,7 +38,7 @@ export const Turn = memo(function Turn({ turn, onDecision, onAnswer }: Props) {
             return <ToolCallCard key={block.id} block={block} />
 
           case 'permission':
-            return <PermissionCard key={block.id} block={block} onDecision={onDecision} />
+            return <PermissionCard key={block.id} block={block} mode={permissionMode} onDecision={onDecision} />
 
           case 'question':
             return <QuestionCard key={block.id} block={block} onAnswer={onAnswer} />

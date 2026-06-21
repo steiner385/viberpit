@@ -63,7 +63,7 @@ function sizeHint(kind: ToolKind, payload: Record<string, unknown>): string {
     text = parts.join('\n')
   }
   if (text !== null) {
-    const count = text ? text.split('\n').length : 0
+    const count = text === '' ? 0 : text.split('\n').length
     return `${count} ${count === 1 ? 'line' : 'lines'}`
   }
 

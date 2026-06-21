@@ -201,6 +201,7 @@ export function SessionView({ sessionId, onBack }: Props) {
       {/* Transcript */}
       <TranscriptView
         turns={state.turns}
+        permissionMode={mode}
         onDecision={handleDecision}
         onAnswer={handleAnswer}
       />

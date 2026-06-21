@@ -4,11 +4,12 @@ import { Turn } from './Turn'
 
 interface Props {
   turns: TurnType[]
+  permissionMode: string
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[]) => void
 }
 
-export function TranscriptView({ turns, onDecision, onAnswer }: Props) {
+export function TranscriptView({ turns, permissionMode, onDecision, onAnswer }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
@@ -41,6 +42,7 @@ export function TranscriptView({ turns, onDecision, onAnswer }: Props) {
         <Turn
           key={turn.id}
           turn={turn}
+          permissionMode={permissionMode}
           onDecision={onDecision}
           onAnswer={onAnswer}
         />
