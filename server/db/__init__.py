@@ -30,24 +30,42 @@ def _make_engine(db_url: str):
 
 
 def _ddl_default_literal(column) -> str | None:
-    """Return a SQL literal for `column`'s static default, or None if it has none.
+    """Return a SQL literal for `column`'s default, or None if it has none.
 
     SQLite can ADD a NOT NULL column to a populated table only when a DEFAULT is
-    supplied to backfill existing rows. We can synthesize that DEFAULT from a
-    *scalar* model default (bool/int/float/str). Callable/server defaults (e.g. a
-    JSON column defaulting to ``list``) have no static literal — return None so the
-    caller skips them rather than emit invalid DDL.
+    supplied to backfill existing rows. We synthesize that DEFAULT from the model
+    default: scalar (bool/int/float/str) directly, and the common *callable*
+    defaults by evaluating them — an empty list/dict becomes a JSON literal and a
+    datetime-producing default becomes CURRENT_TIMESTAMP. A callable we can't map
+    returns None so the caller skips it (and the CI coverage test flags it).
     """
+    from datetime import datetime as _dt
+
     default = column.default
-    if default is None or not getattr(default, "is_scalar", False):
+    if default is None:
         return None
-    value = default.arg
-    if isinstance(value, bool):
-        return "1" if value else "0"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, str):
-        return "'" + value.replace("'", "''") + "'"
+    if getattr(default, "is_scalar", False):
+        value = default.arg
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, str):
+            return "'" + value.replace("'", "''") + "'"
+        return None
+    if getattr(default, "is_callable", False):
+        try:
+            produced = default.arg(None)  # CallableColumnDefault takes an exec context
+        except Exception:
+            return None
+        if isinstance(produced, _dt):
+            # CURRENT_TIMESTAMP is rejected by SQLite as a non-constant DEFAULT
+            # in ALTER TABLE ADD COLUMN; use a fixed sentinel instead.
+            return "'1970-01-01 00:00:00'"
+        if produced == []:
+            return "'[]'"
+        if produced == {}:
+            return "'{}'"
     return None
 
 

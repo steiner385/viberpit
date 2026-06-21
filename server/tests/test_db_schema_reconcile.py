@@ -82,3 +82,48 @@ def test_init_db_adds_missing_not_null_column_with_default(tmp_path):
             )).scalar_one()
 
     assert asyncio.run(_read_name_is_auto()) == 1
+
+
+def test_init_db_adds_not_null_json_column_with_list_default(tmp_path):
+    """An old populated sessions table missing the NOT NULL `tool_allowlist`
+    (JSON, default=list) column gains it, backfilled to '[]'."""
+    db_file = tmp_path / "old.db"
+    con = sqlite3.connect(db_file)
+    con.execute(
+        "CREATE TABLE sessions ("
+        " id TEXT PRIMARY KEY, name TEXT, account_name TEXT, status TEXT, cwd TEXT)"
+    )
+    con.execute("INSERT INTO sessions (id, name, account_name, status, cwd)"
+                " VALUES ('o1','n','acct','idle','/tmp')")
+    con.commit(); con.close()
+
+    asyncio.run(init_db(db_url=f"sqlite+aiosqlite:///{db_file}"))
+
+    async def _read():
+        async with db_session() as db:
+            return (await db.execute(
+                sa_text("SELECT tool_allowlist FROM sessions WHERE id='o1'"))).scalar_one()
+    # JSON column stored as TEXT; the backfilled default literal is '[]'.
+    assert asyncio.run(_read()) == "[]"
+
+
+def test_init_db_adds_not_null_datetime_column_with_current_timestamp(tmp_path):
+    """An old sessions table missing the NOT NULL `created_at` (default=datetime.utcnow)
+    gains it via CURRENT_TIMESTAMP rather than being skipped."""
+    db_file = tmp_path / "old.db"
+    con = sqlite3.connect(db_file)
+    con.execute(
+        "CREATE TABLE sessions ("
+        " id TEXT PRIMARY KEY, name TEXT, account_name TEXT, status TEXT, cwd TEXT)"
+    )
+    con.execute("INSERT INTO sessions (id, name, account_name, status, cwd)"
+                " VALUES ('o2','n','acct','idle','/tmp')")
+    con.commit(); con.close()
+
+    asyncio.run(init_db(db_url=f"sqlite+aiosqlite:///{db_file}"))
+
+    async def _read():
+        async with db_session() as db:
+            return (await db.execute(
+                sa_text("SELECT created_at FROM sessions WHERE id='o2'"))).scalar_one()
+    assert asyncio.run(_read()) is not None   # backfilled with a real timestamp
