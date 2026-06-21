@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Dashboard } from './components/Dashboard'
+import { DesktopShell } from './components/DesktopShell'
 import { SessionView } from './components/session/SessionView'
 import { ReviewView } from './components/ReviewView'
+import { useMediaQuery } from './lib/useMediaQuery'
 
 // ── View state machine ───────────────────────────────────────────────────────
 //
@@ -17,6 +19,10 @@ type View =
   | { type: 'review'; sessionId: string }
 
 function App() {
+  // Wide screens get the master-detail DesktopShell; narrow screens keep the
+  // full-screen view state machine below. useMediaQuery returns false when
+  // matchMedia is unavailable (jsdom), so tests default to the mobile branch.
+  const isWide = useMediaQuery('(min-width: 1024px)')
   const [view, setView] = useState<View>({ type: 'dashboard' })
   const prevViewRef = useRef<View>({ type: 'dashboard' })
   // Bumped on every back-navigation to re-focus the DispatchBar
@@ -48,6 +54,10 @@ function App() {
     setView({ type: 'dashboard' })
     setFocusDispatchNonce((n) => n + 1)
   }, [])
+
+  if (isWide) {
+    return <DesktopShell />
+  }
 
   return (
     <div className="min-h-screen bg-background text-foreground">

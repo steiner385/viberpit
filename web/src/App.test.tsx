@@ -132,6 +132,22 @@ describe('App view-state machine', () => {
     expect(screen.getByRole('heading', { name: /ccswitch/i })).toBeInTheDocument()
   })
 
+  it('renders the DesktopShell side-by-side layout at lg and up', async () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({
+      matches: true, media: q,
+      addEventListener: () => {}, removeEventListener: () => {},
+      addListener: () => {}, removeListener: () => {}, onchange: null, dispatchEvent: () => false,
+    }))
+    render(<App />, { wrapper })
+    // Desktop: the New Session slot is a selectable sidebar entry (data-selected).
+    // The mobile layout's "New session" button has no data-selected attribute, so
+    // this assertion is true only when the DesktopShell is rendered.
+    await waitFor(() => {
+      expect(screen.getByLabelText('New session')).toHaveAttribute('data-selected', 'true')
+    })
+    vi.unstubAllGlobals()
+  })
+
   it('focuses the dispatch prompt after returning from a session', async () => {
     const user = userEvent.setup()
     render(<App />, { wrapper })
