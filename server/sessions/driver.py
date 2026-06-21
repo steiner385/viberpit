@@ -6,6 +6,7 @@ from . import events as ev
 from .translator import Translator
 from .permissions import PermissionRegistry
 from .questions import QuestionRegistry
+from .status import StatusSignals, derive_status
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ class SessionDriver:
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
-                 on_status: Callable[[str], None] | None = None):
+                 on_status=None):
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -35,10 +36,10 @@ class SessionDriver:
         self.claude_session_id: str | None = None
         self._on_session_id = on_session_id
         self._on_sync_back = on_sync_back
-        # Fired with the live working/idle state whenever a Status event is emitted,
-        # so the orchestrator can keep SessionRecord.status (shown in the session
-        # LIST) in sync with the driver's real state — not stuck on the create-time
-        # value. Without this, a session actively mid-turn still shows "Idle" in the list.
+        # async callback ``on_status(session_id, derived_status)`` — keeps
+        # SessionRecord.status (shown in the session LIST) in sync with the driver's
+        # real state, using the RICH derived vocabulary (in_progress / waiting_input /
+        # ready_review / done / idle), not just the live working/idle of the StatusBar.
         self._on_status = on_status
         self._factory = sdk_factory
         self._reg = registry
@@ -49,19 +50,17 @@ class SessionDriver:
         self._pump: asyncio.Task | None = None
         self._titled: bool = False
         self._queue: list[str] = []
+        self._turn_active: bool = False
+        self._turns_completed: int = 0
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
 
     async def _put_status(self, state: str, count: int) -> None:
-        """Emit a Status event to the stream AND notify on_status so the session
-        LIST reflects the live working/idle state (not the stale create-time value)."""
+        """Emit a live Status event (for the in-session StatusBar) AND refresh the
+        derived dashboard status so the session LIST reflects the driver's real state."""
         await self._out.put(ev.Status(state=state, count=count))
-        if self._on_status is not None:
-            try:
-                self._on_status(state)
-            except Exception:
-                log.warning("driver.on_status session=%s", self.session_id, exc_info=True)
+        await self._emit_dashboard_status()
 
     @staticmethod
     def _normalize_option(opt) -> dict:
@@ -105,9 +104,15 @@ class SessionDriver:
             ))
             pending.append((q, fut))
 
+        # A question is now pending for the user → waiting_input.
+        await self._emit_dashboard_status()
+
         # Await all answers concurrently (gather preserves order).
         futs = [fut for _, fut in pending]
         answers: list[list[str] | None] = await asyncio.gather(*futs)
+
+        # Question(s) resolved → back to in_progress.
+        await self._emit_dashboard_status()
 
         # Build the deny message.
         questions_list = [q for q, _ in pending]
@@ -147,6 +152,29 @@ class SessionDriver:
         """
         return self._qreg.pending(self.session_id)
 
+    def _dash_signals(self) -> StatusSignals:
+        """Snapshot the live driver state into the inputs of derive_status."""
+        perms = self._reg.pending(self.session_id)
+        return StatusSignals(
+            turn_active=self._turn_active,
+            pending_permission=bool(perms),
+            pending_question=bool(self._qreg.pending(self.session_id)),
+            pending_plan=any(p.get("tool") == "ExitPlanMode" for p in perms),
+            turns_completed=self._turns_completed,
+        )
+
+    async def _emit_dashboard_status(self) -> None:
+        """Derive the dashboard status from current signals and notify the orchestrator.
+
+        Best-effort: a failing callback must never break the session loop.
+        """
+        if self._on_status is None:
+            return
+        try:
+            await self._on_status(self.session_id, derive_status(self._dash_signals()))
+        except Exception:
+            log.warning("driver.on_status failed session=%s", self.session_id, exc_info=True)
+
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
         turn_id = self._turn()
         if tool_name == "AskUserQuestion":
@@ -158,7 +186,11 @@ class SessionDriver:
             await self._out.put(ev.PermissionRequest(
                 perm_id, turn_id, tool_name, ev.tool_kind(tool_name),
                 tool_input, plan=(tool_name == "ExitPlanMode")))
+            # A prompt is now pending for the user → waiting_input / ready_review.
+            await self._emit_dashboard_status()
         allowed = await fut
+        # Decision made; the perm is no longer pending → back to in_progress.
+        await self._emit_dashboard_status()
         return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied by user")
 
     async def start(self):
@@ -186,6 +218,7 @@ class SessionDriver:
 
     async def _start_turn(self, text: str):
         """Start a new turn: echo the user prompt, emit working status, query SDK, drain."""
+        self._turn_active = True
         await self._put_status("working", len(self._queue))
         # Echo the user's prompt as a session event. The SDK never sends the human's
         # prompt text back through receive_response (only transcript-replay reconstructs
@@ -234,6 +267,8 @@ class SessionDriver:
                 await self._out.put(ev.QueueUpdate(list(self._queue)))
                 await self._start_turn(next_text)
             else:
+                self._turn_active = False
+                self._turns_completed += 1
                 await self._put_status("idle", 0)
 
     def queued(self) -> list[str]:
@@ -263,6 +298,7 @@ class SessionDriver:
         self._queue.clear()
         if self._client:
             await self._client.interrupt()
+        self._turn_active = False
         await self._out.put(ev.QueueUpdate([]))
         await self._put_status("idle", 0)
 
