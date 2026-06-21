@@ -16,8 +16,8 @@ import logging
 import re
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from ccswitch import gitrepos
@@ -25,6 +25,7 @@ from server.auth.middleware import current_identity
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import get_db
+from server.sessions import uploads
 from server.sessions.orchestrator import SessionOrchestrator, BranchSwitchError
 from server.sessions.selection import AllAccountsBusy
 
@@ -36,6 +37,7 @@ _REPO_RE = re.compile(rf"^{_REPO_SEGMENT}/{_REPO_SEGMENT}$")
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+uploads_router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +52,7 @@ class CreateSessionRequest(BaseModel):
     repo: str | None = None  # nameWithOwner, e.g. "owner/name"
     branch: str | None = None
     permissionMode: str | None = None
+    images: list[dict] | None = None
 
 
 class RenameSessionRequest(BaseModel):
@@ -205,6 +208,7 @@ async def create_session(
             repo=body.repo,
             identity=identity,
             permission_mode=body.permissionMode or "interactive",
+            images=body.images,
             name_is_auto=name_is_auto,
         )
     except ValueError as exc:
@@ -266,6 +270,30 @@ async def list_archived_sessions(
     """Return all archived session metadata."""
     orch: SessionOrchestrator = _get_orchestrator(request)
     return await orch.list_archived()
+
+
+@router.get("/{session_id}/images/{sha}")
+async def serve_session_image(
+    session_id: str,
+    sha: str,
+    _identity: str = Depends(current_identity),
+):
+    """Serve a previously uploaded image associated with a session. Returns 404 if unknown."""
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": "image not found"},
+        )
+    path = uploads.image_path(session_id, sha)
+    if path is None or not path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": "image not found"},
+        )
+    # Map extension back to canonical MIME (e.g. .jpg → image/jpeg, not image/jpg)
+    _ext_to_mime = {ext: mime for mime, ext in uploads.ALLOWED.items()}
+    media_type = _ext_to_mime.get(path.suffix.lstrip('.'), f"image/{path.suffix.lstrip('.')}")
+    return FileResponse(str(path), media_type=media_type)
 
 
 @router.get("/{session_id}")
@@ -414,3 +442,26 @@ async def get_session_transcript(
     events = await orch.transcript_events(session_id)
     wire_events = [redact_event(e.to_wire()) for e in events]
     return {"events": wire_events}
+
+
+# ---------------------------------------------------------------------------
+# Upload router (separate prefix /api/uploads)
+# ---------------------------------------------------------------------------
+
+
+@uploads_router.post("")
+async def upload_image(
+    file: UploadFile = File(...),
+    _identity: str = Depends(current_identity),
+):
+    """Accept a multipart image upload and stage it. Returns {sha, mime, name}."""
+    raw = await file.read()
+    try:
+        ref = uploads.stage_image(file.content_type or "", raw)
+    except uploads.UploadError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": {"code": "invalid_image", "message": str(exc)}},
+        )
+    ref["name"] = file.filename or ""
+    return ref

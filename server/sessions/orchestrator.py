@@ -26,6 +26,7 @@ from ccswitch import configdir, worktrees
 from ccswitch.configdir import compose
 from server.db import db_session
 from server.db.models import Session as DbSession
+from server.sessions import uploads
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory
@@ -88,6 +89,7 @@ class SessionOrchestrator:
         # initial_prompt deferred until first WS attach so the client is watching
         # when the turn runs — avoids losing events before any consumer exists.
         self._pending_initial_prompt: dict[str, str] = {}
+        self._pending_initial_images: dict[str, list] = {}
 
         # Build a live-session-aware usage_fn: when an account has a live session
         # the SDK owns its token family, so the poller must not independently
@@ -157,6 +159,7 @@ class SessionOrchestrator:
         repo: str | None = None,
         identity: str = "system",
         permission_mode: str = "interactive",
+        images: list[dict] | None = None,
         name_is_auto: bool = True,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
@@ -235,6 +238,8 @@ class SessionOrchestrator:
             # the client is already watching when the turn runs — events stream
             # live, so nothing is lost.
             self._pending_initial_prompt[session_id] = initial_prompt
+        if images:
+            self._pending_initial_images[session_id] = images
 
         # Persist DB row
         async with db_session() as db:
@@ -616,11 +621,36 @@ class SessionOrchestrator:
         """
         return self._pending_initial_prompt.pop(session_id, None)
 
-    async def send_prompt(self, session_id, text):
+    def pop_pending_initial_images(self, session_id: str) -> list | None:
+        """Return and remove the deferred initial images for session_id, or None.
+
+        Called by the WS bridge on the first attach alongside pop_pending_initial_prompt.
+        Clears the entry so subsequent attaches (reconnects) do not re-send them.
+        """
+        return self._pending_initial_images.pop(session_id, None)
+
+    async def send_prompt(self, session_id, text, images=None):
         d = self._drivers.get(session_id)
-        if d:
-            self._last_prompt[session_id] = text
-            await d.send_prompt(text)
+        if not d:
+            return
+        _raw = list(images or [])
+        if len(_raw) > uploads.MAX_IMAGES:
+            log.warning("send_prompt: truncating images from %d to %d session=%s",
+                        len(_raw), uploads.MAX_IMAGES, session_id)
+        images = _raw[:uploads.MAX_IMAGES]
+        resolved: list[dict] = []
+        for ref in images:
+            try:
+                path = uploads.associate(session_id, ref["sha"], ref["mime"])
+            except Exception:
+                log.warning("send_prompt: dropping image sha=%s (associate failed) session=%s",
+                            ref.get("sha"), session_id, exc_info=True)
+                continue
+            resolved.append({
+                "sha": ref["sha"], "mime": ref["mime"], "name": ref.get("name", ""),
+                "path": str(path), "url": f"/api/sessions/{session_id}/images/{ref['sha']}"})
+        self._last_prompt[session_id] = text
+        await d.send_prompt(text, resolved)
 
     async def interrupt(self, session_id):
         d = self._drivers.get(session_id)

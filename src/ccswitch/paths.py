@@ -70,3 +70,10 @@ def archive_dir() -> Path:
     d = root() / "archive"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def uploads_dir() -> Path:
+    """Directory where session image uploads are stored (staging + per-session)."""
+    d = root() / "uploads"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
