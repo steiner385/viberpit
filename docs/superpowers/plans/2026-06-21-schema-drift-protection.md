@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Reconcilable column ⇔ `column.nullable OR column.primary_key OR _ddl_default_literal(column) is not None OR "<table>.<col>" in RECONCILE_EXEMPT`.
-- Callable-default synthesis (via `default.arg(None)`): `== []` → `'[]'`; `== {}` → `'{}'`; `datetime` instance → `CURRENT_TIMESTAMP`; else `None`.
+- Callable-default synthesis (via `default.arg(None)`): `== []` → `'[]'`; `== {}` → `'{}'`; `datetime` instance → `'1970-01-01 00:00:00'` (a **constant** epoch literal — SQLite rejects `CURRENT_TIMESTAMP` as a non-constant DEFAULT in `ALTER TABLE ADD COLUMN`); else `None`.
 - After Task 1, **every** current model column must be reconcilable with `RECONCILE_EXEMPT` empty.
 - `/healthz` is **unauthenticated** (exempt from `IdentityMiddleware`), runs `select(Session).limit(1)`, returns `200 {"status":"ok"}` or `500 {"status":"schema_error","detail":...}`.
 - Startup raises `SchemaDriftError` (subclass of `RuntimeError`) only on the SQLite path, after reconcile.

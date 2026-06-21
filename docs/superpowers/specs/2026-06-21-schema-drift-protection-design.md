@@ -30,7 +30,7 @@ Rejected alternatives:
 ### 1. Reconcile enhancement (close the gap)
 Extend `_ddl_default_literal` in `server/db/__init__.py` to synthesize literals for the common **callable** defaults (detected by evaluating `default.arg(None)` — SQLAlchemy's `CallableColumnDefault` passes an exec context, and `None` suffices for these):
 - result `== []` → `'[]'`, result `== {}` → `'{}'` (valid SQLite defaults for a JSON-as-TEXT column; SQLAlchemy deserializes `'[]'`→`[]`).
-- result is a `datetime` (e.g. `default=datetime.utcnow`) → `CURRENT_TIMESTAMP`.
+- result is a `datetime` (e.g. `default=datetime.utcnow`) → a **constant** literal `'1970-01-01 00:00:00'`. (SQLite rejects `CURRENT_TIMESTAMP` as a non-constant DEFAULT in `ALTER TABLE ADD COLUMN`; an epoch sentinel is honest — a row predating the column has an unknown/ancient timestamp — and these columns realistically never go missing, so the value is academic, it only satisfies reconcilability.)
 
 This is required, not optional: introspection shows **three** NOT NULL columns with callable defaults today — `tool_allowlist` (`list`→`[]`) **and** `created_at`/`updated_at` (`datetime.utcnow`→`CURRENT_TIMESTAMP`). Without the datetime case the coverage test (component 2) would flag the timestamp columns. After this enhancement, every current column is reconcilable with **no exemptions needed**. Scalar handling (bool/int/float/str) is unchanged. A genuinely non-synthesizable callable still returns `None`.
 
