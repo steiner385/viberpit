@@ -298,12 +298,15 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 elif msg_type == "answerQuestion":
                     question_id = msg.get("questionId", "")
                     selected = msg.get("selected", [])
-                    orchestrator.answer_question(session_id, question_id, selected, identity)
+                    mode = msg.get("mode", "option")
+                    if mode not in ("option", "freeform", "chat"):
+                        mode = "option"
+                    orchestrator.answer_question(session_id, question_id, selected, identity, mode)
                     try:
                         async with db_session() as db:
                             await record_audit(db, "question.answer", identity,
                                                {"sessionId": session_id, "questionId": question_id,
-                                                "selected": selected})
+                                                "selected": selected, "mode": mode})
                     except Exception:
                         log.warning("ws.audit_failed event=%s session=%s",
                                     "question.answer", session_id, exc_info=True)
