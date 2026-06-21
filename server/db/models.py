@@ -39,6 +39,9 @@ class Session(Base):
     repo: Mapped[str | None] = mapped_column(String, nullable=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     permission_mode: Mapped[str] = mapped_column(String, nullable=False, default="interactive")
+    # True while the name is auto-derived (Claude title / first prompt); a manual
+    # rename pins this False so auto-naming never overwrites a user-chosen name.
+    name_is_auto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     tool_allowlist: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
