@@ -1,16 +1,19 @@
 """Sessions expose which repo they are working on (repo label feature).
 
-A session created from a GitHub repo (nameWithOwner) must remember that repo so
-the dashboard list can show it.  A repo-less session (scratch / arbitrary cwd)
-reports repo=None and the UI renders a "Scratch" label for it.
+The dashboard's repo indicator is read LIVE from each session's working
+directory: GET /api/sessions runs git in the cwd and reports the origin's
+``owner/name`` (a scratch / non-git cwd reports repo=None → "Scratch"). The
+stored ``repo`` on the DB row / in-memory record remains the create-time intent
+and survives rehydrate, but the wire value reflects what's actually on disk.
 
 These tests drive the wiring: create_session persists `repo` to the DB row AND
-the in-memory record, GET /api/sessions surfaces it, and a rehydrated (post
-server-restart) session still reports its repo.
+the in-memory record, GET /api/sessions surfaces the live git-derived repo, and
+a rehydrated (post server-restart) session still remembers its stored repo.
 """
 from __future__ import annotations
 
 import os
+import subprocess
 import time as _time
 from datetime import datetime
 from unittest.mock import patch
@@ -81,9 +84,29 @@ def repo_setup(tmp_path):
             yield orch, client, str(work), db_url
 
 
+def _init_git_repo(path: str, origin: str) -> None:
+    """Make ``path`` a git working tree (with one commit) and an ``origin`` remote.
+
+    A session on a real repo runs in a detached worktree, which requires a
+    commit to detach from — so seed an empty initial commit. The worktree shares
+    the repo's ``origin``, so the live repo read resolves through it.
+    """
+    def _git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-C", path,
+             "-c", "user.email=t@example.com", "-c", "user.name=test", *args],
+            check=True, capture_output=True,
+        )
+
+    _git("init", "-q")
+    _git("commit", "-q", "--allow-empty", "-m", "init")
+    _git("remote", "add", "origin", origin)
+
+
 def test_create_session_with_repo_is_surfaced_in_list(repo_setup):
-    """A session created with repo='owner/name' reports that repo via GET /api/sessions."""
+    """GET /api/sessions reports the repo read live from the session's cwd."""
     orch, client, work, _db_url = repo_setup
+    _init_git_repo(work, "https://github.com/acme/widget.git")
 
     rec = client.portal.call(
         lambda: orch.create_session("repo-session", cwd=work, repo="acme/widget")
@@ -94,6 +117,22 @@ def test_create_session_with_repo_is_surfaced_in_list(repo_setup):
     assert resp.status_code == 200, resp.text
     sess = next(s for s in resp.json() if s["id"] == rec.id)
     assert sess["repo"] == "acme/widget", f"wire repo={sess.get('repo')!r}"
+
+
+def test_list_repo_is_read_live_and_overrides_stale_stored_value(repo_setup):
+    """The wire repo comes from the cwd's git origin, even if the stored value differs."""
+    orch, client, work, _db_url = repo_setup
+    # On-disk reality (origin) disagrees with the create-time stored repo.
+    _init_git_repo(work, "git@github.com:acme/actual.git")
+
+    rec = client.portal.call(
+        lambda: orch.create_session("drifted", cwd=work, repo="acme/stale")
+    )
+    assert rec.repo == "acme/stale"  # stored intent unchanged
+
+    resp = client.get("/api/sessions", headers=_IDENT)
+    sess = next(s for s in resp.json() if s["id"] == rec.id)
+    assert sess["repo"] == "acme/actual", f"wire repo={sess.get('repo')!r}"
 
 
 def test_create_session_without_repo_reports_none(repo_setup):
