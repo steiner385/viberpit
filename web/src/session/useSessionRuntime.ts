@@ -151,13 +151,16 @@ export function useSessionRuntime(sessionId: string): SessionRuntime {
     t.blocks.some((b) => b.kind === 'permission' || b.kind === 'question'),
   )
 
-  const title = state.title ?? sessionId.slice(0, 8)
-
   // ── Status-strip derived data ──────────────────────────────────────────────
   // Account: the session record's account, overridden by the latest rotation.
   const { data: sessions } = useSessions()
   const { data: accounts } = useAccounts()
   const sessionRecord = sessions?.find((s) => s.id === sessionId)
+
+  // Header title: prefer the session's name (the AI-generated/auto title, the
+  // same value shown on the dashboard card) so the two stay consistent. Fall
+  // back to a live transcript `title` event, then the sessionId prefix.
+  const title = sessionRecord?.name ?? state.title ?? sessionId.slice(0, 8)
   const latestRotation =
     state.rotations.length > 0 ? state.rotations[state.rotations.length - 1].to : null
   const account = latestRotation ?? sessionRecord?.accountName ?? '—'
