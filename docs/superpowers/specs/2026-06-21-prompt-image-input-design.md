@@ -27,36 +27,55 @@ Anthropic shape the CLI accepts:
 ]},"parent_tool_use_id":null,"session_id":"default"}
 ```
 
-Rejected alternatives:
+Rejected alternative:
 - **Save to cwd + `[image: ./x.png]` text reference** — pollutes the worktree
   (trips the dirty-check on session close) and the model only sees the image if
   it chooses to call `Read`. Not faithful to "paste an image into the prompt".
-- **HTTP upload endpoint returning an id** — avoids large base64 over the WS, but
-  adds an endpoint + temp store + GC. Overkill for a single-user Tailscale tool
-  where pasted screenshots are ~0.1–2 MB. Deferred; trivial to add later if we
-  ever need images larger than the 5 MB cap.
+
+## Transport: HTTP upload, not base64-over-WS (corrected from initial design)
+
+The WS receive loop enforces a **256 KB frame cap** (`ws.py:48`,
+`_MAX_FRAME = 262144`). A single 5 MB image base64-encodes to ~6.8 MB — 26× over
+the cap — so carrying image bytes inside the WS `prompt` frame is infeasible, and
+raising the cap to tens of MB is an unacceptable frame size even for a
+single-user tool. Therefore image **bytes** travel over HTTP and the WS frame
+carries only tiny `sha` references:
+
+- `POST /api/uploads` (multipart, one image per request, behind `current_identity`)
+  validates + saves the bytes content-addressed and returns `{sha, mime, name}`.
+- The client renders the chip preview locally with `URL.createObjectURL(file)`
+  (no download round-trip).
+- The WS `prompt` frame and the create-session body carry only
+  `images: [{sha, mime, name}]` — kilobytes, well under the cap, which we keep.
 
 ## Architecture & data flow
 
 ```
-Composer / DispatchBar   (paste | drop | file-pick → base64 + thumbnail chips)
-   │  WS: {type:'prompt', sessionId, text, images:[{mime,data,name}]}
+Composer / DispatchBar   (paste | drop | file-pick)
+   │  per image:  POST /api/uploads (multipart)  ──►  {sha, mime, name}
+   │  chip preview rendered locally via URL.createObjectURL(file)
+   ▼  on send, carry only sha refs:
+   Composer:    WS {type:'prompt', sessionId, text, images:[{sha,mime,name}]}
+   DispatchBar: POST /api/sessions {initialPrompt, repo, images:[{sha,mime,name}]}
    ▼
-bridge/ws.py → orchestrator.send_prompt(session_id, text, images)
+bridge/ws.py / api/sessions.py → orchestrator.send_prompt(session_id, text, images)
    ▼
 driver.send_prompt(text, images) → _start_turn:
-   • save each image → <uploads_root>/<session_id>/<sha256>.<ext>
+   • associate: move <uploads_root>/_staging/<sha> → <uploads_root>/<session_id>/<sha>.<ext>
+   • read bytes → base64 → image content block
    • emit ev.UserMessage(text, images=[{url,mime,name}])   (live render)
    • query(text)               when images is empty   (unchanged string path)
      query(aiter([user-msg]))  when images present     (text + image/base64 blocks)
 ```
 
 - **`<uploads_root>`** = `~/.claude-accounts/uploads` (alongside `archive/`),
-  overridable via `CCSWITCH_HOME`. Content-addressed by SHA-256 so identical
-  pastes dedupe and filenames can't collide or path-traverse.
+  overridable via `CCSWITCH_HOME`. `POST /api/uploads` saves to `_staging/<sha>.<ext>`;
+  the driver moves it to `<session_id>/<sha>.<ext>` when the prompt is sent.
+  Content-addressed by SHA-256 so identical pastes dedupe and filenames can't
+  collide or path-traverse. Staging files unreferenced after 6 h are swept on
+  startup (a paste that's never sent leaves no permanent litter).
 - **Serving:** `GET /api/sessions/{id}/images/{sha}` behind `current_identity`.
-  Both live and replay render via this stable URL rather than carrying base64
-  through the UI state.
+  Live and replay both render via this stable URL.
 
 ## Limits & validation
 
@@ -99,39 +118,52 @@ image refs to that event.
 
 ## Interfaces
 
+- `ImageRef = {"sha": str, "mime": str, "name": str}` — the small reference shape
+  carried by the WS `prompt` frame and the create-session body.
 - `ev.UserMessage` gains `images: list[dict] | None`; `to_wire()` emits an
-  `"images"` key (list of `{url, mime, name}`).
-- `driver.send_prompt(text: str, images: list[ImageInput] | None = None)`, where
-  `ImageInput = {"mime": str, "data": str /* base64, no data: prefix */, "name": str}`.
-  The queued-prompt path (`self._queue`) carries `(text, images)` tuples so a
-  queued prompt keeps its images.
+  `"images"` key (list of `{url, mime, name}`, where `url` =
+  `/api/sessions/{id}/images/{sha}`).
+- `driver.send_prompt(text: str, images: list[ImageRef] | None = None)`. The
+  queued-prompt path (`self._queue`) carries `(text, images)` tuples so a queued
+  prompt keeps its images.
 - `orchestrator.send_prompt(session_id, text, images=None)`.
-- WS `prompt` message gains an optional `images` array of `ImageInput`.
-- New `server/sessions/uploads.py` (or similar): `save_image(session_id, mime,
-  b64) -> {sha, url, mime}`, `image_path(session_id, sha) -> Path | None`, and a
-  validation helper enforcing the limits table.
+- WS `prompt` message gains an optional `images` array of `ImageRef`.
+- `POST /api/sessions` body gains an optional `images` array of `ImageRef`,
+  stored alongside the deferred `initialPrompt` and sent on first attach.
+- New `server/sessions/uploads.py`:
+  - `stage_image(mime: str, raw: bytes) -> ImageRef` — validates + writes
+    `_staging/<sha>.<ext>`.
+  - `associate(session_id: str, ref: ImageRef) -> Path` — moves staging → session
+    dir (idempotent; tolerates an already-associated sha).
+  - `image_path(session_id: str, sha: str) -> Path | None` — for the serving route.
+  - `read_b64(path: Path) -> str` and `sweep_staging(max_age_h: float = 6)`.
 
 ## Components touched
 
 - **Frontend:** `web/src/components/session/Composer.tsx` and
   `web/src/components/DispatchBar.tsx` — paste/drop/file-pick handlers, thumbnail
   chip strip with remove buttons, oversize/wrong-type inline errors. A shared
-  `useImageAttachments` hook + an `AttachmentChips` component so both inputs
+  `useImageAttachments` hook (validates, uploads to `POST /api/uploads`, holds
+  `{sha,mime,name,previewUrl}[]`) + an `AttachmentChips` component so both inputs
   reuse one implementation (single source of truth).
-  `web/src/ws/client.ts` — `sendPrompt(sessionId, text, images)`.
-- **Backend:** `server/bridge/ws.py`, `server/sessions/orchestrator.py`,
-  `server/sessions/driver.py`, `server/sessions/events.py`,
-  `server/sessions/replay.py`, new `server/sessions/uploads.py`, and a serving
-  route in `server/api/sessions.py`.
+  `web/src/ws/client.ts` — `prompt(sessionId, text, images?)`.
+- **Backend:** new `server/sessions/uploads.py`; `POST /api/uploads` and the
+  `GET /api/sessions/{id}/images/{sha}` serving route in `server/api/sessions.py`
+  (create-session body gains `images`); `server/bridge/ws.py`,
+  `server/sessions/orchestrator.py`, `server/sessions/driver.py`,
+  `server/sessions/events.py`, `server/sessions/replay.py`.
 
 ## Error handling
 
 - Unsupported type or oversize → client blocks the attach and shows a chip-level
-  error; the image is never sent.
-- Malformed/oversize base64 that still reaches the server → that image is
-  dropped, the text is still sent, and a `warning` event/toast is surfaced; the
-  turn is never failed by a bad attachment.
-- Save-to-disk failure → logged, image dropped, text proceeds (non-fatal, same
+  error; nothing is uploaded.
+- `POST /api/uploads` independently validates type (content sniff, not just the
+  declared MIME) and size → `400` for a bad image; the client surfaces the error
+  on the chip and drops it.
+- A `sha` in the `prompt`/create body with no staged or associated file → that
+  image is skipped, the text is still sent, and a `warning` event is surfaced;
+  the turn is never failed by a missing attachment.
+- Associate/move failure → logged, image skipped, text proceeds (non-fatal, same
   posture as `sync_back`).
 
 ## Testing
@@ -150,5 +182,5 @@ image refs to that event.
 ## Out of scope (YAGNI)
 
 - Non-image attachments (PDF/docs).
-- Images larger than 5 MB / the HTTP upload endpoint.
+- Images larger than 5 MB.
 - Drag-reordering attachment chips.
