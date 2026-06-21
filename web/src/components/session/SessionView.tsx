@@ -19,6 +19,7 @@ import { selectSubAgents } from '@/session/selectors'
 import { remainingContextPct } from '@/lib/contextWindow'
 import { useSessions, useAccounts } from '@/api/hooks'
 import { PERMISSION_MODES } from '@/session/permissionModes'
+import type { ToolDetailMode } from '@/session/groupBlocks'
 import { StatusBar } from './StatusBar'
 import { SessionMeta } from './SessionMeta'
 import { RotationDivider } from './RotationDivider'
@@ -66,6 +67,13 @@ export function SessionView({ sessionId, onBack }: Props) {
   const [mode, setMode] = useState('interactive')
   const modeRef = useRef('interactive')
   const [rotations, setRotations] = useState<Rotation[]>([])
+  const [toolDetailMode, setToolDetailMode] = useState<ToolDetailMode>('auto')
+  const toggleToolDetail = useCallback(
+    () => setToolDetailMode((m) =>
+      m === 'auto' ? 'all-closed' : m === 'all-closed' ? 'all-open' : 'auto',
+    ),
+    [],
+  )
 
   // Track whether replay just finished so we can announce "History loaded" once.
   const prevReplayingRef = useRef(true)
@@ -175,8 +183,16 @@ export function SessionView({ sessionId, onBack }: Props) {
   //   Esc  → back to session list (guard: skip if composer textarea has text mid-draft,
   //           or if a permission/question card is pending — let user act on the card first)
   //   Shift+Tab → cycle permission mode through PERMISSION_MODES
+  //   c/C → toggle tool-detail mode (collapse/expand all tool calls)
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      const ae = document.activeElement as HTMLElement | null
+      const typing = !!ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.isContentEditable)
+      if (!typing && (e.key === 'c' || e.key === 'C') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault()
+        toggleToolDetail()
+        return
+      }
       if (e.key === 'Tab' && e.shiftKey) {
         e.preventDefault()
         const next = nextPermissionMode(modeRef.current)
@@ -186,9 +202,9 @@ export function SessionView({ sessionId, onBack }: Props) {
         // has non-empty text, Escape is for the composer (clearing a draft) — do
         // NOT navigate back. Navigate back only when the textarea is empty or
         // focus is elsewhere.
-        const ae = document.activeElement as HTMLTextAreaElement | null
+        const ae2 = document.activeElement as HTMLTextAreaElement | null
         const inComposerWithText =
-          ae?.getAttribute('aria-label') === 'Message' && (ae?.value ?? '') !== ''
+          ae2?.getAttribute('aria-label') === 'Message' && (ae2?.value ?? '') !== ''
         if (inComposerWithText) return
         // Guard 2: if a permission/question card is pending, Escape is a no-op —
         // the user must respond to the card before navigating away.
@@ -199,9 +215,18 @@ export function SessionView({ sessionId, onBack }: Props) {
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleSetMode, handleBack, hasOpenAction])
+  }, [handleSetMode, handleBack, hasOpenAction, toggleToolDetail])
 
   const title = state.title ?? sessionId.slice(0, 8)
+
+  const toolToggleText =
+    toolDetailMode === 'auto' ? 'Collapse tools'
+    : toolDetailMode === 'all-closed' ? 'Expand tools'
+    : 'Auto-fold'
+  const toolToggleAria =
+    toolDetailMode === 'auto' ? 'Collapse tool calls'
+    : toolDetailMode === 'all-closed' ? 'Expand tool calls'
+    : 'Auto-fold tool calls'
 
   // ── Status-strip derived data ──────────────────────────────────────────────
   // Account: the session record's account, overridden by the latest rotation.
@@ -243,7 +268,21 @@ export function SessionView({ sessionId, onBack }: Props) {
 
         <span className="text-sm font-semibold text-gray-100 truncate">{title}</span>
 
-        <div className="ml-auto">
+        <button
+          type="button"
+          onClick={toggleToolDetail}
+          aria-label={toolToggleAria}
+          className={cn(
+            'ml-auto flex items-center gap-1.5 px-3 py-2 rounded-md min-h-[44px]',
+            'text-sm font-medium text-gray-200',
+            'hover:bg-gray-700 active:bg-gray-600',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+          )}
+        >
+          {toolToggleText}
+        </button>
+
+        <div>
           <StatusBar status={state.status} connectionState={connectionState} />
         </div>
       </div>
@@ -283,6 +322,7 @@ export function SessionView({ sessionId, onBack }: Props) {
       <TranscriptView
         turns={state.turns}
         permissionMode={mode}
+        toolDetailMode={toolDetailMode}
         onDecision={handleDecision}
         onAnswer={handleAnswer}
       />
