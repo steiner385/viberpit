@@ -56,14 +56,44 @@ def ensure_valid_token(name: str) -> dict:
         return new_blob
 
 
-def usage_for(name: str) -> oauth.Usage | None:
-    """Cached-or-fetched usage. Returns None and marks needs-reauth if auth fails."""
+def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
+    """Cached-or-fetched usage. Returns None and marks needs-reauth if auth fails.
+
+    Args:
+        name: Account name.
+        allow_refresh: When True (default), expired tokens are refreshed via
+            oauth.refresh_access_token exactly as before.  When False (live-session
+            mode), sync_back is called first to pick up any SDK-rotated token; if
+            the token is still expired after sync_back, returns None WITHOUT
+            refreshing and WITHOUT marking needs-reauth (the live SDK owns the
+            token family and will refresh on its next request).
+    """
     cfg = load_config()
     now = datetime.now(timezone.utc)
     with ledger.locked_ledger() as led:
         cached = ledger.cached_usage(led, name, cfg, now)
         if cached is not None:
             return cached
+
+    if not allow_refresh:
+        # Live-session path: sync_back first so we pick up the SDK's latest
+        # rotation, then attempt usage with whatever is in the slot.  If the
+        # token is expired we return None without touching needs-reauth — the
+        # SDK process that owns the token will refresh it on its next request.
+        sync_back(name)
+        blob = read_credentials(paths.slot_path(name))
+        if not _is_fresh(blob, cfg):
+            log.debug("usage_for(%s): token expired, live session owns it — skipping", name)
+            return None
+        try:
+            u = oauth.fetch_usage(blob["accessToken"])
+        except (oauth.UsageError, oauth.AuthError) as e:
+            log.warning("usage_for(%s, allow_refresh=False): usage fetch failed: %s", name, e)
+            return None
+        with ledger.locked_ledger() as led:
+            ledger.record_usage(led, name, u, now)
+            ledger.set_status(led, name, "ok")
+        return u
 
     # Step 1: ensure the token is valid (may refresh if near-expiry).
     # If the refresh token is already dead, mark needs-reauth immediately — do not retry.
