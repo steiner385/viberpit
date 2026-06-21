@@ -31,4 +31,24 @@ env -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 \
 
 # All gates green — swap in the new code.
 sudo systemctl restart ccswitch.service
-echo "[deploy] live at ${REMOTE:0:9}"
+
+# Post-restart health gate: the new process must answer /healthz (schema OK)
+# within ~30s, else roll back to the previous commit. /healthz is unauthenticated
+# and runs a schema-touching query, so a schema-drift boot fails this check.
+HEALTH_URL="http://${CCSWITCH_HOST:-127.0.0.1}:${CCSWITCH_PORT:-8787}/healthz"
+healthy=0
+for _ in $(seq 1 15); do
+  if curl -fsS -m 3 "$HEALTH_URL" >/dev/null 2>&1; then healthy=1; break; fi
+  sleep 2
+done
+
+if [ "$healthy" -ne 1 ]; then
+  echo "[deploy] /healthz never came up — ROLLING BACK ${REMOTE:0:9} -> ${LOCAL:0:9}" >&2
+  git reset --hard "$LOCAL"
+  ( cd web && npm run build ) || echo "[deploy] WARNING: rollback build failed; restarting old backend anyway" >&2
+  sudo systemctl restart ccswitch.service
+  echo "[deploy] rolled back to ${LOCAL:0:9}" >&2
+  exit 1
+fi
+
+echo "[deploy] live + healthy at ${REMOTE:0:9}"

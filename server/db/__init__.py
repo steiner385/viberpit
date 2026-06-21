@@ -17,6 +17,12 @@ from server.db.models import Base
 
 log = logging.getLogger(__name__)
 
+
+class SchemaDriftError(RuntimeError):
+    """Raised at startup when the live DB is missing model columns that reconcile
+    could not add — a drifted server must refuse to start, not serve empty."""
+
+
 # Module-level singletons — replaced by init_db() at app startup.
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -30,24 +36,44 @@ def _make_engine(db_url: str):
 
 
 def _ddl_default_literal(column) -> str | None:
-    """Return a SQL literal for `column`'s static default, or None if it has none.
+    """Return a SQL literal for `column`'s default, or None if it has none.
 
     SQLite can ADD a NOT NULL column to a populated table only when a DEFAULT is
-    supplied to backfill existing rows. We can synthesize that DEFAULT from a
-    *scalar* model default (bool/int/float/str). Callable/server defaults (e.g. a
-    JSON column defaulting to ``list``) have no static literal — return None so the
-    caller skips them rather than emit invalid DDL.
+    supplied to backfill existing rows. We synthesize that DEFAULT from the model
+    default: scalar (bool/int/float/str) directly, and the common *callable*
+    defaults by evaluating them — an empty list/dict becomes a JSON literal and a
+    datetime-producing default becomes a fixed epoch sentinel ('1970-01-01 00:00:00')
+    — SQLite rejects CURRENT_TIMESTAMP as a non-constant DEFAULT in ALTER TABLE ADD
+    COLUMN. A callable we can't map returns None so the caller skips it (and the CI
+    coverage test flags it).
     """
+    from datetime import datetime as _dt
+
     default = column.default
-    if default is None or not getattr(default, "is_scalar", False):
+    if default is None:
         return None
-    value = default.arg
-    if isinstance(value, bool):
-        return "1" if value else "0"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, str):
-        return "'" + value.replace("'", "''") + "'"
+    if getattr(default, "is_scalar", False):
+        value = default.arg
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, str):
+            return "'" + value.replace("'", "''") + "'"
+        return None
+    if getattr(default, "is_callable", False):
+        try:
+            produced = default.arg(None)  # CallableColumnDefault takes an exec context
+        except Exception:
+            return None
+        if isinstance(produced, _dt):
+            # CURRENT_TIMESTAMP is rejected by SQLite as a non-constant DEFAULT
+            # in ALTER TABLE ADD COLUMN; use a fixed sentinel instead.
+            return "'1970-01-01 00:00:00'"
+        if produced == []:
+            return "'[]'"
+        if produced == {}:
+            return "'{}'"
     return None
 
 
@@ -93,6 +119,29 @@ def _reconcile_sqlite_columns(sync_conn) -> None:
             ))
 
 
+def _assert_no_schema_drift(sync_conn) -> None:
+    """After reconcile, verify every model column exists in its table.
+
+    A residual gap (a column reconcile could not synthesize) means queries
+    selecting it will raise at runtime — so fail fast and loud here instead.
+    """
+    inspector = sa_inspect(sync_conn)
+    existing_tables = set(inspector.get_table_names())
+    drift: dict[str, list[str]] = {}
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue  # create_all just made it — fully formed
+        present = {col["name"] for col in inspector.get_columns(table.name)}
+        missing = [c.name for c in table.columns if c.name not in present]
+        if missing:
+            drift[table.name] = missing
+    if drift:
+        raise SchemaDriftError(
+            f"DB is missing model columns reconcile could not add: {drift}. "
+            "Add a synthesizable default or a real migration."
+        )
+
+
 async def init_db(db_url: str | None = None) -> None:
     """Create tables (SQLite dev path) and initialise the session factory."""
     global _engine, _session_factory
@@ -104,6 +153,7 @@ async def init_db(db_url: str | None = None) -> None:
         await conn.run_sync(Base.metadata.create_all)
         if url.startswith("sqlite"):
             await conn.run_sync(_reconcile_sqlite_columns)
+            await conn.run_sync(_assert_no_schema_drift)
 
 
 @asynccontextmanager

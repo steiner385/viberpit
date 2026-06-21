@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 
+import pytest
 from sqlalchemy import text as sa_text
 
 from server.db import db_session, init_db
@@ -82,3 +83,73 @@ def test_init_db_adds_missing_not_null_column_with_default(tmp_path):
             )).scalar_one()
 
     assert asyncio.run(_read_name_is_auto()) == 1
+
+
+def test_init_db_adds_not_null_json_column_with_list_default(tmp_path):
+    """An old populated sessions table missing the NOT NULL `tool_allowlist`
+    (JSON, default=list) column gains it, backfilled to '[]'."""
+    db_file = tmp_path / "old.db"
+    con = sqlite3.connect(db_file)
+    con.execute(
+        "CREATE TABLE sessions ("
+        " id TEXT PRIMARY KEY, name TEXT, account_name TEXT, status TEXT, cwd TEXT)"
+    )
+    con.execute("INSERT INTO sessions (id, name, account_name, status, cwd)"
+                " VALUES ('o1','n','acct','idle','/tmp')")
+    con.commit(); con.close()
+
+    asyncio.run(init_db(db_url=f"sqlite+aiosqlite:///{db_file}"))
+
+    async def _read():
+        async with db_session() as db:
+            return (await db.execute(
+                sa_text("SELECT tool_allowlist FROM sessions WHERE id='o1'"))).scalar_one()
+    # JSON column stored as TEXT; the backfilled default literal is '[]'.
+    assert asyncio.run(_read()) == "[]"
+
+
+def test_init_db_adds_not_null_datetime_column_with_epoch_sentinel(tmp_path):
+    """An old sessions table missing the NOT NULL `created_at` (default=datetime.utcnow)
+    gains it via a fixed epoch sentinel ('1970-01-01 00:00:00') rather than being skipped."""
+    db_file = tmp_path / "old.db"
+    con = sqlite3.connect(db_file)
+    con.execute(
+        "CREATE TABLE sessions ("
+        " id TEXT PRIMARY KEY, name TEXT, account_name TEXT, status TEXT, cwd TEXT)"
+    )
+    con.execute("INSERT INTO sessions (id, name, account_name, status, cwd)"
+                " VALUES ('o2','n','acct','idle','/tmp')")
+    con.commit(); con.close()
+
+    asyncio.run(init_db(db_url=f"sqlite+aiosqlite:///{db_file}"))
+
+    async def _read():
+        async with db_session() as db:
+            return (await db.execute(
+                sa_text("SELECT created_at FROM sessions WHERE id='o2'"))).scalar_one()
+    assert asyncio.run(_read()) == "1970-01-01 00:00:00"   # backfilled with the epoch sentinel
+
+
+def test_ddl_default_literal_handles_dict_default():
+    """A NOT NULL column with default=dict (callable producing {}) synthesizes '{}'."""
+    from sqlalchemy import Column, JSON
+    from server.db import _ddl_default_literal
+    col = Column("x", JSON, nullable=False, default=dict)
+    assert _ddl_default_literal(col) == "'{}'"
+
+
+def test_init_db_raises_schema_drift_when_reconcile_cannot_fix(tmp_path, monkeypatch):
+    """If reconcile fails to add a model column, init_db must fail LOUD (raise
+    SchemaDriftError) rather than letting the server start and serve empty."""
+    from server.db import SchemaDriftError
+    db_file = tmp_path / "drift.db"
+    con = sqlite3.connect(db_file)
+    # Old table missing several NOT NULL model columns.
+    con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT, cwd TEXT)")
+    con.commit(); con.close()
+
+    # Disable reconcile so the drift is NOT healed → the self-check must catch it.
+    monkeypatch.setattr("server.db._reconcile_sqlite_columns", lambda sync_conn: None)
+
+    with pytest.raises(SchemaDriftError):
+        asyncio.run(init_db(db_url=f"sqlite+aiosqlite:///{db_file}"))
