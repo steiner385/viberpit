@@ -11,9 +11,10 @@ interface Props {
   onSetMode: (mode: string) => void
   queued?: string[]
   onCancelQueued?: (index: number) => void
+  chatArmed?: boolean
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued }: Props) {
+export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed }: Props) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -113,7 +114,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           rows={1}
-          placeholder="Send a message…"
+          placeholder={chatArmed ? 'Reply in chat…' : 'Send a message…'}
           className={cn(
             'flex-1 resize-none rounded-md border border-gray-300 dark:border-gray-600',
             'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',
@@ -148,7 +149,21 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
           <span aria-hidden="true">📎</span>
         </button>
 
-        {isWorking ? (
+        {chatArmed ? (
+          <button
+            type="button"
+            aria-label="Send reply"
+            title="Answers the pending question and continues in chat"
+            onClick={submit}
+            className={cn(
+              'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-[44px]',
+              'bg-blue-600 text-white hover:bg-blue-700',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            )}
+          >
+            Reply
+          </button>
+        ) : isWorking ? (
           <>
             <button
               type="button"

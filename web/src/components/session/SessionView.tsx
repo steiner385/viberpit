@@ -155,6 +155,7 @@ export function SessionView({ sessionId, onBack }: Props) {
           onSetMode={rt.onSetMode}
           queued={rt.state.queued}
           onCancelQueued={rt.onCancelQueued}
+          chatArmed={rt.chatArmed}
         />
       </div>
     </div>

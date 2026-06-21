@@ -35,8 +35,14 @@ export interface SessionRuntime {
   contextPct: number | null
   subAgents: ReturnType<typeof selectSubAgents>
   hasOpenAction: boolean
+  /** Question currently armed for a free-flowing chat reply (next prompt answers it), or null. */
+  armedQuestionId: string | null
+  /** True when a question is armed for chat — the composer shows a "Reply" affordance. */
+  chatArmed: boolean
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
-  onAnswer: (questionId: string, selected: string[]) => void
+  onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
+  /** Set/clear the chat-armed question (toggles off if the same id is passed again). */
+  onChat: (questionId: string) => void
   onPrompt: (text: string, images: ImageRef[]) => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
@@ -60,6 +66,7 @@ export function useSessionRuntime(sessionId: string): SessionRuntime {
 
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
   const [mode, setMode] = useState('interactive')
+  const [armedQuestionId, setArmedQuestionId] = useState<string | null>(null)
   const modeRef = useRef('interactive')
   const [toolDetailMode, setToolDetailMode] = useState<ToolDetailMode>('auto')
   const toggleToolDetail = useCallback(
@@ -110,23 +117,47 @@ export function useSessionRuntime(sessionId: string): SessionRuntime {
   // NOT a user prompt, so the server never echoes it back — optimistically echo the
   // chosen labels into the transcript as a user bubble.
   const onAnswer = useCallback(
-    (questionId: string, selected: string[]) => {
-      answerQuestion(sessionId, questionId, selected)
+    (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => {
+      answerQuestion(sessionId, questionId, selected, mode)
       dispatch({ type: '_resolveQuestion', questionId })
       if (selected.length > 0) {
         dispatch({ type: 'user', turnId: `answer:${questionId}`, text: selected.join(', ') })
       }
+      // If this question was armed for chat, the answer resolves it — disarm.
+      setArmedQuestionId((cur) => (cur === questionId ? null : cur))
     },
     [sessionId, answerQuestion],
   )
 
-  // Composer handlers
+  // Toggle "armed for chat" for a question: the next composer send becomes its answer.
+  const onChat = useCallback(
+    (questionId: string) => {
+      setArmedQuestionId((cur) => (cur === questionId ? null : questionId))
+    },
+    [],
+  )
+
+  // Composer handlers — when a question is armed for chat, the next message answers
+  // that question (mode='chat') and unblocks the turn; otherwise it's a normal prompt.
+  // (Chat replies go through the answer channel, which carries no images.)
   const onPrompt = useCallback(
-    (text: string, images: ImageRef[]) => prompt(sessionId, text, images),
-    [sessionId, prompt],
+    (text: string, images: ImageRef[]) => {
+      if (armedQuestionId) {
+        answerQuestion(sessionId, armedQuestionId, [text], 'chat')
+        dispatch({ type: '_resolveQuestion', questionId: armedQuestionId })
+        dispatch({ type: 'user', turnId: `answer:${armedQuestionId}`, text })
+        setArmedQuestionId(null)
+        return
+      }
+      prompt(sessionId, text, images)
+    },
+    [sessionId, prompt, answerQuestion, armedQuestionId],
   )
   const onInterrupt = useCallback(
-    () => sendInterrupt(sessionId),
+    () => {
+      setArmedQuestionId(null)
+      sendInterrupt(sessionId)
+    },
     [sessionId, sendInterrupt],
   )
   const onSetMode = useCallback(
@@ -150,6 +181,16 @@ export function useSessionRuntime(sessionId: string): SessionRuntime {
   const hasOpenAction = state.turns.some((t) =>
     t.blocks.some((b) => b.kind === 'permission' || b.kind === 'question'),
   )
+
+  // If the armed question is no longer present (resolved/replaced), disarm.
+  useEffect(() => {
+    if (!armedQuestionId) return
+    const stillOpen = state.turns.some((t) =>
+      t.blocks.some((b) => b.kind === 'question' && b.questionId === armedQuestionId),
+    )
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- disarm in sync with transcript changes
+    if (!stillOpen) setArmedQuestionId(null)
+  }, [state.turns, armedQuestionId])
 
   // ── Status-strip derived data ──────────────────────────────────────────────
   // Account: the session record's account, overridden by the latest rotation.
@@ -186,8 +227,11 @@ export function useSessionRuntime(sessionId: string): SessionRuntime {
     contextPct,
     subAgents,
     hasOpenAction,
+    armedQuestionId,
+    chatArmed: armedQuestionId !== null,
     onDecision,
     onAnswer,
+    onChat,
     onPrompt,
     onInterrupt,
     onSetMode,
