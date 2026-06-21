@@ -56,6 +56,9 @@ async def _lifespan(app: FastAPI):
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
 
+    # Rehydrate persisted sessions (lazy — drivers are created on attach, not here).
+    await app.state.orchestrator.rehydrate()
+
     # Sweep stale reauth-tmp dirs (from crashed previous runs)
     app.state.reauth.sweep_stale()
 
