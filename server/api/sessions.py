@@ -62,8 +62,9 @@ def _record_to_dict(record) -> dict[str, Any]:
         "id": record.id,
         "name": record.name,
         "accountName": record.account,
-        "status": "working",  # in-memory sessions are always working
-        "createdAt": None,    # available from DB; omit for simplicity in-memory
+        "status": record.status,
+        "detached": record.detached,
+        "createdAt": record.created_at.isoformat() if record.created_at else None,
         "updatedAt": None,
     }
 

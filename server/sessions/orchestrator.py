@@ -205,6 +205,7 @@ class SessionOrchestrator:
             cols=cols,
             rows=rows,
             cwd=cwd,
+            status="working" if initial_prompt else "idle",
         )
         self._records[session_id] = record
         log.info("session.create id=%s account=%s", session_id, account)
