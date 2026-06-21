@@ -7,14 +7,16 @@ import { TodoList } from './TodoList'
 interface Props {
   kind: ToolKind
   ok: boolean
+  /** The tool's call arguments — Edit/Write diffs are reconstructed from here. */
+  input: Record<string, unknown>
   payload: Record<string, unknown>
 }
 
-export function ToolResult({ kind, ok, payload }: Props) {
+export function ToolResult({ kind, ok, input, payload }: Props) {
   switch (kind) {
     case 'edit':
     case 'write':
-      return <DiffView payload={payload} />
+      return <DiffView input={input} />
     case 'read':
       return <FileContent payload={payload} />
     case 'bash':

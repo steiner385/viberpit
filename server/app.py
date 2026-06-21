@@ -5,7 +5,7 @@ import signal
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
-from fastapi.staticfiles import StaticFiles
+from server.spa import mount_spa
 
 from server.audit import install_redacting_filter
 from server.auth.middleware import IdentityMiddleware, current_identity
@@ -139,10 +139,10 @@ def create_app(
     ws_router = build_ws_router(orchestrator)
     app.include_router(ws_router)
 
-    # SPA static files — optional; guard so it's missing in dev/test (T039)
-    spa_dist = Path(__file__).parent.parent / "web" / "dist"
-    if spa_dist.is_dir():
-        app.mount("/", StaticFiles(directory=str(spa_dist), html=True), name="spa")
+    # SPA static files with client-side-routing fallback — optional; guarded so a
+    # missing build (dev/test) doesn't break startup. Registered AFTER the API/WS
+    # routers so /api/* and /ws/* keep precedence.
+    mount_spa(app, Path(__file__).parent.parent / "web" / "dist")
 
     return app
 

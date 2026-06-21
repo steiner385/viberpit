@@ -5,6 +5,7 @@ Alembic is the migration path for Postgres production (see server/db/migrations/
 """
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -13,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from server.config import get_settings
 from server.db.models import Base
+
+log = logging.getLogger(__name__)
 
 # Module-level singletons — replaced by init_db() at app startup.
 _engine = None
@@ -26,17 +29,42 @@ def _make_engine(db_url: str):
     return create_async_engine(db_url, connect_args=connect_args, echo=False)
 
 
+def _ddl_default_literal(column) -> str | None:
+    """Return a SQL literal for `column`'s static default, or None if it has none.
+
+    SQLite can ADD a NOT NULL column to a populated table only when a DEFAULT is
+    supplied to backfill existing rows. We can synthesize that DEFAULT from a
+    *scalar* model default (bool/int/float/str). Callable/server defaults (e.g. a
+    JSON column defaulting to ``list``) have no static literal — return None so the
+    caller skips them rather than emit invalid DDL.
+    """
+    default = column.default
+    if default is None or not getattr(default, "is_scalar", False):
+        return None
+    value = default.arg
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return "'" + value.replace("'", "''") + "'"
+    return None
+
+
 def _reconcile_sqlite_columns(sync_conn) -> None:
-    """Add any nullable mapped column missing from an existing SQLite table.
+    """Add any mapped column missing from an existing SQLite table.
 
     ``create_all`` creates absent *tables* but never adds a column to a table
     that already exists, so a dev DB created before a model gained a column would
     be missing it.  We derive the desired columns from the models (single source
     of truth) and ALTER TABLE ADD COLUMN any that are absent.
 
-    Conservative on purpose: only NULLable columns are added.  A NOT NULL column
-    can't be added to an already-populated table without a default, so those are
-    left to a real migration (Alembic, the Postgres/prod path).
+    NULLable columns are added bare. A NOT NULL column can't be added to a
+    populated table without a DEFAULT to backfill existing rows — so we add it
+    WITH the model's scalar default when there is one (e.g. ``name_is_auto`` /
+    ``permission_mode``). A NOT NULL column whose default is non-static (a
+    callable/server default) is left to a real migration and logged, since we
+    can't synthesize a literal for it.
     """
     inspector = sa_inspect(sync_conn)
     existing_tables = set(inspector.get_table_names())
@@ -45,11 +73,23 @@ def _reconcile_sqlite_columns(sync_conn) -> None:
             continue  # create_all just made it — it already has every column
         present = {col["name"] for col in inspector.get_columns(table.name)}
         for column in table.columns:
-            if column.name in present or not column.nullable:
+            if column.name in present:
                 continue
             col_type = column.type.compile(dialect=sync_conn.dialect)
+            if column.nullable:
+                sync_conn.execute(sa_text(
+                    f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}'
+                ))
+                continue
+            default_literal = _ddl_default_literal(column)
+            if default_literal is None:
+                log.warning(
+                    "reconcile: cannot add NOT NULL column %s.%s without a static "
+                    "default — needs a real migration", table.name, column.name)
+                continue
             sync_conn.execute(sa_text(
-                f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}'
+                f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" '
+                f'{col_type} NOT NULL DEFAULT {default_literal}'
             ))
 
 

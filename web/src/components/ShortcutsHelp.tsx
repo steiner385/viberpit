@@ -29,6 +29,7 @@ const ACTION_BINDINGS: Binding[] = [
 const IN_SESSION_BINDINGS: Binding[] = [
   { keys: 'Esc', description: 'Back to session list' },
   { keys: 'Shift+Tab', description: 'Cycle permission mode' },
+  { keys: 'c', description: 'Collapse / expand tool calls' },
 ]
 
 export function ShortcutsHelp({ onClose }: ShortcutsHelpProps) {

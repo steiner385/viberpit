@@ -15,6 +15,7 @@ def _parse(path: str, max_turns: int) -> list:
             except json.JSONDecodeError:
                 continue
     out: list = []
+    meta_event = None
     for o in lines:
         typ = o.get("type")
         msg = o.get("message") or {}
@@ -48,6 +49,12 @@ def _parse(path: str, max_turns: int) -> list:
                 out.append(ev.ToolResult(r["tool_use_id"], not r.get("is_error", False),
                                          {"content": r.get("content")}, uuid))
         elif typ == "assistant":
+            # Reconstruct the model once (status strip needs it after re-attach).
+            model = msg.get("model")
+            if model and meta_event is None:
+                # Held aside (not appended) so the trim below can't slice it away on
+                # long sessions — the status strip needs the model after re-attach.
+                meta_event = ev.SessionMeta(model=model, session_id=o.get("sessionId") or "")
             out.append(ev.TurnStart(turn_id=uuid, src_uuid=uuid))
             for b in content:
                 t = b.get("type")
@@ -58,12 +65,16 @@ def _parse(path: str, max_turns: int) -> list:
                 elif t == "tool_use":
                     out.append(ev.ToolCall(uuid, b.get("id", ""), b.get("name", ""), ev.tool_kind(b.get("name", "")),
                                            b.get("input", {}), uuid))
-            out.append(ev.TurnEnd(uuid, None, uuid))
+            usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
+            out.append(ev.TurnEnd(uuid, usage, None, uuid))
     # keep only the last max_turns assistant turns' worth — for the small fixture this is a no-op;
     # a turn boundary is a TurnStart. Trim from the front to the start of the (max_turns)-th-from-last turn.
     starts = [i for i, e in enumerate(out) if isinstance(e, ev.TurnStart)]
     if len(starts) > max_turns:
         out = out[starts[-max_turns]:]
+    # Prepend the model meta (if any) so it always precedes the kept turns.
+    if meta_event is not None:
+        out.insert(0, meta_event)
     return out
 
 

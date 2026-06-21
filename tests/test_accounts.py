@@ -1,7 +1,6 @@
 import json
 import time
 import unittest
-from datetime import datetime, timezone
 from unittest import mock
 from tests.helpers import temp_env, usage
 
@@ -80,7 +79,7 @@ class TestAccounts(unittest.TestCase):
 
     def test_pick_account_reserves_winner(self):
         with temp_env():
-            from ccswitch import accounts, oauth
+            from ccswitch import accounts
             _seed_account("alpha"); _seed_account("beta")
             def fake_usage(name):
                 return usage(session=80.0) if name == "alpha" else usage(session=5.0)

@@ -13,16 +13,44 @@ export type Block =
 
 export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[] }
 
+// ── Rotation marker ────────────────────────────────────────────────────────────
+
+/**
+ * An account-rotation event, interleaved into the transcript timeline.
+ *
+ * `afterTurnId` is the id of the last turn that existed when the rotation
+ * arrived (or null if no turn had arrived yet). The transcript renders each
+ * rotation immediately after its anchor turn, reproducing real arrival order
+ * without needing per-turn timestamps. A null anchor renders at the very top.
+ */
+export interface RotationMarker {
+  from: string
+  to: string
+  reason?: string
+  afterTurnId: string | null
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
+
+/** Latest result's token/cost footprint (consumed by lib/contextWindow helpers). */
+export interface UsageSnapshot {
+  input: number
+  output: number
+  cacheRead: number
+  costUsd: number
+}
 
 export interface TranscriptState {
   turns: Turn[]
   openBlockId: string | null    // id of the open text/thinking block in the active assistant turn
   status: { state: string; count: number }
   title: string | null
+  model: string | null          // current model id (from sessionMeta / replay)
+  usage: UsageSnapshot | null   // most recent result's token/cost snapshot
   replaying: boolean            // true until replayComplete
   error: { code: string; message: string; resetsAt?: string | null } | null
   queued: string[]              // texts of prompts waiting in the server-side queue
+  rotations: RotationMarker[]   // account rotations, anchored into the timeline
 }
 
 export const initialTranscript: TranscriptState = {
@@ -30,9 +58,17 @@ export const initialTranscript: TranscriptState = {
   openBlockId: null,
   status: { state: 'idle', count: 0 },
   title: null,
+  model: null,
+  usage: null,
   replaying: true,
   error: null,
   queued: [],
+  rotations: [],
+}
+
+/** Coerce a possibly-missing numeric usage field to a finite number (0 when absent). */
+function num(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
 }
 
 // ── Local (UI-only) synthetic actions ────────────────────────────────────────
@@ -40,6 +76,7 @@ export const initialTranscript: TranscriptState = {
 export type LocalAction =
   | { type: '_resolvePermission'; permId: string }
   | { type: '_resolveQuestion';   questionId: string }
+  | { type: '_rotation';          from: string; to: string; reason?: string }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -255,6 +292,11 @@ export function transcriptReducer(
       return { ...state, turns: nextTurns }
     }
 
+    // ── sessionMeta ───────────────────────────────────────────────────────────
+    case 'sessionMeta': {
+      return { ...state, model: ev.model }
+    }
+
     // ── title ─────────────────────────────────────────────────────────────────
     case 'title': {
       return { ...state, title: ev.title }
@@ -267,7 +309,18 @@ export function transcriptReducer(
 
     // ── turnEnd ───────────────────────────────────────────────────────────────
     case 'turnEnd': {
-      return { ...state, openBlockId: null }
+      // Snapshot the latest result's usage (token footprint of the current
+      // context) and cumulative cost. A turnEnd with no usage leaves the
+      // previous snapshot intact.
+      if (ev.usage == null) return { ...state, openBlockId: null }
+      const u = ev.usage
+      const usage: UsageSnapshot = {
+        input: num(u.input_tokens),
+        output: num(u.output_tokens),
+        cacheRead: num(u.cache_read_input_tokens),
+        costUsd: num(ev.costUsd),
+      }
+      return { ...state, openBlockId: null, usage }
     }
 
     // ── replayComplete ────────────────────────────────────────────────────────
@@ -298,6 +351,14 @@ export function transcriptReducer(
       })
       if (!changed) return state // No matching permission block found; return unchanged state
       return { ...state, turns: nextTurns }
+    }
+
+    case '_rotation': {
+      // Anchor the rotation to the last turn present right now, so the
+      // transcript can render it inline at the chronologically correct spot.
+      const afterTurnId = state.turns.length > 0 ? state.turns[state.turns.length - 1].id : null
+      const marker: RotationMarker = { from: ev.from, to: ev.to, reason: ev.reason, afterTurnId }
+      return { ...state, rotations: [...state.rotations, marker] }
     }
 
     case '_resolveQuestion': {

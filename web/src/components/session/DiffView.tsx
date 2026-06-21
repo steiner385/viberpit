@@ -1,37 +1,17 @@
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
+import { buildLines } from '@/lib/toolContent'
 
-interface Props { payload: Record<string, unknown> }
+// `input` is the tool's call arguments (Edit: old_string/new_string, Write:
+// content). The result payload carries only the success/error message, so the
+// diff MUST be reconstructed from the input.
+interface Props { input: Record<string, unknown> }
 
 const MAX_LINES = 200
 
-function buildLines(payload: Record<string, unknown>): Array<{ prefix: '+' | '-'; text: string }> {
-  const lines: Array<{ prefix: '+' | '-'; text: string }> = []
-  const oldStr = typeof payload.old_string === 'string' ? payload.old_string : null
-  const newStr = typeof payload.new_string === 'string' ? payload.new_string : null
-  const content = typeof payload.content === 'string' ? payload.content : null
-
-  if (oldStr !== null) {
-    for (const line of oldStr.split('\n')) {
-      lines.push({ prefix: '-', text: line })
-    }
-  }
-  if (newStr !== null) {
-    for (const line of newStr.split('\n')) {
-      lines.push({ prefix: '+', text: line })
-    }
-  } else if (content !== null && oldStr === null) {
-    // Write-only: content as added lines
-    for (const line of content.split('\n')) {
-      lines.push({ prefix: '+', text: line })
-    }
-  }
-  return lines
-}
-
-export function DiffView({ payload }: Props) {
+export function DiffView({ input }: Props) {
   const [showAll, setShowAll] = useState(false)
-  const allLines = buildLines(payload)
+  const allLines = buildLines(input)
   const visible = showAll ? allLines : allLines.slice(0, MAX_LINES)
   const hidden = allLines.length - visible.length
 

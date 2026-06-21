@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 from server.sessions.replay import replay_events
-from server.sessions.events import TurnStart, TextDelta, ToolCall, ToolResult, TurnEnd, UserMessage
+from server.sessions.events import ToolCall, ToolResult
 
 FIX = Path(__file__).parent / "fixtures" / "transcript.jsonl"
 
@@ -26,6 +26,43 @@ def test_replay_skips_malformed_lines(tmp_path):
     out = asyncio.run(replay_events(str(p)))
     types = [e.to_wire()["type"] for e in out]
     assert "user" in types and "turnStart" in types and "turnEnd" in types
+
+
+def test_replay_emits_session_meta_and_usage(tmp_path):
+    """Re-attach must reconstruct the model (from the assistant message) and the
+    per-result usage so the status strip can render context/quota after replay."""
+    p = tmp_path / "m.jsonl"
+    p.write_text(
+        '{"type":"assistant","uuid":"a1","message":{"role":"assistant","model":"claude-opus-4-1",'
+        '"content":[{"type":"text","text":"ok"}],'
+        '"usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":3}}}\n'
+    )
+    out = asyncio.run(replay_events(str(p)))
+    metas = [e for e in out if e.to_wire()["type"] == "sessionMeta"]
+    assert metas and metas[0].to_wire()["model"] == "claude-opus-4-1"
+    te = next(e for e in out if e.to_wire()["type"] == "turnEnd")
+    assert te.to_wire()["usage"] == {"input_tokens": 10, "output_tokens": 2, "cache_read_input_tokens": 3}
+
+
+def test_replay_keeps_session_meta_after_trim(tmp_path):
+    """The model id is emitted once (on the first assistant turn). In a session with
+    more than max_turns turns, the trim must NOT drop that SessionMeta — otherwise the
+    status strip loses the model after re-attach to a long session."""
+    p = tmp_path / "long.jsonl"
+    lines = []
+    for i in range(25):
+        msg = {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}
+        if i == 0:
+            msg["model"] = "claude-opus-4-1"  # model only on the first turn
+        lines.append('{"type":"assistant","uuid":"a%d","message":%s}\n' % (i, __import__("json").dumps(msg)))
+    p.write_text("".join(lines))
+    out = asyncio.run(replay_events(str(p), max_turns=20))
+    metas = [e for e in out if e.to_wire()["type"] == "sessionMeta"]
+    assert metas, "SessionMeta must survive trimming of a long session"
+    assert metas[0].to_wire()["model"] == "claude-opus-4-1"
+    # Trim still applies to turns themselves.
+    starts = [e for e in out if e.to_wire()["type"] == "turnStart"]
+    assert len(starts) == 20
 
 
 def test_replay_handles_string_content(tmp_path):

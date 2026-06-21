@@ -1,7 +1,7 @@
 from server.tests.fakes import fake_sdk as f
 from server.sessions.translator import Translator
-from server.sessions.events import (TurnStart, TextDelta, ThinkingDelta, ToolCall, ToolResult,
-                                     TurnEnd, ToolKind)
+from server.sessions.events import (TurnStart, ThinkingDelta, ToolCall, ToolResult,
+                                     TurnEnd, ToolKind, SessionMeta)
 from claude_agent_sdk import TextBlock
 
 def _run(msgs):
@@ -18,6 +18,28 @@ def test_simple_turn():
     assert tr.session_id == "s1"
     assert [type(e).__name__ for e in out] == ["TurnStart", "TextDelta", "TextDelta", "TurnEnd"]
     assert out[1].text == "Hello " and out[1].turn_id == out[0].turn_id == "t1"
+
+def test_init_emits_session_meta_with_model():
+    msgs = [f.sys_init("s1", model="claude-sonnet-4-5"), f.stream_start(uuid="t1"),
+            f.result(session_id="s1", uuid="t1")]
+    _, out = _run(msgs)
+    metas = [e for e in out if isinstance(e, SessionMeta)]
+    assert len(metas) == 1
+    assert metas[0].model == "claude-sonnet-4-5"
+    assert metas[0].session_id == "s1"
+
+def test_init_without_model_emits_no_session_meta():
+    msgs = [f.sys_init("s1"), f.stream_start(uuid="t1"), f.result(session_id="s1", uuid="t1")]
+    _, out = _run(msgs)
+    assert not any(isinstance(e, SessionMeta) for e in out)
+
+def test_turn_end_carries_usage_and_cost():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(session_id="s1", usage={"input_tokens": 5}, cost=0.25, uuid="t1")]
+    _, out = _run(msgs)
+    te = next(e for e in out if isinstance(e, TurnEnd))
+    assert te.usage == {"input_tokens": 5}
+    assert te.cost_usd == 0.25
 
 def test_thinking_delta():
     msgs = [f.stream_start(uuid="t1"), f.stream_thinking("hmm", uuid="t1"), f.result(uuid="t1")]

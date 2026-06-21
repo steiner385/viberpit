@@ -34,3 +34,15 @@ When a unit of work is complete and verified (tests + lint green), finish it wit
 3. Push and open a PR via `gh pr create` (end body with the Claude Code trailer).
 4. Merge to `master` once mergeable: `gh pr merge --merge --delete-branch`.
 Only hold off if the user said it's a prototype/WIP, or if verification is failing.
+
+## Dev / testing
+
+- Tests: server → `pytest server/tests/`; web (run in `web/`) → `vitest run`, `tsc --noEmit`, `eslint`.
+- A fresh git worktree has no built env (network blocks `uv sync` of the ~70MB claude-agent-sdk).
+  Run against the main checkout's prebuilt env (`<main-checkout>/.venv/bin/python -m pytest …`) and
+  symlink `web/node_modules` from the main checkout.
+- API auth tests 401 unless `CCSWITCH_TAILNET_ALLOWLIST` includes the test identity (the real shell
+  env sets a live allowlist). Pin it per-test, or run the full suite with
+  `env -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 pytest` (empty allowlist needs `CCSWITCH_DEV=1`).
+- Dev SQLite: `create_all` never ALTERs existing tables; `init_db` backfills missing nullable columns,
+  so add new model columns nullable — a NOT NULL column needs a real migration (Alembic, Postgres/prod).

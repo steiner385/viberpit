@@ -205,7 +205,6 @@ export class SessionSocket {
     const set = this._listeners[event] as Set<EventMap[K]> | undefined
     if (!set) return
     for (const cb of set) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(cb as (...a: unknown[]) => void)(...(args as unknown[]))
     }
   }

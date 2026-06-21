@@ -1,13 +1,14 @@
 import { cn } from '@/lib/utils'
+import { stripAnsi, coerceText } from '@/lib/toolContent'
 
 interface Props { payload: Record<string, unknown>; ok?: boolean }
 
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, '')
-}
-
 function extractContent(payload: Record<string, unknown>): string {
-  if (typeof payload.content === 'string') return payload.content
+  // `content` may be a string OR a list of content blocks — normalize both.
+  if (payload.content != null) {
+    const text = coerceText(payload.content)
+    if (text) return text
+  }
   const parts: string[] = []
   if (typeof payload.stdout === 'string' && payload.stdout) parts.push(payload.stdout)
   if (typeof payload.stderr === 'string' && payload.stderr) parts.push(payload.stderr)

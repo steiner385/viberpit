@@ -14,12 +14,11 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from tests.helpers import temp_env, usage as make_usage
+from tests.helpers import temp_env
 from ccswitch.oauth import Usage
 
 
