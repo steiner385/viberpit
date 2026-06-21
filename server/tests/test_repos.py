@@ -220,8 +220,6 @@ def test_create_session_accepts_images(tmp_path):
     from ccswitch import paths
     from server.sessions import uploads
 
-    monkeypatch_env = {"CCSWITCH_HOME": str(tmp_path / "home"), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}
-
     # Stage a 1×1 PNG so uploads.stage_image returns a real ref.
     PNG = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
