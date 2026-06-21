@@ -38,7 +38,7 @@ const SESSIONS: Session[] = [
     id: 'sess-1',
     name: 'Work session',
     accountName: 'alice',
-    status: 'working',
+    status: 'in_progress',
     createdAt: '2026-06-19T10:00:00Z',
     updatedAt: '2026-06-19T10:00:00Z',
   },
@@ -159,7 +159,7 @@ describe('a11y: StatusPill', () => {
   })
 
   it('has no axe violations for session statuses', async () => {
-    const sessionStatuses = ['working', 'idle', 'limited', 'ended'] as const
+    const sessionStatuses = ['in_progress', 'idle', 'limited', 'ended'] as const
     for (const status of sessionStatuses) {
       const { container } = render(<StatusPill status={status} />)
       const results = await axe(container)

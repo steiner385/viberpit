@@ -10,7 +10,7 @@ const SESSIONS: Session[] = [
     id: 'sess-1',
     name: 'Work session',
     accountName: 'alice',
-    status: 'working',
+    status: 'in_progress',
     createdAt: '2026-06-19T10:00:00Z',
     updatedAt: '2026-06-19T10:00:00Z',
   },
@@ -84,7 +84,7 @@ describe('SessionList', () => {
       { wrapper },
     )
 
-    expect(screen.getByText('Working')).toBeInTheDocument()
+    expect(screen.getByText('In progress')).toBeInTheDocument()
     expect(screen.getByText('Idle')).toBeInTheDocument()
   })
 

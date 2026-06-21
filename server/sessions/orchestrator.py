@@ -30,6 +30,7 @@ from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory
 from server.sessions.selection import AllAccountsBusy, select_account
+from server.sessions.titles import read_ai_title_from_file
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
 
@@ -156,6 +157,7 @@ class SessionOrchestrator:
         repo: str | None = None,
         identity: str = "system",
         permission_mode: str = "interactive",
+        name_is_auto: bool = True,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
 
@@ -219,7 +221,7 @@ class SessionOrchestrator:
             registry=self._registry, identity=identity,
             on_session_id=self._persist_claude_session_id,
             on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
-            on_status=functools.partial(self._set_record_status, session_id),
+            on_status=self._persist_status,
         )
         await driver.start()
         self._drivers[session_id] = driver
@@ -245,6 +247,7 @@ class SessionOrchestrator:
                 cwd=cwd,
                 repo=repo,
                 permission_mode=permission_mode,
+                name_is_auto=name_is_auto,
             )
             db.add(row)
 
@@ -258,6 +261,7 @@ class SessionOrchestrator:
             cwd=cwd,
             repo=repo,
             status="idle",
+            name_is_auto=name_is_auto,
         )
         self._records[session_id] = record
         log.info("session.create id=%s account=%s", session_id, account)
@@ -317,24 +321,59 @@ class SessionOrchestrator:
         log.info("session.close id=%s", session_id)
 
     async def rename_session(self, session_id: str, name: str) -> None:
-        """Update the session name in the DB and in-memory record."""
+        """Update the session name in the DB and in-memory record.
+
+        A manual rename pins ``name_is_auto = False`` so auto-naming never overwrites it.
+        """
         if session_id in self._records:
             self._records[session_id].name = name
+            self._records[session_id].name_is_auto = False
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             await db.execute(
                 sa_update(DbSession)
                 .where(DbSession.id == session_id)
-                .values(name=name)
+                .values(name=name, name_is_auto=False)
             )
 
-    def _set_record_status(self, session_id: str, state: str) -> None:
-        """Sync a session's live working/idle state (from the driver) into its in-memory
-        SessionRecord, so the session LIST (which reads record.status) reflects reality
-        instead of being stuck on the create-time value."""
+    async def _persist_status(self, session_id: str, status: str) -> None:
+        """Driver ``on_status`` callback: persist the derived dashboard status.
+
+        Updates the in-memory record (which the dashboard's 5s poll reads) and the DB
+        row. Never downgrades a terminal ``ended`` status. When a turn finishes
+        (``done``), opportunistically refresh the auto-name from Claude's title.
+        """
         rec = self._records.get(session_id)
+        if rec is not None and rec.status == "ended":
+            return
         if rec is not None:
-            rec.status = state
+            rec.status = status
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(status=status)
+            )
+        if status == "done":
+            await self._maybe_apply_auto_name(session_id)
+
+    async def _maybe_apply_auto_name(self, session_id: str) -> None:
+        """If the session name is still auto, adopt Claude's transcript title."""
+        rec = self._records.get(session_id)
+        if rec is None or not rec.name_is_auto:
+            return
+        path = self.transcript_path(session_id)
+        if not path:
+            return
+        title = await asyncio.to_thread(read_ai_title_from_file, path)
+        if not title or title == rec.name:
+            return
+        rec.name = title
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(name=title)
+            )
+        log.info("session.auto_name id=%s title=%r", session_id, title)
 
     async def _persist_claude_session_id(self, session_id: str, claude_session_id: str) -> None:
         """Callback fired by the driver the first time it captures the Claude session id.
@@ -370,7 +409,8 @@ class SessionOrchestrator:
         for row in rows:
             if row.id in self._records:
                 continue
-            status = "idle" if row.status == "working" else row.status
+            # A pre-crash live status has no driver anymore → normalize to idle.
+            status = "idle" if row.status in ("working", "in_progress") else row.status
             self._records[row.id] = SessionRecord(
                 id=row.id,
                 name=row.name,
@@ -382,6 +422,7 @@ class SessionOrchestrator:
                 repo=row.repo,
                 detached=True,
                 status=status,
+                name_is_auto=row.name_is_auto,
                 permission_mode=row.permission_mode,
                 created_at=row.created_at,
             )
@@ -506,7 +547,7 @@ class SessionOrchestrator:
                     resume=resume_arg,
                     on_session_id=self._persist_claude_session_id,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
-                    on_status=functools.partial(self._set_record_status, session_id),
+                    on_status=self._persist_status,
                 )
 
             driver = _build(resume)
@@ -676,7 +717,7 @@ class SessionOrchestrator:
                 resume=claude_sid,
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
-                on_status=functools.partial(self._set_record_status, session_id),
+                on_status=self._persist_status,
             )
             await new_driver.start()
             self._drivers[record.id] = new_driver

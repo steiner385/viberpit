@@ -21,7 +21,14 @@ export interface Account {
   nickname?: string | null
 }
 
-export type SessionStatus = 'working' | 'idle' | 'limited' | 'ended'
+export type SessionStatus =
+  | 'idle'
+  | 'in_progress'
+  | 'waiting_input'
+  | 'ready_review'
+  | 'done'
+  | 'limited'
+  | 'ended'
 
 export interface Session {
   id: string
@@ -33,6 +40,7 @@ export interface Session {
   createdAt: string
   updatedAt: string
   detached?: boolean
+  nameIsAuto?: boolean
 }
 
 export interface ArchivedSession {
