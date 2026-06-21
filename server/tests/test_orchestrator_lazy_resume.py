@@ -329,3 +329,35 @@ def test_ensure_driver_concurrent_calls_start_driver_once(tmp_path):
         f"sdk_factory must be called exactly once; called {factory_call_count} times — "
         "two SDK processes would attach to the same Claude conversation"
     )
+
+
+def test_ensure_driver_recreates_missing_cwd(tmp_path):
+    """A rehydrated session whose cwd (scratch dir / worktree) was removed on close
+    must have it recreated, not fail with 'Working directory does not exist'."""
+    from server.tests.fakes.fake_sdk import FakeSDKClient
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    missing_cwd = str(tmp_path / "gone" / "session-cwd")  # does NOT exist
+    session_id = "s-missing-cwd"
+
+    def factory(cwd, cfg, can_use_tool, mode, resume):
+        return FakeSDKClient([], on_can_use_tool=can_use_tool)
+
+    async def _run():
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(DbSession(
+                id=session_id, name="t", account_name="acct1",
+                claude_session_id="csid", status="idle", cwd=missing_cwd,
+            ))
+        orch = SessionOrchestrator(sdk_factory=factory)
+        await orch.rehydrate()
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir(parents=True)
+        with patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+             patch("server.sessions.orchestrator.configdir"):
+            driver = await orch.ensure_driver(session_id)
+        return driver
+
+    driver = asyncio.run(_run())
+    assert driver is not None
+    assert os.path.isdir(missing_cwd), "ensure_driver must recreate the missing cwd"

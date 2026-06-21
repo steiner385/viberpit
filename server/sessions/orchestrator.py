@@ -466,6 +466,12 @@ class SessionOrchestrator:
             # Build and start a new driver resuming from the stored claude_session_id
             resume = rec.claude_session_id or None
             cfg_dir = compose(rec.account)
+            # Ensure the working directory exists. A rehydrated session's cwd (a no-repo
+            # scratch dir or a git worktree) may have been removed when the session was
+            # previously closed (close_session cleans those up); without recreating it the
+            # SDK fails with "Working directory does not exist", which surfaced as a
+            # misleading "account needs re-authentication" error.
+            Path(rec.cwd).mkdir(parents=True, exist_ok=True)
             configdir.trust_project(rec.account, rec.cwd)
 
             def _build(resume_arg):
