@@ -15,6 +15,7 @@ class Config:
     expiry_skew_sec: int = 300
     timezone: str = "America/New_York"
     claude_bin: str = "claude"
+    prefer_soon_reset: bool = True
 
 
 def load_config() -> Config:

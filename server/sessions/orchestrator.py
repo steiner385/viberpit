@@ -15,6 +15,8 @@ import asyncio
 import functools
 import logging
 import os
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Callable
@@ -346,7 +348,9 @@ class SessionOrchestrator:
         from sqlalchemy import select as sa_select
         async with db_session() as db:
             rows = (await db.execute(
-                sa_select(DbSession).where(DbSession.status != "ended")
+                sa_select(DbSession).where(
+                DbSession.status.notin_(["ended", "archived"])
+            )
             )).scalars().all()
         added = 0
         for row in rows:
@@ -680,3 +684,228 @@ class SessionOrchestrator:
             log.warning("rotation.all_busy session=%s", record.id)
         except Exception:
             log.exception("rotation.error session=%s", record.id)
+
+    # ------------------------------------------------------------------
+    # Archive / unarchive / permanent-delete
+    # ------------------------------------------------------------------
+
+    async def archive_session(self, session_id: str) -> None:
+        """Archive a session: stop driver, move cwd into archive_dir, status='archived'.
+
+        The DB row is KEPT (status='archived'). The working directory is moved to
+        archive_dir()/<session_id>/ so it can be reviewed or unarchived later.
+        If the cwd is missing (already gone), skip the move but still mark archived.
+        Git worktree registrations are pruned best-effort after the move.
+        """
+        from ccswitch.paths import archive_dir
+
+        # Stop the driver and clear in-memory state (mirrors close_session head).
+        driver = self._drivers.pop(session_id, None)
+        self._last_prompt.pop(session_id, None)
+        self._pending_initial_prompt.pop(session_id, None)
+        if driver is not None:
+            await driver.aclose()
+
+        # Remove from active records — archived sessions are NOT in _records.
+        record = self._records.pop(session_id, None)
+
+        # Clear in-memory worktree registration (we move the dir, not remove via git).
+        self._worktrees.pop(session_id, None)
+
+        # Move the cwd into the archive directory.
+        dest = archive_dir() / session_id
+        cwd_path: Path | None = Path(record.cwd) if (record and record.cwd) else None
+
+        if cwd_path and cwd_path.exists():
+            try:
+                await asyncio.to_thread(shutil.move, str(cwd_path), str(dest))
+                log.info(
+                    "session.archive id=%s moved cwd=%s to archive=%s",
+                    session_id, cwd_path, dest,
+                )
+            except Exception:
+                log.exception(
+                    "session.archive_move_failed id=%s src=%s dest=%s",
+                    session_id, cwd_path, dest,
+                )
+        else:
+            log.info("session.archive id=%s cwd missing or unknown, skip move", session_id)
+
+        # Best-effort: prune stale git worktree registrations.
+        if cwd_path:
+            def _prune_worktree() -> None:
+                try:
+                    r = subprocess.run(
+                        ["git", "-C", str(cwd_path.parent), "worktree", "prune"],
+                        capture_output=True, timeout=10,
+                    )
+                    if r.returncode != 0:
+                        log.debug(
+                            "session.archive_worktree_prune_failed id=%s stderr=%s",
+                            session_id, r.stderr,
+                        )
+                except Exception:
+                    pass
+            await asyncio.to_thread(_prune_worktree)
+
+        # Mark archived in DB.
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession)
+                .where(DbSession.id == session_id)
+                .values(status="archived")
+            )
+        log.info("session.archive id=%s done", session_id)
+
+    async def list_archived(self) -> list[dict]:
+        """Return metadata dicts for all archived sessions (reads DB, not _records)."""
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            rows = (await db.execute(
+                sa_select(DbSession).where(DbSession.status == "archived")
+            )).scalars().all()
+        return [
+            {
+                "id": row.id,
+                "name": row.name,
+                "account": row.account_name,
+                "cwd": row.cwd,
+                "claudeSessionId": row.claude_session_id,
+                "permissionMode": row.permission_mode,
+                "createdAt": row.created_at.isoformat() if row.created_at else None,
+                "archivedAt": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in rows
+        ]
+
+    async def unarchive(self, session_id: str) -> "SessionRecord | None":
+        """Move the archived cwd back and restore the session to idle.
+
+        Returns the restored SessionRecord, or None if not found / not archived.
+        Adds the record to _records so it reappears in list_sessions() without restart.
+        """
+        from ccswitch.paths import archive_dir
+        from sqlalchemy import select as sa_select
+
+        async with db_session() as db:
+            row = (await db.execute(
+                sa_select(DbSession)
+                .where(DbSession.id == session_id)
+                .where(DbSession.status == "archived")
+            )).scalars().first()
+        if row is None:
+            return None
+
+        archive_path = archive_dir() / session_id
+        original_cwd = Path(row.cwd)
+
+        def _restore() -> None:
+            if archive_path.exists():
+                original_cwd.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(archive_path), str(original_cwd))
+            else:
+                # Archive folder missing — recreate an empty cwd so SDK can start.
+                original_cwd.mkdir(parents=True, exist_ok=True)
+                log.warning(
+                    "session.unarchive id=%s archive folder missing, recreating empty cwd",
+                    session_id,
+                )
+
+        await asyncio.to_thread(_restore)
+
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession)
+                .where(DbSession.id == session_id)
+                .values(status="idle")
+            )
+
+        record = SessionRecord(
+            id=row.id,
+            name=row.name,
+            account=row.account_name,
+            claude_session_id=row.claude_session_id or "",
+            cols=80,
+            rows=24,
+            cwd=row.cwd,
+            detached=True,
+            status="idle",
+            permission_mode=row.permission_mode,
+            created_at=row.created_at,
+        )
+        self._records[session_id] = record
+        log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)
+        return record
+
+    async def permanent_delete(self, session_id: str) -> bool:
+        """Permanently delete an archived session: remove archive folder + DB row.
+
+        Returns True if deleted, False if the session was not found in DB.
+        Containment guard: only removes paths that are direct children of archive_dir().
+        """
+        from ccswitch.paths import archive_dir
+        from sqlalchemy import select as sa_select
+
+        async with db_session() as db:
+            row = (await db.execute(
+                sa_select(DbSession).where(DbSession.id == session_id)
+            )).scalars().first()
+        if row is None:
+            return False
+
+        # Containment guard: candidate must be a direct child of archive_dir().
+        archive_base = archive_dir().resolve()
+        candidate = (archive_base / session_id).resolve()
+        try:
+            candidate.relative_to(archive_base)
+        except ValueError:
+            log.error(
+                "session.permanent_delete CONTAINMENT GUARD id=%s candidate=%s",
+                session_id, candidate,
+            )
+            return False
+
+        await asyncio.to_thread(shutil.rmtree, str(candidate), True)
+        log.info("session.permanent_delete id=%s archive_path=%s", session_id, candidate)
+
+        async with db_session() as db:
+            from sqlalchemy import delete as sa_delete
+            await db.execute(
+                sa_delete(DbSession).where(DbSession.id == session_id)
+            )
+        log.info("session.permanent_delete id=%s db row removed", session_id)
+        return True
+
+    async def transcript_events(self, session_id: str) -> list:
+        """Return replayed transcript events for a session (read-only review).
+
+        Works for both active and archived sessions: transcripts live in the
+        account's config dir (not the moved cwd), so always accessible.
+        Returns [] if no transcript is found or parsing fails.
+        """
+        from server.sessions.replay import replay_events
+
+        path = self.transcript_path(session_id)
+        if path is None:
+            # For archived sessions the record is not in _records; load from DB.
+            from sqlalchemy import select as sa_select
+            import glob as _glob
+            async with db_session() as db:
+                row = (await db.execute(
+                    sa_select(DbSession).where(DbSession.id == session_id)
+                )).scalars().first()
+            if row and row.claude_session_id:
+                cfg_dir = str(compose(row.account_name))
+                matches = _glob.glob(
+                    str(Path(cfg_dir) / "projects" / "*" / f"{row.claude_session_id}.jsonl")
+                )
+                path = matches[0] if matches else None
+        if not path:
+            return []
+        try:
+            return await replay_events(path)
+        except Exception:
+            log.warning("session.transcript_events id=%s replay failed", session_id, exc_info=True)
+            return []
