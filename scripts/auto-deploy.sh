@@ -45,7 +45,7 @@ done
 if [ "$healthy" -ne 1 ]; then
   echo "[deploy] /healthz never came up — ROLLING BACK ${REMOTE:0:9} -> ${LOCAL:0:9}" >&2
   git reset --hard "$LOCAL"
-  ( cd web && npm run build )
+  ( cd web && npm run build ) || echo "[deploy] WARNING: rollback build failed; restarting old backend anyway" >&2
   sudo systemctl restart ccswitch.service
   echo "[deploy] rolled back to ${LOCAL:0:9}" >&2
   exit 1
