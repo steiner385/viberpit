@@ -109,6 +109,27 @@ describe('SettingsPanel', () => {
     )
   })
 
+  it('reflects server values when settings load AFTER the panel mounts', () => {
+    // Open before the settings query resolves: form shows defaults.
+    vi.mocked(hooks.useSettings).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+    } as ReturnType<typeof hooks.useSettings>)
+
+    const { rerender } = render(<SettingsPanel onClose={vi.fn()} />, { wrapper })
+    expect((screen.getByLabelText(/repo clone root/i) as HTMLInputElement).value).toBe('')
+
+    // Settings resolve: the form must pick up the server values.
+    vi.mocked(hooks.useSettings).mockReturnValue({
+      data: SETTINGS,
+      isLoading: false,
+    } as ReturnType<typeof hooks.useSettings>)
+    rerender(<SettingsPanel onClose={vi.fn()} />)
+
+    expect((screen.getByLabelText(/repo clone root/i) as HTMLInputElement).value).toBe('/home/user/repos')
+    expect((screen.getByLabelText(/default tool approvals/i) as HTMLSelectElement).value).toBe('interactive')
+  })
+
   it('calls onClose when the Close button is clicked', async () => {
     const onClose = vi.fn()
     const user = userEvent.setup()
