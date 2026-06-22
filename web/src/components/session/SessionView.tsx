@@ -4,8 +4,7 @@
  * The live session runtime (socket wiring, transcript reducer, derived status,
  * action handlers) lives in useSessionRuntime so it can be shared with the desktop
  * master-detail layout. SessionView owns only the full-screen chrome: the top bar
- * (Back, title, tool-detail toggle, status), the Esc/Shift+Tab/c keyboard
- * shortcuts, and the composer.
+ * (Back, title, status), the Esc/Shift+Tab keyboard shortcuts, and the composer.
  *
  * Accessibility note:
  *   - An `aria-live="polite"` sr-only region (rendered by SessionBody) mirrors the
@@ -20,7 +19,7 @@ import { useSessionRuntime } from '@/session/useSessionRuntime'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { Composer } from './Composer'
 import { SessionBody } from './SessionBody'
-import { PendingQuestionPanel } from './PendingQuestionPanel'
+import { CommandResultOverlay } from './CommandResultOverlay'
 
 /**
  * Cycle to the next permission mode in PERMISSION_MODES order.
@@ -65,16 +64,26 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
         e.preventDefault()
         const next = nextPermissionMode(modeRef.current)
         onSetMode(next)
-      } else if (e.key === 'Escape') {
-        // Guard 1: if the composer textarea (aria-label="Message") is focused and
-        // has non-empty text, Escape is for the composer (clearing a draft) — do
-        // NOT navigate back.
-        const ae2 = document.activeElement as HTMLTextAreaElement | null
-        const inComposerWithText =
-          ae2?.getAttribute('aria-label') === 'Message' && (ae2?.value ?? '') !== ''
+        return
+      }
+      // Composer-with-text guard, shared by ←/Esc (cursor move keeps the draft) and
+      // Ctrl+Z (yield to textarea undo while editing).
+      const ae2 = document.activeElement as HTMLTextAreaElement | null
+      const inComposerWithText =
+        ae2?.getAttribute('aria-label') === 'Message' && (ae2?.value ?? '') !== ''
+      // Ctrl+Z → unconditional force-detach escape hatch (bypasses the pending-card guard).
+      if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
         if (inComposerWithText) return
-        // Guard 2: if a permission/question card is pending, Escape is a no-op.
+        e.preventDefault()
+        handleBack()
+        return
+      }
+      // ← (empty prompt) and Esc → detach to the list. Shared guards: composer-with-text,
+      // and a pending permission/question card (answer it first).
+      if (e.key === 'ArrowLeft' || e.key === 'Escape') {
+        if (inComposerWithText) return
         if (hasOpenAction) return
+        e.preventDefault()
         handleBack()
       }
     }
@@ -85,6 +94,11 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
 
   return (
     <div className="flex flex-col h-dvh bg-white dark:bg-gray-950">
+      <CommandResultOverlay
+        result={rt.commandResult}
+        commands={rt.commands}
+        onClose={rt.dismissCommandResult}
+      />
       {/* Top bar */}
       <div className={cn(
         'flex items-center gap-3 px-3 py-2',
@@ -108,16 +122,9 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
         <span className="text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
       </div>
 
-      {/* Transcript + status strip + banners */}
+      {/* Transcript + status strip + banners + pinned live-question panel
+          (the panel lives in SessionBody so desktop + mobile share it). */}
       <SessionBody rt={rt} />
-
-      {/* Pinned answer panel for the live open question (answer in place) */}
-      <PendingQuestionPanel
-        turns={rt.state.turns}
-        onAnswer={rt.onAnswer}
-        onChat={rt.onChat}
-        armedQuestionId={rt.armedQuestionId}
-      />
 
       {/* Composer */}
       <div className="flex-shrink-0">
@@ -130,6 +137,8 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
           queued={rt.state.queued}
           onCancelQueued={rt.onCancelQueued}
           chatArmed={rt.chatArmed}
+          commands={rt.commands}
+          onCommand={rt.onCommand}
           autoFocusKey={sessionId}
         />
       </div>

@@ -1,11 +1,13 @@
 import { useState, useId } from 'react'
-import { ChevronDown, ChevronRight, FileEdit, FileText, Terminal, List, Search, Wrench } from 'lucide-react'
-import type { Block } from '@/session/reducer'
+import { ChevronDown, ChevronRight, FileEdit, FileText, Terminal, List, Search, Globe, Bot, Plug, Wrench } from 'lucide-react'
+import type { Block, SubThread } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import type { ToolKind } from '@/session/events'
 import { ToolResult } from './ToolResult'
+import { StructuredView } from './StructuredView'
 import { sizeHint } from '@/lib/toolContent'
 import { cn } from '@/lib/utils'
+import { Turn } from './Turn'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -17,6 +19,10 @@ interface Props {
   defaultResultOpen?: boolean
   /** Global detail override: 'all-open'/'all-closed' force every panel; 'auto' uses defaultResultOpen. */
   toolDetailMode?: ToolDetailMode
+  /** Persisted default for whether thinking blocks start collapsed (threaded to nested sub-agent turns). */
+  thinkingCollapsed?: boolean
+  /** When this is a Task tool, the spawned sub-agent's own thread (rendered nested). */
+  subThread?: SubThread
 }
 
 function kindIcon(kind: ToolKind) {
@@ -27,6 +33,9 @@ function kindIcon(kind: ToolKind) {
     case 'bash':   return <Terminal size={14} />
     case 'todo':   return <List size={14} />
     case 'search': return <Search size={14} />
+    case 'web':    return <Globe size={14} />
+    case 'task':   return <Bot size={14} />
+    case 'mcp':    return <Plug size={14} />
     default:       return <Wrench size={14} />
   }
 }
@@ -41,7 +50,7 @@ function keyArg(kind: ToolKind, input: Record<string, unknown>): string {
   return ''
 }
 
-export function ToolCallCard({ block, density = 'card', defaultResultOpen = false, toolDetailMode }: Props) {
+export function ToolCallCard({ block, density = 'card', defaultResultOpen = false, toolDetailMode, thinkingCollapsed = true, subThread }: Props) {
   const [argsOpen, setArgsOpen] = useState(false)
   // The global toggle force-overrides the per-row default; 'auto' (or no mode)
   // falls back to defaultResultOpen so only the live tail's latest tool opens.
@@ -57,9 +66,11 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
     setPrevMode(toolDetailMode)
     setResultOpen(modeResultOpen)
   }
+  const [subOpen, setSubOpen] = useState(false)
   const argsRegionId = useId()
   const resultRegionId = useId()
   const detailRegionId = useId()
+  const subRegionId = useId()
 
   const summary = keyArg(block.toolKind, block.input)
   // Completed tools dim to grey (Claude-Code style); a running tool stays prominent.
@@ -103,11 +114,33 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
           hidden={!resultOpen}
           className="border-l-2 border-gray-200 dark:border-gray-700 ml-4 px-3 py-2"
         >
-          <pre className="mb-2 overflow-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-xs font-mono text-gray-800 dark:text-gray-200">
-            {JSON.stringify(block.input, null, 2)}
-          </pre>
+          {resultOpen && (
+            <div className="mb-2">
+              <StructuredView data={block.input} />
+            </div>
+          )}
+          {resultOpen && block.name === 'Task' && subThread && subThread.turns.length > 0 && (
+            <div className="mb-2 rounded bg-indigo-50/30 dark:bg-indigo-950/10 border-l-2 border-indigo-300 dark:border-indigo-700 pl-2">
+              <div className="px-1 py-1 text-xs font-medium text-indigo-700 dark:text-indigo-300">
+                Sub-agent activity
+                <span className="ml-1 opacity-60">{subThread.turns.length} turn{subThread.turns.length === 1 ? '' : 's'}</span>
+              </div>
+              {subThread.turns.map((t) => (
+                <Turn
+                  key={t.id}
+                  turn={t}
+                  permissionMode="interactive"
+                  isLastTurn={false}
+                  toolDetailMode={toolDetailMode ?? 'auto'}
+                  thinkingCollapsed={thinkingCollapsed}
+                  onDecision={() => {}}
+                  onAnswer={() => {}}
+                />
+              ))}
+            </div>
+          )}
           {block.result && (
-            <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} />
+            <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} name={block.name} />
           )}
         </div>
       </div>
@@ -142,10 +175,49 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
 
       {/* Args panel */}
       <div id={argsRegionId} hidden={!argsOpen} className="border-t border-gray-200 dark:border-gray-700 px-3 py-2">
-        <pre className="overflow-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-xs font-mono text-gray-800 dark:text-gray-200">
-          {JSON.stringify(block.input, null, 2)}
-        </pre>
+        {argsOpen && <StructuredView data={block.input} />}
       </div>
+
+      {/* Sub-agent thread (Task tool only) */}
+      {block.name === 'Task' && subThread && subThread.turns.length > 0 && (
+        <div className="border-t border-gray-200 dark:border-gray-700">
+          <button
+            type="button"
+            aria-label="Sub-agent activity"
+            aria-expanded={subOpen}
+            aria-controls={subRegionId}
+            onClick={() => setSubOpen((v) => !v)}
+            className={cn(
+              'flex w-full items-center gap-2 px-3 py-1 text-left min-h-[44px]',
+              'text-indigo-700 dark:text-indigo-300',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            )}
+          >
+            <span className="text-xs font-medium">Sub-agent activity</span>
+            <span className="text-xs opacity-60">{subThread.turns.length} turn{subThread.turns.length === 1 ? '' : 's'}</span>
+            <span className="ml-auto shrink-0 text-gray-400 dark:text-gray-500">
+              {subOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </span>
+          </button>
+          <div
+            id={subRegionId}
+            className="border-t border-gray-200 dark:border-gray-700 bg-indigo-50/30 dark:bg-indigo-950/10 pl-2"
+          >
+            {subOpen && subThread.turns.map((t) => (
+              <Turn
+                key={t.id}
+                turn={t}
+                permissionMode="interactive"
+                isLastTurn={false}
+                toolDetailMode={toolDetailMode ?? 'auto'}
+                thinkingCollapsed={thinkingCollapsed}
+                onDecision={() => {}}
+                onAnswer={() => {}}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Result section */}
       {block.result && (() => {
@@ -191,7 +263,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
 
             {/* Result panel */}
             <div id={resultRegionId} hidden={!resultOpen} className="border-t border-gray-200 dark:border-gray-700 px-3 py-2">
-              <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} />
+              <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} name={block.name} />
             </div>
           </>
         )

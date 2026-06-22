@@ -19,6 +19,13 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
+# Transient busy-defer state file. Resolve it inside git's real dir via
+# --absolute-git-dir so it lands in a writable directory even when $REPO is a git
+# WORKTREE — there ".git" is a FILE (a gitdir pointer), so the old
+# "$REPO/.git/ccswitch-deploy-defer" path treats a regular file as a directory and
+# the write fails with "Not a directory", which wedged the deploy timer (issue #95).
+DEFER_FILE="${CCSWITCH_DEPLOY_DEFER_FILE:-$(git rev-parse --absolute-git-dir)/ccswitch-deploy-defer}"
+
 git fetch --quiet origin master
 LOCAL="$(git rev-parse @)"
 REMOTE="$(git rev-parse origin/master)"
@@ -56,6 +63,39 @@ case "$verdict" in
   pending)    echo "[deploy] CI still running for ${REMOTE:0:9} — will retry next tick"; exit 0 ;;
   *)          echo "[deploy] WARNING: cannot determine CI status for ${REMOTE:0:9} (gh/network?) — skipping this tick" >&2; exit 0 ;;
 esac
+
+# Idle gate. A restart kills every live session, so defer while the running server
+# is mid-turn (status in_progress/working/waiting_input). Skip-and-retry until idle,
+# capped at CCSWITCH_DEPLOY_MAX_DEFER_SEC so a perpetually-busy session can't block
+# deploys forever (a forced deploy falls back to resume). Placed BEFORE the pull so
+# the "HEAD == origin/master ⇒ deployed" invariant holds (we never pull then defer).
+# Test seam: CCSWITCH_DEPLOY_BUSY (1/0) forces the verdict without curling /healthz.
+busy_verdict() {
+  if [ -n "${CCSWITCH_DEPLOY_BUSY:-}" ]; then
+    [ "$CCSWITCH_DEPLOY_BUSY" = "1" ] && echo busy || echo idle
+    return 0
+  fi
+  local url="http://${CCSWITCH_HOST:-127.0.0.1}:${CCSWITCH_PORT:-8787}/healthz"
+  local body; body="$(curl -fsS -m 3 "$url" 2>/dev/null || true)"
+  # Unreachable / no busy field => treat as idle (recover a down server; the CI gate
+  # already enforced correctness, and the post-restart health gate guards the rest).
+  if grep -q '"busy":true' <<<"$body"; then echo busy; else echo idle; fi
+}
+
+if [ "$(busy_verdict)" = "busy" ]; then
+  MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
+  now="$(date +%s)"
+  msha=""; mts=0
+  if [ -f "$DEFER_FILE" ]; then read -r msha mts < "$DEFER_FILE" || true; fi
+  if [ "$msha" != "$REMOTE" ]; then
+    printf '%s %s\n' "$REMOTE" "$now" > "$DEFER_FILE"
+    echo "[deploy] server busy — deferring ${REMOTE:0:9} (will retry)"; exit 0
+  elif [ "$(( now - mts ))" -gt "$MAX_DEFER" ]; then
+    echo "[deploy] server busy for $(( now - mts ))s (> ${MAX_DEFER}s) — forcing deploy of ${REMOTE:0:9}" >&2
+  else
+    echo "[deploy] server busy — deferring ${REMOTE:0:9} ($(( now - mts ))s so far)"; exit 0
+  fi
+fi
 
 # Restore the working tree to the last-good commit and rebuild it. Called when any
 # gate fails AFTER the fast-forward. Resetting HEAD back to $LOCAL is what makes the
@@ -149,3 +189,4 @@ if [ "$healthy" -ne 1 ]; then
 fi
 
 echo "[deploy] live + healthy at ${REMOTE:0:9}"
+rm -f "$DEFER_FILE"

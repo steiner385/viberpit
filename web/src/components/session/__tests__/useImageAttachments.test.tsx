@@ -10,7 +10,7 @@ beforeEach(() => {
   // @ts-expect-error test shim
   URL.revokeObjectURL = vi.fn()
   vi.stubGlobal('fetch', vi.fn(async () =>
-    ({ ok: true, json: async () => ({ sha: 'abc', mime: 'image/png', name: 'x.png' }) })))
+    ({ ok: true, json: async () => ({ id: 'att-1', mediaType: 'image/png', filename: 'x.png', byteSize: 10, url: '/api/attachments/att-1' }) })))
 })
 
 function pngFile(size = 10) {
@@ -18,16 +18,17 @@ function pngFile(size = 10) {
 }
 
 describe('useImageAttachments', () => {
-  it('uploads a valid image and exposes a ref', async () => {
+  it('uploads a valid image and exposes its attachment id', async () => {
     const { result } = renderHook(() => useImageAttachments())
     await act(async () => { await result.current.addFiles([pngFile()]) })
     await waitFor(() => expect(result.current.attachments).toHaveLength(1))
-    expect(result.current.refs()).toEqual([{ sha: 'abc', mime: 'image/png', name: 'x.png' }])
+    expect(result.current.attachments[0].id).toBe('att-1')
+    expect(result.current.refs()).toEqual(['att-1'])
   })
 
   it('rejects an oversize file without uploading', async () => {
     const { result } = renderHook(() => useImageAttachments())
-    const big = new File([new Uint8Array(6 * 1024 * 1024)], 'big.png', { type: 'image/png' })
+    const big = new File([new Uint8Array(11 * 1024 * 1024)], 'big.png', { type: 'image/png' })
     await act(async () => { await result.current.addFiles([big]) })
     expect(result.current.attachments[0].error).toMatch(/too large/i)
     expect(result.current.refs()).toHaveLength(0)
@@ -40,11 +41,12 @@ describe('useImageAttachments', () => {
     expect(result.current.attachments[0].error).toMatch(/unsupported/i)
   })
 
-  it('remove drops the attachment', async () => {
+  it('remove drops the attachment by key', async () => {
     const { result } = renderHook(() => useImageAttachments())
     await act(async () => { await result.current.addFiles([pngFile()]) })
     await waitFor(() => expect(result.current.attachments).toHaveLength(1))
-    act(() => result.current.remove('abc'))
+    const key = result.current.attachments[0].key
+    act(() => result.current.remove(key))
     expect(result.current.attachments).toHaveLength(0)
   })
 
@@ -66,12 +68,12 @@ describe('useImageAttachments', () => {
     expect(result.current.refs()).toHaveLength(0)
   })
 
-  it('caps multi-file batch at MAX_IMAGES', async () => {
+  it('caps multi-file batch at MAX_IMAGES (5)', async () => {
     const { result } = renderHook(() => useImageAttachments())
-    const files = Array.from({ length: 9 }, (_, i) =>
+    const files = Array.from({ length: 7 }, (_, i) =>
       new File([new Uint8Array(10)], `img${i}.png`, { type: 'image/png' }))
     await act(async () => { await result.current.addFiles(files) })
-    await waitFor(() => expect(result.current.attachments).toHaveLength(8))
-    expect(result.current.refs()).toHaveLength(8)
+    await waitFor(() => expect(result.current.attachments).toHaveLength(5))
+    expect(result.current.refs()).toHaveLength(5)
   })
 })

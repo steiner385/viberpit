@@ -78,6 +78,15 @@ describe('ToolCallCard', () => {
     expect(document.getElementById(regionId)!.hidden).toBe(false)
   })
 
+  it('renders inputs as humanized key/value rows, not raw JSON', async () => {
+    const user = userEvent.setup()
+    render(<ToolCallCard block={bashBlock} density="card" />)
+    await user.click(screen.getByRole('button', { name: /args/i }))
+    // StructuredView shows the arg name as a label (no JSON braces/quotes).
+    expect(screen.getByText('command')).toBeInTheDocument()
+    expect(screen.queryByText(/^\{$/)).toBeNull()
+  })
+
   describe('result collapsing', () => {
     it('result is hidden by default when block.result is present', () => {
       render(<ToolCallCard block={bashBlockWithResult} density="card" />)

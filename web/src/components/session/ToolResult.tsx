@@ -1,9 +1,12 @@
 import type { ToolKind } from '@/session/events'
-import { cn } from '@/lib/utils'
 import { DiffView } from './DiffView'
 import { FileContent } from './FileContent'
 import { BashResult } from './BashResult'
 import { TodoList } from './TodoList'
+import { SearchResult } from './SearchResult'
+import { SubagentResult } from './SubagentResult'
+import { WebResult } from './WebResult'
+import { GenericResult } from './GenericResult'
 
 interface Props {
   kind: ToolKind
@@ -11,9 +14,11 @@ interface Props {
   /** The tool's call arguments — Edit/Write diffs are reconstructed from here. */
   input: Record<string, unknown>
   payload: Record<string, unknown>
+  /** Tool name (e.g. Grep, WebFetch, mcp__github__list_prs) for renderer context. */
+  name?: string
 }
 
-export function ToolResult({ kind, ok, input, payload }: Props) {
+export function ToolResult({ kind, ok, input, payload, name }: Props) {
   switch (kind) {
     case 'edit':
     case 'write':
@@ -24,18 +29,14 @@ export function ToolResult({ kind, ok, input, payload }: Props) {
       return <BashResult payload={payload} ok={ok} />
     case 'todo':
       return <TodoList payload={payload} />
+    case 'search':
+      return <SearchResult payload={payload} ok={ok} name={name} />
+    case 'task':
+      return <SubagentResult payload={payload} ok={ok} />
+    case 'web':
+      return <WebResult input={input} payload={payload} ok={ok} name={name} />
+    case 'mcp':
     default:
-      return (
-        <pre
-          className={cn(
-            'max-h-64 overflow-auto rounded p-2 text-xs font-mono md:max-h-96',
-            ok
-              ? 'bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200'
-              : 'bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-300',
-          )}
-        >
-          {JSON.stringify(payload, null, 2)}
-        </pre>
-      )
+      return <GenericResult payload={payload} ok={ok} />
   }
 }

@@ -1,7 +1,7 @@
 from server.tests.fakes import fake_sdk as f
 from server.sessions.translator import Translator
 from server.sessions.events import (TurnStart, ThinkingDelta, ToolCall, ToolResult,
-                                     TurnEnd, ToolKind, SessionMeta, ErrorEvent)
+                                     TurnEnd, ToolKind, SessionMeta, TextDelta, ErrorEvent)
 from claude_agent_sdk import TextBlock
 
 def _run(msgs):
@@ -143,6 +143,34 @@ def test_askuserquestion_tool_use_emits_no_toolcall():
     assert tool_calls == [], (
         f"expected no ToolCall for AskUserQuestion, got {tool_calls}"
     )
+
+def test_subagent_events_tagged_and_separately_turned():
+    msgs = [f.stream_start(uuid="t1"),
+            f.tool_use("task1", "Task", {"subagent_type": "Explore", "description": "x"}, uuid="t1"),
+            f.stream_start(uuid="sa1", pid="task1"),
+            f.stream_text("sub-text", uuid="sa1", pid="task1"),
+            f.tool_use("g1", "Grep", {"pattern": "foo"}, uuid="sa1", pid="task1"),
+            f.result(uuid="t1")]
+    _, out = _run(msgs)
+    task = next(e for e in out if isinstance(e, ToolCall) and e.name == "Task")
+    grep = next(e for e in out if isinstance(e, ToolCall) and e.name == "Grep")
+    assert task.parent_tool_use_id is None
+    assert grep.parent_tool_use_id == "task1"
+    sub_text = next(e for e in out if isinstance(e, TextDelta) and e.parent_tool_use_id == "task1")
+    main_start = next(e for e in out if isinstance(e, TurnStart) and e.parent_tool_use_id is None)
+    assert sub_text.turn_id != main_start.turn_id
+
+def test_parallel_subagents_get_distinct_turns():
+    msgs = [f.stream_start(uuid="t1"),
+            f.tool_use("taskA", "Task", {}, uuid="t1"),
+            f.tool_use("taskB", "Task", {}, uuid="t1"),
+            f.stream_start(uuid="saA", pid="taskA"), f.stream_text("A", uuid="saA", pid="taskA"),
+            f.stream_start(uuid="saB", pid="taskB"), f.stream_text("B", uuid="saB", pid="taskB"),
+            f.result(uuid="t1")]
+    _, out = _run(msgs)
+    starts = {e.parent_tool_use_id: e.turn_id for e in out if isinstance(e, TurnStart)}
+    assert starts["taskA"] != starts["taskB"]
+    assert starts[None] not in (starts["taskA"], starts["taskB"])
 
 
 # ---- outcome classification tests ----

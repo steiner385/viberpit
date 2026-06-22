@@ -32,6 +32,7 @@ import { RenameDialog, PermanentDeleteDialog } from './Dashboard'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from './session/SessionRuntimeProvider'
 import { SessionBody } from './session/SessionBody'
 import { Composer } from './session/Composer'
+import { CommandResultOverlay } from './session/CommandResultOverlay'
 import {
   useAccounts,
   useSessions,
@@ -62,6 +63,11 @@ function MainPaneSession() {
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-gray-950">
         <SessionBody rt={rt} />
       </div>
+      <CommandResultOverlay
+        result={rt.commandResult}
+        commands={rt.commands}
+        onClose={rt.dismissCommandResult}
+      />
     </div>
   )
 }
@@ -77,6 +83,8 @@ function SessionComposer() {
       onSetMode={rt.onSetMode}
       queued={rt.state.queued}
       onCancelQueued={rt.onCancelQueued}
+      commands={rt.commands}
+      onCommand={rt.onCommand}
     />
   )
 }
@@ -119,6 +127,9 @@ export function DesktopShell() {
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
   const highlighted = highlightedIndex >= 0 ? sessions[highlightedIndex] : undefined
 
+  // Bumped to return focus to the DispatchBar after detaching from a session.
+  const [dispatchFocusNonce, setDispatchFocusNonce] = useState(0)
+
   // Press-twice delete guard
   const [pendingDelete, setPendingDelete] = useState<{ id: string; ts: number } | null>(null)
   const pendingDeleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -153,6 +164,42 @@ export function DesktopShell() {
     setTab('sessions')
     setSelection({ type: 'new' })
   }
+
+  const detachToList = useCallback(() => {
+    const id = selection.type === 'session' ? selection.id : null
+    setSelection({ type: 'new' })
+    if (id) {
+      const idx = sessions.findIndex((s) => s.id === id)
+      if (idx >= 0) setHighlightedIndex(idx)
+    }
+    setDispatchFocusNonce((n) => n + 1) // return focus to DispatchBar for ↑/↓ nav
+  }, [selection, sessions])
+
+  // In-session detach gestures (desktop): ← / Esc / Ctrl+Z return to the list.
+  // Active only while a session is focused. Guards: yield to the composer while it
+  // holds a draft (cursor move / undo). Faithful detach → main pane shows WelcomePane.
+  useEffect(() => {
+    const active = tab === 'sessions' && selection.type === 'session'
+    if (!active) return
+    function onKey(e: KeyboardEvent) {
+      const ae = document.activeElement as HTMLTextAreaElement | null
+      const inComposerWithText =
+        ae?.getAttribute('aria-label') === 'Message' && (ae?.value ?? '') !== ''
+      if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
+        if (inComposerWithText) return
+        e.preventDefault()
+        detachToList()
+        return
+      }
+      if (e.key === 'ArrowLeft' || e.key === 'Escape') {
+        if (inComposerWithText) return
+        e.preventDefault()
+        detachToList()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [tab, selection, detachToList])
 
   const handleClose = useCallback((id: string) => {
     closeSession.mutate(id)
@@ -234,7 +281,7 @@ export function DesktopShell() {
     }
   }
 
-  function handleDispatch({ initialPrompt, repo, images }: { initialPrompt: string; repo: string | null; images: { sha: string; mime: string; name: string }[] }) {
+  function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
     clearPendingDelete()
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     createSession.mutate(
@@ -242,7 +289,7 @@ export function DesktopShell() {
         initialPrompt,
         repo: repo ?? undefined,
         branch: repoInfo?.defaultBranch ?? undefined,
-        images: images.length ? images : undefined,
+        attachmentIds: attachmentIds.length ? attachmentIds : undefined,
       },
       {
         onSuccess: (session) => {
@@ -367,6 +414,7 @@ export function DesktopShell() {
         pendingDelete && highlighted?.id === pendingDelete.id ? highlighted.name : null
       }
       activeDescendantId={highlighted ? `row-${highlighted.id}` : undefined}
+      autoFocusKey={dispatchFocusNonce}
       isPending={createSession.isPending}
     />
   )

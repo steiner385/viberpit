@@ -14,13 +14,14 @@ import { useSessionSocket } from '@/ws/client'
 import type { ConnectionState, WsRotatedMsg, WsErrorMsg } from '@/ws/client'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { TranscriptState } from '@/session/reducer'
-import type { SessionEvent } from '@/session/events'
+import type { SessionEvent, Command } from '@/session/events'
 import { selectSubAgents } from '@/session/selectors'
 import { remainingContextPct } from '@/lib/contextWindow'
 import { useSessions, useAccounts, useSettings } from '@/api/hooks'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 
-export type ImageRef = { sha: string; mime: string; name: string }
+// Dispatch payload for attached images: the DB-backed attachment ids.
+export type AttachmentIds = string[]
 
 export interface SessionRuntime {
   sessionId: string
@@ -31,7 +32,12 @@ export interface SessionRuntime {
   connectionState: ConnectionState
   title: string
   account: string
-  quota: { sessionPct: number; weeklyPct: number } | null
+  quota: {
+    sessionPct: number
+    weeklyPct: number
+    sessionResetsAt: string | null
+    weeklyResetsAt: string | null
+  } | null
   contextPct: number | null
   subAgents: ReturnType<typeof selectSubAgents>
   hasOpenAction: boolean
@@ -45,10 +51,14 @@ export interface SessionRuntime {
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
   /** Set/clear the chat-armed question (toggles off if the same id is passed again). */
   onChat: (questionId: string) => void
-  onPrompt: (text: string, images: ImageRef[]) => void
+  onPrompt: (text: string, attachmentIds: AttachmentIds) => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   onCancelQueued: (index: number) => void
+  commands: Command[]
+  commandResult: { render: 'help' | 'context'; data: unknown } | null
+  onCommand: (name: string, args: string) => void
+  dismissCommandResult: () => void
 }
 
 export function useSessionRuntime(sessionId: string, initialPrompt?: string): SessionRuntime {
@@ -64,12 +74,19 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     answerQuestion,
     setPermissionMode,
     cancelQueued,
+    command,
   } = useSessionSocket()
 
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
   const [mode, setMode] = useState('interactive')
   const [armedQuestionId, setArmedQuestionId] = useState<string | null>(null)
+  const [commands, setCommands] = useState<Command[]>([])
+  const [commandResult, setCommandResult] = useState<{ render: 'help' | 'context'; data: unknown } | null>(null)
   const modeRef = useRef('interactive')
+  // Answers whose WS send was dropped (socket not open). Buffered here and
+  // auto-resent when the socket reconnects. Keyed by questionId.
+  const pendingAnswersRef = useRef<Map<string, { selected: string[]; mode: 'option' | 'freeform' | 'chat' }>>(new Map())
+
   // Attach / detach + subscribe to session events
   useEffect(() => {
     const onEvent = (e: SessionEvent) => dispatch(e)
@@ -84,9 +101,23 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
       dispatch({ type: 'error', code: msg.code, message: msg.message, resetsAt: msg.resetsAt ?? null })
     }
 
+    const onCommands = (msg: { sessionId: string; commands: Command[] }) => {
+      if (msg.sessionId !== sessionId) return
+      setCommands(msg.commands)
+    }
+    const onCommandResult = (msg: { sessionId: string; ok: boolean; render?: string; data?: unknown; error?: string }) => {
+      if (msg.sessionId !== sessionId) return
+      if (!msg.ok) { dispatch({ type: '_notice', text: msg.error ? `Command failed: ${msg.error}` : 'Command failed' }); return }
+      if (msg.render === 'clear')  { dispatch({ type: '_clear', text: (msg.data as { text: string })?.text ?? 'Conversation cleared' }); return }
+      if (msg.render === 'notice') { dispatch({ type: '_notice', text: (msg.data as { text: string })?.text ?? '' }); return }
+      if (msg.render === 'help' || msg.render === 'context') { setCommandResult({ render: msg.render, data: msg.data }) }
+    }
+
     on('sessionEvent', onEvent)
     on('rotated', onRotated)
     on('error', onError)
+    on('commands', onCommands)
+    on('commandResult', onCommandResult)
     // Seed the user's prompt optimistically so it shows the instant the session
     // opens, before the SDK echoes it back. The reducer adopts (re-keys) this
     // turn when the real `user` event arrives, so there's no duplicate. The seed
@@ -99,6 +130,8 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
       off('sessionEvent', onEvent)
       off('rotated', onRotated)
       off('error', onError)
+      off('commands', onCommands)
+      off('commandResult', onCommandResult)
       detach(sessionId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -116,18 +149,53 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   // Answer handler for question cards. The answer is delivered as a tool result,
   // NOT a user prompt, so the server never echoes it back — optimistically echo the
   // chosen labels into the transcript as a user bubble.
-  const onAnswer = useCallback(
-    (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => {
-      answerQuestion(sessionId, questionId, selected, mode)
+  // Send an answer over WS. On a confirmed send, resolve the question locally and
+  // echo the chosen labels (the server delivers the answer as a tool result and
+  // never echoes it). Returns whether the frame actually went out.
+  const deliverAnswer = useCallback(
+    (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat') => {
+      const sent = answerQuestion(sessionId, questionId, selected, mode)
+      if (!sent) return false
       dispatch({ type: '_resolveQuestion', questionId })
       if (selected.length > 0) {
         dispatch({ type: 'user', turnId: `answer:${questionId}`, text: selected.join(', ') })
       }
       // If this question was armed for chat, the answer resolves it — disarm.
       setArmedQuestionId((cur) => (cur === questionId ? null : cur))
+      return true
     },
     [sessionId, answerQuestion],
   )
+
+  const onAnswer = useCallback(
+    (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => {
+      if (deliverAnswer(questionId, selected, mode)) return
+      // The socket wasn't open — buffer the answer to auto-resend on reconnect,
+      // keep the question interactive, and surface a transient notice.
+      pendingAnswersRef.current.set(questionId, { selected, mode })
+      dispatch({
+        type: 'error',
+        code: 'answer_not_sent',
+        message: 'Not connected — your answer is queued and will be sent automatically when you reconnect.',
+      })
+    },
+    [deliverAnswer],
+  )
+
+  // Flush buffered answers when the socket reconnects. A stale answer (question
+  // no longer pending server-side) is a harmless no-op — the server ignores
+  // unknown questionIds — so there is no misfire risk.
+  useEffect(() => {
+    if (connectionState !== 'connected') return
+    const pending = pendingAnswersRef.current
+    if (pending.size === 0) return
+    for (const [questionId, { selected, mode }] of Array.from(pending.entries())) {
+      if (deliverAnswer(questionId, selected, mode)) pending.delete(questionId)
+    }
+    if (pending.size === 0 && state.error?.code === 'answer_not_sent') {
+      dispatch({ type: '_clearError' })
+    }
+  }, [connectionState, deliverAnswer, state.error])
 
   // Toggle "armed for chat" for a question: the next composer send becomes its answer.
   const onChat = useCallback(
@@ -139,9 +207,9 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
 
   // Composer handlers — when a question is armed for chat, the next message answers
   // that question (mode='chat') and unblocks the turn; otherwise it's a normal prompt.
-  // (Chat replies go through the answer channel, which carries no images.)
+  // (Chat replies go through the answer channel, which carries no attachments.)
   const onPrompt = useCallback(
-    (text: string, images: ImageRef[]) => {
+    (text: string, attachmentIds: AttachmentIds) => {
       if (armedQuestionId) {
         answerQuestion(sessionId, armedQuestionId, [text], 'chat')
         dispatch({ type: '_resolveQuestion', questionId: armedQuestionId })
@@ -149,7 +217,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
         setArmedQuestionId(null)
         return
       }
-      prompt(sessionId, text, images)
+      prompt(sessionId, text, attachmentIds)
     },
     [sessionId, prompt, answerQuestion, armedQuestionId],
   )
@@ -171,6 +239,8 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     (index: number) => cancelQueued(sessionId, index),
     [sessionId, cancelQueued],
   )
+  const onCommand = useCallback((name: string, args: string) => command(sessionId, name, args), [sessionId, command])
+  const dismissCommandResult = useCallback(() => setCommandResult(null), [])
 
   // Keep modeRef current so external keydown handlers can read the latest mode.
   useEffect(() => {
@@ -212,7 +282,12 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
 
   const accountUsage = accounts?.find((a) => a.name === account)?.usage ?? null
   const quota = accountUsage
-    ? { sessionPct: accountUsage.session.pct, weeklyPct: accountUsage.weekly.pct }
+    ? {
+        sessionPct: accountUsage.session.pct,
+        weeklyPct: accountUsage.weekly.pct,
+        sessionResetsAt: accountUsage.session.resetsAt,
+        weeklyResetsAt: accountUsage.weekly.resetsAt,
+      }
     : null
 
   const contextPct = remainingContextPct(state.usage, state.model)
@@ -241,5 +316,9 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     onInterrupt,
     onSetMode,
     onCancelQueued,
+    commands,
+    commandResult,
+    onCommand,
+    dismissCommandResult,
   }
 }

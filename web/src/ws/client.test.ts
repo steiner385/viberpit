@@ -124,6 +124,23 @@ describe('SessionSocket', () => {
     expect(sent).toEqual({ type: 'answerQuestion', sessionId: 's', questionId: 'q1', selected: ['a'], mode: 'option' })
   })
 
+  it('socket.answerQuestion returns true when the socket is open', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+
+    expect(sock.answerQuestion('s', 'q1', ['a'])).toBe(true)
+    expect(lastSock().sent).toHaveLength(1)
+  })
+
+  it('socket.answerQuestion returns false and sends nothing when the socket is not open', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect() // CONNECTING — never opened
+
+    expect(sock.answerQuestion('s', 'q1', ['a'])).toBe(false)
+    expect(lastSock().sent).toHaveLength(0)
+  })
+
   it('socket.answerQuestion forwards an explicit mode', () => {
     const sock = new SessionSocket('/ws')
     sock.connect()

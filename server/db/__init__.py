@@ -9,7 +9,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from sqlalchemy import inspect as sa_inspect, text as sa_text
+from sqlalchemy import event, inspect as sa_inspect, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from server.config import get_settings
@@ -32,7 +32,19 @@ def _make_engine(db_url: str):
     connect_args = {}
     if db_url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
-    return create_async_engine(db_url, connect_args=connect_args, echo=False)
+    engine = create_async_engine(db_url, connect_args=connect_args, echo=False)
+    if db_url.startswith("sqlite"):
+        # WAL = concurrent readers + a single serialized writer, so the daemon
+        # (sessions) and edge (audit/settings) can share one DB file across
+        # processes; busy_timeout makes a contended writer wait instead of
+        # raising "database is locked". Set per-connection via the sync driver.
+        @event.listens_for(engine.sync_engine, "connect")
+        def _set_sqlite_pragmas(dbapi_conn, _record):  # pragma: no cover - driver callback
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA busy_timeout=5000")
+            cur.close()
+    return engine
 
 
 def _ddl_default_literal(column) -> str | None:

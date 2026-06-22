@@ -207,6 +207,17 @@ describe('transcriptReducer', () => {
     expect(s.turns).toHaveLength(0)
   })
 
+  it('_clearError clears a surfaced error', () => {
+    const s = transcriptReducer(initialTranscript, { type: 'error', code: 'answer_not_sent', message: 'nope' })
+    expect(s.error).not.toBeNull()
+    const cleared = transcriptReducer(s, { type: '_clearError' })
+    expect(cleared.error).toBeNull()
+  })
+
+  it('_clearError with no error returns the same state reference', () => {
+    expect(transcriptReducer(initialTranscript, { type: '_clearError' })).toBe(initialTranscript)
+  })
+
   it('error with turnId appends an inline error block to that turn AND sets the banner', () => {
     const s = reduce([
       { type: 'turnStart', turnId: 't1' },
@@ -283,6 +294,23 @@ describe('transcriptReducer', () => {
     ])
     const questionBlocks = s.turns[0].blocks.filter((b) => b.kind === 'question')
     expect(questionBlocks).toHaveLength(1)
+  })
+
+  it('re-emitted question after replayComplete upgrades a replay-created block to live', () => {
+    // Reproduces the refresh/reconnect bug: during replay (replaying=true) the
+    // question is created live:false; the server then re-emits the still-pending
+    // question after replayComplete. The idempotency guard must upgrade the
+    // existing block to live:true instead of dropping the re-emit.
+    const q: SessionEvent = { type: 'question', questionId: 'q-1', turnId: 't1', header: 'Pick', question: 'Which?', options: [], multiSelect: false }
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      q,                            // replay: block created with live:false
+      { type: 'replayComplete' },   // replaying → false
+      q,                            // re-emit of the still-pending question
+    ])
+    const blocks = s.turns[0].blocks.filter((b) => b.kind === 'question')
+    expect(blocks).toHaveLength(1) // still idempotent — exactly one block
+    expect(blocks.every((b) => b.kind === 'question' && b.live)).toBe(true)
   })
 
   // ── Referential stability on no-ops ────────────────────────────────────────
@@ -411,5 +439,52 @@ describe('transcriptReducer', () => {
       const block = s.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question')
       expect(block).toMatchObject({ kind: 'question', live: true })
     })
+  })
+})
+
+describe('sub-agent thread routing', () => {
+  it('routes a tagged toolCall into subAgents, leaving main turns empty', () => {
+    let s = initialTranscript
+    s = transcriptReducer(s, { type: 'turnStart', turnId: 'sa1', parentToolUseId: 'task1' })
+    s = transcriptReducer(s, {
+      type: 'toolCall', turnId: 'sa1', toolId: 'g1', name: 'Grep', toolKind: 'search',
+      input: {}, parentToolUseId: 'task1',
+    })
+    expect(s.turns).toEqual([])
+    expect(s.subAgents['task1'].turns[0].blocks[0]).toMatchObject({ kind: 'tool', toolId: 'g1' })
+  })
+
+  it('keeps untagged events on the main thread', () => {
+    let s = initialTranscript
+    s = transcriptReducer(s, { type: 'turnStart', turnId: 't1' })
+    s = transcriptReducer(s, { type: 'textDelta', turnId: 't1', text: 'hi' })
+    expect(s.turns[0].blocks[0]).toMatchObject({ kind: 'text', text: 'hi' })
+    expect(s.subAgents).toEqual({})
+  })
+
+  it('isolates open-text state per thread during concurrent streaming', () => {
+    let s = initialTranscript
+    s = transcriptReducer(s, { type: 'turnStart', turnId: 't1' })
+    s = transcriptReducer(s, { type: 'textDelta', turnId: 't1', text: 'main-' })
+    s = transcriptReducer(s, { type: 'textDelta', turnId: 'sa1', text: 'sub', parentToolUseId: 'task1' })
+    s = transcriptReducer(s, { type: 'textDelta', turnId: 't1', text: 'continued' })
+    const mainText = s.turns[0].blocks
+      .filter((b) => b.kind === 'text').map((b) => (b as { text: string }).text).join('')
+    expect(mainText).toBe('main-continued')
+    expect(s.subAgents['task1'].turns[0].blocks[0]).toMatchObject({ kind: 'text', text: 'sub' })
+  })
+
+  it('routes a tagged toolResult into the matching sub-thread tool block', () => {
+    let s = initialTranscript
+    s = transcriptReducer(s, { type: 'turnStart', turnId: 'sa1', parentToolUseId: 'task1' })
+    s = transcriptReducer(s, {
+      type: 'toolCall', turnId: 'sa1', toolId: 'g1', name: 'Grep', toolKind: 'search',
+      input: {}, parentToolUseId: 'task1',
+    })
+    s = transcriptReducer(s, {
+      type: 'toolResult', toolId: 'g1', ok: true, payload: { content: 'hit' }, parentToolUseId: 'task1',
+    })
+    const block = s.subAgents['task1'].turns[0].blocks[0]
+    expect(block).toMatchObject({ kind: 'tool', toolId: 'g1', result: { ok: true } })
   })
 })

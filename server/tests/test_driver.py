@@ -197,7 +197,7 @@ def test_queued_prompt_runs_after_first_turn():
         # Collect events until we see the final idle status (emitted after turn 2).
         # Turn 1 drain → start turn 2 (no idle). Turn 2 drain → idle.
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return sdk.queries
@@ -259,7 +259,7 @@ def test_auto_title_emitted_on_first_prompt():
         events = []
         async for e in d.events():
             events.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return events
@@ -305,13 +305,13 @@ def test_auto_title_only_fires_once():
         await d.send_prompt("hello world")
         async for e in d.events():
             all_events.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         # Second prompt: should NOT emit another Title
         await d.send_prompt("second query")
         async for e in d.events():
             all_events.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return all_events
@@ -334,7 +334,7 @@ def test_auto_title_first_line_only():
         events = []
         async for e in d.events():
             events.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return events
@@ -637,7 +637,7 @@ def test_on_status_fires_in_progress_then_done():
         await d.start()
         await d.send_prompt("hi")
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         if d._pump:
             await d._pump

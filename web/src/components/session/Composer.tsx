@@ -3,26 +3,43 @@ import { Paperclip, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useImageAttachments } from './useImageAttachments'
 import { AttachmentChips } from './AttachmentChips'
+import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
+import { MicButton } from './MicButton'
+import { useDictationField } from '@/lib/useDictationField'
+import type { Command } from '@/session/events'
+import { statusTier } from '@/session/statusTier'
 
 interface Props {
   status: { state: string; count: number }
   mode: string
-  onPrompt: (text: string, images: { sha: string; mime: string; name: string }[]) => void
+  onPrompt: (text: string, attachmentIds: string[]) => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   queued?: string[]
   onCancelQueued?: (index: number) => void
   chatArmed?: boolean
+  commands?: Command[]
+  onCommand?: (name: string, args: string) => void
   /** Auto-focus the textarea when this changes / on mount (mirrors DispatchBar). */
   autoFocusKey?: unknown
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, autoFocusKey }: Props) {
+export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey }: Props) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const isWorking = status.state === 'working'
+  const paletteRef = useRef<CommandPaletteHandle>(null)
+  const isWorking = statusTier(status.state) === 'busy'
   const att = useImageAttachments()
+  const voice = useDictationField({ value: text, setValue: setText, textareaRef })
+  const slash = text.startsWith('/') && !text.includes('\n')
+  const afterSlash = slash ? text.slice(1) : ''
+  // The palette is the keyboard owner only while the user is still typing the
+  // command NAME (no space yet). Once a space is typed they're entering args, so
+  // Enter must submit the command (with its args) instead of re-selecting from
+  // the palette — otherwise the trailing text is silently dropped.
+  const pickingCommand = slash && !/\s/.test(afterSlash)
+  const slashQuery = afterSlash.split(/\s+/)[0] ?? ''
 
   // Focus the prompt on mount (and when the active session changes) so the user
   // can start typing immediately on entering a session.
@@ -38,18 +55,30 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
     el.style.height = `${Math.min(el.scrollHeight, 192)}px`
   }
 
+  const runCommandFromText = useCallback((raw: string): boolean => {
+    if (!raw.startsWith('/') || raw.includes('\n')) return false
+    const m = raw.slice(1).match(/^(\S+)\s*(.*)$/)
+    if (!m) return false
+    const known = commands.find((c) => c.name === m[1])
+    if (!known) return false
+    onCommand?.(known.name, m[2] ?? '')
+    return true
+  }, [commands, onCommand])
+
   const submit = useCallback(() => {
     const trimmed = text.trim()
     const refs = att.refs()
     if (!trimmed && refs.length === 0) return
+    if (refs.length === 0 && runCommandFromText(trimmed)) {
+      setText(''); if (textareaRef.current) textareaRef.current.style.height = 'auto'; return
+    }
     onPrompt(trimmed, refs)
-    setText('')
-    att.clear()
+    setText(''); att.clear()
     // Reset height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [text, onPrompt, att])
+  }, [text, onPrompt, att, runCommandFromText])
 
   function handlePaste(e: React.ClipboardEvent) {
     const files = Array.from(e.clipboardData?.files || [])
@@ -62,6 +91,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (pickingCommand && paletteRef.current?.handleKeyDown(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       submit()
@@ -114,7 +144,17 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
 
       <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
 
-      <div className="flex items-end gap-2">
+      <div className="relative flex items-end gap-2">
+        {pickingCommand && (
+          <CommandPalette
+            ref={paletteRef}
+            commands={commands}
+            query={slashQuery}
+            onSelect={(c) => { if (c.argumentHint) { setText(`/${c.name} `) } else { onCommand?.(c.name, ''); setText('') } }}
+            onComplete={(c) => setText(`/${c.name} `)}
+            onDismiss={() => { /* keep text; palette hides when slash becomes false */ }}
+          />
+        )}
         <textarea
           ref={textareaRef}
           aria-label="Message"
@@ -133,6 +173,13 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
             'min-h-[44px] overflow-y-auto',
           )}
           style={{ maxHeight: '192px' }}
+        />
+
+        <MicButton
+          supported={voice.supported}
+          listening={voice.listening}
+          error={voice.error}
+          onToggle={voice.toggle}
         />
 
         <input

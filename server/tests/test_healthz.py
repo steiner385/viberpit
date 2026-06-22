@@ -35,3 +35,20 @@ def test_healthz_500_on_schema_error(tmp_path, monkeypatch):
         r = client.get("/healthz")
     assert r.status_code == 500
     assert r.json()["status"] == "schema_error"
+
+
+def test_healthz_reports_busy_and_active_sessions(tmp_path):
+    """/healthz surfaces orchestrator drain-readiness for the deployer's idle gate."""
+    from server.sessions.types import SessionRecord
+    client = _client(tmp_path)
+    orch = client.app.state.orchestrator
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="s1", account="acct", claude_session_id="cs",
+        cols=80, rows=24, cwd="/tmp", status="in_progress",
+    )
+    with client:
+        r = client.get("/healthz")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["busy"] is True
+    assert body["activeSessions"] == 1

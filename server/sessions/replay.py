@@ -17,6 +17,8 @@ def _parse(path: str, max_turns: int) -> list:
     out: list = []
     meta_event = None
     for o in lines:
+        if o.get("isSidechain"):
+            continue
         typ = o.get("type")
         msg = o.get("message") or {}
         # Claude transcripts use TWO shapes for `content`: a plain string (common for

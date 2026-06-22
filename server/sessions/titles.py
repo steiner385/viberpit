@@ -1,8 +1,8 @@
-"""Extract the user's prompts from a Claude transcript JSONL.
+"""Read Claude's own session title from the transcript JSONL.
 
-These prompts are the highest-signal, lowest-token input for the AI title
-generator (see ``title_generator.py``). Any I/O or parse error degrades to an
-empty list — this must never break the session loop.
+Claude records ``customTitle`` (user-set) and ``ai-title`` (model-generated) in the
+per-session transcript. We reuse that rather than summarising ourselves. Any I/O or
+parse error degrades to ``None`` — this must never break the session loop.
 """
 from __future__ import annotations
 
@@ -12,44 +12,14 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-
-def _prompt_text(message: dict) -> str:
-    """Return the joined text of a transcript ``user`` message, or ``""``.
-
-    Claude transcripts store ``content`` either as a plain string (common for
-    user turns) or as a list of content blocks. Tool-result echoes are also
-    typed ``user`` but carry no text block, so they naturally yield ``""``.
-    """
-    content = message.get("content")
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts = [
-            b.get("text", "")
-            for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
-        ]
-        return "".join(parts).strip()
-    return ""
+_CUSTOM_KEYS = ("customTitle",)
+_AUTO_KEYS = ("ai-title", "aiTitle", "summary")
 
 
-def read_user_prompts_from_file(path: str | Path) -> list[str]:
-    """Return the ordered, non-empty user prompts from a transcript file.
-
-    Excludes assistant messages and tool-result echoes. Never raises: returns
-    ``[]`` for a missing/unreadable/garbage file.
-    """
-    if not path:
-        return []
-    try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-    except Exception:  # never raise into the session loop
-        log.warning("read_user_prompts_from_file failed for %s", path, exc_info=True)
-        return []
-
-    prompts: list[str] = []
+def _scan_text(text: str) -> tuple[str | None, str | None]:
+    """Scan transcript JSONL text; return (customTitle, autoTitle) — last non-empty wins."""
+    custom: str | None = None
+    auto: str | None = None
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -58,12 +28,61 @@ def read_user_prompts_from_file(path: str | Path) -> list[str]:
             obj = json.loads(line)
         except (ValueError, TypeError):
             continue
-        if not isinstance(obj, dict) or obj.get("type") != "user":
+        if not isinstance(obj, dict):
             continue
-        message = obj.get("message")
-        if not isinstance(message, dict):
-            continue
-        prompt = _prompt_text(message)
-        if prompt:
-            prompts.append(prompt)
-    return prompts
+        for k in _CUSTOM_KEYS:
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                custom = v.strip()
+        for k in _AUTO_KEYS:
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                auto = v.strip()
+    return custom, auto
+
+
+def read_ai_title_from_file(path: str | Path) -> str | None:
+    """Read the best title from a single transcript file path, or ``None``. Never raises."""
+    if not path:
+        return None
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    except Exception:  # never raise into the session loop
+        log.warning("read_ai_title_from_file failed for %s", path, exc_info=True)
+        return None
+    custom, auto = _scan_text(text)
+    return custom or auto
+
+
+def read_ai_title(projects_root: str | Path, claude_session_id: str) -> str | None:
+    """Return the best available title for a session, or ``None``.
+
+    Prefers a user-set ``customTitle`` over a model ``ai-title``/``summary``. Scans
+    every JSONL line of every transcript matching the session id; the last non-empty
+    value of each kind wins. Never raises.
+    """
+    if not claude_session_id:
+        return None
+    try:
+        root = Path(projects_root)
+        matches = list(root.glob(f"**/{claude_session_id}.jsonl"))
+        if not matches:
+            return None
+        custom: str | None = None
+        auto: str | None = None
+        for path in matches:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            c, a = _scan_text(text)
+            if c:
+                custom = c
+            if a:
+                auto = a
+        return custom or auto
+    except Exception:  # never raise into the session loop
+        log.warning("read_ai_title failed for %s", claude_session_id, exc_info=True)
+        return None

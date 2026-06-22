@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import type { Turn as TurnType } from '@/session/reducer'
+import type { Turn as TurnType, SubThread } from '@/session/reducer'
 import { groupBlocks, type ToolDetailMode } from '@/session/groupBlocks'
 import { AssistantText } from './AssistantText'
 import { UserBubble } from './UserBubble'
@@ -21,11 +21,12 @@ interface Props {
   streamingBlockId?: string | null
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
+  subAgents?: Record<string, SubThread>
 }
 
 export const Turn = memo(function Turn({
   turn, permissionMode, isLastTurn, toolDetailMode, thinkingCollapsed, streamingBlockId = null,
-  onDecision, onAnswer,
+  onDecision, onAnswer, subAgents,
 }: Props) {
   const isUser = turn.role === 'user'
   // Suppress live questions inline — they are rendered by the pinned
@@ -50,6 +51,8 @@ export const Turn = memo(function Turn({
               tools={item.tools}
               isLiveTail={isLiveTail}
               toolDetailMode={toolDetailMode}
+              thinkingCollapsed={thinkingCollapsed}
+              subAgents={subAgents}
             />
           )
         }
@@ -64,7 +67,7 @@ export const Turn = memo(function Turn({
             return <ThinkingBlock key={block.id} text={block.text} defaultCollapsed={thinkingCollapsed} />
           case 'tool':
             // Unreachable: tool blocks are coalesced into toolGroup items above.
-            return <ToolCallCard key={block.id} block={block} density="line" />
+            return <ToolCallCard key={block.id} block={block} density="line" thinkingCollapsed={thinkingCollapsed} subThread={subAgents?.[block.toolId]} />
           case 'permission':
             return <PermissionCard key={block.id} block={block} mode={permissionMode} onDecision={onDecision} />
           case 'question':
@@ -72,6 +75,12 @@ export const Turn = memo(function Turn({
             // above the composer — omit it inline to avoid a duplicate. Historical
             // (replayed) questions render inline, read-only.
             return <QuestionCard key={block.id} block={block} onAnswer={onAnswer} readOnly />
+          case 'notice':
+            return (
+              <div key={block.id} className="my-2 text-center text-xs text-gray-400 dark:text-gray-500 italic">
+                {block.text}
+              </div>
+            )
           case 'error':
             return <ErrorCard key={block.id} code={block.code} message={block.message} resetsAt={block.resetsAt} />
           default:
