@@ -65,17 +65,17 @@ def select_best(usages: dict[str, Usage | None], reserved: set[str],
             if resets:
                 busy_resets.append(min(resets))
             continue
-        l = load.get(name, 0.0)
+        acct_load = load.get(name, 0.0)
         perish = _perishability(u, ceiling, now) if cfg.prefer_soon_reset else 0.0
         # Multiplicative discount: live load shrinks an account's score, so a busy
-        # perishable account can drop below a less-busy one. Bounded (1 + λ·l >= 1)
+        # perishable account can drop below a less-busy one. Bounded (1 + λ·load >= 1)
         # so no divide-by-zero / NaN; with load={} this reduces to the legacy key.
-        composite = perish / (1.0 + cfg.load_sensitivity * l)
+        composite = perish / (1.0 + cfg.load_sensitivity * acct_load)
         # Sort ascending: most-perishable-after-discount first (-composite); then raw
         # load so spreading still applies when perishability can't differentiate
         # (prefer_soon_reset off or all-fresh -> every composite is 0); then the
         # legacy lowest-usage ordering; then name for determinism.
-        candidates.append((-composite, l, u.session_pct, u.weekly_pct, name))
+        candidates.append((-composite, acct_load, u.session_pct, u.weekly_pct, name))
     if not candidates:
         raise AllAccountsBusy(min(busy_resets) if busy_resets else None)
     candidates.sort()
