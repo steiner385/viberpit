@@ -1,5 +1,8 @@
 import type { SessionEvent, ToolKind } from './events'
 
+/** Sentinel id for the optimistic user turn seeded before the SDK echoes the prompt. */
+export const OPTIMISTIC_USER_ID = 'optimistic:user'
+
 // ── Block types ───────────────────────────────────────────────────────────────
 
 export type Block =
@@ -57,6 +60,7 @@ function num(v: unknown): number {
 export type LocalAction =
   | { type: '_resolvePermission'; permId: string }
   | { type: '_resolveQuestion';   questionId: string }
+  | { type: '_seedUserPrompt';    text: string }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -97,6 +101,20 @@ export function transcriptReducer(
     case 'user': {
       const { turnId, text } = ev
       const userBlock: Block = { kind: 'text', id: `${turnId}:u`, text }
+
+      // Adopt an optimistic seed turn if present: re-key it in place to the real
+      // server turnId instead of appending a duplicate. Only one ever exists, so
+      // the first real user event after a seed is unambiguously that prompt.
+      const optIdx = findTurnIdx(state.turns, OPTIMISTIC_USER_ID)
+      if (optIdx !== -1) {
+        const nextTurns = replaceTurn(state.turns, optIdx, () => ({
+          id: turnId,
+          role: 'user' as const,
+          blocks: [userBlock],
+        }))
+        return { ...state, turns: nextTurns, openBlockId: null }
+      }
+
       const idx = findTurnIdx(state.turns, turnId)
       let nextTurns: Turn[]
       if (idx === -1) {
@@ -344,6 +362,17 @@ export function transcriptReducer(
       })
       if (!changed) return state // No matching question block found; return unchanged state
       return { ...state, turns: nextTurns }
+    }
+
+    case '_seedUserPrompt': {
+      // Idempotent: never seed twice (guards React StrictMode double-invoke).
+      if (findTurnIdx(state.turns, OPTIMISTIC_USER_ID) !== -1) return state
+      const block: Block = { kind: 'text', id: `${OPTIMISTIC_USER_ID}:u`, text: ev.text }
+      return {
+        ...state,
+        turns: [...state.turns, { id: OPTIMISTIC_USER_ID, role: 'user', blocks: [block] }],
+        openBlockId: null,
+      }
     }
 
     default:
