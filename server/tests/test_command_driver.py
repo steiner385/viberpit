@@ -49,3 +49,24 @@ async def test_reconnect_starts_fresh_and_resets_state():
     assert d.claude_session_id is None
     assert d._titled is False
     assert d.resume is None
+
+
+@pytest.mark.anyio
+async def test_reconnect_calls_sync_back():
+    """reconnect() must invoke on_sync_back to capture any token rotation mid-turn."""
+    client = fake_sdk.FakeSDKClient(messages=[])
+    sync_back_called = []
+
+    def factory(cwd, config_dir, can_use_tool, mode, resume):
+        client.last_resume = resume
+        return client
+
+    d = SessionDriver(
+        "sess-sync", "acct", "/tmp", "/tmp/cfg",
+        mode="interactive", sdk_factory=factory,
+        registry=PermissionRegistry(), identity="tester",
+        on_sync_back=lambda: sync_back_called.append(True),
+    )
+    await d.start()
+    await d.reconnect()
+    assert sync_back_called, "on_sync_back must be called during reconnect()"

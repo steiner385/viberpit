@@ -387,6 +387,7 @@ class SessionDriver:
         self._pump = None
         if self._client is not None:
             await self._client.__aexit__(None, None, None)
+            await self._call_sync_back()
         self.resume = None
         self.claude_session_id = None
         self._titled = False
