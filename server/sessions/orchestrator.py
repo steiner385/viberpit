@@ -967,6 +967,11 @@ class SessionOrchestrator:
         cmd = by_name.get(str(name).lstrip("/"))
         if cmd is None:
             raise KeyError(name)
+        if cmd.name == "model":
+            arg = (args or "").strip()
+            await self.set_model_for_session(session_id, arg or None)
+            return {"name": "model", "render": "notice",
+                    "data": {"text": f"Model → {arg or 'default'}"}}
         return await cmd_dispatcher.dispatch(d, cmd, args or "")
 
     async def cancel_queued(self, session_id, index: int) -> bool:
@@ -1167,6 +1172,24 @@ class SessionOrchestrator:
                 ledger.set_status(led, account, "needs-reauth")
         except Exception:
             log.warning("recover.mark_needs_reauth failed account=%s", account, exc_info=True)
+
+    async def set_model_for_session(self, session_id: str, model: str | None) -> None:
+        """Set the live model AND persist it, so it survives rehydrate and every
+        driver rebuild (rotation/recovery re-applies record.model in _reassign)."""
+        driver = self._drivers.get(session_id)
+        if driver is not None:
+            await driver.set_model(model)
+        record = self._records.get(session_id)
+        if record is not None:
+            record.model = model
+        await self._persist_model(session_id, model)
+
+    async def _persist_model(self, session_id: str, model: str | None) -> None:
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(model=model)
+            )
 
     async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str) -> None:
         """Resume the session's claude conversation on *new_account* (may equal the
