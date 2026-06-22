@@ -240,13 +240,26 @@ def test_ws_prompt_frame_forwards_attachment_ids(ws_env, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Test 2: POST /api/sessions with attachmentIds is accepted (201, no error)
+# Test 2: POST /api/sessions forwards attachmentIds to orchestrator.create_session
 # ---------------------------------------------------------------------------
 
 
 def test_create_session_accepts_attachment_ids(ws_env):
-    """POST /api/sessions with attachmentIds must be accepted (201) without error."""
+    """POST /api/sessions with attachmentIds must forward them to orchestrator.create_session.
+
+    Regression guard: if `attachment_ids=body.attachmentIds` is removed from sessions.py,
+    this test FAILS because the captured kwarg will be None instead of the supplied list.
+    """
     _app, orch, client = ws_env([])
+
+    captured: list[dict] = []
+    _real_create = orch.create_session
+
+    async def _spy(*args, **kwargs):
+        captured.append({"args": args, "kwargs": kwargs})
+        return await _real_create(*args, **kwargs)
+
+    orch.create_session = _spy
 
     resp = client.post(
         "/api/sessions",
@@ -258,5 +271,12 @@ def test_create_session_accepts_attachment_ids(ws_env):
     )
     data = resp.json()
     assert "id" in data, f"no id in response: {data}"
-    # No error key present.
     assert "error" not in data, f"unexpected error in response: {data}"
+
+    # This is the real regression guard: create_session MUST have received the ids.
+    assert captured, "orchestrator.create_session was never called"
+    forwarded_ids = captured[0]["kwargs"].get("attachment_ids")
+    assert forwarded_ids == ["fake-id-1", "fake-id-2"], (
+        f"attachment_ids not forwarded to orchestrator.create_session; "
+        f"got {forwarded_ids!r}"
+    )
