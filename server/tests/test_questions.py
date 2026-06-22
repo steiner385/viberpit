@@ -233,7 +233,9 @@ def test_resolve_carries_mode_to_future():
 # the live registry's random uuid id, so the answer was silently dropped.
 # ---------------------------------------------------------------------------
 
-def test_resolve_reconciles_replayed_id_via_session_and_index():
+def test_resolve_reconciles_replayed_id_to_sole_pending_question():
+    """Single-question turn: answering the transcript-rebuilt card (replay-derived id)
+    resolves the sole live waiter even though the ids differ."""
     reg = QuestionRegistry()
     async def run():
         qid, fut = _req(reg, session_id="s1")  # live random uuid id
@@ -245,19 +247,26 @@ def test_resolve_reconciles_replayed_id_via_session_and_index():
     assert result == (["Option A"], "option")
 
 
-def test_resolve_reconciles_multi_question_by_index():
-    """A multi-question turn maps the replay id's trailing -<index> to the Nth pending."""
+def test_resolve_multi_question_requires_exact_id_no_positional_guess():
+    """Safety: with several questions pending (a multi-question turn), an unrecognized
+    id is NOT reconciled by position — that could mis-route a stale/duplicate answer to
+    the wrong remaining question. The answerable cards carry exact live ids, so exact
+    lookup handles them; an unknown id resolves nothing."""
     reg = QuestionRegistry()
     async def run():
         qid0, fut0 = _req(reg, question="Q0?", session_id="s1")
         qid1, fut1 = _req(reg, question="Q1?", session_id="s1")
-        ok = reg.resolve("toolu_xyz-1", ["Second"], "me", session_id="s1")
-        return ok, fut0, fut1
-    ok, fut0, fut1 = asyncio.run(run())
-    assert ok is True
-    assert fut1.done() and fut1.result() == (["Second"], "option")
-    assert not fut0.done()  # the sibling question stays pending
-    reg.deny_all("s1")  # cleanup
+        # An unrecognized (replay-style) id while two are pending must NOT resolve either.
+        guessed = reg.resolve("toolu_xyz-1", ["Second"], "me", session_id="s1")
+        # The exact live ids still resolve their own question, in any order.
+        ok1 = reg.resolve(qid1, ["Second"], "me", session_id="s1")
+        ok0 = reg.resolve(qid0, ["First"], "me", session_id="s1")
+        return guessed, ok0, ok1, fut0, fut1
+    guessed, ok0, ok1, fut0, fut1 = asyncio.run(run())
+    assert guessed is False           # no positional guess
+    assert ok0 is True and ok1 is True
+    assert fut0.result() == (["First"], "option")
+    assert fut1.result() == (["Second"], "option")
 
 
 def test_resolve_reconciles_single_pending_without_parseable_index():
