@@ -1,6 +1,7 @@
 import asyncio
+import json
 from pathlib import Path
-from server.sessions.replay import replay_events
+from server.sessions.replay import replay_events, _parse
 from server.sessions.events import ToolCall, ToolResult
 
 FIX = Path(__file__).parent / "fixtures" / "transcript.jsonl"
@@ -57,3 +58,18 @@ def test_replay_handles_string_content(tmp_path):
     user_evs = [e for e in out if e.to_wire()["type"] == "user"]
     assert user_evs, "string-content user message should produce a user event"
     assert user_evs[0].to_wire()["text"] == "tell me a lullaby"
+
+
+def test_replay_skips_sidechain_entries(tmp_path):
+    p = tmp_path / "t.jsonl"
+    rows = [
+        {"type": "assistant", "uuid": "m1",
+         "message": {"model": "claude", "content": [{"type": "text", "text": "main-line"}]}},
+        {"type": "assistant", "uuid": "s1", "isSidechain": True,
+         "message": {"content": [{"type": "text", "text": "subagent-secret"}]}},
+    ]
+    p.write_text("\n".join(json.dumps(r) for r in rows))
+    out = _parse(str(p), 20)
+    texts = [getattr(e, "text", None) for e in out]
+    assert "main-line" in texts
+    assert "subagent-secret" not in texts
