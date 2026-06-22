@@ -306,3 +306,50 @@ describe('transcriptReducer', () => {
     expect(initialTranscript.queued).toEqual([])
   })
 })
+
+describe('sub-agent thread routing', () => {
+  it('routes a tagged toolCall into subAgents, leaving main turns empty', () => {
+    let s = initialTranscript
+    s = transcriptReducer(s, { type: 'turnStart', turnId: 'sa1', parentToolUseId: 'task1' })
+    s = transcriptReducer(s, {
+      type: 'toolCall', turnId: 'sa1', toolId: 'g1', name: 'Grep', toolKind: 'search',
+      input: {}, parentToolUseId: 'task1',
+    })
+    expect(s.turns).toEqual([])
+    expect(s.subAgents['task1'].turns[0].blocks[0]).toMatchObject({ kind: 'tool', toolId: 'g1' })
+  })
+
+  it('keeps untagged events on the main thread', () => {
+    let s = initialTranscript
+    s = transcriptReducer(s, { type: 'turnStart', turnId: 't1' })
+    s = transcriptReducer(s, { type: 'textDelta', turnId: 't1', text: 'hi' })
+    expect(s.turns[0].blocks[0]).toMatchObject({ kind: 'text', text: 'hi' })
+    expect(s.subAgents).toEqual({})
+  })
+
+  it('isolates open-text state per thread during concurrent streaming', () => {
+    let s = initialTranscript
+    s = transcriptReducer(s, { type: 'turnStart', turnId: 't1' })
+    s = transcriptReducer(s, { type: 'textDelta', turnId: 't1', text: 'main-' })
+    s = transcriptReducer(s, { type: 'textDelta', turnId: 'sa1', text: 'sub', parentToolUseId: 'task1' })
+    s = transcriptReducer(s, { type: 'textDelta', turnId: 't1', text: 'continued' })
+    const mainText = s.turns[0].blocks
+      .filter((b) => b.kind === 'text').map((b) => (b as { text: string }).text).join('')
+    expect(mainText).toBe('main-continued')
+    expect(s.subAgents['task1'].turns[0].blocks[0]).toMatchObject({ kind: 'text', text: 'sub' })
+  })
+
+  it('routes a tagged toolResult into the matching sub-thread tool block', () => {
+    let s = initialTranscript
+    s = transcriptReducer(s, { type: 'turnStart', turnId: 'sa1', parentToolUseId: 'task1' })
+    s = transcriptReducer(s, {
+      type: 'toolCall', turnId: 'sa1', toolId: 'g1', name: 'Grep', toolKind: 'search',
+      input: {}, parentToolUseId: 'task1',
+    })
+    s = transcriptReducer(s, {
+      type: 'toolResult', toolId: 'g1', ok: true, payload: { content: 'hit' }, parentToolUseId: 'task1',
+    })
+    const block = s.subAgents['task1'].turns[0].blocks[0]
+    expect(block).toMatchObject({ kind: 'tool', toolId: 'g1', result: { ok: true } })
+  })
+})
