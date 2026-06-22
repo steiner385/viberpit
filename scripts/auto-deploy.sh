@@ -65,10 +65,11 @@ case "$verdict" in
 esac
 
 # Idle gate. A restart kills every live session, so defer while the running server
-# is mid-turn (status in_progress/working/waiting_input). Skip-and-retry until idle,
-# capped at CCSWITCH_DEPLOY_MAX_DEFER_SEC so a perpetually-busy session can't block
-# deploys forever (a forced deploy falls back to resume). Placed BEFORE the pull so
-# the "HEAD == origin/master ⇒ deployed" invariant holds (we never pull then defer).
+# is mid-turn (status in_progress/working/waiting_input) or a VNC client is attached.
+# Skip-and-retry until idle/detached, capped at CCSWITCH_DEPLOY_MAX_DEFER_SEC so a
+# perpetually-busy/attached session can't block deploys forever. Placed BEFORE the
+# pull so the "HEAD == origin/master ⇒ deployed" invariant holds (we never pull then
+# defer).
 # Test seam: CCSWITCH_DEPLOY_BUSY (1/0) forces the verdict without curling /healthz.
 busy_verdict() {
   if [ -n "${CCSWITCH_DEPLOY_BUSY:-}" ]; then
@@ -82,18 +83,47 @@ busy_verdict() {
   if grep -q '"busy":true' <<<"$body"; then echo busy; else echo idle; fi
 }
 
+# VNC-client gate. Defers the deploy while a VNC client is attached to the running
+# Xvfb framebuffer, so a human watching a session is not disrupted mid-view.
+# Test seam: CCSWITCH_DEPLOY_VNC_ATTACHED (1/0) forces the verdict without curling.
+# Degrades gracefully: an unreachable metrics route (arrives in a later task) => none,
+# so shipping this gate before the route exists is safe.
+vnc_verdict() {
+  if [ -n "${CCSWITCH_DEPLOY_VNC_ATTACHED:-}" ]; then
+    [ "$CCSWITCH_DEPLOY_VNC_ATTACHED" = "1" ] && echo attached || echo none
+    return 0
+  fi
+  local url="http://${CCSWITCH_HOST:-127.0.0.1}:${CCSWITCH_PORT:-8787}/api/x11/metrics"
+  local body; body="$(curl -fsS -m 3 "$url" 2>/dev/null || true)"
+  # Treat attached when vnc_clients_attached > 0; anything else (unreachable, missing
+  # field, zero) => none.
+  if grep -Eq '"vnc_clients_attached"[[:space:]]*:[[:space:]]*[1-9]' <<<"$body"; then
+    echo attached
+  else
+    echo none
+  fi
+}
+
+# Compute defer_reason: "busy", "vnc-attached", or empty (proceed).
+defer_reason=""
 if [ "$(busy_verdict)" = "busy" ]; then
+  defer_reason="busy"
+elif [ "$(vnc_verdict)" = "attached" ]; then
+  defer_reason="vnc-attached"
+fi
+
+if [ -n "$defer_reason" ]; then
   MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
   now="$(date +%s)"
   msha=""; mts=0
   if [ -f "$DEFER_FILE" ]; then read -r msha mts < "$DEFER_FILE" || true; fi
   if [ "$msha" != "$REMOTE" ]; then
     printf '%s %s\n' "$REMOTE" "$now" > "$DEFER_FILE"
-    echo "[deploy] server busy — deferring ${REMOTE:0:9} (will retry)"; exit 0
+    echo "[deploy] ${defer_reason} — deferring ${REMOTE:0:9} (will retry)"; exit 0
   elif [ "$(( now - mts ))" -gt "$MAX_DEFER" ]; then
-    echo "[deploy] server busy for $(( now - mts ))s (> ${MAX_DEFER}s) — forcing deploy of ${REMOTE:0:9}" >&2
+    echo "[deploy] ${defer_reason} for $(( now - mts ))s (> ${MAX_DEFER}s) — forcing deploy of ${REMOTE:0:9}" >&2
   else
-    echo "[deploy] server busy — deferring ${REMOTE:0:9} ($(( now - mts ))s so far)"; exit 0
+    echo "[deploy] ${defer_reason} — deferring ${REMOTE:0:9} ($(( now - mts ))s so far)"; exit 0
   fi
 fi
 

@@ -13,7 +13,12 @@ EnvironmentFile=/etc/ccswitch/ccswitch.env
 ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/uvicorn server.app:app --host 100.102.11.121 --port 8787
 Restart=on-failure
 RestartSec=3
-TimeoutStopSec=20
+# Chromium is slow to exit; cap host resources on the 19GB box
+TimeoutStopSec=60
+KillMode=control-group
+MemoryMax=12G
+TasksMax=512
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
