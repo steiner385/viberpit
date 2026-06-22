@@ -5,7 +5,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { QueryClient } from '@tanstack/react-query'
 import { SessionSocket } from './client'
+import { QK } from '@/api/hooks'
 
 // ── WebSocket mock ────────────────────────────────────────────────────────────
 
@@ -178,6 +180,28 @@ describe('SessionSocket', () => {
 
     expect(handler).toHaveBeenCalledOnce()
     expect(handler).toHaveBeenCalledWith({ type: 'status', sessionId: 'session-1', status: 'idle' })
+  })
+
+  it('patches the cached session record on a status frame (live list update)', () => {
+    const qc = new QueryClient()
+    qc.setQueryData(QK.sessions, [
+      { id: 'session-1', status: 'in_progress' },
+      { id: 'session-2', status: 'idle' },
+    ])
+
+    const sock = new SessionSocket('/ws')
+    sock.setQueryClient(qc)
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+
+    // A broadcast status frame for a session that is NOT the open/attached one must
+    // still patch the list cache — this is what keeps the sidebar from going stale.
+    ws.simulateMessage({ type: 'status', sessionId: 'session-1', status: 'waiting_input' })
+
+    const sessions = qc.getQueryData(QK.sessions) as Array<{ id: string; status: string }>
+    expect(sessions.find((s) => s.id === 'session-1')?.status).toBe('waiting_input')
+    expect(sessions.find((s) => s.id === 'session-2')?.status).toBe('idle')
   })
 
   it('invokes rotated callback', () => {
