@@ -27,3 +27,4 @@ class SessionRecord:
     name_is_auto: bool = True        # False once the user manually renames the session
     permission_mode: str = "interactive"
     created_at: datetime | None = None
+    sub_agents: list | None = None   # latest per-sub-agent summary; populated at turn-end

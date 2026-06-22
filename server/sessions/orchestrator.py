@@ -398,6 +398,9 @@ class SessionOrchestrator:
         """
         try:
             summary = await self.sub_agents(session_id)
+            rec = self._records.get(session_id)
+            if rec is not None:
+                rec.sub_agents = summary
             async with db_session() as db:
                 from sqlalchemy import update as sa_update
                 await db.execute(
