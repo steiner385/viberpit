@@ -161,6 +161,7 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
           queued={rt.state.queued}
           onCancelQueued={rt.onCancelQueued}
           chatArmed={rt.chatArmed}
+          autoFocusKey={sessionId}
         />
       </div>
     </div>
