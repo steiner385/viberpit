@@ -28,6 +28,7 @@ function Row({
         className={cn(
           'flex w-full items-center gap-2 py-1.5 text-left text-xs min-h-[36px]',
           'text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/40 rounded',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
         )}
         aria-label={`Review sub-agent ${node.type}: ${node.description}`}
       >

@@ -10,6 +10,8 @@ export function SubSessionView({ sessionId, agentId, parentTitle, onBack }: Prop
   const turns = selectTurnsForAgent(state.turns, agentId)
   const meta = state.subAgents[agentId]
   const label = meta ? meta.agentType : 'sub-agent'
+  // Prefer the live session title (human/auto name) over the short-id fallback.
+  const parentLabel = state.title ?? parentTitle
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
@@ -22,7 +24,7 @@ export function SubSessionView({ sessionId, agentId, parentTitle, onBack }: Prop
           ← Back
         </button>
         <nav aria-label="Breadcrumb" className="text-sm text-gray-600 dark:text-gray-300 truncate">
-          <span className="opacity-80">{parentTitle}</span>
+          <span className="opacity-80">{parentLabel}</span>
           <span aria-hidden className="mx-1.5 opacity-50">›</span>
           <span className="font-medium">{label}</span>
           {meta?.status === 'running' && (
