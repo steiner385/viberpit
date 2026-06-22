@@ -131,6 +131,19 @@ describe('SessionView', () => {
     expect(screen.getByText('abcd1234')).toBeInTheDocument()
   })
 
+  it('seeds the initialPrompt as a user message immediately on open', () => {
+    render(<SessionView sessionId="s1" onBack={vi.fn()} initialPrompt="fix the bug" />, { wrapper })
+    expect(screen.getByText('fix the bug')).toBeInTheDocument()
+  })
+
+  it('does not duplicate the seeded prompt when the SDK echoes it back', () => {
+    render(<SessionView sessionId="s1" onBack={vi.fn()} initialPrompt="fix the bug" />, { wrapper })
+    // The real user event arrives with the server turnId; the reducer adopts the
+    // optimistic seed in place rather than appending a duplicate.
+    emitSessionEvent({ type: 'user', turnId: 'real-1', text: 'fix the bug' })
+    expect(screen.getAllByText('fix the bug')).toHaveLength(1)
+  })
+
   it('renders assistant text after turnStart + textDelta + turnEnd events', async () => {
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
 

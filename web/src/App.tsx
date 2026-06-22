@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Dashboard, type TabId } from './components/Dashboard'
 import { DesktopShell } from './components/DesktopShell'
 import { SessionView } from './components/session/SessionView'
@@ -25,7 +25,9 @@ function DashboardRoute({ tab }: { tab: TabId }) {
         <Dashboard
           activeTab={tab}
           onTabChange={(next) => navigate(next === 'sessions' ? '/sessions' : `/${next}`)}
-          onOpenSession={(id) => navigate(`/session/${id}`)}
+          onOpenSession={(id, prompt) =>
+            navigate(`/session/${id}`, prompt ? { state: { initialPrompt: prompt } } : undefined)
+          }
           onReviewSession={(id) => navigate(`/review/${id}`)}
           dialog={dialog}
           onDialogChange={(next) => {
@@ -45,10 +47,15 @@ function DashboardRoute({ tab }: { tab: TabId }) {
 function SessionRoute() {
   const { sessionId } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
+  // Carried via navigation state when a session is opened straight from create,
+  // so the user's prompt shows immediately (seeded into the transcript). Absent
+  // on a normal open / refresh / deep-link, in which case nothing is seeded.
+  const initialPrompt = (location.state as { initialPrompt?: string } | null)?.initialPrompt
   if (!sessionId) return <Navigate to="/sessions" replace />
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <SessionView sessionId={sessionId} onBack={() => navigate('/sessions')} />
+      <SessionView sessionId={sessionId} onBack={() => navigate('/sessions')} initialPrompt={initialPrompt} />
     </div>
   )
 }

@@ -46,7 +46,7 @@ import {
 import { setLastRepo } from '@/lib/lastRepo'
 
 type TabId = 'sessions' | 'accounts' | 'archived'
-type Target = { type: 'new' } | { type: 'session'; id: string }
+type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
 
 // ── Session subtree (rendered only under SessionRuntimeProvider) ──────────────
 
@@ -165,10 +165,10 @@ export function DesktopShell() {
     }
   }
 
-  function focusSession(id: string) {
+  function focusSession(id: string, initialPrompt?: string) {
     clearPendingDelete()
     setTab('sessions')
-    setSelection({ type: 'session', id })
+    setSelection({ type: 'session', id, initialPrompt })
   }
 
   function focusNew() {
@@ -270,7 +270,7 @@ export function DesktopShell() {
       {
         onSuccess: (session) => {
           if (repo) setLastRepo(repo)
-          focusSession(session.id)
+          focusSession(session.id, initialPrompt)
         },
         onError: (err) => {
           if (err.status === 409) {
@@ -455,6 +455,6 @@ export function DesktopShell() {
   // One SessionRuntimeProvider mounted at a time, keyed by the focused id so each
   // session gets a fresh reducer + clean attach/detach.
   return sessionActive
-    ? <SessionRuntimeProvider key={selection.id} sessionId={selection.id}>{shell}</SessionRuntimeProvider>
+    ? <SessionRuntimeProvider key={selection.id} sessionId={selection.id} initialPrompt={selection.initialPrompt}>{shell}</SessionRuntimeProvider>
     : shell
 }
