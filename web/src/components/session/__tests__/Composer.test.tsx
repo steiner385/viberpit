@@ -164,6 +164,61 @@ describe('Composer', () => {
     expect(onPrompt).not.toHaveBeenCalled()
   })
 
+  // ── Slash commands ──────────────────────────────────────────────────────────
+
+  const goalCmd = { name: 'goal', description: 'Set the goal', argumentHint: '<text>', kind: 'passthrough' as const }
+  const clearCmd = { name: 'clear', description: 'Clear conversation', argumentHint: null, kind: 'control' as const }
+
+  it('runs a slash command with trailing text as args on Enter', async () => {
+    const user = userEvent.setup()
+    const onCommand = vi.fn()
+    const onPrompt = vi.fn()
+    render(<Composer {...defaults} commands={[goalCmd]} onCommand={onCommand} onPrompt={onPrompt} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, '/goal ship the web UI')
+    await user.keyboard('{Enter}')
+    expect(onCommand).toHaveBeenCalledWith('goal', 'ship the web UI')
+    expect(onPrompt).not.toHaveBeenCalled()
+    expect(textarea).toHaveValue('')
+  })
+
+  it('preserves multi-word args verbatim', async () => {
+    const user = userEvent.setup()
+    const onCommand = vi.fn()
+    render(<Composer {...defaults} commands={[goalCmd]} onCommand={onCommand} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, '/goal   keep   inner spacing')
+    await user.keyboard('{Enter}')
+    expect(onCommand).toHaveBeenCalledWith('goal', 'keep   inner spacing')
+  })
+
+  it('runs a slash command with no args when none are typed', async () => {
+    const user = userEvent.setup()
+    const onCommand = vi.fn()
+    render(<Composer {...defaults} commands={[clearCmd]} onCommand={onCommand} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, '/clear')
+    await user.keyboard('{Enter}')
+    expect(onCommand).toHaveBeenCalledWith('clear', '')
+    expect(textarea).toHaveValue('')
+  })
+
+  it('keeps the palette open while still typing the command name', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} commands={[goalCmd]} onCommand={vi.fn()} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, '/go')
+    expect(screen.getByRole('listbox', { name: /slash commands/i })).toBeInTheDocument()
+  })
+
+  it('hides the palette once the user types a space after the command name', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} commands={[goalCmd]} onCommand={vi.fn()} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, '/goal ')
+    expect(screen.queryByRole('listbox', { name: /slash commands/i })).not.toBeInTheDocument()
+  })
+
   // ── Queued strip ────────────────────────────────────────────────────────────
 
   it('renders cancel buttons for each queued item', () => {
