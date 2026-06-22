@@ -71,6 +71,12 @@ export const Turn = memo(function Turn({
             // above the composer — omit it inline to avoid a duplicate. Historical
             // (replayed) questions render inline, read-only.
             return <QuestionCard key={block.id} block={block} onAnswer={onAnswer} readOnly />
+          case 'notice':
+            return (
+              <div key={block.id} className="my-2 text-center text-xs text-gray-400 dark:text-gray-500 italic">
+                {block.text}
+              </div>
+            )
           case 'error':
             return <ErrorCard key={block.id} code={block.code} message={block.message} resetsAt={block.resetsAt} />
           default:

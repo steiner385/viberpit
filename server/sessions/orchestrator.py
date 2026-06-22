@@ -30,6 +30,8 @@ from server.db import db_session
 from server.db.models import Session as DbSession
 from server.sessions import adopt as _adopt
 from server.sessions import uploads
+from server.sessions.commands import catalog as cmd_catalog
+from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory
@@ -807,6 +809,30 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         if d:
             await d.set_permission_mode(mode)
+
+    async def command_catalog(self, session_id) -> list[dict]:
+        """Build the per-session slash-command catalog (wire dicts). [] if no driver."""
+        d = self._drivers.get(session_id)
+        if d is None:
+            return []
+        try:
+            info = await d.server_info()
+        except Exception:
+            log.warning("command_catalog: server_info failed session=%s", session_id, exc_info=True)
+            return []
+        return [c.to_wire() for c in cmd_catalog.build_catalog(info)]
+
+    async def run_command(self, session_id, name, args) -> dict | None:
+        """Dispatch a slash command. Raises KeyError if the command is unknown."""
+        d = self._drivers.get(session_id)
+        if d is None:
+            raise KeyError(name)
+        info = await d.server_info()
+        by_name = {c.name: c for c in cmd_catalog.build_catalog(info)}
+        cmd = by_name.get(str(name).lstrip("/"))
+        if cmd is None:
+            raise KeyError(name)
+        return await cmd_dispatcher.dispatch(d, cmd, args or "")
 
     async def cancel_queued(self, session_id, index: int) -> bool:
         d = self._drivers.get(session_id)

@@ -11,6 +11,7 @@ export type Block =
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown> } }
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean }
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean }
+  | { kind: 'notice';     id: string; text: string }
   | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null }
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
@@ -83,6 +84,8 @@ export type LocalAction =
   | { type: '_clearError' }
   | { type: '_seedUserPrompt';    text: string }
   | { type: '_rotation';          from: string; to: string; reason?: string }
+  | { type: '_notice'; text: string }
+  | { type: '_clear';  text: string }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -422,6 +425,15 @@ export function transcriptReducer(
       return { ...state, turns: nextTurns }
     }
 
+    case '_notice': {
+      const id = `notice:${state.turns.length}`
+      return {
+        ...state,
+        turns: [...state.turns, { id, role: 'assistant', blocks: [{ kind: 'notice', id: `${id}:n`, text: ev.text }] }],
+        openBlockId: null,
+      }
+    }
+
     case '_clearError': {
       // Dismiss a surfaced banner (e.g. the transient "answer queued" notice
       // once a buffered answer has been resent). Ref-stable when already clear.
@@ -436,6 +448,15 @@ export function transcriptReducer(
         ...state,
         turns: [...state.turns, { id: OPTIMISTIC_USER_ID, role: 'user', blocks: [block] }],
         openBlockId: null,
+      }
+    }
+
+    case '_clear': {
+      const id = 'notice:clear'
+      return {
+        ...initialTranscript,
+        replaying: false,
+        turns: [{ id, role: 'assistant', blocks: [{ kind: 'notice', id: `${id}:n`, text: ev.text }] }],
       }
     }
 

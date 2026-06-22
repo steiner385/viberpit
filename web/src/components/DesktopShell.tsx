@@ -32,6 +32,7 @@ import { RenameDialog, PermanentDeleteDialog } from './Dashboard'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from './session/SessionRuntimeProvider'
 import { SessionBody } from './session/SessionBody'
 import { Composer } from './session/Composer'
+import { CommandResultOverlay } from './session/CommandResultOverlay'
 import {
   useAccounts,
   useSessions,
@@ -83,6 +84,11 @@ function MainPaneSession() {
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-gray-950">
         <SessionBody rt={rt} />
       </div>
+      <CommandResultOverlay
+        result={rt.commandResult}
+        commands={rt.commands}
+        onClose={rt.dismissCommandResult}
+      />
     </div>
   )
 }
@@ -98,6 +104,8 @@ function SessionComposer() {
       onSetMode={rt.onSetMode}
       queued={rt.state.queued}
       onCancelQueued={rt.onCancelQueued}
+      commands={rt.commands}
+      onCommand={rt.onCommand}
     />
   )
 }

@@ -21,6 +21,7 @@ import { PERMISSION_MODES } from '@/session/permissionModes'
 import { Composer } from './Composer'
 import { SessionBody } from './SessionBody'
 import { PendingQuestionPanel } from './PendingQuestionPanel'
+import { CommandResultOverlay } from './CommandResultOverlay'
 
 /**
  * Cycle to the next permission mode in PERMISSION_MODES order.
@@ -112,6 +113,11 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
 
   return (
     <div className="flex flex-col h-dvh bg-white dark:bg-gray-950">
+      <CommandResultOverlay
+        result={rt.commandResult}
+        commands={rt.commands}
+        onClose={rt.dismissCommandResult}
+      />
       {/* Top bar */}
       <div className={cn(
         'flex items-center gap-3 px-3 py-2',
@@ -171,6 +177,8 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
           queued={rt.state.queued}
           onCancelQueued={rt.onCancelQueued}
           chatArmed={rt.chatArmed}
+          commands={rt.commands}
+          onCommand={rt.onCommand}
           autoFocusKey={sessionId}
         />
       </div>
