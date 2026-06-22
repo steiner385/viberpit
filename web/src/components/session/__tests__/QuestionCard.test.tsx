@@ -127,3 +127,28 @@ describe('QuestionCard', () => {
     expect(onChat).toHaveBeenCalledWith('q-1')
   })
 })
+
+describe('QuestionCard readOnly', () => {
+  it('renders options inertly and never calls onAnswer when readOnly', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={onAnswer} readOnly />)
+    expect(screen.getByText('Choose an option')).toBeInTheDocument()
+    expect(screen.getByText('Which would you prefer?')).toBeInTheDocument()
+    expect(screen.getByText('Option A')).toBeInTheDocument()
+    // No interactive option buttons (read-only): clicking the text does nothing.
+    await user.click(screen.getByText('Option A'))
+    expect(onAnswer).not.toHaveBeenCalled()
+    // No write/chat escape hatches in read-only mode.
+    expect(screen.queryByText(/Write a response/)).toBeNull()
+    expect(screen.queryByText(/Chat about this/)).toBeNull()
+  })
+
+  it('interactive mode still answers on option click', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={onAnswer} />)
+    await user.click(screen.getByRole('radio', { name: 'Option A' }))
+    expect(onAnswer).toHaveBeenCalledWith('q-1', ['Option A'])
+  })
+})
