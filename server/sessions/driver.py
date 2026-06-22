@@ -31,7 +31,7 @@ class SessionDriver:
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
-                 on_status=None):
+                 on_status=None, suggester=None):
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -60,6 +60,11 @@ class SessionDriver:
         self._turn_active: bool = False
         self._turns_completed: int = 0
         self._last_turn_outcome: str = "success"
+        self._suggester = suggester
+        self._suggest_task: asyncio.Task | None = None
+        self._last_user_text: str = ""
+        self._last_assistant_parts: list[str] = []
+        self._last_turn_id: str = ""
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -257,6 +262,9 @@ class SessionDriver:
     async def _start_turn(self, text: str, images: list[dict] | None = None):
         """Echo the user prompt, emit working status, query the SDK, drain."""
         images = images or []
+        self._cancel_suggest()
+        self._last_user_text = text
+        self._last_assistant_parts = []
         self._turn_active = True
         self._last_turn_outcome = "success"
         await self._emit_status()
@@ -300,8 +308,11 @@ class SessionDriver:
         try:
             async for msg in self._client.receive_response():
                 for e in self._tr.feed(msg):
-                    if isinstance(e, ev.TurnEnd):
+                    if isinstance(e, ev.TextDelta):
+                        self._last_assistant_parts.append(e.text)
+                    elif isinstance(e, ev.TurnEnd):
                         self._last_turn_outcome = e.outcome
+                        self._last_turn_id = e.turn_id
                     await self._out.put(e)
                 if self.claude_session_id is None and self._tr.session_id:
                     self.claude_session_id = self._tr.session_id
@@ -333,6 +344,7 @@ class SessionDriver:
                 self._turn_active = False
                 self._turns_completed += 1
                 await self._emit_status()
+                self._maybe_start_suggestions()
 
     def queued(self) -> list[str]:
         """Return a snapshot of the queued prompt texts."""
@@ -354,11 +366,34 @@ class SessionDriver:
                 return
             yield item
 
+    def _cancel_suggest(self) -> None:
+        if self._suggest_task is not None and not self._suggest_task.done():
+            self._suggest_task.cancel()
+
+    def _maybe_start_suggestions(self) -> None:
+        """Fire-and-forget suggestion generation once the session is idle. Best-effort."""
+        if self._suggester is None:
+            return
+        sig = self._dash_signals()
+        if sig.pending_permission or sig.pending_question:
+            return
+        user = self._last_user_text[:500]
+        assistant = "".join(self._last_assistant_parts)[-1500:]
+        context = f"User: {user}\n\nAssistant: {assistant}"
+        self._cancel_suggest()
+        self._suggest_task = asyncio.create_task(self._run_suggestions(context, self._last_turn_id))
+
+    async def _run_suggestions(self, context: str, turn_id: str) -> None:
+        items = await self._suggester.generate(self.cwd, self.config_dir, context)
+        if items:
+            await self._out.put(ev.Suggestions(self.session_id, turn_id, items))
+
     async def interrupt(self):
         self._reg.deny_all(self.session_id)
         self._qreg.deny_all(self.session_id)
         # Clear the queue so a Stop abandons all pending queued prompts.
         self._queue.clear()
+        self._cancel_suggest()
         if self._client:
             await self._client.interrupt()
         self._turn_active = False
@@ -415,6 +450,7 @@ class SessionDriver:
         return self._reg.resolve(perm_id, decision, identity)
 
     async def aclose(self):
+        self._cancel_suggest()
         self._reg.deny_all(self.session_id)
         self._qreg.deny_all(self.session_id)
         if self._pump:

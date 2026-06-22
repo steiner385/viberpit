@@ -35,7 +35,8 @@ from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
-from server.sessions.sdk_factory import real_sdk_factory
+from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory
+from server.sessions.suggestions import SuggestionService
 from server.sessions.selection import AllAccountsBusy, select_account
 from server.sessions.titles import read_ai_title_from_file
 from server.sessions.types import SessionRecord
@@ -74,6 +75,7 @@ class SessionOrchestrator:
     def __init__(
         self,
         sdk_factory=None,
+        suggestion_factory=None,
         work_dir: str | None = None,
         poll_interval: float = 60.0,
         usage_fn: Callable[[str], object] | None = None,
@@ -96,6 +98,10 @@ class SessionOrchestrator:
         # session_id → WorktreeInfo for sessions launched in an isolated worktree
         self._worktrees: dict[str, worktrees.WorktreeInfo] = {}
         self._sdk_factory = sdk_factory or real_sdk_factory
+        if os.environ.get("CCSWITCH_SUGGESTIONS", "1") == "0":
+            self._suggester = None
+        else:
+            self._suggester = SuggestionService(suggestion_factory or real_suggestion_factory)
         # Cadence (seconds) of the background titling sweep that adopts Claude's
         # own transcript title into still-auto-named sessions. Constructor arg so
         # tests can drive it fast.
@@ -250,6 +256,7 @@ class SessionOrchestrator:
             on_session_id=self._persist_claude_session_id,
             on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
             on_status=self._persist_status,
+            suggester=self._suggester,
         )
         await driver.start()
         self._drivers[session_id] = driver
@@ -623,6 +630,7 @@ class SessionOrchestrator:
                     on_session_id=self._persist_claude_session_id,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
                     on_status=self._persist_status,
+                    suggester=self._suggester,
                 )
 
             driver = _build(resume)
@@ -707,6 +715,7 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, cand.account),
                 on_status=self._persist_status,
+                suggester=self._suggester,
             )
 
         # Resume the conversation; fall back to a fresh session if resume fails so
@@ -957,6 +966,7 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
                 on_status=self._persist_status,
+                suggester=self._suggester,
             )
             await new_driver.start()
             self._drivers[record.id] = new_driver
