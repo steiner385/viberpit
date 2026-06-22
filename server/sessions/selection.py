@@ -15,11 +15,14 @@ from ccswitch.selector import AllAccountsBusy  # re-exported so callers only imp
 __all__ = ["select_account", "AllAccountsBusy"]
 
 
-def select_account(exclude: frozenset[str] = frozenset()) -> str:
+def select_account(exclude: frozenset[str] = frozenset(),
+                   load: dict[str, float] | None = None) -> str:
     """Select the best available account, skipping any in *exclude*.
 
     Writes a soft reservation into the ledger so concurrent calls don't
-    double-assign the same account (R8 / FR-009a).
+    double-assign the same account (R8 / FR-009a). *load* is an optional
+    per-account weighted live-session count; accounts already carrying load are
+    discounted so new sessions spread out (avoids 429s).
 
     Raises:
         AllAccountsBusy: when every account is at or above the usage ceiling.
@@ -27,4 +30,4 @@ def select_account(exclude: frozenset[str] = frozenset()) -> str:
     """
     cfg = load_config()
     # pick_account already calls select_best + ledger.reserve under a lock.
-    return pick_account(cfg, exclude=set(exclude))
+    return pick_account(cfg, exclude=set(exclude), load=load)

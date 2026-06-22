@@ -120,6 +120,18 @@ class TestAccounts(unittest.TestCase):
                 # beta now reserved → excluded on the next pick, alpha wins
                 self.assertEqual(accounts.pick_account(accounts.load_config()), "alpha")
 
+    def test_pick_account_forwards_load_to_selector(self):
+        with temp_env():
+            from ccswitch import accounts
+            _seed_account("alpha"); _seed_account("beta")
+            # Equal usage so load is the deciding factor; alpha carries live load.
+            def fake_usage(name):
+                return usage(session=30.0)
+            with mock.patch.object(accounts, "usage_for", side_effect=fake_usage):
+                picked = accounts.pick_account(
+                    accounts.load_config(), load={"alpha": 2.0})
+                self.assertEqual(picked, "beta")
+
     def test_sync_back_splits_live_creds(self):
         with temp_env():
             from ccswitch import accounts, paths, configdir

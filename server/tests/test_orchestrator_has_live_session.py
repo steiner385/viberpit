@@ -145,3 +145,46 @@ def test_poller_closure_passes_allow_refresh_true_when_no_live_session():
     assert allow_refresh_calls == [True], (
         f"expected allow_refresh=True when no live session, got {allow_refresh_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# live_session_load — weighted count of live sessions per account
+# ---------------------------------------------------------------------------
+
+def _plant(orch, sid, account, status):
+    from server.sessions.types import SessionRecord
+    driver = MagicMock()
+    driver.account = account
+    orch._drivers[sid] = driver
+    orch._records[sid] = SessionRecord(
+        id=sid, name=sid, account=account, claude_session_id="c",
+        cols=80, rows=24, cwd="/tmp", status=status)
+
+
+def test_live_session_load_weights_working_and_idle():
+    orch = SessionOrchestrator(sdk_factory=MagicMock())
+    _plant(orch, "s1", "acct1", "in_progress")  # working -> 1.0
+    _plant(orch, "s2", "acct1", "idle")         # idle    -> 0.3
+    _plant(orch, "s3", "acct2", "working")      # working -> 1.0
+
+    load = orch.live_session_load()
+    assert load["acct1"] == 1.3
+    assert load["acct2"] == 1.0
+    assert "acct3" not in load  # accounts with no live sessions are absent
+
+
+def test_live_session_load_ignores_driverless_records():
+    orch = SessionOrchestrator(sdk_factory=MagicMock())
+    from server.sessions.types import SessionRecord
+    # A record with no live driver (detached/rehydrated) must not count.
+    orch._records["dead"] = SessionRecord(
+        id="dead", name="dead", account="acct1", claude_session_id="c",
+        cols=80, rows=24, cwd="/tmp", status="working")
+    assert orch.live_session_load() == {}
+
+
+def test_live_session_load_skips_driver_without_record():
+    orch = SessionOrchestrator(sdk_factory=MagicMock())
+    d = MagicMock(); d.account = "acct1"
+    orch._drivers["orphan"] = d  # no matching record
+    assert orch.live_session_load() == {}
