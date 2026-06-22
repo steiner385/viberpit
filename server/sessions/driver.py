@@ -357,6 +357,45 @@ class SessionDriver:
         if self._client:
             await self._client.set_permission_mode("plan" if mode == "plan" else "default")
 
+    async def set_model(self, model: str | None) -> None:
+        if self._client:
+            await self._client.set_model(model)
+
+    async def server_info(self) -> dict | None:
+        if self._client is None:
+            return None
+        return await self._client.get_server_info()
+
+    async def context_usage(self) -> dict:
+        if self._client is None:
+            return {}
+        return await self._client.get_context_usage()
+
+    async def reconnect(self) -> None:
+        """Tear down the SDK client and start a FRESH session (resume=None).
+
+        Implements /clear: a conversation's history IS the resumed session, so
+        clearing == dropping the resume handle and reconnecting. Resets per-turn
+        and titling state so the new session behaves like a brand-new one.
+        """
+        if self._pump is not None and not self._pump.done():
+            self._pump.cancel()
+            try:
+                await self._pump
+            except asyncio.CancelledError:
+                pass
+        self._pump = None
+        if self._client is not None:
+            await self._client.__aexit__(None, None, None)
+        self.resume = None
+        self.claude_session_id = None
+        self._titled = False
+        self._queue.clear()
+        self._turn_active = False
+        self._tr = Translator()
+        self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None)
+        await self._client.__aenter__()
+
     def resolve_permission(self, perm_id, decision, identity) -> bool:
         return self._reg.resolve(perm_id, decision, identity)
 

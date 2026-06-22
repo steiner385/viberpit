@@ -45,12 +45,15 @@ def result(session_id: str = "sess-1", usage: dict | None = None, uuid: str = "u
 # ---- fake client --------------------------------------------------------------
 class FakeSDKClient:
     """Implements server.sessions.sdk_contract.SDKClientProtocol."""
-    def __init__(self, messages, on_can_use_tool=None):
+    def __init__(self, messages, on_can_use_tool=None, server_info=None, context_usage=None):
         self._messages = messages
         self.on_can_use_tool = on_can_use_tool
         self.interrupted = False
         self.permission_mode = "default"
+        self.model = None
         self.sent: list[str] = []
+        self._server_info = server_info
+        self._context_usage = context_usage or {}
 
     async def __aenter__(self): return self
     async def __aexit__(self, *exc): return False
@@ -61,3 +64,6 @@ class FakeSDKClient:
             yield m
     async def interrupt(self): self.interrupted = True
     async def set_permission_mode(self, mode: str): self.permission_mode = mode
+    async def set_model(self, model=None): self.model = model
+    async def get_server_info(self): return self._server_info
+    async def get_context_usage(self): return self._context_usage
