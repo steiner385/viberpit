@@ -1218,6 +1218,8 @@ class SessionOrchestrator:
             )
             await new_driver.start()
             self._drivers[record.id] = new_driver
+            if record.model is not None:
+                await new_driver.set_model(record.model)
             record.account = new_account
             last = self._last_prompt.get(record.id)
             if last:
