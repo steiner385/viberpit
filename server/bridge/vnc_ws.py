@@ -1,0 +1,88 @@
+"""WebSocket <-> x11vnc RFB byte relay, gated by Tailscale identity."""
+from __future__ import annotations
+import asyncio
+import logging
+
+from fastapi import APIRouter, Depends, WebSocket
+from server.auth.middleware import require_ws_identity
+
+log = logging.getLogger("server.vnc")
+
+CLOSE_NOT_ENABLED = 4401
+CLOSE_NO_DISPLAY = 4404
+
+
+async def _relay(ws, tcp, idle: float = 30.0) -> None:
+    """Flow-controlled bidirectional pump. Each direction awaits its write
+    before reading more, bounding in-process buffering."""
+
+    async def ws_to_tcp():
+        while True:
+            try:
+                data = await ws.receive_bytes()
+            except (StopAsyncIteration, Exception):
+                return
+            tcp.write(data)
+            await tcp.drain()
+
+    async def tcp_to_ws():
+        while True:
+            data = await tcp.read(65536)
+            if not data:
+                return
+            await ws.send_bytes(data)
+
+    t1 = asyncio.create_task(ws_to_tcp())
+    t2 = asyncio.create_task(tcp_to_ws())
+    done, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
+    for t in pending:
+        t.cancel()
+
+
+class _StreamAdapter:
+    """Adapts asyncio (reader, writer) to the .read/.write/.drain shape _relay uses."""
+
+    def __init__(self, reader, writer):
+        self._r = reader
+        self._w = writer
+
+    async def read(self, n):
+        return await self._r.read(n)
+
+    def write(self, b):
+        self._w.write(b)
+
+    async def drain(self):
+        await self._w.drain()
+
+
+def build_vnc_ws_router(get_x11) -> APIRouter:
+    """Return an APIRouter containing the /ws/vnc endpoint."""
+    router = APIRouter()
+
+    @router.websocket("/ws/vnc")
+    async def vnc_ws(
+        websocket: WebSocket,
+        identity: str = Depends(require_ws_identity),
+    ) -> None:
+        x11 = get_x11()
+        session_id = websocket.query_params.get("session", "")
+        if x11 is None:
+            await websocket.accept()
+            await websocket.close(CLOSE_NOT_ENABLED, "xvfb disabled")
+            return
+        if x11.display_for(session_id) is None:
+            await websocket.accept()
+            await websocket.close(CLOSE_NO_DISPLAY, "no display")
+            return
+        await websocket.accept()
+        port = await x11.attach(session_id)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            await _relay(websocket, _StreamAdapter(reader, writer))
+        except Exception:
+            log.exception("vnc: relay failed session=%s", session_id)
+        finally:
+            x11.detach(session_id)
+
+    return router
