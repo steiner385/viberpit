@@ -1,8 +1,19 @@
 # Fresh-from-origin session worktrees
 
 **Date:** 2026-06-22
-**Status:** Approved (design), pending implementation
+**Status:** Implemented (PR #125), amended by PR #126
 **Area:** `src/ccswitch/worktrees.py` (`create_worktree`)
+
+> **Amendment (PR #126) — fetch failure is best-effort, not fatal.** The original
+> Rule 2 below made a `git fetch` failure against a configured `origin` abort the
+> session (`WorktreeError`). In practice `git fetch` fails for any origin that isn't
+> fetchable non-interactively — private repos with no cached credentials, the
+> credential-less deploy box, offline — and even the project's own test fixtures use
+> placeholder origins. Hard-fail therefore broke session creation broadly (it turned
+> CI red). **Revised behavior:** on fetch failure (or an unresolvable `origin/HEAD`),
+> log a warning and fall back to the local-ref base instead of aborting. Remote
+> anchoring still applies whenever the fetch succeeds. Read Rule 2/3 below with this
+> override in mind.
 
 ## Problem
 
