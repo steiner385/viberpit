@@ -40,7 +40,7 @@ def test_images_sent_as_content_blocks(tmp_path):
         await d.send_prompt("look at this", images)
         async for e in d.events():
             seen.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return seen
@@ -65,7 +65,7 @@ def test_text_only_unchanged(tmp_path):
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start(); await d.send_prompt("hello")  # no images arg
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
     asyncio.run(run())  # must not raise

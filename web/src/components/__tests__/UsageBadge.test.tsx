@@ -70,21 +70,21 @@ describe('UsageBadge', () => {
 })
 
 describe('StatusPill — session status tiers', () => {
-  it('renders Complete with emerald text', () => {
+  it('renders complete as "Your turn" with neutral text', () => {
     const { container } = render(<StatusPill status="complete" />)
-    expect(screen.getByText('Complete')).toBeInTheDocument()
-    expect(container.querySelector('.text-emerald-700')).toBeTruthy()
+    expect(screen.getByText('Your turn')).toBeInTheDocument()
+    expect(container.querySelector('.text-emerald-700')).toBeFalsy()
   })
 
-  it('renders Needs attention with amber text', () => {
+  it('renders needs_attention as "Turn failed" with red text', () => {
     const { container } = render(<StatusPill status="needs_attention" />)
-    expect(screen.getByText('Needs attention')).toBeInTheDocument()
-    expect(container.querySelector('.text-amber-700')).toBeTruthy()
+    expect(screen.getByText('Turn failed')).toBeInTheDocument()
+    expect(container.querySelector('.text-red-700')).toBeTruthy()
   })
 
-  it('renders Done with neutral (non-emerald) text', () => {
+  it('renders done as "Your turn" with neutral (non-emerald) text', () => {
     const { container } = render(<StatusPill status="done" />)
-    expect(screen.getByText('Done')).toBeInTheDocument()
+    expect(screen.getByText('Your turn')).toBeInTheDocument()
     expect(container.querySelector('.text-emerald-700')).toBeFalsy()
   })
 })

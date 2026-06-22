@@ -64,11 +64,26 @@ class SessionDriver:
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
 
-    async def _put_status(self, state: str, count: int) -> None:
-        """Emit a live Status event (for the in-session StatusBar) AND refresh the
-        derived dashboard status so the session LIST reflects the driver's real state."""
-        await self._out.put(ev.Status(state=state, count=count))
-        await self._emit_dashboard_status()
+    def current_status(self) -> str:
+        """The rich derived status right now (no side effects). Used on WS attach."""
+        return derive_status(self._dash_signals())
+
+    async def _emit_status(self, count: int | None = None) -> None:
+        """Single status emitter — rich vocabulary to BOTH consumers.
+
+        Emits a live Status event (for the in-session StatusBar) AND notifies the
+        orchestrator (which persists it for the session LIST). `count` is the queue
+        depth shown in the busy label; defaults to the live queue length.
+        Best-effort on the callback: a failure must never break the session loop.
+        """
+        status = derive_status(self._dash_signals())
+        n = len(self._queue) if count is None else count
+        await self._out.put(ev.Status(state=status, count=n))
+        if self._on_status is not None:
+            try:
+                await self._on_status(self.session_id, status)
+            except Exception:
+                log.warning("driver.on_status failed session=%s", self.session_id, exc_info=True)
 
     @staticmethod
     def _normalize_option(opt) -> dict:
@@ -133,7 +148,7 @@ class SessionDriver:
             pending.append((q, fut))
 
         # A question is now pending for the user → waiting_input.
-        await self._emit_dashboard_status()
+        await self._emit_status()
 
         # Await all answers concurrently (gather preserves order).
         # Each future resolves to (selected, mode) or None (dismissed).
@@ -141,7 +156,7 @@ class SessionDriver:
         answers: list[tuple[list[str], str] | None] = await asyncio.gather(*futs)
 
         # Question(s) resolved → back to in_progress.
-        await self._emit_dashboard_status()
+        await self._emit_status()
 
         # Build the deny message.
         questions_list = [q for q, _ in pending]
@@ -198,18 +213,6 @@ class SessionDriver:
             last_turn_outcome=self._last_turn_outcome,
         )
 
-    async def _emit_dashboard_status(self) -> None:
-        """Derive the dashboard status from current signals and notify the orchestrator.
-
-        Best-effort: a failing callback must never break the session loop.
-        """
-        if self._on_status is None:
-            return
-        try:
-            await self._on_status(self.session_id, derive_status(self._dash_signals()))
-        except Exception:
-            log.warning("driver.on_status failed session=%s", self.session_id, exc_info=True)
-
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
         turn_id = self._turn()
         if tool_name == "AskUserQuestion":
@@ -222,10 +225,10 @@ class SessionDriver:
                 perm_id, turn_id, tool_name, ev.tool_kind(tool_name),
                 tool_input, plan=(tool_name == "ExitPlanMode")))
             # A prompt is now pending for the user → waiting_input / ready_review.
-            await self._emit_dashboard_status()
+            await self._emit_status()
         allowed = await fut
         # Decision made; the perm is no longer pending → back to in_progress.
-        await self._emit_dashboard_status()
+        await self._emit_status()
         return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied by user")
 
     async def start(self):
@@ -241,7 +244,7 @@ class SessionDriver:
             self._queue.append((text, images))
             log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
                       self.session_id, len(self._queue))
-            await self._put_status("working", len(self._queue))
+            await self._emit_status()
             await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
             return
         # C3 — auto-title from the first prompt (first line, max 50 chars).
@@ -256,7 +259,7 @@ class SessionDriver:
         images = images or []
         self._turn_active = True
         self._last_turn_outcome = "success"
-        await self._put_status("working", len(self._queue))
+        await self._emit_status()
         # Build the live UserMessage image refs (url/mime/name only).
         wire_images = [{"url": im["url"], "mime": im["mime"], "name": im.get("name", "")}
                        for im in images]
@@ -329,7 +332,7 @@ class SessionDriver:
             else:
                 self._turn_active = False
                 self._turns_completed += 1
-                await self._put_status("idle", 0)
+                await self._emit_status()
 
     def queued(self) -> list[str]:
         """Return a snapshot of the queued prompt texts."""
@@ -341,7 +344,7 @@ class SessionDriver:
             return False
         self._queue.pop(index)
         await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
-        await self._put_status("working", len(self._queue))
+        await self._emit_status()
         return True
 
     async def events(self):
@@ -360,7 +363,7 @@ class SessionDriver:
             await self._client.interrupt()
         self._turn_active = False
         await self._out.put(ev.QueueUpdate([]))
-        await self._put_status("idle", 0)
+        await self._emit_status()
 
     async def set_permission_mode(self, mode: str):
         self.mode = mode

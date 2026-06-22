@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Plus, RefreshCw, Settings, Pencil, Check, X, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -34,7 +34,9 @@ import {
 } from '@/api/hooks'
 import type { Account, Session, ArchivedSession } from '@/api/types'
 import { PERMISSION_MODES } from '@/session/permissionModes'
+import { sortSessionsByTier } from '@/session/statusTier'
 import { setLastRepo } from '@/lib/lastRepo'
+import { useNeedsYouTitle } from '@/hooks/useNeedsYouTitle'
 
 // ── New Session Dialog ──────────────────────────────────────────────────────
 
@@ -1034,6 +1036,8 @@ interface DashboardProps {
 export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab, activeTab: activeTabProp, onTabChange, dialog, onDialogChange }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
+  const orderedSessions = useMemo(() => sortSessionsByTier(sessions), [sessions])
+  useNeedsYouTitle(sessions)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const { data: settingsData } = useSettings()
   const reposQuery = useGithubRepos()
@@ -1075,7 +1079,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   // ── Keyboard selection state ─────────────────────────────────────────────────
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
-  const selectedSession = highlightedIndex >= 0 ? sessions[highlightedIndex] : undefined
+  const selectedSession = highlightedIndex >= 0 ? orderedSessions[highlightedIndex] : undefined
   const selectedId = selectedSession?.id ?? null
 
   // ── Press-twice delete guard ──────────────────────────────────────────────────
@@ -1278,7 +1282,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         clearTimeout(pendingDeleteTimeoutRef.current)
         pendingDeleteTimeoutRef.current = null
       }
-      const s = sessions[action.index]
+      const s = orderedSessions[action.index]
       if (s) {
         setHighlightedIndex(action.index)
         handleOpen(s.id)
@@ -1497,7 +1501,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           </div>
 
           <SessionList
-            sessions={sessions}
+            sessions={orderedSessions}
             accounts={accounts}
             isLoading={isLoading}
             selectedId={selectedId}

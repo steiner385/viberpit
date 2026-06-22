@@ -494,6 +494,38 @@ def test_reattach_reemits_pending_question(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# Reattach emits the current live status (regression: stale 'Ready' mid-turn)
+# ---------------------------------------------------------------------------
+
+def test_attach_emits_live_status(ws_env):
+    """Attaching to a session whose driver is blocked mid-turn emits a live status
+    frame so the in-session header reflects the true state (regression: stale 'Ready')."""
+    _app, orch, client = ws_env([], client_cls=_QuestionBlockingFakeClient)
+    session = client.portal.call(
+        lambda: orch.create_session("test-attach-status", identity="wstest@example.com")
+    )
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+        # Drive the turn until it blocks on the question.
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "go"}))
+        _drain_events(ws, until_type="question", timeout=8.0)
+        ws.send_text(json.dumps({"type": "detach", "sessionId": session_id}))
+
+    # Reattach — a status frame must now be emitted, carrying the blocked state.
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="status", timeout=6.0)
+        status_evs = [e for e in events if e.get("type") == "status"]
+        assert status_evs, f"no status frame on attach — {[e.get('type') for e in events]}"
+        assert status_evs[-1]["state"] in ("waiting_question", "waiting_input"), (
+            f"expected a needs-you state, got {status_evs[-1]['state']}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Frame larger than 256KB is rejected, socket stays open
 # ---------------------------------------------------------------------------
 
