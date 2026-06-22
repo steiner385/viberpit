@@ -55,6 +55,10 @@ export interface Session {
   nameIsAuto?: boolean
   /** Sub-agents spawned in this session, for hierarchical drill-down (empty when none). */
   subAgents?: SubAgentSummary[]
+  /** True when the user has pinned the account (disables auto-rotation). */
+  accountPinned?: boolean
+  /** Current model alias/id for the session; null = account default. */
+  model?: string | null
 }
 
 export interface ArchivedSession {

@@ -35,6 +35,11 @@ interface Props {
    *  has a single status line instead of two stacked bars. Optional so the
    *  component stays usable standalone. */
   statusSlot?: React.ReactNode
+  models: { id: string; label: string }[]
+  accounts: { name: string }[]
+  accountPinned: boolean
+  onSelectModel: (id: string) => void
+  onSelectAccount: (name: string) => void
 }
 
 const DASH = '—'
@@ -52,7 +57,7 @@ const DOT_CLASS: Record<SubAgentStatus, string> = {
   failed: 'bg-red-500',
 }
 
-export function SessionMeta({ account, model, contextPct, quota, subAgents, statusSlot }: Props) {
+export function SessionMeta({ account, model, contextPct, quota, subAgents, statusSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount }: Props) {
   const [open, setOpen] = useState(false)
   const agentCount = subAgents.length
 
@@ -65,16 +70,39 @@ export function SessionMeta({ account, model, contextPct, quota, subAgents, stat
           'text-xs text-gray-600 dark:text-gray-300',
         )}
       >
-        {/* Account */}
-        <span className="inline-flex items-center gap-1" aria-label="Current account">
+        {/* Account switcher */}
+        <span className="inline-flex items-center gap-1">
           <span className="text-gray-400 dark:text-gray-500">acct</span>
-          <span className="font-medium text-gray-900 dark:text-gray-100">{account}</span>
+          <select
+            aria-label="Switch account"
+            value={account}
+            onChange={(e) => e.target.value && e.target.value !== account && onSelectAccount(e.target.value)}
+            className="bg-transparent font-medium text-gray-900 dark:text-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+          >
+            {accounts.every((a) => a.name !== account) && <option value={account}>{account}</option>}
+            {accounts.map((a) => (
+              <option key={a.name} value={a.name}>{a.name}</option>
+            ))}
+          </select>
+          {accountPinned && (
+            <span aria-label="Account pinned" title="Pinned — auto-rotation off" className="text-amber-500">📌</span>
+          )}
         </span>
 
-        {/* Model */}
-        <span className="inline-flex items-center gap-1" aria-label="Current model">
+        {/* Model switcher */}
+        <span className="inline-flex items-center gap-1">
           <span className="text-gray-400 dark:text-gray-500">model</span>
-          <span className="font-medium text-gray-900 dark:text-gray-100 truncate max-w-[14rem]">{model ?? DASH}</span>
+          <select
+            aria-label="Select model"
+            value={model ?? 'default'}
+            onChange={(e) => onSelectModel(e.target.value)}
+            className="bg-transparent font-medium text-gray-900 dark:text-gray-100 truncate max-w-[14rem] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+          >
+            {model && !models.some((m) => m.id === model) && <option value={model}>{model}</option>}
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </select>
         </span>
 
         {/* Remaining context */}
