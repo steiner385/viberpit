@@ -126,6 +126,27 @@ describe('QuestionCard', () => {
     await user.click(screen.getByRole('button', { name: /cancel/i }))
     expect(onChat).toHaveBeenCalledWith('q-1')
   })
+
+  it('single-select: digit 2 answers with the second option', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={onAnswer} />)
+    await user.keyboard('2')
+    expect(onAnswer).toHaveBeenCalledWith('q-1', ['Option B'])
+  })
+
+  it('single-select: ArrowDown then Enter answers the highlighted option', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={onAnswer} />)
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(onAnswer).toHaveBeenCalledWith('q-1', ['Option B'])
+  })
+
+  it('single-select: first option is focused on mount', () => {
+    render(<QuestionCard block={singleQ} onAnswer={vi.fn()} />)
+    expect(screen.getByRole('radio', { name: 'Option A' })).toHaveFocus()
+  })
 })
 
 describe('QuestionCard readOnly', () => {

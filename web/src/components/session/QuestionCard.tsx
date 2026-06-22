@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Block } from '@/session/reducer'
 import { cn } from '@/lib/utils'
+import { useCardKeyboard } from './useCardKeyboard'
 
 type QuestionBlock = Extract<Block, { kind: 'question' }>
 
@@ -24,6 +25,43 @@ const hatchBtn = cn(
   'text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/30',
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
 )
+
+function SingleSelectOptions({
+  block, onAnswer,
+}: { block: QuestionBlock; onAnswer: Props['onAnswer'] }) {
+  const headerId = `q-header-${block.questionId}`
+  const kb = useCardKeyboard({
+    count: block.options.length,
+    onActivate: (i) => onAnswer(block.questionId, [optionLabel(block.options[i])]),
+  })
+  return (
+    <div role="radiogroup" aria-labelledby={headerId} className="space-y-1" {...kb.containerProps}>
+      {block.options.map((opt, i) => {
+        const label = optionLabel(opt)
+        return (
+          <button
+            key={i}
+            type="button"
+            role="radio"
+            aria-checked={i === kb.activeIndex}
+            {...kb.itemProps(i)}
+            onClick={() => onAnswer(block.questionId, [label])}
+            className={cn(
+              'w-full text-left rounded px-3 py-2 text-sm',
+              'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700',
+              'text-gray-800 dark:text-gray-200',
+              'hover:bg-blue-50 dark:hover:bg-blue-900/30',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              'min-h-[44px]',
+            )}
+          >
+            {label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
 
 export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, readOnly = false }: Props) {
   const [checked, setChecked] = useState<Set<string>>(new Set())
@@ -128,32 +166,9 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
 
   if (!block.multiSelect) {
     return (
-      <div role="radiogroup" aria-labelledby={headerId} className={containerClass}>
+      <div role="group" aria-labelledby={headerId} className={containerClass}>
         {heading}
-        <div className="space-y-1">
-          {block.options.map((opt, i) => {
-            const label = optionLabel(opt)
-            return (
-              <button
-                key={i}
-                type="button"
-                role="radio"
-                aria-checked={false}
-                onClick={() => onAnswer(block.questionId, [label])}
-                className={cn(
-                  'w-full text-left rounded px-3 py-2 text-sm',
-                  'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700',
-                  'text-gray-800 dark:text-gray-200',
-                  'hover:bg-blue-50 dark:hover:bg-blue-900/30',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-                  'min-h-[44px]',
-                )}
-              >
-                {label}
-              </button>
-            )
-          })}
-        </div>
+        <SingleSelectOptions block={block} onAnswer={onAnswer} />
         {escapeHatches}
       </div>
     )
