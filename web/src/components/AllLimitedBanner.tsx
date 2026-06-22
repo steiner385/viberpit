@@ -1,5 +1,6 @@
 import { Ban, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { formatResetTime } from '@/lib/formatReset'
 
 interface AllLimitedBannerProps {
   earliestReset: string | null  // ISO timestamp
@@ -7,15 +8,7 @@ interface AllLimitedBannerProps {
 }
 
 export function AllLimitedBanner({ earliestReset, onDismiss }: AllLimitedBannerProps) {
-  const resetLabel = earliestReset
-    ? new Intl.DateTimeFormat(undefined, {
-        hour: 'numeric',
-        minute: '2-digit',
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-      }).format(new Date(earliestReset))
-    : null
+  const resetLabel = formatResetTime(earliestReset)
 
   return (
     <div

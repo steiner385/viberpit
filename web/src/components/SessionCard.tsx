@@ -102,7 +102,11 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
               Accounts tab and the in-session meta strip, so repeating it on every
               card just adds noise and forces the meta row to wrap. */}
           {account?.usage && (
-            <UsageBadge pct={account.usage.session.pct} label="session" />
+            <UsageBadge
+              pct={account.usage.session.pct}
+              label="session"
+              resetsAt={account.usage.session.resetsAt}
+            />
           )}
         </div>
       </button>
