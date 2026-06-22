@@ -189,6 +189,15 @@ class WorktreeFreshFromOriginTests(unittest.TestCase):
         ).stdout
         self.assertEqual(len(listing.strip().splitlines()), 1, "no extra worktree expected")
 
+    def test_local_only_branch_uses_local_base(self) -> None:
+        """A branch that exists only locally (not on origin) is based off the local
+        ref even though origin is configured — there is no remote tip to be fresh against."""
+        _git("branch", "localfeature", cwd=str(self.repo))   # at local A, never pushed
+        info = worktrees.create_worktree(str(self.repo), "localfeature", "eeeeeeee-0005", str(self.root))
+        self.assertFalse(info.is_child)
+        self.assertEqual(info.branch, "localfeature")
+        self.assertEqual(_rev(Path(info.path), "HEAD"), self.local_sha)
+
 
 if __name__ == "__main__":
     unittest.main()
