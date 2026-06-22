@@ -4,6 +4,7 @@ Methods are async (they await RPC) even where the in-process orchestrator method
 is sync; reconciling that with the sync API callers is an A2.2 concern. A2.1 wires
 the vertical-slice methods only.
 """
+from ccswitch.oauth import Usage
 from server.sessions.types import SessionRecord
 
 
@@ -122,6 +123,16 @@ class RemoteOrchestrator:
     async def transcript_events(self, session_id):
         r = await self._client.call("transcript_events", session_id=session_id)
         return r["events"]
+
+    async def usage(self, name):
+        r = await self._client.call("usage", name=name)
+        return Usage.from_dict(r["usage"]) if r["usage"] is not None else None
+
+    async def pending_permissions(self, session_id):
+        return await self._client.call("pending_permissions", session_id=session_id)
+
+    async def active_session_count(self):
+        return await self._client.call("active_session_count")
 
     def subscribe(self, session_id: str):
         return self._client.subscribe(session_id)

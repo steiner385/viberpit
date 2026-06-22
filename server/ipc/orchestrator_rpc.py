@@ -81,3 +81,17 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "unarchive", unarchive)
     register_rpc(app, "adopt_session", adopt_session)
     register_rpc(app, "transcript_events", transcript_events)
+
+    async def usage(params: dict) -> dict:
+        u = await orch.poller.get(params["name"])
+        return {"usage": u.to_dict() if u is not None else None}
+
+    async def pending_permissions(params: dict):
+        return orch._registry.pending(params["session_id"])
+
+    async def active_session_count(params: dict):
+        return orch.active_session_count()
+
+    register_rpc(app, "usage", usage)
+    register_rpc(app, "pending_permissions", pending_permissions)
+    register_rpc(app, "active_session_count", active_session_count)
