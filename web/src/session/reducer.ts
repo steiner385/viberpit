@@ -10,11 +10,28 @@ export type Block =
   | { kind: 'thinking';   id: string; text: string }
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown> } }
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean }
-  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean }
+  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean }
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
 export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[] }
+
+// ── Rotation marker ────────────────────────────────────────────────────────────
+
+/**
+ * An account-rotation event, interleaved into the transcript timeline.
+ *
+ * `afterTurnId` is the id of the last turn that existed when the rotation
+ * arrived (or null if no turn had arrived yet). The transcript renders each
+ * rotation immediately after its anchor turn, reproducing real arrival order
+ * without needing per-turn timestamps. A null anchor renders at the very top.
+ */
+export interface RotationMarker {
+  from: string
+  to: string
+  reason?: string
+  afterTurnId: string | null
+}
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -36,6 +53,7 @@ export interface TranscriptState {
   replaying: boolean            // true until replayComplete
   error: { code: string; message: string; resetsAt?: string | null } | null
   queued: string[]              // texts of prompts waiting in the server-side queue
+  rotations: RotationMarker[]   // account rotations, anchored into the timeline
 }
 
 export const initialTranscript: TranscriptState = {
@@ -48,6 +66,7 @@ export const initialTranscript: TranscriptState = {
   replaying: true,
   error: null,
   queued: [],
+  rotations: [],
 }
 
 /** Coerce a possibly-missing numeric usage field to a finite number (0 when absent). */
@@ -61,6 +80,7 @@ export type LocalAction =
   | { type: '_resolvePermission'; permId: string }
   | { type: '_resolveQuestion';   questionId: string }
   | { type: '_seedUserPrompt';    text: string }
+  | { type: '_rotation';          from: string; to: string; reason?: string }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -283,7 +303,7 @@ export function transcriptReducer(
         return { ...state, turns }
       }
 
-      const newBlock: Block = { kind: 'question', id: questionId, questionId, header, question, options, multiSelect }
+      const newBlock: Block = { kind: 'question', id: questionId, questionId, header, question, options, multiSelect, live: !state.replaying }
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t,
         blocks: [...t.blocks, newBlock],
@@ -350,6 +370,14 @@ export function transcriptReducer(
       })
       if (!changed) return state // No matching permission block found; return unchanged state
       return { ...state, turns: nextTurns }
+    }
+
+    case '_rotation': {
+      // Anchor the rotation to the last turn present right now, so the
+      // transcript can render it inline at the chronologically correct spot.
+      const afterTurnId = state.turns.length > 0 ? state.turns[state.turns.length - 1].id : null
+      const marker: RotationMarker = { from: ev.from, to: ev.to, reason: ev.reason, afterTurnId }
+      return { ...state, rotations: [...state.rotations, marker] }
     }
 
     case '_resolveQuestion': {

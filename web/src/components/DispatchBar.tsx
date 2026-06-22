@@ -3,13 +3,15 @@ import { cn } from '@/lib/utils'
 import type { GithubRepo } from '@/api/hooks'
 import { getLastRepo, setLastRepo } from '@/lib/lastRepo'
 import { caretLineEdges } from '@/lib/caretLineEdges'
+import { useImageAttachments } from './session/useImageAttachments'
+import { AttachmentChips } from './session/AttachmentChips'
 
 export interface DispatchBarProps {
   repos: GithubRepo[]
   reposLoading: boolean
   reposError: boolean
-  /** Fired on Enter when the prompt has text. */
-  onDispatch: (input: { initialPrompt: string; repo: string | null }) => void
+  /** Fired on Enter when the prompt has text or images are attached. */
+  onDispatch: (input: { initialPrompt: string; repo: string | null; images: { sha: string; mime: string; name: string }[] }) => void
   /** ↑/↓ at a line boundary (or empty prompt). */
   onNavigate: (dir: 'up' | 'down') => void
   /** Enter on an EMPTY prompt, or →. */
@@ -49,6 +51,8 @@ export function DispatchBar({
   const [text, setText] = useState('')
   const [repo, setRepo] = useState<string>(() => getLastRepo() ?? '')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const att = useImageAttachments()
 
   // Auto-focus when autoFocusKey changes (or on mount)
   useEffect(() => {
@@ -63,14 +67,26 @@ export function DispatchBar({
     el.style.height = `${Math.min(el.scrollHeight, 192)}px`
   }
 
+  function handlePaste(e: React.ClipboardEvent) {
+    const files = Array.from(e.clipboardData?.files || [])
+    if (files.length) { e.preventDefault(); void att.addFiles(files) }
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    const files = Array.from(e.dataTransfer?.files || [])
+    if (files.length) { e.preventDefault(); void att.addFiles(files) }
+  }
+
   function dispatchNow() {
     const trimmed = text.trim()
-    if (!trimmed) {
+    const refs = att.refs()
+    if (!trimmed && refs.length === 0) {
       onOpenHighlighted()
       return
     }
-    onDispatch({ initialPrompt: trimmed, repo: repo || null })
+    onDispatch({ initialPrompt: trimmed, repo: repo || null, images: refs })
     setText('')
+    att.clear()
     // Reset textarea height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
@@ -163,6 +179,12 @@ export function DispatchBar({
   const persistedRepo = repo
   const repoIsKnown = repos.some((r) => r.nameWithOwner === persistedRepo)
 
+  // The Create button is a click affordance for the same action as pressing Enter.
+  // Unlike Enter (which falls back to opening the highlighted row when empty), the
+  // button is enabled ONLY when there is something to dispatch — a labelled "Create"
+  // control should never silently open an existing session.
+  const canSubmit = !isPending && (text.trim().length > 0 || att.refs().length > 0)
+
   return (
     <div
       className={cn(
@@ -170,6 +192,8 @@ export function DispatchBar({
         'border-t border-gray-200 dark:border-gray-700',
         'bg-white dark:bg-gray-900',
       )}
+      onDrop={handleDrop}
+      onDragOver={(e) => e.preventDefault()}
     >
       {/* Repo selector row */}
       <div className="flex items-center gap-2">
@@ -229,30 +253,73 @@ export function DispatchBar({
         </p>
       )}
 
-      {/* Prompt textarea */}
-      <textarea
-        ref={textareaRef}
-        id="dispatch-bar-prompt"
-        aria-label="New session prompt"
-        aria-controls="session-listbox"
-        aria-activedescendant={activeDescendantId}
-        value={text}
-        onChange={handleChange}
-        onKeyDown={handleKeyDown}
-        rows={1}
-        placeholder="New session… (Enter to create, ↑↓ to navigate, ? for shortcuts)"
-        disabled={isPending}
-        className={cn(
-          'w-full resize-none rounded-md border border-gray-300 dark:border-gray-600',
-          'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',
-          'px-3 py-2 text-sm',
-          'placeholder:text-gray-400 dark:placeholder:text-gray-500',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-          'min-h-[44px] overflow-y-auto',
-          'disabled:opacity-50 disabled:cursor-not-allowed',
-        )}
-        style={{ maxHeight: '192px' }}
-      />
+      <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
+
+      {/* Prompt textarea + attach button row */}
+      <div className="flex items-end gap-2">
+        <textarea
+          ref={textareaRef}
+          id="dispatch-bar-prompt"
+          aria-label="New session prompt"
+          aria-controls="session-listbox"
+          aria-activedescendant={activeDescendantId}
+          value={text}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
+          rows={1}
+          placeholder="New session… (Enter to create, ↑↓ to navigate, ? for shortcuts)"
+          disabled={isPending}
+          className={cn(
+            'flex-1 resize-none rounded-md border border-gray-300 dark:border-gray-600',
+            'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',
+            'px-3 py-2 text-sm',
+            'placeholder:text-gray-400 dark:placeholder:text-gray-500',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+            'min-h-[44px] overflow-y-auto',
+            'disabled:opacity-50 disabled:cursor-not-allowed',
+          )}
+          style={{ maxHeight: '192px' }}
+        />
+
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          multiple
+          className="hidden"
+          onChange={(e) => { if (e.target.files) void att.addFiles(e.target.files); e.target.value = '' }}
+        />
+        <button
+          type="button"
+          aria-label="Attach image"
+          onClick={() => fileRef.current?.click()}
+          className={cn(
+            'flex-shrink-0 rounded-md px-3 py-2 text-sm min-h-[44px]',
+            'border border-gray-300 dark:border-gray-600',
+            'text-gray-600 dark:text-gray-300',
+            'hover:bg-gray-100 dark:hover:bg-gray-800',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+          )}
+        >
+          <span aria-hidden="true">📎</span>
+        </button>
+        <button
+          type="button"
+          aria-label="Create session"
+          onClick={dispatchNow}
+          disabled={!canSubmit}
+          className={cn(
+            'flex-shrink-0 rounded-md px-4 py-2 text-sm font-medium min-h-[44px]',
+            'bg-blue-600 text-white',
+            'hover:bg-blue-700',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            'disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-blue-600',
+          )}
+        >
+          Create
+        </button>
+      </div>
     </div>
   )
 }

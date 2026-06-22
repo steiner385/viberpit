@@ -1,8 +1,9 @@
 from __future__ import annotations
 import dataclasses as _dc
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
-                              ResultMessage, ToolUseBlock, ToolResultBlock)
+                              ResultMessage, ToolUseBlock, ToolResultBlock, TextBlock)
 from . import events as ev
+from .completion import COMPLETION_MARKER
 
 
 def _usage_dict(u):
@@ -24,6 +25,7 @@ class Translator:
         self._turn_id: str = ""
         self._started = False
         self._seen_tools: set[str] = set()
+        self._turn_text: str = ""
 
     def _ensure_turn(self, uuid) -> list:
         if not self._started:
@@ -36,6 +38,7 @@ class Translator:
         self._started = False
         self._turn_id = ""
         self._seen_tools = set()
+        self._turn_text = ""
 
     def feed(self, msg) -> list:
         if isinstance(msg, SystemMessage):
@@ -65,9 +68,15 @@ class Translator:
 
         if isinstance(msg, AssistantMessage):
             out = self._ensure_turn(getattr(msg, "uuid", None))
-            # Text/thinking blocks are intentionally NOT re-emitted here — they stream live
-            # via StreamEvent content_block_delta (driver always sets include_partial_messages=True).
-            # Only tool calls (not streamed as deltas) are emitted from the consolidated message.
+            # Only the top-level agent's OWN final message can signal completion.
+            # Sub-agent (Task) messages carry a parent_tool_use_id and may emit the
+            # marker for their own sub-objective — exclude them. Reset per top-level
+            # message so only the FINAL top-level message's text is matched.
+            if getattr(msg, "parent_tool_use_id", None) is None:
+                self._turn_text = ""
+                for b in msg.content:
+                    if isinstance(b, TextBlock):
+                        self._turn_text += b.text
             for b in msg.content:
                 if isinstance(b, ToolUseBlock) and b.id not in self._seen_tools:
                     self._seen_tools.add(b.id)
@@ -91,8 +100,15 @@ class Translator:
         if isinstance(msg, ResultMessage):
             self.session_id = msg.session_id or self.session_id
             tid = self._turn_id or "turn"
+            if msg.subtype != "success" or bool(getattr(msg, "is_error", False)):
+                outcome = "failed"
+            elif COMPLETION_MARKER in self._turn_text:
+                outcome = "complete"
+            else:
+                outcome = "success"
             self._reset()
             return [ev.TurnEnd(tid, _usage_dict(msg.usage),
-                               getattr(msg, "total_cost_usd", None), getattr(msg, "uuid", None))]
+                               getattr(msg, "total_cost_usd", None), getattr(msg, "uuid", None),
+                               outcome)]
 
         return []

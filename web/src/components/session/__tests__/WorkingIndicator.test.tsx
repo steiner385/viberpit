@@ -75,41 +75,63 @@ describe('WorkingIndicator', () => {
       expect(found).toBe(true)
     })
 
-    it('does not set up a rotation interval when reduced-motion is set', () => {
+    it('does not cycle the spinner glyph when reduced-motion is set', () => {
       vi.useFakeTimers()
-      const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
       render(<WorkingIndicator />)
-      // Fast-forward past the rotation interval threshold
-      act(() => { vi.advanceTimersByTime(10_000) })
-      expect(setIntervalSpy).not.toHaveBeenCalled()
+      const before = document.querySelector('[data-testid="working-spinner"]')?.textContent
+      act(() => { vi.advanceTimersByTime(2000) })
+      const after = document.querySelector('[data-testid="working-spinner"]')?.textContent
+      expect(after).toBe(before)  // static glyph — no animation frames
     })
   })
 
-  describe('word rotation (motion allowed)', () => {
-    it('rotates to a new word after the interval elapses', async () => {
+  describe('phrase stability (motion allowed)', () => {
+    it('keeps the same phrase for the whole working period (no periodic rotation)', () => {
       vi.useFakeTimers()
+      render(<WorkingIndicator />)
+      const initialWord = WORKING_WORDS.find((w) => document.body.textContent?.includes(w))
+      expect(initialWord).toBeDefined()
 
-      const { rerender } = render(<WorkingIndicator />)
-      const initialText = document.body.textContent ?? ''
+      // Advance well past the old 2800ms rotation window many times over.
+      act(() => { vi.advanceTimersByTime(30_000) })
 
-      // Collect all words rendered over many interval ticks.
-      const seenWords = new Set<string>()
-      for (let i = 0; i < 20; i++) {
-        act(() => { vi.advanceTimersByTime(2800) })
-        rerender(<WorkingIndicator />)
-        WORKING_WORDS.forEach((w) => {
-          if ((document.body.textContent ?? '').includes(w)) seenWords.add(w)
-        })
+      // The originally-chosen word is still the only one present.
+      expect(document.body.textContent).toContain(initialWord!)
+      const othersPresent = WORKING_WORDS.filter(
+        (w) => w !== initialWord && document.body.textContent?.includes(w),
+      )
+      expect(othersPresent).toEqual([])
+    })
+  })
+
+  describe('spinner animation (motion allowed)', () => {
+    it('advances the braille spinner glyph over time', () => {
+      vi.useFakeTimers()
+      render(<WorkingIndicator />)
+      const spinner = () => document.querySelector('[data-testid="working-spinner"]')?.textContent
+      const frames = new Set<string>()
+      for (let i = 0; i < 12; i++) {
+        act(() => { vi.advanceTimersByTime(80) })
+        frames.add(spinner() ?? '')
       }
+      expect(frames.size).toBeGreaterThan(1)  // glyph actually cycles
+    })
+  })
 
-      // After many ticks we should have seen at least one word different from
-      // the first (probabilistically guaranteed with 35 words and 20 ticks).
-      const hasRotated = seenWords.size > 1 ||
-        !WORKING_WORDS.every((w) => (initialText).includes(w))
-      // We just need to confirm at least one word appeared and the interval ran.
-      expect(seenWords.size).toBeGreaterThan(0)
-      // The interval should have been called for rotations
-      void hasRotated // consumed
+  describe('elapsed time readout', () => {
+    it('shows seconds elapsed and updates as time passes', () => {
+      vi.useFakeTimers()
+      render(<WorkingIndicator />)
+      act(() => { vi.advanceTimersByTime(12_000) })
+      expect(screen.getByTestId('working-elapsed').textContent).toContain('12s')
+    })
+
+    it('formats past a minute as "Nm Ss"', async () => {
+      const { formatElapsed } = await import('../elapsed')
+      expect(formatElapsed(0)).toBe('0s')
+      expect(formatElapsed(12_000)).toBe('12s')
+      expect(formatElapsed(62_000)).toBe('1m 2s')
+      expect(formatElapsed(125_000)).toBe('2m 5s')
     })
   })
 })

@@ -95,6 +95,7 @@ describe('a11y: SessionList', () => {
     onOpen: vi.fn(),
     onRename: vi.fn(),
     onClose: vi.fn(),
+    onDelete: vi.fn(),
   }
 
   it('has no axe violations (empty)', async () => {

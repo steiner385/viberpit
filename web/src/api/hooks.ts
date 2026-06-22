@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiRequestError } from './client'
-import type { Account, Session, ReauthState, ArchivedSession } from './types'
+import type {
+  Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome,
+} from './types'
 import type { SessionEvent } from '@/session/events'
 
 // Query keys
@@ -8,6 +10,7 @@ export const QK = {
   accounts: ['accounts'] as const,
   sessions: ['sessions'] as const,
   archived: ['archived-sessions'] as const,
+  adoptable: ['adoptable-sessions'] as const,
   config: ['config'] as const,
   githubRepos: ['github-repos'] as const,
   githubBranches: (repo?: string) => ['github-branches', repo] as const,
@@ -106,6 +109,7 @@ export interface CreateSessionInput {
   repo?: string
   branch?: string
   permissionMode?: string
+  images?: { sha: string; mime: string; name: string }[]
 }
 
 export function useCreateSession() {
@@ -171,7 +175,14 @@ export function useReauthStatus(name: string, enabled: boolean) {
     queryKey: ['reauth-status', name],
     queryFn: () => api.get<ReauthState>(`/accounts/${encodeURIComponent(name)}/reauth`),
     enabled,
-    refetchInterval: enabled ? 1500 : false,
+    // Poll while a reauth is in flight; stop automatically once the status
+    // reaches a terminal state. Keeping the polling-stop here (instead of a
+    // setState-in-effect in the component) lets the last status stay visible.
+    refetchInterval: (query) => {
+      const s = query.state.data?.state
+      return s === 'success' || s === 'error' || s === 'timeout' ? false : 1500
+    },
+    refetchOnWindowFocus: false,
     staleTime: 0,
   })
 }
@@ -214,7 +225,35 @@ export function usePermanentDeleteSession() {
   const qc = useQueryClient()
   return useMutation<void, ApiRequestError, string>({
     mutationFn: (id) => api.del<void>(`/sessions/${id}/permanent`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.archived }) },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.archived })
+      // A live session can also be permanently deleted from its card, so the
+      // active sessions list must refresh too.
+      qc.invalidateQueries({ queryKey: QK.sessions })
+    },
+  })
+}
+
+/** Live untracked claude sessions eligible for adoption. Polled while the panel is open. */
+export function useAdoptable() {
+  return useQuery<{ candidates: AdoptionCandidate[] }>({
+    queryKey: QK.adoptable,
+    queryFn: () => api.get<{ candidates: AdoptionCandidate[] }>('/sessions/adoptable'),
+    staleTime: 3_000,
+    refetchInterval: 5_000,
+  })
+}
+
+/** Force-take-over an untracked session, then refresh both the sessions list and candidates. */
+export function useAdoptSession() {
+  const qc = useQueryClient()
+  return useMutation<AdoptOutcome, ApiRequestError, string>({
+    mutationFn: (claudeSessionId) =>
+      api.post<AdoptOutcome>('/sessions/adopt', { claudeSessionId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.sessions })
+      qc.invalidateQueries({ queryKey: QK.adoptable })
+    },
   })
 }
 

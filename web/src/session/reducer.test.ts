@@ -3,7 +3,7 @@
  * Pure function — no mocks needed.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { transcriptReducer, initialTranscript } from './reducer'
 import type { TranscriptState } from './reducer'
 import type { SessionEvent } from './events'
@@ -17,12 +17,6 @@ function reduce(events: (SessionEvent | Parameters<typeof transcriptReducer>[1])
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('transcriptReducer', () => {
-  let base: TranscriptState
-
-  beforeEach(() => {
-    base = { ...initialTranscript, turns: [], openBlockId: null }
-  })
-
   // ── textDelta appending ────────────────────────────────────────────────────
 
   it('appends text delta into open turn; second delta appends to same block', () => {
@@ -304,5 +298,74 @@ describe('transcriptReducer', () => {
 
   it('initialTranscript has queued as empty array', () => {
     expect(initialTranscript.queued).toEqual([])
+  })
+
+  // ── rotations (interleaved into the timeline) ───────────────────────────────
+
+  it('initialTranscript has rotations as empty array', () => {
+    expect(initialTranscript.rotations).toEqual([])
+  })
+
+  it('anchors a rotation to the last turn present when it arrives', () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'textDelta', turnId: 't1', text: 'hi' },
+      { type: 'turnEnd', turnId: 't1' },
+      { type: '_rotation', from: 'alice', to: 'bob', reason: 'rate limited' },
+    ])
+    expect(s.rotations).toEqual([
+      { from: 'alice', to: 'bob', reason: 'rate limited', afterTurnId: 't1' },
+    ])
+  })
+
+  it('anchors a rotation that arrives before any turn to null (renders at top)', () => {
+    const s = reduce([{ type: '_rotation', from: 'alice', to: 'bob' }])
+    expect(s.rotations).toEqual([
+      { from: 'alice', to: 'bob', reason: undefined, afterTurnId: null },
+    ])
+  })
+
+  it('keeps rotations in arrival order, each anchored to the then-current last turn', () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: '_rotation', from: 'a', to: 'b' },
+      { type: 'turnStart', turnId: 't2' },
+      { type: '_rotation', from: 'b', to: 'c' },
+    ])
+    expect(s.rotations.map((r) => [r.from, r.to, r.afterTurnId])).toEqual([
+      ['a', 'b', 't1'],
+      ['b', 'c', 't2'],
+    ])
+  })
+
+  it('does not touch turns when a rotation arrives', () => {
+    const withTurn = reduce([{ type: 'turnStart', turnId: 't1' }])
+    const after = transcriptReducer(withTurn, { type: '_rotation', from: 'a', to: 'b' })
+    expect(after.turns).toBe(withTurn.turns) // referentially stable
+  })
+
+  // ── question live flag ─────────────────────────────────────────────────────
+
+  describe('question live flag', () => {
+    const qEvent = { type: 'question', questionId: 'q1', turnId: 't1', header: 'H', question: 'Q?', options: [{ label: 'A' }], multiSelect: false } as const
+
+    it('marks a question received during replay as not live', () => {
+      // Precondition: the initial transcript must be in replaying mode
+      expect(initialTranscript.replaying).toBe(true)
+
+      const s = transcriptReducer(initialTranscript, qEvent)
+      const block = s.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question')
+      expect(block).toMatchObject({ kind: 'question', live: false })
+    })
+
+    it('marks a question received after replayComplete as live', () => {
+      // Precondition: the initial transcript must be in replaying mode
+      expect(initialTranscript.replaying).toBe(true)
+
+      const afterReplay = transcriptReducer(initialTranscript, { type: 'replayComplete' } as const)
+      const s = transcriptReducer(afterReplay, qEvent)
+      const block = s.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question')
+      expect(block).toMatchObject({ kind: 'question', live: true })
+    })
   })
 })

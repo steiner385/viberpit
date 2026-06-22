@@ -136,8 +136,8 @@ export class SessionSocket {
     this._send({ type: 'interrupt', sessionId })
   }
 
-  prompt(sessionId: string, text: string) {
-    this._send({ type: 'prompt', sessionId, text })
+  prompt(sessionId: string, text: string, images?: { sha: string; mime: string; name: string }[]) {
+    this._send({ type: 'prompt', sessionId, text, ...(images && images.length ? { images } : {}) })
   }
 
   sendInterrupt(sessionId: string) {
@@ -148,8 +148,8 @@ export class SessionSocket {
     this._send({ type: 'permissionResponse', sessionId, permId, decision })
   }
 
-  answerQuestion(sessionId: string, questionId: string, selected: string[]) {
-    this._send({ type: 'answerQuestion', sessionId, questionId, selected })
+  answerQuestion(sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') {
+    this._send({ type: 'answerQuestion', sessionId, questionId, selected, mode })
   }
 
   setPermissionMode(sessionId: string, mode: string) {
@@ -205,7 +205,6 @@ export class SessionSocket {
     const set = this._listeners[event] as Set<EventMap[K]> | undefined
     if (!set) return
     for (const cb of set) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(cb as (...a: unknown[]) => void)(...(args as unknown[]))
     }
   }
@@ -315,10 +314,10 @@ export function useSessionSocket() {
   const attach              = useCallback((sessionId: string) => socket.attach(sessionId), [socket])
   const detach              = useCallback((sessionId: string) => socket.detach(sessionId), [socket])
   const interrupt           = useCallback((sessionId: string) => socket.interrupt(sessionId), [socket])
-  const prompt              = useCallback((sessionId: string, text: string) => socket.prompt(sessionId, text), [socket])
+  const prompt              = useCallback((sessionId: string, text: string, images?: { sha: string; mime: string; name: string }[]) => socket.prompt(sessionId, text, images), [socket])
   const sendInterrupt       = useCallback((sessionId: string) => socket.sendInterrupt(sessionId), [socket])
   const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') => socket.permissionResponse(sessionId, permId, decision), [socket])
-  const answerQuestion      = useCallback((sessionId: string, questionId: string, selected: string[]) => socket.answerQuestion(sessionId, questionId, selected), [socket])
+  const answerQuestion      = useCallback((sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => socket.answerQuestion(sessionId, questionId, selected, mode), [socket])
   const setPermissionMode   = useCallback((sessionId: string, mode: string) => socket.setPermissionMode(sessionId, mode), [socket])
   const cancelQueued        = useCallback((sessionId: string, index: number) => socket.cancelQueued(sessionId, index), [socket])
 

@@ -17,6 +17,7 @@ class StatusSignals:
     pending_question: bool
     pending_plan: bool
     turns_completed: int
+    last_turn_outcome: str = "success"
 
 
 def derive_status(sig: StatusSignals) -> str:
@@ -27,5 +28,9 @@ def derive_status(sig: StatusSignals) -> str:
     if sig.turn_active:
         return "in_progress"
     if sig.turns_completed >= 1:
+        if sig.last_turn_outcome == "failed":
+            return "needs_attention"
+        if sig.last_turn_outcome == "complete":
+            return "complete"
         return "done"
     return "idle"

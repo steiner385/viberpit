@@ -16,15 +16,18 @@ import logging
 import re
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
+from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
+from server.sessions import adopt as _adopt
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import get_db
+from server.sessions import uploads
 from server.sessions.orchestrator import SessionOrchestrator, BranchSwitchError
 from server.sessions.selection import AllAccountsBusy
 
@@ -36,6 +39,7 @@ _REPO_RE = re.compile(rf"^{_REPO_SEGMENT}/{_REPO_SEGMENT}$")
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+uploads_router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 
 
 # ---------------------------------------------------------------------------
@@ -50,25 +54,69 @@ class CreateSessionRequest(BaseModel):
     repo: str | None = None  # nameWithOwner, e.g. "owner/name"
     branch: str | None = None
     permissionMode: str | None = None
+    images: list[dict] | None = None
 
 
 class RenameSessionRequest(BaseModel):
     name: str
 
 
-def _record_to_dict(record) -> dict[str, Any]:
-    """Convert an in-memory SessionRecord to the wire-format dict."""
+class AdoptRequest(BaseModel):
+    claudeSessionId: str
+
+
+_UNSET = object()
+
+
+def _record_to_dict(record, repo: Any = _UNSET) -> dict[str, Any]:
+    """Convert an in-memory SessionRecord to the wire-format dict.
+
+    ``repo`` lets callers inject a value read live from the session's working
+    directory (see :func:`_resolve_repo`); when omitted, the stored
+    ``record.repo`` is used as a fallback.
+    """
     return {
         "id": record.id,
         "name": record.name,
         "accountName": record.account,
-        "repo": record.repo,
+        "repo": record.repo if repo is _UNSET else repo,
         "status": record.status,
         "nameIsAuto": getattr(record, "name_is_auto", True),
         "detached": record.detached,
+        "adoptedInPlace": getattr(record, "adopted_in_place", False),
         "createdAt": record.created_at.isoformat() if record.created_at else None,
         "updatedAt": None,
     }
+
+
+def _candidate_to_dict(c) -> dict[str, Any]:
+    """Convert an AdoptionCandidate to the wire-format dict for the dashboard."""
+    return {
+        "pid": c.pid,
+        "account": c.account,
+        "cwd": c.cwd,
+        "claudeSessionId": c.claude_session_id,
+        "name": c.name,
+        "mapped": c.mapped,
+        "tracked": c.tracked,
+        "skipReason": c.skip_reason,
+        "lastActivity": c.last_activity.isoformat() if c.last_activity else None,
+        "pidAlive": c.pid_alive,
+    }
+
+
+async def _resolve_repo(record) -> str | None:
+    """Read the repo indicator live from the session's working dir.
+
+    Runs git in ``record.cwd`` (off the event loop) so the sessions screen shows
+    what's actually checked out — a worktree resolves to its clone's origin, and
+    a scratch dir with no git remote reports None ("Scratch"). Falls back to the
+    stored ``record.repo`` only when the session has no working directory.
+    """
+    cwd = getattr(record, "cwd", None)
+    if not cwd:
+        return record.repo
+    return await asyncio.to_thread(gitrepos.repo_at_path, cwd)
 
 
 def _get_orchestrator(request: Request) -> SessionOrchestrator:
@@ -88,7 +136,9 @@ async def list_sessions(
     """Return all in-memory session records."""
     orch: SessionOrchestrator = _get_orchestrator(request)
     records = orch.list_sessions()
-    return [_record_to_dict(r) for r in records]
+    # Read each session's repo live from its working dir, all in parallel.
+    repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
+    return [_record_to_dict(r, repo=repo) for r, repo in zip(records, repos)]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -181,6 +231,7 @@ async def create_session(
             repo=body.repo,
             identity=identity,
             permission_mode=body.permissionMode or "interactive",
+            images=body.images,
             name_is_auto=name_is_auto,
         )
     except ValueError as exc:
@@ -227,8 +278,51 @@ async def create_session(
 
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
-        content=_record_to_dict(record),
+        content=_record_to_dict(record, repo=await _resolve_repo(record)),
     )
+
+
+# NOTE: like /archived below, these static routes MUST precede the dynamic
+# "/{session_id}" route or FastAPI captures "adoptable"/"adopt" as a session_id.
+@router.get("/adoptable")
+async def list_adoptable(
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Discover live claude sessions running outside ccswitch.
+
+    Returns ALL session candidates (mapped, unmapped, already-tracked), each
+    flagged with a skipReason where applicable — the dashboard renders adoptable
+    ones with a force-takeover action and groups the rest as "not adoptable".
+    """
+    orch: SessionOrchestrator = _get_orchestrator(request)
+    known = [a["name"] for a in _accounts.list_accounts()]
+    tracked = {r.claude_session_id for r in orch.list_sessions() if r.claude_session_id}
+    cands = await asyncio.to_thread(_adopt.discover_candidates, known, tracked)
+    return {"candidates": [_candidate_to_dict(c) for c in cands]}
+
+
+@router.post("/adopt", status_code=status.HTTP_201_CREATED)
+async def adopt_session_route(
+    body: AdoptRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> dict:
+    """Force-take-over an untracked live session: terminate it, resume in place.
+
+    409 when the session is no longer adoptable (process gone, unmapped, or
+    already tracked) — an expected outcome given processes churn fast, so the
+    dashboard should re-scan rather than treat it as a hard error.
+    """
+    orch: SessionOrchestrator = _get_orchestrator(request)
+    try:
+        rec, outcome = await orch.adopt_session(body.claudeSessionId, identity=identity)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="session no longer adoptable",
+        )
+    return {"session": _record_to_dict(rec), **outcome}
 
 
 # NOTE: this static route MUST be declared before the dynamic "/{session_id}" route
@@ -242,6 +336,30 @@ async def list_archived_sessions(
     """Return all archived session metadata."""
     orch: SessionOrchestrator = _get_orchestrator(request)
     return await orch.list_archived()
+
+
+@router.get("/{session_id}/images/{sha}")
+async def serve_session_image(
+    session_id: str,
+    sha: str,
+    _identity: str = Depends(current_identity),
+):
+    """Serve a previously uploaded image associated with a session. Returns 404 if unknown."""
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": "image not found"},
+        )
+    path = uploads.image_path(session_id, sha)
+    if path is None or not path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": "image not found"},
+        )
+    # Map extension back to canonical MIME (e.g. .jpg → image/jpeg, not image/jpg)
+    _ext_to_mime = {ext: mime for mime, ext in uploads.ALLOWED.items()}
+    media_type = _ext_to_mime.get(path.suffix.lstrip('.'), f"image/{path.suffix.lstrip('.')}")
+    return FileResponse(str(path), media_type=media_type)
 
 
 @router.get("/{session_id}")
@@ -258,7 +376,7 @@ async def get_session(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
-    return _record_to_dict(record)
+    return _record_to_dict(record, repo=await _resolve_repo(record))
 
 
 @router.patch("/{session_id}")
@@ -279,7 +397,8 @@ async def rename_session(
     await orch.rename_session(session_id, body.name)
     # Re-fetch (rename_session updates in place)
     updated = orch.get_session(session_id)
-    return _record_to_dict(updated or record)
+    final = updated or record
+    return _record_to_dict(final, repo=await _resolve_repo(final))
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -331,7 +450,7 @@ async def unarchive_session(
         identity=identity,
         detail={"session_id": session_id},
     )
-    return _record_to_dict(record)
+    return _record_to_dict(record, repo=await _resolve_repo(record))
 
 
 @router.delete("/{session_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)
@@ -389,3 +508,26 @@ async def get_session_transcript(
     events = await orch.transcript_events(session_id)
     wire_events = [redact_event(e.to_wire()) for e in events]
     return {"events": wire_events}
+
+
+# ---------------------------------------------------------------------------
+# Upload router (separate prefix /api/uploads)
+# ---------------------------------------------------------------------------
+
+
+@uploads_router.post("")
+async def upload_image(
+    file: UploadFile = File(...),
+    _identity: str = Depends(current_identity),
+):
+    """Accept a multipart image upload and stage it. Returns {sha, mime, name}."""
+    raw = await file.read()
+    try:
+        ref = uploads.stage_image(file.content_type or "", raw)
+    except uploads.UploadError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": {"code": "invalid_image", "message": str(exc)}},
+        )
+    ref["name"] = file.filename or ""
+    return ref

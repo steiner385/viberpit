@@ -1,11 +1,17 @@
 """Anthropic OAuth: exact usage + independent token refresh (stdlib urllib)."""
 import json
+import random
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+
+# Backoff bounds for transient (429 / 5xx) retries.
+_BACKOFF_BASE = 0.5   # seconds — first retry waits up to this (with jitter)
+_BACKOFF_CAP = 30.0   # seconds — never wait longer than this between retries
+_RETRY_AFTER_CAP = 120.0  # ignore absurd server-supplied Retry-After values
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
@@ -14,11 +20,26 @@ BETA_HEADER = "oauth-2025-04-20"
 
 
 class AuthError(Exception):
-    """Token rejected (401) — needs refresh or re-auth."""
+    """Token genuinely rejected (400 invalid_grant / 401) — needs refresh or re-auth."""
+
+
+class TransientError(Exception):
+    """Endpoint returned a retryable status (429 / 5xx).
+
+    NOT a credential failure — the token is presumed still valid and callers must
+    leave the account's status unchanged (do not mark needs-reauth). Deliberately
+    a sibling of AuthError, not a subclass, so `except AuthError` cannot swallow it
+    and re-introduce the rate-limit-as-dead-token misclassification.
+    """
 
 
 class UsageError(Exception):
     """Usage endpoint returned an unexpected status."""
+
+
+def _is_transient_status(status: int) -> bool:
+    """True for statuses that mean 'back off and retry', not 'credential is dead'."""
+    return status == 429 or 500 <= status <= 599
 
 
 @dataclass
@@ -30,14 +51,46 @@ class Usage:
     extra_usage_enabled: bool
 
 
+def _retry_delay(http_headers, attempt: int, rng=random.random) -> float:
+    """Seconds to wait before retry *attempt* (0-based).
+
+    Honors a sane integer ``Retry-After`` header if present; otherwise uses
+    exponential backoff with equal jitter so concurrent callers don't retry in
+    lockstep and re-trigger the same rate limit.
+    """
+    ra = http_headers.get("Retry-After") if http_headers else None
+    if ra is not None:
+        try:
+            secs = float(int(ra))
+            if 0 <= secs <= _RETRY_AFTER_CAP:
+                return secs
+        except (TypeError, ValueError):
+            pass  # HTTP-date form unsupported — fall through to computed backoff
+    base = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** attempt))
+    return base * (0.5 + 0.5 * rng())  # equal jitter: [base/2, base)
+
+
 def http_request(method: str, url: str, headers: dict | None = None,
-                 data: bytes | None = None, timeout: int = 15) -> tuple[int, bytes]:
-    req = urllib.request.Request(url, method=method, headers=headers or {}, data=data)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read()
+                 data: bytes | None = None, timeout: int = 15, *,
+                 max_retries: int = 3, sleep=time.sleep, rng=random.random) -> tuple[int, bytes]:
+    """Issue an HTTP request, retrying transient (429 / 5xx) responses with backoff.
+
+    Retries are safe for our callers: a 429/5xx means the request was throttled or
+    failed server-side before the (single-use) refresh token was consumed. Terminal
+    statuses (4xx other than 429) and 2xx return immediately. ``sleep``/``rng`` are
+    injectable for deterministic tests.
+    """
+    for attempt in range(max_retries + 1):
+        req = urllib.request.Request(url, method=method, headers=headers or {}, data=data)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            status, body = e.code, e.read()
+            if attempt < max_retries and _is_transient_status(status):
+                sleep(_retry_delay(e.headers, attempt, rng))
+                continue
+            return status, body
 
 
 def _parse_iso(s: str | None) -> datetime | None:
@@ -101,6 +154,11 @@ def refresh_access_token(refresh_token: str, prior: dict) -> dict:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         data=form.encode("utf-8"),
     )
+    if _is_transient_status(status):
+        # Rate-limit / server error: the refresh token is presumed valid. Surface
+        # as transient so callers leave the account status untouched instead of
+        # flipping it to needs-reauth.
+        raise TransientError(f"token refresh rate-limited/unavailable: {status}")
     if status != 200:
         raise AuthError(f"token refresh failed with {status}")
     resp = json.loads(body)

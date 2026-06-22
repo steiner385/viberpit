@@ -1,75 +1,88 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Dashboard } from './components/Dashboard'
+import { Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Dashboard, type TabId } from './components/Dashboard'
+import { DesktopShell } from './components/DesktopShell'
 import { SessionView } from './components/session/SessionView'
 import { ReviewView } from './components/ReviewView'
+import { useMediaQuery } from './lib/useMediaQuery'
 
-// ── View state machine ───────────────────────────────────────────────────────
-//
-// 'dashboard' — shows the session list / account strip.
-// 'session'   — full-screen terminal for a specific session.
-// 'review'    — read-only transcript viewer for an archived session.
-//   `originElementId` — the id of the DOM element that triggered navigation
-//   (used to restore focus when the user presses Back).
+// Routing is the source of truth for which view is shown:
+//   /sessions | /accounts | /archived  → dashboard with that tab active
+//   /session/:sessionId                → full-screen terminal for a session
+//   /review/:sessionId                 → read-only transcript for an archived session
+// Dialogs are layered on the dashboard via a `?dialog=` search param (see Dashboard).
 
-type View =
-  | { type: 'dashboard' }
-  | { type: 'session'; sessionId: string; originElementId?: string; initialPrompt?: string }
-  | { type: 'review'; sessionId: string }
+function DashboardRoute({ tab }: { tab: TabId }) {
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawDialog = searchParams.get('dialog')
+  const dialog = rawDialog === 'new' || rawDialog === 'settings' ? rawDialog : null
+  return (
+    <div className="min-h-dvh bg-background text-foreground">
+      <header className="p-4 border-b border-border">
+        <h1 className="text-2xl font-bold tracking-tight">ccswitch</h1>
+      </header>
+      <main className="p-4">
+        <Dashboard
+          activeTab={tab}
+          onTabChange={(next) => navigate(next === 'sessions' ? '/sessions' : `/${next}`)}
+          onOpenSession={(id) => navigate(`/session/${id}`)}
+          onReviewSession={(id) => navigate(`/review/${id}`)}
+          dialog={dialog}
+          onDialogChange={(next) => {
+            setSearchParams((prev) => {
+              const params = new URLSearchParams(prev)
+              if (next) params.set('dialog', next)
+              else params.delete('dialog')
+              return params
+            })
+          }}
+        />
+      </main>
+    </div>
+  )
+}
+
+function SessionRoute() {
+  const { sessionId } = useParams()
+  const navigate = useNavigate()
+  if (!sessionId) return <Navigate to="/sessions" replace />
+  return (
+    <div className="min-h-dvh bg-background text-foreground">
+      <SessionView sessionId={sessionId} onBack={() => navigate('/sessions')} />
+    </div>
+  )
+}
+
+function ReviewRoute() {
+  const { sessionId } = useParams()
+  const navigate = useNavigate()
+  if (!sessionId) return <Navigate to="/sessions" replace />
+  return (
+    <div className="min-h-dvh bg-background text-foreground">
+      <ReviewView sessionId={sessionId} onBack={() => navigate('/sessions')} />
+    </div>
+  )
+}
 
 function App() {
-  const [view, setView] = useState<View>({ type: 'dashboard' })
-  const prevViewRef = useRef<View>({ type: 'dashboard' })
-  // Bumped on every back-navigation to re-focus the DispatchBar
-  const [focusDispatchNonce, setFocusDispatchNonce] = useState(0)
-
-  // Track previous view so we can restore focus on back navigation
-  useEffect(() => {
-    prevViewRef.current = view
-  })
-
-  const handleOpenSession = useCallback((sessionId: string, initialPrompt?: string) => {
-    // The session card button has id="row-<sessionId>" so focus can be restored
-    setView({ type: 'session', sessionId, originElementId: `row-${sessionId}`, initialPrompt })
-  }, [])
-
-  const handleReviewSession = useCallback((sessionId: string) => {
-    setView({ type: 'review', sessionId })
-  }, [])
-
-  const handleBack = useCallback(() => {
-    setView({ type: 'dashboard' })
-    // Bump the nonce to re-focus the DispatchBar after the dashboard mounts.
-    // For keyboard-first users the prompt is always the right place to return to.
-    setFocusDispatchNonce((n) => n + 1)
-  }, [])
-
-  const handleBackFromReview = useCallback(() => {
-    // Return to dashboard with the archived tab active
-    setView({ type: 'dashboard' })
-    setFocusDispatchNonce((n) => n + 1)
-  }, [])
+  // Wide screens get the master-detail DesktopShell; narrow screens keep the
+  // routed full-screen views below. useMediaQuery returns false when matchMedia
+  // is unavailable (jsdom), so tests default to the mobile/routed branch.
+  const isWide = useMediaQuery('(min-width: 1024px)')
+  if (isWide) {
+    return <DesktopShell />
+  }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      {view.type === 'session' ? (
-        <SessionView sessionId={view.sessionId} onBack={handleBack} initialPrompt={view.initialPrompt} />
-      ) : view.type === 'review' ? (
-        <ReviewView sessionId={view.sessionId} onBack={handleBackFromReview} />
-      ) : (
-        <>
-          <header className="p-4 border-b border-border">
-            <h1 className="text-2xl font-bold tracking-tight">ccswitch</h1>
-          </header>
-          <main className="p-4">
-            <Dashboard
-              onOpenSession={handleOpenSession}
-              onReviewSession={handleReviewSession}
-              focusDispatchSignal={focusDispatchNonce}
-            />
-          </main>
-        </>
-      )}
-    </div>
+    <Routes>
+      <Route path="/" element={<Navigate to="/sessions" replace />} />
+      <Route path="/sessions" element={<DashboardRoute tab="sessions" />} />
+      <Route path="/accounts" element={<DashboardRoute tab="accounts" />} />
+      <Route path="/archived" element={<DashboardRoute tab="archived" />} />
+      <Route path="/session/:sessionId" element={<SessionRoute />} />
+      <Route path="/review/:sessionId" element={<ReviewRoute />} />
+      <Route path="*" element={<Navigate to="/sessions" replace />} />
+    </Routes>
   )
 }
 

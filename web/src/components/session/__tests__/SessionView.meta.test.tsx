@@ -29,7 +29,9 @@ vi.mock('@/ws/client', async (importOriginal) => {
 })
 
 vi.mock('@/api/hooks', () => ({
-  useSessions: () => ({ data: [{ id: 's1', name: 'S', accountName: 'work-max', status: 'idle', createdAt: '', updatedAt: '' }] }),
+  useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
+  useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSessions: () => ({ data: [{ id: 's1', name: 'Fix OAuth login bug', accountName: 'work-max', status: 'idle', createdAt: '', updatedAt: '' }] }),
   useAccounts: () => ({ data: [{ name: 'work-max', status: 'ok', usage: { session: { pct: 42, resetsAt: null }, weekly: { pct: 18, resetsAt: null } } }] }),
 }))
 
@@ -53,6 +55,14 @@ describe('SessionView status strip', () => {
       if (!capturedHandlers[event]) capturedHandlers[event] = []
       capturedHandlers[event].push(cb)
     })
+  })
+
+  it('shows the session name (AI title) as the header title', () => {
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    // The same generated title shown on the dashboard session card appears in
+    // the terminal header — not the raw sessionId prefix.
+    expect(screen.getByText('Fix OAuth login bug')).toBeInTheDocument()
+    expect(screen.queryByText('s1')).not.toBeInTheDocument()
   })
 
   it('shows the account from useSessions and quota from useAccounts', () => {

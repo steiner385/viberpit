@@ -211,6 +211,49 @@ def test_create_session_with_repo_clones(tmp_path):
     assert captured["url"] == "https://github.com/acme/widget.git"
 
 
+def test_create_session_accepts_images(tmp_path):
+    """POST /api/sessions accepts an images array and defers it for first attach."""
+    import base64
+    import time as _time
+    from ccswitch import paths
+    from server.sessions import uploads
+
+    # Stage a 1×1 PNG so uploads.stage_image returns a real ref.
+    PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+
+    with temp_env():
+        # stage_image uses paths.uploads_dir() which is under CCSWITCH_HOME (set by temp_env).
+        ref = uploads.stage_image("image/png", PNG)
+
+        store = paths.store_dir()
+        store.mkdir(parents=True, exist_ok=True)
+        now_ms = int(_time.time() * 1000)
+        (store / "account1.cred.json").write_text(
+            f'{{"accessToken":"t","refreshToken":"r","expiresAt":{now_ms+9_000_000},"subscriptionType":"max"}}')
+        cfg_dir = paths.account_cfg_dir("account1")
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+
+        with patch("server.sessions.orchestrator.select_account", return_value="account1"), \
+             patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+             patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path),
+                                     "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            from fastapi.testclient import TestClient
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=False)
+            with client:
+                resp = client.post("/api/sessions", headers=IDENTITY_HEADERS, json={
+                    "name": "t", "initialPrompt": "see this",
+                    "images": [dict(ref, name="x.png")]})
+            assert resp.status_code == 201
+            sid = resp.json()["id"]
+            assert orch.pop_pending_initial_images(sid) == [dict(ref, name="x.png")]
+
+
 def test_create_session_clone_error_502(tmp_path):
     """A CloneError from gitrepos.ensure_clone → HTTP 502."""
     from ccswitch.gitrepos import CloneError

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { UsageBadge } from '../UsageBadge'
+import { UsageBadge, StatusPill } from '../UsageBadge'
 
 describe('UsageBadge', () => {
   it('renders the numeric percentage text', () => {
@@ -40,5 +40,25 @@ describe('UsageBadge', () => {
   it('clamps values below 0', () => {
     render(<UsageBadge pct={-10} />)
     expect(screen.getByText('0%')).toBeInTheDocument()
+  })
+})
+
+describe('StatusPill — session status tiers', () => {
+  it('renders Complete with emerald text', () => {
+    const { container } = render(<StatusPill status="complete" />)
+    expect(screen.getByText('Complete')).toBeInTheDocument()
+    expect(container.querySelector('.text-emerald-700')).toBeTruthy()
+  })
+
+  it('renders Needs attention with amber text', () => {
+    const { container } = render(<StatusPill status="needs_attention" />)
+    expect(screen.getByText('Needs attention')).toBeInTheDocument()
+    expect(container.querySelector('.text-amber-700')).toBeTruthy()
+  })
+
+  it('renders Done with neutral (non-emerald) text', () => {
+    const { container } = render(<StatusPill status="done" />)
+    expect(screen.getByText('Done')).toBeInTheDocument()
+    expect(container.querySelector('.text-emerald-700')).toBeFalsy()
   })
 })

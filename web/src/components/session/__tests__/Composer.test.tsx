@@ -44,7 +44,7 @@ describe('Composer', () => {
     const textarea = screen.getByRole('textbox', { name: /message/i })
     await user.type(textarea, 'upcoming task')
     await user.click(screen.getByRole('button', { name: /queue message/i }))
-    expect(onPrompt).toHaveBeenCalledWith('upcoming task')
+    expect(onPrompt).toHaveBeenCalledWith('upcoming task', [])
     expect(textarea).toHaveValue('')
   })
 
@@ -57,7 +57,7 @@ describe('Composer', () => {
     await user.type(textarea, 'queued message')
     // Queue it
     await user.click(screen.getByRole('button', { name: /queue message/i }))
-    expect(onPrompt).toHaveBeenCalledWith('queued message')
+    expect(onPrompt).toHaveBeenCalledWith('queued message', [])
     // Stop is still available
     await user.click(screen.getByRole('button', { name: /stop current turn/i }))
     expect(onInterrupt).toHaveBeenCalledOnce()
@@ -70,7 +70,7 @@ describe('Composer', () => {
     const textarea = screen.getByRole('textbox', { name: /message/i })
     await user.type(textarea, 'next step')
     await user.keyboard('{Enter}')
-    expect(onPrompt).toHaveBeenCalledWith('next step')
+    expect(onPrompt).toHaveBeenCalledWith('next step', [])
     expect(textarea).toHaveValue('')
   })
 
@@ -81,7 +81,7 @@ describe('Composer', () => {
     const textarea = screen.getByRole('textbox', { name: /message/i })
     await user.type(textarea, 'Hello world')
     await user.keyboard('{Enter}')
-    expect(onPrompt).toHaveBeenCalledWith('Hello world')
+    expect(onPrompt).toHaveBeenCalledWith('Hello world', [])
     expect(textarea).toHaveValue('')
   })
 
@@ -95,6 +95,23 @@ describe('Composer', () => {
     expect(onPrompt).not.toHaveBeenCalled()
     // textarea still has content
     expect(textarea).toHaveValue('Hello\n')
+  })
+
+  it('when chatArmed, shows a Reply button (not Queue) even while working', () => {
+    render(<Composer {...defaults} status={{ state: 'working', count: 0 }} chatArmed />)
+    expect(screen.getByRole('button', { name: /send reply/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /queue message/i })).not.toBeInTheDocument()
+  })
+
+  it('clicking Reply when chatArmed calls onPrompt and clears input', async () => {
+    const user = userEvent.setup()
+    const onPrompt = vi.fn()
+    render(<Composer {...defaults} status={{ state: 'working', count: 0 }} chatArmed onPrompt={onPrompt} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, 'lets chat')
+    await user.click(screen.getByRole('button', { name: /send reply/i }))
+    expect(onPrompt).toHaveBeenCalledWith('lets chat', [])
+    expect(textarea).toHaveValue('')
   })
 
   it('plan mode toggle shows aria-checked=false when not in plan mode', () => {

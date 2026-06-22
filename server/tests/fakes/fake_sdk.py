@@ -24,8 +24,9 @@ def stream_thinking(text: str, uuid: str = "u1", sid: str = "sess-1") -> StreamE
                        event={"type": "content_block_delta", "index": 0,
                               "delta": {"type": "thinking_delta", "thinking": text}})
 
-def assistant(*blocks, uuid: str = "u1") -> AssistantMessage:
-    return AssistantMessage(content=list(blocks), model="claude", uuid=uuid)
+def assistant(*blocks, uuid: str = "u1", parent_tool_use_id=None) -> AssistantMessage:
+    return AssistantMessage(content=list(blocks), model="claude", uuid=uuid,
+                            parent_tool_use_id=parent_tool_use_id)
 
 def tool_use(tool_id: str, name: str, inp: dict, uuid: str = "u1") -> AssistantMessage:
     return AssistantMessage(content=[ToolUseBlock(id=tool_id, name=name, input=inp)],
@@ -36,8 +37,8 @@ def user_tool_result(tool_id: str, content, is_error: bool = False, uuid: str = 
                        uuid=uuid)
 
 def result(session_id: str = "sess-1", usage: dict | None = None, uuid: str = "u9",
-           cost: float | None = None) -> ResultMessage:
-    return ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+           cost: float | None = None, subtype: str = "success", is_error: bool = False) -> ResultMessage:
+    return ResultMessage(subtype=subtype, duration_ms=1, duration_api_ms=1, is_error=is_error,
                          num_turns=1, session_id=session_id, usage=usage, uuid=uuid,
                          total_cost_usd=cost)
 

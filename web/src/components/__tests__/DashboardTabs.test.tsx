@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Dashboard } from '../Dashboard'
@@ -7,6 +7,8 @@ import * as hooks from '@/api/hooks'
 import type { Account, Session } from '@/api/types'
 
 vi.mock('@/api/hooks', () => ({
+  useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
+  useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAccounts: vi.fn(),
   useSessions: vi.fn(),
   useCreateSession: vi.fn(),

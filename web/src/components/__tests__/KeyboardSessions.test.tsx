@@ -15,6 +15,8 @@ import type { Session } from '@/api/types'
 // ── Mock @/api/hooks (same scaffold as DashboardTabs.test.tsx) ────────────────
 
 vi.mock('@/api/hooks', () => ({
+  useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
+  useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAccounts: vi.fn(),
   useSessions: vi.fn(),
   useCreateSession: vi.fn(),
@@ -326,7 +328,7 @@ describe('Task 6 — dispatch create-and-open', () => {
       { initialPrompt: 'add a button', repo: 'acme/web', branch: 'main' },
       expect.anything(),
     )
-    expect(onOpen).toHaveBeenCalledWith('new-1', 'add a button')
+    expect(onOpen).toHaveBeenCalledWith('new-1')
   })
 
   it('dispatch with no repo selected omits repo and branch', async () => {
