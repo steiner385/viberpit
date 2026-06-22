@@ -5,6 +5,7 @@ import type { SessionEvent, ToolKind } from './events'
 export type Block =
   | { kind: 'text';       id: string; text: string }
   | { kind: 'thinking';   id: string; text: string }
+  | { kind: 'image';      id: string; attachments: Array<{ id: string; mediaType: string; filename: string }> }
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown> } }
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean }
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean }
@@ -96,12 +97,15 @@ export function transcriptReducer(
     // ── user ─────────────────────────────────────────────────────────────────
     case 'user': {
       const { turnId, text } = ev
+      const atts = ev.attachments ?? []
       const userBlock: Block = { kind: 'text', id: `${turnId}:u`, text }
+      const blocks: Block[] = [userBlock]
+      if (atts.length) blocks.push({ kind: 'image', id: `${turnId}:img`, attachments: atts })
       const idx = findTurnIdx(state.turns, turnId)
       let nextTurns: Turn[]
       if (idx === -1) {
         // Append new user turn
-        nextTurns = [...state.turns, { id: turnId, role: 'user', blocks: [userBlock] }]
+        nextTurns = [...state.turns, { id: turnId, role: 'user', blocks }]
       } else {
         // Upsert: replace the text block in the existing turn
         nextTurns = replaceTurn(state.turns, idx, (t) => ({

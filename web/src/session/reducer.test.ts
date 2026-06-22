@@ -3,7 +3,7 @@
  * Pure function — no mocks needed.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { transcriptReducer, initialTranscript } from './reducer'
 import type { TranscriptState } from './reducer'
 import type { SessionEvent } from './events'
@@ -17,12 +17,6 @@ function reduce(events: (SessionEvent | Parameters<typeof transcriptReducer>[1])
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('transcriptReducer', () => {
-  let base: TranscriptState
-
-  beforeEach(() => {
-    base = { ...initialTranscript, turns: [], openBlockId: null }
-  })
-
   // ── textDelta appending ────────────────────────────────────────────────────
 
   it('appends text delta into open turn; second delta appends to same block', () => {
@@ -304,5 +298,22 @@ describe('transcriptReducer', () => {
 
   it('initialTranscript has queued as empty array', () => {
     expect(initialTranscript.queued).toEqual([])
+  })
+
+  // ── image block on user turn with attachments ──────────────────────────────
+
+  it('adds an image block on a user turn with attachments', () => {
+    const ev = {
+      type: 'user', turnId: 'T1', text: 'look',
+      attachments: [{ id: 'a1', mediaType: 'image/png', filename: 'a.png' }],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any
+    const s = transcriptReducer(initialTranscript, ev)
+    const turn = s.turns.find((t) => t.id === 'T1')!
+    expect(turn.blocks.some((b) => b.kind === 'text')).toBe(true)
+    const imgBlock = turn.blocks.find((b) => b.kind === 'image')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const img = imgBlock as any
+    expect(img.attachments[0].id).toBe('a1')
   })
 })
