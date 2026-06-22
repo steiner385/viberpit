@@ -65,6 +65,7 @@ class SessionDriver:
         self._last_user_text: str = ""
         self._last_assistant_parts: list[str] = []
         self._last_turn_id: str = ""
+        self._idle_seeded: bool = False
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -385,8 +386,32 @@ class SessionDriver:
 
     async def _run_suggestions(self, context: str, turn_id: str) -> None:
         items = await self._suggester.generate(self.cwd, self.config_dir, context)
+        log.info("suggestions session=%s turn=%s n=%d", self.session_id, turn_id, len(items))
         if items:
             await self._out.put(ev.Suggestions(self.session_id, turn_id, items))
+
+    def seed_idle_suggestions(self, user_text: str, assistant_text: str) -> None:
+        """Generate suggestions for a session resumed into an idle state.
+
+        Unlike _maybe_start_suggestions (fired at turn completion from in-memory
+        context), this seeds context from the replayed transcript. Runs at most once
+        per driver and only while no live turn has produced context, so repeated WS
+        attaches don't regenerate; a later real turn still refreshes via drain().
+        Best-effort and gated (no permission/question pending) inside
+        _maybe_start_suggestions.
+        """
+        if self._suggester is None or self._idle_seeded:
+            return
+        if self._turn_active or self._last_assistant_parts:
+            return
+        if not (user_text.strip() or assistant_text.strip()):
+            return
+        self._idle_seeded = True
+        self._last_user_text = user_text
+        self._last_assistant_parts = [assistant_text]
+        if not self._last_turn_id:
+            self._last_turn_id = "resumed"
+        self._maybe_start_suggestions()
 
     async def interrupt(self):
         self._reg.deny_all(self.session_id)
