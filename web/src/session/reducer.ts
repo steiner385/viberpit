@@ -11,7 +11,7 @@ export type Block =
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
-export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[] }
+export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; agentId?: string | null }
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -33,6 +33,7 @@ export interface TranscriptState {
   replaying: boolean            // true until replayComplete
   error: { code: string; message: string; resetsAt?: string | null } | null
   queued: string[]              // texts of prompts waiting in the server-side queue
+  subAgents: Record<string, { agentId: string; parentAgentId: string | null; agentType: string; description: string; status: 'running' | 'done' | 'failed' }>
 }
 
 export const initialTranscript: TranscriptState = {
@@ -45,6 +46,7 @@ export const initialTranscript: TranscriptState = {
   replaying: true,
   error: null,
   queued: [],
+  subAgents: {},
 }
 
 /** Coerce a possibly-missing numeric usage field to a finite number (0 when absent). */
@@ -80,10 +82,10 @@ function replaceTurn(turns: Turn[], idx: number, fn: (t: Turn) => Turn): Turn[] 
  * Ensure a turn exists at turnId; if it doesn't, append an empty assistant
  * turn. Returns [nextTurns, idx].
  */
-function ensureAssistantTurn(turns: Turn[], turnId: string): [Turn[], number] {
+function ensureAssistantTurn(turns: Turn[], turnId: string, agentId?: string | null): [Turn[], number] {
   const idx = findTurnIdx(turns, turnId)
   if (idx !== -1) return [turns, idx]
-  return [[...turns, { id: turnId, role: 'assistant', blocks: [] }], turns.length]
+  return [[...turns, { id: turnId, role: 'assistant', blocks: [], agentId: agentId ?? null }], turns.length]
 }
 
 // ── Reducer ───────────────────────────────────────────────────────────────────
@@ -101,7 +103,7 @@ export function transcriptReducer(
       let nextTurns: Turn[]
       if (idx === -1) {
         // Append new user turn
-        nextTurns = [...state.turns, { id: turnId, role: 'user', blocks: [userBlock] }]
+        nextTurns = [...state.turns, { id: turnId, role: 'user', blocks: [userBlock], agentId: ev.agentId ?? null }]
       } else {
         // Upsert: replace the text block in the existing turn
         nextTurns = replaceTurn(state.turns, idx, (t) => ({
@@ -123,7 +125,7 @@ export function transcriptReducer(
       }
       return {
         ...state,
-        turns: [...state.turns, { id: turnId, role: 'assistant', blocks: [] }],
+        turns: [...state.turns, { id: turnId, role: 'assistant', blocks: [], agentId: ev.agentId ?? null }],
         openBlockId: null,
       }
     }
@@ -131,7 +133,7 @@ export function transcriptReducer(
     // ── textDelta ─────────────────────────────────────────────────────────────
     case 'textDelta': {
       const { turnId, text } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.agentId)
       const turn = turns[idx]
 
       // Check if the currently open block is a text block in this turn
@@ -165,7 +167,7 @@ export function transcriptReducer(
     // ── thinkingDelta ─────────────────────────────────────────────────────────
     case 'thinkingDelta': {
       const { turnId, text } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.agentId)
       const turn = turns[idx]
 
       // Check if the currently open block is a thinking block in this turn
@@ -199,7 +201,7 @@ export function transcriptReducer(
     // ── toolCall ─────────────────────────────────────────────────────────────
     case 'toolCall': {
       const { turnId, toolId, name, toolKind, input } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.agentId)
       const turn = turns[idx]
 
       // Idempotent by toolId. If turn already has this tool and openBlockId is already null, return state unchanged.
@@ -316,6 +318,13 @@ export function transcriptReducer(
     // ── queueUpdate ───────────────────────────────────────────────────────────
     case 'queueUpdate': {
       return { ...state, queued: ev.items }
+    }
+
+    // ── subAgentUpdate ────────────────────────────────────────────────────────
+    case 'subAgentUpdate': {
+      const { agentId, parentAgentId, agentType, description, status } = ev
+      return { ...state, subAgents: { ...state.subAgents,
+        [agentId]: { agentId, parentAgentId, agentType, description, status } } }
     }
 
     // ── Local synthetic actions ────────────────────────────────────────────────
