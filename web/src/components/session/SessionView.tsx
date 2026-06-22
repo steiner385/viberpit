@@ -140,6 +140,7 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
           commands={rt.commands}
           onCommand={rt.onCommand}
           autoFocusKey={sessionId}
+          suggestions={rt.state.latestSuggestions}
         />
       </div>
     </div>

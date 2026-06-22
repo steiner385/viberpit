@@ -1,0 +1,143 @@
+import asyncio
+from server.sessions.driver import SessionDriver
+from server.sessions.permissions import PermissionRegistry
+from server.sessions.events import Suggestions
+from server.tests.fakes.fake_sdk import FakeSDKClient
+from server.tests.fakes import fake_sdk as f
+
+
+def _factory(msgs):
+    def make(cwd, config_dir, can_use_tool, mode, resume):
+        return FakeSDKClient(msgs, on_can_use_tool=can_use_tool)
+    return make
+
+
+class _StubSuggester:
+    def __init__(self, items, gate: asyncio.Event | None = None):
+        self.items = items
+        self.gate = gate
+        self.calls = 0
+
+    async def generate(self, cwd, config_dir, context):
+        self.calls += 1
+        if self.gate is not None:
+            await self.gate.wait()
+        return self.items
+
+
+def test_emits_suggestions_after_idle():
+    msgs = [f.stream_start(uuid="t1"), f.stream_text("done", uuid="t1"), f.result(uuid="t1")]
+    sug = _StubSuggester(["Run the tests", "Commit it"])
+
+    async def run():
+        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(),
+                          identity="me", suggester=sug)
+        await d.start()
+        await d.send_prompt("hi")
+        got = []
+        async def consume():
+            async for e in d.events():
+                got.append(e)
+                if isinstance(e, Suggestions):
+                    return
+        await asyncio.wait_for(asyncio.create_task(consume()), timeout=1.0)
+        await d.aclose()
+        return got
+    got = asyncio.run(run())
+    sug_ev = next(e for e in got if isinstance(e, Suggestions))
+    assert sug_ev.items == ["Run the tests", "Commit it"]
+    assert sug_ev.session_id == "s1"
+
+
+def test_empty_suggestions_emit_no_event():
+    msgs = [f.stream_start(uuid="t1"), f.stream_text("done", uuid="t1"), f.result(uuid="t1")]
+    sug = _StubSuggester([])
+
+    async def run():
+        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(),
+                          identity="me", suggester=sug)
+        await d.start()
+        await d.send_prompt("hi")
+        got = []
+        async def consume():
+            async for e in d.events():
+                got.append(e)
+        t = asyncio.create_task(consume())
+        await asyncio.sleep(0.1)
+        if d._suggest_task:
+            await d._suggest_task
+        await asyncio.sleep(0.05)
+        await d.aclose()
+        await t
+        return got
+    got = asyncio.run(run())
+    assert sug.calls == 1
+    assert not any(isinstance(e, Suggestions) for e in got)
+
+
+def test_no_suggester_never_triggers():
+    msgs = [f.stream_start(uuid="t1"), f.stream_text("done", uuid="t1"), f.result(uuid="t1")]
+
+    async def run():
+        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(),
+                          identity="me")
+        await d.start()
+        await d.send_prompt("hi")
+        got = []
+        async def consume():
+            async for e in d.events():
+                got.append(e)
+        t = asyncio.create_task(consume())
+        await asyncio.sleep(0.1)
+        await d.aclose()
+        await t
+        return d._suggest_task, got
+    suggest_task, got = asyncio.run(run())
+    assert suggest_task is None
+    assert not any(isinstance(e, Suggestions) for e in got)
+
+
+def test_new_prompt_cancels_inflight_suggestion():
+    msgs = [f.stream_start(uuid="t1"), f.stream_text("done", uuid="t1"), f.result(uuid="t1")]
+    gate = asyncio.Event()  # never set → generate() blocks until cancelled
+    sug = _StubSuggester(["late"], gate=gate)
+
+    async def run():
+        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(),
+                          identity="me", suggester=sug)
+        await d.start()
+        got = []
+        async def consume():
+            async for e in d.events():
+                got.append(e)
+        t = asyncio.create_task(consume())
+        await d.send_prompt("hi")
+        await asyncio.sleep(0.1)            # idle → suggestion task launched, blocked on gate
+        inflight = d._suggest_task
+        await d.send_prompt("second")       # must cancel the in-flight suggestion task
+        await asyncio.sleep(0.05)
+        cancelled = inflight.cancelled()
+        await d.aclose()
+        await t
+        return cancelled, got
+    cancelled, got = asyncio.run(run())
+    assert cancelled is True
+    assert not any(isinstance(e, Suggestions) for e in got)
+
+
+def test_orchestrator_disabled_by_env(monkeypatch):
+    monkeypatch.setenv("CCSWITCH_SUGGESTIONS", "0")
+    from server.sessions.orchestrator import SessionOrchestrator
+    orch = SessionOrchestrator(sdk_factory=_factory([]))
+    assert orch._suggester is None
+
+
+def test_orchestrator_enabled_by_default(monkeypatch):
+    monkeypatch.delenv("CCSWITCH_SUGGESTIONS", raising=False)
+    from server.sessions.orchestrator import SessionOrchestrator
+    orch = SessionOrchestrator(sdk_factory=_factory([]))
+    assert orch._suggester is not None

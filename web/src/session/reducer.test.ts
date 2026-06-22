@@ -416,6 +416,31 @@ describe('transcriptReducer', () => {
     expect(after.turns).toBe(withTurn.turns) // referentially stable
   })
 
+  // ── latestSuggestions ────────────────────────────────────────────────────
+
+  it('stores suggestions from a suggestions event', () => {
+    const s = transcriptReducer(initialTranscript, {
+      type: 'suggestions', sessionId: 's1', turnId: 't1', items: ['Run tests', 'Commit'],
+    })
+    expect(s.latestSuggestions).toEqual(['Run tests', 'Commit'])
+  })
+
+  it('clears suggestions on the next turnStart', () => {
+    const s1 = transcriptReducer(initialTranscript, {
+      type: 'suggestions', sessionId: 's1', turnId: 't1', items: ['A'],
+    })
+    const s2 = transcriptReducer(s1, { type: 'turnStart', turnId: 't2' })
+    expect(s2.latestSuggestions).toEqual([])
+  })
+
+  it('clears suggestions when the user sends a prompt', () => {
+    const s1 = transcriptReducer(initialTranscript, {
+      type: 'suggestions', sessionId: 's1', turnId: 't1', items: ['A'],
+    })
+    const s2 = transcriptReducer(s1, { type: 'user', turnId: 'u1', text: 'next thing' })
+    expect(s2.latestSuggestions).toEqual([])
+  })
+
   // ── question live flag ─────────────────────────────────────────────────────
 
   describe('question live flag', () => {

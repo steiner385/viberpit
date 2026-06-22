@@ -16,11 +16,13 @@ export interface EvStatus        { type: 'status';        state: string; count: 
 export interface EvReplayComplete { type: 'replayComplete' }
 export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null; turnId?: string | null }
 export interface EvQueueUpdate   { type: 'queueUpdate';   items: string[] }
+export interface EvSuggestions   { type: 'suggestions';   sessionId: string; turnId: string; items: string[] }
 
 export type SessionEvent =
   | EvUser | EvTurnStart | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvQuestion
   | EvSessionMeta | EvTitle | EvStatus | EvReplayComplete | EvError | EvQueueUpdate
+  | EvSuggestions
 
 export interface Command {
   name: string
@@ -33,4 +35,5 @@ export interface Command {
 export const SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   'user','turnStart','turnEnd','textDelta','thinkingDelta','toolCall','toolResult',
   'permissionRequest','question','sessionMeta','title','status','replayComplete','error','queueUpdate',
+  'suggestions',
 ])

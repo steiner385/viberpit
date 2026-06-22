@@ -73,6 +73,17 @@ def reconcile_links(name: str) -> None:
                 shutil.rmtree(link)
             else:
                 link.unlink()
+        # Defense in depth: never create a link that points at itself or into the
+        # account store — that is the symlink loop this guards against. shared_base()
+        # already excludes account dirs; this holds even if a caller passes a bad base.
+        source_resolved = source.resolve()
+        if source_resolved == link.resolve():
+            continue
+        try:
+            source_resolved.relative_to(paths.cfg_root().resolve())
+            continue  # source is inside the account store — refuse to mirror from it
+        except ValueError:
+            pass
         link.symlink_to(source)
 
 
