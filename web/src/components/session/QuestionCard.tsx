@@ -48,9 +48,9 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
       <div role="group" aria-labelledby={headerId} className={containerClass}>
         {heading}
         <ul className="space-y-1">
-          {block.options.map((opt, i) => (
+          {block.options.map((opt) => (
             <li
-              key={i}
+              key={optionLabel(opt)}
               className={cn(
                 'rounded px-3 py-2 text-sm',
                 'bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700',

@@ -76,7 +76,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
       {/* "Action needed" sticky banner when an open permission is pending.
           Live questions are pinned in PendingQuestionPanel (Task 4) — they no
           longer need the banner for discoverability. */}
-      {rt.state.turns.some((t) => t.blocks.some((b) => b.kind === 'permission')) && (
+      {rt.hasOpenPermission && (
         <div
           aria-live="polite"
           className={cn(

@@ -45,6 +45,13 @@ describe('PendingQuestionPanel', () => {
     expect(onChat).toHaveBeenCalledWith('q1')
   })
 
+  it('exposes role="region" with accessible name "Pending question" when a live question is present', () => {
+    render(
+      <PendingQuestionPanel turns={[turn(q('r1', true))]} onAnswer={vi.fn()} onChat={vi.fn()} armedQuestionId={null} />
+    )
+    expect(screen.getByRole('region', { name: /pending question/i })).toBeInTheDocument()
+  })
+
   it('freeform: clicking "Write a response", typing, and "Send response" calls onAnswer with freeform mode', async () => {
     const user = userEvent.setup()
     const onAnswer = vi.fn()

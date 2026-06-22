@@ -26,6 +26,9 @@ export function PendingQuestionPanel({ turns, onAnswer, onChat, armedQuestionId 
   if (!q) return null
   return (
     <div
+      role="region"
+      aria-label="Pending question"
+      aria-live="polite"
       className={cn(
         'flex-shrink-0 border-t border-amber-200 dark:border-amber-800',
         'bg-amber-50/60 dark:bg-amber-950/20 px-3 py-2',
