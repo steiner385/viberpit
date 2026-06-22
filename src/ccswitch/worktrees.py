@@ -50,6 +50,19 @@ def _has_origin(repo_top: str) -> bool:
     return _run(["git", "-C", repo_top, "remote", "get-url", "origin"]).returncode == 0
 
 
+def _remote_default_ref(repo_top: str) -> str:
+    """Return the remote default branch ref (e.g. 'origin/master').
+
+    Repairs origin/HEAD with `set-head --auto` first in case the clone never
+    recorded it. Raises WorktreeError if it cannot be resolved.
+    """
+    _run(["git", "-C", repo_top, "remote", "set-head", "origin", "--auto"])
+    r = _run(["git", "-C", repo_top, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    if r.returncode != 0 or not r.stdout.strip():
+        raise WorktreeError("could not resolve origin/HEAD (remote default branch)")
+    return r.stdout.strip()
+
+
 def _fetch_origin(repo_top: str) -> None:
     """Fetch `origin`; raise WorktreeError if it fails.
 
@@ -128,11 +141,15 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
     if has_origin:
         _fetch_origin(repo_top)
 
-    # 0) No branch selected → detached worktree off the current HEAD. This gives the
-    # session its own working directory (per-session isolation) with no branch
-    # collisions between concurrent sessions on the same repo.
+    # 0) No branch selected → detached worktree. With origin, detach at the remote
+    # default tip (origin/HEAD); without origin, off the local current HEAD.
     if branch is None:
-        rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach", str(dest)])
+        if has_origin:
+            base = _remote_default_ref(repo_top)
+            rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach",
+                       str(dest), "--", base])
+        else:
+            rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach", str(dest)])
         if rd.returncode == 0:
             log.info("worktree.create_detached repo=%s path=%s", repo_name, dest)
             return WorktreeInfo(str(dest), None, is_child=False, repo=repo_top)

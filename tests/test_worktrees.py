@@ -156,6 +156,14 @@ class WorktreeFreshFromOriginTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def test_no_branch_uses_remote_default_tip(self) -> None:
+        """branch=None with origin → detached at origin/HEAD tip, not local HEAD."""
+        info = worktrees.create_worktree(str(self.repo), None, "bbbbbbbb-0002", str(self.root))
+        self.assertIsNone(info.branch)
+        self.assertFalse(info.is_child)
+        self.assertEqual(_rev(Path(info.path), "HEAD"), self.origin_sha)
+        self.assertNotEqual(_rev(Path(info.path), "HEAD"), self.local_sha)
+
     def test_fetch_failure_is_fatal(self) -> None:
         """A configured-but-unreachable origin aborts session start; no worktree left."""
         _git("remote", "set-url", "origin", str(self.root / "does-not-exist.git"),
