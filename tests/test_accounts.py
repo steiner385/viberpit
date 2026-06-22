@@ -49,6 +49,25 @@ class TestAccounts(unittest.TestCase):
                 self.assertIsNone(accounts.usage_for("alpha"))
                 self.assertEqual(accounts.list_accounts()[0]["status"], "needs-reauth")
 
+    def test_usage_for_refresh_transient_does_not_mark_needs_reauth(self):
+        """Expired token + transient refresh failure (429/5xx) must NOT mark needs-reauth.
+
+        This is the overnight bug: the background poller refreshed idle accounts'
+        expired tokens, Anthropic rate-limited the *token* endpoint, and a 429 was
+        misclassified as a dead credential. The token is fine — leave status alone.
+        """
+        with temp_env():
+            from ccswitch import accounts, oauth, ledger
+            _seed_account("alpha", expires_in_ms=-1)  # expired → forces a refresh
+            with ledger.locked_ledger() as led:
+                ledger.set_status(led, "alpha", "ok")
+            with mock.patch.object(
+                oauth, "refresh_access_token",
+                side_effect=oauth.TransientError("token refresh failed with 429"),
+            ):
+                self.assertIsNone(accounts.usage_for("alpha"))
+            self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
+
     def test_usage_for_usageerror_returns_none_without_changing_status(self):
         """A transient usage-endpoint error (429/5xx) returns None and leaves status
         unchanged — it must NOT mark needs-reauth or propagate (which 500s the list)."""

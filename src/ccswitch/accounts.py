@@ -99,6 +99,12 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
     # If the refresh token is already dead, mark needs-reauth immediately — do not retry.
     try:
         blob = ensure_valid_token(name)
+    except oauth.TransientError as e:
+        # Token endpoint rate-limited (429) or unavailable (5xx). The refresh token
+        # is presumed valid — leave status unchanged so a transient throttle can't
+        # flip an idle account to needs-reauth.
+        log.warning("usage_for(%s): transient refresh error, leaving status unchanged: %s", name, e)
+        return None
     except oauth.AuthError:
         with ledger.locked_ledger() as led:
             ledger.set_status(led, name, "needs-reauth")
@@ -122,8 +128,8 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
                 slot = oauth.refresh_access_token(slot["refreshToken"], slot)
                 write_credentials(paths.slot_path(name), slot)
             u = oauth.fetch_usage(slot["accessToken"])
-        except oauth.UsageError as e:
-            log.warning("usage_for(%s): transient usage error after refresh: %s", name, e)
+        except (oauth.UsageError, oauth.TransientError) as e:
+            log.warning("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
             return None
         except oauth.AuthError:
             with ledger.locked_ledger() as led:
