@@ -51,7 +51,9 @@ def ensure_valid_token(name: str) -> dict:
         blob = read_credentials(paths.slot_path(name))
         if _is_fresh(blob, cfg):
             return blob
-        new_blob = oauth.refresh_access_token(blob["refreshToken"], blob)
+        new_blob = oauth.refresh_access_token(
+            blob["refreshToken"], blob,
+            max_retries=cfg.retry_max_retries, max_total_sec=cfg.retry_max_total_sec)
         write_credentials(paths.slot_path(name), new_blob)
         return new_blob
 
@@ -69,6 +71,7 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
             token family and will refresh on its next request).
     """
     cfg = load_config()
+    retry_kw = {"max_retries": cfg.retry_max_retries, "max_total_sec": cfg.retry_max_total_sec}
     now = datetime.now(timezone.utc)
     with ledger.locked_ledger() as led:
         cached = ledger.cached_usage(led, name, cfg, now)
@@ -86,8 +89,8 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
             log.debug("usage_for(%s): token expired, live session owns it — skipping", name)
             return None
         try:
-            u = oauth.fetch_usage(blob["accessToken"])
-        except (oauth.UsageError, oauth.AuthError) as e:
+            u = oauth.fetch_usage(blob["accessToken"], **retry_kw)
+        except (oauth.UsageError, oauth.TransientError, oauth.AuthError) as e:
             log.warning("usage_for(%s, allow_refresh=False): usage fetch failed: %s", name, e)
             return None
         with ledger.locked_ledger() as led:
@@ -99,6 +102,12 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
     # If the refresh token is already dead, mark needs-reauth immediately — do not retry.
     try:
         blob = ensure_valid_token(name)
+    except oauth.TransientError as e:
+        # Token endpoint rate-limited (429) or unavailable (5xx). The refresh token
+        # is presumed valid — leave status unchanged so a transient throttle can't
+        # flip an idle account to needs-reauth.
+        log.warning("usage_for(%s): transient refresh error, leaving status unchanged: %s", name, e)
+        return None
     except oauth.AuthError:
         with ledger.locked_ledger() as led:
             ledger.set_status(led, name, "needs-reauth")
@@ -106,12 +115,13 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
 
     # Step 2: fetch usage; on 401 do exactly ONE refresh+refetch.
     try:
-        u = oauth.fetch_usage(blob["accessToken"])
-    except oauth.UsageError as e:
-        # Transient usage-endpoint failure (429 rate-limit / 5xx). The token is
-        # valid — only the usage API is unavailable. Return None (no usage) WITHOUT
-        # marking needs-reauth, so callers (the accounts list) degrade gracefully
-        # instead of 500-ing the whole dashboard.
+        u = oauth.fetch_usage(blob["accessToken"], **retry_kw)
+    except (oauth.UsageError, oauth.TransientError) as e:
+        # Transient usage-endpoint failure (429 / 5xx) or a network blip that
+        # exhausted retries. The token is valid — only the usage API is
+        # unavailable. Return None (no usage) WITHOUT marking needs-reauth, so
+        # callers (the accounts list) degrade gracefully instead of 500-ing the
+        # whole dashboard.
         log.warning("usage_for(%s): transient usage error, leaving status unchanged: %s", name, e)
         return None
     except oauth.AuthError:
@@ -119,11 +129,11 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
             with _account_lock(name):
                 # Re-read under the lock: a concurrent caller may have refreshed.
                 slot = read_credentials(paths.slot_path(name))
-                slot = oauth.refresh_access_token(slot["refreshToken"], slot)
+                slot = oauth.refresh_access_token(slot["refreshToken"], slot, **retry_kw)
                 write_credentials(paths.slot_path(name), slot)
-            u = oauth.fetch_usage(slot["accessToken"])
-        except oauth.UsageError as e:
-            log.warning("usage_for(%s): transient usage error after refresh: %s", name, e)
+            u = oauth.fetch_usage(slot["accessToken"], **retry_kw)
+        except (oauth.UsageError, oauth.TransientError) as e:
+            log.warning("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
             return None
         except oauth.AuthError:
             with ledger.locked_ledger() as led:

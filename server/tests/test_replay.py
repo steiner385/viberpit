@@ -45,6 +45,27 @@ def test_replay_emits_session_meta_and_usage(tmp_path):
     assert te.to_wire()["usage"] == {"input_tokens": 10, "output_tokens": 2, "cache_read_input_tokens": 3}
 
 
+def test_replay_keeps_session_meta_after_trim(tmp_path):
+    """The model id is emitted once (on the first assistant turn). In a session with
+    more than max_turns turns, the trim must NOT drop that SessionMeta — otherwise the
+    status strip loses the model after re-attach to a long session."""
+    p = tmp_path / "long.jsonl"
+    lines = []
+    for i in range(25):
+        msg = {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}
+        if i == 0:
+            msg["model"] = "claude-opus-4-1"  # model only on the first turn
+        lines.append('{"type":"assistant","uuid":"a%d","message":%s}\n' % (i, __import__("json").dumps(msg)))
+    p.write_text("".join(lines))
+    out = asyncio.run(replay_events(str(p), max_turns=20))
+    metas = [e for e in out if e.to_wire()["type"] == "sessionMeta"]
+    assert metas, "SessionMeta must survive trimming of a long session"
+    assert metas[0].to_wire()["model"] == "claude-opus-4-1"
+    # Trim still applies to turns themselves.
+    starts = [e for e in out if e.to_wire()["type"] == "turnStart"]
+    assert len(starts) == 20
+
+
 def test_replay_handles_string_content(tmp_path):
     """Regression: a user message whose `content` is a plain STRING (not a list of
     blocks) must parse — otherwise iterating it yields chars and b.get() raises

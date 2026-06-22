@@ -177,3 +177,66 @@ def test_bash_always_grant_does_not_cover_other_commands():
     now = time.time()
     assert reg.is_granted("s1", "Bash", {"command": "npm test", "cwd": "/r"}, now) is True
     assert reg.is_granted("s1", "Bash", {"command": "npm install evil", "cwd": "/r"}, now) is False
+
+
+# ---------------------------------------------------------------------------
+# Auto-allow writes to a managed-account auto-memory directory
+# (<cfg_root>/<account>/projects/<encoded-cwd>/memory/**).  These are the
+# agent's own bookkeeping writes; prompting for them is pure friction.
+# Anchored on cfg_root() so it can never auto-approve a write into a real repo.
+# ---------------------------------------------------------------------------
+
+def _mem_path(tmp_path, *, account="secondary", enc="-enc-cwd", name="note.md"):
+    return str(tmp_path / "cfg" / account / "projects" / enc / "memory" / name)
+
+
+def _request(reg, tool, file_path, mode):
+    async def run():
+        pid, fut = await reg.request("s1", "t1", tool, {"file_path": file_path},
+                                     mode=mode, denylist=PermissionRegistry.DANGEROUS,
+                                     allowlist=True, identity="me")
+        if pid is not None:
+            reg.resolve(pid, "allow", "me")
+            await fut
+        return pid
+    return asyncio.run(run())
+
+
+def test_account_memory_write_auto_allowed_in_allowlist_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    reg = PermissionRegistry()
+    pid = _request(reg, "Write", _mem_path(tmp_path), "allowlist")
+    assert pid is None, "Write to account memory dir must auto-allow (no prompt) in allowlist mode"
+
+
+def test_account_memory_edit_auto_allowed_in_auto_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    reg = PermissionRegistry()
+    pid = _request(reg, "Edit", _mem_path(tmp_path, name="ccswitch-x.md"), "auto")
+    assert pid is None, "Edit to account memory dir must auto-allow in auto mode"
+
+
+def test_account_memory_write_still_prompts_in_interactive(tmp_path, monkeypatch):
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    reg = PermissionRegistry()
+    pid = _request(reg, "Write", _mem_path(tmp_path), "interactive")
+    assert pid is not None, "interactive mode must still prompt even for memory writes"
+
+
+def test_non_memory_write_under_cfg_still_prompts(tmp_path, monkeypatch):
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    reg = PermissionRegistry()
+    # Under the account projects dir but NOT in a memory/ subdir → must prompt.
+    other = str(tmp_path / "cfg" / "secondary" / "projects" / "-enc-cwd" / "settings.json")
+    pid = _request(reg, "Write", other, "allowlist")
+    assert pid is not None, "non-memory writes inside the config dir must still prompt"
+
+
+def test_repo_memory_dir_not_auto_allowed(tmp_path, monkeypatch):
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    reg = PermissionRegistry()
+    # A real repo that happens to have projects/x/memory/ must NOT be auto-allowed:
+    # the rule is anchored on cfg_root(), which this path is outside of.
+    repo = str(tmp_path / "repo" / "projects" / "x" / "memory" / "note.md")
+    pid = _request(reg, "Write", repo, "allowlist")
+    assert pid is not None, "memory dirs outside cfg_root must still prompt"

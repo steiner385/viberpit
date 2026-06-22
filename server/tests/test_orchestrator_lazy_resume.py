@@ -291,7 +291,7 @@ def test_ensure_driver_threads_attaching_identity(tmp_path):
         f"resumed driver must carry the attaching identity, got {identity!r}"
     )
     assert resolved is True, "answer_question must resolve with the attaching identity"
-    assert answer == ["Yes"], "the pending question future must receive the answer"
+    assert answer == (["Yes"], "option"), "the pending question future must receive the (answer, mode) tuple"
 
 
 # -----------------------------------------------------------------------

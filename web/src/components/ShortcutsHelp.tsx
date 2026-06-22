@@ -19,16 +19,18 @@ const NAVIGATION_BINDINGS: Binding[] = [
 ]
 
 const ACTION_BINDINGS: Binding[] = [
-  { keys: 'r / F2', description: 'Rename highlighted session' },
-  { keys: 'Delete', description: 'Close highlighted session' },
+  { keys: 'Ctrl+R', description: 'Rename highlighted session' },
+  { keys: 'Ctrl+X', description: 'Close highlighted session' },
   { keys: 'Enter (with text)', description: 'Create new session with prompt' },
   { keys: 'Shift+Enter', description: 'Insert newline in prompt' },
   { keys: '?', description: 'Show this shortcuts overlay' },
 ]
 
 const IN_SESSION_BINDINGS: Binding[] = [
-  { keys: 'Esc', description: 'Back to session list' },
+  { keys: '← / Esc', description: 'Detach to session list' },
+  { keys: 'Ctrl+Z', description: 'Force-detach' },
   { keys: 'Shift+Tab', description: 'Cycle permission mode' },
+  { keys: 'c', description: 'Collapse / expand tool calls' },
 ]
 
 export function ShortcutsHelp({ onClose }: ShortcutsHelpProps) {

@@ -1,7 +1,7 @@
 from server.tests.fakes import fake_sdk as f
 from server.sessions.translator import Translator
 from server.sessions.events import (TurnStart, ThinkingDelta, ToolCall, ToolResult,
-                                     TurnEnd, ToolKind, SessionMeta, TextDelta)
+                                     TurnEnd, ToolKind, SessionMeta, TextDelta, ErrorEvent)
 from claude_agent_sdk import TextBlock
 
 def _run(msgs):
@@ -82,6 +82,54 @@ def test_second_turn_resets_state():
     assert sum(1 for e in out2 if isinstance(e, ToolCall)) == 1  # not deduped across turns
 
 
+def test_success_result_emits_no_error_event():
+    msgs = [f.stream_start(uuid="t1"), f.stream_text("hi", uuid="t1"), f.result(uuid="t1")]
+    _, out = _run(msgs)
+    assert not any(isinstance(e, ErrorEvent) for e in out)
+    assert any(isinstance(e, TurnEnd) for e in out)
+
+
+def test_max_turns_error_emits_error_event_before_turn_end():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="error_max_turns", is_error=True,
+                     result="Reached the maximum number of turns")]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    end = next(e for e in out if isinstance(e, TurnEnd))
+    assert err.code == "max_turns"
+    assert "maximum number of turns" in err.message
+    assert err.turn_id == "t1"
+    # error precedes the turnEnd so the UI shows it inline before the turn closes
+    assert out.index(err) < out.index(end)
+
+
+def test_execution_error_maps_to_execution_error_code():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="error_during_execution", is_error=True,
+                     errors=["boom", "kapow"])]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    assert err.code == "execution_error"
+    assert "boom" in err.message and "kapow" in err.message
+
+
+def test_api_error_status_maps_to_api_code():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="success", is_error=True, api_error_status=429)]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    assert err.code == "api_429"
+    assert "429" in err.message
+
+
+def test_error_result_without_text_has_default_message():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="error_during_execution", is_error=True)]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    assert err.message  # non-empty fallback
+
+
 def test_askuserquestion_tool_use_emits_no_toolcall():
     """AskUserQuestion tool_use blocks must NOT produce a ToolCall event.
     The driver emits ev.Question instead; a raw ToolCall alongside it would make
@@ -123,3 +171,78 @@ def test_parallel_subagents_get_distinct_turns():
     starts = {e.parent_tool_use_id: e.turn_id for e in out if isinstance(e, TurnStart)}
     assert starts["taskA"] != starts["taskB"]
     assert starts[None] not in (starts["taskA"], starts["taskB"])
+
+
+# ---- outcome classification tests ----
+from server.sessions.completion import COMPLETION_MARKER
+
+
+def _drive(msgs):
+    tr = Translator()
+    out = []
+    for m in msgs:
+        out.extend(tr.feed(m))
+    return out
+
+
+def _turn_end(events):
+    from server.sessions.events import TurnEnd
+    return next(e for e in events if isinstance(e, TurnEnd))
+
+
+def test_turn_end_outcome_success_without_marker():
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text="all set"), uuid="t1"),
+            f.result(session_id="s", uuid="t1")]
+    assert _turn_end(_drive(msgs)).outcome == "success"
+
+
+def test_turn_end_outcome_complete_with_marker():
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text=f"done\n{COMPLETION_MARKER}"), uuid="t1"),
+            f.result(session_id="s", uuid="t1")]
+    assert _turn_end(_drive(msgs)).outcome == "complete"
+
+
+def test_turn_end_outcome_failed_on_error_subtype():
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text="boom"), uuid="t1"),
+            f.result(session_id="s", uuid="t1", subtype="error_during_execution", is_error=True)]
+    assert _turn_end(_drive(msgs)).outcome == "failed"
+
+
+def test_marker_on_an_errored_turn_is_still_failed():
+    # subtype precedence: an errored turn is never 'complete' even if text has the marker.
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text=f"{COMPLETION_MARKER}"), uuid="t1"),
+            f.result(session_id="s", uuid="t1", subtype="error_max_turns", is_error=True)]
+    assert _turn_end(_drive(msgs)).outcome == "failed"
+
+
+def test_sub_agent_marker_does_not_complete_parent_turn():
+    # A Task sub-agent emits the marker for its own sub-objective; the top-level
+    # final message has no marker. The parent turn must NOT be 'complete'.
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text=f"sub done {COMPLETION_MARKER}"), uuid="sub", parent_tool_use_id="task-1"),
+            f.assistant(TextBlock(text="top-level still working"), uuid="t1"),
+            f.result(session_id="s", uuid="t1")]
+    assert _turn_end(_drive(msgs)).outcome == "success"
+
+
+def test_marker_in_final_top_level_message_completes():
+    # Sub-agent runs, then the TOP-LEVEL agent's final message carries the marker.
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text="delegating"), uuid="sub", parent_tool_use_id="task-1"),
+            f.assistant(TextBlock(text=f"all objectives met {COMPLETION_MARKER}"), uuid="t1"),
+            f.result(session_id="s", uuid="t1")]
+    assert _turn_end(_drive(msgs)).outcome == "complete"
+
+
+def test_marker_only_in_interim_top_level_message_is_not_complete():
+    # Reset-per-message: a non-final top-level message mentions the marker, but the
+    # FINAL top-level message does not. Per spec ("final message"), not complete.
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text=f"I will end with {COMPLETION_MARKER} when done"), uuid="t1"),
+            f.assistant(TextBlock(text="actually not done yet"), uuid="t1"),
+            f.result(session_id="s", uuid="t1")]
+    assert _turn_end(_drive(msgs)).outcome == "success"

@@ -27,8 +27,9 @@ def stream_thinking(text: str, uuid: str = "u1", sid: str = "sess-1", pid: str |
                               "delta": {"type": "thinking_delta", "thinking": text}},
                        parent_tool_use_id=pid)
 
-def assistant(*blocks, uuid: str = "u1", pid: str | None = None) -> AssistantMessage:
-    return AssistantMessage(content=list(blocks), model="claude", uuid=uuid, parent_tool_use_id=pid)
+def assistant(*blocks, uuid: str = "u1", parent_tool_use_id=None) -> AssistantMessage:
+    return AssistantMessage(content=list(blocks), model="claude", uuid=uuid,
+                            parent_tool_use_id=parent_tool_use_id)
 
 def tool_use(tool_id: str, name: str, inp: dict, uuid: str = "u1", pid: str | None = None) -> AssistantMessage:
     return AssistantMessage(content=[ToolUseBlock(id=tool_id, name=name, input=inp)],
@@ -40,20 +41,26 @@ def user_tool_result(tool_id: str, content, is_error: bool = False, uuid: str = 
                        uuid=uuid, parent_tool_use_id=pid)
 
 def result(session_id: str = "sess-1", usage: dict | None = None, uuid: str = "u9",
-           cost: float | None = None) -> ResultMessage:
-    return ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+           cost: float | None = None, subtype: str = "success", is_error: bool = False,
+           result: str | None = None, errors: list[str] | None = None,
+           api_error_status: int | None = None) -> ResultMessage:
+    return ResultMessage(subtype=subtype, duration_ms=1, duration_api_ms=1, is_error=is_error,
                          num_turns=1, session_id=session_id, usage=usage, uuid=uuid,
-                         total_cost_usd=cost)
+                         total_cost_usd=cost, result=result, errors=errors,
+                         api_error_status=api_error_status)
 
 # ---- fake client --------------------------------------------------------------
 class FakeSDKClient:
     """Implements server.sessions.sdk_contract.SDKClientProtocol."""
-    def __init__(self, messages, on_can_use_tool=None):
+    def __init__(self, messages, on_can_use_tool=None, server_info=None, context_usage=None):
         self._messages = messages
         self.on_can_use_tool = on_can_use_tool
         self.interrupted = False
         self.permission_mode = "default"
+        self.model = None
         self.sent: list[str] = []
+        self._server_info = server_info
+        self._context_usage = context_usage or {}
 
     async def __aenter__(self): return self
     async def __aexit__(self, *exc): return False
@@ -64,3 +71,6 @@ class FakeSDKClient:
             yield m
     async def interrupt(self): self.interrupted = True
     async def set_permission_mode(self, mode: str): self.permission_mode = mode
+    async def set_model(self, model=None): self.model = model
+    async def get_server_info(self): return self._server_info
+    async def get_context_usage(self): return self._context_usage

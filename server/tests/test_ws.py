@@ -584,3 +584,33 @@ def test_attach_rehydrated_session_gets_replay_complete(tmp_path):
                 assert any(e.get("type") == "replayComplete" for e in events), (
                     f"replayComplete not in {[e.get('type') for e in events]}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Live-forwarder: a crash mid-stream still reaches the UI as an error frame
+# ---------------------------------------------------------------------------
+
+def test_forward_live_emits_error_frame_on_crash():
+    """If the driver's live event stream raises, the forwarder must enqueue an
+    error wire frame — not log-and-swallow, which leaves the UI silent."""
+    import asyncio
+    from server.bridge.ws import _forward_live
+
+    class _BoomDriver:
+        async def events(self):
+            raise RuntimeError("pty closed unexpectedly")
+            yield  # pragma: no cover — makes this an async generator
+
+    async def run():
+        out_q: asyncio.Queue = asyncio.Queue()
+        await _forward_live(_BoomDriver(), out_q, "sx")
+        frames = []
+        while not out_q.empty():
+            frames.append(out_q.get_nowait())
+        return frames
+
+    frames = asyncio.run(run())
+    errs = [fr for fr in frames if fr.get("type") == "error"]
+    assert errs, f"expected an error frame, got {[fr.get('type') for fr in frames]}"
+    assert "RuntimeError" in errs[0]["message"]
+    assert "pty closed unexpectedly" in errs[0]["message"]

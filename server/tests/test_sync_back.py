@@ -292,7 +292,7 @@ def test_usage_for_allow_refresh_true_default_unchanged():
                            60.0, datetime.now(timezone.utc) + timedelta(hours=1), False)
 
         with mock.patch.object(oauth, "refresh_access_token",
-                               side_effect=lambda rt, blob: refresh_calls.append(rt) or new_blob), \
+                               side_effect=lambda rt, blob, **kw: refresh_calls.append(rt) or new_blob), \
              mock.patch.object(oauth, "fetch_usage", return_value=fake_usage):
 
             result = accounts.usage_for("beta")  # allow_refresh=True (default)

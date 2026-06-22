@@ -27,6 +27,8 @@ export type SessionStatus =
   | 'waiting_input'
   | 'ready_review'
   | 'done'
+  | 'complete'
+  | 'needs_attention'
   | 'limited'
   | 'ended'
 
@@ -52,6 +54,31 @@ export interface ArchivedSession {
   permissionMode: string
   createdAt: string
   archivedAt: string
+}
+
+/** A live `claude` session running outside ccswitch, discovered for adoption. */
+export interface AdoptionCandidate {
+  pid: number | null
+  account: string | null
+  cwd: string
+  claudeSessionId: string
+  name: string
+  mapped: boolean
+  tracked: boolean
+  /** Machine code; the UI maps it to plain-language copy. */
+  skipReason: 'unmapped' | 'tracked' | null
+  /** ISO timestamp of the transcript's last activity — drives the risk signal. */
+  lastActivity: string
+  pidAlive: boolean
+}
+
+/** Honest result of a force-takeover adoption. */
+export interface AdoptOutcome {
+  session: Session
+  /** false when the transcript couldn't be resumed and a fresh session was started. */
+  resumed: boolean
+  /** The PID that was terminated, or null if the process had already exited. */
+  terminatedPid: number | null
 }
 
 export interface ApiError {

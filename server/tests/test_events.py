@@ -1,10 +1,19 @@
-from server.sessions.events import ToolKind, tool_kind, TextDelta, ToolCall, Status, SessionMeta, TurnEnd
+from server.sessions.events import (ToolKind, tool_kind, TextDelta, ToolCall, Status, SessionMeta,
+                                     TurnEnd, TurnStart, ThinkingDelta, ToolResult)
 
 def test_tool_kind_maps_known_names():
     assert tool_kind("Edit") is ToolKind.EDIT
     assert tool_kind("Bash") is ToolKind.BASH
     assert tool_kind("Grep") is ToolKind.SEARCH
     assert tool_kind("SomethingNew") is ToolKind.UNKNOWN
+
+def test_tool_kind_maps_web_task_and_mcp():
+    assert tool_kind("WebFetch") is ToolKind.WEB
+    assert tool_kind("WebSearch") is ToolKind.WEB
+    assert tool_kind("Task") is ToolKind.TASK
+    # Any mcp__<server>__<tool> name is the MCP kind, regardless of server/tool.
+    assert tool_kind("mcp__github__list_prs") is ToolKind.MCP
+    assert tool_kind("mcp__plugin_railway_railway__deploy") is ToolKind.MCP
 
 def test_textdelta_to_wire():
     e = TextDelta(turn_id="t1", text="hi", src_uuid="u1")
@@ -27,9 +36,6 @@ def test_turn_end_to_wire_includes_cost():
     w = e.to_wire()
     assert w["type"] == "turnEnd" and w["usage"] == {"input_tokens": 5}
     assert w["costUsd"] == 0.25 and w["turnId"] == "t1"
-
-from server.sessions.events import (TurnStart, TurnEnd, TextDelta, ThinkingDelta,
-                                     ToolCall, ToolResult, ToolKind)
 
 def test_block_events_carry_parent_tool_use_id_on_wire():
     tc = ToolCall("t1", "g1", "Grep", ToolKind.SEARCH, {}, src_uuid="u1",

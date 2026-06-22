@@ -1,14 +1,30 @@
 #!/usr/bin/env bash
-# ccswitch auto-deploy: poll origin/master and, when behind, fast-forward,
-# rebuild the frontend, run the test gate, then restart the systemd service.
+# ccswitch auto-deploy: poll origin/master and, when behind, deploy it.
+#
+# Testing now lives in GitHub Actions, NOT on this host: instead of re-running the
+# suite locally, this script GATES on the commit's GitHub CI conclusion and only
+# deploys a commit whose CI is green. It then syncs deps (if lockfiles changed),
+# rebuilds the frontend bundle (web/dist, served by the backend), restarts the
+# service, and verifies the new process answers /healthz with the EXPECTED SHA.
 #
 # Idempotent — a no-op when already up to date. Invoked on a schedule by
-# ccswitch-deploy.timer. A failing build or test suite aborts BEFORE the
-# restart, so a broken master can never take down the running service.
+# ccswitch-deploy.timer. A non-green / unverifiable CI is a skip-and-retry (the
+# old version stays live); any gate failure AFTER the fast-forward rolls the tree
+# back to the last-good commit, so a broken master can neither take down the
+# running service NOR wedge future deploys — the next tick re-attempts once master
+# goes green. The pre-pull working-tree guard discards stray tracked edits so a
+# dirty checkout can't wedge the fast-forward itself.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
+
+# Transient busy-defer state file. Resolve it inside git's real dir via
+# --absolute-git-dir so it lands in a writable directory even when $REPO is a git
+# WORKTREE — there ".git" is a FILE (a gitdir pointer), so the old
+# "$REPO/.git/ccswitch-deploy-defer" path treats a regular file as a directory and
+# the write fails with "Not a directory", which wedged the deploy timer (issue #95).
+DEFER_FILE="${CCSWITCH_DEPLOY_DEFER_FILE:-$(git rev-parse --absolute-git-dir)/ccswitch-deploy-defer}"
 
 git fetch --quiet origin master
 LOCAL="$(git rev-parse @)"
@@ -17,18 +33,160 @@ if [ "$LOCAL" = "$REMOTE" ]; then
   exit 0   # already current — nothing to do
 fi
 
-echo "[deploy] ${LOCAL:0:9} -> ${REMOTE:0:9}"
-git pull --ff-only origin master
+# CI verdict for a commit: echoes green | pending | red | unavailable.
+# Testing is GitHub's job now; we only deploy a commit GitHub already proved green.
+# Test seam: CCSWITCH_DEPLOY_CI_OK forces the verdict (1/green, or pending/red) so
+# the gate can be exercised without calling gh.
+ci_verdict() {
+  local sha="$1"
+  if [ -n "${CCSWITCH_DEPLOY_CI_OK:-}" ]; then
+    case "$CCSWITCH_DEPLOY_CI_OK" in
+      1|green) echo green ;;
+      *) echo "$CCSWITCH_DEPLOY_CI_OK" ;;
+    esac
+    return 0
+  fi
+  gh api "repos/{owner}/{repo}/commits/$sha/check-runs" --jq '
+    if (.check_runs | length) == 0 then "pending"
+    elif ([.check_runs[] | select(.status != "completed")] | length) > 0 then "pending"
+    elif ([.check_runs[] | select((.conclusion // "") as $c
+            | ($c == "success" or $c == "neutral" or $c == "skipped") | not)] | length) > 0 then "red"
+    else "green" end' 2>/dev/null || echo unavailable
+}
 
-# Frontend gate — regenerates web/dist (served by the backend via StaticFiles).
-# A failed build exits here, leaving the running service untouched.
-( cd web && npm run build )
+# Gate on GitHub CI. Fail CLOSED: anything but a definitive green keeps the old
+# version live and retries next tick (CI catches up, or a human fixes red master).
+verdict="$(ci_verdict "$REMOTE")"
+case "$verdict" in
+  green) ;;
+  red)        echo "[deploy] CI is RED for ${REMOTE:0:9} — not deploying; waiting for a green commit" >&2; exit 0 ;;
+  pending)    echo "[deploy] CI still running for ${REMOTE:0:9} — will retry next tick"; exit 0 ;;
+  *)          echo "[deploy] WARNING: cannot determine CI status for ${REMOTE:0:9} (gh/network?) — skipping this tick" >&2; exit 0 ;;
+esac
 
-# Backend gate — keep the old version live if the suite is red.
-# CCSWITCH_DEV=1 + cleared allowlist makes the Tailscale-auth tests hermetic.
-env -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 \
-  "$REPO/.venv/bin/python" -m pytest server/tests -q
+# Idle gate. A restart kills every live session, so defer while the running server
+# is mid-turn (status in_progress/working/waiting_input). Skip-and-retry until idle,
+# capped at CCSWITCH_DEPLOY_MAX_DEFER_SEC so a perpetually-busy session can't block
+# deploys forever (a forced deploy falls back to resume). Placed BEFORE the pull so
+# the "HEAD == origin/master ⇒ deployed" invariant holds (we never pull then defer).
+# Test seam: CCSWITCH_DEPLOY_BUSY (1/0) forces the verdict without curling /healthz.
+busy_verdict() {
+  if [ -n "${CCSWITCH_DEPLOY_BUSY:-}" ]; then
+    [ "$CCSWITCH_DEPLOY_BUSY" = "1" ] && echo busy || echo idle
+    return 0
+  fi
+  local url="http://${CCSWITCH_HOST:-127.0.0.1}:${CCSWITCH_PORT:-8787}/healthz"
+  local body; body="$(curl -fsS -m 3 "$url" 2>/dev/null || true)"
+  # Unreachable / no busy field => treat as idle (recover a down server; the CI gate
+  # already enforced correctness, and the post-restart health gate guards the rest).
+  if grep -q '"busy":true' <<<"$body"; then echo busy; else echo idle; fi
+}
+
+if [ "$(busy_verdict)" = "busy" ]; then
+  MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
+  now="$(date +%s)"
+  msha=""; mts=0
+  if [ -f "$DEFER_FILE" ]; then read -r msha mts < "$DEFER_FILE" || true; fi
+  if [ "$msha" != "$REMOTE" ]; then
+    printf '%s %s\n' "$REMOTE" "$now" > "$DEFER_FILE"
+    echo "[deploy] server busy — deferring ${REMOTE:0:9} (will retry)"; exit 0
+  elif [ "$(( now - mts ))" -gt "$MAX_DEFER" ]; then
+    echo "[deploy] server busy for $(( now - mts ))s (> ${MAX_DEFER}s) — forcing deploy of ${REMOTE:0:9}" >&2
+  else
+    echo "[deploy] server busy — deferring ${REMOTE:0:9} ($(( now - mts ))s so far)"; exit 0
+  fi
+fi
+
+# Restore the working tree to the last-good commit and rebuild it. Called when any
+# gate fails AFTER the fast-forward. Resetting HEAD back to $LOCAL is what makes the
+# next tick see HEAD != origin/master and re-attempt, instead of treating the broken
+# master as "already deployed" and wedging.
+rollback_to_local() {
+  echo "[deploy] gate failed — ROLLING BACK ${REMOTE:0:9} -> ${LOCAL:0:9}" >&2
+  git reset --hard "$LOCAL"
+  ( cd web && npm run build ) || echo "[deploy] WARNING: rollback build failed; web/dist may be stale" >&2
+}
+
+echo "[deploy] ${LOCAL:0:9} -> ${REMOTE:0:9} (CI green)"
+
+# Working-tree guard. This deploy checkout is a pristine mirror of master, so any
+# tracked-file modification is unintended drift. Left in place it makes
+# `git pull --ff-only` abort on EVERY tick — a silent, permanent wedge the
+# gate-failure rollback does NOT cover (that only runs after a successful
+# fast-forward). Discard tracked changes; untracked files (e.g. .venv) are kept.
+if ! git diff --quiet HEAD --; then
+  echo "[deploy] WARNING: discarding unexpected local changes before pull:" >&2
+  git status --short --untracked-files=no >&2
+  git reset --hard HEAD
+fi
+
+# Fast-forward. `if !` keeps a pull failure out of `set -e` so it self-heals via
+# rollback instead of crashing mid-state.
+if ! git pull --ff-only origin master; then
+  echo "[deploy] fast-forward pull failed unexpectedly" >&2
+  rollback_to_local
+  exit 1
+fi
+
+# Test hook: stop after the working tree is synced + fast-forwarded, so the guard
+# and pull can be exercised in isolation without dep-sync/build/restart side
+# effects. Unset in production.
+if [ -n "${CCSWITCH_DEPLOY_TEST_STOP_AFTER_SYNC:-}" ]; then
+  echo "[deploy] TEST: synced + fast-forwarded to $(git rev-parse --short HEAD), stopping"
+  exit 0
+fi
+
+# Dependency sync — only when a lockfile actually changed between old and new, so
+# normal deploys stay fast. A new dependency would otherwise crash the new process
+# on boot (ImportError) → health gate → endless rollback loop. Mirrors CI's install
+# (pip install -e ".[server]" / npm ci) against this checkout's venv + node_modules.
+if [ -n "$(git diff --name-only "$LOCAL" "$REMOTE" -- pyproject.toml uv.lock)" ]; then
+  echo "[deploy] python deps changed — reinstalling into .venv"
+  if ! "$REPO/.venv/bin/pip" install -e ".[server]" --quiet; then rollback_to_local; exit 1; fi
+fi
+if [ -n "$(git diff --name-only "$LOCAL" "$REMOTE" -- web/package-lock.json)" ]; then
+  echo "[deploy] web deps changed — npm ci"
+  if ! ( cd web && npm ci ); then rollback_to_local; exit 1; fi
+fi
+
+# Frontend build — regenerates web/dist (served via StaticFiles). CI already proved
+# it compiles; this just produces the bundle to serve. Rollback on the off chance
+# the host build differs.
+if ! ( cd web && npm run build ); then
+  rollback_to_local
+  exit 1
+fi
 
 # All gates green — swap in the new code.
 sudo systemctl restart ccswitch.service
-echo "[deploy] live at ${REMOTE:0:9}"
+
+# Post-restart health gate. The new process must answer /healthz with status ok
+# AND the SHA we just deployed, within ~30s, else roll back.
+#
+# Asserting the SHA (not just status:ok) closes two gaps a bare check misses: the
+# SPA static mount returns 200 for ANY path (so a process on OLD code lacking the
+# route, or a stale server squatting the port, would still 200), and it proves
+# THIS commit — not merely "some healthy ccswitch" — is the one now serving.
+EXPECTED_SHA="$(git rev-parse --short "$REMOTE")"
+HEALTH_URL="http://${CCSWITCH_HOST:-127.0.0.1}:${CCSWITCH_PORT:-8787}/healthz"
+healthy=0
+for _ in $(seq 1 15); do
+  body="$(curl -fsS -m 3 "$HEALTH_URL" 2>/dev/null || true)"
+  if grep -q '"status":"ok"' <<<"$body" && grep -q "\"sha\":\"${EXPECTED_SHA}\"" <<<"$body"; then
+    healthy=1; break
+  fi
+  sleep 2
+done
+
+if [ "$healthy" -ne 1 ]; then
+  echo "[deploy] /healthz did not report status:ok + sha=${EXPECTED_SHA} after restart" >&2
+  rollback_to_local
+  # The new (broken) backend was already swapped in above — restart the rolled-back
+  # code so the last-good version is the one actually serving.
+  sudo systemctl restart ccswitch.service
+  echo "[deploy] rolled back to ${LOCAL:0:9}" >&2
+  exit 1
+fi
+
+echo "[deploy] live + healthy at ${REMOTE:0:9}"
+rm -f "$DEFER_FILE"

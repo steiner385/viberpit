@@ -1,5 +1,5 @@
 // Server → client session events (the backend's normalized event wire shapes).
-export type ToolKind = 'edit' | 'write' | 'read' | 'bash' | 'todo' | 'search' | 'unknown'
+export type ToolKind = 'edit' | 'write' | 'read' | 'bash' | 'todo' | 'search' | 'web' | 'task' | 'mcp' | 'unknown'
 
 export interface EvUser          { type: 'user';          turnId: string; text: string; srcUuid?: string | null }
 export interface EvTurnStart     { type: 'turnStart';     turnId: string; srcUuid?: string | null; parentToolUseId?: string | null }
@@ -14,13 +14,20 @@ export interface EvSessionMeta   { type: 'sessionMeta';   model: string; session
 export interface EvTitle         { type: 'title';         title: string; source: string }
 export interface EvStatus        { type: 'status';        state: string; count: number }
 export interface EvReplayComplete { type: 'replayComplete' }
-export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null }
+export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null; turnId?: string | null }
 export interface EvQueueUpdate   { type: 'queueUpdate';   items: string[] }
 
 export type SessionEvent =
   | EvUser | EvTurnStart | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvQuestion
   | EvSessionMeta | EvTitle | EvStatus | EvReplayComplete | EvError | EvQueueUpdate
+
+export interface Command {
+  name: string
+  description: string
+  argumentHint: string | null
+  kind: 'client' | 'control' | 'passthrough'
+}
 
 // The set of `type` strings that are session events (used by the WS fan-out).
 export const SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([

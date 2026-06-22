@@ -1,20 +1,41 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
+import { Paperclip, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useImageAttachments } from './useImageAttachments'
+import { AttachmentChips } from './AttachmentChips'
+import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
+import type { Command } from '@/session/events'
 
 interface Props {
   status: { state: string; count: number }
   mode: string
-  onPrompt: (text: string) => void
+  onPrompt: (text: string, images: { sha: string; mime: string; name: string }[]) => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   queued?: string[]
   onCancelQueued?: (index: number) => void
+  chatArmed?: boolean
+  commands?: Command[]
+  onCommand?: (name: string, args: string) => void
+  /** Auto-focus the textarea when this changes / on mount (mirrors DispatchBar). */
+  autoFocusKey?: unknown
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued }: Props) {
+export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey }: Props) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const paletteRef = useRef<CommandPaletteHandle>(null)
   const isWorking = status.state === 'working'
+  const att = useImageAttachments()
+  const slash = text.startsWith('/') && !text.includes('\n')
+  const slashQuery = slash ? text.slice(1).split(/\s+/)[0] : ''
+
+  // Focus the prompt on mount (and when the active session changes) so the user
+  // can start typing immediately on entering a session.
+  useEffect(() => {
+    textareaRef.current?.focus()
+  }, [autoFocusKey])
 
   // Auto-grow textarea: reset height then set to scrollHeight (capped at 8 rows ~192px)
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -24,18 +45,43 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
     el.style.height = `${Math.min(el.scrollHeight, 192)}px`
   }
 
+  const runCommandFromText = useCallback((raw: string): boolean => {
+    if (!raw.startsWith('/') || raw.includes('\n')) return false
+    const m = raw.slice(1).match(/^(\S+)\s*(.*)$/)
+    if (!m) return false
+    const known = commands.find((c) => c.name === m[1])
+    if (!known) return false
+    onCommand?.(known.name, m[2] ?? '')
+    return true
+  }, [commands, onCommand])
+
   const submit = useCallback(() => {
     const trimmed = text.trim()
-    if (!trimmed) return
-    onPrompt(trimmed)
-    setText('')
+    const refs = att.refs()
+    if (!trimmed && refs.length === 0) return
+    if (refs.length === 0 && runCommandFromText(trimmed)) {
+      setText(''); if (textareaRef.current) textareaRef.current.style.height = 'auto'; return
+    }
+    onPrompt(trimmed, refs)
+    setText(''); att.clear()
     // Reset height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [text, onPrompt])
+  }, [text, onPrompt, att, runCommandFromText])
+
+  function handlePaste(e: React.ClipboardEvent) {
+    const files = Array.from(e.clipboardData?.files || [])
+    if (files.length) { e.preventDefault(); void att.addFiles(files) }
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    const files = Array.from(e.dataTransfer?.files || [])
+    if (files.length) { e.preventDefault(); void att.addFiles(files) }
+  }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (slash && paletteRef.current?.handleKeyDown(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       submit()
@@ -48,11 +94,15 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   }
 
   return (
-    <div className={cn(
-      'flex flex-col gap-2 px-3 py-2',
-      'border-t border-gray-200 dark:border-gray-700',
-      'bg-white dark:bg-gray-900',
-    )}>
+    <div
+      className={cn(
+        'flex flex-col gap-2 px-3 py-2',
+        'border-t border-gray-200 dark:border-gray-700',
+        'bg-white dark:bg-gray-900',
+      )}
+      onDrop={handleDrop}
+      onDragOver={(e) => e.preventDefault()}
+    >
       {/* Queued strip — shown only when there are queued items */}
       {queued && queued.length > 0 && (
         <div className="flex flex-col gap-1">
@@ -75,22 +125,35 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
                 )}
               >
-                ✕
+                <X size={16} aria-hidden="true" />
               </button>
             </div>
           ))}
         </div>
       )}
 
-      <div className="flex items-end gap-2">
+      <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
+
+      <div className="relative flex items-end gap-2">
+        {slash && (
+          <CommandPalette
+            ref={paletteRef}
+            commands={commands}
+            query={slashQuery}
+            onSelect={(c) => { if (c.argumentHint) { setText(`/${c.name} `) } else { onCommand?.(c.name, ''); setText('') } }}
+            onComplete={(c) => setText(`/${c.name} `)}
+            onDismiss={() => { /* keep text; palette hides when slash becomes false */ }}
+          />
+        )}
         <textarea
           ref={textareaRef}
           aria-label="Message"
           value={text}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           rows={1}
-          placeholder="Send a message…"
+          placeholder={chatArmed ? 'Reply in chat…' : 'Send a message…'}
           className={cn(
             'flex-1 resize-none rounded-md border border-gray-300 dark:border-gray-600',
             'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',
@@ -102,7 +165,44 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
           style={{ maxHeight: '192px' }}
         />
 
-        {isWorking ? (
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          multiple
+          className="hidden"
+          onChange={(e) => { if (e.target.files) void att.addFiles(e.target.files); e.target.value = '' }}
+        />
+        <button
+          type="button"
+          aria-label="Attach image"
+          onClick={() => fileRef.current?.click()}
+          className={cn(
+            'flex-shrink-0 rounded-md px-3 py-2 text-sm min-h-[44px]',
+            'border border-gray-300 dark:border-gray-600',
+            'text-gray-600 dark:text-gray-300',
+            'hover:bg-gray-100 dark:hover:bg-gray-800',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+          )}
+        >
+          <Paperclip size={16} aria-hidden="true" />
+        </button>
+
+        {chatArmed ? (
+          <button
+            type="button"
+            aria-label="Send reply"
+            title="Answers the pending question and continues in chat"
+            onClick={submit}
+            className={cn(
+              'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-[44px]',
+              'bg-blue-600 text-white hover:bg-blue-700',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            )}
+          >
+            Reply
+          </button>
+        ) : isWorking ? (
           <>
             <button
               type="button"
