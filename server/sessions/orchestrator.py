@@ -26,6 +26,7 @@ from ccswitch import configdir, worktrees
 from ccswitch.configdir import compose
 from server.db import db_session
 from server.db.models import Session as DbSession
+from server.sessions.attachments import resolve_and_bind
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory
@@ -87,7 +88,8 @@ class SessionOrchestrator:
         self._last_prompt: dict[str, str] = {}
         # initial_prompt deferred until first WS attach so the client is watching
         # when the turn runs — avoids losing events before any consumer exists.
-        self._pending_initial_prompt: dict[str, str] = {}
+        # Value is a tuple (text, attachment_ids) so both are carried together.
+        self._pending_initial_prompt: dict[str, tuple[str, list[str]]] = {}
 
         # Build a live-session-aware usage_fn: when an account has a live session
         # the SDK owns its token family, so the poller must not independently
@@ -158,6 +160,7 @@ class SessionOrchestrator:
         identity: str = "system",
         permission_mode: str = "interactive",
         name_is_auto: bool = True,
+        attachment_ids: list[str] | None = None,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
 
@@ -234,7 +237,7 @@ class SessionOrchestrator:
             # buffered _out events can race the client's replay.  Deferring means
             # the client is already watching when the turn runs — events stream
             # live, so nothing is lost.
-            self._pending_initial_prompt[session_id] = initial_prompt
+            self._pending_initial_prompt[session_id] = (initial_prompt, attachment_ids or [])
 
         # Persist DB row
         async with db_session() as db:
@@ -607,20 +610,29 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         return d.pending_questions() if d else []
 
-    def pop_pending_initial_prompt(self, session_id: str) -> str | None:
-        """Return and remove the deferred initial prompt for session_id, or None.
+    def pop_pending_initial_prompt(self, session_id: str) -> tuple[str, list[str]] | None:
+        """Return and remove the deferred initial prompt tuple for session_id, or None.
 
+        Returns a (text, attachment_ids) tuple, or None if no pending prompt.
         Called by the WS bridge on the first attach so the initial prompt is sent
         while a client is already watching.  Clears the entry so subsequent attaches
         (reconnects) do not re-send it.
         """
         return self._pending_initial_prompt.pop(session_id, None)
 
-    async def send_prompt(self, session_id, text):
+    async def send_prompt(self, session_id, text, attachment_ids=None):
         d = self._drivers.get(session_id)
-        if d:
-            self._last_prompt[session_id] = text
-            await d.send_prompt(text)
+        if not d:
+            return
+        self._last_prompt[session_id] = text
+        attachments = []
+        if attachment_ids:
+            import uuid as _uuid
+            turn_id = _uuid.uuid4().hex
+            async with db_session() as db:
+                attachments = await resolve_and_bind(db, session_id, turn_id, attachment_ids)
+                await db.commit()
+        await d.send_prompt(text, attachments)
 
     async def interrupt(self, session_id):
         d = self._drivers.get(session_id)

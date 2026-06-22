@@ -197,9 +197,10 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             #     rather than racing the transcript-file write or arriving before any
             #     consumer exists in driver._out.  Only fires on the first attach
             #     (pop clears the entry); reconnects fall through to live-stream only.
-            pending_prompt = orchestrator.pop_pending_initial_prompt(session_id)
-            if pending_prompt is not None:
-                await orchestrator.send_prompt(session_id, pending_prompt)
+            pending = orchestrator.pop_pending_initial_prompt(session_id)
+            if pending is not None:
+                p_text, p_ids = pending
+                await orchestrator.send_prompt(session_id, p_text, p_ids or None)
 
             # 3) Start the live stream: forward driver events into the batcher.
             async def _live() -> None:

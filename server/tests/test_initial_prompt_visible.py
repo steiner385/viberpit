@@ -160,8 +160,8 @@ def test_initial_prompt_deferred_until_first_attach(ws_env_ip):
 
     # --- Verify the pending initial prompt is stored in the orchestrator ---
     pending = orch.pop_pending_initial_prompt(session_id)
-    assert pending == "Hello!", (
-        f"expected pending initial prompt 'Hello!', got {pending!r}"
+    assert pending == ("Hello!", []), (
+        f"expected pending initial prompt ('Hello!', []), got {pending!r}"
     )
     # Restore it (pop consumed it; we need it back for the attach test below)
     # We test pop then re-create, but actually let's use a fresh session for the full flow.
