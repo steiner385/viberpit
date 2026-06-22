@@ -451,6 +451,13 @@ class SessionOrchestrator:
         # Refresh the per-sub-agent summary so the dashboard list can nest sub-agents
         # under this session. Best-effort: a failure must never break the session loop.
         await self._persist_sub_agents(session_id)
+        # Live-push the change to every connected dashboard so the session LIST updates
+        # immediately, instead of waiting for the 5s poll (which the browser suspends
+        # while the ccswitch tab is backgrounded — the cause of cards getting stuck on
+        # "Working…" until the session is opened). Mirrors the "rotated" broadcast; the
+        # WS bridge forwards lifecycle frames top-level so the client's status handler
+        # (_patchSessionStatus) patches the cached session record.
+        self._publish_event({"type": "status", "sessionId": session_id, "status": status})
         if status == "done":
             await self._maybe_apply_auto_name(session_id)
 
