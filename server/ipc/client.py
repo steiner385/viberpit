@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+from typing import Any
 
 import httpx
 import websockets
@@ -32,8 +33,8 @@ class DaemonClient:
             base_url="http://daemon",
             timeout=30.0,
         )
-        self._ws = None
-        self._reader_task = None
+        self._ws: Any = None
+        self._reader_task: asyncio.Task | None = None
         self._queues: dict[str, asyncio.Queue] = {}      # stream -> event queue
         self._ready: dict[str, asyncio.Event] = {}        # stream -> subscribed-on-daemon
         self._desired: set[str] = set()                   # streams to (re)subscribe on connect
