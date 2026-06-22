@@ -515,6 +515,38 @@ describe('transcriptReducer', () => {
       expect(block).toMatchObject({ kind: 'question', live: true })
     })
   })
+
+  // ── image blocks on user turns (attachments) ───────────────────────────────
+
+  it('adds an image block carrying the wire images on an appended user turn', () => {
+    const ev = {
+      type: 'user', turnId: 'T1', text: 'look',
+      images: [{ url: '/api/attachments/a1', mime: 'image/png', name: 'a.png' }],
+    } as unknown as SessionEvent
+    const s = transcriptReducer(initialTranscript, ev)
+    const turn = s.turns.find((t) => t.id === 'T1')!
+    expect(turn.blocks.some((b) => b.kind === 'text')).toBe(true)
+    const img = turn.blocks.find((b) => b.kind === 'image') as
+      | { kind: 'image'; images: Array<{ url: string; mime: string; name: string }> } | undefined
+    expect(img?.images).toHaveLength(1)
+    expect(img?.images[0]).toMatchObject({ url: '/api/attachments/a1', mime: 'image/png', name: 'a.png' })
+  })
+
+  it('carries images when a brand-new session adopts its optimistic seed turn', () => {
+    let s = transcriptReducer(initialTranscript, { type: '_seedUserPrompt', text: 'look' })
+    s = transcriptReducer(s, {
+      type: 'user', turnId: 'real-1', text: 'look',
+      images: [{ url: '/api/attachments/a1', mime: 'image/png', name: 'a.png' }],
+    } as unknown as SessionEvent)
+    const turn = s.turns.find((t) => t.id === 'real-1')!
+    expect(turn.blocks.find((b) => b.kind === 'image')).toBeDefined()
+  })
+
+  it('adds no image block when the user event carries no images', () => {
+    const s = transcriptReducer(initialTranscript, { type: 'user', turnId: 'T2', text: 'hi' })
+    const turn = s.turns.find((t) => t.id === 'T2')!
+    expect(turn.blocks.some((b) => b.kind === 'image')).toBe(false)
+  })
 })
 
 describe('sub-agent thread routing', () => {
