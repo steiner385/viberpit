@@ -13,7 +13,7 @@ import { ReviewView } from './components/ReviewView'
 
 type View =
   | { type: 'dashboard' }
-  | { type: 'session'; sessionId: string; originElementId?: string }
+  | { type: 'session'; sessionId: string; originElementId?: string; initialPrompt?: string }
   | { type: 'review'; sessionId: string }
 
 function App() {
@@ -27,9 +27,9 @@ function App() {
     prevViewRef.current = view
   })
 
-  const handleOpenSession = useCallback((sessionId: string) => {
+  const handleOpenSession = useCallback((sessionId: string, initialPrompt?: string) => {
     // The session card button has id="row-<sessionId>" so focus can be restored
-    setView({ type: 'session', sessionId, originElementId: `row-${sessionId}` })
+    setView({ type: 'session', sessionId, originElementId: `row-${sessionId}`, initialPrompt })
   }, [])
 
   const handleReviewSession = useCallback((sessionId: string) => {
@@ -52,7 +52,7 @@ function App() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       {view.type === 'session' ? (
-        <SessionView sessionId={view.sessionId} onBack={handleBack} />
+        <SessionView sessionId={view.sessionId} onBack={handleBack} initialPrompt={view.initialPrompt} />
       ) : view.type === 'review' ? (
         <ReviewView sessionId={view.sessionId} onBack={handleBackFromReview} />
       ) : (

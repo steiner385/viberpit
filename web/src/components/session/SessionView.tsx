@@ -39,6 +39,7 @@ function nextPermissionMode(current: string): string {
 interface Props {
   sessionId: string
   onBack: () => void
+  initialPrompt?: string
 }
 
 interface Rotation {
@@ -47,7 +48,7 @@ interface Rotation {
   reason?: string
 }
 
-export function SessionView({ sessionId, onBack }: Props) {
+export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
   const {
     attach,
     detach,
@@ -86,6 +87,7 @@ export function SessionView({ sessionId, onBack }: Props) {
     on('sessionEvent', onEvent)
     on('rotated', onRotated)
     on('error', onError)
+    if (initialPrompt) dispatch({ type: '_seedUserPrompt', text: initialPrompt })
     attach(sessionId)
 
     return () => {

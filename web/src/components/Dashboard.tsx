@@ -998,7 +998,7 @@ type TabId = 'sessions' | 'accounts' | 'archived'
 
 interface DashboardProps {
   /** Called when the user opens a session (navigates to Terminal view). */
-  onOpenSession?: (sessionId: string) => void
+  onOpenSession?: (sessionId: string, initialPrompt?: string) => void
   /** Bump this to re-focus the dispatch bar (e.g. after returning from a session). */
   focusDispatchSignal?: unknown
   /** Called when the user wants to review an archived session. */

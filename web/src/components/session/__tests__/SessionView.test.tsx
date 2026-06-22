@@ -240,3 +240,31 @@ describe('SessionView', () => {
     expect(onBack).toHaveBeenCalledOnce()
   })
 })
+
+describe('SessionView — optimistic initial prompt', () => {
+  beforeEach(() => {
+    capturedHandlers = {}
+    vi.clearAllMocks()
+  })
+
+  it('renders the initial prompt immediately as a user message', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionView sessionId="s1" onBack={() => {}} initialPrompt="fix the bug" />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByText('fix the bug')).toBeInTheDocument()
+  })
+
+  it('does not duplicate the prompt when the user echo arrives', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionView sessionId="s1" onBack={() => {}} initialPrompt="fix the bug" />
+      </QueryClientProvider>,
+    )
+    emitSessionEvent({ type: 'user', turnId: 'real-1', text: 'fix the bug' })
+    expect(screen.getAllByText('fix the bug')).toHaveLength(1)
+  })
+})
