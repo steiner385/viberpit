@@ -4,8 +4,56 @@ Loaded by pytest before any test module in this package is collected, so the
 ``write_json_secure`` guard below is in place before tests bind the function via
 their (function-local) ``from ccswitch.creds import write_json_secure`` imports.
 """
+import atexit
 import importlib
+import os
+import shutil
+import tempfile
 from pathlib import Path
+
+
+# --------------------------------------------------------------------------- #
+# Production isolation — redirect ALL ccswitch state to a per-session temp dir #
+# BEFORE any test module is collected.                                         #
+#                                                                              #
+# `paths.root()` reads CCSWITCH_HOME and `server.config.Settings` reads        #
+# CCSWITCH_DB_URL lazily, BOTH defaulting to the REAL ~/.claude-accounts when  #
+# unset. Only ~20 of ~80 test files set CCSWITCH_HOME themselves, so the rest  #
+# silently resolved to the live store: reading/writing the real ledger.json    #
+# and ccswitch.db. That is how a reauth test stamped `needs-reauth` onto the   #
+# real `primary` account and how phantom `alpha`/`dave` rows reached prod.     #
+#                                                                              #
+# Setting both env vars here — at import, before collection — makes production #
+# UNREACHABLE by default: the value any test sees at session start is a temp   #
+# dir, never the real store. Tests that need their own isolated home still     #
+# override CCSWITCH_HOME via `patch.dict()` within their own scope (and even   #
+# their restore falls back to this temp dir, not to ~/.claude-accounts).       #
+#                                                                              #
+# Each var is redirected independently iff it is unset or points at the real   #
+# store, so a harness that already isolates one or both is left untouched.     #
+# --------------------------------------------------------------------------- #
+_REAL_HOME = (Path.home() / ".claude-accounts").resolve()
+
+
+def _redirect_state_off_production():
+    home = os.environ.get("CCSWITCH_HOME")
+    db = os.environ.get("CCSWITCH_DB_URL")
+    home_is_prod = home is None or Path(home).resolve() == _REAL_HOME
+    db_is_prod = db is None or str(_REAL_HOME) in db
+    if not home_is_prod and not db_is_prod:
+        return  # caller already isolated both — respect it
+
+    session_home = Path(tempfile.mkdtemp(prefix="ccswitch-tests-"))
+    atexit.register(shutil.rmtree, session_home, ignore_errors=True)
+    if home_is_prod:
+        os.environ["CCSWITCH_HOME"] = str(session_home)
+    if db_is_prod:
+        os.environ["CCSWITCH_DB_URL"] = (
+            f"sqlite+aiosqlite:///{session_home / 'ccswitch.db'}"
+        )
+
+
+_redirect_state_off_production()
 
 
 # Enable asyncio mode for all tests in this package
