@@ -38,7 +38,7 @@ from server.sessions.events import ErrorEvent, tool_kind
 from server.sessions.replay import replay_events
 
 if TYPE_CHECKING:
-    from server.sessions.orchestrator import SessionOrchestrator
+    from server.sessions.facade import InProcessOrchestratorAdapter
 
 log = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -
         ).to_wire())
 
 
-def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
+def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
     """Return an APIRouter containing the /ws endpoint wired to *orchestrator*."""
     router = APIRouter()
 

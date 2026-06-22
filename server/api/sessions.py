@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -27,8 +27,11 @@ from server.sessions import adopt as _adopt
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import get_db
-from server.sessions.orchestrator import SessionOrchestrator, BranchSwitchError
+from server.sessions.orchestrator import BranchSwitchError
 from server.sessions.selection import AllAccountsBusy
+
+if TYPE_CHECKING:
+    from server.sessions.facade import InProcessOrchestratorAdapter
 
 # Repo nameWithOwner shape: owner/name — each segment alphanumeric + . _ -
 # No leading/trailing dots, no consecutive dots (blocks path-traversal via ../foo).
@@ -117,7 +120,7 @@ async def _resolve_repo(record) -> str | None:
     return await asyncio.to_thread(gitrepos.repo_at_path, cwd)
 
 
-def _get_orchestrator(request: Request) -> SessionOrchestrator:
+def _get_orchestrator(request: Request) -> "InProcessOrchestratorAdapter":
     return request.app.state.sessions
 
 
@@ -132,7 +135,7 @@ async def list_sessions(
     _identity: str = Depends(current_identity),
 ) -> list[dict]:
     """Return all in-memory session records."""
-    orch: SessionOrchestrator = _get_orchestrator(request)
+    orch = _get_orchestrator(request)
     records = await orch.list_sessions()
     # Read each session's repo live from its working dir, all in parallel.
     repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
@@ -150,7 +153,7 @@ async def create_session(
 
     Returns 409 with earliestReset if all accounts are at ceiling.
     """
-    orch: SessionOrchestrator = _get_orchestrator(request)
+    orch = _get_orchestrator(request)
     # When the user supplies no name, the session is auto-named (Claude title / first
     # prompt) and stays auto until a manual rename. A supplied name is pinned manual.
     name_is_auto = not (body.name and body.name.strip())
@@ -293,7 +296,7 @@ async def list_adoptable(
     flagged with a skipReason where applicable — the dashboard renders adoptable
     ones with a force-takeover action and groups the rest as "not adoptable".
     """
-    orch: SessionOrchestrator = _get_orchestrator(request)
+    orch = _get_orchestrator(request)
     known = [a["name"] for a in _accounts.list_accounts()]
     tracked = {r.claude_session_id for r in await orch.list_sessions() if r.claude_session_id}
     cands = await asyncio.to_thread(_adopt.discover_candidates, known, tracked)
@@ -312,7 +315,7 @@ async def adopt_session_route(
     already tracked) — an expected outcome given processes churn fast, so the
     dashboard should re-scan rather than treat it as a hard error.
     """
-    orch: SessionOrchestrator = _get_orchestrator(request)
+    orch = _get_orchestrator(request)
     try:
         rec, outcome = await orch.adopt_session(body.claudeSessionId, identity=identity)
     except KeyError:
@@ -332,7 +335,7 @@ async def list_archived_sessions(
     _identity: str = Depends(current_identity),
 ) -> list[dict]:
     """Return all archived session metadata."""
-    orch: SessionOrchestrator = _get_orchestrator(request)
+    orch = _get_orchestrator(request)
     return await orch.list_archived()
 
 
@@ -343,7 +346,7 @@ async def get_session(
     _identity: str = Depends(current_identity),
 ) -> dict:
     """Return a single session record, or 404 if unknown."""
-    orch: SessionOrchestrator = _get_orchestrator(request)
+    orch = _get_orchestrator(request)
     record = await orch.get_session(session_id)
     if record is None:
         raise HTTPException(
@@ -361,7 +364,7 @@ async def rename_session(
     _identity: str = Depends(current_identity),
 ) -> dict:
     """Rename a session. Returns 404 if unknown."""
-    orch: SessionOrchestrator = _get_orchestrator(request)
+    orch = _get_orchestrator(request)
     record = await orch.get_session(session_id)
     if record is None:
         raise HTTPException(
@@ -383,7 +386,7 @@ async def close_session(
     db=Depends(get_db),
 ):
     """Archive a session (moves cwd to archive, keeps DB row). Returns 404 if unknown."""
-    orch: SessionOrchestrator = _get_orchestrator(request)
+    orch = _get_orchestrator(request)
     record = await orch.get_session(session_id)
     if record is None:
         raise HTTPException(
@@ -409,7 +412,7 @@ async def unarchive_session(
     db=Depends(get_db),
 ) -> dict:
     """Restore an archived session to idle. Returns 404 if not found or not archived."""
-    orch: SessionOrchestrator = _get_orchestrator(request)
+    orch = _get_orchestrator(request)
     record = await orch.unarchive(session_id)
     if record is None:
         raise HTTPException(
@@ -435,7 +438,7 @@ async def permanent_delete_session(
     db=Depends(get_db),
 ):
     """Permanently delete a session: remove archive folder and DB row. 404 if unknown."""
-    orch: SessionOrchestrator = _get_orchestrator(request)
+    orch = _get_orchestrator(request)
     deleted = await orch.permanent_delete(session_id)
     if not deleted:
         raise HTTPException(
@@ -464,7 +467,7 @@ async def get_session_transcript(
     from server.audit import redact_event
     from sqlalchemy import select as sa_select
 
-    orch: SessionOrchestrator = _get_orchestrator(request)
+    orch = _get_orchestrator(request)
 
     # Verify the session exists (in _records for active, or DB for archived).
     record = await orch.get_session(session_id)
