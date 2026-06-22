@@ -14,7 +14,7 @@ export function AssistantText({ text, streaming }: Props) {
     )
   }
   return (
-    <div className="prose prose-sm dark:prose-invert max-w-none">
+    <div className="markdown max-w-none text-gray-900 dark:text-gray-100">
       <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
         {text}
       </ReactMarkdown>
