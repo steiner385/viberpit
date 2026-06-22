@@ -1,4 +1,5 @@
 import {
+  Check,
   CheckCircle2,
   AlertTriangle,
   WifiOff,
@@ -124,8 +125,18 @@ const SESSION_STATUS_MAP: Record<string, StatusConfig> = {
   },
   done: {
     label: 'Done',
+    Icon: Check,
+    textClass: 'text-gray-600 dark:text-gray-400',
+  },
+  complete: {
+    label: 'Complete',
     Icon: CheckCircle2,
     textClass: 'text-emerald-700 dark:text-emerald-400',
+  },
+  needs_attention: {
+    label: 'Needs attention',
+    Icon: AlertTriangle,
+    textClass: 'text-amber-700 dark:text-amber-400',
   },
   limited: {
     label: 'Limited',

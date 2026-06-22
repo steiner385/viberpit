@@ -27,6 +27,8 @@ export type SessionStatus =
   | 'waiting_input'
   | 'ready_review'
   | 'done'
+  | 'complete'
+  | 'needs_attention'
   | 'limited'
   | 'ended'
 
