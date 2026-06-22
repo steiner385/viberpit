@@ -52,14 +52,6 @@ type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: s
 
 function MainPaneSession() {
   const rt = useSessionRuntimeContext()
-  const toolToggleText =
-    rt.toolDetailMode === 'auto' ? 'Collapse tools'
-    : rt.toolDetailMode === 'all-closed' ? 'Expand tools'
-    : 'Auto-fold'
-  const toolToggleAria =
-    rt.toolDetailMode === 'auto' ? 'Collapse tool calls'
-    : rt.toolDetailMode === 'all-closed' ? 'Expand tool calls'
-    : 'Auto-fold tool calls'
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className={cn(
@@ -67,19 +59,6 @@ function MainPaneSession() {
         'bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700',
       )}>
         <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{rt.title}</span>
-        <button
-          type="button"
-          onClick={rt.toggleToolDetail}
-          aria-label={toolToggleAria}
-          className={cn(
-            'ml-auto flex items-center gap-1.5 px-3 py-2 rounded-md min-h-[44px]',
-            'text-sm font-medium text-gray-700 dark:text-gray-200',
-            'hover:bg-gray-200 dark:hover:bg-gray-700 active:bg-gray-300 dark:active:bg-gray-600',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-          )}
-        >
-          {toolToggleText}
-        </button>
       </div>
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-gray-950">
         <SessionBody rt={rt} />

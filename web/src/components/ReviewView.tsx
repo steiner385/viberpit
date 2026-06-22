@@ -71,6 +71,7 @@ export function ReviewView({ sessionId, onBack }: Props) {
             turns={state.turns}
             permissionMode="interactive"
             toolDetailMode="auto"
+            thinkingCollapsed={true}
             onDecision={() => {/* read-only */}}
             onAnswer={() => {/* read-only */}}
           />

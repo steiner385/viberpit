@@ -30,7 +30,6 @@ const IN_SESSION_BINDINGS: Binding[] = [
   { keys: '← / Esc', description: 'Detach to session list' },
   { keys: 'Ctrl+Z', description: 'Force-detach' },
   { keys: 'Shift+Tab', description: 'Cycle permission mode' },
-  { keys: 'c', description: 'Collapse / expand tool calls' },
 ]
 
 export function ShortcutsHelp({ onClose }: ShortcutsHelpProps) {

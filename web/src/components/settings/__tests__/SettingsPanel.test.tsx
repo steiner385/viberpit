@@ -16,6 +16,7 @@ const SETTINGS = {
   defaultPermissionMode: 'interactive',
   thinkingCollapsed: false,
   repoRoot: '/home/user/repos',
+  defaultToolDetail: 'auto',
 }
 
 const NOOP_MUTATION = {
@@ -150,5 +151,31 @@ describe('SettingsPanel', () => {
     await user.keyboard('{Escape}')
 
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('renders the tool calls default select pre-filled with current value', () => {
+    render(<SettingsPanel onClose={vi.fn()} />, { wrapper })
+    const select = screen.getByLabelText(/tool calls default/i)
+    expect(select).toBeInTheDocument()
+    expect((select as HTMLSelectElement).value).toBe('auto')
+  })
+
+  it('saves defaultToolDetail when changed', async () => {
+    const mutate = vi.fn()
+    vi.mocked(hooks.useUpdateSettings).mockReturnValue({
+      ...NOOP_MUTATION,
+      mutate,
+    } as unknown as ReturnType<typeof hooks.useUpdateSettings>)
+
+    const user = userEvent.setup()
+    render(<SettingsPanel onClose={vi.fn()} />, { wrapper })
+
+    await user.selectOptions(screen.getByLabelText(/tool calls default/i), 'all-closed')
+    await user.click(screen.getByRole('button', { name: /save/i }))
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultToolDetail: 'all-closed' }),
+      expect.anything(),
+    )
   })
 })

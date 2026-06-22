@@ -19,6 +19,8 @@ interface Props {
   defaultResultOpen?: boolean
   /** Global detail override: 'all-open'/'all-closed' force every panel; 'auto' uses defaultResultOpen. */
   toolDetailMode?: ToolDetailMode
+  /** Persisted default for whether thinking blocks start collapsed (threaded to nested sub-agent turns). */
+  thinkingCollapsed?: boolean
   /** When this is a Task tool, the spawned sub-agent's own thread (rendered nested). */
   subThread?: SubThread
 }
@@ -48,7 +50,7 @@ function keyArg(kind: ToolKind, input: Record<string, unknown>): string {
   return ''
 }
 
-export function ToolCallCard({ block, density = 'card', defaultResultOpen = false, toolDetailMode, subThread }: Props) {
+export function ToolCallCard({ block, density = 'card', defaultResultOpen = false, toolDetailMode, thinkingCollapsed = true, subThread }: Props) {
   const [argsOpen, setArgsOpen] = useState(false)
   // The global toggle force-overrides the per-row default; 'auto' (or no mode)
   // falls back to defaultResultOpen so only the live tail's latest tool opens.
@@ -130,6 +132,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
                   permissionMode="interactive"
                   isLastTurn={false}
                   toolDetailMode={toolDetailMode ?? 'auto'}
+                  thinkingCollapsed={thinkingCollapsed}
                   onDecision={() => {}}
                   onAnswer={() => {}}
                 />
@@ -207,6 +210,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
                 permissionMode="interactive"
                 isLastTurn={false}
                 toolDetailMode={toolDetailMode ?? 'auto'}
+                thinkingCollapsed={thinkingCollapsed}
                 onDecision={() => {}}
                 onAnswer={() => {}}
               />

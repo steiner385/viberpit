@@ -16,7 +16,12 @@ vi.mock('@/ws/client', () => ({
     command,
   }),
 }))
-vi.mock('@/api/hooks', () => ({ useSessions: () => ({ data: [] }), useAccounts: () => ({ data: [] }), QK: {} }))
+vi.mock('@/api/hooks', () => ({
+  useSessions: () => ({ data: [] }),
+  useAccounts: () => ({ data: [] }),
+  useSettings: () => ({ data: { defaultToolDetail: 'auto', thinkingCollapsed: true } }),
+  QK: {},
+}))
 
 import { useSessionRuntime } from '@/session/useSessionRuntime'
 
