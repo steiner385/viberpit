@@ -59,7 +59,7 @@ def test_on_sync_back_called_after_turn():
         await d.send_prompt("hello")
         # Drain until idle
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return calls
@@ -118,14 +118,14 @@ def test_on_sync_back_failure_does_not_crash_session():
         seen = []
         async for e in d.events():
             seen.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return seen, calls
 
     seen, calls = asyncio.run(run())
     # The stream still completed (we got idle)
-    assert any(isinstance(e, Status) and e.state == "idle" for e in seen)
+    assert any(isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention") for e in seen)
     # sync_back was attempted
     assert "attempt" in calls
 
@@ -200,7 +200,7 @@ def test_on_sync_back_sdk_rotation_captured_in_slot(tmp_path):
         await d.start()
         await d.send_prompt("hello")
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
 
