@@ -12,11 +12,12 @@
  *   - Errors use `role="alert"` (assertive).
  */
 
-import { useEffect, useCallback, useRef } from 'react'
+import { useEffect, useCallback, useRef, useMemo } from 'react'
 import { cn } from '@/lib/utils'
 import { useSessionSocket } from '@/ws/client'
 import { useSessionRuntime } from '@/session/useSessionRuntime'
 import { PERMISSION_MODES } from '@/session/permissionModes'
+import { deriveHistory } from '@/session/history'
 import { Composer } from './Composer'
 import { SessionBody } from './SessionBody'
 import { CommandResultOverlay } from './CommandResultOverlay'
@@ -40,6 +41,7 @@ interface Props {
 export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
   const { detach } = useSessionSocket()
   const rt = useSessionRuntime(sessionId, initialPrompt)
+  const history = useMemo(() => deriveHistory(rt.state.turns), [rt.state.turns])
 
   // Keep modeRef current so the keydown handler reads the latest mode without
   // needing to re-register the listener on every mode change.
@@ -141,6 +143,7 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
           onCommand={rt.onCommand}
           autoFocusKey={sessionId}
           suggestions={rt.state.latestSuggestions}
+          history={history}
         />
       </div>
     </div>
