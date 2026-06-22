@@ -22,6 +22,10 @@ def store_dir() -> Path:
     return root() / "store"
 
 
+def attachments_dir() -> Path:
+    return root() / "attachments"
+
+
 def cfg_root() -> Path:
     return root() / "cfg"
 

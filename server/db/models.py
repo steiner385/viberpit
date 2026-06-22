@@ -75,6 +75,24 @@ class AuditEvent(Base):
     detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
+class Attachment(Base):
+    """An image uploaded by a user and attached to a prompt."""
+
+    __tablename__ = "attachments"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    turn_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    media_type: Mapped[str] = mapped_column(String, nullable=False)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    uploaded_by: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now()
+    )
+
+
 class AppSettings(Base):
     """Single-row application settings (singleton id='singleton')."""
 
