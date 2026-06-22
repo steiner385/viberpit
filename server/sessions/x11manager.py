@@ -1,7 +1,15 @@
 """Per-session virtual X display management (Xvfb + x11vnc + managed browser)."""
 from __future__ import annotations
 import asyncio
-from dataclasses import dataclass
+import logging
+import os
+import secrets
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from server.sessions.adopt import terminate_process_tree
+
+log = logging.getLogger("server.x11")
 
 
 class PoolExhausted(RuntimeError):
@@ -41,15 +49,6 @@ class DisplayAllocator:
     def in_use(self) -> int:
         return len(self._used)
 
-import logging
-import os
-import secrets
-from pathlib import Path
-
-from server.sessions.adopt import terminate_process_tree
-
-log = logging.getLogger("server.x11")
-
 
 def _default_ready_check(display: int, run_dir: str = "/tmp") -> bool:
     return Path(run_dir, ".X11-unix", f"X{display}").exists()
@@ -62,12 +61,8 @@ class DisplaySpec:
     xauthority: str
     xvfb: object | None = None
     x11vnc: object | None = None
-    browsers: list = None              # managed Chromium procs
+    browsers: list = field(default_factory=list)   # managed Chromium procs
     vnc_clients: int = 0
-
-    def __post_init__(self):
-        if self.browsers is None:
-            self.browsers = []
 
 
 async def _terminate(proc, timeout: float = 5.0) -> None:
@@ -138,6 +133,10 @@ class X11Manager:
             except FileNotFoundError:
                 log.exception("x11: Xvfb/xauth binary missing")
                 await self._allocator.release(lease)
+                try:
+                    os.unlink(xauth)
+                except OSError:
+                    pass
                 return None
             if not await self._await_ready(lease.display):
                 log.warning("x11: display :%d never became ready", lease.display)
@@ -202,9 +201,10 @@ class X11Manager:
                 if not self._lock_owner_alive(lock):
                     for p in (lock, os.path.join(self._run_dir, ".X11-unix", f"X{n}")):
                         try:
-                            os.unlink(p); removed += 1
+                            os.unlink(p)
                         except OSError:
                             pass
+                    removed += 1
         return removed
 
     @staticmethod
