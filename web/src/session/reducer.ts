@@ -80,6 +80,7 @@ function num(v: unknown): number {
 export type LocalAction =
   | { type: '_resolvePermission'; permId: string }
   | { type: '_resolveQuestion';   questionId: string }
+  | { type: '_clearError' }
   | { type: '_seedUserPrompt';    text: string }
   | { type: '_rotation';          from: string; to: string; reason?: string }
 
@@ -419,6 +420,12 @@ export function transcriptReducer(
       })
       if (!changed) return state // No matching question block found; return unchanged state
       return { ...state, turns: nextTurns }
+    }
+
+    case '_clearError': {
+      // Dismiss a surfaced banner (e.g. the transient "answer queued" notice
+      // once a buffered answer has been resent). Ref-stable when already clear.
+      return state.error ? { ...state, error: null } : state
     }
 
     case '_seedUserPrompt': {

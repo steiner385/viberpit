@@ -207,6 +207,17 @@ describe('transcriptReducer', () => {
     expect(s.turns).toHaveLength(0)
   })
 
+  it('_clearError clears a surfaced error', () => {
+    const s = transcriptReducer(initialTranscript, { type: 'error', code: 'answer_not_sent', message: 'nope' })
+    expect(s.error).not.toBeNull()
+    const cleared = transcriptReducer(s, { type: '_clearError' })
+    expect(cleared.error).toBeNull()
+  })
+
+  it('_clearError with no error returns the same state reference', () => {
+    expect(transcriptReducer(initialTranscript, { type: '_clearError' })).toBe(initialTranscript)
+  })
+
   it('error with turnId appends an inline error block to that turn AND sets the banner', () => {
     const s = reduce([
       { type: 'turnStart', turnId: 't1' },
