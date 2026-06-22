@@ -36,6 +36,13 @@ try:
         # minutes; the timeout must outlast that or it tears down the localhost
         # callback listener mid-login (zombie consent page).
         reauth_timeout_s: float = Field(default=900.0, alias="CCSWITCH_REAUTH_TIMEOUT_S")
+        enable_xvfb: bool = Field(default=False, alias="CCSWITCH_ENABLE_XVFB")
+        display_start: int = Field(default=100, alias="CCSWITCH_DISPLAY_START")
+        display_count: int = Field(default=12, alias="CCSWITCH_DISPLAY_COUNT")
+        max_browsers: int = Field(default=6, alias="CCSWITCH_MAX_BROWSERS")
+        vnc_port_base: int = Field(default=6100, alias="CCSWITCH_VNC_PORT_BASE")
+        xvfb_resolution: str = Field(default="1280x1024x24", alias="CCSWITCH_XVFB_RESOLUTION")
+        vnc_idle_timeout_s: float = Field(default=1800.0, alias="CCSWITCH_VNC_IDLE_TIMEOUT_S")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -87,6 +94,27 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         reauth_timeout_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("CCSWITCH_REAUTH_TIMEOUT_S", "900"))
+        )
+        enable_xvfb: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_XVFB", "false").lower() in ("1","true","yes","on")
+        )
+        display_start: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_DISPLAY_START", "100"))
+        )
+        display_count: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_DISPLAY_COUNT", "12"))
+        )
+        max_browsers: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_MAX_BROWSERS", "6"))
+        )
+        vnc_port_base: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_VNC_PORT_BASE", "6100"))
+        )
+        xvfb_resolution: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_XVFB_RESOLUTION", "1280x1024x24")
+        )
+        vnc_idle_timeout_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_VNC_IDLE_TIMEOUT_S", "1800"))
         )
 
         @property

@@ -114,6 +114,15 @@ async def _lifespan(app: FastAPI):
     # Start the singleton orchestrator (usage poller + rotation monitor)
     await app.state.orchestrator.start()
 
+    # Sweep stale X lock/socket files from crashed previous runs
+    if getattr(app.state, "x11", None) is not None:
+        try:
+            n = app.state.x11.sweep_stale()
+            if n:
+                _logging.getLogger("server").info("startup: swept %d stale X lock/socket(s)", n)
+        except Exception:
+            _logging.getLogger("server").warning("startup: X sweep failed", exc_info=True)
+
     # Sweep stale unbound attachments (uploaded but never sent) from prior runs.
     from server.db import db_session as _db_session
     from server.sessions import attachments as _attachments
@@ -132,6 +141,17 @@ async def _lifespan(app: FastAPI):
     yield
     # Shutdown
     await app.state.reauth.shutdown()
+
+    # Close live sessions before stopping orchestrator — triggers stop_display for each
+    if getattr(app.state, "x11", None) is not None:
+        for sid in list(app.state.orchestrator._drivers.keys()):
+            try:
+                await app.state.orchestrator.close_session(sid)
+            except Exception:
+                _logging.getLogger("server").warning(
+                    "shutdown: close %s failed", sid, exc_info=True
+                )
+
     await app.state.orchestrator.stop()
 
 
@@ -147,6 +167,12 @@ def create_app(
     app.state.orchestrator = orchestrator
     from server.sessions.facade import InProcessOrchestratorAdapter
     app.state.sessions = InProcessOrchestratorAdapter(orchestrator)
+
+    # X11 manager — None when feature is disabled or preflight fails (fail-loud warning)
+    from server.config import get_settings as _gs
+    from server.sessions.x11manager import build_x11_manager
+    app.state.x11 = build_x11_manager(_gs())
+    orchestrator._x11 = app.state.x11  # share the manager with the orchestrator
 
     # Attach the ReauthManager (allows tests to inject a fake)
     if reauth_manager is None:
@@ -166,12 +192,15 @@ def create_app(
         # Exercises every Session model column; a drifted DB raises → 500.
         orch = getattr(app.state, "orchestrator", None)
         active = orch.active_session_count() if orch is not None else 0
+        x11 = getattr(app.state, "x11", None)
+        vnc_attached = bool(x11 and x11.metrics().get("vnc_clients_attached", 0) > 0)
         try:
             async with _db.db_session() as db:
                 await db.execute(_sa_select(_SessionModel).limit(1))
             return JSONResponse({
                 "status": "ok", "sha": running_git_sha(),
                 "busy": active > 0, "activeSessions": active,
+                "vncAttached": vnc_attached,
             })
         except Exception as exc:  # noqa: BLE001 — any DB/schema failure is unhealthy
             logging.getLogger("server").warning("healthz schema check failed", exc_info=exc)
@@ -189,6 +218,31 @@ def create_app(
     # WebSocket bridge
     ws_router = build_ws_router(app.state.sessions)
     app.include_router(ws_router)
+
+    # VNC WebSocket bridge — gated by x11 state at call time
+    from server.bridge.vnc_ws import build_vnc_ws_router
+    app.include_router(build_vnc_ws_router(lambda: getattr(app.state, "x11", None)))
+
+    @app.get("/api/x11/metrics")
+    async def x11_metrics(_identity: str = Depends(current_identity)) -> dict:
+        x11 = getattr(app.state, "x11", None)
+        return x11.metrics() if x11 else {"enabled": False}
+
+    from fastapi import Body, HTTPException  # noqa: PLC0415 — local import avoids top-level churn
+
+    @app.post("/api/sessions/{session_id}/browser/open")
+    async def open_browser(
+        session_id: str,
+        payload: dict = Body(default={}),
+        _identity: str = Depends(current_identity),
+    ) -> dict:
+        x11 = getattr(app.state, "x11", None)
+        if x11 is None or x11.display_for(session_id) is None:
+            raise HTTPException(status_code=409, detail="no display for session")
+        ok = await x11.launch_browser(session_id, payload.get("url"))
+        if not ok:
+            raise HTTPException(status_code=409, detail="browser cap reached")
+        return {"ok": True}
 
     # SPA static files with client-side-routing fallback — optional; guarded so a
     # missing build (dev/test) doesn't break startup. Registered AFTER the API/WS

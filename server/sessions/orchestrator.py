@@ -82,6 +82,7 @@ class SessionOrchestrator:
         usage_fn: Callable[[str], object] | None = None,
         repo_root: str | None = None,
         titling_interval: float = 15.0,
+        x11=None,
         title_fn: Callable | None = None,
     ) -> None:
         # work_dir param is accepted for back-compat (used in tests to keep
@@ -100,6 +101,7 @@ class SessionOrchestrator:
         # session_id → WorktreeInfo for sessions launched in an isolated worktree
         self._worktrees: dict[str, worktrees.WorktreeInfo] = {}
         self._sdk_factory = sdk_factory or real_sdk_factory
+        self._x11 = x11  # X11Manager | None — per-session virtual displays
         if os.environ.get("CCSWITCH_SUGGESTIONS", "1") == "0":
             self._suggester = None
         else:
@@ -152,6 +154,22 @@ class SessionOrchestrator:
         # each see no driver, each build+start one, and both register → two SDK
         # processes attached to the same Claude conversation (TOCTOU fix).
         self._ensure_lock: asyncio.Lock = asyncio.Lock()
+
+    def _session_factory(self, session_id: str):
+        """Return a 5-arg SDK factory closure injecting this session's DISPLAY.
+
+        When no X11 display is allocated for this session, the closure calls the
+        base factory with only the standard 5 positional arguments so that test
+        factories (which don't accept ``extra_env``) keep working unchanged.
+        """
+        base = self._sdk_factory
+        x11 = self._x11
+        def _factory(cwd, config_dir, can_use_tool, mode, resume):
+            extra = x11.env_for(session_id) if x11 else {}
+            if extra:
+                return base(cwd, config_dir, can_use_tool, mode, resume, extra_env=extra)
+            return base(cwd, config_dir, can_use_tool, mode, resume)
+        return _factory
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -255,10 +273,17 @@ class SessionOrchestrator:
         # won't prompt for trust on startup.
         configdir.trust_project(account, cwd)
 
+        # Allocate a virtual X11 display for this session (if X11Manager wired in).
+        if self._x11 is not None:
+            try:
+                await self._x11.start_display(session_id)
+            except Exception:
+                log.exception("session.display_start_failed id=%s", session_id)
+
         # Start a SessionDriver backed by the configured SDK factory.
         driver = SessionDriver(
             session_id, account, cwd, str(cfg_dir),
-            mode=permission_mode, sdk_factory=self._sdk_factory,
+            mode=permission_mode, sdk_factory=self._session_factory(session_id),
             registry=self._registry, identity=identity,
             on_session_id=self._persist_claude_session_id,
             on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
@@ -313,6 +338,14 @@ class SessionOrchestrator:
 
     async def close_session(self, session_id: str) -> None:
         """Stop the driver, clean up the session worktree, mark the row ended."""
+        # Teardown the virtual X11 display — runs unconditionally so orphaned
+        # displays are never leaked even when the driver was never registered.
+        if self._x11 is not None:
+            try:
+                await self._x11.stop_display(session_id)
+            except Exception:
+                log.exception("session.display_cleanup_failed id=%s", session_id)
+
         driver = self._drivers.pop(session_id, None)
         self._last_prompt.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
@@ -684,7 +717,7 @@ class SessionOrchestrator:
                     rec.cwd,
                     str(cfg_dir),
                     mode=getattr(rec, "permission_mode", "interactive"),
-                    sdk_factory=self._sdk_factory,
+                    sdk_factory=self._session_factory(session_id),
                     registry=self._registry,
                     identity=identity,
                     resume=resume_arg,
@@ -768,10 +801,17 @@ class SessionOrchestrator:
         Path(cand.cwd).mkdir(parents=True, exist_ok=True)
         configdir.trust_project(cand.account, cand.cwd)
 
+        # Allocate a virtual X11 display for the adopted session (fresh allocation).
+        if self._x11 is not None:
+            try:
+                await self._x11.start_display(session_id)
+            except Exception:
+                log.exception("session.display_start_failed id=%s", session_id)
+
         def _build(resume_arg):
             return SessionDriver(
                 session_id, cand.account, cand.cwd, str(cfg_dir),
-                mode="interactive", sdk_factory=self._sdk_factory, registry=self._registry,
+                mode="interactive", sdk_factory=self._session_factory(session_id), registry=self._registry,
                 identity=identity, resume=resume_arg,
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, cand.account),
@@ -1021,7 +1061,7 @@ class SessionOrchestrator:
             configdir.trust_project(new_account, old_driver.cwd)
             new_driver = SessionDriver(
                 record.id, new_account, old_driver.cwd, str(cfg),
-                mode=old_driver.mode, sdk_factory=self._sdk_factory,
+                mode=old_driver.mode, sdk_factory=self._session_factory(record.id),
                 registry=self._registry, identity=old_driver.identity,
                 resume=claude_sid,
                 on_session_id=self._persist_claude_session_id,
@@ -1066,6 +1106,13 @@ class SessionOrchestrator:
         Git worktree registrations are pruned best-effort after the move.
         """
         from ccswitch.paths import archive_dir
+
+        # Teardown the virtual X11 display — mirrors close_session.
+        if self._x11 is not None:
+            try:
+                await self._x11.stop_display(session_id)
+            except Exception:
+                log.exception("session.display_cleanup_failed id=%s", session_id)
 
         # Stop the driver and clear in-memory state (mirrors close_session head).
         driver = self._drivers.pop(session_id, None)

@@ -5,9 +5,16 @@ import os
 from .completion import COMPLETION_INSTRUCTION
 
 
-def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume):
+def _import_sdk():
     from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+    return ClaudeSDKClient, ClaudeAgentOptions
+
+
+def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None):
+    ClaudeSDKClient, ClaudeAgentOptions = _import_sdk()
     env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
+    if extra_env:
+        env.update(extra_env)
     opts = ClaudeAgentOptions(
         cwd=cwd, env=env, can_use_tool=can_use_tool,
         permission_mode=("plan" if mode == "plan" else "default"),
