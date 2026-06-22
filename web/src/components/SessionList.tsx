@@ -12,6 +12,7 @@ interface SessionListProps {
   onOpen: (id: string) => void
   onRename: (id: string) => void
   onClose: (id: string) => void
+  onDelete: (id: string) => void
 }
 
 function SkeletonCard() {
@@ -43,6 +44,7 @@ export function SessionList({
   onOpen,
   onRename,
   onClose,
+  onDelete,
 }: SessionListProps) {
   if (isLoading) {
     return (
@@ -82,6 +84,7 @@ export function SessionList({
           onOpen={onOpen}
           onRename={onRename}
           onClose={onClose}
+          onDelete={onDelete}
         />
       ))}
     </div>
