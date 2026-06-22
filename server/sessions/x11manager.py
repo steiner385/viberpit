@@ -182,6 +182,62 @@ class X11Manager:
                 pass
         await self._allocator.release(spec.lease)
 
+    async def ensure_vnc(self, session_id: str) -> int | None:
+        spec = self._specs.get(session_id)
+        if spec is None:
+            return None
+        async with self._lock:
+            if spec.x11vnc is None:
+                spec.x11vnc = await self._spawn(
+                    "x11vnc", "-display", f":{spec.lease.display}",
+                    "-rfbport", str(spec.lease.rfbport), "-localhost", "-nopw",
+                    "-auth", spec.xauthority, "-forever", "-shared", "-quiet",
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                )
+            return spec.lease.rfbport
+
+    async def attach(self, session_id: str) -> int | None:
+        spec = self._specs.get(session_id)
+        if spec is None:
+            return None
+        port = await self.ensure_vnc(session_id)
+        spec.vnc_clients += 1
+        return port
+
+    def detach(self, session_id: str) -> None:
+        spec = self._specs.get(session_id)
+        if spec is None:
+            return
+        spec.vnc_clients = max(0, spec.vnc_clients - 1)
+        if spec.vnc_clients == 0:
+            asyncio.create_task(self._idle_teardown(session_id))
+
+    async def _idle_teardown(self, session_id: str, timeout: float | None = None) -> None:
+        await asyncio.sleep(timeout if timeout is not None else self._vnc_idle_timeout_s)
+        spec = self._specs.get(session_id)
+        if spec and spec.vnc_clients == 0 and spec.x11vnc is not None:
+            await _terminate(spec.x11vnc)
+            spec.x11vnc = None
+
+    async def launch_browser(self, session_id: str, url: str | None) -> bool:
+        spec = self._specs.get(session_id)
+        if spec is None or len(spec.browsers) >= self._max_browsers:
+            return False
+        argv = ["chromium", f"--display=:{spec.lease.display}",
+                "--disable-dev-shm-usage", "--no-first-run", "--start-maximized"]
+        if url:
+            argv.append(url)
+        env = dict(os.environ, DISPLAY=f":{spec.lease.display}", XAUTHORITY=spec.xauthority)
+        try:
+            proc = await self._spawn(*argv, env=env,
+                                     stdout=asyncio.subprocess.DEVNULL,
+                                     stderr=asyncio.subprocess.DEVNULL)
+        except FileNotFoundError:
+            log.exception("x11: chromium missing")
+            return False
+        spec.browsers.append(proc)
+        return True
+
     def metrics(self) -> dict:
         specs = list(self._specs.values())
         return {

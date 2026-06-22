@@ -47,3 +47,23 @@ async def test_stop_display_idempotent(tmp_path):
     await mgr.stop_display("sess-1")
     await mgr.stop_display("sess-1")  # no raise
     assert mgr.display_for("sess-1") is None
+
+@pytest.mark.asyncio
+async def test_ensure_vnc_spawns_x11vnc_once(tmp_path):
+    spawned=[]
+    async def fake_spawn(*argv, **kw): spawned.append(argv[0]); return FakeProc()
+    mgr = X11Manager(DisplayAllocator(100,2,6100), resolution="800x600x24", max_browsers=2,
+                     spawn=fake_spawn, ready_check=lambda d: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    p1 = await mgr.ensure_vnc("S"); p2 = await mgr.ensure_vnc("S")
+    assert p1 == p2 == 6100
+    assert spawned.count("x11vnc") == 1
+
+@pytest.mark.asyncio
+async def test_launch_browser_respects_cap(tmp_path):
+    async def fake_spawn(*argv, **kw): return FakeProc()
+    mgr = X11Manager(DisplayAllocator(100,2,6100), resolution="800x600x24", max_browsers=1,
+                     spawn=fake_spawn, ready_check=lambda d: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    assert await mgr.launch_browser("S", "https://example.com") is True
+    assert await mgr.launch_browser("S", None) is False  # cap=1
