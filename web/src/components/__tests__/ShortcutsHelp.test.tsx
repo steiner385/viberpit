@@ -17,6 +17,14 @@ describe('ShortcutsHelp', () => {
     expect(screen.getByText(/cycle permission mode/i)).toBeInTheDocument()
   })
 
+  it('documents the rebound and detach shortcuts', () => {
+    render(<ShortcutsHelp onClose={vi.fn()} />)
+    expect(screen.getByText('Ctrl+R')).toBeInTheDocument()
+    expect(screen.getByText('Ctrl+X')).toBeInTheDocument()
+    expect(screen.getByText('← / Esc')).toBeInTheDocument()
+    expect(screen.getByText('Ctrl+Z')).toBeInTheDocument()
+  })
+
   it('Escape closes', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()
