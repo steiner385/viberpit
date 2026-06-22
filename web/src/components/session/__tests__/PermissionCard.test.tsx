@@ -86,4 +86,42 @@ describe('PermissionCard', () => {
     const primary = screen.getByRole('button', { name: /^Allow Bash/i })
     expect(document.activeElement).toBe(primary)
   })
+
+  it('digit 1 allows, 2 denies, 3 always (normal mode)', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={bashPerm} onDecision={onDecision} />)
+    await user.keyboard('1')
+    expect(onDecision).toHaveBeenCalledWith('perm-1', 'allow')
+    await user.keyboard('2')
+    expect(onDecision).toHaveBeenCalledWith('perm-1', 'deny')
+    await user.keyboard('3')
+    expect(onDecision).toHaveBeenCalledWith('perm-1', 'always')
+  })
+
+  it('digit 3 is ignored in interactive mode (no always button)', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={bashPerm} mode="interactive" onDecision={onDecision} />)
+    await user.keyboard('3')
+    expect(onDecision).not.toHaveBeenCalled()
+  })
+
+  it('ArrowDown then Enter denies', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={bashPerm} onDecision={onDecision} />)
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(onDecision).toHaveBeenCalledWith('perm-1', 'deny')
+  })
+
+  it('plan variant: digit 1 allows, 2 denies', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={planPerm} onDecision={onDecision} />)
+    await user.keyboard('1')
+    expect(onDecision).toHaveBeenCalledWith(planPerm.permId, 'allow')
+    await user.keyboard('2')
+    expect(onDecision).toHaveBeenCalledWith(planPerm.permId, 'deny')
+  })
 })
