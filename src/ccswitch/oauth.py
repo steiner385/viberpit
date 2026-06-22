@@ -54,6 +54,28 @@ class Usage:
     weekly_resets_at: datetime | None
     extra_usage_enabled: bool
 
+    def to_dict(self) -> dict:
+        return {
+            "sessionPct": self.session_pct,
+            "sessionResetsAt": self.session_resets_at.isoformat() if self.session_resets_at else None,
+            "weeklyPct": self.weekly_pct,
+            "weeklyResetsAt": self.weekly_resets_at.isoformat() if self.weekly_resets_at else None,
+            "extraUsageEnabled": self.extra_usage_enabled,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Usage":
+        from datetime import datetime
+        def _p(s):
+            return datetime.fromisoformat(s) if s else None
+        return cls(
+            session_pct=d["sessionPct"],
+            session_resets_at=_p(d["sessionResetsAt"]),
+            weekly_pct=d["weeklyPct"],
+            weekly_resets_at=_p(d["weeklyResetsAt"]),
+            extra_usage_enabled=d["extraUsageEnabled"],
+        )
+
 
 def _retry_delay(http_headers, attempt: int, rng=random.random) -> float:
     """Seconds to wait before retry *attempt* (0-based).

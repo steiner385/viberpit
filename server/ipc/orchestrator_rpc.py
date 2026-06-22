@@ -10,6 +10,18 @@ from server.ipc.daemon import register_rpc
 def register_orchestrator_rpc(app, orch) -> None:
     app.state.pumped = set()
 
+    async def _global_pump():
+        q = orch.subscribe_events()
+        while True:
+            ev = await q.get()
+            await app.state.publish("_global", ev)
+
+    try:
+        loop = asyncio.get_running_loop()
+        app.state.global_pump = loop.create_task(_global_pump(), name="global-pump")
+    except RuntimeError:
+        app.state.global_pump = None   # no loop at register time (sync TestClient tests don't use the bus)
+
     async def _pump(session_id: str, driver) -> None:
         async for e in driver.events():
             await app.state.publish(session_id, e.to_wire())
@@ -17,10 +29,12 @@ def register_orchestrator_rpc(app, orch) -> None:
     async def ensure_driver(params: dict) -> dict:
         session_id = params["session_id"]
         driver = await orch.ensure_driver(session_id, params.get("identity", "system"))
-        if driver is not None and session_id not in app.state.pumped:
+        if driver is None:
+            return {"found": False}
+        if session_id not in app.state.pumped:
             app.state.pumped.add(session_id)
             asyncio.create_task(_pump(session_id, driver), name=f"pump-{session_id}")
-        return {"found": driver is not None}
+        return {"found": True, "status": driver.current_status(), "queued": driver.queued()}
 
     async def list_sessions(params: dict) -> dict:
         return {"sessions": [r.to_dict() for r in orch.list_sessions()]}
@@ -79,3 +93,17 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "unarchive", unarchive)
     register_rpc(app, "adopt_session", adopt_session)
     register_rpc(app, "transcript_events", transcript_events)
+
+    async def usage(params: dict) -> dict:
+        u = await orch.poller.get(params["name"])
+        return {"usage": u.to_dict() if u is not None else None}
+
+    async def pending_permissions(params: dict):
+        return orch._registry.pending(params["session_id"])
+
+    async def active_session_count(params: dict):
+        return orch.active_session_count()
+
+    register_rpc(app, "usage", usage)
+    register_rpc(app, "pending_permissions", pending_permissions)
+    register_rpc(app, "active_session_count", active_session_count)
