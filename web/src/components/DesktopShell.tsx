@@ -100,6 +100,8 @@ function SessionComposer() {
       onSetMode={rt.onSetMode}
       queued={rt.state.queued}
       onCancelQueued={rt.onCancelQueued}
+      commands={rt.commands}
+      onCommand={rt.onCommand}
     />
   )
 }

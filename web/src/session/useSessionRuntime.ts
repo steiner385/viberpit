@@ -14,7 +14,7 @@ import { useSessionSocket } from '@/ws/client'
 import type { ConnectionState, WsRotatedMsg, WsErrorMsg } from '@/ws/client'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { TranscriptState } from '@/session/reducer'
-import type { SessionEvent } from '@/session/events'
+import type { SessionEvent, Command } from '@/session/events'
 import { selectSubAgents } from '@/session/selectors'
 import { remainingContextPct } from '@/lib/contextWindow'
 import { useSessions, useAccounts } from '@/api/hooks'
@@ -49,6 +49,10 @@ export interface SessionRuntime {
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   onCancelQueued: (index: number) => void
+  commands: Command[]
+  commandResult: { render: 'help' | 'context'; data: unknown } | null
+  onCommand: (name: string, args: string) => void
+  dismissCommandResult: () => void
 }
 
 export function useSessionRuntime(sessionId: string): SessionRuntime {
@@ -64,11 +68,14 @@ export function useSessionRuntime(sessionId: string): SessionRuntime {
     answerQuestion,
     setPermissionMode,
     cancelQueued,
+    command,
   } = useSessionSocket()
 
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
   const [mode, setMode] = useState('interactive')
   const [armedQuestionId, setArmedQuestionId] = useState<string | null>(null)
+  const [commands, setCommands] = useState<Command[]>([])
+  const [commandResult, setCommandResult] = useState<{ render: 'help' | 'context'; data: unknown } | null>(null)
   const modeRef = useRef('interactive')
   const [toolDetailMode, setToolDetailMode] = useState<ToolDetailMode>('auto')
   const toggleToolDetail = useCallback(
@@ -92,15 +99,31 @@ export function useSessionRuntime(sessionId: string): SessionRuntime {
       dispatch({ type: 'error', code: msg.code, message: msg.message, resetsAt: msg.resetsAt ?? null })
     }
 
+    const onCommands = (msg: { sessionId: string; commands: Command[] }) => {
+      if (msg.sessionId !== sessionId) return
+      setCommands(msg.commands)
+    }
+    const onCommandResult = (msg: { sessionId: string; ok: boolean; render?: string; data?: unknown; error?: string }) => {
+      if (msg.sessionId !== sessionId) return
+      if (!msg.ok) { dispatch({ type: '_notice', text: msg.error ? `Command failed: ${msg.error}` : 'Command failed' }); return }
+      if (msg.render === 'clear')  { dispatch({ type: '_clear', text: (msg.data as { text: string })?.text ?? 'Conversation cleared' }); return }
+      if (msg.render === 'notice') { dispatch({ type: '_notice', text: (msg.data as { text: string })?.text ?? '' }); return }
+      if (msg.render === 'help' || msg.render === 'context') { setCommandResult({ render: msg.render, data: msg.data }) }
+    }
+
     on('sessionEvent', onEvent)
     on('rotated', onRotated)
     on('error', onError)
+    on('commands', onCommands)
+    on('commandResult', onCommandResult)
     attach(sessionId)
 
     return () => {
       off('sessionEvent', onEvent)
       off('rotated', onRotated)
       off('error', onError)
+      off('commands', onCommands)
+      off('commandResult', onCommandResult)
       detach(sessionId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -173,6 +196,8 @@ export function useSessionRuntime(sessionId: string): SessionRuntime {
     (index: number) => cancelQueued(sessionId, index),
     [sessionId, cancelQueued],
   )
+  const onCommand = useCallback((name: string, args: string) => command(sessionId, name, args), [sessionId, command])
+  const dismissCommandResult = useCallback(() => setCommandResult(null), [])
 
   // Keep modeRef current so external keydown handlers can read the latest mode.
   useEffect(() => {
@@ -240,5 +265,9 @@ export function useSessionRuntime(sessionId: string): SessionRuntime {
     onInterrupt,
     onSetMode,
     onCancelQueued,
+    commands,
+    commandResult,
+    onCommand,
+    dismissCommandResult,
   }
 }
