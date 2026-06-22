@@ -1055,6 +1055,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const [branchError, setBranchError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
   const [permDeleteTarget, setPermDeleteTarget] = useState<ArchivedSession | null>(null)
+  // Permanent-delete confirmation for a live (non-archived) session card.
+  const [sessionDeleteTarget, setSessionDeleteTarget] = useState<{ id: string; name: string } | null>(null)
   const [unarchivingId, setUnarchivingId] = useState<string | null>(null)
 
   // ── Keyboard selection state ─────────────────────────────────────────────────
@@ -1162,6 +1164,20 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const handleClose = useCallback((id: string) => {
     closeSession.mutate(id)
   }, [closeSession])
+
+  // Open the permanent-delete confirmation for a live session card.
+  const handleSessionDelete = useCallback((id: string) => {
+    const session = sessions.find((s) => s.id === id)
+    setSessionDeleteTarget({ id, name: session?.name ?? id.slice(0, 8) })
+  }, [sessions])
+
+  function confirmSessionDelete() {
+    if (!sessionDeleteTarget) return
+    permanentDeleteSession.mutate(sessionDeleteTarget.id, {
+      onSuccess: () => setSessionDeleteTarget(null),
+      onError: () => setSessionDeleteTarget(null),
+    })
+  }
 
   // ── DispatchBar handlers ─────────────────────────────────────────────────────
 
@@ -1449,6 +1465,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             onOpen={handleOpen}
             onRename={handleRename}
             onClose={handleClose}
+            onDelete={handleSessionDelete}
           />
 
           <AdoptPanel />
@@ -1556,6 +1573,15 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           sessionName={permDeleteTarget.name || permDeleteTarget.id.slice(0, 8)}
           onClose={() => setPermDeleteTarget(null)}
           onConfirm={confirmPermanentDelete}
+          isPending={permanentDeleteSession.isPending}
+        />
+      )}
+
+      {sessionDeleteTarget && (
+        <PermanentDeleteDialog
+          sessionName={sessionDeleteTarget.name}
+          onClose={() => setSessionDeleteTarget(null)}
+          onConfirm={confirmSessionDelete}
           isPending={permanentDeleteSession.isPending}
         />
       )}

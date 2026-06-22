@@ -17,13 +17,13 @@ const noop = () => {}
 describe('SessionCard auto-name affordance', () => {
   it('marks an auto-named session', () => {
     render(<SessionCard session={{ ...base, nameIsAuto: true }} account={undefined}
-      onOpen={noop} onRename={noop} onClose={noop} />)
+      onOpen={noop} onRename={noop} onClose={noop} onDelete={noop} />)
     expect(screen.getByText('Fix login bug')).toHaveAttribute('title', 'Auto-named by Claude')
   })
 
   it('does not mark a manually named session', () => {
     render(<SessionCard session={{ ...base, nameIsAuto: false }} account={undefined}
-      onOpen={noop} onRename={noop} onClose={noop} />)
+      onOpen={noop} onRename={noop} onClose={noop} onDelete={noop} />)
     expect(screen.getByText('Fix login bug')).not.toHaveAttribute('title')
   })
 })

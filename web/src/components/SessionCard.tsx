@@ -1,6 +1,5 @@
-import * as React from 'react'
-import { useState, useRef, useEffect } from 'react'
-import { Pencil, Trash2, EllipsisVertical, FolderGit2 } from 'lucide-react'
+import { useRef, useEffect } from 'react'
+import { Pencil, Archive, Trash2, FolderGit2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { StatusPill, UsageBadge } from './UsageBadge'
@@ -12,13 +11,13 @@ interface SessionCardProps {
   selected?: boolean
   onOpen: (id: string) => void
   onRename: (id: string) => void
+  /** Archive the session (stops the driver, moves it to the Archived tab). */
   onClose: (id: string) => void
+  /** Permanently delete the session (irreversible; confirmed by the caller). */
+  onDelete: (id: string) => void
 }
 
-export function SessionCard({ session, account, selected = false, onOpen, onRename, onClose }: SessionCardProps) {
-  const [menuOpen, setMenuOpen] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
-  const menuButtonRef = useRef<HTMLButtonElement>(null)
+export function SessionCard({ session, account, selected = false, onOpen, onRename, onClose, onDelete }: SessionCardProps) {
   const articleRef = useRef<HTMLElement>(null)
 
   // Scroll selected row into view when selection changes (jsdom doesn't implement scrollIntoView)
@@ -27,28 +26,6 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
       articleRef.current.scrollIntoView({ block: 'nearest' })
     }
   }, [selected])
-
-  // Close menu on outside click
-  React.useEffect(() => {
-    if (!menuOpen) return
-    function handleClick(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [menuOpen])
-
-  function handleRename() {
-    setMenuOpen(false)
-    onRename(session.id)
-  }
-
-  function handleClose() {
-    setMenuOpen(false)
-    onClose(session.id)
-  }
 
   const repoLabel = formatRepoLabel(session.repo)
 
@@ -122,10 +99,11 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
         </div>
       </button>
 
-      {/* Overflow action menu */}
-      <div className="relative flex-shrink-0" ref={menuRef}>
+      {/* Per-session actions — explicit buttons (no overflow menu).
+          Each is a 44px touch target with an aria-label + native title tooltip
+          so the icon-only controls stay accessible and discoverable on mobile. */}
+      <div className="flex flex-shrink-0 items-center gap-1">
         <button
-          ref={menuButtonRef}
           type="button"
           className={cn(
             'h-11 w-11 flex items-center justify-center rounded-md',
@@ -133,54 +111,40 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
             'hover:bg-gray-100 dark:hover:bg-gray-700',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
           )}
-          aria-label={`Actions for session ${session.name}`}
-          aria-haspopup="true"
-          aria-expanded={menuOpen}
-          onClick={() => setMenuOpen((v) => !v)}
+          aria-label={`Rename session ${session.name}`}
+          title="Rename"
+          onClick={() => onRename(session.id)}
         >
-          <EllipsisVertical size={16} aria-hidden="true" />
+          <Pencil size={16} aria-hidden="true" />
         </button>
-
-        {menuOpen && (
-          <div
-            className={cn(
-              'absolute right-0 top-full mt-1 z-10 min-w-[140px]',
-              'rounded-md border border-gray-200 dark:border-gray-600',
-              'bg-white dark:bg-gray-800 shadow-lg py-1',
-            )}
-            role="menu"
-            aria-label={`Actions for ${session.name}`}
-          >
-            <button
-              type="button"
-              role="menuitem"
-              className={cn(
-                'flex w-full items-center gap-2 px-3 py-2 text-sm min-h-[44px]',
-                'text-gray-700 dark:text-gray-200',
-                'hover:bg-gray-100 dark:hover:bg-gray-700',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500',
-              )}
-              onClick={handleRename}
-            >
-              <Pencil size={14} aria-hidden="true" />
-              Rename
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className={cn(
-                'flex w-full items-center gap-2 px-3 py-2 text-sm min-h-[44px]',
-                'text-red-600 dark:text-red-400',
-                'hover:bg-red-50 dark:hover:bg-red-900/20',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500',
-              )}
-              onClick={handleClose}
-            >
-              <Trash2 size={14} aria-hidden="true" />
-              Close
-            </button>
-          </div>
-        )}
+        <button
+          type="button"
+          className={cn(
+            'h-11 w-11 flex items-center justify-center rounded-md',
+            'text-gray-500 dark:text-gray-400',
+            'hover:bg-gray-100 dark:hover:bg-gray-700',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+          )}
+          aria-label={`Archive session ${session.name}`}
+          title="Archive"
+          onClick={() => onClose(session.id)}
+        >
+          <Archive size={16} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className={cn(
+            'h-11 w-11 flex items-center justify-center rounded-md',
+            'text-red-600 dark:text-red-400',
+            'hover:bg-red-50 dark:hover:bg-red-900/20',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500',
+          )}
+          aria-label={`Delete session ${session.name}`}
+          title="Delete"
+          onClick={() => onDelete(session.id)}
+        >
+          <Trash2 size={16} aria-hidden="true" />
+        </button>
       </div>
     </article>
   )

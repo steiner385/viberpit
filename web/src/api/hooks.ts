@@ -217,7 +217,12 @@ export function usePermanentDeleteSession() {
   const qc = useQueryClient()
   return useMutation<void, ApiRequestError, string>({
     mutationFn: (id) => api.del<void>(`/sessions/${id}/permanent`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.archived }) },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.archived })
+      // A live session can also be permanently deleted from its card, so the
+      // active sessions list must refresh too.
+      qc.invalidateQueries({ queryKey: QK.sessions })
+    },
   })
 }
 
