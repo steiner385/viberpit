@@ -41,6 +41,14 @@ export function selectSubAgents(turns: Turn[]): SubAgent[] {
 /**
  * Count sub-agents (Task or Agent tool calls) that are still running (no
  * result yet). Used by the busy indicator to show a more specific label.
+ *
+ * Intentionally derived from the parent thread's `turns` (the Task tool block +
+ * its result), NOT from the reducer's `state.subAgents` map. The two are
+ * complementary, not redundant: `state.subAgents` holds each sub-agent's nested
+ * thread *content* and is only created once the sub-agent emits its first child
+ * event, whereas the spawning Task block appears in `turns` immediately. Reading
+ * `turns` therefore reflects a just-spawned sub-agent as "running" before any
+ * child event arrives — the more responsive signal for a live busy indicator.
  */
 export function selectRunningSubAgentCount(turns: Turn[]): number {
   return selectSubAgents(turns).filter((a) => a.status === 'running').length
