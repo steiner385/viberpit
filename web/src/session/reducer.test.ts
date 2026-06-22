@@ -285,6 +285,23 @@ describe('transcriptReducer', () => {
     expect(questionBlocks).toHaveLength(1)
   })
 
+  it('re-emitted question after replayComplete upgrades a replay-created block to live', () => {
+    // Reproduces the refresh/reconnect bug: during replay (replaying=true) the
+    // question is created live:false; the server then re-emits the still-pending
+    // question after replayComplete. The idempotency guard must upgrade the
+    // existing block to live:true instead of dropping the re-emit.
+    const q: SessionEvent = { type: 'question', questionId: 'q-1', turnId: 't1', header: 'Pick', question: 'Which?', options: [], multiSelect: false }
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      q,                            // replay: block created with live:false
+      { type: 'replayComplete' },   // replaying → false
+      q,                            // re-emit of the still-pending question
+    ])
+    const blocks = s.turns[0].blocks.filter((b) => b.kind === 'question')
+    expect(blocks).toHaveLength(1) // still idempotent — exactly one block
+    expect(blocks.every((b) => b.kind === 'question' && b.live)).toBe(true)
+  })
+
   // ── Referential stability on no-ops ────────────────────────────────────────
 
   it('_resolvePermission for an unknown permId returns the same state reference', () => {

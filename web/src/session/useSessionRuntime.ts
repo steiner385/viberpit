@@ -126,7 +126,18 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   // chosen labels into the transcript as a user bubble.
   const onAnswer = useCallback(
     (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => {
-      answerQuestion(sessionId, questionId, selected, mode)
+      const sent = answerQuestion(sessionId, questionId, selected, mode)
+      if (!sent) {
+        // The socket wasn't open — the answer never left the browser. Keep the
+        // question interactive so it can be retried once reconnected, and surface
+        // a notice instead of silently swallowing the click.
+        dispatch({
+          type: 'error',
+          code: 'answer_not_sent',
+          message: "Not connected — your answer wasn't sent. It will stay here; try again once you're reconnected.",
+        })
+        return
+      }
       dispatch({ type: '_resolveQuestion', questionId })
       if (selected.length > 0) {
         dispatch({ type: 'user', turnId: `answer:${questionId}`, text: selected.join(', ') })
