@@ -265,7 +265,9 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 elif msg_type == "detach":
                     await _handle_detach(session_id)
                 elif msg_type == "prompt":
-                    await orchestrator.send_prompt(session_id, msg.get("text", ""))
+                    await orchestrator.send_prompt(
+                        session_id, msg.get("text", ""),
+                        msg.get("attachmentIds") or None)
                 elif msg_type == "interrupt":
                     await orchestrator.interrupt(session_id)
                     try:

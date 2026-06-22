@@ -47,6 +47,7 @@ class CreateSessionRequest(BaseModel):
     name: str | None = None
     account: str | None = None
     initialPrompt: str | None = None
+    attachmentIds: list[str] | None = None
     repo: str | None = None  # nameWithOwner, e.g. "owner/name"
     branch: str | None = None
     permissionMode: str | None = None
@@ -176,6 +177,7 @@ async def create_session(
             name=name,
             account=body.account,
             initial_prompt=body.initialPrompt,
+            attachment_ids=body.attachmentIds,
             cwd=cwd,
             branch=body.branch,
             repo=body.repo,
