@@ -5,13 +5,15 @@ import { getLastRepo, setLastRepo } from '@/lib/lastRepo'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 import { useImageAttachments } from './session/useImageAttachments'
 import { AttachmentChips } from './session/AttachmentChips'
+import { MicButton } from './session/MicButton'
+import { useDictationField } from '@/lib/useDictationField'
 
 export interface DispatchBarProps {
   repos: GithubRepo[]
   reposLoading: boolean
   reposError: boolean
   /** Fired on Enter when the prompt has text or images are attached. */
-  onDispatch: (input: { initialPrompt: string; repo: string | null; images: { sha: string; mime: string; name: string }[] }) => void
+  onDispatch: (input: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) => void
   /** ↑/↓ at a line boundary (or empty prompt). */
   onNavigate: (dir: 'up' | 'down') => void
   /** Enter on an EMPTY prompt, or →. */
@@ -53,6 +55,7 @@ export function DispatchBar({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const att = useImageAttachments()
+  const voice = useDictationField({ value: text, setValue: setText, textareaRef })
 
   // Auto-focus when autoFocusKey changes (or on mount)
   useEffect(() => {
@@ -84,7 +87,7 @@ export function DispatchBar({
       onOpenHighlighted()
       return
     }
-    onDispatch({ initialPrompt: trimmed, repo: repo || null, images: refs })
+    onDispatch({ initialPrompt: trimmed, repo: repo || null, attachmentIds: refs })
     setText('')
     att.clear()
     // Reset textarea height
@@ -279,6 +282,13 @@ export function DispatchBar({
             'disabled:opacity-50 disabled:cursor-not-allowed',
           )}
           style={{ maxHeight: '192px' }}
+        />
+
+        <MicButton
+          supported={voice.supported}
+          listening={voice.listening}
+          error={voice.error}
+          onToggle={voice.toggle}
         />
 
         <input

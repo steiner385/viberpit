@@ -4,12 +4,15 @@ import { cn } from '@/lib/utils'
 import { useImageAttachments } from './useImageAttachments'
 import { AttachmentChips } from './AttachmentChips'
 import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
+import { MicButton } from './MicButton'
+import { useDictationField } from '@/lib/useDictationField'
 import type { Command } from '@/session/events'
+import { statusTier } from '@/session/statusTier'
 
 interface Props {
   status: { state: string; count: number }
   mode: string
-  onPrompt: (text: string, images: { sha: string; mime: string; name: string }[]) => void
+  onPrompt: (text: string, attachmentIds: string[]) => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   queued?: string[]
@@ -27,8 +30,9 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const paletteRef = useRef<CommandPaletteHandle>(null)
-  const isWorking = status.state === 'working'
+  const isWorking = statusTier(status.state) === 'busy'
   const att = useImageAttachments()
+  const voice = useDictationField({ value: text, setValue: setText, textareaRef })
   const slash = text.startsWith('/') && !text.includes('\n')
   const afterSlash = slash ? text.slice(1) : ''
   // The palette is the keyboard owner only while the user is still typing the
@@ -202,6 +206,13 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
             'min-h-[44px] overflow-y-auto',
           )}
           style={{ maxHeight: '192px' }}
+        />
+
+        <MicButton
+          supported={voice.supported}
+          listening={voice.listening}
+          error={voice.error}
+          onToggle={voice.toggle}
         />
 
         <input

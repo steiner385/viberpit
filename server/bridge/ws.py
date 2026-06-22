@@ -220,6 +220,18 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 ).to_wire())
                 await _send(q_wire)
 
+            # 2d) Emit the current live status so a client attaching or reconnecting
+            #     mid-turn renders the true state immediately. The live status is
+            #     otherwise only pushed on transitions, so without this a mid-turn
+            #     attach would show the reducer's initial 'idle' ("Ready"). Best-effort.
+            try:
+                await _send(redact_event(ev.Status(
+                    state=driver.current_status(),
+                    count=len(driver.queued()),
+                ).to_wire()))
+            except Exception:
+                log.warning("ws.attach: live status emit failed for %s", session_id, exc_info=True)
+
             # 2c) Send the deferred initial prompt (if any) now that the client is
             #     watching.  The prompt was stored in create_session instead of being
             #     sent immediately so that its events stream live to this first attach
@@ -227,10 +239,10 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             #     consumer exists in driver._out.  Only fires on the first attach
             #     (pop clears the entry); reconnects fall through to live-stream only.
             pending_prompt = orchestrator.pop_pending_initial_prompt(session_id)
-            pending_images = orchestrator.pop_pending_initial_images(session_id)
-            if pending_prompt is not None or pending_images:
+            pending_attachment_ids = orchestrator.pop_pending_initial_attachment_ids(session_id)
+            if pending_prompt is not None or pending_attachment_ids:
                 await orchestrator.send_prompt(
-                    session_id, pending_prompt or "", pending_images)
+                    session_id, pending_prompt or "", pending_attachment_ids)
 
             # 3) Start the live stream: forward driver events into the batcher.
             live_tasks[session_id] = asyncio.create_task(
@@ -287,7 +299,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                     await _handle_detach(session_id)
                 elif msg_type == "prompt":
                     await orchestrator.send_prompt(
-                        session_id, msg.get("text", ""), msg.get("images"))
+                        session_id, msg.get("text", ""), msg.get("attachmentIds"))
                 elif msg_type == "interrupt":
                     await orchestrator.interrupt(session_id)
                     try:

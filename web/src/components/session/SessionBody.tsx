@@ -15,8 +15,12 @@ import { SessionPlaceholder } from './SessionPlaceholder'
 import { WorkingIndicator } from './WorkingIndicator'
 import { PendingQuestionPanel } from './PendingQuestionPanel'
 import { SessionAriaLive } from './SessionAriaLive'
+import { statusTier } from '@/session/statusTier'
+import { selectRunningSubAgentCount } from '@/session/selectors'
 
 export function SessionBody({ rt }: { rt: SessionRuntime }) {
+  const runningSubAgents = selectRunningSubAgentCount(rt.state.turns)
+
   return (
     <>
       {/* Status strip: account · model · context · quota · live status · sub-agents.
@@ -29,7 +33,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           contextPct={rt.contextPct}
           quota={rt.quota}
           subAgents={rt.subAgents}
-          statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} />}
+          statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} subAgentCount={runningSubAgents} />}
         />
       </div>
 
@@ -79,7 +83,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
       )}
 
       {/* Prominent "waiting for Claude" indicator shown below the last turn */}
-      {rt.state.status.state === 'working' && (
+      {statusTier(rt.state.status.state) === 'busy' && (
         <div
           aria-hidden="true"
           className={cn(
@@ -87,7 +91,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
             'text-xs text-gray-400 dark:text-gray-500',
           )}
         >
-          <WorkingIndicator count={rt.state.status.count} />
+          <WorkingIndicator count={rt.state.status.count} subAgentCount={runningSubAgents} />
         </div>
       )}
 

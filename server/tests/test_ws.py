@@ -494,6 +494,38 @@ def test_reattach_reemits_pending_question(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# Reattach emits the current live status (regression: stale 'Ready' mid-turn)
+# ---------------------------------------------------------------------------
+
+def test_attach_emits_live_status(ws_env):
+    """Attaching to a session whose driver is blocked mid-turn emits a live status
+    frame so the in-session header reflects the true state (regression: stale 'Ready')."""
+    _app, orch, client = ws_env([], client_cls=_QuestionBlockingFakeClient)
+    session = client.portal.call(
+        lambda: orch.create_session("test-attach-status", identity="wstest@example.com")
+    )
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+        # Drive the turn until it blocks on the question.
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "go"}))
+        _drain_events(ws, until_type="question", timeout=8.0)
+        ws.send_text(json.dumps({"type": "detach", "sessionId": session_id}))
+
+    # Reattach — a status frame must now be emitted, carrying the blocked state.
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="status", timeout=6.0)
+        status_evs = [e for e in events if e.get("type") == "status"]
+        assert status_evs, f"no status frame on attach — {[e.get('type') for e in events]}"
+        assert status_evs[-1]["state"] in ("waiting_question", "waiting_input"), (
+            f"expected a needs-you state, got {status_evs[-1]['state']}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Frame larger than 256KB is rejected, socket stays open
 # ---------------------------------------------------------------------------
 
@@ -562,8 +594,6 @@ def test_attach_rehydrated_session_gets_replay_complete(tmp_path):
     cfg_dir = tmp_path / "cfg" / "alpha"
     cfg_dir.mkdir(parents=True)
 
-    _seed_account("alpha")
-
     env = {
         "CCSWITCH_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
@@ -574,6 +604,11 @@ def test_attach_rehydrated_session_gets_replay_complete(tmp_path):
          patch("server.sessions.orchestrator.configdir"), \
          patch("server.sessions.orchestrator.select_account", return_value="alpha"), \
          patch("ccswitch.accounts.usage_for", side_effect=_fake_usage):
+
+        # Seed INSIDE the CCSWITCH_HOME patch so paths.slot_path() resolves to the
+        # temp store — otherwise it leaks an "alpha" account into the real store
+        # (the conftest guard now fails the test if this regresses).
+        _seed_account("alpha")
 
         orch = _make_orch([])
         app = create_app(orchestrator=orch)

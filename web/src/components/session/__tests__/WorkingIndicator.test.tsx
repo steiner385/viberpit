@@ -118,6 +118,20 @@ describe('WorkingIndicator', () => {
     })
   })
 
+  describe('sub-agent phrase', () => {
+    it('shows the sub-agent phrase when subAgentCount > 0', () => {
+      render(<WorkingIndicator subAgentCount={1} />)
+      const sr = document.querySelector('.sr-only')
+      expect(sr?.textContent).toBe('Running a sub-agent…')
+    })
+
+    it('pluralizes for multiple sub-agents', () => {
+      render(<WorkingIndicator subAgentCount={3} />)
+      const sr = document.querySelector('.sr-only')
+      expect(sr?.textContent).toBe('Running 3 sub-agents…')
+    })
+  })
+
   describe('elapsed time readout', () => {
     it('shows seconds elapsed and updates as time passes', () => {
       vi.useFakeTimers()

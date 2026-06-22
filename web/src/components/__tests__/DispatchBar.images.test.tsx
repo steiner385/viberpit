@@ -7,10 +7,10 @@ beforeEach(() => {
   URL.createObjectURL = vi.fn(() => 'blob:p'); // @ts-expect-error shim
   URL.revokeObjectURL = vi.fn()
   vi.stubGlobal('fetch', vi.fn(async () =>
-    ({ ok: true, json: async () => ({ sha: 'abc', mime: 'image/png', name: 'x.png' }) })))
+    ({ ok: true, json: async () => ({ id: 'att-1', mediaType: 'image/png', filename: 'x.png', byteSize: 10, url: '/api/attachments/att-1' }) })))
 })
 
-it('dispatch includes pasted image refs', async () => {
+it('dispatch includes pasted image attachment ids', async () => {
   const onDispatch = vi.fn()
   render(<DispatchBar repos={[]} reposLoading={false} reposError={false} onDispatch={onDispatch} />)
   const ta = screen.getByRole('textbox')
@@ -21,7 +21,7 @@ it('dispatch includes pasted image refs', async () => {
   fireEvent.keyDown(ta, { key: 'Enter' })
   await waitFor(() => expect(onDispatch).toHaveBeenCalledWith(expect.objectContaining({
     initialPrompt: 'start with this',
-    images: [{ sha: 'abc', mime: 'image/png', name: 'x.png' }] })))
+    attachmentIds: ['att-1'] })))
 })
 
 it('dispatch with image-only (empty prompt) calls onDispatch not onOpenHighlighted', async () => {
@@ -48,6 +48,6 @@ it('dispatch with image-only (empty prompt) calls onDispatch not onOpenHighlight
   fireEvent.keyDown(ta, { key: 'Enter' })
   await waitFor(() => expect(onDispatch).toHaveBeenCalledWith(expect.objectContaining({
     initialPrompt: '',
-    images: [{ sha: 'abc', mime: 'image/png', name: 'x.png' }] })))
+    attachmentIds: ['att-1'] })))
   expect(onOpenHighlighted).not.toHaveBeenCalled()
 })

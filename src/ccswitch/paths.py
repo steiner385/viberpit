@@ -72,8 +72,12 @@ def archive_dir() -> Path:
     return d
 
 
-def uploads_dir() -> Path:
-    """Directory where session image uploads are stored (staging + per-session)."""
-    d = root() / "uploads"
+def attachments_dir() -> Path:
+    """Directory for content-addressed image attachments (named by sha256).
+
+    Files are shared across DB Attachment rows: the same image bytes uploaded
+    twice produce one on-disk file (dedup). Unlink is therefore reference-aware.
+    """
+    d = root() / "attachments"
     d.mkdir(parents=True, exist_ok=True)
     return d
