@@ -1,0 +1,58 @@
+import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { PendingQuestionPanel } from '../PendingQuestionPanel'
+
+const q = (id: string, live: boolean) => ({
+  kind: 'question' as const, id, questionId: id, header: id, question: `${id}?`,
+  options: [{ label: 'Yes' }], multiSelect: false, live,
+})
+const turn = (...blocks: ReturnType<typeof q>[]) => ({ id: `t-${Math.random()}`, role: 'assistant' as const, blocks })
+
+describe('PendingQuestionPanel', () => {
+  it('renders nothing when there is no live question (detached/replay)', () => {
+    const { container } = render(
+      <PendingQuestionPanel turns={[turn(q('a', false))]} onAnswer={vi.fn()} onChat={vi.fn()} armedQuestionId={null} />)
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('pins the first LIVE open question and answers it synchronously on click', () => {
+    const onAnswer = vi.fn()
+    render(<PendingQuestionPanel turns={[turn(q('a', true))]} onAnswer={onAnswer} onChat={vi.fn()} armedQuestionId={null} />)
+    expect(screen.getByText('a?')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('radio', { name: 'Yes' }))
+    expect(onAnswer).toHaveBeenCalledWith('a', ['Yes'])   // immediate, synchronous send
+  })
+
+  it('one at a time: shows only the first live question; the second after the first is gone', () => {
+    const { rerender } = render(
+      <PendingQuestionPanel turns={[turn(q('a', true), q('b', true))]} onAnswer={vi.fn()} onChat={vi.fn()} armedQuestionId={null} />)
+    expect(screen.getByText('a?')).toBeInTheDocument()
+    expect(screen.queryByText('b?')).toBeNull()
+    // After 'a' is answered/removed, 'b' pins.
+    rerender(<PendingQuestionPanel turns={[turn(q('b', true))]} onAnswer={vi.fn()} onChat={vi.fn()} armedQuestionId={null} />)
+    expect(screen.getByText('b?')).toBeInTheDocument()
+  })
+
+  it('chat-arm: clicking "Chat about this" calls onChat with the question id', async () => {
+    const user = userEvent.setup()
+    const onChat = vi.fn()
+    render(
+      <PendingQuestionPanel turns={[turn(q('q1', true))]} onAnswer={vi.fn()} onChat={onChat} armedQuestionId={null} />
+    )
+    await user.click(screen.getByRole('button', { name: /chat about this/i }))
+    expect(onChat).toHaveBeenCalledWith('q1')
+  })
+
+  it('freeform: clicking "Write a response", typing, and "Send response" calls onAnswer with freeform mode', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    render(
+      <PendingQuestionPanel turns={[turn(q('q2', true))]} onAnswer={onAnswer} onChat={vi.fn()} armedQuestionId={null} />
+    )
+    await user.click(screen.getByRole('button', { name: /write a response/i }))
+    await user.type(screen.getByRole('textbox', { name: /write a response/i }), 'my freeform answer')
+    await user.click(screen.getByRole('button', { name: /send response/i }))
+    expect(onAnswer).toHaveBeenCalledWith('q2', ['my freeform answer'], 'freeform')
+  })
+})

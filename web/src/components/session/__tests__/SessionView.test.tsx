@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act, waitFor } from '@testing-library/react'
+import { render, screen, act, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionView } from '../SessionView'
@@ -208,14 +208,16 @@ describe('SessionView', () => {
       multiSelect: false,
     })
 
-    // Live questions are pinned above the composer (Task 4 — PendingQuestionPanel).
-    // They must NOT render inline in the transcript.
-    await waitFor(() => {
-      expect(screen.queryByText('Which color?')).toBeNull()
-      expect(screen.queryByRole('radio')).toBeNull()
-    })
+    // Live questions are pinned in the PendingQuestionPanel above the composer
+    // (Task 4), rendered interactively THERE — not inline in the transcript.
+    const panel = await screen.findByTestId('pending-question-panel')
+    expect(within(panel).getByText('Which color?')).toBeInTheDocument()
+    expect(within(panel).getByRole('radio', { name: 'Red' })).toBeInTheDocument()
+    // Exactly one copy in the DOM — pinned, not duplicated inline.
+    expect(screen.getAllByText('Which color?')).toHaveLength(1)
 
-    // The "action needed" banner signals the pending question.
+    // The "action needed" banner still signals the pending question.
+    // (Task 5 narrows the banner to open permissions only.)
     await waitFor(() => {
       expect(screen.getByText(/action needed/i)).toBeInTheDocument()
     })
@@ -353,20 +355,20 @@ describe('SessionView question escape hatches', () => {
     return utils
   }
 
-  // NOTE: The "Chat about this" and "Write a response" escape hatches are rendered
-  // by PendingQuestionPanel (Task 4), which pins the live question above the composer.
-  // These tests will be re-enabled / extended once PendingQuestionPanel is implemented.
+  // The "Chat about this" / "Write a response" escape hatches render inside the
+  // PendingQuestionPanel (Task 4), which pins the live question above the composer.
+  // (The hatch callbacks are unit-tested in PendingQuestionPanel.test.tsx.)
 
-  it('live question is not rendered inline in the escape-hatch context either', async () => {
+  it('live question and its escape hatches render in the pinned panel, not inline', async () => {
     renderAndAskQuestion()
-    // Live questions are filtered from inline rendering — no interactive buttons appear in the transcript.
-    // (They will be rendered by PendingQuestionPanel in Task 4.)
-    await waitFor(() => {
-      expect(screen.queryByText('Pick one')).toBeNull()
-      expect(screen.queryByRole('button', { name: /chat about this/i })).toBeNull()
-      expect(screen.queryByRole('button', { name: /write a response/i })).toBeNull()
-      expect(screen.getByText(/action needed/i)).toBeInTheDocument()
-    })
+    const panel = await screen.findByTestId('pending-question-panel')
+    expect(within(panel).getByText('Pick one')).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: /chat about this/i })).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: /write a response/i })).toBeInTheDocument()
+    // Exactly one copy — pinned, not inline in the transcript.
+    expect(screen.getAllByText('Pick one')).toHaveLength(1)
+    // Banner still signals the pending action (Task 5 narrows it to permissions).
+    expect(screen.getByText(/action needed/i)).toBeInTheDocument()
   })
 
   it('normal prompt is unaffected when no question is armed', async () => {
