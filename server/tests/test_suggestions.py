@@ -1,5 +1,8 @@
+import asyncio
 from server.sessions.events import Suggestions
-from server.sessions.suggestions import build_prompt, parse_suggestions
+from server.sessions.suggestions import build_prompt, parse_suggestions, SuggestionService, SUGGEST_SYSTEM_PROMPT
+from server.tests.fakes.fake_sdk import FakeSDKClient
+from server.tests.fakes import fake_sdk as f
 
 
 def test_suggestions_to_wire():
@@ -35,12 +38,6 @@ def test_parse_garbage_returns_empty():
 def test_build_prompt_includes_context():
     p = build_prompt("User: hi\n\nAssistant: hello")
     assert "User: hi" in p and "Assistant: hello" in p
-
-
-import asyncio
-from server.sessions.suggestions import SuggestionService
-from server.tests.fakes.fake_sdk import FakeSDKClient
-from server.tests.fakes import fake_sdk as f
 
 
 def test_generate_parses_streamed_json():
@@ -92,3 +89,21 @@ def test_real_suggestion_factory_builds_isolated_oneshot(monkeypatch):
     assert opts.resume is None
     assert opts.max_turns == 1
     assert opts.model == "claude-haiku-4-5"
+    assert opts.system_prompt == SUGGEST_SYSTEM_PROMPT
+
+
+def test_real_suggestion_factory_empty_model_env_uses_account_default(monkeypatch):
+    import server.sessions.sdk_factory as sf
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, options=None):
+            captured["options"] = options
+
+    import claude_agent_sdk
+    monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _FakeClient)
+    monkeypatch.setenv("CCSWITCH_SUGGEST_MODEL", "")
+
+    sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct")
+    assert captured["options"].model is None
