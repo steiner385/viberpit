@@ -2,18 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { pickWorkingWord } from './workingWords'
 import { formatElapsed } from './elapsed'
-
-/** Returns true when the user has requested reduced motion. Safe in jsdom (matchMedia may be absent). */
-function prefersReducedMotion(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
-
-/** Braille spinner frames — the classic Claude-Code-style cycling dot glyph. */
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
-const SPINNER_INTERVAL_MS = 80
-/** Static glyph shown instead of the cycling spinner under reduced-motion. */
-const STATIC_SPINNER = '⠿'
+import { useBrailleSpinner, prefersReducedMotion } from './brailleSpinner'
 
 /** Module-level memory of the last phrase shown, so consecutive waits never repeat it. */
 let lastWord: string | undefined
@@ -50,15 +39,8 @@ export function WorkingIndicator({ count = 0, className }: Props) {
     return next
   })
 
-  // Cycling braille spinner frame index (motion only).
-  const [frame, setFrame] = useState(0)
-  useEffect(() => {
-    if (reducedMotion) return
-    const id = setInterval(() => {
-      setFrame((f) => (f + 1) % SPINNER_FRAMES.length)
-    }, SPINNER_INTERVAL_MS)
-    return () => clearInterval(id)
-  }, [reducedMotion])
+  // Cycling braille spinner glyph (shared with SessionPlaceholder).
+  const spinnerGlyph = useBrailleSpinner()
 
   // Live elapsed time since this working period began. The start instant is
   // captured in the mount effect (not during render — Date.now() is impure) and
@@ -74,7 +56,6 @@ export function WorkingIndicator({ count = 0, className }: Props) {
   }, [])
 
   const srLabel = count > 0 ? `Working, ${count} queued` : 'Working…'
-  const spinnerGlyph = reducedMotion ? STATIC_SPINNER : SPINNER_FRAMES[frame]
 
   return (
     <span className={cn('inline-flex items-center gap-1.5', className)}>
