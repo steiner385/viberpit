@@ -10,6 +10,18 @@ from server.ipc.daemon import register_rpc
 def register_orchestrator_rpc(app, orch) -> None:
     app.state.pumped = set()
 
+    async def _global_pump():
+        q = orch.subscribe_events()
+        while True:
+            ev = await q.get()
+            await app.state.publish("_global", ev)
+
+    try:
+        loop = asyncio.get_running_loop()
+        app.state.global_pump = loop.create_task(_global_pump(), name="global-pump")
+    except RuntimeError:
+        app.state.global_pump = None   # no loop at register time (sync TestClient tests don't use the bus)
+
     async def _pump(session_id: str, driver) -> None:
         async for e in driver.events():
             await app.state.publish(session_id, e.to_wire())

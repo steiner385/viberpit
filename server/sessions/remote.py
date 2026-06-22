@@ -4,6 +4,7 @@ Methods are async (they await RPC) even where the in-process orchestrator method
 is sync; reconciling that with the sync API callers is an A2.2 concern. A2.1 wires
 the vertical-slice methods only.
 """
+import asyncio
 from ccswitch.oauth import Usage
 from server.sessions.types import SessionRecord
 
@@ -43,6 +44,7 @@ class RemoteDriver:
 class RemoteOrchestrator:
     def __init__(self, client):
         self._client = client
+        self._feeders = {}
 
     async def list_sessions(self) -> list[SessionRecord]:
         r = await self._client.call("list_sessions")
@@ -134,8 +136,26 @@ class RemoteOrchestrator:
     async def active_session_count(self):
         return await self._client.call("active_session_count")
 
+    async def subscribe_events(self):
+        q: asyncio.Queue = asyncio.Queue()
+
+        async def _feed():
+            async for ev in self._client.subscribe("_global"):
+                q.put_nowait(ev)
+
+        self._feeders[id(q)] = asyncio.create_task(_feed(), name="global-feeder")
+        return q
+
+    async def unsubscribe_events(self, q):
+        task = self._feeders.pop(id(q), None)
+        if task is not None:
+            task.cancel()
+
     def subscribe(self, session_id: str):
         return self._client.subscribe(session_id)
 
     async def aclose(self) -> None:
+        for task in list(self._feeders.values()):
+            task.cancel()
+        self._feeders.clear()
         await self._client.aclose()
