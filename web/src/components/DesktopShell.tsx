@@ -28,6 +28,8 @@ import { SettingsPanel } from './settings/SettingsPanel'
 import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
 import { ReviewView } from './ReviewView'
+import { SidebarResizer } from './SidebarResizer'
+import { useSidebarWidth } from '@/lib/useSidebarWidth'
 import { RenameDialog, PermanentDeleteDialog } from './Dashboard'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from './session/SessionRuntimeProvider'
 import { SessionBody } from './session/SessionBody'
@@ -118,6 +120,7 @@ export function DesktopShell() {
   const permanentDeleteSession = usePermanentDeleteSession()
 
   const [tab, setTab] = useState<TabId>('sessions')
+  const [sidebarWidth, setSidebarWidth] = useSidebarWidth()
   const [selection, setSelection] = useState<Target>({ type: 'new' })
   const [reviewId, setReviewId] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -318,7 +321,10 @@ export function DesktopShell() {
   // ── Pieces shared between the provider and no-provider branches ──────────────
 
   const sidebar = (
-    <aside className="w-80 shrink-0 border-r border-gray-200 dark:border-gray-700 flex flex-col min-h-0">
+    <aside
+      style={{ width: sidebarWidth }}
+      className="shrink-0 flex flex-col min-h-0"
+    >
       {/* Tab bar */}
       <div role="tablist" aria-label="Dashboard sections" className="flex gap-1 border-b border-gray-200 dark:border-gray-700 px-2">
         {(['sessions', 'accounts', 'archived'] as TabId[]).map((t) => (
@@ -450,6 +456,7 @@ export function DesktopShell() {
 
       <div className="flex-1 flex min-h-0">
         {sidebar}
+        <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         <main className="flex-1 min-h-0 overflow-hidden flex flex-col">{mainPane}</main>
       </div>
 

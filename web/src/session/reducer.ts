@@ -10,6 +10,7 @@ export const OPTIMISTIC_USER_ID = 'optimistic:user'
 export type Block =
   | { kind: 'text';       id: string; text: string }
   | { kind: 'thinking';   id: string; text: string }
+  | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }> }
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown> } }
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean }
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean }
@@ -124,6 +125,18 @@ function ensureAssistantTurn(turns: Turn[], turnId: string): [Turn[], number] {
   return [[...turns, { id: turnId, role: 'assistant', blocks: [] }], turns.length]
 }
 
+/**
+ * Build the blocks for a user turn: the text block, plus one image block when the
+ * event carries attachments. Single-sourced so every user-turn path (append,
+ * optimistic-seed adoption, sub-thread) renders attachments identically. The image
+ * `url` is used verbatim as an <img> src — a serve URL live, a `data:` URL on replay.
+ */
+function userTurnBlocks(turnId: string, text: string, images?: EvUser['images']): Block[] {
+  const blocks: Block[] = [{ kind: 'text', id: `${turnId}:u`, text }]
+  if (images && images.length) blocks.push({ kind: 'image', id: `${turnId}:img`, images })
+  return blocks
+}
+
 // ── Thread-scoped reducer ─────────────────────────────────────────────────────
 
 type BlockEvent = EvUser | EvTurnStart | EvTextDelta | EvThinkingDelta | EvToolCall | EvToolResult
@@ -137,15 +150,12 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
   switch (ev.type) {
     case 'user': {
       const { turnId, text } = ev
-      const userBlock: Block = { kind: 'text', id: `${turnId}:u`, text }
+      const blocks = userTurnBlocks(turnId, text, ev.images)
       const idx = findTurnIdx(thread.turns, turnId)
       const turns =
         idx === -1
-          ? [...thread.turns, { id: turnId, role: 'user' as const, blocks: [userBlock] }]
-          : replaceTurn(thread.turns, idx, (t) => ({
-              ...t,
-              blocks: t.blocks.map((b) => (b.kind === 'text' && b.id === `${turnId}:u` ? userBlock : b)),
-            }))
+          ? [...thread.turns, { id: turnId, role: 'user' as const, blocks }]
+          : replaceTurn(thread.turns, idx, (t) => ({ ...t, blocks }))
       return { turns, openBlockId: null }
     }
 
@@ -261,7 +271,7 @@ export function transcriptReducer(
     // ── user ─────────────────────────────────────────────────────────────────
     case 'user': {
       const { turnId, text } = ev
-      const userBlock: Block = { kind: 'text', id: `${turnId}:u`, text }
+      const blocks = userTurnBlocks(turnId, text, ev.images)
 
       // Adopt an optimistic seed turn if present: re-key it in place to the real
       // server turnId instead of appending a duplicate. Unconditional adoption is
@@ -272,7 +282,7 @@ export function transcriptReducer(
         const nextTurns = replaceTurn(state.turns, optIdx, () => ({
           id: turnId,
           role: 'user' as const,
-          blocks: [userBlock],
+          blocks,
         }))
         return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [] }
       }
@@ -281,13 +291,10 @@ export function transcriptReducer(
       let nextTurns: Turn[]
       if (idx === -1) {
         // Append new user turn
-        nextTurns = [...state.turns, { id: turnId, role: 'user', blocks: [userBlock] }]
+        nextTurns = [...state.turns, { id: turnId, role: 'user', blocks }]
       } else {
-        // Upsert: replace the text block in the existing turn
-        nextTurns = replaceTurn(state.turns, idx, (t) => ({
-          ...t,
-          blocks: t.blocks.map((b) => (b.kind === 'text' && b.id === `${turnId}:u` ? userBlock : b)),
-        }))
+        // Upsert: rebuild the existing turn's blocks (text + any attachments)
+        nextTurns = replaceTurn(state.turns, idx, (t) => ({ ...t, blocks }))
       }
       return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [] }
     }
@@ -496,6 +503,18 @@ export function transcriptReducer(
         costUsd: num(ev.costUsd),
       }
       return { ...state, openBlockId: null, usage }
+    }
+
+    // ── replayReset ───────────────────────────────────────────────────────────
+    case 'replayReset': {
+      // The server prepends this to every transcript replay (sent on each
+      // attach, including reconnect re-attaches). Streamed text/thinking deltas
+      // are append-only — without a reset, a second replay re-appends a full
+      // copy of every assistant block (the "duplicating content" bug). Clear the
+      // transcript-rebuildable state so the following replay events rebuild it
+      // cleanly. Live-only state that the replay does NOT re-emit (rotations,
+      // queue, banner) is preserved.
+      return { ...state, turns: [], openBlockId: null, subAgents: {}, replaying: true }
     }
 
     // ── replayComplete ────────────────────────────────────────────────────────

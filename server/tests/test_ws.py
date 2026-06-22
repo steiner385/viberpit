@@ -247,6 +247,57 @@ def test_attach_replays_then_live(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# Replay leads with replayReset so reconnect re-attaches don't duplicate content
+# ---------------------------------------------------------------------------
+
+def test_replay_batch_leads_with_reset_on_every_attach(ws_env):
+    """A transcript replay must be preceded by a replayReset event in the SAME
+    batch frame. attach is re-sent on every WS reconnect (client onopen), so
+    without the reset a second replay re-appends a full copy of every assistant
+    block into the never-recreated reducer — the duplicating-content bug."""
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-reset")
+    session_id = session.id
+
+    # Point replay at a real, non-empty transcript fixture so the bridge actually
+    # emits a replay batch (an empty transcript sends only replayComplete).
+    fixture = str(Path(__file__).parent / "fixtures" / "transcript.jsonl")
+    orch.transcript_path = lambda sid: fixture
+
+    def _first_batch_events(ws) -> list[dict]:
+        """Return the events of the first `batch` frame seen (the replay batch)."""
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            msg = json.loads(ws.receive_text())
+            if msg.get("type") == "batch":
+                return msg.get("events", [])
+        return []
+
+    # First attach (fresh connection).
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        batch1 = _first_batch_events(ws)
+        assert batch1 and batch1[0].get("type") == "replayReset", (
+            f"replay batch must lead with replayReset, got {[e.get('type') for e in batch1][:3]}"
+        )
+        assert any(e.get("type") in ("textDelta", "toolCall") for e in batch1), (
+            "expected replayed transcript content after the reset"
+        )
+        _drain_events(ws, until_type="replayComplete")
+
+    # Reconnect = a brand-new socket re-attaching the same session. The replay
+    # re-runs (fresh server-side live_tasks), and the reset must lead it again.
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws2:
+        ws2.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        batch2 = _first_batch_events(ws2)
+        assert batch2 and batch2[0].get("type") == "replayReset", (
+            f"re-attach replay must lead with replayReset, got {[e.get('type') for e in batch2][:3]}"
+        )
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
 # Permission round-trip: tool needs permission, allow lets it proceed
 # ---------------------------------------------------------------------------
 
