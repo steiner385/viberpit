@@ -235,4 +235,16 @@ describe('DispatchBar', () => {
     expect(select).toBeDisabled()
     expect(select).toHaveValue('acme/web')
   })
+
+  it('ArrowUp/ArrowDown with single-line text navigate the list (no caret destination)', async () => {
+    const user = userEvent.setup()
+    const onNavigate = vi.fn()
+    render(<DispatchBar {...makeProps({ onNavigate })} />)
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.type(box, 'fix the bug')        // single line, caret at end
+    await user.keyboard('{ArrowUp}')
+    expect(onNavigate).toHaveBeenCalledWith('up')
+    await user.keyboard('{ArrowDown}')
+    expect(onNavigate).toHaveBeenCalledWith('down')
+  })
 })
