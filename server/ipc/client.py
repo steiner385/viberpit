@@ -96,15 +96,26 @@ class DaemonClient:
 
     async def _reader(self) -> None:
         uri = "ws://daemon/events"
-        async with websockets.unix_connect(self._sock, uri) as ws:
-            self._ws = ws
-            for stream in list(self._desired):
-                await ws.send(json.dumps(proto.subscribe_frame(stream)))
-                self._ready[stream].set()
-            async for raw in ws:
-                frame = json.loads(raw)
-                if frame.get("type") == proto.EVENT:
-                    self._deliver(frame["stream"], frame["event"])
+        backoff = 0.05
+        while True:
+            try:
+                async with websockets.unix_connect(self._sock, uri) as ws:
+                    self._ws = ws
+                    backoff = 0.05
+                    for stream in list(self._desired):
+                        await ws.send(json.dumps(proto.subscribe_frame(stream)))
+                        self._ready[stream].set()
+                    async for raw in ws:
+                        frame = json.loads(raw)
+                        if frame.get("type") == proto.EVENT:
+                            self._deliver(frame["stream"], frame["event"])
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — drop/connect failures → retry
+                log.warning("ipc: events WS error (%s) — reconnecting in %.2fs", exc, backoff)
+            self._ws = None
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 2.0)
 
     async def aclose(self) -> None:
         if self._reader_task is not None:
