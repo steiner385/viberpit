@@ -1,6 +1,7 @@
 import { useState, useId } from 'react'
 import { ChevronDown, ChevronRight, FileEdit, FileText, Terminal, List, Search, Wrench } from 'lucide-react'
 import type { Block } from '@/session/reducer'
+import type { ToolDetailMode } from '@/session/groupBlocks'
 import type { ToolKind } from '@/session/events'
 import { ToolResult } from './ToolResult'
 import { sizeHint } from '@/lib/toolContent'
@@ -14,6 +15,8 @@ interface Props {
   density?: 'line' | 'card'
   /** Auto-expand the result/detail panel (use for the most recent tool call). Default false. */
   defaultResultOpen?: boolean
+  /** Global detail override: 'all-open'/'all-closed' force every panel; 'auto' uses defaultResultOpen. */
+  toolDetailMode?: ToolDetailMode
 }
 
 function kindIcon(kind: ToolKind) {
@@ -38,14 +41,29 @@ function keyArg(kind: ToolKind, input: Record<string, unknown>): string {
   return ''
 }
 
-export function ToolCallCard({ block, density = 'card', defaultResultOpen = false }: Props) {
+export function ToolCallCard({ block, density = 'card', defaultResultOpen = false, toolDetailMode }: Props) {
   const [argsOpen, setArgsOpen] = useState(false)
-  const [resultOpen, setResultOpen] = useState(defaultResultOpen)
+  // The global toggle force-overrides the per-row default; 'auto' (or no mode)
+  // falls back to defaultResultOpen so only the live tail's latest tool opens.
+  const modeResultOpen =
+    toolDetailMode === 'all-open' ? true
+    : toolDetailMode === 'all-closed' ? false
+    : defaultResultOpen
+  const [resultOpen, setResultOpen] = useState(modeResultOpen)
+  // Re-sync to the mode default when the global toggle flips (during-render reset),
+  // mirroring ToolGroup's old pattern so expand/collapse-all stays uniform.
+  const [prevMode, setPrevMode] = useState(toolDetailMode)
+  if (prevMode !== toolDetailMode) {
+    setPrevMode(toolDetailMode)
+    setResultOpen(modeResultOpen)
+  }
   const argsRegionId = useId()
   const resultRegionId = useId()
   const detailRegionId = useId()
 
   const summary = keyArg(block.toolKind, block.input)
+  // Completed tools dim to grey (Claude-Code style); a running tool stays prominent.
+  const complete = block.result !== undefined
 
   if (density === 'line') {
     const ok = block.result?.ok ?? true
@@ -59,13 +77,13 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
           aria-controls={detailRegionId}
           onClick={() => setResultOpen((v) => !v)}
           className={cn(
-            'flex w-full items-center gap-2 px-3 py-0.5 text-left',
+            'flex w-full items-center gap-2 px-3 py-1 text-left leading-tight',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-            'min-h-[44px] hover:bg-gray-50 dark:hover:bg-gray-900/40 rounded',
+            'hover:bg-gray-50 dark:hover:bg-gray-900/40 rounded',
           )}
         >
-          <span className="shrink-0 text-gray-500 dark:text-gray-400">{kindIcon(block.toolKind)}</span>
-          <span className="shrink-0 font-medium text-gray-900 dark:text-gray-100">{block.name}</span>
+          <span className={cn('shrink-0', complete ? 'text-gray-400 dark:text-gray-500' : 'text-gray-600 dark:text-gray-300')}>{kindIcon(block.toolKind)}</span>
+          <span className={cn('shrink-0 font-medium', complete ? 'text-gray-500 dark:text-gray-400' : 'text-gray-900 dark:text-gray-100')}>{block.name}</span>
           {summary && (
             <span className="truncate text-xs text-gray-500 dark:text-gray-400">{summary}</span>
           )}
