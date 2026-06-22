@@ -9,7 +9,7 @@ interface Props { children: string }
 // callouts). Centralizes the plugin set and the safe-link policy.
 export function Markdown({ children }: Props) {
   return (
-    <div className="prose prose-sm dark:prose-invert max-w-none">
+    <div className="markdown max-w-none text-gray-900 dark:text-gray-100">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
