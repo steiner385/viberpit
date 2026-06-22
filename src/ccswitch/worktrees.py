@@ -45,6 +45,49 @@ def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True)
 
 
+def _has_origin(repo_top: str) -> bool:
+    """True if the repo has an `origin` remote configured."""
+    return _run(["git", "-C", repo_top, "remote", "get-url", "origin"]).returncode == 0
+
+
+def _remote_default_ref(repo_top: str) -> str | None:
+    """Return the remote default branch ref (e.g. 'origin/master'), or None if it
+    cannot be resolved.
+
+    Repairs origin/HEAD with `set-head --auto` first in case the clone never
+    recorded it. Returning None (rather than raising) lets the caller fall back to
+    the local ref instead of aborting the session.
+    """
+    _run(["git", "-C", repo_top, "remote", "set-head", "origin", "--auto"])
+    r = _run(["git", "-C", repo_top, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    return r.stdout.strip()
+
+
+def _try_fetch_origin(repo_top: str) -> bool:
+    """Fetch `origin`; return True on success.
+
+    A fetch failure is best-effort, NOT fatal: many real origins are not fetchable
+    non-interactively (private repos with no cached credentials, the credential-less
+    deploy box, offline). On failure we log a warning and return False so the caller
+    bases the session on the local ref rather than refusing to start it.
+    """
+    r = _run(["git", "-C", repo_top, "fetch", "origin"])
+    if r.returncode != 0:
+        log.warning("worktree.fetch_failed repo=%s — basing on local ref: %s",
+                    repo_top, r.stderr.strip())
+        return False
+    return True
+
+
+def _branch_on_origin(repo_top: str, branch: str) -> bool:
+    """True if `branch` exists on origin (refs/remotes/origin/<branch>)."""
+    r = _run(["git", "-C", repo_top, "rev-parse", "--verify", "--quiet",
+              f"refs/remotes/origin/{branch}"])
+    return r.returncode == 0
+
+
 def is_git_repo(path: str) -> bool:
     """True if `path` is inside a git work tree."""
     r = _run(["git", "-C", path, "rev-parse", "--is-inside-work-tree"])
@@ -104,17 +147,45 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
     # (e.g. a previous crash) so a reused path doesn't collide.
     _run(["git", "-C", repo_top, "worktree", "prune"])
 
-    # 0) No branch selected → detached worktree off the current HEAD. This gives the
-    # session its own working directory (per-session isolation) with no branch
-    # collisions between concurrent sessions on the same repo.
+    # Fetch-first (best-effort): a session should start from the true remote tip,
+    # so when origin is configured we fetch and (below) base on remote refs. But a
+    # fetch failure (offline, no non-interactive credentials, unreachable origin)
+    # must NOT block the session — we warn and fall back to the local ref. A repo
+    # with NO origin has nothing to refresh and uses the local ref directly.
+    # `use_remote` is true only when we have origin AND the fetch actually succeeded.
+    has_origin = _has_origin(repo_top)
+    use_remote = has_origin and _try_fetch_origin(repo_top)
+
+    # 0) No branch selected → detached worktree. When we fetched origin, detach at
+    # the remote default tip (origin/HEAD); otherwise (no origin, fetch failed, or
+    # origin/HEAD unresolvable) off the local current HEAD.
     if branch is None:
-        rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach", str(dest)])
+        base = _remote_default_ref(repo_top) if use_remote else None
+        if base is not None:
+            rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach",
+                       str(dest), "--", base])
+        else:
+            rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach", str(dest)])
         if rd.returncode == 0:
             log.info("worktree.create_detached repo=%s path=%s", repo_name, dest)
             return WorktreeInfo(str(dest), None, is_child=False, repo=repo_top)
         raise WorktreeError(f"git worktree add --detach failed: {rd.stderr.strip()}")
 
-    # 1) Try to check out the selected branch directly.
+    # 1) Remote-backed branch → isolated per-session child branch based at the
+    # remote tip origin/<branch>. This is the normal path (not just a fallback):
+    # a fresh, writable, isolated branch without moving the user's local <branch>.
+    if use_remote and _branch_on_origin(repo_top, branch):
+        child = f"ccswitch/{branch}-{_short(session_id)}"
+        r = _run(["git", "-C", repo_top, "worktree", "add", "-b", child,
+                  str(dest), "--", f"origin/{branch}"])
+        if r.returncode == 0:
+            log.info("worktree.create_child repo=%s base=origin/%s child=%s path=%s",
+                     repo_name, branch, child, dest)
+            return WorktreeInfo(str(dest), child, is_child=True, repo=repo_top)
+        raise WorktreeError(
+            f"git worktree add failed for origin/{branch}: {r.stderr.strip()}")
+
+    # 2) Local-only branch (or no origin) → check out the local branch directly;
     # '--' separates options from the commit-ish so a crafted branch name cannot
     # be parsed as a git option (belt-and-suspenders with the '-' prefix guard above).
     r = _run(["git", "-C", repo_top, "worktree", "add", str(dest), "--", branch])
@@ -122,7 +193,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         log.info("worktree.create repo=%s branch=%s path=%s", repo_name, branch, dest)
         return WorktreeInfo(str(dest), branch, is_child=False, repo=repo_top)
 
-    # 2) Branch is busy (checked out elsewhere) — make a session child branch off it.
+    # 3) Branch is busy (checked out elsewhere) — make a session child branch off it.
     child = f"ccswitch/{branch}-{_short(session_id)}"
     r2 = _run(["git", "-C", repo_top, "worktree", "add", "-b", child, str(dest), "--", branch])
     if r2.returncode == 0:

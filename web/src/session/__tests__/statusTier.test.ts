@@ -30,6 +30,7 @@ describe('statusPresentation', () => {
     ['waiting_input', 'Permission needed'],
     ['waiting_question', 'Answer needed'],
     ['done', 'Your turn'],
+    ['complete', 'Complete'],
     ['idle', 'Ready'],
     ['needs_attention', 'Turn failed'],
     ['limited', 'Usage limit'],

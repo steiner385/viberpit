@@ -63,6 +63,13 @@ Concrete, operational discipline that backs constitution Principle VI (single so
 dead code) and IV/V (security-first, quality gates). Several map to installed skills — invoke the
 skill, don't just recall the rule.
 
+### Execute implementation plans subagent-driven — always
+
+When a written plan reaches the execution-handoff step (brainstorming → writing-plans → execute),
+**always** choose subagent-driven execution: a fresh subagent per task with review between tasks.
+Never ask which mode to use and never default to inline batch execution. Skill:
+`subagent-driven-development`.
+
 ### Before adding new code, find the existing source of truth
 
 The most expensive bug shape is **N parallel implementations of one concept** (status maps, default

@@ -17,7 +17,7 @@
  * via SessionRuntimeProvider keyed by the focused id.
  */
 
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Plus, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SessionList } from './SessionList'
@@ -46,6 +46,7 @@ import {
   useGithubRepos,
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
+import { deriveHistory } from '@/session/history'
 
 type TabId = 'sessions' | 'accounts' | 'archived'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
@@ -76,6 +77,7 @@ function MainPaneSession() {
 
 function SessionComposer() {
   const rt = useSessionRuntimeContext()
+  const history = useMemo(() => deriveHistory(rt.state.turns), [rt.state.turns])
   return (
     <Composer
       status={rt.state.status}
@@ -87,6 +89,7 @@ function SessionComposer() {
       onCancelQueued={rt.onCancelQueued}
       commands={rt.commands}
       onCommand={rt.onCommand}
+      history={history}
     />
   )
 }
