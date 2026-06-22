@@ -12,7 +12,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { useSessionStream } from '@/session/useSessionStream'
-import { selectSubAgents } from '@/session/selectors'
+import { selectSubAgents, selectTurnsForAgent } from '@/session/selectors'
 import { remainingContextPct } from '@/lib/contextWindow'
 import { useSessions, useAccounts } from '@/api/hooks'
 import { PERMISSION_MODES } from '@/session/permissionModes'
@@ -71,8 +71,8 @@ export function SessionView({ sessionId, onBack }: Props) {
       setAriaAnnouncement('History loaded')
       return
     }
-    // Find the last assistant text block and mirror it.
-    const lastAssistantTurn = [...state.turns].reverse().find((t) => t.role === 'assistant')
+    // Find the last assistant text block and mirror it (main thread only).
+    const lastAssistantTurn = [...selectTurnsForAgent(state.turns, null)].reverse().find((t) => t.role === 'assistant')
     if (!lastAssistantTurn) return
     const lastTextBlock = [...lastAssistantTurn.blocks].reverse().find((b) => b.kind === 'text')
     if (lastTextBlock && lastTextBlock.kind === 'text') {
@@ -243,7 +243,7 @@ export function SessionView({ sessionId, onBack }: Props) {
 
       {/* Transcript */}
       <TranscriptView
-        turns={state.turns}
+        turns={selectTurnsForAgent(state.turns, null)}
         permissionMode={mode}
         onDecision={handleDecision}
         onAnswer={handleAnswer}
