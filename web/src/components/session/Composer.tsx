@@ -153,14 +153,14 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
 
       {suggestions && suggestions.length > 0 && !isWorking && (
         <div data-testid="suggestion-chips" className="flex flex-wrap gap-2">
-          {suggestions.map((s, i) => (
+          {suggestions.map((s) => (
             <button
-              key={`${i}-${s.slice(0, 24)}`}
+              key={s}
               type="button"
               aria-label={s}
               onClick={() => prefill(s)}
               className={cn(
-                'rounded-full px-3 py-1 text-xs min-h-[44px]',
+                'inline-flex items-center justify-center rounded-full px-3 py-1 text-xs min-h-[44px]',
                 'border border-blue-300 dark:border-blue-700',
                 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
                 'hover:bg-blue-100 dark:hover:bg-blue-900/50',

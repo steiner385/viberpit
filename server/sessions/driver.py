@@ -374,8 +374,9 @@ class SessionDriver:
         sig = self._dash_signals()
         if sig.pending_permission or sig.pending_question:
             return
-        context = f"User: {self._last_user_text}\n\nAssistant: {''.join(self._last_assistant_parts)}"
-        context = context[-2000:]
+        user = self._last_user_text[:500]
+        assistant = "".join(self._last_assistant_parts)[-1500:]
+        context = f"User: {user}\n\nAssistant: {assistant}"
         self._cancel_suggest()
         self._suggest_task = asyncio.create_task(self._run_suggestions(context, self._last_turn_id))
 
