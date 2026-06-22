@@ -1,5 +1,5 @@
 import { useRef, useEffect } from 'react'
-import type { Turn as TurnType } from '@/session/reducer'
+import type { Turn as TurnType, SubThread } from '@/session/reducer'
 import { Turn } from './Turn'
 
 interface Props {
@@ -7,9 +7,10 @@ interface Props {
   permissionMode: string
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[]) => void
+  subAgents: Record<string, SubThread>
 }
 
-export function TranscriptView({ turns, permissionMode, onDecision, onAnswer }: Props) {
+export function TranscriptView({ turns, permissionMode, onDecision, onAnswer, subAgents }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
@@ -45,6 +46,7 @@ export function TranscriptView({ turns, permissionMode, onDecision, onAnswer }: 
           permissionMode={permissionMode}
           onDecision={onDecision}
           onAnswer={onAnswer}
+          subAgents={subAgents}
         />
       ))}
       {/* Bottom sentinel for future IntersectionObserver use */}

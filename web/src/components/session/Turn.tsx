@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import type { Turn as TurnType } from '@/session/reducer'
+import type { Turn as TurnType, SubThread } from '@/session/reducer'
 import { AssistantText } from './AssistantText'
 import { UserBubble } from './UserBubble'
 import { ThinkingBlock } from './ThinkingBlock'
@@ -17,9 +17,10 @@ interface Props {
   permissionMode: string
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[]) => void
+  subAgents?: Record<string, SubThread>
 }
 
-export const Turn = memo(function Turn({ turn, permissionMode, onDecision, onAnswer }: Props) {
+export const Turn = memo(function Turn({ turn, permissionMode, onDecision, onAnswer, subAgents }: Props) {
   const isUser = turn.role === 'user'
 
   return (
@@ -35,7 +36,7 @@ export const Turn = memo(function Turn({ turn, permissionMode, onDecision, onAns
             return <ThinkingBlock key={block.id} text={block.text} />
 
           case 'tool':
-            return <ToolCallCard key={block.id} block={block} />
+            return <ToolCallCard key={block.id} block={block} subThread={subAgents?.[block.toolId]} />
 
           case 'permission':
             return <PermissionCard key={block.id} block={block} mode={permissionMode} onDecision={onDecision} />

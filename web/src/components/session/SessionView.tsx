@@ -285,6 +285,7 @@ export function SessionView({ sessionId, onBack }: Props) {
         permissionMode={mode}
         onDecision={handleDecision}
         onAnswer={handleAnswer}
+        subAgents={state.subAgents}
       />
 
       {/* Prominent "waiting for Claude" indicator shown below the last turn */}
