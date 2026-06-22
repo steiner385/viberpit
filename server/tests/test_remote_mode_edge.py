@@ -2,8 +2,6 @@
 import asyncio
 import os
 import threading
-import time as _time
-from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
@@ -57,6 +55,16 @@ class _DaemonThread:
             self._err = exc
             self._ready.set()
         finally:
+            # Cancel any background daemon tasks (e.g. the orchestrator global-pump)
+            # and let them settle before closing the loop, else a still-scheduled
+            # task raises "Event loop is closed" on GC (PytestUnraisableException).
+            pending = asyncio.all_tasks(loop)
+            for t in pending:
+                t.cancel()
+            if pending:
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
             loop.close()
 
     def start(self):

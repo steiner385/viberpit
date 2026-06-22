@@ -18,6 +18,7 @@ from server.audit import install_redacting_filter
 from server.auth.middleware import IdentityMiddleware, current_identity
 from server.bridge.ws import build_ws_router
 from server.db import init_db
+from server.ipc.client import DaemonUnavailable
 from server.reauth import ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
 
@@ -212,8 +213,6 @@ def create_app(
         # Exercises every Session model column; a drifted DB raises → 500.
         # Active count comes through the facade (async) so it works in both modes;
         # in remote mode an unreachable daemon degrades gracefully (200 + flag).
-        from server.ipc.client import DaemonUnavailable
-
         active = 0
         daemon_state = None
         try:
