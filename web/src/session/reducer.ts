@@ -57,6 +57,8 @@ export interface TranscriptState {
   status: { state: string; count: number }
   title: string | null
   model: string | null          // current model id (from sessionMeta / replay)
+  account: string | null        // current account (from sessionMeta / session record)
+  accountPinned: boolean        // user pinned the account (no usage-ceiling rotation)
   usage: UsageSnapshot | null   // most recent result's token/cost snapshot
   replaying: boolean            // true until replayComplete
   error: { code: string; message: string; resetsAt?: string | null } | null
@@ -72,6 +74,8 @@ export const initialTranscript: TranscriptState = {
   status: { state: 'idle', count: 0 },
   title: null,
   model: null,
+  account: null,
+  accountPinned: false,
   usage: null,
   replaying: true,
   error: null,
@@ -476,7 +480,12 @@ export function transcriptReducer(
 
     // ── sessionMeta ───────────────────────────────────────────────────────────
     case 'sessionMeta': {
-      return { ...state, model: ev.model }
+      return {
+        ...state,
+        model: ev.model,
+        account: ev.account ?? state.account,
+        accountPinned: ev.accountPinned ?? state.accountPinned,
+      }
     }
 
     // ── title ─────────────────────────────────────────────────────────────────
