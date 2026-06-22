@@ -39,6 +39,25 @@ def parse_suggestions(raw: str, limit: int = 4) -> list[str]:
     return out[:limit]
 
 
+def last_turn_context(events: list) -> tuple[str, str]:
+    """Extract (user_text, assistant_text) for the latest turn from replayed events.
+
+    user_text is the most-recent UserMessage's text; assistant_text concatenates the
+    TextDelta texts that follow it. Returns ("", "") when there's no user message.
+    Used to seed suggestion generation for a session resumed into an idle state,
+    whose turn context is not in the driver's memory.
+    """
+    last_user = -1
+    for i, e in enumerate(events):
+        if isinstance(e, ev.UserMessage):
+            last_user = i
+    if last_user == -1:
+        return "", ""
+    user_text = events[last_user].text or ""
+    parts = [e.text for e in events[last_user + 1:] if isinstance(e, ev.TextDelta)]
+    return user_text, "".join(parts)
+
+
 class SuggestionService:
     """Generates next-prompt suggestions via a throwaway, resume-less SDK query.
 

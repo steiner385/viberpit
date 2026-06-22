@@ -107,3 +107,23 @@ def test_real_suggestion_factory_empty_model_env_uses_account_default(monkeypatc
 
     sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct")
     assert captured["options"].model is None
+
+
+def test_last_turn_context_extracts_latest_user_and_following_assistant():
+    from server.sessions import events as ev
+    from server.sessions.suggestions import last_turn_context
+    evs = [
+        ev.UserMessage("t1", "first question"),
+        ev.TextDelta("t1", "old answer"),
+        ev.UserMessage("t2", "do the thing"),
+        ev.TextDelta("t2", "Sure, "),
+        ev.TextDelta("t2", "done."),
+    ]
+    assert last_turn_context(evs) == ("do the thing", "Sure, done.")
+
+
+def test_last_turn_context_empty_when_no_user_message():
+    from server.sessions.suggestions import last_turn_context
+    assert last_turn_context([]) == ("", "")
+    from server.sessions import events as ev
+    assert last_turn_context([ev.TextDelta("t1", "orphan")]) == ("", "")
