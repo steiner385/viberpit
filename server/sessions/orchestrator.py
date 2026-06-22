@@ -936,6 +936,15 @@ class SessionOrchestrator:
         await asyncio.to_thread(shutil.rmtree, str(candidate), True)
         log.info("session.permanent_delete id=%s archive_path=%s", session_id, candidate)
 
+        # Best-effort: unlink attachment files and delete attachment rows.
+        try:
+            from server.sessions.attachments import delete_for_session
+            async with db_session() as _db:
+                await delete_for_session(_db, session_id)
+                await _db.commit()
+        except Exception:
+            log.exception("session.permanent_delete attachment_cleanup_failed id=%s", session_id)
+
         async with db_session() as db:
             from sqlalchemy import delete as sa_delete
             await db.execute(
