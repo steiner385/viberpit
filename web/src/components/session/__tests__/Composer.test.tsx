@@ -16,6 +16,20 @@ describe('Composer', () => {
     vi.clearAllMocks()
   })
 
+  it('auto-focuses the message textarea on mount', () => {
+    render(<Composer {...defaults} />)
+    expect(screen.getByRole('textbox', { name: /message/i })).toHaveFocus()
+  })
+
+  it('re-focuses the textarea when autoFocusKey changes', () => {
+    const { rerender } = render(<Composer {...defaults} autoFocusKey="a" />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    textarea.blur()
+    expect(textarea).not.toHaveFocus()
+    rerender(<Composer {...defaults} autoFocusKey="b" />)
+    expect(textarea).toHaveFocus()
+  })
+
   it('shows Send button in idle state', () => {
     render(<Composer {...defaults} />)
     expect(screen.getByRole('button', { name: /send message/i })).toBeInTheDocument()

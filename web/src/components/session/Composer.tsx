@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
 import { Paperclip, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useImageAttachments } from './useImageAttachments'
@@ -13,14 +13,22 @@ interface Props {
   queued?: string[]
   onCancelQueued?: (index: number) => void
   chatArmed?: boolean
+  /** Auto-focus the textarea when this changes / on mount (mirrors DispatchBar). */
+  autoFocusKey?: unknown
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed }: Props) {
+export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, autoFocusKey }: Props) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const isWorking = status.state === 'working'
   const att = useImageAttachments()
+
+  // Focus the prompt on mount (and when the active session changes) so the user
+  // can start typing immediately on entering a session.
+  useEffect(() => {
+    textareaRef.current?.focus()
+  }, [autoFocusKey])
 
   // Auto-grow textarea: reset height then set to scrollHeight (capped at 8 rows ~192px)
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
