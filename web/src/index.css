@@ -143,3 +143,42 @@ body {
 @media (prefers-color-scheme: dark) {
   .markdown a { color: #60a5fa; }
 }
+
+/* ───────────────────────────────────────────────────────────────────────────
+   WorkingIndicator phrase shimmer. A soft highlight sweeps L→R across the
+   "working" gerund while Claude is busy. Implemented with background-clip:text
+   so only the glyphs are tinted. The component drops the class under
+   prefers-reduced-motion; the media query below is a belt-and-suspenders reset.
+   ─────────────────────────────────────────────────────────────────────────── */
+@layer components {
+  .working-shimmer {
+    background: linear-gradient(
+      90deg,
+      var(--text) 0%,
+      var(--text) 40%,
+      var(--text-h) 50%,
+      var(--text) 60%,
+      var(--text) 100%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: working-shimmer 1.8s linear infinite;
+  }
+}
+
+@keyframes working-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .working-shimmer {
+    animation: none;
+    background: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    color: inherit;
+  }
+}
