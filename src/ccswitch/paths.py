@@ -15,7 +15,28 @@ def ensure_root() -> Path:
 
 
 def shared_base() -> Path:
-    return Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
+    """Account-INDEPENDENT Claude home that shared assets (plugins, commands,
+    settings, projects) are mirrored FROM.
+
+    Reads CLAUDE_CONFIG_DIR (the test harness injects a throwaway mirror source
+    this way), but NEVER accepts a value that resolves inside our own account
+    store (cfg_root()). ccswitch sets CLAUDE_CONFIG_DIR per-account when launching
+    a session, so a value inherited from a running session points at an account
+    dir; using that as the mirror source makes reconcile_links() symlink accounts
+    to each other — or to themselves, a symlink loop. In that case fall back to
+    the real ~/.claude. This keeps the share source a single canonical dir (a star
+    topology), so account→account chains and loops are structurally impossible.
+    """
+    real_home = Path.home() / ".claude"
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    if not env:
+        return real_home
+    candidate = Path(env)
+    try:
+        candidate.resolve().relative_to(cfg_root().resolve())
+    except ValueError:
+        return candidate  # outside the account store — a genuine external base
+    return real_home  # inside cfg_root() → an account dir, never a shared base
 
 
 def store_dir() -> Path:
