@@ -407,7 +407,11 @@ git commit -m "feat(translator): per-agent-context turns, agent_id tagging, SubA
   - `subagents.summarize(events: list) -> list[dict]` — given the wire-or-object event list, return a flat list of `{"agentId","parentAgentId","agentType","description","status"}` (latest status per agent wins). Used by the orchestrator + API.
   - `replay._parse` tags every emitted event with `agent_id` and emits `SubAgentUpdate` events for each Task found.
 
-**Replay linkage (implements Task 1's finding):** default to fallback (B) — group sidechain entries by their distinct `parentUuid` roots and associate each root to a main-agent `Task` tool-use in document order. If Task 1 found a direct id field (A), use it instead (simpler: `agent_id = entry["<field>"]`).
+**Replay linkage (verified 2026-06-22 — defensive, user-approved):** no existing ccswitch transcript contains a sub-agent run, so the parser tolerates BOTH shapes per entry, in priority order:
+  1. non-null `parent_tool_use_id` (top-level or inside `message`) → use it as `agent_id` (mirrors the live path; simplest);
+  2. else truthy `isSidechain` → fallback (B): group by distinct `parentUuid` roots, associate each root to a main-agent `Task` tool-use in document order;
+  3. else → `agent_id = None` (main agent).
+The fixture from Task 1 exercises shape (2). A real sub-agent transcript is captured at final manual smoke to confirm before merge.
 
 - [ ] **Step 1: Write the failing helper test**
 
@@ -503,12 +507,23 @@ Expected: FAIL — current `replay._parse` emits no `SubAgentUpdate` and tags no
 In `server/sessions/replay.py`, change `_parse` to (1) pre-scan for sidechain grouping, (2) tag each event with `agent_id`, (3) emit `SubAgentUpdate`. Add this grouping before the main loop and thread `agent_id` into every `ev.*` constructor:
 
 ```python
-def _agent_ids(lines: list) -> dict:
-    """Map each entry uuid -> owning agent_id (None = main).
+def _entry_ptui(o: dict):
+    """Non-null parent_tool_use_id from top-level or message, else None."""
+    v = o.get("parent_tool_use_id")
+    if v:
+        return v
+    m = o.get("message")
+    if isinstance(m, dict) and m.get("parent_tool_use_id"):
+        return m.get("parent_tool_use_id")
+    return None
 
-    Fallback (B): sidechain entries form parentUuid chains; each distinct
-    sidechain root is associated to a main-agent Task tool_use in document
-    order. If Task 1 found a direct field, replace this body with that lookup.
+
+def _agent_ids(lines: list) -> dict:
+    """Map each entry uuid -> owning agent_id (None = main), defensively.
+
+    Priority per entry: (1) non-null parent_tool_use_id wins; (2) else
+    isSidechain entries are grouped by parentUuid roots and associated to
+    main-agent Task tool_uses in document order; (3) else None.
     """
     by_uuid = {o.get("uuid"): o for o in lines if o.get("uuid")}
     # Task tool_use ids in document order (main agent only).
@@ -541,7 +556,13 @@ def _agent_ids(lines: list) -> dict:
                      for i, r in enumerate(roots)}
     out = {}
     for o in lines:
-        out[o.get("uuid")] = root_to_agent.get(root_of(o)) if o.get("isSidechain") else None
+        ptui = _entry_ptui(o)
+        if ptui:                                   # (1) explicit link wins
+            out[o.get("uuid")] = ptui
+        elif o.get("isSidechain"):                 # (2) sidechain grouping
+            out[o.get("uuid")] = root_to_agent.get(root_of(o))
+        else:                                      # (3) main agent
+            out[o.get("uuid")] = None
     return out
 ```
 

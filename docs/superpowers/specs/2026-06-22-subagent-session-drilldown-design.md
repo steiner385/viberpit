@@ -231,3 +231,32 @@ from the `subAgents` map.
 4. **Frontend reducer/selectors** — buckets + tree; main thread filtered to `null`.
 5. **Frontend UI** — `SessionList` nesting, sub-session `ReviewView` + breadcrumb, live
    running status.
+
+## Observed sidechain linkage (verified 2026-06-22)
+
+Verification against real data (1,665 ccswitch SDK transcripts under
+`~/.claude-accounts/cfg/*/projects/*/*.jsonl` and interactive Claude Code transcripts under
+`~/.claude.backup/projects/*`) found:
+
+- **Live path is authoritative and unchanged in plan:** the SDK delivers `parent_tool_use_id`
+  on `AssistantMessage`/`UserMessage`/`StreamEvent`. This is the sub-agent link the
+  `Translator` uses. Solid.
+- **No existing ccswitch transcript contains a real sub-agent run.** `isSidechain:true`
+  appears 0 times; every `parent_tool_use_id` string hit was source code quoted *inside*
+  transcript text (always null as an actual field). So the SDK's on-disk sub-agent format
+  could not be pinned from existing data.
+- **Conversation entries use the Claude Code schema:** top-level `uuid`, `parentUuid`,
+  `isSidechain` (normally `false`), `message.content` (string or block list). Interactive
+  Claude Code writes sub-agent turns to **separate `agent-<shortid>.jsonl` files** carrying
+  an `agentId` field; the SDK *may* instead write them inline with `isSidechain:true`.
+
+**Decision (user-approved):** the replay parser is written **defensively to tolerate both
+shapes** without depending on an unverified one:
+  1. If an entry has a non-null `parent_tool_use_id` (top-level or in `message`), use it as
+     `agent_id` directly (mirrors the live path; simplest, future-proof).
+  2. Else if `isSidechain` is truthy, group by `parentUuid` chains → distinct sidechain
+     roots, associated to main-agent `Task` tool-uses in document order (fallback B).
+  3. Else `agent_id = None` (main agent).
+A hand-authored fixture (`transcript_subagent.jsonl`) exercises the `isSidechain`+`parentUuid`
+inline shape (the single-file case `replay.py` reads). A real sub-agent transcript will be
+captured during the final manual smoke to confirm before merge.

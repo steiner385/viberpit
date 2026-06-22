@@ -1,0 +1,8 @@
+{"type":"user","uuid":"u1","parentUuid":null,"isSidechain":false,"message":{"role":"user","content":"Find where foo is defined using the Explore subagent"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","isSidechain":false,"message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"MAIN delegating to a sub-agent."},{"type":"tool_use","id":"toolu_task1","name":"Task","input":{"subagent_type":"Explore","description":"find foo"}}],"usage":{"input_tokens":10,"output_tokens":5}}}
+{"type":"user","uuid":"s1","parentUuid":"a1","isSidechain":true,"message":{"role":"user","content":"Find where foo is defined"}}
+{"type":"assistant","uuid":"s2","parentUuid":"s1","isSidechain":true,"message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"SUBWORK searching the tree."},{"type":"tool_use","id":"toolu_g1","name":"Grep","input":{"pattern":"def foo"}}]}}
+{"type":"user","uuid":"s3","parentUuid":"s2","isSidechain":true,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_g1","content":"src/foo.py:1:def foo():"}]}}
+{"type":"assistant","uuid":"s4","parentUuid":"s3","isSidechain":true,"message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"SUBWORK located the definition."}]}}
+{"type":"user","uuid":"r1","parentUuid":"a1","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_task1","content":"Found foo in src/foo.py"}]}}
+{"type":"assistant","uuid":"a2","parentUuid":"r1","isSidechain":false,"message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"MAIN done; the sub-agent reported back."}],"usage":{"input_tokens":12,"output_tokens":6}}}
