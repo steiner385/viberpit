@@ -14,11 +14,26 @@ BETA_HEADER = "oauth-2025-04-20"
 
 
 class AuthError(Exception):
-    """Token rejected (401) — needs refresh or re-auth."""
+    """Token genuinely rejected (400 invalid_grant / 401) — needs refresh or re-auth."""
+
+
+class TransientError(Exception):
+    """Endpoint returned a retryable status (429 / 5xx).
+
+    NOT a credential failure — the token is presumed still valid and callers must
+    leave the account's status unchanged (do not mark needs-reauth). Deliberately
+    a sibling of AuthError, not a subclass, so `except AuthError` cannot swallow it
+    and re-introduce the rate-limit-as-dead-token misclassification.
+    """
 
 
 class UsageError(Exception):
     """Usage endpoint returned an unexpected status."""
+
+
+def _is_transient_status(status: int) -> bool:
+    """True for statuses that mean 'back off and retry', not 'credential is dead'."""
+    return status == 429 or 500 <= status <= 599
 
 
 @dataclass
@@ -101,6 +116,11 @@ def refresh_access_token(refresh_token: str, prior: dict) -> dict:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         data=form.encode("utf-8"),
     )
+    if _is_transient_status(status):
+        # Rate-limit / server error: the refresh token is presumed valid. Surface
+        # as transient so callers leave the account status untouched instead of
+        # flipping it to needs-reauth.
+        raise TransientError(f"token refresh rate-limited/unavailable: {status}")
     if status != 200:
         raise AuthError(f"token refresh failed with {status}")
     resp = json.loads(body)

@@ -56,6 +56,34 @@ class TestOAuth(unittest.TestCase):
             self.assertGreater(blob["expiresAt"], 0)
             self.assertEqual(blob["scopes"], ["user:inference", "user:profile"])
 
+    def test_refresh_429_raises_transient_not_autherror(self):
+        """A 429 on the token endpoint is rate-limiting, not a dead token.
+        It must surface as TransientError, never AuthError (which marks needs-reauth)."""
+        from ccswitch import oauth
+        with mock.patch.object(oauth, "http_request", return_value=(429, b'{"error":"rate_limited"}')):
+            with self.assertRaises(oauth.TransientError):
+                oauth.refresh_access_token("oldR", {})
+
+    def test_refresh_5xx_raises_transient_not_autherror(self):
+        """A 503 from the token endpoint is a server blip — retryable, not terminal."""
+        from ccswitch import oauth
+        with mock.patch.object(oauth, "http_request", return_value=(503, b"upstream unavailable")):
+            with self.assertRaises(oauth.TransientError):
+                oauth.refresh_access_token("oldR", {})
+
+    def test_refresh_transient_is_not_an_autherror(self):
+        """TransientError must NOT be a subclass of AuthError, so `except AuthError`
+        cannot swallow it and re-introduce the needs-reauth misclassification."""
+        from ccswitch import oauth
+        self.assertFalse(issubclass(oauth.TransientError, oauth.AuthError))
+
+    def test_refresh_400_invalid_grant_raises_autherror(self):
+        """A 400/401 is a genuinely dead refresh token — must stay terminal (AuthError)."""
+        from ccswitch import oauth
+        with mock.patch.object(oauth, "http_request", return_value=(400, b'{"error":"invalid_grant"}')):
+            with self.assertRaises(oauth.AuthError):
+                oauth.refresh_access_token("oldR", {})
+
     def test_parse_usage_limits_missing_resets_at_falls_back(self):
         """limits session entry without resets_at must be skipped; fallback fills in."""
         from ccswitch.oauth import parse_usage
