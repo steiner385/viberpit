@@ -1053,6 +1053,17 @@ class SessionOrchestrator:
                         continue
                     if record.id not in self._drivers:
                         continue
+                    if record.account_pinned:
+                        log.info("rotation.skip_pinned session=%s account=%s", record.id, account)
+                        record.status = "limited"
+                        asyncio.create_task(
+                            self._persist_status(record.id, "limited"),
+                            name=f"limited-{record.id}",
+                        )
+                        self._publish_event({
+                            "type": "status", "sessionId": record.id, "state": "limited",
+                        })
+                        continue
                     log.info(
                         "rotation.trigger session=%s account=%s pct=%.1f",
                         record.id,
@@ -1144,6 +1155,9 @@ class SessionOrchestrator:
             await self._pause_session(record, reason="all_accounts_busy",
                                       earliest_reset=e.earliest_reset)
             return
+        if record.account_pinned:
+            record.account_pinned = False
+            await self._persist_pin(record.id, False)
         self._recovery.record_rotation(record.id, now=now)
         await self._reassign(record, new_account, reason=reason)
 
@@ -1172,6 +1186,25 @@ class SessionOrchestrator:
                 ledger.set_status(led, account, "needs-reauth")
         except Exception:
             log.warning("recover.mark_needs_reauth failed account=%s", account, exc_info=True)
+
+    async def switch_account_manual(self, session_id: str, new_account: str) -> None:
+        """User-initiated account switch. Pins the session against usage-ceiling
+        rotation, then resumes the conversation on new_account via the shared
+        _reassign primitive (same path as auto-rotation / recovery)."""
+        record = self._records.get(session_id)
+        if record is None or session_id not in self._drivers:
+            raise KeyError(session_id)
+        record.account_pinned = True
+        await self._persist_pin(session_id, True)
+        await self._reassign(record, new_account, reason="manual")
+
+    async def _persist_pin(self, session_id: str, pinned: bool) -> None:
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id)
+                .values(account_pinned=pinned)
+            )
 
     async def set_model_for_session(self, session_id: str, model: str | None) -> None:
         """Set the live model AND persist it, so it survives rehydrate and every
