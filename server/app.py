@@ -159,10 +159,15 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
         # Exercises every Session model column; a drifted DB raises → 500.
+        orch = getattr(app.state, "orchestrator", None)
+        active = orch.active_session_count() if orch is not None else 0
         try:
             async with _db.db_session() as db:
                 await db.execute(_sa_select(_SessionModel).limit(1))
-            return JSONResponse({"status": "ok", "sha": running_git_sha()})
+            return JSONResponse({
+                "status": "ok", "sha": running_git_sha(),
+                "busy": active > 0, "activeSessions": active,
+            })
         except Exception as exc:  # noqa: BLE001 — any DB/schema failure is unhealthy
             logging.getLogger("server").warning("healthz schema check failed", exc_info=exc)
             return JSONResponse({"status": "schema_error", "sha": running_git_sha()}, status_code=500)
