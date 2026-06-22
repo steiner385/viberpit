@@ -41,6 +41,12 @@ from server.usage.poller import UsagePoller
 log = logging.getLogger(__name__)
 
 
+# Statuses that mean a session is mid-turn or awaiting user input — restarting now
+# would lose in-flight work. All other statuses (idle / ready_review / done /
+# limited / ended / archived) are restart-safe: resume + transcript replay recover them.
+_ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input"})
+
+
 class BranchSwitchError(Exception):
     """Raised when a git branch checkout fails."""
 
@@ -500,6 +506,14 @@ class SessionOrchestrator:
             self._event_subscribers.remove(q)
         except ValueError:
             pass
+
+    def active_session_count(self) -> int:
+        """Number of sessions currently mid-turn or awaiting input (restart-blocking)."""
+        return sum(1 for r in self._records.values() if r.status in _ACTIVE_STATUSES)
+
+    def restart_safe(self) -> bool:
+        """True when a restart now would interrupt no in-flight work."""
+        return self.active_session_count() == 0
 
     def _publish_event(self, event: dict) -> None:
         """Fan an event out to all subscribers (non-blocking)."""

@@ -291,8 +291,16 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
             <StatusPill status={account.status} />
             {account.usage && (
               <>
-                <UsageBadge pct={account.usage.session.pct} label="session" />
-                <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
+                <UsageBadge
+                  pct={account.usage.session.pct}
+                  label="session"
+                  resetsAt={account.usage.session.resetsAt}
+                />
+                <UsageBadge
+                  pct={account.usage.weekly.pct}
+                  label="weekly"
+                  resetsAt={account.usage.weekly.resetsAt}
+                />
               </>
             )}
             {needsReauth && (

@@ -31,7 +31,12 @@ export interface SessionRuntime {
   connectionState: ConnectionState
   title: string
   account: string
-  quota: { sessionPct: number; weeklyPct: number } | null
+  quota: {
+    sessionPct: number
+    weeklyPct: number
+    sessionResetsAt: string | null
+    weeklyResetsAt: string | null
+  } | null
   contextPct: number | null
   subAgents: ReturnType<typeof selectSubAgents>
   hasOpenAction: boolean
@@ -71,6 +76,9 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   const [armedQuestionId, setArmedQuestionId] = useState<string | null>(null)
   const modeRef = useRef('interactive')
   const [toolDetailMode, setToolDetailMode] = useState<ToolDetailMode>('auto')
+  // Answers whose WS send was dropped (socket not open). Buffered here and
+  // auto-resent when the socket reconnects. Keyed by questionId.
+  const pendingAnswersRef = useRef<Map<string, { selected: string[]; mode: 'option' | 'freeform' | 'chat' }>>(new Map())
   const toggleToolDetail = useCallback(
     () => setToolDetailMode((m) =>
       m === 'auto' ? 'all-closed' : m === 'all-closed' ? 'all-open' : 'auto',
@@ -124,18 +132,53 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   // Answer handler for question cards. The answer is delivered as a tool result,
   // NOT a user prompt, so the server never echoes it back — optimistically echo the
   // chosen labels into the transcript as a user bubble.
-  const onAnswer = useCallback(
-    (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => {
-      answerQuestion(sessionId, questionId, selected, mode)
+  // Send an answer over WS. On a confirmed send, resolve the question locally and
+  // echo the chosen labels (the server delivers the answer as a tool result and
+  // never echoes it). Returns whether the frame actually went out.
+  const deliverAnswer = useCallback(
+    (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat') => {
+      const sent = answerQuestion(sessionId, questionId, selected, mode)
+      if (!sent) return false
       dispatch({ type: '_resolveQuestion', questionId })
       if (selected.length > 0) {
         dispatch({ type: 'user', turnId: `answer:${questionId}`, text: selected.join(', ') })
       }
       // If this question was armed for chat, the answer resolves it — disarm.
       setArmedQuestionId((cur) => (cur === questionId ? null : cur))
+      return true
     },
     [sessionId, answerQuestion],
   )
+
+  const onAnswer = useCallback(
+    (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => {
+      if (deliverAnswer(questionId, selected, mode)) return
+      // The socket wasn't open — buffer the answer to auto-resend on reconnect,
+      // keep the question interactive, and surface a transient notice.
+      pendingAnswersRef.current.set(questionId, { selected, mode })
+      dispatch({
+        type: 'error',
+        code: 'answer_not_sent',
+        message: 'Not connected — your answer is queued and will be sent automatically when you reconnect.',
+      })
+    },
+    [deliverAnswer],
+  )
+
+  // Flush buffered answers when the socket reconnects. A stale answer (question
+  // no longer pending server-side) is a harmless no-op — the server ignores
+  // unknown questionIds — so there is no misfire risk.
+  useEffect(() => {
+    if (connectionState !== 'connected') return
+    const pending = pendingAnswersRef.current
+    if (pending.size === 0) return
+    for (const [questionId, { selected, mode }] of Array.from(pending.entries())) {
+      if (deliverAnswer(questionId, selected, mode)) pending.delete(questionId)
+    }
+    if (pending.size === 0 && state.error?.code === 'answer_not_sent') {
+      dispatch({ type: '_clearError' })
+    }
+  }, [connectionState, deliverAnswer, state.error])
 
   // Toggle "armed for chat" for a question: the next composer send becomes its answer.
   const onChat = useCallback(
@@ -217,7 +260,12 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
 
   const accountUsage = accounts?.find((a) => a.name === account)?.usage ?? null
   const quota = accountUsage
-    ? { sessionPct: accountUsage.session.pct, weeklyPct: accountUsage.weekly.pct }
+    ? {
+        sessionPct: accountUsage.session.pct,
+        weeklyPct: accountUsage.weekly.pct,
+        sessionResetsAt: accountUsage.session.resetsAt,
+        weeklyResetsAt: accountUsage.weekly.resetsAt,
+      }
     : null
 
   const contextPct = remainingContextPct(state.usage, state.model)

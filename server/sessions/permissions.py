@@ -1,5 +1,31 @@
 from __future__ import annotations
-import asyncio, time, uuid as _uuid
+import asyncio, os, time, uuid as _uuid
+from pathlib import Path
+
+from ccswitch import paths as _paths
+
+# File-writing tools whose target is a single path argument.
+_FILE_WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+
+
+def _is_account_memory_path(file_path) -> bool:
+    """True if file_path targets a managed-account auto-memory dir.
+
+    Layout: <cfg_root>/<account>/projects/<encoded-cwd>/memory/**.  The auto-memory
+    feature derives its directory from CLAUDE_CONFIG_DIR (= cfg/<account>), so the tool
+    receives this literal cfg-anchored path — NOT the symlink-resolved ~/.claude/projects
+    target.  Match lexically (os.path.abspath, no symlink resolution) and anchor on
+    cfg_root() so this can never auto-approve a write into a real repository.
+    """
+    if not file_path:
+        return False
+    try:
+        rel = Path(os.path.abspath(file_path)).relative_to(os.path.abspath(_paths.cfg_root()))
+    except ValueError:
+        return False
+    parts = rel.parts  # (<account>, "projects", <encoded-cwd>, "memory", ...)
+    return len(parts) >= 5 and parts[1] == "projects" and parts[3] == "memory"
+
 
 class PermissionRegistry:
     """
@@ -49,6 +75,12 @@ class PermissionRegistry:
         # modes EXCEPT "interactive" ("Ask each time").  A user who chose interactive
         # explicitly wants approval every time, so previous "always" grants are ignored.
         if mode != "interactive" and allowlist and self.is_granted(session_id, tool, input, now):
+            return None, _resolved(True)
+        # Auto-allow the agent's own auto-memory writes (managed-account memory dir).
+        # Honoured in every mode except "interactive" (ask each time), mirroring the
+        # grant-cache bypass above.
+        if mode != "interactive" and tool in _FILE_WRITE_TOOLS and _is_account_memory_path(
+                input.get("file_path") or input.get("notebook_path")):
             return None, _resolved(True)
         if mode == "auto" and tool not in denylist:
             # Auto-approve safe tools: approve anything not on the dangerous denylist.

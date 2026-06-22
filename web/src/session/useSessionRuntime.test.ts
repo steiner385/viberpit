@@ -15,6 +15,8 @@ import React from 'react'
 // so the hoisted vi.mock factory can close over them.
 const mockAnswerQuestion = vi.fn()
 let capturedSessionEventHandler: ((e: unknown) => void) | undefined
+// Controllable so tests can simulate a reconnect (reconnecting → connected).
+let mockConnectionState: 'connecting' | 'connected' | 'disconnected' | 'reconnecting' = 'connected'
 
 vi.mock('@/ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/ws/client')>()
@@ -34,7 +36,7 @@ vi.mock('@/ws/client', async (importOriginal) => {
         if (event === 'sessionEvent') capturedSessionEventHandler = handler
       },
       off: vi.fn(),
-      connectionState: 'connected' as const,
+      connectionState: mockConnectionState,
       socket: null,
     }),
   }
@@ -49,7 +51,9 @@ function wrapper({ children }: { children: React.ReactNode }) {
 
 describe('useSessionRuntime.onAnswer', () => {
   beforeEach(() => {
-    mockAnswerQuestion.mockClear()
+    mockAnswerQuestion.mockReset()
+    mockAnswerQuestion.mockReturnValue(true) // socket open: send succeeds by default
+    mockConnectionState = 'connected'
     capturedSessionEventHandler = undefined
   })
 
@@ -100,5 +104,66 @@ describe('useSessionRuntime.onAnswer', () => {
     expect(result.current.armedQuestionId).toBeNull()
     // Assert the question block is no longer in state (cleared by _resolveQuestion).
     expect(result.current.state.turns.flatMap((t) => t.blocks).some((b) => b.kind === 'question' && b.questionId === 'q2')).toBe(false)
+  })
+
+  it('keeps the question and surfaces a notice when the WS send is dropped', () => {
+    mockAnswerQuestion.mockReturnValue(false) // socket not open → frame dropped
+    const { result } = renderHook(() => useSessionRuntime('sess3'), { wrapper })
+
+    act(() => {
+      capturedSessionEventHandler?.({ type: 'replayComplete' })
+      capturedSessionEventHandler?.({
+        type: 'question',
+        questionId: 'q3',
+        turnId: 'turn-1',
+        header: 'Q',
+        question: 'Q?',
+        options: [{ label: 'Yes' }],
+        multiSelect: false,
+      })
+    })
+
+    act(() => { result.current.onAnswer('q3', ['Yes']) })
+
+    // The answer never left the browser — the question must stay in state so the
+    // user can retry, and a notice must be surfaced.
+    expect(result.current.state.turns.flatMap((t) => t.blocks).some((b) => b.kind === 'question' && b.questionId === 'q3')).toBe(true)
+    expect(result.current.state.error?.code).toBe('answer_not_sent')
+  })
+
+  it('auto-resends a buffered answer and clears the notice when the socket reconnects', () => {
+    const qExists = (id: string) =>
+      result.current.state.turns.flatMap((t) => t.blocks).some((b) => b.kind === 'question' && b.questionId === id)
+
+    mockConnectionState = 'reconnecting'
+    mockAnswerQuestion.mockReturnValue(false) // dropped while reconnecting
+    const { result, rerender } = renderHook(() => useSessionRuntime('sess4'), { wrapper })
+
+    act(() => {
+      capturedSessionEventHandler?.({ type: 'replayComplete' })
+      capturedSessionEventHandler?.({
+        type: 'question',
+        questionId: 'q4',
+        turnId: 'turn-1',
+        header: 'Q',
+        question: 'Q?',
+        options: [{ label: 'Yes' }],
+        multiSelect: false,
+      })
+    })
+
+    act(() => { result.current.onAnswer('q4', ['Yes']) })
+    expect(mockAnswerQuestion).toHaveBeenCalledTimes(1)   // attempted once, dropped
+    expect(result.current.state.error?.code).toBe('answer_not_sent')
+    expect(qExists('q4')).toBe(true)                       // retained for retry
+
+    // Reconnect: socket open, send now succeeds.
+    mockAnswerQuestion.mockReturnValue(true)
+    act(() => { mockConnectionState = 'connected'; rerender() })
+
+    expect(mockAnswerQuestion).toHaveBeenCalledTimes(2)    // auto-resent on reconnect
+    expect(mockAnswerQuestion).toHaveBeenLastCalledWith('sess4', 'q4', ['Yes'], 'option')
+    expect(qExists('q4')).toBe(false)                      // resolved after resend
+    expect(result.current.state.error).toBeNull()          // notice cleared
   })
 })

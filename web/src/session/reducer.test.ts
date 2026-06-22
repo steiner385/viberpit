@@ -207,6 +207,17 @@ describe('transcriptReducer', () => {
     expect(s.turns).toHaveLength(0)
   })
 
+  it('_clearError clears a surfaced error', () => {
+    const s = transcriptReducer(initialTranscript, { type: 'error', code: 'answer_not_sent', message: 'nope' })
+    expect(s.error).not.toBeNull()
+    const cleared = transcriptReducer(s, { type: '_clearError' })
+    expect(cleared.error).toBeNull()
+  })
+
+  it('_clearError with no error returns the same state reference', () => {
+    expect(transcriptReducer(initialTranscript, { type: '_clearError' })).toBe(initialTranscript)
+  })
+
   it('error with turnId appends an inline error block to that turn AND sets the banner', () => {
     const s = reduce([
       { type: 'turnStart', turnId: 't1' },
@@ -283,6 +294,23 @@ describe('transcriptReducer', () => {
     ])
     const questionBlocks = s.turns[0].blocks.filter((b) => b.kind === 'question')
     expect(questionBlocks).toHaveLength(1)
+  })
+
+  it('re-emitted question after replayComplete upgrades a replay-created block to live', () => {
+    // Reproduces the refresh/reconnect bug: during replay (replaying=true) the
+    // question is created live:false; the server then re-emits the still-pending
+    // question after replayComplete. The idempotency guard must upgrade the
+    // existing block to live:true instead of dropping the re-emit.
+    const q: SessionEvent = { type: 'question', questionId: 'q-1', turnId: 't1', header: 'Pick', question: 'Which?', options: [], multiSelect: false }
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      q,                            // replay: block created with live:false
+      { type: 'replayComplete' },   // replaying → false
+      q,                            // re-emit of the still-pending question
+    ])
+    const blocks = s.turns[0].blocks.filter((b) => b.kind === 'question')
+    expect(blocks).toHaveLength(1) // still idempotent — exactly one block
+    expect(blocks.every((b) => b.kind === 'question' && b.live)).toBe(true)
   })
 
   // ── Referential stability on no-ops ────────────────────────────────────────

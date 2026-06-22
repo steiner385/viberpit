@@ -177,41 +177,41 @@ describe('Task 4 — row actions on highlighted session', () => {
     window.localStorage.clear()
   })
 
-  it('r on empty prompt opens the rename dialog for the highlighted session', async () => {
+  it('Ctrl+R on empty prompt opens the rename dialog for the highlighted session', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
     render(<Dashboard />, { wrapper })
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('{ArrowDown}r')
+    await user.keyboard('{ArrowDown}{Control>}r{/Control}')
     expect(screen.getByRole('dialog', { name: /rename session/i })).toBeInTheDocument()
   })
 
-  it('first Delete arms the guard (does NOT close) and shows the confirmation hint', async () => {
+  it('first Ctrl+X arms the guard (does NOT close) and shows the confirmation hint', async () => {
     const user = userEvent.setup()
     const closeMutate = vi.fn()
     vi.mocked(hooks.useCloseSession).mockReturnValue({ mutate: closeMutate, isPending: false } as unknown as ReturnType<typeof hooks.useCloseSession>)
     vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
     render(<Dashboard />, { wrapper })
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('{ArrowDown}{Delete}')
-    // close must NOT have been called on the first Delete
+    await user.keyboard('{ArrowDown}{Control>}x{/Control}')
+    // close must NOT have been called on the first Ctrl+X
     expect(closeMutate).not.toHaveBeenCalled()
     // confirmation hint should be visible
-    expect(screen.getByRole('status')).toHaveTextContent(/press delete again to close/i)
+    expect(screen.getByRole('status')).toHaveTextContent(/press ctrl\+x again to close/i)
   })
 
-  it('second Delete within the window calls close', async () => {
+  it('second Ctrl+X within the window calls close', async () => {
     const user = userEvent.setup()
     const closeMutate = vi.fn()
     vi.mocked(hooks.useCloseSession).mockReturnValue({ mutate: closeMutate, isPending: false } as unknown as ReturnType<typeof hooks.useCloseSession>)
     vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
     render(<Dashboard />, { wrapper })
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('{ArrowDown}{Delete}{Delete}')
+    await user.keyboard('{ArrowDown}{Control>}x{/Control}{Control>}x{/Control}')
     expect(closeMutate).toHaveBeenCalledWith('s1')
   })
 
-  it('Delete on a different row resets the guard without closing', async () => {
+  it('Ctrl+X on a different row resets the guard without closing', async () => {
     const user = userEvent.setup()
     const closeMutate = vi.fn()
     vi.mocked(hooks.useCloseSession).mockReturnValue({ mutate: closeMutate, isPending: false } as unknown as ReturnType<typeof hooks.useCloseSession>)
@@ -219,12 +219,12 @@ describe('Task 4 — row actions on highlighted session', () => {
     render(<Dashboard />, { wrapper })
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     // Arm guard on row 0 (s1)
-    await user.keyboard('{ArrowDown}{Delete}')
+    await user.keyboard('{ArrowDown}{Control>}x{/Control}')
     expect(closeMutate).not.toHaveBeenCalled()
     // Navigate to row 1 (s2) — clears guard
     await user.keyboard('{ArrowDown}')
-    // Press Delete on s2 — should arm the guard for s2, not close
-    await user.keyboard('{Delete}')
+    // Press Ctrl+X on s2 — should arm the guard for s2, not close
+    await user.keyboard('{Control>}x{/Control}')
     expect(closeMutate).not.toHaveBeenCalled()
   })
 

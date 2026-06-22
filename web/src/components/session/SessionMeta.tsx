@@ -8,12 +8,21 @@
  */
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
+import { formatResetTime } from '@/lib/formatReset'
 import type { SubAgent, SubAgentStatus } from '@/session/selectors'
 import { SubAgentList } from './SubAgentList'
 
 interface Quota {
   sessionPct: number
   weeklyPct: number
+  sessionResetsAt: string | null
+  weeklyResetsAt: string | null
+}
+
+/** Tooltip copy for a quota window: spell out the abbreviation + reset time. */
+function quotaTitle(window: string, resetsAt: string | null): string {
+  const reset = formatResetTime(resetsAt)
+  return reset ? `${window} limit · resets ${reset}` : `${window} limit · no active window`
 }
 
 interface Props {
@@ -80,9 +89,21 @@ export function SessionMeta({ account, model, contextPct, quota, subAgents, stat
         {quota && (
           <span className="inline-flex items-center gap-1.5" aria-label="Account quota">
             <span className="text-gray-400 dark:text-gray-500">quota</span>
-            <span className="tabular-nums text-gray-900 dark:text-gray-100">sess {quota.sessionPct}%</span>
+            <span
+              className="tabular-nums text-gray-900 dark:text-gray-100"
+              title={quotaTitle('Session', quota.sessionResetsAt)}
+              aria-label={`Session usage: ${quota.sessionPct}% — ${quotaTitle('Session', quota.sessionResetsAt)}`}
+            >
+              sess {quota.sessionPct}%
+            </span>
             <span className="text-gray-300 dark:text-gray-600">/</span>
-            <span className="tabular-nums text-gray-900 dark:text-gray-100">wk {quota.weeklyPct}%</span>
+            <span
+              className="tabular-nums text-gray-900 dark:text-gray-100"
+              title={quotaTitle('Weekly', quota.weeklyResetsAt)}
+              aria-label={`Weekly usage: ${quota.weeklyPct}% — ${quotaTitle('Weekly', quota.weeklyResetsAt)}`}
+            >
+              wk {quota.weeklyPct}%
+            </span>
           </span>
         )}
 

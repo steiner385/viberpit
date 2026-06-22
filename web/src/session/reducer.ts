@@ -80,6 +80,7 @@ function num(v: unknown): number {
 export type LocalAction =
   | { type: '_resolvePermission'; permId: string }
   | { type: '_resolveQuestion';   questionId: string }
+  | { type: '_clearError' }
   | { type: '_seedUserPrompt';    text: string }
   | { type: '_rotation';          from: string; to: string; reason?: string }
 
@@ -299,8 +300,22 @@ export function transcriptReducer(
       const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
       const turn = turns[idx]
 
-      // Idempotent by questionId
-      if (turn.blocks.some((b) => b.kind === 'question' && b.questionId === questionId)) {
+      // Idempotent by questionId — but the server re-emits a still-pending
+      // question after replayComplete. The replay copy was created live:false
+      // (replaying was true); the re-emit (replaying now false) must upgrade it
+      // to live:true, otherwise a question pending across a refresh/reconnect
+      // renders read-only forever. Only ever flip false→true; never downgrade.
+      const existing = turn.blocks.find((b) => b.kind === 'question' && b.questionId === questionId)
+      if (existing) {
+        if (existing.kind === 'question' && !existing.live && !state.replaying) {
+          const nextTurns = replaceTurn(turns, idx, (t) => ({
+            ...t,
+            blocks: t.blocks.map((b) =>
+              b.kind === 'question' && b.questionId === questionId ? { ...b, live: true } : b,
+            ),
+          }))
+          return { ...state, turns: nextTurns }
+        }
         return { ...state, turns }
       }
 
@@ -405,6 +420,12 @@ export function transcriptReducer(
       })
       if (!changed) return state // No matching question block found; return unchanged state
       return { ...state, turns: nextTurns }
+    }
+
+    case '_clearError': {
+      // Dismiss a surfaced banner (e.g. the transient "answer queued" notice
+      // once a buffered answer has been resent). Ref-stable when already clear.
+      return state.error ? { ...state, error: null } : state
     }
 
     case '_seedUserPrompt': {
