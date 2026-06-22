@@ -1,7 +1,8 @@
 from __future__ import annotations
 import dataclasses as _dc
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
-                              ResultMessage, ToolUseBlock, ToolResultBlock, TextBlock)
+                              ResultMessage, ToolUseBlock, ToolResultBlock, TextBlock,
+                              RateLimitEvent)
 from . import events as ev
 from .completion import COMPLETION_MARKER
 
@@ -114,6 +115,13 @@ class Translator:
                                              {"content": rb.content}, getattr(msg, "uuid", None),
                                              parent_tool_use_id=pid))
             return out
+
+        if isinstance(msg, RateLimitEvent):
+            # Surface the rate-limit reset so the driver can use it as a Retry-After
+            # when a hard 429 lands this turn. Internal — not forwarded to the UI.
+            info = getattr(msg, "rate_limit_info", None)
+            return [ev.RateLimit(resets_at=getattr(info, "resets_at", None),
+                                 status=getattr(info, "status", None))]
 
         if isinstance(msg, ResultMessage):
             self.session_id = msg.session_id or self.session_id

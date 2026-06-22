@@ -2,10 +2,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import time
 import uuid
 from typing import Callable
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from . import events as ev
+from .failure import classify
 from .translator import Translator
 from .permissions import PermissionRegistry
 from .questions import QuestionRegistry
@@ -31,7 +33,7 @@ class SessionDriver:
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
-                 on_status=None, suggester=None):
+                 on_status=None, on_recoverable_failure=None, clock=None, suggester=None):
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -48,6 +50,14 @@ class SessionDriver:
         # real state, using the RICH derived vocabulary (in_progress / waiting_input /
         # ready_review / done / idle), not just the live working/idle of the StatusBar.
         self._on_status = on_status
+        # async callback ``on_recoverable_failure(session_id, kind, retry_after)`` fired
+        # when a turn fails with a recoverable kind (rate_limit / auth_401). The
+        # orchestrator drives the actual recovery (same-account retry/recompose, then
+        # rotation). ``clock`` is injected only for deterministic retry-after-from-reset
+        # tests; production uses wall-clock time.
+        self._on_recoverable_failure = on_recoverable_failure
+        self._clock = clock or time.time
+        self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
         self._factory = sdk_factory
         self._reg = registry
         self._qreg = QuestionRegistry()
@@ -305,15 +315,41 @@ class SessionDriver:
             log.warning("driver.sync_back failed (non-fatal) session=%s", self.session_id,
                         exc_info=True)
 
+    async def _maybe_signal_recovery(self, code: str, message: str) -> None:
+        """Classify a turn-failure surface; if recoverable, emit TurnFailure and notify
+        the orchestrator. Retry-After comes from the error text, falling back to a
+        RateLimitEvent reset observed this turn (resets_at - now)."""
+        failure = classify(code, message)
+        if not failure.is_recoverable:
+            return
+        retry_after = failure.retry_after
+        if retry_after is None and self._last_rate_reset is not None:
+            retry_after = max(0.0, float(self._last_rate_reset) - self._clock())
+        await self._out.put(ev.TurnFailure(
+            kind=failure.kind, account=self.account, retry_after=retry_after))
+        if self._on_recoverable_failure is not None:
+            try:
+                await self._on_recoverable_failure(self.session_id, failure.kind, retry_after)
+            except Exception:
+                log.warning("driver.on_recoverable_failure failed session=%s",
+                            self.session_id, exc_info=True)
+
     async def _drain(self):
         try:
             async for msg in self._client.receive_response():
                 for e in self._tr.feed(msg):
+                    if isinstance(e, ev.RateLimit):
+                        # Internal: stash the reset for retry timing; don't forward.
+                        if e.resets_at is not None:
+                            self._last_rate_reset = e.resets_at
+                        continue
                     if isinstance(e, ev.TextDelta):
                         self._last_assistant_parts.append(e.text)
                     elif isinstance(e, ev.TurnEnd):
                         self._last_turn_outcome = e.outcome
                         self._last_turn_id = e.turn_id
+                    elif isinstance(e, ev.ErrorEvent):
+                        await self._maybe_signal_recovery(e.code, e.message)
                     await self._out.put(e)
                 if self.claude_session_id is None and self._tr.session_id:
                     self.claude_session_id = self._tr.session_id
@@ -328,9 +364,11 @@ class SessionDriver:
             # (e.g. a dead token or a closed subprocess) is exactly what the user needs
             # to act on; redaction scrubs any secret-shaped substrings downstream.
             detail = str(exc).strip() or "no detail"
+            full = f"{type(exc).__name__}: {detail}"
             await self._out.put(ev.ErrorEvent(
-                "driver_error", f"{type(exc).__name__}: {detail[:500]}", turn_id=self._turn()))
+                "driver_error", full[:500], turn_id=self._turn()))
             self._last_turn_outcome = "failed"
+            await self._maybe_signal_recovery("driver_error", full)
         finally:
             # Capture any token rotation the SDK performed during this turn.
             await self._call_sync_back()
