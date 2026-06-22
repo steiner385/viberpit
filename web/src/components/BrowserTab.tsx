@@ -72,6 +72,12 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
           setFocused(false)
           clientRef.current?.blur()
         }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.stopPropagation()
+            ;(e.currentTarget as HTMLElement).blur()
+          }
+        }}
       />
 
       {/* Agent-driving badge */}

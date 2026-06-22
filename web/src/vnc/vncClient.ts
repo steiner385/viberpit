@@ -12,7 +12,8 @@ export function classifyClose(code: number): 'disabled' | 'nodisplay' | 'reconne
 export class VncClient {
   private rfb: any = null
   private listeners: Record<string, ((s: VncState) => void)[]> = {}
-  constructor(private url: string) {}
+  private url: string
+  constructor(url: string) { this.url = url }
   on(ev: string, cb: (s: VncState) => void) { (this.listeners[ev] ||= []).push(cb) }
   private emit(ev: string, s: VncState) { (this.listeners[ev] || []).forEach(cb => cb(s)) }
   connect(canvas: HTMLElement) {
