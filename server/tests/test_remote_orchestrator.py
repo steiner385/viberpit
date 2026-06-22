@@ -69,7 +69,10 @@ async def test_ensure_driver_and_stream_over_uds():
                 ev = await asyncio.wait_for(stream.__anext__(), 2)
             finally:
                 await ro.aclose()
-    assert found is True
+    # A2.2b-1: ensure_driver now returns a RemoteDriver (not a bool) so ws.py can
+    # consume it like a local driver; truthy/non-None signals "found".
+    from server.sessions.remote import RemoteDriver
+    assert isinstance(found, RemoteDriver)
     assert ev == {"type": "textDelta", "turnId": "t1", "text": "hi"}
 
 

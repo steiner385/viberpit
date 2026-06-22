@@ -42,3 +42,40 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "get_session", get_session)
     register_rpc(app, "create_session", create_session)
     register_rpc(app, "send_prompt", send_prompt)
+
+    import inspect
+
+    async def _maybe_await(r):
+        return await r if inspect.isawaitable(r) else r
+
+    # 15 methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
+    _SIMPLE = [
+        "archive_session", "permanent_delete", "rename_session", "interrupt",
+        "set_permission_mode", "cancel_queued", "resolve_permission", "answer_question",
+        "transcript_path", "pending_questions", "pop_pending_initial_prompt",
+        "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
+    ]
+
+    def _make_simple(method_name):
+        async def handler(params: dict):
+            return await _maybe_await(getattr(orch, method_name)(**params))
+        return handler
+
+    for _m in _SIMPLE:
+        register_rpc(app, _m, _make_simple(_m))
+
+    async def unarchive(params: dict) -> dict:
+        rec = await orch.unarchive(**params)
+        return {"session": rec.to_dict() if rec is not None else None}
+
+    async def adopt_session(params: dict) -> dict:
+        rec, metadata = await orch.adopt_session(**params)
+        return {"record": rec.to_dict(), "metadata": metadata}
+
+    async def transcript_events(params: dict) -> dict:
+        events = await orch.transcript_events(**params)
+        return {"events": [e.to_wire() for e in events]}
+
+    register_rpc(app, "unarchive", unarchive)
+    register_rpc(app, "adopt_session", adopt_session)
+    register_rpc(app, "transcript_events", transcript_events)
