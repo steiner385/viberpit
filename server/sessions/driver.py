@@ -399,8 +399,9 @@ class SessionDriver:
         self._queue.clear()
         self._turn_active = False
         self._tr = Translator()
-        self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None)
-        await self._client.__aenter__()
+        client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None)
+        self._client = client
+        await client.__aenter__()
 
     def resolve_permission(self, perm_id, decision, identity) -> bool:
         return self._reg.resolve(perm_id, decision, identity)
