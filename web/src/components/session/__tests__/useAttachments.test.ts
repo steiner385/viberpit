@@ -28,3 +28,21 @@ it('rejects non-images and over-count', async () => {
   expect(result.current.error).toBeTruthy()
   expect(result.current.ids).toEqual([])
 })
+
+it('rejects an oversize file and sets error without uploading', async () => {
+  const { result } = renderHook(() => useAttachments())
+  const big = new File([new Uint8Array([1])], 'big.png', { type: 'image/png' })
+  Object.defineProperty(big, 'size', { value: 11 * 1024 * 1024 })
+  await act(async () => { await result.current.addFiles([big]) })
+  expect(result.current.error).toMatch(/larger than 10 MB/)
+  expect(result.current.ids).toEqual([])
+})
+
+it('allows at most MAX_COUNT images and sets error when limit is hit', async () => {
+  const { result } = renderHook(() => useAttachments())
+  const files = Array.from({ length: 7 }, (_, i) => png(`img${i}.png`))
+  await act(async () => { await result.current.addFiles(files) })
+  await waitFor(() => expect(result.current.uploading).toBe(false))
+  expect(result.current.ids.length).toBeLessThanOrEqual(5)
+  expect(result.current.error).toMatch(/At most 5/)
+})

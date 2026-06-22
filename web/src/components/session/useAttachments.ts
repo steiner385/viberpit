@@ -17,32 +17,29 @@ export function useAttachments() {
   const addFiles = useCallback(async (files: File[]) => {
     setError(null)
     const valid: File[] = []
-    setItems((cur) => {
-      let count = cur.length
-      for (const f of files) {
-        if (!OK.includes(f.type)) { setError(`Unsupported file: ${f.name}`); continue }
-        if (f.size > MAX_BYTES) { setError(`${f.name} is larger than 10 MB`); continue }
-        if (count >= MAX_COUNT) { setError(`At most ${MAX_COUNT} images per message`); break }
-        count++; valid.push(f)
-      }
-      return cur
-    })
+    let count = items.length
+    for (const f of files) {
+      if (!OK.includes(f.type)) { setError(`Unsupported file: ${f.name}`); continue }
+      if (f.size > MAX_BYTES) { setError(`${f.name} is larger than 10 MB`); continue }
+      if (count >= MAX_COUNT) { setError(`At most ${MAX_COUNT} images per message`); break }
+      count++; valid.push(f)
+    }
     for (const f of valid) {
       const key = `${f.name}-${f.size}-${Math.random().toString(36).slice(2)}`
       setItems((cur) => [...cur, {
-        key, filename: f.name, previewUrl: URL.createObjectURL(f), status: 'uploading',
+        key, filename: f.name, previewUrl: URL.createObjectURL(f), status: 'uploading' as const,
       }])
       try {
         const d = await uploadAttachment(f)
         setItems((cur) => cur.map((it) =>
-          it.key === key ? { ...it, status: 'done', id: d.id } : it))
+          it.key === key ? { ...it, status: 'done' as const, id: d.id } : it))
       } catch {
         setItems((cur) => cur.map((it) =>
-          it.key === key ? { ...it, status: 'error' } : it))
+          it.key === key ? { ...it, status: 'error' as const } : it))
         setError(`Upload failed: ${f.name}`)
       }
     }
-  }, [])
+  }, [items])
 
   const remove = useCallback((key: string) => {
     setItems((cur) => cur.filter((it) => it.key !== key))
