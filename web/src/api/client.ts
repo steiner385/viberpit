@@ -31,3 +31,16 @@ export const api = {
   patch: <T>(path: string, body: unknown) => request<T>('PATCH', path, body),
   del: <T>(path: string) => request<T>('DELETE', path),
 }
+
+export interface AttachmentDescriptor {
+  id: string; mediaType: string; filename: string; byteSize: number; url: string
+}
+
+export async function uploadAttachment(file: File): Promise<AttachmentDescriptor> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch('/api/attachments', { method: 'POST', body: form })
+  const data = await res.json() as Record<string, unknown>
+  if (!res.ok) throw new ApiRequestError(res.status, data)
+  return data as unknown as AttachmentDescriptor
+}

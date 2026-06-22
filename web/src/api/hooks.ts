@@ -106,6 +106,7 @@ export interface CreateSessionInput {
   repo?: string
   branch?: string
   permissionMode?: string
+  attachmentIds?: string[]
 }
 
 export function useCreateSession() {
