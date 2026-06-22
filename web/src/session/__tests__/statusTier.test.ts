@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { statusTier, statusPresentation } from '../statusTier'
+import { statusTier, statusPresentation, sortSessionsByTier } from '../statusTier'
 
 describe('statusTier', () => {
   it.each([
@@ -36,5 +36,30 @@ describe('statusPresentation', () => {
     ['ended', 'Ended'],
   ])('labels %s as "%s"', (state, label) => {
     expect(statusPresentation(state).label).toBe(label)
+  })
+})
+
+
+describe('sortSessionsByTier', () => {
+  it('sorts needs-you first, then error, your-turn, busy; stable within tier', () => {
+    const input = [
+      { id: 'a', name: 'A', status: 'in_progress' },
+      { id: 'b', name: 'B', status: 'done' },
+      { id: 'c', name: 'C', status: 'waiting_input' },
+      { id: 'd', name: 'D', status: 'in_progress' },
+      { id: 'e', name: 'E', status: 'needs_attention' },
+    ]
+    const result = sortSessionsByTier(input)
+    expect(result.map((s) => s.id)).toEqual(['c', 'e', 'b', 'a', 'd'])
+  })
+
+  it('does not mutate the original array', () => {
+    const input = [
+      { id: 'x', status: 'in_progress' },
+      { id: 'y', status: 'waiting_input' },
+    ]
+    const original = [...input]
+    sortSessionsByTier(input)
+    expect(input).toEqual(original)
   })
 })

@@ -317,7 +317,7 @@ describe('SessionList — repo label', () => {
   })
 })
 
-describe('SessionList — tier sort', () => {
+describe('SessionList — pure renderer (no internal sort)', () => {
   const onNew = vi.fn()
   const onOpen = vi.fn()
   const onRename = vi.fn()
@@ -328,7 +328,9 @@ describe('SessionList — tier sort', () => {
     vi.clearAllMocks()
   })
 
-  it('sorts needs-you and error to the top, busy to the bottom, stable within tier', () => {
+  it('renders cards in the same order as the sessions prop (pre-sorted by caller)', () => {
+    // Pass sessions in a specific order: busy → your-turn → needs-you
+    // SessionList should render them exactly as given, not re-sort.
     const sessions: Session[] = [
       {
         id: 'a',
@@ -354,22 +356,6 @@ describe('SessionList — tier sort', () => {
         createdAt: '2026-06-19T10:00:00Z',
         updatedAt: '2026-06-19T10:00:00Z',
       },
-      {
-        id: 'd',
-        name: 'D busy2',
-        accountName: 'alice',
-        status: 'in_progress',
-        createdAt: '2026-06-19T10:00:00Z',
-        updatedAt: '2026-06-19T10:00:00Z',
-      },
-      {
-        id: 'e',
-        name: 'E error',
-        accountName: 'alice',
-        status: 'needs_attention',
-        createdAt: '2026-06-19T10:00:00Z',
-        updatedAt: '2026-06-19T10:00:00Z',
-      },
     ]
     render(
       <SessionList
@@ -386,14 +372,11 @@ describe('SessionList — tier sort', () => {
     const order = screen.getAllByRole('button', { name: /Open session/ }).map(
       (b) => b.getAttribute('aria-label'),
     )
-    // needs-you (C) + error (E) first (original relative order C before E),
-    // then your-turn (B), then busy (A before D).
+    // Must match input order exactly — SessionList is now a pure renderer.
     expect(order).toEqual([
-      'Open session C blocked',
-      'Open session E error',
-      'Open session B done',
       'Open session A busy',
-      'Open session D busy2',
+      'Open session B done',
+      'Open session C blocked',
     ])
   })
 })

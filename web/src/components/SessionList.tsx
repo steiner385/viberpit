@@ -2,15 +2,6 @@ import { cn } from '@/lib/utils'
 import { SessionCard } from './SessionCard'
 import { EmptyState } from './EmptyState'
 import type { Session, Account } from '@/api/types'
-import { statusTier, type StatusTier } from '@/session/statusTier'
-
-// Lower rank sorts first: action-required at top, finished next, busy last.
-const TIER_RANK: Record<StatusTier, number> = {
-  'needs-you': 0,
-  error: 1,
-  'your-turn': 2,
-  busy: 3,
-}
 
 interface SessionListProps {
   sessions: Session[]
@@ -70,9 +61,6 @@ export function SessionList({
   }
 
   const accountMap = new Map(accounts.map((a) => [a.name, a]))
-  const ordered = [...sessions].sort(
-    (a, b) => TIER_RANK[statusTier(a.status)] - TIER_RANK[statusTier(b.status)],
-  )
 
   return (
     // id="session-listbox" is referenced by DispatchBar's aria-controls.
@@ -87,7 +75,7 @@ export function SessionList({
       aria-activedescendant={selectedId ? `row-${selectedId}` : undefined}
       className="space-y-2"
     >
-      {ordered.map((session) => (
+      {sessions.map((session) => (
         <SessionCard
           key={session.id}
           session={session}

@@ -45,3 +45,12 @@ export function statusPresentation(state: string): StatusPresentation {
 export function statusTier(state: string): StatusTier {
   return statusPresentation(state).tier
 }
+
+export const TIER_RANK: Record<StatusTier, number> = {
+  'needs-you': 0, error: 1, 'your-turn': 2, busy: 3,
+}
+
+/** Stable sort by status tier: action-required first, busy last. Returns a new array. */
+export function sortSessionsByTier<T extends { status: string }>(items: readonly T[]): T[] {
+  return [...items].sort((a, b) => TIER_RANK[statusTier(a.status)] - TIER_RANK[statusTier(b.status)])
+}
