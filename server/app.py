@@ -204,6 +204,13 @@ def create_app(
     # Identity middleware — wraps all routes
     app.add_middleware(IdentityMiddleware)
 
+    # In remote mode an unreachable daemon surfaces as DaemonUnavailable from any
+    # facade RPC; map it to 503 so clients see "try again", not a 500. Harmless
+    # in-process (never raised there).
+    @app.exception_handler(DaemonUnavailable)
+    async def _daemon_unavailable_handler(_request, _exc):  # noqa: ANN001
+        return JSONResponse(status_code=503, content={"detail": "session daemon unavailable"})
+
     @app.get("/api/health")
     async def health(_identity: str = Depends(current_identity)) -> dict:
         return {"ok": True, "version": "0.1.0"}

@@ -100,6 +100,22 @@ def remote_edge(tmp_path):
         daemon.stop()
 
 
+@pytest.fixture()
+def dead_socket_edge(tmp_path):
+    """Edge in remote mode pointed at a socket with no daemon → every RPC raises
+    DaemonUnavailable."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}"
+    env = {
+        "CCSWITCH_SESSIOND_SOCKET": str(tmp_path / "dead.sock"),
+        "CCSWITCH_DB_URL": db_url,
+        "CCSWITCH_TAILNET_ALLOWLIST": _IDENT["Tailscale-User-Login"],
+    }
+    with mock.patch.dict(os.environ, env):
+        app = create_app()
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client
+
+
 def test_healthz_busy_count_over_rpc(remote_edge):
     orch, client = remote_edge
     # Two active sessions on the daemon → edge healthz reflects them over RPC.
@@ -111,3 +127,10 @@ def test_healthz_busy_count_over_rpc(remote_edge):
     assert body["activeSessions"] == 2
     assert body["busy"] is True
     assert body["daemon"] == "ok"
+
+
+def test_rest_call_returns_503_when_daemon_down(dead_socket_edge):
+    # GET /api/sessions → facade.list_sessions() → DaemonUnavailable → 503.
+    resp = dead_socket_edge.get("/api/sessions", headers=_IDENT)
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == "session daemon unavailable"
