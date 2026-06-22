@@ -70,3 +70,25 @@ def test_generate_swallows_errors():
 
     svc = SuggestionService(boom)
     assert asyncio.run(svc.generate("/tmp/r", "/tmp/cfg", "User: hi")) == []
+
+
+def test_real_suggestion_factory_builds_isolated_oneshot(monkeypatch):
+    import server.sessions.sdk_factory as sf
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, options=None):
+            captured["options"] = options
+
+    import claude_agent_sdk
+    monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _FakeClient)
+    monkeypatch.setenv("CCSWITCH_SUGGEST_MODEL", "claude-haiku-4-5")
+
+    sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct")
+    opts = captured["options"]
+    assert opts.cwd == "/tmp/r"
+    assert opts.env["CLAUDE_CONFIG_DIR"] == "/tmp/cfg-acct"
+    assert opts.resume is None
+    assert opts.max_turns == 1
+    assert opts.model == "claude-haiku-4-5"
