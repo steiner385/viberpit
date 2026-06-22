@@ -44,9 +44,11 @@ def _perishability(u: Usage, ceiling: float, now: datetime) -> float:
 
 
 def select_best(usages: dict[str, Usage | None], reserved: set[str],
-                cfg: Config, now: datetime, exclude: set[str] = frozenset()) -> str:
+                cfg: Config, now: datetime, exclude: set[str] = frozenset(),
+                load: dict[str, float] | None = None) -> str:
+    load = load or {}
     ceiling = cfg.hard_ceiling * 100.0
-    candidates: list[tuple[float, float, float, str]] = []
+    candidates: list[tuple[float, float, float, float, str]] = []
     busy_resets: list[datetime] = []
     for name, u in usages.items():
         if name in exclude or name in reserved or u is None:
@@ -63,12 +65,18 @@ def select_best(usages: dict[str, Usage | None], reserved: set[str],
             if resets:
                 busy_resets.append(min(resets))
             continue
-        score = _perishability(u, ceiling, now) if cfg.prefer_soon_reset else 0.0
-        # Sort ascending: most-perishable first (-score), then fall back to the legacy
-        # lowest-usage ordering, then name for determinism. With prefer_soon_reset off
-        # (or all scores equal, e.g. all-fresh), this reduces to the legacy key exactly.
-        candidates.append((-score, u.session_pct, u.weekly_pct, name))
+        l = load.get(name, 0.0)
+        perish = _perishability(u, ceiling, now) if cfg.prefer_soon_reset else 0.0
+        # Multiplicative discount: live load shrinks an account's score, so a busy
+        # perishable account can drop below a less-busy one. Bounded (1 + λ·l >= 1)
+        # so no divide-by-zero / NaN; with load={} this reduces to the legacy key.
+        composite = perish / (1.0 + cfg.load_sensitivity * l)
+        # Sort ascending: most-perishable-after-discount first (-composite); then raw
+        # load so spreading still applies when perishability can't differentiate
+        # (prefer_soon_reset off or all-fresh -> every composite is 0); then the
+        # legacy lowest-usage ordering; then name for determinism.
+        candidates.append((-composite, l, u.session_pct, u.weekly_pct, name))
     if not candidates:
         raise AllAccountsBusy(min(busy_resets) if busy_resets else None)
     candidates.sort()
-    return candidates[0][3]
+    return candidates[0][4]
