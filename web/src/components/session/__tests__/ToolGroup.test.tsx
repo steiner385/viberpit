@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { ToolGroup } from '../ToolGroup'
 import type { ToolBlock } from '@/session/groupBlocks'
 
@@ -11,59 +10,45 @@ function tool(id: string, withResult = true): ToolBlock {
 
 const fourDone = [tool('a'), tool('b'), tool('c'), tool('d')]
 
+/** Claude-Code-faithful: every tool is its own compact line — never a rollup count. */
 describe('ToolGroup', () => {
-  it('folds a completed run of >= threshold tools into a summary (auto, not live)', () => {
+  it('renders one row per tool with no rollup summary header (auto, not live)', () => {
     render(<ToolGroup tools={fourDone} isLiveTail={false} toolDetailMode="auto" />)
-    const header = screen.getByRole('button', { name: /tool group/i })
-    expect(header.textContent).toMatch(/4 tool calls/)
-    expect(header).toHaveAttribute('aria-expanded', 'false')
-    const regionId = header.getAttribute('aria-controls')!
-    expect(document.getElementById(regionId)!.hidden).toBe(true)
-  })
-
-  it('clicking the summary expands the rows', async () => {
-    const user = userEvent.setup()
-    render(<ToolGroup tools={fourDone} isLiveTail={false} toolDetailMode="auto" />)
-    const header = screen.getByRole('button', { name: /tool group/i })
-    await user.click(header)
-    expect(header).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.queryByRole('button', { name: /tool group/i })).toBeNull()
     expect(screen.getAllByRole('button', { name: /tool details/i })).toHaveLength(4)
   })
 
-  it('does not fold a short run (< threshold) in auto mode', () => {
-    render(<ToolGroup tools={[tool('a'), tool('b'), tool('c')]} isLiveTail={false} toolDetailMode="auto" />)
-    expect(screen.queryByRole('button', { name: /tool group/i })).toBeNull()
-    expect(screen.getAllByRole('button', { name: /tool details/i })).toHaveLength(3)
+  it('keeps every result collapsed in auto mode when not the live tail', () => {
+    render(<ToolGroup tools={fourDone} isLiveTail={false} toolDetailMode="auto" />)
+    for (const row of screen.getAllByRole('button', { name: /tool details/i })) {
+      expect(row).toHaveAttribute('aria-expanded', 'false')
+    }
   })
 
-  it('does not fold the live tail even when long', () => {
+  it('auto-opens only the last tool of the live tail', () => {
     render(<ToolGroup tools={fourDone} isLiveTail toolDetailMode="auto" />)
-    expect(screen.queryByRole('button', { name: /tool group/i })).toBeNull()
-    expect(screen.getAllByRole('button', { name: /tool details/i })).toHaveLength(4)
+    const rows = screen.getAllByRole('button', { name: /tool details/i })
+    expect(rows.slice(0, 3).every((r) => r.getAttribute('aria-expanded') === 'false')).toBe(true)
+    expect(rows[3]).toHaveAttribute('aria-expanded', 'true')
   })
 
-  it('does not fold when a tool is still incomplete', () => {
-    const withPending = [tool('a'), tool('b'), tool('c'), tool('d', false)]
-    render(<ToolGroup tools={withPending} isLiveTail={false} toolDetailMode="auto" />)
-    expect(screen.queryByRole('button', { name: /tool group/i })).toBeNull()
-  })
-
-  it('all-closed folds even a short run', () => {
-    render(<ToolGroup tools={[tool('a'), tool('b')]} isLiveTail={false} toolDetailMode="all-closed" />)
-    const header = screen.getByRole('button', { name: /tool group/i })
-    expect(header).toHaveAttribute('aria-expanded', 'false')
-  })
-
-  it('all-open shows rows with no summary header', () => {
+  it('all-open expands every result panel', () => {
     render(<ToolGroup tools={fourDone} isLiveTail={false} toolDetailMode="all-open" />)
-    expect(screen.queryByRole('button', { name: /tool group/i })).toBeNull()
-    expect(screen.getAllByRole('button', { name: /tool details/i })).toHaveLength(4)
+    for (const row of screen.getAllByRole('button', { name: /tool details/i })) {
+      expect(row).toHaveAttribute('aria-expanded', 'true')
+    }
   })
 
-  it('marks the summary with ✕ when any tool failed', () => {
-    const failed: ToolBlock = { ...tool('e'), result: { ok: false, payload: { content: 'boom' } } }
-    render(<ToolGroup tools={[tool('a'), tool('b'), tool('c'), failed]} isLiveTail={false} toolDetailMode="auto" />)
-    const header = screen.getByRole('button', { name: /tool group/i })
-    expect(header.textContent).toContain('✕')
+  it('all-closed collapses every result panel, even on the live tail', () => {
+    render(<ToolGroup tools={fourDone} isLiveTail toolDetailMode="all-closed" />)
+    for (const row of screen.getAllByRole('button', { name: /tool details/i })) {
+      expect(row).toHaveAttribute('aria-expanded', 'false')
+    }
+  })
+
+  it('renders a row for an incomplete tool too (no result yet)', () => {
+    const withPending = [tool('a'), tool('b', false)]
+    render(<ToolGroup tools={withPending} isLiveTail={false} toolDetailMode="auto" />)
+    expect(screen.getAllByRole('button', { name: /tool details/i })).toHaveLength(2)
   })
 })

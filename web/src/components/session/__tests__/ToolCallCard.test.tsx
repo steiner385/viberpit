@@ -218,5 +218,24 @@ describe('ToolCallCard', () => {
       const toggle = screen.getByRole('button', { name: /tool details/i })
       expect(toggle).toHaveAttribute('aria-expanded', 'true')
     })
+
+    it('toolDetailMode="all-open" force-opens the detail panel', () => {
+      render(<ToolCallCard block={bashBlockWithResult} density="line" toolDetailMode="all-open" />)
+      expect(screen.getByRole('button', { name: /tool details/i })).toHaveAttribute('aria-expanded', 'true')
+    })
+
+    it('toolDetailMode="all-closed" overrides defaultResultOpen and keeps the panel shut', () => {
+      render(<ToolCallCard block={bashBlockWithResult} density="line" defaultResultOpen toolDetailMode="all-closed" />)
+      expect(screen.getByRole('button', { name: /tool details/i })).toHaveAttribute('aria-expanded', 'false')
+    })
+
+    it('dims a completed tool name and keeps a running one prominent', () => {
+      const { rerender } = render(<ToolCallCard block={bashBlockWithResult} density="line" />)
+      // Completed → muted name color
+      expect(screen.getByText('Bash').className).toMatch(/text-gray-(500|600)/)
+      rerender(<ToolCallCard block={bashBlock} density="line" />)
+      // Running (no result) → prominent name color
+      expect(screen.getByText('Bash').className).toMatch(/text-gray-(900|100)/)
+    })
   })
 })

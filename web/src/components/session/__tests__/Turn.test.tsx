@@ -17,7 +17,7 @@ function makeTurn(blocks: Block[]): TurnType {
 const noop = () => {}
 
 describe('Turn tool grouping', () => {
-  it('folds a long completed tool run when this is NOT the last turn', () => {
+  it('renders one line per completed tool — no rollup — when NOT the last turn', () => {
     render(
       <Turn
         turn={makeTurn([tool('a'), tool('b'), tool('c'), tool('d')])}
@@ -28,7 +28,11 @@ describe('Turn tool grouping', () => {
         onAnswer={noop}
       />,
     )
-    expect(screen.getByRole('button', { name: /tool group/i }).textContent).toMatch(/4 tool calls/)
+    expect(screen.queryByRole('button', { name: /tool group/i })).toBeNull()
+    const rows = screen.getAllByRole('button', { name: /tool details/i })
+    expect(rows).toHaveLength(4)
+    // Auto + not live tail → every result stays collapsed.
+    for (const row of rows) expect(row).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('keeps the tool run expanded when this IS the last turn (live tail)', () => {
