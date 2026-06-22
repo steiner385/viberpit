@@ -44,7 +44,8 @@ class RemoteDriver:
 class RemoteOrchestrator:
     def __init__(self, client):
         self._client = client
-        self._feeders = {}
+        self._global_subs: set[asyncio.Queue] = set()
+        self._global_pump: asyncio.Task | None = None
 
     async def list_sessions(self) -> list[SessionRecord]:
         r = await self._client.call("list_sessions")
@@ -136,26 +137,32 @@ class RemoteOrchestrator:
     async def active_session_count(self):
         return await self._client.call("active_session_count")
 
-    async def subscribe_events(self):
+    async def subscribe_events(self) -> asyncio.Queue:
+        """Return a queue that receives global lifecycle events.
+
+        A single daemon subscription is shared; each caller gets their own
+        unbounded queue and events are fanned out to all active subscribers.
+        Call unsubscribe_events(q) to stop receiving events on a queue.
+        """
         q: asyncio.Queue = asyncio.Queue()
-
-        async def _feed():
-            async for ev in self._client.subscribe("_global"):
-                q.put_nowait(ev)
-
-        self._feeders[id(q)] = asyncio.create_task(_feed(), name="global-feeder")
+        self._global_subs.add(q)
+        if self._global_pump is None or self._global_pump.done():
+            async def _pump():
+                async for ev in self._client.subscribe("_global"):
+                    for sq in list(self._global_subs):
+                        sq.put_nowait(ev)
+            self._global_pump = asyncio.create_task(_pump(), name="global-pump")
         return q
 
-    async def unsubscribe_events(self, q):
-        task = self._feeders.pop(id(q), None)
-        if task is not None:
-            task.cancel()
+    async def unsubscribe_events(self, q: asyncio.Queue) -> None:
+        """Remove q from the fan-out set; the shared pump continues for remaining subscribers."""
+        self._global_subs.discard(q)
 
     def subscribe(self, session_id: str):
         return self._client.subscribe(session_id)
 
     async def aclose(self) -> None:
-        for task in list(self._feeders.values()):
-            task.cancel()
-        self._feeders.clear()
+        if self._global_pump is not None and not self._global_pump.done():
+            self._global_pump.cancel()
+        self._global_subs.clear()
         await self._client.aclose()

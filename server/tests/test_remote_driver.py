@@ -66,6 +66,7 @@ async def test_remote_driver_snapshot_and_wire_events():
 
     ro = RemoteOrchestrator(_Client())
     d = await ro.ensure_driver("s1")
+    assert isinstance(d, RemoteDriver)
     assert d.current_status() == "in_progress"
     assert d.queued() == ["q1", "q2"]
     ev = await d.events().__anext__()
