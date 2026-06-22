@@ -1,9 +1,10 @@
 import { useState, useId } from 'react'
-import { ChevronDown, ChevronRight, FileEdit, FileText, Terminal, List, Search, Wrench } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileEdit, FileText, Terminal, List, Search, Globe, Bot, Plug, Wrench } from 'lucide-react'
 import type { Block } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import type { ToolKind } from '@/session/events'
 import { ToolResult } from './ToolResult'
+import { StructuredView } from './StructuredView'
 import { sizeHint } from '@/lib/toolContent'
 import { cn } from '@/lib/utils'
 
@@ -27,6 +28,9 @@ function kindIcon(kind: ToolKind) {
     case 'bash':   return <Terminal size={14} />
     case 'todo':   return <List size={14} />
     case 'search': return <Search size={14} />
+    case 'web':    return <Globe size={14} />
+    case 'task':   return <Bot size={14} />
+    case 'mcp':    return <Plug size={14} />
     default:       return <Wrench size={14} />
   }
 }
@@ -103,11 +107,13 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
           hidden={!resultOpen}
           className="border-l-2 border-gray-200 dark:border-gray-700 ml-4 px-3 py-2"
         >
-          <pre className="mb-2 overflow-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-xs font-mono text-gray-800 dark:text-gray-200">
-            {JSON.stringify(block.input, null, 2)}
-          </pre>
+          {resultOpen && (
+            <div className="mb-2">
+              <StructuredView data={block.input} />
+            </div>
+          )}
           {block.result && (
-            <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} />
+            <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} name={block.name} />
           )}
         </div>
       </div>
@@ -142,9 +148,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
 
       {/* Args panel */}
       <div id={argsRegionId} hidden={!argsOpen} className="border-t border-gray-200 dark:border-gray-700 px-3 py-2">
-        <pre className="overflow-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-xs font-mono text-gray-800 dark:text-gray-200">
-          {JSON.stringify(block.input, null, 2)}
-        </pre>
+        {argsOpen && <StructuredView data={block.input} />}
       </div>
 
       {/* Result section */}
@@ -191,7 +195,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
 
             {/* Result panel */}
             <div id={resultRegionId} hidden={!resultOpen} className="border-t border-gray-200 dark:border-gray-700 px-3 py-2">
-              <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} />
+              <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} name={block.name} />
             </div>
           </>
         )

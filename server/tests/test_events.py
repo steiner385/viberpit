@@ -6,6 +6,14 @@ def test_tool_kind_maps_known_names():
     assert tool_kind("Grep") is ToolKind.SEARCH
     assert tool_kind("SomethingNew") is ToolKind.UNKNOWN
 
+def test_tool_kind_maps_web_task_and_mcp():
+    assert tool_kind("WebFetch") is ToolKind.WEB
+    assert tool_kind("WebSearch") is ToolKind.WEB
+    assert tool_kind("Task") is ToolKind.TASK
+    # Any mcp__<server>__<tool> name is the MCP kind, regardless of server/tool.
+    assert tool_kind("mcp__github__list_prs") is ToolKind.MCP
+    assert tool_kind("mcp__plugin_railway_railway__deploy") is ToolKind.MCP
+
 def test_textdelta_to_wire():
     e = TextDelta(turn_id="t1", text="hi", src_uuid="u1")
     assert e.to_wire() == {"type": "textDelta", "turnId": "t1", "text": "hi", "srcUuid": "u1"}
