@@ -17,7 +17,7 @@
  * via SessionRuntimeProvider keyed by the focused id.
  */
 
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Plus, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SessionList } from './SessionList'
@@ -28,6 +28,8 @@ import { SettingsPanel } from './settings/SettingsPanel'
 import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
 import { ReviewView } from './ReviewView'
+import { SidebarResizer } from './SidebarResizer'
+import { useSidebarWidth } from '@/lib/useSidebarWidth'
 import { RenameDialog, PermanentDeleteDialog } from './Dashboard'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from './session/SessionRuntimeProvider'
 import { SessionBody } from './session/SessionBody'
@@ -44,6 +46,7 @@ import {
   useGithubRepos,
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
+import { deriveHistory } from '@/session/history'
 
 type TabId = 'sessions' | 'accounts' | 'archived'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
@@ -52,14 +55,6 @@ type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: s
 
 function MainPaneSession() {
   const rt = useSessionRuntimeContext()
-  const toolToggleText =
-    rt.toolDetailMode === 'auto' ? 'Collapse tools'
-    : rt.toolDetailMode === 'all-closed' ? 'Expand tools'
-    : 'Auto-fold'
-  const toolToggleAria =
-    rt.toolDetailMode === 'auto' ? 'Collapse tool calls'
-    : rt.toolDetailMode === 'all-closed' ? 'Expand tool calls'
-    : 'Auto-fold tool calls'
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className={cn(
@@ -67,19 +62,6 @@ function MainPaneSession() {
         'bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700',
       )}>
         <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{rt.title}</span>
-        <button
-          type="button"
-          onClick={rt.toggleToolDetail}
-          aria-label={toolToggleAria}
-          className={cn(
-            'ml-auto flex items-center gap-1.5 px-3 py-2 rounded-md min-h-[44px]',
-            'text-sm font-medium text-gray-700 dark:text-gray-200',
-            'hover:bg-gray-200 dark:hover:bg-gray-700 active:bg-gray-300 dark:active:bg-gray-600',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-          )}
-        >
-          {toolToggleText}
-        </button>
       </div>
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-gray-950">
         <SessionBody rt={rt} />
@@ -95,6 +77,7 @@ function MainPaneSession() {
 
 function SessionComposer() {
   const rt = useSessionRuntimeContext()
+  const history = useMemo(() => deriveHistory(rt.state.turns), [rt.state.turns])
   return (
     <Composer
       status={rt.state.status}
@@ -106,6 +89,7 @@ function SessionComposer() {
       onCancelQueued={rt.onCancelQueued}
       commands={rt.commands}
       onCommand={rt.onCommand}
+      history={history}
     />
   )
 }
@@ -136,6 +120,7 @@ export function DesktopShell() {
   const permanentDeleteSession = usePermanentDeleteSession()
 
   const [tab, setTab] = useState<TabId>('sessions')
+  const [sidebarWidth, setSidebarWidth] = useSidebarWidth()
   const [selection, setSelection] = useState<Target>({ type: 'new' })
   const [reviewId, setReviewId] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -336,7 +321,10 @@ export function DesktopShell() {
   // ── Pieces shared between the provider and no-provider branches ──────────────
 
   const sidebar = (
-    <aside className="w-80 shrink-0 border-r border-gray-200 dark:border-gray-700 flex flex-col min-h-0">
+    <aside
+      style={{ width: sidebarWidth }}
+      className="shrink-0 flex flex-col min-h-0"
+    >
       {/* Tab bar */}
       <div role="tablist" aria-label="Dashboard sections" className="flex gap-1 border-b border-gray-200 dark:border-gray-700 px-2">
         {(['sessions', 'accounts', 'archived'] as TabId[]).map((t) => (
@@ -468,6 +456,7 @@ export function DesktopShell() {
 
       <div className="flex-1 flex min-h-0">
         {sidebar}
+        <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         <main className="flex-1 min-h-0 overflow-hidden flex flex-col">{mainPane}</main>
       </div>
 

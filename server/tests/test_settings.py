@@ -99,3 +99,53 @@ def test_put_rejects_invalid_mode():
                 get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
                 assert get_resp.status_code == 200
                 assert get_resp.json()["defaultPermissionMode"] == "interactive"
+
+
+# ---------------------------------------------------------------------------
+# defaultToolDetail
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_default_tool_detail_is_auto():
+    """GET /api/settings returns defaultToolDetail 'auto' by default."""
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            _, client = _make_app_and_client()
+            with client:
+                resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    assert resp.json()["defaultToolDetail"] == "auto"
+
+
+def test_put_default_tool_detail_round_trips():
+    """PUT {defaultToolDetail: 'all-closed'} then GET → 'all-closed'."""
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            _, client = _make_app_and_client()
+            with client:
+                put_resp = client.put(
+                    "/api/settings",
+                    json={"defaultToolDetail": "all-closed"},
+                    headers=IDENTITY_HEADERS,
+                )
+                assert put_resp.status_code == 200
+                assert put_resp.json()["defaultToolDetail"] == "all-closed"
+
+                get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+                assert get_resp.json()["defaultToolDetail"] == "all-closed"
+
+
+def test_put_rejects_invalid_tool_detail():
+    """PUT {defaultToolDetail: 'bogus'} → value silently stays 'auto'."""
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            _, client = _make_app_and_client()
+            with client:
+                put_resp = client.put(
+                    "/api/settings",
+                    json={"defaultToolDetail": "bogus"},
+                    headers=IDENTITY_HEADERS,
+                )
+                assert put_resp.status_code == 200
+                assert put_resp.json()["defaultToolDetail"] == "auto"

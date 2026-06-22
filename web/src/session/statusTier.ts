@@ -27,7 +27,7 @@ const PRESENTATION: Record<string, StatusPresentation> = {
   waiting_input:    { tier: 'needs-you', label: 'Permission needed', Icon: CircleAlert,   textClass: NEEDS_YOU },
   waiting_question: { tier: 'needs-you', label: 'Answer needed',     Icon: HelpCircle,    textClass: NEEDS_YOU },
   done:             { tier: 'your-turn', label: 'Your turn',         Icon: Check,         textClass: CALM },
-  complete:         { tier: 'your-turn', label: 'Your turn',         Icon: CheckCircle2,  textClass: CALM },
+  complete:         { tier: 'your-turn', label: 'Complete',          Icon: CheckCircle2,  textClass: CALM },
   idle:             { tier: 'your-turn', label: 'Ready',             Icon: Clock,         textClass: CALM },
   needs_attention:  { tier: 'error',     label: 'Turn failed',       Icon: AlertTriangle, textClass: ERROR },
   limited:          { tier: 'error',     label: 'Usage limit',       Icon: AlertTriangle, textClass: ERROR },

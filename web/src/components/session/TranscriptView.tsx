@@ -9,6 +9,7 @@ interface Props {
   rotations?: RotationMarker[]
   permissionMode: string
   toolDetailMode: ToolDetailMode
+  thinkingCollapsed: boolean
   /** Id of the live-streaming block (null when idle/replaying). */
   streamingBlockId?: string | null
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
@@ -37,7 +38,7 @@ function groupRotationsByAnchor(rotations: RotationMarker[]) {
   return { byTurn, top }
 }
 
-export function TranscriptView({ turns, rotations = [], permissionMode, toolDetailMode, streamingBlockId = null, onDecision, onAnswer, subAgents = {} }: Props) {
+export function TranscriptView({ turns, rotations = [], permissionMode, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onDecision, onAnswer, subAgents = {} }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
   const isNearBottomRef = useRef(true)
@@ -83,6 +84,7 @@ export function TranscriptView({ turns, rotations = [], permissionMode, toolDeta
             permissionMode={permissionMode}
             isLastTurn={idx === turns.length - 1}
             toolDetailMode={toolDetailMode}
+            thinkingCollapsed={thinkingCollapsed}
             // The open block only ever lives in the last turn; pass null to the
             // rest so their memoized render stays stable across deltas.
             streamingBlockId={idx === turns.length - 1 ? streamingBlockId : null}

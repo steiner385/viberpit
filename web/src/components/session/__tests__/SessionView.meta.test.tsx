@@ -33,6 +33,7 @@ vi.mock('@/api/hooks', () => ({
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessions: () => ({ data: [{ id: 's1', name: 'Fix OAuth login bug', accountName: 'work-max', status: 'idle', createdAt: '', updatedAt: '' }] }),
   useAccounts: () => ({ data: [{ name: 'work-max', status: 'ok', usage: { session: { pct: 42, resetsAt: null }, weekly: { pct: 18, resetsAt: null } } }] }),
+  useSettings: () => ({ data: undefined }),
 }))
 
 function emitSessionEvent(event: SessionEvent) {

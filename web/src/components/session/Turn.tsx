@@ -15,6 +15,7 @@ interface Props {
   permissionMode: string
   isLastTurn: boolean
   toolDetailMode: ToolDetailMode
+  thinkingCollapsed: boolean
   /** Id of the block currently being streamed live (renders as plain text);
    *  null/absent means every text block is finalized and rendered as markdown. */
   streamingBlockId?: string | null
@@ -24,7 +25,7 @@ interface Props {
 }
 
 export const Turn = memo(function Turn({
-  turn, permissionMode, isLastTurn, toolDetailMode, streamingBlockId = null,
+  turn, permissionMode, isLastTurn, toolDetailMode, thinkingCollapsed, streamingBlockId = null,
   onDecision, onAnswer, subAgents,
 }: Props) {
   const isUser = turn.role === 'user'
@@ -50,6 +51,7 @@ export const Turn = memo(function Turn({
               tools={item.tools}
               isLiveTail={isLiveTail}
               toolDetailMode={toolDetailMode}
+              thinkingCollapsed={thinkingCollapsed}
               subAgents={subAgents}
             />
           )
@@ -61,11 +63,13 @@ export const Turn = memo(function Turn({
             return isUser
               ? <UserBubble key={block.id} text={block.text} />
               : <AssistantText key={block.id} text={block.text} streaming={block.id === streamingBlockId} />
+          case 'image':
+            return <UserBubble key={block.id} images={block.images} />
           case 'thinking':
-            return <ThinkingBlock key={block.id} text={block.text} />
+            return <ThinkingBlock key={block.id} text={block.text} defaultCollapsed={thinkingCollapsed} />
           case 'tool':
             // Unreachable: tool blocks are coalesced into toolGroup items above.
-            return <ToolCallCard key={block.id} block={block} density="line" subThread={subAgents?.[block.toolId]} />
+            return <ToolCallCard key={block.id} block={block} density="line" thinkingCollapsed={thinkingCollapsed} subThread={subAgents?.[block.toolId]} />
           case 'permission':
             return <PermissionCard key={block.id} block={block} mode={permissionMode} onDecision={onDecision} />
           case 'question':

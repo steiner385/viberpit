@@ -107,3 +107,50 @@ def test_real_suggestion_factory_empty_model_env_uses_account_default(monkeypatc
 
     sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct")
     assert captured["options"].model is None
+
+
+def test_last_turn_context_extracts_latest_user_and_following_assistant():
+    from server.sessions import events as ev
+    from server.sessions.suggestions import last_turn_context
+    evs = [
+        ev.UserMessage("t1", "first question"),
+        ev.TextDelta("t1", "old answer"),
+        ev.UserMessage("t2", "do the thing"),
+        ev.TextDelta("t2", "Sure, "),
+        ev.TextDelta("t2", "done."),
+    ]
+    assert last_turn_context(evs) == ("do the thing", "Sure, done.")
+
+
+def test_last_turn_context_empty_when_no_user_message():
+    from server.sessions.suggestions import last_turn_context
+    assert last_turn_context([]) == ("", "")
+    from server.sessions import events as ev
+    assert last_turn_context([ev.TextDelta("t1", "orphan")]) == ("", "")
+
+
+def test_kick_idle_suggestions_passes_extracted_context():
+    from server.sessions import events as ev
+    from server.sessions.suggestions import kick_idle_suggestions
+
+    class _SpyDriver:
+        def __init__(self): self.seeded = None
+        def seed_idle_suggestions(self, user_text, assistant_text):
+            self.seeded = (user_text, assistant_text)
+
+    d = _SpyDriver()
+    kick_idle_suggestions(d, [ev.UserMessage("t1", "ship it"), ev.TextDelta("t1", "On it.")])
+    assert d.seeded == ("ship it", "On it.")
+
+
+def test_kick_idle_suggestions_blank_events_still_calls_driver():
+    from server.sessions.suggestions import kick_idle_suggestions
+
+    class _SpyDriver:
+        def __init__(self): self.seeded = None
+        def seed_idle_suggestions(self, user_text, assistant_text):
+            self.seeded = (user_text, assistant_text)
+
+    d = _SpyDriver()
+    kick_idle_suggestions(d, [])
+    assert d.seeded == ("", "")

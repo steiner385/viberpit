@@ -53,3 +53,28 @@ export function selectSubAgents(turns: Turn[]): SubAgent[] {
 export function selectRunningSubAgentCount(turns: Turn[]): number {
   return selectSubAgents(turns).filter((a) => a.status === 'running').length
 }
+
+// ── Sub-agent tree (for the dashboard session-list drill-down) ────────────────
+
+import type { SubAgentSummary } from '@/api/types'
+
+export interface SubAgentNode extends SubAgentSummary {
+  children: SubAgentNode[]
+}
+
+/**
+ * Build a nested tree from a flat sub-agent summary list (from the session-list
+ * API payload). Roots are entries whose `parentAgentId` is null; children nest
+ * recursively to arbitrary depth via `parentAgentId` links.
+ */
+export function subAgentTreeFromSummaries(list: SubAgentSummary[]): SubAgentNode[] {
+  const nodes = new Map<string, SubAgentNode>()
+  for (const s of list) nodes.set(s.agentId, { ...s, children: [] })
+  const roots: SubAgentNode[] = []
+  for (const n of nodes.values()) {
+    const parent = n.parentAgentId ? nodes.get(n.parentAgentId) : undefined
+    if (parent) parent.children.push(n)
+    else roots.push(n)
+  }
+  return roots
+}

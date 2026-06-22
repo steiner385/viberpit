@@ -13,14 +13,14 @@ async def _seed(rows):
             db.add(DbSession(**r))
 
 
-async def _build_orch(tmp_path, **row):
+async def _build_orch(tmp_path, *, title_fn=None, **row):
     db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
     await init_db(db_url=db_url)
     base = dict(id="s1", name="New Session", account_name="acct1",
                 claude_session_id="claude-s1", status="in_progress", cwd="/repo/s1")
     base.update(row)
     await _seed([base])
-    orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+    orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), title_fn=title_fn)
     await orch.rehydrate()
     return orch
 
@@ -51,6 +51,56 @@ def test_titling_sweep_skips_ended_sessions(tmp_path):
         return orch.record("s1").name
 
     assert asyncio.run(run()) == "New Session"
+
+
+def test_titling_sweep_generates_title_when_no_ai_title(tmp_path):
+    """SDK-driven sessions get no Claude ai-title record, so the sweep must fall
+    back to summarizing the user prompts via the injected title generator."""
+    transcript = tmp_path / "claude-s1.jsonl"
+    transcript.write_text(
+        '{"type":"user","message":{"role":"user","content":"fix the nightly build"}}\n'
+    )
+
+    seen = {}
+
+    async def stub_title_fn(prompts, *, account, cwd):
+        seen["prompts"] = prompts
+        seen["account"] = account
+        return "Fix the nightly build"
+
+    async def run():
+        orch = await _build_orch(tmp_path, title_fn=stub_title_fn)
+        orch.transcript_path = lambda sid: str(transcript)
+        await orch._titling_sweep()
+        return orch.record("s1").name
+
+    assert asyncio.run(run()) == "Fix the nightly build"
+    assert seen["prompts"] == ["fix the nightly build"]
+    assert seen["account"] == "acct1"
+
+
+def test_titling_sweep_prefers_ai_title_over_generator(tmp_path):
+    """When Claude *did* write an ai-title, the generator must not be called."""
+    transcript = tmp_path / "claude-s1.jsonl"
+    transcript.write_text(
+        '{"type":"ai-title","aiTitle":"Investigate slow query"}\n'
+        '{"type":"user","message":{"role":"user","content":"something else"}}\n'
+    )
+
+    called = {"n": 0}
+
+    async def stub_title_fn(prompts, *, account, cwd):
+        called["n"] += 1
+        return "Generated should not win"
+
+    async def run():
+        orch = await _build_orch(tmp_path, title_fn=stub_title_fn)
+        orch.transcript_path = lambda sid: str(transcript)
+        await orch._titling_sweep()
+        return orch.record("s1").name
+
+    assert asyncio.run(run()) == "Investigate slow query"
+    assert called["n"] == 0
 
 
 def test_titling_interval_defaults_to_15s(tmp_path):

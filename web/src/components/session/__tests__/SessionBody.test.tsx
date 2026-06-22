@@ -26,7 +26,7 @@ function makeRuntime(blocks: Block[]): SessionRuntime {
     },
     mode: 'interactive',
     toolDetailMode: 'auto',
-    toggleToolDetail: vi.fn(),
+    thinkingCollapsed: true,
     connectionState: 'connected',
     title: 'Test', account: 'acct', quota: null, contextPct: null, subAgents: [],
     hasOpenAction: false, hasOpenPermission: false,

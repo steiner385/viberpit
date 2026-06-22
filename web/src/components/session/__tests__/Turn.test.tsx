@@ -24,6 +24,7 @@ describe('Turn tool grouping', () => {
         permissionMode="interactive"
         isLastTurn={false}
         toolDetailMode="auto"
+        thinkingCollapsed={true}
         onDecision={noop}
         onAnswer={noop}
       />,
@@ -42,6 +43,7 @@ describe('Turn tool grouping', () => {
         permissionMode="interactive"
         isLastTurn
         toolDetailMode="auto"
+        thinkingCollapsed={true}
         onDecision={noop}
         onAnswer={noop}
       />,
@@ -58,6 +60,7 @@ describe('Turn tool grouping', () => {
         permissionMode="interactive"
         isLastTurn={false}
         toolDetailMode="auto"
+        thinkingCollapsed={true}
         onDecision={noop}
         onAnswer={noop}
       />,
@@ -74,6 +77,7 @@ describe('Turn rendering edge cases', () => {
         permissionMode="interactive"
         isLastTurn
         toolDetailMode="auto"
+        thinkingCollapsed={true}
         onDecision={noop}
         onAnswer={noop}
       />,
@@ -89,6 +93,7 @@ describe('Turn rendering edge cases', () => {
         permissionMode="interactive"
         isLastTurn
         toolDetailMode="auto"
+        thinkingCollapsed={true}
         streamingBlockId="t1"
         onDecision={noop}
         onAnswer={noop}
@@ -106,6 +111,7 @@ describe('Turn rendering edge cases', () => {
         permissionMode="interactive"
         isLastTurn
         toolDetailMode="auto"
+        thinkingCollapsed={true}
         streamingBlockId={null}
         onDecision={noop}
         onAnswer={noop}
@@ -133,6 +139,7 @@ describe('Turn question rendering', () => {
         permissionMode="interactive"
         isLastTurn
         toolDetailMode="auto"
+        thinkingCollapsed={true}
         onDecision={noop}
         onAnswer={noop}
       />,
@@ -149,6 +156,7 @@ describe('Turn question rendering', () => {
         permissionMode="interactive"
         isLastTurn
         toolDetailMode="auto"
+        thinkingCollapsed={true}
         onDecision={noop}
         onAnswer={vi.fn()}
       />,

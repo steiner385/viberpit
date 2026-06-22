@@ -178,15 +178,34 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             #    can't be located or parsed must NOT crash the WS (which would close the
             #    socket → client reconnect-loop on a blank screen) — skip the history and
             #    continue; the live session still works.
+            events: list = []  # guard: keep in scope if the replay try block raises early
             try:
                 path = await orchestrator.transcript_path(session_id)
                 events = await replay_events(path) if path else []
                 if events:
-                    redacted_replay = [redact_event(e.to_wire()) for e in events]
+                    # Lead the replay with a reset. attach is re-sent on every WS
+                    # reconnect (client.ts onopen), so the same transcript is
+                    # replayed repeatedly into a reducer that is never recreated.
+                    # Streamed text/thinking deltas are append-only, so without a
+                    # reset each reconnect re-appends a full copy of every assistant
+                    # block — the "sessions duplicating content" bug. The reset is the
+                    # first event of this single batch frame, so the client clears and
+                    # rebuilds atomically (no flicker, no duplication).
+                    redacted_replay = [{"type": "replayReset"}]
+                    redacted_replay += [redact_event(e.to_wire()) for e in events]
                     await _send({"type": "batch", "events": redacted_replay})
             except Exception:
                 log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
             await _send({"type": "replayComplete"})
+
+            # A session resumed into an idle state has no in-memory turn context, so
+            # the turn-completion suggestion trigger never fires. Seed one suggestion
+            # from the replayed transcript tail (best-effort; driver gates + dedupes).
+            try:
+                from server.sessions.suggestions import kick_idle_suggestions
+                kick_idle_suggestions(driver, events)
+            except Exception:
+                log.warning("ws.attach: idle suggestion seeding failed for %s", session_id, exc_info=True)
 
             # Slash-command catalog (built from the SDK's get_server_info) for this session.
             try:

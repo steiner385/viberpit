@@ -85,6 +85,7 @@ def _record_to_dict(record, repo: Any = _UNSET) -> dict[str, Any]:
         "nameIsAuto": getattr(record, "name_is_auto", True),
         "detached": record.detached,
         "adoptedInPlace": getattr(record, "adopted_in_place", False),
+        "subAgents": getattr(record, "sub_agents", None) or [],
         "createdAt": record.created_at.isoformat() if record.created_at else None,
         "updatedAt": None,
     }

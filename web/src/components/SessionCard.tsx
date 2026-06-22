@@ -1,8 +1,10 @@
-import { useRef, useEffect } from 'react'
-import { Pencil, Archive, Trash2, FolderGit2 } from 'lucide-react'
+import { useRef, useEffect, useState } from 'react'
+import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
+import { relTime } from '@/lib/relativeTime'
 import { StatusPill, UsageBadge } from './UsageBadge'
+import { SubAgentRows } from './SubAgentRows'
 import type { Session, Account } from '@/api/types'
 
 // Shared sizing for the per-session icon buttons: 44px tap target on touch,
@@ -27,6 +29,9 @@ interface SessionCardProps {
 
 export function SessionCard({ session, account, selected = false, onOpen, onRename, onClose, onDelete }: SessionCardProps) {
   const articleRef = useRef<HTMLElement>(null)
+  const subAgents = session.subAgents ?? []
+  const hasSubAgents = subAgents.length > 0
+  const [expanded, setExpanded] = useState(false)
 
   // Scroll selected row into view when selection changes (jsdom doesn't implement scrollIntoView)
   useEffect(() => {
@@ -48,12 +53,29 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
     <article
       ref={articleRef}
       className={cn(
-        'group flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700',
+        'group flex flex-col rounded-lg border border-gray-200 dark:border-gray-700',
         'bg-white dark:bg-gray-800 px-3 py-2 min-h-[44px]',
         'focus-within:ring-2 focus-within:ring-blue-500',
         selected && 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-950/30',
       )}
     >
+     <div className="flex items-center gap-2">
+      {hasSubAgents && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-label={expanded ? 'Hide sub-agents' : 'Show sub-agents'}
+          aria-expanded={expanded}
+          className={cn(
+            'flex-shrink-0 h-6 w-6 flex items-center justify-center rounded',
+            'text-gray-400 hover:text-gray-600 dark:hover:text-gray-200',
+            'hover:bg-gray-100 dark:hover:bg-gray-700',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+          )}
+        >
+          {expanded ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+        </button>
+      )}
       {/* Main tappable area — opens the session.
           id is used by DispatchBar's aria-activedescendant to signal the highlighted
           row to assistive technologies without moving DOM focus.
@@ -83,6 +105,13 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
           <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
             {session.accountName}
           </span>
+          {/* Sub-agent count, visible without expanding. Only shown while
+              collapsed — once expanded, the chevron + SubAgentRows carry it. */}
+          {hasSubAgents && !expanded && (
+            <span className="text-xs tabular-nums px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
+              {subAgents.length} {subAgents.length === 1 ? 'agent' : 'agents'}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <span
@@ -107,6 +136,17 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
               label="session"
               resetsAt={account.usage.session.resetsAt}
             />
+          )}
+          {/* Last activity — helps tell live sessions from stale ones at a glance.
+              Refreshes naturally as React Query refetches the session list.
+              Guarded against a missing/invalid timestamp so we never show "NaN". */}
+          {Number.isFinite(new Date(session.updatedAt).getTime()) && (
+            <span
+              className="text-xs text-gray-400 dark:text-gray-500 tabular-nums"
+              title={`Last active ${new Date(session.updatedAt).toLocaleString()}`}
+            >
+              active {relTime(session.updatedAt)}
+            </span>
           )}
         </div>
       </button>
@@ -156,6 +196,8 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
           <Trash2 size={16} aria-hidden="true" />
         </button>
       </div>
+     </div>
+      {hasSubAgents && expanded && <SubAgentRows sessionId={session.id} subAgents={subAgents} />}
     </article>
   )
 }

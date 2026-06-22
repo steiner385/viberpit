@@ -35,6 +35,9 @@ function SettingsForm({ settings, onClose }: SettingsFormProps) {
     settings?.thinkingCollapsed ?? false,
   )
   const [repoRoot, setRepoRoot] = useState(settings?.repoRoot ?? '')
+  const [toolDetail, setToolDetail] = useState<AppSettings['defaultToolDetail']>(
+    settings?.defaultToolDetail ?? 'auto',
+  )
 
   // Escape to close
   useEffect(() => {
@@ -67,6 +70,7 @@ function SettingsForm({ settings, onClose }: SettingsFormProps) {
       defaultPermissionMode: permissionMode,
       thinkingCollapsed,
       repoRoot: repoRoot.trim() || null,
+      defaultToolDetail: toolDetail,
     }, {
       onSuccess: () => onClose(),
     })
@@ -134,24 +138,48 @@ function SettingsForm({ settings, onClose }: SettingsFormProps) {
             )}
           </div>
 
-          {/* Collapse thinking by default */}
-          <div className="flex items-center gap-3">
-            <input
-              id="settings-thinking-collapsed"
-              type="checkbox"
-              checked={thinkingCollapsed}
-              onChange={(e) => setThinkingCollapsed(e.target.checked)}
-              className={cn(
-                'h-4 w-4 rounded border-gray-300 dark:border-gray-600',
-                'text-blue-600 focus:ring-2 focus:ring-blue-500',
-              )}
-            />
-            <label
-              htmlFor="settings-thinking-collapsed"
-              className="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer"
-            >
-              Collapse thinking by default
-            </label>
+          {/* Transcript display */}
+          <div className="space-y-3 border-t border-gray-200 dark:border-gray-700 pt-4">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              Transcript display
+            </h3>
+            <div className="space-y-1">
+              <label
+                htmlFor="settings-tool-detail"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                Tool calls default
+              </label>
+              <select
+                id="settings-tool-detail"
+                value={toolDetail}
+                onChange={(e) => setToolDetail(e.target.value as AppSettings['defaultToolDetail'])}
+                className={inputClass}
+              >
+                <option value="auto">Auto-fold long groups</option>
+                <option value="all-open">Expand all</option>
+                <option value="all-closed">Collapse all</option>
+              </select>
+            </div>
+            {/* Collapse thinking by default */}
+            <div className="flex items-center gap-3">
+              <input
+                id="settings-thinking-collapsed"
+                type="checkbox"
+                checked={thinkingCollapsed}
+                onChange={(e) => setThinkingCollapsed(e.target.checked)}
+                className={cn(
+                  'h-4 w-4 rounded border-gray-300 dark:border-gray-600',
+                  'text-blue-600 focus:ring-2 focus:ring-blue-500',
+                )}
+              />
+              <label
+                htmlFor="settings-thinking-collapsed"
+                className="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer"
+              >
+                Collapse thinking by default
+              </label>
+            </div>
           </div>
 
           {/* Repo clone root */}

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
+import { relTime } from '@/lib/relativeTime'
 import { useAdoptable, useAdoptSession } from '@/api/hooks'
 import type { AdoptionCandidate } from '@/api/types'
 
@@ -7,13 +8,6 @@ import type { AdoptionCandidate } from '@/api/types'
 const SKIP_COPY: Record<string, string> = {
   unmapped: 'Not a managed account — running under an unmanaged config dir (e.g. ~/.claude).',
   tracked: 'Already managed by ccswitch.',
-}
-
-function relTime(iso: string): string {
-  const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
-  if (secs < 60) return `${Math.round(secs)}s ago`
-  if (secs < 3600) return `${Math.round(secs / 60)}m ago`
-  return `${Math.round(secs / 3600)}h ago`
 }
 
 /** Middle-elide a long path so the repo basename stays visible. */

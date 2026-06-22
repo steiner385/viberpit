@@ -17,7 +17,7 @@ import type { TranscriptState } from '@/session/reducer'
 import type { SessionEvent, Command } from '@/session/events'
 import { selectSubAgents } from '@/session/selectors'
 import { remainingContextPct } from '@/lib/contextWindow'
-import { useSessions, useAccounts } from '@/api/hooks'
+import { useSessions, useAccounts, useSettings } from '@/api/hooks'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 
 // Dispatch payload for attached images: the DB-backed attachment ids.
@@ -28,7 +28,7 @@ export interface SessionRuntime {
   state: TranscriptState
   mode: string
   toolDetailMode: ToolDetailMode
-  toggleToolDetail: () => void
+  thinkingCollapsed: boolean
   connectionState: ConnectionState
   title: string
   account: string
@@ -83,16 +83,9 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   const [commands, setCommands] = useState<Command[]>([])
   const [commandResult, setCommandResult] = useState<{ render: 'help' | 'context'; data: unknown } | null>(null)
   const modeRef = useRef('interactive')
-  const [toolDetailMode, setToolDetailMode] = useState<ToolDetailMode>('auto')
   // Answers whose WS send was dropped (socket not open). Buffered here and
   // auto-resent when the socket reconnects. Keyed by questionId.
   const pendingAnswersRef = useRef<Map<string, { selected: string[]; mode: 'option' | 'freeform' | 'chat' }>>(new Map())
-  const toggleToolDetail = useCallback(
-    () => setToolDetailMode((m) =>
-      m === 'auto' ? 'all-closed' : m === 'all-closed' ? 'all-open' : 'auto',
-    ),
-    [],
-  )
 
   // Attach / detach + subscribe to session events
   useEffect(() => {
@@ -274,6 +267,9 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   // Account: the session record's account, overridden by the latest rotation.
   const { data: sessions } = useSessions()
   const { data: accounts } = useAccounts()
+  const { data: appSettings } = useSettings()
+  const toolDetailMode: ToolDetailMode = appSettings?.defaultToolDetail ?? 'auto'
+  const thinkingCollapsed = appSettings?.thinkingCollapsed ?? true
   const sessionRecord = sessions?.find((s) => s.id === sessionId)
 
   // Header title: prefer the session's name (the AI-generated/auto title, the
@@ -302,7 +298,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     state,
     mode,
     toolDetailMode,
-    toggleToolDetail,
+    thinkingCollapsed,
     connectionState,
     title,
     account,
