@@ -86,18 +86,19 @@ busy_verdict() {
 # VNC-client gate. Defers the deploy while a VNC client is attached to the running
 # Xvfb framebuffer, so a human watching a session is not disrupted mid-view.
 # Test seam: CCSWITCH_DEPLOY_VNC_ATTACHED (1/0) forces the verdict without curling.
-# Degrades gracefully: an unreachable metrics route (arrives in a later task) => none,
-# so shipping this gate before the route exists is safe.
+# Reads /healthz (auth-exempt) rather than /api/x11/metrics (identity-gated) so the
+# deploy curl — which has no Tailscale identity — can reach it without a 401.
+# Degrades gracefully: unreachable / missing field => none (same as busy_verdict).
 vnc_verdict() {
   if [ -n "${CCSWITCH_DEPLOY_VNC_ATTACHED:-}" ]; then
     [ "$CCSWITCH_DEPLOY_VNC_ATTACHED" = "1" ] && echo attached || echo none
     return 0
   fi
-  local url="http://${CCSWITCH_HOST:-127.0.0.1}:${CCSWITCH_PORT:-8787}/api/x11/metrics"
+  local url="http://${CCSWITCH_HOST:-127.0.0.1}:${CCSWITCH_PORT:-8787}/healthz"
   local body; body="$(curl -fsS -m 3 "$url" 2>/dev/null || true)"
-  # Treat attached when vnc_clients_attached > 0; anything else (unreachable, missing
-  # field, zero) => none.
-  if grep -Eq '"vnc_clients_attached"[[:space:]]*:[[:space:]]*[1-9]' <<<"$body"; then
+  # Treat attached when vncAttached is true; anything else (unreachable, missing
+  # field, false) => none.
+  if grep -q '"vncAttached":true' <<<"$body"; then
     echo attached
   else
     echo none

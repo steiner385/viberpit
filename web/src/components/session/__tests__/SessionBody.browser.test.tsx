@@ -93,4 +93,29 @@ describe('SessionBody — Browser tab gating', () => {
       expect(screen.queryByRole('tab', { name: /browser/i })).toBeNull()
     })
   })
+
+  it('conversation container has no role=tabpanel when browser feature is disabled (fetch rejects)', async () => {
+    vi.spyOn(global, 'fetch').mockRejectedValue(new Error('Network error'))
+    render(<SessionBody rt={makeRuntime()} />)
+    // Wait for the fetch to settle (browserEnabled stays false)
+    await waitFor(() => {
+      expect(screen.queryByRole('tab', { name: /browser/i })).toBeNull()
+    })
+    // The conversation container must NOT carry tab ARIA (dangling reference)
+    expect(screen.queryByRole('tabpanel')).toBeNull()
+  })
+
+  it('conversation container has no role=tabpanel when metrics report disabled', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ enabled: false }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+    render(<SessionBody rt={makeRuntime()} />)
+    await waitFor(() => {
+      expect(screen.queryByRole('tab', { name: /browser/i })).toBeNull()
+    })
+    expect(screen.queryByRole('tabpanel')).toBeNull()
+  })
 })

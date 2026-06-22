@@ -176,6 +176,10 @@ The 2-minute auto-deploy timer defers a service restart while a session is mid-t
 while a VNC client is attached**. This prevents a routine deploy from cold-killing an
 active human-takeover session.
 
+The deploy script reads the auth-exempt `/healthz` endpoint (not `/api/x11/metrics`, which
+requires a Tailscale identity) and checks the `"vncAttached"` boolean field added to its
+response. The `/api/x11/metrics` route remains available for operator observability.
+
 The deferral is capped by `CCSWITCH_DEPLOY_MAX_DEFER_SEC` (set in `ccswitch.env` or the
 deploy script). Once the cap is reached the restart proceeds regardless.
 
