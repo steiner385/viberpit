@@ -39,14 +39,15 @@
 }
 
 #root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
+  /* Full-bleed: fill the entire viewport. The old `width: 1126px; margin: 0 auto`
+     was a leftover Vite scaffold default that caged the whole app in a centered
+     column, wasting all the space on wide monitors. The master-detail DesktopShell
+     (fixed `w-80` sidebar + `flex-1` main pane) is built to fill this width. */
+  width: 100%;
   /* Left-aligned, not centered: `text-align: center` here was a leftover Vite
      scaffold default that center-justified all text app-wide (chat prompts,
      responses, headings, account rows). */
   text-align: left;
-  border-inline: 1px solid var(--border);
   min-height: 100svh;
   display: flex;
   flex-direction: column;
