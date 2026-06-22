@@ -113,7 +113,7 @@ describe('SessionSocket', () => {
     expect(sent).toEqual({ type: 'interrupt', sessionId: 's' })
   })
 
-  it('socket.answerQuestion("s","q1",["a"]) sends {type:"answerQuestion",sessionId:"s",questionId:"q1",selected:["a"]}', () => {
+  it('socket.answerQuestion("s","q1",["a"]) sends mode "option" by default', () => {
     const sock = new SessionSocket('/ws')
     sock.connect()
     lastSock().simulateOpen()
@@ -121,7 +121,18 @@ describe('SessionSocket', () => {
     sock.answerQuestion('s', 'q1', ['a'])
 
     const sent = parseSent(lastSock(), 0)
-    expect(sent).toEqual({ type: 'answerQuestion', sessionId: 's', questionId: 'q1', selected: ['a'] })
+    expect(sent).toEqual({ type: 'answerQuestion', sessionId: 's', questionId: 'q1', selected: ['a'], mode: 'option' })
+  })
+
+  it('socket.answerQuestion forwards an explicit mode', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+
+    sock.answerQuestion('s', 'q1', ['hello'], 'chat')
+
+    const sent = parseSent(lastSock(), 0)
+    expect(sent).toEqual({ type: 'answerQuestion', sessionId: 's', questionId: 'q1', selected: ['hello'], mode: 'chat' })
   })
 
   it('socket.setPermissionMode("s","plan") sends {type:"setPermissionMode",sessionId:"s",mode:"plan"}', () => {

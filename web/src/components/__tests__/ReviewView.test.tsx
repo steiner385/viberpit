@@ -15,6 +15,8 @@ import { ReviewView } from '../ReviewView'
 import * as hooks from '@/api/hooks'
 
 vi.mock('@/api/hooks', () => ({
+  useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
+  useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessionTranscript: vi.fn(),
 }))
 

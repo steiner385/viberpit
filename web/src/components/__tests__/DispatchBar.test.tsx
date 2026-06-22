@@ -64,7 +64,7 @@ describe('DispatchBar', () => {
     await user.click(box)
     await user.type(box, 'fix the bug')
     await user.keyboard('{Enter}')
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, images: [] })
     expect(box).toHaveValue('')
   })
 
@@ -88,6 +88,36 @@ describe('DispatchBar', () => {
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{Enter}')
     expect(onOpenHighlighted).toHaveBeenCalledTimes(1)
+  })
+
+  it('Create button is disabled until the prompt has text, then dispatches and clears', async () => {
+    const user = userEvent.setup()
+    const onDispatch = vi.fn()
+    render(<DispatchBar {...makeProps({ onDispatch })} />)
+    const create = screen.getByRole('button', { name: /create session/i })
+    // Empty prompt → disabled (a "Create" button must never open an existing session)
+    expect(create).toBeDisabled()
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.type(box, 'fix the bug')
+    expect(create).toBeEnabled()
+    await user.click(create)
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, images: [] })
+    expect(box).toHaveValue('')
+  })
+
+  it('Create button never opens the highlighted session (stays disabled when empty)', async () => {
+    const user = userEvent.setup()
+    const onOpenHighlighted = vi.fn()
+    render(<DispatchBar {...makeProps({ onOpenHighlighted })} />)
+    const create = screen.getByRole('button', { name: /create session/i })
+    expect(create).toBeDisabled()
+    await user.click(create)
+    expect(onOpenHighlighted).not.toHaveBeenCalled()
+  })
+
+  it('Create button is disabled while a session is pending', () => {
+    render(<DispatchBar {...makeProps({ isPending: true })} />)
+    expect(screen.getByRole('button', { name: /create session/i })).toBeDisabled()
   })
 
   it('ArrowDown on empty prompt navigates down', async () => {

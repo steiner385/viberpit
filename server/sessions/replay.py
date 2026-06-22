@@ -15,7 +15,7 @@ def _parse(path: str, max_turns: int) -> list:
             except json.JSONDecodeError:
                 continue
     out: list = []
-    meta_emitted = False
+    meta_event = None
     for o in lines:
         typ = o.get("type")
         msg = o.get("message") or {}
@@ -34,17 +34,27 @@ def _parse(path: str, max_turns: int) -> list:
         if typ == "user":
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
             results = [b for b in content if b.get("type") == "tool_result"]
-            if text:
-                out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid))
+            imgs = []
+            for b in content:
+                if b.get("type") == "image":
+                    src = b.get("source") or {}
+                    if src.get("type") == "base64":
+                        mt = src.get("media_type", "image/png")
+                        imgs.append({"url": f"data:{mt};base64,{src.get('data', '')}",
+                                     "mime": mt, "name": ""})
+            if text or imgs:
+                out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
+                                          images=imgs or None))
             for r in results:
                 out.append(ev.ToolResult(r["tool_use_id"], not r.get("is_error", False),
                                          {"content": r.get("content")}, uuid))
         elif typ == "assistant":
             # Reconstruct the model once (status strip needs it after re-attach).
             model = msg.get("model")
-            if model and not meta_emitted:
-                meta_emitted = True
-                out.append(ev.SessionMeta(model=model, session_id=o.get("sessionId") or ""))
+            if model and meta_event is None:
+                # Held aside (not appended) so the trim below can't slice it away on
+                # long sessions — the status strip needs the model after re-attach.
+                meta_event = ev.SessionMeta(model=model, session_id=o.get("sessionId") or "")
             out.append(ev.TurnStart(turn_id=uuid, src_uuid=uuid))
             for b in content:
                 t = b.get("type")
@@ -62,6 +72,9 @@ def _parse(path: str, max_turns: int) -> list:
     starts = [i for i, e in enumerate(out) if isinstance(e, ev.TurnStart)]
     if len(starts) > max_turns:
         out = out[starts[-max_turns]:]
+    # Prepend the model meta (if any) so it always precedes the kept turns.
+    if meta_event is not None:
+        out.insert(0, meta_event)
     return out
 
 

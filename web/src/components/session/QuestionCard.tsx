@@ -4,30 +4,108 @@ import { cn } from '@/lib/utils'
 
 type QuestionBlock = Extract<Block, { kind: 'question' }>
 
+type AnswerMode = 'option' | 'freeform' | 'chat'
+
 interface Props {
   block: QuestionBlock
-  onAnswer: (questionId: string, selected: string[]) => void
+  onAnswer: (questionId: string, selected: string[], mode?: AnswerMode) => void
+  onChat?: (questionId: string) => void
+  armedForChat?: boolean
 }
 
 function optionLabel(opt: Record<string, unknown>): string {
   return String(opt.label ?? opt)
 }
 
-export function QuestionCard({ block, onAnswer }: Props) {
+const hatchBtn = cn(
+  'rounded px-3 py-2 text-xs font-medium min-h-[44px]',
+  'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700',
+  'text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/30',
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+)
+
+export function QuestionCard({ block, onAnswer, onChat, armedForChat = false }: Props) {
   const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [writing, setWriting] = useState(false)
+  const [draft, setDraft] = useState('')
+
+  const containerClass = 'rounded border border-gray-200 dark:border-gray-700 p-3 my-1'
+  const headerId = `q-header-${block.questionId}`
+
+  const heading = (
+    <>
+      <div id={headerId} className="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">
+        {block.header}
+      </div>
+      <p className="mb-3 text-sm text-gray-700 dark:text-gray-300">{block.question}</p>
+    </>
+  )
+
+  // Armed for chat: structured options collapse to a quiet banner; the user
+  // types their reply in the main composer (routed back as the answer).
+  if (armedForChat) {
+    return (
+      <div role="group" aria-labelledby={headerId} className={containerClass}>
+        {heading}
+        <div className="flex items-center justify-between gap-2 rounded bg-blue-50 dark:bg-blue-900/30 px-3 py-2 text-sm text-blue-800 dark:text-blue-200">
+          <span>💬 Replying in chat — type your message in the composer below.</span>
+          <button type="button" onClick={() => onChat?.(block.questionId)} className={cn(hatchBtn, 'flex-shrink-0')}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const escapeHatches = (
+    <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-3">
+      {writing ? (
+        <div className="space-y-2">
+          <textarea
+            aria-label="Write a response"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={2}
+            placeholder="Type your own answer…"
+            className={cn(
+              'w-full resize-none rounded-md border border-gray-300 dark:border-gray-600',
+              'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-3 py-2 text-sm',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 min-h-[44px]',
+            )}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              const t = draft.trim()
+              if (!t) return
+              onAnswer(block.questionId, [t], 'freeform')
+            }}
+            className={cn(
+              'rounded px-4 py-2 text-sm font-medium min-h-[44px]',
+              'bg-blue-600 text-white hover:bg-blue-700',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            )}
+          >
+            Send response
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={() => setWriting(true)} className={hatchBtn}>
+            ✍️ Write a response
+          </button>
+          <button type="button" onClick={() => onChat?.(block.questionId)} className={hatchBtn}>
+            💬 Chat about this
+          </button>
+        </div>
+      )}
+    </div>
+  )
 
   if (!block.multiSelect) {
-    // Single-select: radio-style, auto-submit on select
     return (
-      <div
-        role="radiogroup"
-        aria-labelledby={`q-header-${block.questionId}`}
-        className="rounded border border-gray-200 dark:border-gray-700 p-3 my-1"
-      >
-        <div id={`q-header-${block.questionId}`} className="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">
-          {block.header}
-        </div>
-        <p className="mb-3 text-sm text-gray-700 dark:text-gray-300">{block.question}</p>
+      <div role="radiogroup" aria-labelledby={headerId} className={containerClass}>
+        {heading}
         <div className="space-y-1">
           {block.options.map((opt, i) => {
             const label = optionLabel(opt)
@@ -52,21 +130,14 @@ export function QuestionCard({ block, onAnswer }: Props) {
             )
           })}
         </div>
+        {escapeHatches}
       </div>
     )
   }
 
-  // Multi-select: checkboxes + Submit
   return (
-    <div
-      role="group"
-      aria-labelledby={`q-header-${block.questionId}`}
-      className="rounded border border-gray-200 dark:border-gray-700 p-3 my-1"
-    >
-      <div id={`q-header-${block.questionId}`} className="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">
-        {block.header}
-      </div>
-      <p className="mb-3 text-sm text-gray-700 dark:text-gray-300">{block.question}</p>
+    <div role="group" aria-labelledby={headerId} className={containerClass}>
+      {heading}
       <div className="space-y-1 mb-3">
         {block.options.map((opt, i) => {
           const label = optionLabel(opt)
@@ -111,6 +182,7 @@ export function QuestionCard({ block, onAnswer }: Props) {
       >
         Submit
       </button>
+      {escapeHatches}
     </div>
   )
 }

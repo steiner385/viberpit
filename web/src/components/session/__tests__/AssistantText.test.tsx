@@ -30,4 +30,32 @@ describe('AssistantText', () => {
     const code = document.querySelector('code')
     expect(code).not.toBeNull()
   })
+
+  it('renders an embedded ★ Insight block as a callout, not literal dashes', async () => {
+    const text = [
+      'intro line',
+      '★ Insight ─────────────────────────────────────',
+      'a key point',
+      '─────────────────────────────────────────────────',
+    ].join('\n')
+    render(<AssistantText text={text} streaming={false} />)
+    expect(await screen.findByText('Insight')).toBeInTheDocument()
+    expect(await screen.findByText('a key point')).toBeInTheDocument()
+    // The box-drawing rule lines are not rendered as visible content.
+    expect(screen.queryByText(/─────/)).toBeNull()
+  })
+
+  it('renders plain settled text without an insight callout', () => {
+    render(<AssistantText text="just prose" streaming={false} />)
+    expect(screen.getByText('just prose')).toBeInTheDocument()
+    expect(screen.queryByText('Insight')).toBeNull()
+  })
+
+  it('opens markdown links in a new tab with a safe rel', async () => {
+    render(<AssistantText text="[example](https://example.com)" streaming={false} />)
+    const link = await screen.findByRole('link', { name: 'example' })
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link.getAttribute('rel') ?? '').toContain('noopener')
+    expect(link.getAttribute('rel') ?? '').toContain('noreferrer')
+  })
 })

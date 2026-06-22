@@ -70,8 +70,11 @@ export function ReviewView({ sessionId, onBack }: Props) {
           <TranscriptView
             turns={state.turns}
             permissionMode="interactive"
+            toolDetailMode="auto"
             onDecision={() => {/* read-only */}}
             onAnswer={() => {/* read-only */}}
+            onChat={() => {/* read-only */}}
+            armedQuestionId={null}
           />
         )}
       </main>

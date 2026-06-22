@@ -6,8 +6,8 @@ import uuid as _uuid
 class QuestionRegistry:
     """Lifecycle analogue to PermissionRegistry, but for AskUserQuestion.
 
-    The future resolves to the user's chosen list[str] of labels, or None
-    if the question was dismissed (via deny_all on disconnect/interrupt).
+    The future resolves to the tuple (selected_labels, mode), or None if the
+    question was dismissed (via deny_all on disconnect/interrupt).
     """
 
     def __init__(self):
@@ -28,7 +28,7 @@ class QuestionRegistry:
 
         The full question payload (turn_id, header, question, options, multi_select) is stored
         so that pending() can rebuild ev.Question events on reattach without data loss.
-        The future resolves to list[str] (user's selected labels) or None (dismissed).
+        The future resolves to the tuple (selected, mode) or None (dismissed).
         """
         qid = _uuid.uuid4().hex
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -63,8 +63,14 @@ class QuestionRegistry:
             if r["session_id"] == session_id
         ]
 
-    def resolve(self, question_id: str, selected: list[str], identity: str) -> bool:
-        """Resolve a pending question with the user's selection.
+    def resolve(self, question_id: str, selected: list[str], identity: str,
+                mode: str = "option") -> bool:
+        """Resolve a pending question with the user's selection and answer mode.
+
+        ``mode`` is one of "option" (picked a predefined option), "freeform"
+        (typed their own answer to this question), or "chat" (chose to discuss
+        rather than pick). The future resolves to the tuple ``(selected, mode)``;
+        ``deny_all`` instead resolves to ``None`` (dismissed sentinel).
 
         Returns True if resolved, False if unknown id, identity mismatch, or already done.
         """
@@ -73,7 +79,7 @@ class QuestionRegistry:
             return False
         del self._pending[question_id]
         if not rec["future"].done():
-            rec["future"].set_result(selected)
+            rec["future"].set_result((selected, mode))
             return True
         return False
 

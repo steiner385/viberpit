@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import base64
 import logging
 import uuid
 from typing import Callable
@@ -13,6 +14,10 @@ from .status import StatusSignals, derive_status
 log = logging.getLogger(__name__)
 
 _STREAM_DONE = object()
+
+
+async def _aiter_one(message: dict):
+    yield message
 
 
 class SessionDriver:
@@ -51,7 +56,7 @@ class SessionDriver:
         self._out: asyncio.Queue = asyncio.Queue()
         self._pump: asyncio.Task | None = None
         self._titled: bool = False
-        self._queue: list[str] = []
+        self._queue: list[tuple[str, list[dict]]] = []
         self._turn_active: bool = False
         self._turns_completed: int = 0
 
@@ -70,6 +75,26 @@ class SessionDriver:
         if isinstance(opt, dict):
             return opt
         return {"label": str(opt)}
+
+    @staticmethod
+    def _format_answer_message(q_text: str, selected: list[str], mode: str) -> str:
+        """Single-question deny-message body, framed by answer mode."""
+        answer_str = ", ".join(selected)
+        if mode == "chat":
+            return f"[User wants to discuss rather than pick an option] {answer_str}"
+        if mode == "freeform":
+            return f"[User answered in their own words] {q_text} → {answer_str}"
+        return f"[User answered via the question UI] {q_text} → {answer_str}"
+
+    @staticmethod
+    def _format_answer_line(q_text: str, selected: list[str], mode: str) -> str:
+        """Per-question line for the multi-question deny message, framed by mode."""
+        answer_str = ", ".join(selected)
+        if mode == "chat":
+            return f"- {q_text} → (discussing) {answer_str}"
+        if mode == "freeform":
+            return f"- {q_text} → (in their own words) {answer_str}"
+        return f"- {q_text} → {answer_str}"
 
     async def _handle_ask_user_question(self, tool_input: dict, turn_id: str) -> PermissionResultDeny:
         """Block the SDK callback, emit ev.Question events, await user answers.
@@ -110,41 +135,42 @@ class SessionDriver:
         await self._emit_dashboard_status()
 
         # Await all answers concurrently (gather preserves order).
+        # Each future resolves to (selected, mode) or None (dismissed).
         futs = [fut for _, fut in pending]
-        answers: list[list[str] | None] = await asyncio.gather(*futs)
+        answers: list[tuple[list[str], str] | None] = await asyncio.gather(*futs)
 
         # Question(s) resolved → back to in_progress.
         await self._emit_dashboard_status()
 
         # Build the deny message.
         questions_list = [q for q, _ in pending]
-        all_dismissed = all(a is None for a in answers)
         if len(questions_list) == 1:
             q_text = questions_list[0].get("question") or ""
-            selected = answers[0]
-            if selected is None:
-                prefix = "[User dismissed the question UI]"
-                msg = f"{prefix} {q_text} → (dismissed — user did not answer)"
+            answer = answers[0]
+            if answer is None:
+                msg = f"[User dismissed the question UI] {q_text} → (dismissed — user did not answer)"
             else:
-                answer_str = ", ".join(selected)
-                msg = f"[User answered via the question UI] {q_text} → {answer_str}"
+                selected, mode = answer
+                msg = self._format_answer_message(q_text, selected, mode)
         else:
+            all_dismissed = all(a is None for a in answers)
             prefix = "[User dismissed the question UI]" if all_dismissed else "[User answered via the question UI]"
             lines = [prefix]
-            for q_obj, selected in zip(questions_list, answers):
+            for q_obj, answer in zip(questions_list, answers):
                 q_text = q_obj.get("question") or ""
-                if selected is None:
-                    answer_str = "(dismissed — user did not answer)"
+                if answer is None:
+                    lines.append(f"- {q_text} → (dismissed — user did not answer)")
                 else:
-                    answer_str = ", ".join(selected)
-                lines.append(f"- {q_text} → {answer_str}")
+                    selected, mode = answer
+                    lines.append(self._format_answer_line(q_text, selected, mode))
             msg = "\n".join(lines)
 
         return PermissionResultDeny(message=msg)
 
-    def answer_question(self, question_id: str, selected: list[str], identity: str) -> bool:
-        """Resolve a pending question with the user's selection. Mirrors resolve_permission."""
-        return self._qreg.resolve(question_id, selected, identity)
+    def answer_question(self, question_id: str, selected: list[str], identity: str,
+                        mode: str = "option") -> bool:
+        """Resolve a pending question with the user's selection and mode. Mirrors resolve_permission."""
+        return self._qreg.resolve(question_id, selected, identity, mode)
 
     def pending_questions(self) -> list[dict]:
         """Return still-pending question payloads for this session (parallel to pending permissions).
@@ -199,38 +225,53 @@ class SessionDriver:
         self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, self.resume)
         await self._client.__aenter__()
 
-    async def send_prompt(self, text: str):
+    async def send_prompt(self, text: str, images: list[dict] | None = None):
         if self._client is None:
             raise RuntimeError("SessionDriver.send_prompt called before start()")
-        # C2 — FIFO queue: if a pump is live, enqueue the prompt instead of rejecting.
+        images = images or []
+        # C2 — FIFO queue: if a pump is live, enqueue (text, images) instead of rejecting.
         if self._pump is not None and not self._pump.done():
-            self._queue.append(text)
+            self._queue.append((text, images))
             log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
                       self.session_id, len(self._queue))
             await self._put_status("working", len(self._queue))
-            await self._out.put(ev.QueueUpdate(list(self._queue)))
+            await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
             return
-        # C3 — auto-title: emit a Title event from the first prompt (first line, max 50 chars).
+        # C3 — auto-title from the first prompt (first line, max 50 chars).
         if not self._titled:
             self._titled = True
-            first_line = text.splitlines()[0] if text else text
-            title_text = first_line[:50]
-            await self._out.put(ev.Title(title=title_text, source="prompt"))
-        await self._start_turn(text)
+            first_line = text.splitlines()[0] if text else (text or "image")
+            await self._out.put(ev.Title(title=first_line[:50], source="prompt"))
+        await self._start_turn(text, images)
 
-    async def _start_turn(self, text: str):
-        """Start a new turn: echo the user prompt, emit working status, query SDK, drain."""
+    async def _start_turn(self, text: str, images: list[dict] | None = None):
+        """Echo the user prompt, emit working status, query the SDK, drain."""
+        images = images or []
         self._turn_active = True
         await self._put_status("working", len(self._queue))
-        # Echo the user's prompt as a session event. The SDK never sends the human's
-        # prompt text back through receive_response (only transcript-replay reconstructs
-        # it on re-attach), so without this the live stream shows only responses. The
-        # user message is its own turn, keyed by a fresh id distinct from the assistant
-        # turn the Translator assigns from the SDK's message_start uuid.
+        # Build the live UserMessage image refs (url/mime/name only).
+        wire_images = [{"url": im["url"], "mime": im["mime"], "name": im.get("name", "")}
+                       for im in images]
         user_turn = uuid.uuid4().hex
-        await self._out.put(ev.UserMessage(turn_id=user_turn, text=text, src_uuid=user_turn))
+        await self._out.put(ev.UserMessage(
+            turn_id=user_turn, text=text, src_uuid=user_turn,
+            images=wire_images or None))
         assert self._client is not None  # _start_turn only runs once the client is connected
-        await self._client.query(text)
+        if images:
+            content: list[dict] = []
+            if text:
+                content.append({"type": "text", "text": text})
+            for im in images:
+                with open(im["path"], "rb") as fh:
+                    data = base64.b64encode(fh.read()).decode("ascii")
+                content.append({"type": "image", "source": {
+                    "type": "base64", "media_type": im["mime"], "data": data}})
+            message = {"type": "user",
+                       "message": {"role": "user", "content": content},
+                       "parent_tool_use_id": None, "session_id": "default"}
+            await self._client.query(_aiter_one(message))
+        else:
+            await self._client.query(text)
         self._pump = asyncio.create_task(self._drain())
 
     async def _call_sync_back(self) -> None:
@@ -264,26 +305,26 @@ class SessionDriver:
             await self._call_sync_back()
             # If queued prompts remain, pop the front and start the next turn.
             if self._queue:
-                next_text = self._queue.pop(0)
+                next_text, next_images = self._queue.pop(0)
                 log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
                           self.session_id, len(self._queue))
-                await self._out.put(ev.QueueUpdate(list(self._queue)))
-                await self._start_turn(next_text)
+                await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
+                await self._start_turn(next_text, next_images)
             else:
                 self._turn_active = False
                 self._turns_completed += 1
                 await self._put_status("idle", 0)
 
     def queued(self) -> list[str]:
-        """Return a snapshot of the queued prompts."""
-        return list(self._queue)
+        """Return a snapshot of the queued prompt texts."""
+        return [t for t, _ in self._queue]
 
     async def cancel_queued(self, index: int) -> bool:
         """Cancel a queued prompt by index. Returns True if removed, False if index invalid."""
         if index < 0 or index >= len(self._queue):
             return False
         self._queue.pop(index)
-        await self._out.put(ev.QueueUpdate(list(self._queue)))
+        await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
         await self._put_status("working", len(self._queue))
         return True
 

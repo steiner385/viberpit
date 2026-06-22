@@ -77,4 +77,53 @@ describe('QuestionCard', () => {
     await user.click(screen.getByRole('button', { name: /submit/i }))
     expect(onAnswer).toHaveBeenCalledWith('q-2', expect.arrayContaining(['Option A', 'Option B']))
   })
+
+  it('renders both escape hatches for single-select', () => {
+    render(<QuestionCard block={singleQ} onAnswer={vi.fn()} onChat={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /write a response/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /chat about this/i })).toBeInTheDocument()
+  })
+
+  it('renders both escape hatches for multi-select', () => {
+    render(<QuestionCard block={multiQ} onAnswer={vi.fn()} onChat={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /write a response/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /chat about this/i })).toBeInTheDocument()
+  })
+
+  it('free-form: typing and sending calls onAnswer with mode "freeform"', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={onAnswer} onChat={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: /write a response/i }))
+    await user.type(screen.getByRole('textbox', { name: /write a response/i }), 'my own answer')
+    await user.click(screen.getByRole('button', { name: /send response/i }))
+    expect(onAnswer).toHaveBeenCalledWith('q-1', ['my own answer'], 'freeform')
+  })
+
+  it('free-form: empty input does not submit', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={onAnswer} onChat={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: /write a response/i }))
+    await user.click(screen.getByRole('button', { name: /send response/i }))
+    expect(onAnswer).not.toHaveBeenCalled()
+  })
+
+  it('chat: clicking "Chat about this" calls onChat', async () => {
+    const user = userEvent.setup()
+    const onChat = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={vi.fn()} onChat={onChat} />)
+    await user.click(screen.getByRole('button', { name: /chat about this/i }))
+    expect(onChat).toHaveBeenCalledWith('q-1')
+  })
+
+  it('armedForChat: options collapse to a banner and Cancel calls onChat', async () => {
+    const user = userEvent.setup()
+    const onChat = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={vi.fn()} onChat={onChat} armedForChat />)
+    expect(screen.queryByRole('radio', { name: 'Option A' })).not.toBeInTheDocument()
+    expect(screen.getByText(/replying in chat/i)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /cancel/i }))
+    expect(onChat).toHaveBeenCalledWith('q-1')
+  })
 })

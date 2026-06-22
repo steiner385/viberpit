@@ -1,20 +1,25 @@
 import { useRef, useState, useCallback } from 'react'
 import { cn } from '@/lib/utils'
+import { useImageAttachments } from './useImageAttachments'
+import { AttachmentChips } from './AttachmentChips'
 
 interface Props {
   status: { state: string; count: number }
   mode: string
-  onPrompt: (text: string) => void
+  onPrompt: (text: string, images: { sha: string; mime: string; name: string }[]) => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   queued?: string[]
   onCancelQueued?: (index: number) => void
+  chatArmed?: boolean
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued }: Props) {
+export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed }: Props) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
   const isWorking = status.state === 'working'
+  const att = useImageAttachments()
 
   // Auto-grow textarea: reset height then set to scrollHeight (capped at 8 rows ~192px)
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -26,14 +31,26 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
 
   const submit = useCallback(() => {
     const trimmed = text.trim()
-    if (!trimmed) return
-    onPrompt(trimmed)
+    const refs = att.refs()
+    if (!trimmed && refs.length === 0) return
+    onPrompt(trimmed, refs)
     setText('')
+    att.clear()
     // Reset height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [text, onPrompt])
+  }, [text, onPrompt, att])
+
+  function handlePaste(e: React.ClipboardEvent) {
+    const files = Array.from(e.clipboardData?.files || [])
+    if (files.length) { e.preventDefault(); void att.addFiles(files) }
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    const files = Array.from(e.dataTransfer?.files || [])
+    if (files.length) { e.preventDefault(); void att.addFiles(files) }
+  }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -48,11 +65,15 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   }
 
   return (
-    <div className={cn(
-      'flex flex-col gap-2 px-3 py-2',
-      'border-t border-gray-200 dark:border-gray-700',
-      'bg-white dark:bg-gray-900',
-    )}>
+    <div
+      className={cn(
+        'flex flex-col gap-2 px-3 py-2',
+        'border-t border-gray-200 dark:border-gray-700',
+        'bg-white dark:bg-gray-900',
+      )}
+      onDrop={handleDrop}
+      onDragOver={(e) => e.preventDefault()}
+    >
       {/* Queued strip — shown only when there are queued items */}
       {queued && queued.length > 0 && (
         <div className="flex flex-col gap-1">
@@ -82,6 +103,8 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
         </div>
       )}
 
+      <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
+
       <div className="flex items-end gap-2">
         <textarea
           ref={textareaRef}
@@ -89,8 +112,9 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
           value={text}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           rows={1}
-          placeholder="Send a message…"
+          placeholder={chatArmed ? 'Reply in chat…' : 'Send a message…'}
           className={cn(
             'flex-1 resize-none rounded-md border border-gray-300 dark:border-gray-600',
             'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',
@@ -102,7 +126,44 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
           style={{ maxHeight: '192px' }}
         />
 
-        {isWorking ? (
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          multiple
+          className="hidden"
+          onChange={(e) => { if (e.target.files) void att.addFiles(e.target.files); e.target.value = '' }}
+        />
+        <button
+          type="button"
+          aria-label="Attach image"
+          onClick={() => fileRef.current?.click()}
+          className={cn(
+            'flex-shrink-0 rounded-md px-3 py-2 text-sm min-h-[44px]',
+            'border border-gray-300 dark:border-gray-600',
+            'text-gray-600 dark:text-gray-300',
+            'hover:bg-gray-100 dark:hover:bg-gray-800',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+          )}
+        >
+          <span aria-hidden="true">📎</span>
+        </button>
+
+        {chatArmed ? (
+          <button
+            type="button"
+            aria-label="Send reply"
+            title="Answers the pending question and continues in chat"
+            onClick={submit}
+            className={cn(
+              'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-[44px]',
+              'bg-blue-600 text-white hover:bg-blue-700',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            )}
+          >
+            Reply
+          </button>
+        ) : isWorking ? (
           <>
             <button
               type="button"

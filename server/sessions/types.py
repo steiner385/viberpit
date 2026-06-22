@@ -27,3 +27,4 @@ class SessionRecord:
     name_is_auto: bool = True        # False once the user manually renames the session
     permission_mode: str = "interactive"
     created_at: datetime | None = None
+    adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
