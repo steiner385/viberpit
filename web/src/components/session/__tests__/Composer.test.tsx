@@ -16,14 +16,28 @@ describe('Composer', () => {
     vi.clearAllMocks()
   })
 
+  it('auto-focuses the message textarea on mount', () => {
+    render(<Composer {...defaults} />)
+    expect(screen.getByRole('textbox', { name: /message/i })).toHaveFocus()
+  })
+
+  it('re-focuses the textarea when autoFocusKey changes', () => {
+    const { rerender } = render(<Composer {...defaults} autoFocusKey="a" />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    textarea.blur()
+    expect(textarea).not.toHaveFocus()
+    rerender(<Composer {...defaults} autoFocusKey="b" />)
+    expect(textarea).toHaveFocus()
+  })
+
   it('shows Send button in idle state', () => {
     render(<Composer {...defaults} />)
     expect(screen.getByRole('button', { name: /send message/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /stop/i })).not.toBeInTheDocument()
   })
 
-  it('shows Stop and Queue buttons in working state', () => {
-    render(<Composer {...defaults} status={{ state: 'working', count: 0 }} />)
+  it('shows Stop and Queue buttons in in_progress state', () => {
+    render(<Composer {...defaults} status={{ state: 'in_progress', count: 0 }} />)
     expect(screen.getByRole('button', { name: /stop current turn/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /queue message/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /send message/i })).not.toBeInTheDocument()
@@ -32,15 +46,15 @@ describe('Composer', () => {
   it('clicking Stop calls onInterrupt', async () => {
     const user = userEvent.setup()
     const onInterrupt = vi.fn()
-    render(<Composer {...defaults} status={{ state: 'working', count: 0 }} onInterrupt={onInterrupt} />)
+    render(<Composer {...defaults} status={{ state: 'in_progress', count: 0 }} onInterrupt={onInterrupt} />)
     await user.click(screen.getByRole('button', { name: /stop current turn/i }))
     expect(onInterrupt).toHaveBeenCalledOnce()
   })
 
-  it('clicking Queue while working calls onPrompt and clears input', async () => {
+  it('clicking Queue while in_progress calls onPrompt and clears input', async () => {
     const user = userEvent.setup()
     const onPrompt = vi.fn()
-    render(<Composer {...defaults} status={{ state: 'working', count: 0 }} onPrompt={onPrompt} />)
+    render(<Composer {...defaults} status={{ state: 'in_progress', count: 0 }} onPrompt={onPrompt} />)
     const textarea = screen.getByRole('textbox', { name: /message/i })
     await user.type(textarea, 'upcoming task')
     await user.click(screen.getByRole('button', { name: /queue message/i }))
@@ -48,11 +62,11 @@ describe('Composer', () => {
     expect(textarea).toHaveValue('')
   })
 
-  it('while working, Stop still calls onInterrupt and Queue calls onPrompt independently', async () => {
+  it('while in_progress, Stop still calls onInterrupt and Queue calls onPrompt independently', async () => {
     const user = userEvent.setup()
     const onPrompt = vi.fn()
     const onInterrupt = vi.fn()
-    render(<Composer {...defaults} status={{ state: 'working', count: 0 }} onPrompt={onPrompt} onInterrupt={onInterrupt} />)
+    render(<Composer {...defaults} status={{ state: 'in_progress', count: 0 }} onPrompt={onPrompt} onInterrupt={onInterrupt} />)
     const textarea = screen.getByRole('textbox', { name: /message/i })
     await user.type(textarea, 'queued message')
     // Queue it
@@ -63,10 +77,10 @@ describe('Composer', () => {
     expect(onInterrupt).toHaveBeenCalledOnce()
   })
 
-  it('Enter submits as Queue while working and clears textarea', async () => {
+  it('Enter submits as Queue while in_progress and clears textarea', async () => {
     const user = userEvent.setup()
     const onPrompt = vi.fn()
-    render(<Composer {...defaults} status={{ state: 'working', count: 0 }} onPrompt={onPrompt} />)
+    render(<Composer {...defaults} status={{ state: 'in_progress', count: 0 }} onPrompt={onPrompt} />)
     const textarea = screen.getByRole('textbox', { name: /message/i })
     await user.type(textarea, 'next step')
     await user.keyboard('{Enter}')
@@ -95,6 +109,23 @@ describe('Composer', () => {
     expect(onPrompt).not.toHaveBeenCalled()
     // textarea still has content
     expect(textarea).toHaveValue('Hello\n')
+  })
+
+  it('when chatArmed, shows a Reply button (not Queue) even while in_progress', () => {
+    render(<Composer {...defaults} status={{ state: 'in_progress', count: 0 }} chatArmed />)
+    expect(screen.getByRole('button', { name: /send reply/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /queue message/i })).not.toBeInTheDocument()
+  })
+
+  it('clicking Reply when chatArmed calls onPrompt and clears input', async () => {
+    const user = userEvent.setup()
+    const onPrompt = vi.fn()
+    render(<Composer {...defaults} status={{ state: 'in_progress', count: 0 }} chatArmed onPrompt={onPrompt} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, 'lets chat')
+    await user.click(screen.getByRole('button', { name: /send reply/i }))
+    expect(onPrompt).toHaveBeenCalledWith('lets chat', [])
+    expect(textarea).toHaveValue('')
   })
 
   it('plan mode toggle shows aria-checked=false when not in plan mode', () => {
@@ -131,6 +162,61 @@ describe('Composer', () => {
     render(<Composer {...defaults} onPrompt={onPrompt} />)
     await user.keyboard('{Enter}')
     expect(onPrompt).not.toHaveBeenCalled()
+  })
+
+  // ── Slash commands ──────────────────────────────────────────────────────────
+
+  const goalCmd = { name: 'goal', description: 'Set the goal', argumentHint: '<text>', kind: 'passthrough' as const }
+  const clearCmd = { name: 'clear', description: 'Clear conversation', argumentHint: null, kind: 'control' as const }
+
+  it('runs a slash command with trailing text as args on Enter', async () => {
+    const user = userEvent.setup()
+    const onCommand = vi.fn()
+    const onPrompt = vi.fn()
+    render(<Composer {...defaults} commands={[goalCmd]} onCommand={onCommand} onPrompt={onPrompt} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, '/goal ship the web UI')
+    await user.keyboard('{Enter}')
+    expect(onCommand).toHaveBeenCalledWith('goal', 'ship the web UI')
+    expect(onPrompt).not.toHaveBeenCalled()
+    expect(textarea).toHaveValue('')
+  })
+
+  it('preserves multi-word args verbatim', async () => {
+    const user = userEvent.setup()
+    const onCommand = vi.fn()
+    render(<Composer {...defaults} commands={[goalCmd]} onCommand={onCommand} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, '/goal   keep   inner spacing')
+    await user.keyboard('{Enter}')
+    expect(onCommand).toHaveBeenCalledWith('goal', 'keep   inner spacing')
+  })
+
+  it('runs a slash command with no args when none are typed', async () => {
+    const user = userEvent.setup()
+    const onCommand = vi.fn()
+    render(<Composer {...defaults} commands={[clearCmd]} onCommand={onCommand} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, '/clear')
+    await user.keyboard('{Enter}')
+    expect(onCommand).toHaveBeenCalledWith('clear', '')
+    expect(textarea).toHaveValue('')
+  })
+
+  it('keeps the palette open while still typing the command name', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} commands={[goalCmd]} onCommand={vi.fn()} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, '/go')
+    expect(screen.getByRole('listbox', { name: /slash commands/i })).toBeInTheDocument()
+  })
+
+  it('hides the palette once the user types a space after the command name', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} commands={[goalCmd]} onCommand={vi.fn()} />)
+    const textarea = screen.getByRole('textbox', { name: /message/i })
+    await user.type(textarea, '/goal ')
+    expect(screen.queryByRole('listbox', { name: /slash commands/i })).not.toBeInTheDocument()
   })
 
   // ── Queued strip ────────────────────────────────────────────────────────────

@@ -109,14 +109,22 @@ export interface CreateSessionInput {
   repo?: string
   branch?: string
   permissionMode?: string
-  images?: { sha: string; mime: string; name: string }[]
+  attachmentIds?: string[]
 }
 
 export function useCreateSession() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, CreateSessionInput>({
     mutationFn: (input) => api.post<Session>('/sessions', input),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+    onSuccess: (session) => {
+      // Show the new card immediately instead of waiting up to 5s for the poll.
+      qc.setQueryData<Session[]>(QK.sessions, (prev) => {
+        const list = prev ?? []
+        if (list.some((s) => s.id === session.id)) return list
+        return [...list, session]
+      })
+      qc.invalidateQueries({ queryKey: QK.sessions })
+    },
   })
 }
 
@@ -217,7 +225,12 @@ export function usePermanentDeleteSession() {
   const qc = useQueryClient()
   return useMutation<void, ApiRequestError, string>({
     mutationFn: (id) => api.del<void>(`/sessions/${id}/permanent`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.archived }) },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.archived })
+      // A live session can also be permanently deleted from its card, so the
+      // active sessions list must refresh too.
+      qc.invalidateQueries({ queryKey: QK.sessions })
+    },
   })
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { DesktopShell } from '../DesktopShell'
@@ -72,5 +72,55 @@ describe('DesktopShell', () => {
     render(<DesktopShell />, { wrapper })
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
     expect(screen.getByRole('heading', { name: /^accounts$/i })).toBeInTheDocument()
+  })
+
+  it('deleting a session opens a confirm dialog; the mutation runs only on confirm', async () => {
+    const user = userEvent.setup()
+    const deleteMutate = vi.fn()
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(
+      { mutate: deleteMutate, isPending: false, isSuccess: false } as never,
+    )
+    render(<DesktopShell />, { wrapper })
+
+    await user.click(screen.getByRole('button', { name: /delete session one/i }))
+
+    // Destructive: the confirm dialog appears and nothing is deleted yet.
+    const dialog = screen.getByRole('dialog')
+    expect(deleteMutate).not.toHaveBeenCalled()
+
+    await user.click(within(dialog).getByRole('button', { name: /delete permanently/i }))
+    expect(deleteMutate).toHaveBeenCalledWith('s1', expect.anything())
+  })
+
+  it('ArrowLeft on an empty composer detaches to the welcome pane and highlights the origin row', async () => {
+    const user = userEvent.setup()
+    render(<DesktopShell />, { wrapper })
+    await user.click(screen.getByLabelText(/open session one/i))
+    expect(screen.getByRole('textbox', { name: /^message$/i })).toBeInTheDocument()
+    await user.keyboard('{ArrowLeft}')
+    expect(screen.getByRole('textbox', { name: /new session prompt/i })).toBeInTheDocument()
+    expect(screen.getByText(/select a session from the left/i)).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: /new session prompt/i }))
+      .toHaveAttribute('aria-activedescendant', 'row-s1')
+  })
+
+  it('Ctrl+Z detaches to the welcome pane', async () => {
+    const user = userEvent.setup()
+    render(<DesktopShell />, { wrapper })
+    await user.click(screen.getByLabelText(/open session one/i))
+    await user.keyboard('{Control>}z{/Control}')
+    expect(screen.getByRole('textbox', { name: /new session prompt/i })).toBeInTheDocument()
+  })
+
+  it('ArrowLeft with composer text does NOT detach', async () => {
+    const user = userEvent.setup()
+    render(<DesktopShell />, { wrapper })
+    await user.click(screen.getByLabelText(/open session one/i))
+    const box = screen.getByRole('textbox', { name: /^message$/i })
+    await user.click(box)
+    await user.type(box, 'wip')
+    await user.keyboard('{ArrowLeft}')
+    expect(screen.getByRole('textbox', { name: /^message$/i })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: /new session prompt/i })).not.toBeInTheDocument()
   })
 })

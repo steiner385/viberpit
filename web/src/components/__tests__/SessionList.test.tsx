@@ -47,6 +47,7 @@ describe('SessionList', () => {
   const onOpen = vi.fn()
   const onRename = vi.fn()
   const onClose = vi.fn()
+  const onDelete = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -61,6 +62,7 @@ describe('SessionList', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )
@@ -80,12 +82,13 @@ describe('SessionList', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )
 
-    expect(screen.getByText('In progress')).toBeInTheDocument()
-    expect(screen.getByText('Idle')).toBeInTheDocument()
+    expect(screen.getByText('Working…')).toBeInTheDocument()
+    expect(screen.getByText('Ready')).toBeInTheDocument()
   })
 
   it('calls onOpen when the session main button is clicked', async () => {
@@ -98,6 +101,7 @@ describe('SessionList', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )
@@ -116,6 +120,7 @@ describe('SessionList', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )
@@ -136,6 +141,7 @@ describe('SessionList', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )
@@ -155,6 +161,7 @@ describe('SessionList', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )
@@ -171,6 +178,7 @@ describe('SessionList', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )
@@ -189,6 +197,7 @@ describe('SessionList', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )
@@ -197,8 +206,7 @@ describe('SessionList', () => {
     expect(screen.getByLabelText('Loading sessions')).toBeInTheDocument()
   })
 
-  it('shows rename and close options in overflow menu', async () => {
-    const user = userEvent.setup()
+  it('shows rename, archive, and delete buttons on each session', () => {
     render(
       <SessionList
         sessions={[SESSIONS[0]]}
@@ -207,18 +215,17 @@ describe('SessionList', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )
 
-    // Open the overflow menu for the first session
-    await user.click(screen.getByRole('button', { name: /actions for session work session/i }))
-
-    expect(screen.getByRole('menuitem', { name: /rename/i })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /close/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /rename session work session/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /archive session work session/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /delete session work session/i })).toBeInTheDocument()
   })
 
-  it('calls onRename when rename is selected from overflow menu', async () => {
+  it('calls onRename when the rename button is clicked', async () => {
     const user = userEvent.setup()
     render(
       <SessionList
@@ -228,16 +235,16 @@ describe('SessionList', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )
 
-    await user.click(screen.getByRole('button', { name: /actions for session work session/i }))
-    await user.click(screen.getByRole('menuitem', { name: /rename/i }))
+    await user.click(screen.getByRole('button', { name: /rename session work session/i }))
     expect(onRename).toHaveBeenCalledWith('sess-1')
   })
 
-  it('calls onClose when close is selected from overflow menu', async () => {
+  it('calls onClose when the archive button is clicked', async () => {
     const user = userEvent.setup()
     render(
       <SessionList
@@ -247,13 +254,32 @@ describe('SessionList', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )
 
-    await user.click(screen.getByRole('button', { name: /actions for session work session/i }))
-    await user.click(screen.getByRole('menuitem', { name: /close/i }))
+    await user.click(screen.getByRole('button', { name: /archive session work session/i }))
     expect(onClose).toHaveBeenCalledWith('sess-1')
+  })
+
+  it('calls onDelete when the delete button is clicked', async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionList
+        sessions={[SESSIONS[0]]}
+        accounts={ACCOUNTS}
+        onNew={onNew}
+        onOpen={onOpen}
+        onRename={onRename}
+        onClose={onClose}
+        onDelete={onDelete}
+      />,
+      { wrapper },
+    )
+
+    await user.click(screen.getByRole('button', { name: /delete session work session/i }))
+    expect(onDelete).toHaveBeenCalledWith('sess-1')
   })
 })
 
@@ -262,6 +288,7 @@ describe('SessionList — repo label', () => {
   const onOpen = vi.fn()
   const onRename = vi.fn()
   const onClose = vi.fn()
+  const onDelete = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -280,12 +307,77 @@ describe('SessionList — repo label', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )
 
     expect(screen.getByText('acme/widget')).toBeInTheDocument()
     expect(screen.getByText('Scratch')).toBeInTheDocument()
+  })
+})
+
+describe('SessionList — pure renderer (no internal sort)', () => {
+  const onNew = vi.fn()
+  const onOpen = vi.fn()
+  const onRename = vi.fn()
+  const onClose = vi.fn()
+  const onDelete = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('renders cards in the same order as the sessions prop (pre-sorted by caller)', () => {
+    // Pass sessions in a specific order: busy → your-turn → needs-you
+    // SessionList should render them exactly as given, not re-sort.
+    const sessions: Session[] = [
+      {
+        id: 'a',
+        name: 'A busy',
+        accountName: 'alice',
+        status: 'in_progress',
+        createdAt: '2026-06-19T10:00:00Z',
+        updatedAt: '2026-06-19T10:00:00Z',
+      },
+      {
+        id: 'b',
+        name: 'B done',
+        accountName: 'alice',
+        status: 'done',
+        createdAt: '2026-06-19T10:00:00Z',
+        updatedAt: '2026-06-19T10:00:00Z',
+      },
+      {
+        id: 'c',
+        name: 'C blocked',
+        accountName: 'alice',
+        status: 'waiting_input',
+        createdAt: '2026-06-19T10:00:00Z',
+        updatedAt: '2026-06-19T10:00:00Z',
+      },
+    ]
+    render(
+      <SessionList
+        sessions={sessions}
+        accounts={[]}
+        onNew={onNew}
+        onOpen={onOpen}
+        onRename={onRename}
+        onClose={onClose}
+        onDelete={onDelete}
+      />,
+      { wrapper },
+    )
+    const order = screen.getAllByRole('button', { name: /Open session/ }).map(
+      (b) => b.getAttribute('aria-label'),
+    )
+    // Must match input order exactly — SessionList is now a pure renderer.
+    expect(order).toEqual([
+      'Open session A busy',
+      'Open session B done',
+      'Open session C blocked',
+    ])
   })
 })
 
@@ -297,6 +389,7 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
   const onOpen = vi.fn()
   const onRename = vi.fn()
   const onClose = vi.fn()
+  const onDelete = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -327,6 +420,7 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
           onOpen={onOpen}
           onRename={onRename}
           onClose={onClose}
+          onDelete={onDelete}
         />,
         { wrapper },
       ),
@@ -357,6 +451,7 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
+        onDelete={onDelete}
       />,
       { wrapper },
     )

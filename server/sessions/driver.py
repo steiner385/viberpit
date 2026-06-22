@@ -59,15 +59,31 @@ class SessionDriver:
         self._queue: list[tuple[str, list[dict]]] = []
         self._turn_active: bool = False
         self._turns_completed: int = 0
+        self._last_turn_outcome: str = "success"
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
 
-    async def _put_status(self, state: str, count: int) -> None:
-        """Emit a live Status event (for the in-session StatusBar) AND refresh the
-        derived dashboard status so the session LIST reflects the driver's real state."""
-        await self._out.put(ev.Status(state=state, count=count))
-        await self._emit_dashboard_status()
+    def current_status(self) -> str:
+        """The rich derived status right now (no side effects). Used on WS attach."""
+        return derive_status(self._dash_signals())
+
+    async def _emit_status(self, count: int | None = None) -> None:
+        """Single status emitter — rich vocabulary to BOTH consumers.
+
+        Emits a live Status event (for the in-session StatusBar) AND notifies the
+        orchestrator (which persists it for the session LIST). `count` is the queue
+        depth shown in the busy label; defaults to the live queue length.
+        Best-effort on the callback: a failure must never break the session loop.
+        """
+        status = derive_status(self._dash_signals())
+        n = len(self._queue) if count is None else count
+        await self._out.put(ev.Status(state=status, count=n))
+        if self._on_status is not None:
+            try:
+                await self._on_status(self.session_id, status)
+            except Exception:
+                log.warning("driver.on_status failed session=%s", self.session_id, exc_info=True)
 
     @staticmethod
     def _normalize_option(opt) -> dict:
@@ -75,6 +91,26 @@ class SessionDriver:
         if isinstance(opt, dict):
             return opt
         return {"label": str(opt)}
+
+    @staticmethod
+    def _format_answer_message(q_text: str, selected: list[str], mode: str) -> str:
+        """Single-question deny-message body, framed by answer mode."""
+        answer_str = ", ".join(selected)
+        if mode == "chat":
+            return f"[User wants to discuss rather than pick an option] {answer_str}"
+        if mode == "freeform":
+            return f"[User answered in their own words] {q_text} → {answer_str}"
+        return f"[User answered via the question UI] {q_text} → {answer_str}"
+
+    @staticmethod
+    def _format_answer_line(q_text: str, selected: list[str], mode: str) -> str:
+        """Per-question line for the multi-question deny message, framed by mode."""
+        answer_str = ", ".join(selected)
+        if mode == "chat":
+            return f"- {q_text} → (discussing) {answer_str}"
+        if mode == "freeform":
+            return f"- {q_text} → (in their own words) {answer_str}"
+        return f"- {q_text} → {answer_str}"
 
     async def _handle_ask_user_question(self, tool_input: dict, turn_id: str) -> PermissionResultDeny:
         """Block the SDK callback, emit ev.Question events, await user answers.
@@ -112,44 +148,50 @@ class SessionDriver:
             pending.append((q, fut))
 
         # A question is now pending for the user → waiting_input.
-        await self._emit_dashboard_status()
+        await self._emit_status()
 
         # Await all answers concurrently (gather preserves order).
+        # Each future resolves to (selected, mode) or None (dismissed).
         futs = [fut for _, fut in pending]
-        answers: list[list[str] | None] = await asyncio.gather(*futs)
+        answers: list[tuple[list[str], str] | None] = await asyncio.gather(*futs)
 
         # Question(s) resolved → back to in_progress.
-        await self._emit_dashboard_status()
+        await self._emit_status()
 
         # Build the deny message.
         questions_list = [q for q, _ in pending]
-        all_dismissed = all(a is None for a in answers)
         if len(questions_list) == 1:
             q_text = questions_list[0].get("question") or ""
-            selected = answers[0]
-            if selected is None:
-                prefix = "[User dismissed the question UI]"
-                msg = f"{prefix} {q_text} → (dismissed — user did not answer)"
+            answer = answers[0]
+            if answer is None:
+                msg = f"[User dismissed the question UI] {q_text} → (dismissed — user did not answer)"
             else:
-                answer_str = ", ".join(selected)
-                msg = f"[User answered via the question UI] {q_text} → {answer_str}"
+                selected, mode = answer
+                msg = self._format_answer_message(q_text, selected, mode)
         else:
+            all_dismissed = all(a is None for a in answers)
             prefix = "[User dismissed the question UI]" if all_dismissed else "[User answered via the question UI]"
             lines = [prefix]
-            for q_obj, selected in zip(questions_list, answers):
+            for q_obj, answer in zip(questions_list, answers):
                 q_text = q_obj.get("question") or ""
-                if selected is None:
-                    answer_str = "(dismissed — user did not answer)"
+                if answer is None:
+                    lines.append(f"- {q_text} → (dismissed — user did not answer)")
                 else:
-                    answer_str = ", ".join(selected)
-                lines.append(f"- {q_text} → {answer_str}")
+                    selected, mode = answer
+                    lines.append(self._format_answer_line(q_text, selected, mode))
             msg = "\n".join(lines)
 
         return PermissionResultDeny(message=msg)
 
-    def answer_question(self, question_id: str, selected: list[str], identity: str) -> bool:
-        """Resolve a pending question with the user's selection. Mirrors resolve_permission."""
-        return self._qreg.resolve(question_id, selected, identity)
+    def answer_question(self, question_id: str, selected: list[str], identity: str,
+                        mode: str = "option") -> bool:
+        """Resolve a pending question with the user's selection and mode. Mirrors resolve_permission.
+
+        Passes session_id so the registry can reconcile a replay-derived question id
+        (from a transcript-rebuilt card on reattach) onto the live pending waiter.
+        """
+        return self._qreg.resolve(question_id, selected, identity, mode,
+                                  session_id=self.session_id)
 
     def pending_questions(self) -> list[dict]:
         """Return still-pending question payloads for this session (parallel to pending permissions).
@@ -168,19 +210,8 @@ class SessionDriver:
             pending_question=bool(self._qreg.pending(self.session_id)),
             pending_plan=any(p.get("tool") == "ExitPlanMode" for p in perms),
             turns_completed=self._turns_completed,
+            last_turn_outcome=self._last_turn_outcome,
         )
-
-    async def _emit_dashboard_status(self) -> None:
-        """Derive the dashboard status from current signals and notify the orchestrator.
-
-        Best-effort: a failing callback must never break the session loop.
-        """
-        if self._on_status is None:
-            return
-        try:
-            await self._on_status(self.session_id, derive_status(self._dash_signals()))
-        except Exception:
-            log.warning("driver.on_status failed session=%s", self.session_id, exc_info=True)
 
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
         turn_id = self._turn()
@@ -194,10 +225,10 @@ class SessionDriver:
                 perm_id, turn_id, tool_name, ev.tool_kind(tool_name),
                 tool_input, plan=(tool_name == "ExitPlanMode")))
             # A prompt is now pending for the user → waiting_input / ready_review.
-            await self._emit_dashboard_status()
+            await self._emit_status()
         allowed = await fut
         # Decision made; the perm is no longer pending → back to in_progress.
-        await self._emit_dashboard_status()
+        await self._emit_status()
         return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied by user")
 
     async def start(self):
@@ -213,7 +244,7 @@ class SessionDriver:
             self._queue.append((text, images))
             log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
                       self.session_id, len(self._queue))
-            await self._put_status("working", len(self._queue))
+            await self._emit_status()
             await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
             return
         # C3 — auto-title from the first prompt (first line, max 50 chars).
@@ -227,7 +258,8 @@ class SessionDriver:
         """Echo the user prompt, emit working status, query the SDK, drain."""
         images = images or []
         self._turn_active = True
-        await self._put_status("working", len(self._queue))
+        self._last_turn_outcome = "success"
+        await self._emit_status()
         # Build the live UserMessage image refs (url/mime/name only).
         wire_images = [{"url": im["url"], "mime": im["mime"], "name": im.get("name", "")}
                        for im in images]
@@ -268,6 +300,8 @@ class SessionDriver:
         try:
             async for msg in self._client.receive_response():
                 for e in self._tr.feed(msg):
+                    if isinstance(e, ev.TurnEnd):
+                        self._last_turn_outcome = e.outcome
                     await self._out.put(e)
                 if self.claude_session_id is None and self._tr.session_id:
                     self.claude_session_id = self._tr.session_id
@@ -276,9 +310,15 @@ class SessionDriver:
                             await self._on_session_id(self.session_id, self.claude_session_id)
                         except Exception:
                             log.exception("driver.on_session_id session=%s", self.session_id)
-        except Exception:
+        except Exception as exc:
             log.exception("driver.drain session=%s", self.session_id)
-            await self._out.put(ev.ErrorEvent("driver_error", "session stream failed"))
+            # Surface the real failure to the UI, not a generic placeholder. The cause
+            # (e.g. a dead token or a closed subprocess) is exactly what the user needs
+            # to act on; redaction scrubs any secret-shaped substrings downstream.
+            detail = str(exc).strip() or "no detail"
+            await self._out.put(ev.ErrorEvent(
+                "driver_error", f"{type(exc).__name__}: {detail[:500]}", turn_id=self._turn()))
+            self._last_turn_outcome = "failed"
         finally:
             # Capture any token rotation the SDK performed during this turn.
             await self._call_sync_back()
@@ -292,7 +332,7 @@ class SessionDriver:
             else:
                 self._turn_active = False
                 self._turns_completed += 1
-                await self._put_status("idle", 0)
+                await self._emit_status()
 
     def queued(self) -> list[str]:
         """Return a snapshot of the queued prompt texts."""
@@ -304,7 +344,7 @@ class SessionDriver:
             return False
         self._queue.pop(index)
         await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
-        await self._put_status("working", len(self._queue))
+        await self._emit_status()
         return True
 
     async def events(self):
@@ -323,12 +363,53 @@ class SessionDriver:
             await self._client.interrupt()
         self._turn_active = False
         await self._out.put(ev.QueueUpdate([]))
-        await self._put_status("idle", 0)
+        await self._emit_status()
 
     async def set_permission_mode(self, mode: str):
         self.mode = mode
         if self._client:
             await self._client.set_permission_mode("plan" if mode == "plan" else "default")
+
+    async def set_model(self, model: str | None) -> None:
+        if self._client:
+            await self._client.set_model(model)
+
+    async def server_info(self) -> dict | None:
+        if self._client is None:
+            return None
+        return await self._client.get_server_info()
+
+    async def context_usage(self) -> dict:
+        if self._client is None:
+            return {}
+        return await self._client.get_context_usage()
+
+    async def reconnect(self) -> None:
+        """Tear down the SDK client and start a FRESH session (resume=None).
+
+        Implements /clear: a conversation's history IS the resumed session, so
+        clearing == dropping the resume handle and reconnecting. Resets per-turn
+        and titling state so the new session behaves like a brand-new one.
+        """
+        if self._pump is not None and not self._pump.done():
+            self._pump.cancel()
+            try:
+                await self._pump
+            except asyncio.CancelledError:
+                pass
+        self._pump = None
+        if self._client is not None:
+            await self._client.__aexit__(None, None, None)
+            await self._call_sync_back()
+        self.resume = None
+        self.claude_session_id = None
+        self._titled = False
+        self._queue.clear()
+        self._turn_active = False
+        self._tr = Translator()
+        client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None)
+        self._client = client
+        await client.__aenter__()
 
     def resolve_permission(self, perm_id, decision, identity) -> bool:
         return self._reg.resolve(perm_id, decision, identity)

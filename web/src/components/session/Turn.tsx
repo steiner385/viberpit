@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import type { Turn as TurnType } from '@/session/reducer'
+import type { Turn as TurnType, SubThread } from '@/session/reducer'
 import { groupBlocks, type ToolDetailMode } from '@/session/groupBlocks'
 import { AssistantText } from './AssistantText'
 import { UserBubble } from './UserBubble'
@@ -8,6 +8,7 @@ import { ToolCallCard } from './ToolCallCard'
 import { ToolGroup } from './ToolGroup'
 import { PermissionCard } from './PermissionCard'
 import { QuestionCard } from './QuestionCard'
+import { ErrorCard } from './ErrorCard'
 
 interface Props {
   turn: TurnType
@@ -18,14 +19,19 @@ interface Props {
    *  null/absent means every text block is finalized and rendered as markdown. */
   streamingBlockId?: string | null
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
-  onAnswer: (questionId: string, selected: string[]) => void
+  onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
+  subAgents?: Record<string, SubThread>
 }
 
 export const Turn = memo(function Turn({
-  turn, permissionMode, isLastTurn, toolDetailMode, streamingBlockId = null, onDecision, onAnswer,
+  turn, permissionMode, isLastTurn, toolDetailMode, streamingBlockId = null,
+  onDecision, onAnswer, subAgents,
 }: Props) {
   const isUser = turn.role === 'user'
-  const items = groupBlocks(turn.blocks)
+  // Suppress live questions inline — they are rendered by the pinned
+  // PendingQuestionPanel above the composer. Historical questions stay.
+  const visibleBlocks = turn.blocks.filter((b) => !(b.kind === 'question' && b.live))
+  const items = groupBlocks(visibleBlocks)
   const lastIdx = items.length - 1
 
   // An empty turn (e.g. a turnStart with no content yet, or a turn whose only
@@ -44,6 +50,7 @@ export const Turn = memo(function Turn({
               tools={item.tools}
               isLiveTail={isLiveTail}
               toolDetailMode={toolDetailMode}
+              subAgents={subAgents}
             />
           )
         }
@@ -58,11 +65,22 @@ export const Turn = memo(function Turn({
             return <ThinkingBlock key={block.id} text={block.text} />
           case 'tool':
             // Unreachable: tool blocks are coalesced into toolGroup items above.
-            return <ToolCallCard key={block.id} block={block} density="line" />
+            return <ToolCallCard key={block.id} block={block} density="line" subThread={subAgents?.[block.toolId]} />
           case 'permission':
             return <PermissionCard key={block.id} block={block} mode={permissionMode} onDecision={onDecision} />
           case 'question':
-            return <QuestionCard key={block.id} block={block} onAnswer={onAnswer} />
+            // A LIVE open question is rendered by the pinned PendingQuestionPanel
+            // above the composer — omit it inline to avoid a duplicate. Historical
+            // (replayed) questions render inline, read-only.
+            return <QuestionCard key={block.id} block={block} onAnswer={onAnswer} readOnly />
+          case 'notice':
+            return (
+              <div key={block.id} className="my-2 text-center text-xs text-gray-400 dark:text-gray-500 italic">
+                {block.text}
+              </div>
+            )
+          case 'error':
+            return <ErrorCard key={block.id} code={block.code} message={block.message} resetsAt={block.resetsAt} />
           default:
             return null
         }

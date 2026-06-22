@@ -78,6 +78,15 @@ describe('ToolCallCard', () => {
     expect(document.getElementById(regionId)!.hidden).toBe(false)
   })
 
+  it('renders inputs as humanized key/value rows, not raw JSON', async () => {
+    const user = userEvent.setup()
+    render(<ToolCallCard block={bashBlock} density="card" />)
+    await user.click(screen.getByRole('button', { name: /args/i }))
+    // StructuredView shows the arg name as a label (no JSON braces/quotes).
+    expect(screen.getByText('command')).toBeInTheDocument()
+    expect(screen.queryByText(/^\{$/)).toBeNull()
+  })
+
   describe('result collapsing', () => {
     it('result is hidden by default when block.result is present', () => {
       render(<ToolCallCard block={bashBlockWithResult} density="card" />)
@@ -217,6 +226,25 @@ describe('ToolCallCard', () => {
       render(<ToolCallCard block={bashBlockWithResult} density="line" defaultResultOpen />)
       const toggle = screen.getByRole('button', { name: /tool details/i })
       expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    })
+
+    it('toolDetailMode="all-open" force-opens the detail panel', () => {
+      render(<ToolCallCard block={bashBlockWithResult} density="line" toolDetailMode="all-open" />)
+      expect(screen.getByRole('button', { name: /tool details/i })).toHaveAttribute('aria-expanded', 'true')
+    })
+
+    it('toolDetailMode="all-closed" overrides defaultResultOpen and keeps the panel shut', () => {
+      render(<ToolCallCard block={bashBlockWithResult} density="line" defaultResultOpen toolDetailMode="all-closed" />)
+      expect(screen.getByRole('button', { name: /tool details/i })).toHaveAttribute('aria-expanded', 'false')
+    })
+
+    it('dims a completed tool name and keeps a running one prominent', () => {
+      const { rerender } = render(<ToolCallCard block={bashBlockWithResult} density="line" />)
+      // Completed → muted name color
+      expect(screen.getByText('Bash').className).toMatch(/text-gray-(500|600)/)
+      rerender(<ToolCallCard block={bashBlock} density="line" />)
+      // Running (no result) → prominent name color
+      expect(screen.getByText('Bash').className).toMatch(/text-gray-(900|100)/)
     })
   })
 })

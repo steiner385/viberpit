@@ -5,18 +5,20 @@ import { getLastRepo, setLastRepo } from '@/lib/lastRepo'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 import { useImageAttachments } from './session/useImageAttachments'
 import { AttachmentChips } from './session/AttachmentChips'
+import { MicButton } from './session/MicButton'
+import { useDictationField } from '@/lib/useDictationField'
 
 export interface DispatchBarProps {
   repos: GithubRepo[]
   reposLoading: boolean
   reposError: boolean
   /** Fired on Enter when the prompt has text or images are attached. */
-  onDispatch: (input: { initialPrompt: string; repo: string | null; images: { sha: string; mime: string; name: string }[] }) => void
+  onDispatch: (input: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) => void
   /** ↑/↓ at a line boundary (or empty prompt). */
   onNavigate: (dir: 'up' | 'down') => void
   /** Enter on an EMPTY prompt, or →. */
   onOpenHighlighted: () => void
-  /** r / F2 / Delete / Alt+1..9 on the highlighted row. */
+  /** Ctrl+R / Ctrl+X / Alt+1..9 on the highlighted row. */
   onRowAction: (
     action: { type: 'rename' } | { type: 'delete' } | { type: 'jump'; index: number },
   ) => void
@@ -24,7 +26,7 @@ export interface DispatchBarProps {
   onShowHelp: () => void
   /** Esc — also clears highlight in the parent. */
   onEscape: () => void
-  /** When set, show a "press Delete again to close '<name>'" hint. */
+  /** When set, show a "press Ctrl+X again to close '<name>'" hint. */
   confirmDeleteName?: string | null
   /** id of the highlighted row's button, e.g. "row-<id>", for aria-activedescendant. */
   activeDescendantId?: string
@@ -53,6 +55,7 @@ export function DispatchBar({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const att = useImageAttachments()
+  const voice = useDictationField({ value: text, setValue: setText, textareaRef })
 
   // Auto-focus when autoFocusKey changes (or on mount)
   useEffect(() => {
@@ -84,7 +87,7 @@ export function DispatchBar({
       onOpenHighlighted()
       return
     }
-    onDispatch({ initialPrompt: trimmed, repo: repo || null, images: refs })
+    onDispatch({ initialPrompt: trimmed, repo: repo || null, attachmentIds: refs })
     setText('')
     att.clear()
     // Reset textarea height
@@ -151,18 +154,17 @@ export function DispatchBar({
       return
     }
 
-    // r or F2 when prompt is empty → rename highlighted row
-    // preventDefault prevents the character from being inserted into the textarea.
-    // In tests, user.keyboard('r') respects preventDefault; user.type('fix r') won't
-    // trigger this branch because `empty` is false when text already has content.
-    if (empty && (e.key === 'r' || e.key === 'F2')) {
+    // Ctrl+R → rename highlighted row. preventDefault ALWAYS so the browser never
+    // reloads and discards an in-progress prompt; act only when the prompt is empty.
+    if (e.ctrlKey && (e.key === 'r' || e.key === 'R')) {
       e.preventDefault()
-      onRowAction({ type: 'rename' })
+      if (empty) onRowAction({ type: 'rename' })
       return
     }
 
-    // Delete when prompt is empty → delete (close) highlighted row
-    if (empty && e.key === 'Delete') {
+    // Ctrl+X → close (delete) highlighted row; two-press guard lives in the parent.
+    // Only when the prompt is empty, so native "cut" still works while editing a draft.
+    if (empty && e.ctrlKey && (e.key === 'x' || e.key === 'X')) {
       e.preventDefault()
       onRowAction({ type: 'delete' })
       return
@@ -178,6 +180,12 @@ export function DispatchBar({
   // Determine if the persisted repo is in the current repo list
   const persistedRepo = repo
   const repoIsKnown = repos.some((r) => r.nameWithOwner === persistedRepo)
+
+  // The Create button is a click affordance for the same action as pressing Enter.
+  // Unlike Enter (which falls back to opening the highlighted row when empty), the
+  // button is enabled ONLY when there is something to dispatch — a labelled "Create"
+  // control should never silently open an existing session.
+  const canSubmit = !isPending && (text.trim().length > 0 || att.refs().length > 0)
 
   return (
     <div
@@ -243,7 +251,7 @@ export function DispatchBar({
           aria-live="polite"
           className="text-xs text-amber-700 dark:text-amber-400 px-1"
         >
-          Press Delete again to close &lsquo;{confirmDeleteName}&rsquo;
+          Press Ctrl+X again to close &lsquo;{confirmDeleteName}&rsquo;
         </p>
       )}
 
@@ -276,6 +284,13 @@ export function DispatchBar({
           style={{ maxHeight: '192px' }}
         />
 
+        <MicButton
+          supported={voice.supported}
+          listening={voice.listening}
+          error={voice.error}
+          onToggle={voice.toggle}
+        />
+
         <input
           ref={fileRef}
           type="file"
@@ -297,6 +312,21 @@ export function DispatchBar({
           )}
         >
           <span aria-hidden="true">📎</span>
+        </button>
+        <button
+          type="button"
+          aria-label="Create session"
+          onClick={dispatchNow}
+          disabled={!canSubmit}
+          className={cn(
+            'flex-shrink-0 rounded-md px-4 py-2 text-sm font-medium min-h-[44px]',
+            'bg-blue-600 text-white',
+            'hover:bg-blue-700',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            'disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-blue-600',
+          )}
+        >
+          Create
         </button>
       </div>
     </div>

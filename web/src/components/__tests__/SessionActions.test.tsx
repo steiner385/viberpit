@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Dashboard } from '../Dashboard'
@@ -139,8 +139,11 @@ describe('SessionActions (via Dashboard)', () => {
 
     await user.click(screen.getByRole('button', { name: /new session/i }))
 
-    expect(screen.getByRole('dialog', { name: /new session/i })).toBeInTheDocument()
-    expect(screen.getByLabelText(/name/i)).toBeInTheDocument()
+    const dialog = screen.getByRole('dialog', { name: /new session/i })
+    expect(dialog).toBeInTheDocument()
+    // Scope to the dialog: the session cards behind it now expose a "Rename …"
+    // button whose accessible name also contains "name".
+    expect(within(dialog).getByLabelText(/name/i)).toBeInTheDocument()
   })
 
   it('closes the dialog when Cancel is clicked', async () => {
@@ -169,29 +172,51 @@ describe('SessionActions (via Dashboard)', () => {
     })
   })
 
-  it('rename option is accessible via overflow menu', async () => {
-    const user = userEvent.setup()
+  it('exposes rename, archive, and delete buttons directly on each session', () => {
     render(<Dashboard />, { wrapper })
 
-    await user.click(screen.getByRole('button', { name: /actions for session alpha session/i }))
-    expect(screen.getByRole('menuitem', { name: /rename/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /rename session alpha session/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /archive session alpha session/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /delete session alpha session/i })).toBeInTheDocument()
   })
 
-  it('close option is accessible via overflow menu', async () => {
-    const user = userEvent.setup()
+  it('no longer renders an overflow actions menu', () => {
     render(<Dashboard />, { wrapper })
 
-    await user.click(screen.getByRole('button', { name: /actions for session alpha session/i }))
-    expect(screen.getByRole('menuitem', { name: /close/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /actions for session/i })).not.toBeInTheDocument()
   })
 
-  it('opening rename shows a rename dialog', async () => {
+  it('clicking rename shows a rename dialog', async () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
 
-    await user.click(screen.getByRole('button', { name: /actions for session alpha session/i }))
-    await user.click(screen.getByRole('menuitem', { name: /rename/i }))
+    await user.click(screen.getByRole('button', { name: /rename session alpha session/i }))
 
     expect(screen.getByRole('dialog', { name: /rename session/i })).toBeInTheDocument()
+  })
+
+  it('clicking delete shows a permanent-delete confirmation dialog', async () => {
+    const user = userEvent.setup()
+    render(<Dashboard />, { wrapper })
+
+    await user.click(screen.getByRole('button', { name: /delete session alpha session/i }))
+
+    expect(screen.getByRole('dialog', { name: /permanently delete session/i })).toBeInTheDocument()
+  })
+
+  it('confirming delete calls the permanent-delete mutation', async () => {
+    const permanentDelete = vi.fn()
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue({
+      mutate: permanentDelete,
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+
+    const user = userEvent.setup()
+    render(<Dashboard />, { wrapper })
+
+    await user.click(screen.getByRole('button', { name: /delete session alpha session/i }))
+    await user.click(screen.getByRole('button', { name: /delete permanently/i }))
+
+    expect(permanentDelete).toHaveBeenCalledWith('sess-1', expect.anything())
   })
 })

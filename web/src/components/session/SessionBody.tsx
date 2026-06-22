@@ -9,14 +9,23 @@
 import { cn } from '@/lib/utils'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SessionMeta } from './SessionMeta'
+import { StatusBar } from './StatusBar'
 import { TranscriptView } from './TranscriptView'
+import { SessionPlaceholder } from './SessionPlaceholder'
 import { WorkingIndicator } from './WorkingIndicator'
+import { PendingQuestionPanel } from './PendingQuestionPanel'
 import { SessionAriaLive } from './SessionAriaLive'
+import { statusTier } from '@/session/statusTier'
+import { selectRunningSubAgentCount } from '@/session/selectors'
 
 export function SessionBody({ rt }: { rt: SessionRuntime }) {
+  const runningSubAgents = selectRunningSubAgentCount(rt.state.turns)
+
   return (
     <>
-      {/* Status strip: account · model · context · quota · sub-agents */}
+      {/* Status strip: account · model · context · quota · live status · sub-agents.
+          The live StatusBar is folded into the right of this strip so the session
+          pane shows a single status line rather than two stacked bars. */}
       <div className="flex-shrink-0">
         <SessionMeta
           account={rt.account}
@@ -24,6 +33,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           contextPct={rt.contextPct}
           quota={rt.quota}
           subAgents={rt.subAgents}
+          statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} subAgentCount={runningSubAgents} />}
         />
       </div>
 
@@ -47,21 +57,33 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
         </div>
       )}
 
-      {/* Transcript — rotation dividers are interleaved inline by anchor turn */}
-      <TranscriptView
-        turns={rt.state.turns}
-        rotations={rt.state.rotations}
-        permissionMode={rt.mode}
-        toolDetailMode={rt.toolDetailMode}
-        // Only the live-open block streams as plain text; during replay the open
-        // id is meaningless, so suppress it and render everything as markdown.
-        streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
-        onDecision={rt.onDecision}
-        onAnswer={rt.onAnswer}
-      />
+      {/* Transcript — rotation dividers are interleaved inline by anchor turn.
+          With no turns to show, the transcript area would be blank; the
+          placeholder fills it with an explicit connecting/loading/empty/error
+          state instead so the user always knows what's happening. */}
+      {rt.state.turns.length === 0 && rt.state.rotations.length === 0 ? (
+        <SessionPlaceholder
+          connectionState={rt.connectionState}
+          replaying={rt.state.replaying}
+          hasError={rt.state.error !== null}
+        />
+      ) : (
+        <TranscriptView
+          turns={rt.state.turns}
+          rotations={rt.state.rotations}
+          permissionMode={rt.mode}
+          toolDetailMode={rt.toolDetailMode}
+          // Only the live-open block streams as plain text; during replay the open
+          // id is meaningless, so suppress it and render everything as markdown.
+          streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
+          onDecision={rt.onDecision}
+          onAnswer={rt.onAnswer}
+          subAgents={rt.state.subAgents}
+        />
+      )}
 
       {/* Prominent "waiting for Claude" indicator shown below the last turn */}
-      {rt.state.status.state === 'working' && (
+      {statusTier(rt.state.status.state) === 'busy' && (
         <div
           aria-hidden="true"
           className={cn(
@@ -69,12 +91,14 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
             'text-xs text-gray-400 dark:text-gray-500',
           )}
         >
-          <WorkingIndicator count={rt.state.status.count} />
+          <WorkingIndicator count={rt.state.status.count} subAgentCount={runningSubAgents} />
         </div>
       )}
 
-      {/* "Action needed" sticky banner when permission/question is pending */}
-      {rt.hasOpenAction && (
+      {/* "Action needed" sticky banner when an open permission is pending.
+          Live questions are pinned in PendingQuestionPanel (Task 4) — they no
+          longer need the banner for discoverability. */}
+      {rt.hasOpenPermission && (
         <div
           aria-live="polite"
           className={cn(
@@ -86,6 +110,18 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           Action needed — scroll up to respond
         </div>
       )}
+
+      {/* Pinned answer panel for the live open question (answer in place). Lives
+          here in SessionBody so BOTH the mobile SessionView and the desktop
+          master-detail shell render it — the desktop shell previously had no panel,
+          so a live AskUserQuestion (filtered out of the inline transcript by Turn)
+          rendered nowhere and was unanswerable. */}
+      <PendingQuestionPanel
+        turns={rt.state.turns}
+        onAnswer={rt.onAnswer}
+        onChat={rt.onChat}
+        armedQuestionId={rt.armedQuestionId}
+      />
 
       {/* sr-only aria-live mirror (owns its own ref + effect) */}
       <SessionAriaLive turns={rt.state.turns} replaying={rt.state.replaying} />

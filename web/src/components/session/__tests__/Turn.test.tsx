@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { Turn } from '../Turn'
 import type { Turn as TurnType, Block } from '@/session/reducer'
@@ -17,7 +17,7 @@ function makeTurn(blocks: Block[]): TurnType {
 const noop = () => {}
 
 describe('Turn tool grouping', () => {
-  it('folds a long completed tool run when this is NOT the last turn', () => {
+  it('renders one line per completed tool — no rollup — when NOT the last turn', () => {
     render(
       <Turn
         turn={makeTurn([tool('a'), tool('b'), tool('c'), tool('d')])}
@@ -28,7 +28,11 @@ describe('Turn tool grouping', () => {
         onAnswer={noop}
       />,
     )
-    expect(screen.getByRole('button', { name: /tool group/i }).textContent).toMatch(/4 tool calls/)
+    expect(screen.queryByRole('button', { name: /tool group/i })).toBeNull()
+    const rows = screen.getAllByRole('button', { name: /tool details/i })
+    expect(rows).toHaveLength(4)
+    // Auto + not live tail → every result stays collapsed.
+    for (const row of rows) expect(row).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('keeps the tool run expanded when this IS the last turn (live tail)', () => {
@@ -108,5 +112,49 @@ describe('Turn rendering edge cases', () => {
       />,
     )
     expect(document.querySelector('strong')).not.toBeNull()
+  })
+})
+
+describe('Turn question rendering', () => {
+  const baseQ = {
+    kind: 'question' as const,
+    id: 'q1',
+    questionId: 'q1',
+    header: 'Layout',
+    question: 'Two-pane?',
+    options: [{ label: 'Yes' }],
+    multiSelect: false,
+  }
+
+  it('does not render a LIVE question inline (it is pinned elsewhere)', () => {
+    const { container } = render(
+      <Turn
+        turn={makeTurn([{ ...baseQ, live: true }])}
+        permissionMode="interactive"
+        isLastTurn
+        toolDetailMode="auto"
+        onDecision={noop}
+        onAnswer={noop}
+      />,
+    )
+    expect(screen.queryByText('Two-pane?')).toBeNull()
+    // No stray empty wrapper div either
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('renders a historical (non-live) question inline, read-only', () => {
+    render(
+      <Turn
+        turn={makeTurn([{ ...baseQ, live: false }])}
+        permissionMode="interactive"
+        isLastTurn
+        toolDetailMode="auto"
+        onDecision={noop}
+        onAnswer={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('Two-pane?')).toBeInTheDocument()
+    // Read-only: no interactive radio inputs
+    expect(screen.queryByRole('radio')).toBeNull()
   })
 })

@@ -105,7 +105,7 @@ def test_answer_question_delegates_to_driver(orch_env):
         return fut.done() and await fut
 
     resolved = client.portal.call(_check)
-    assert resolved == ["Option X"]
+    assert resolved == (["Option X"], "option")
 
     client.portal.call(orch.close_session, session_id)
 
@@ -149,4 +149,27 @@ def test_pending_questions_delegates_to_driver(orch_env):
     orch.answer_question(session_id, qid, ["Yes"], "me")
     assert orch.pending_questions(session_id) == []
 
+    client.portal.call(orch.close_session, session_id)
+
+
+def test_answer_question_forwards_freeform_mode(orch_env):
+    """orchestrator.answer_question(..., mode='freeform') resolves the future with that mode."""
+    orch, client = orch_env
+
+    session = client.portal.call(lambda: orch.create_session("q-mode-test", identity="me"))
+    session_id = session.id
+    driver = orch.driver(session_id)
+    assert driver is not None
+
+    async def _register():
+        return driver._qreg.request(session_id, "t1", "H", "Q?", [{"label": "X"}], False, "me")
+
+    qid, fut = client.portal.call(_register)
+
+    assert orch.answer_question(session_id, qid, ["my words"], "me", mode="freeform") is True
+
+    async def _check():
+        return await fut
+
+    assert client.portal.call(_check) == (["my words"], "freeform")
     client.portal.call(orch.close_session, session_id)

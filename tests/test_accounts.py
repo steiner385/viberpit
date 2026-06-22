@@ -49,6 +49,25 @@ class TestAccounts(unittest.TestCase):
                 self.assertIsNone(accounts.usage_for("alpha"))
                 self.assertEqual(accounts.list_accounts()[0]["status"], "needs-reauth")
 
+    def test_usage_for_refresh_transient_does_not_mark_needs_reauth(self):
+        """Expired token + transient refresh failure (429/5xx) must NOT mark needs-reauth.
+
+        This is the overnight bug: the background poller refreshed idle accounts'
+        expired tokens, Anthropic rate-limited the *token* endpoint, and a 429 was
+        misclassified as a dead credential. The token is fine — leave status alone.
+        """
+        with temp_env():
+            from ccswitch import accounts, oauth, ledger
+            _seed_account("alpha", expires_in_ms=-1)  # expired → forces a refresh
+            with ledger.locked_ledger() as led:
+                ledger.set_status(led, "alpha", "ok")
+            with mock.patch.object(
+                oauth, "refresh_access_token",
+                side_effect=oauth.TransientError("token refresh failed with 429"),
+            ):
+                self.assertIsNone(accounts.usage_for("alpha"))
+            self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
+
     def test_usage_for_usageerror_returns_none_without_changing_status(self):
         """A transient usage-endpoint error (429/5xx) returns None and leaves status
         unchanged — it must NOT mark needs-reauth or propagate (which 500s the list)."""
@@ -61,6 +80,19 @@ class TestAccounts(unittest.TestCase):
                 # Returns None rather than raising — no 500.
                 self.assertIsNone(accounts.usage_for("alpha"))
             # Status stays "ok" (a rate-limit is not an auth failure).
+            self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
+
+    def test_usage_for_fetch_transient_returns_none_without_changing_status(self):
+        """A persistent network failure exhausts retries inside http_request and
+        surfaces as TransientError from fetch_usage. usage_for must treat it like a
+        rate-limit: return None, leave status unchanged, never 500 or mark reauth."""
+        with temp_env():
+            from ccswitch import accounts, oauth, ledger
+            _seed_account("alpha")
+            with ledger.locked_ledger() as led:
+                ledger.set_status(led, "alpha", "ok")
+            with mock.patch.object(oauth, "fetch_usage", side_effect=oauth.TransientError("network error after 4 attempt(s)")):
+                self.assertIsNone(accounts.usage_for("alpha"))
             self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
 
     def test_usage_for_ensure_valid_token_autherror_no_double_refresh(self):
@@ -115,7 +147,7 @@ class TestRefreshSerialization(unittest.TestCase):
                 "accessToken": "old", "refreshToken": "r",
                 "expiresAt": now_ms - 1, "subscriptionType": "max"})
             calls = []
-            def fake_refresh(rt, prior):
+            def fake_refresh(rt, prior, **kwargs):
                 calls.append(rt); _t.sleep(0.05)
                 return {"accessToken": "new", "refreshToken": "r2",
                         "expiresAt": now_ms + 10_000_000, "subscriptionType": "max"}

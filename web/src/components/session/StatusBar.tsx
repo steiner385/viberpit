@@ -1,27 +1,23 @@
 import { cn } from '@/lib/utils'
 import { WorkingIndicator } from './WorkingIndicator'
+import { statusPresentation } from '@/session/statusTier'
 
 interface Props {
   status: { state: string; count: number }
   connectionState: string
+  /** Forwarded to WorkingIndicator to show a sub-agent-specific phrase. */
+  subAgentCount?: number
 }
 
-function statusText(status: { state: string; count: number }): string {
-  switch (status.state) {
-    case 'idle':               return 'Ready'
-    case 'waiting-permission': return 'Waiting for permission'
-    case 'queued':             return `${status.count} queued`
-    default:                   return status.state
-  }
-}
-
-export function StatusBar({ status, connectionState }: Props) {
+export function StatusBar({ status, connectionState, subAgentCount }: Props) {
   const connected = connectionState === 'connected'
   const connectionNote = connected
     ? null
     : connectionState === 'reconnecting'
       ? 'Reconnecting…'
       : 'Disconnected'
+
+  const { tier, label, Icon, textClass } = statusPresentation(status.state)
 
   return (
     <div
@@ -30,13 +26,16 @@ export function StatusBar({ status, connectionState }: Props) {
       aria-atomic="true"
       className={cn(
         'flex items-center gap-2 px-3 py-1 text-xs',
-        'text-gray-500 dark:text-gray-400',
+        tier === 'needs-you' || tier === 'error' ? textClass : 'text-gray-500 dark:text-gray-400',
       )}
     >
-      {status.state === 'working' ? (
-        <WorkingIndicator count={status.count} />
+      {tier === 'busy' ? (
+        <WorkingIndicator count={status.count} subAgentCount={subAgentCount} />
       ) : (
-        <span>{statusText(status)}</span>
+        <span className={cn('inline-flex items-center gap-1', tier !== 'your-turn' && 'font-medium')}>
+          <Icon size={12} aria-hidden="true" />
+          {label}
+        </span>
       )}
       {connectionNote && (
         <span className="ml-auto text-amber-600 dark:text-amber-400 font-medium">

@@ -59,7 +59,7 @@ def test_on_sync_back_called_after_turn():
         await d.send_prompt("hello")
         # Drain until idle
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return calls
@@ -118,14 +118,14 @@ def test_on_sync_back_failure_does_not_crash_session():
         seen = []
         async for e in d.events():
             seen.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return seen, calls
 
     seen, calls = asyncio.run(run())
     # The stream still completed (we got idle)
-    assert any(isinstance(e, Status) and e.state == "idle" for e in seen)
+    assert any(isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention") for e in seen)
     # sync_back was attempted
     assert "attempt" in calls
 
@@ -200,7 +200,7 @@ def test_on_sync_back_sdk_rotation_captured_in_slot(tmp_path):
         await d.start()
         await d.send_prompt("hello")
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
 
@@ -292,7 +292,7 @@ def test_usage_for_allow_refresh_true_default_unchanged():
                            60.0, datetime.now(timezone.utc) + timedelta(hours=1), False)
 
         with mock.patch.object(oauth, "refresh_access_token",
-                               side_effect=lambda rt, blob: refresh_calls.append(rt) or new_blob), \
+                               side_effect=lambda rt, blob, **kw: refresh_calls.append(rt) or new_blob), \
              mock.patch.object(oauth, "fetch_usage", return_value=fake_usage):
 
             result = accounts.usage_for("beta")  # allow_refresh=True (default)

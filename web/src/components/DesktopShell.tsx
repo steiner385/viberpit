@@ -28,11 +28,11 @@ import { SettingsPanel } from './settings/SettingsPanel'
 import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
 import { ReviewView } from './ReviewView'
-import { RenameDialog } from './Dashboard'
+import { RenameDialog, PermanentDeleteDialog } from './Dashboard'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from './session/SessionRuntimeProvider'
 import { SessionBody } from './session/SessionBody'
-import { StatusBar } from './session/StatusBar'
 import { Composer } from './session/Composer'
+import { CommandResultOverlay } from './session/CommandResultOverlay'
 import {
   useAccounts,
   useSessions,
@@ -40,12 +40,13 @@ import {
   useCreateSession,
   useRenameSession,
   useCloseSession,
+  usePermanentDeleteSession,
   useGithubRepos,
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
 
 type TabId = 'sessions' | 'accounts' | 'archived'
-type Target = { type: 'new' } | { type: 'session'; id: string }
+type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
 
 // ── Session subtree (rendered only under SessionRuntimeProvider) ──────────────
 
@@ -63,29 +64,31 @@ function MainPaneSession() {
     <div className="flex flex-col h-full min-h-0">
       <div className={cn(
         'flex items-center gap-3 px-3 py-2 flex-shrink-0',
-        'bg-gray-900 border-b border-gray-700',
+        'bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700',
       )}>
-        <span className="text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
+        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{rt.title}</span>
         <button
           type="button"
           onClick={rt.toggleToolDetail}
           aria-label={toolToggleAria}
           className={cn(
             'ml-auto flex items-center gap-1.5 px-3 py-2 rounded-md min-h-[44px]',
-            'text-sm font-medium text-gray-200',
-            'hover:bg-gray-700 active:bg-gray-600',
+            'text-sm font-medium text-gray-700 dark:text-gray-200',
+            'hover:bg-gray-200 dark:hover:bg-gray-700 active:bg-gray-300 dark:active:bg-gray-600',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
           )}
         >
           {toolToggleText}
         </button>
-        <div>
-          <StatusBar status={rt.state.status} connectionState={rt.connectionState} />
-        </div>
       </div>
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-gray-950">
         <SessionBody rt={rt} />
       </div>
+      <CommandResultOverlay
+        result={rt.commandResult}
+        commands={rt.commands}
+        onClose={rt.dismissCommandResult}
+      />
     </div>
   )
 }
@@ -101,6 +104,8 @@ function SessionComposer() {
       onSetMode={rt.onSetMode}
       queued={rt.state.queued}
       onCancelQueued={rt.onCancelQueued}
+      commands={rt.commands}
+      onCommand={rt.onCommand}
     />
   )
 }
@@ -128,6 +133,7 @@ export function DesktopShell() {
   const createSession = useCreateSession()
   const renameSession = useRenameSession()
   const closeSession = useCloseSession()
+  const permanentDeleteSession = usePermanentDeleteSession()
 
   const [tab, setTab] = useState<TabId>('sessions')
   const [selection, setSelection] = useState<Target>({ type: 'new' })
@@ -135,11 +141,15 @@ export function DesktopShell() {
   const [showSettings, setShowSettings] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
+  const [sessionDeleteTarget, setSessionDeleteTarget] = useState<{ id: string; name: string } | null>(null)
   const [allLimitedReset, setAllLimitedReset] = useState<string | null | undefined>(undefined)
 
   // Keyboard highlight (for the new-session DispatchBar nav affordances)
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
   const highlighted = highlightedIndex >= 0 ? sessions[highlightedIndex] : undefined
+
+  // Bumped to return focus to the DispatchBar after detaching from a session.
+  const [dispatchFocusNonce, setDispatchFocusNonce] = useState(0)
 
   // Press-twice delete guard
   const [pendingDelete, setPendingDelete] = useState<{ id: string; ts: number } | null>(null)
@@ -164,10 +174,10 @@ export function DesktopShell() {
     }
   }
 
-  function focusSession(id: string) {
+  function focusSession(id: string, initialPrompt?: string) {
     clearPendingDelete()
     setTab('sessions')
-    setSelection({ type: 'session', id })
+    setSelection({ type: 'session', id, initialPrompt })
   }
 
   function focusNew() {
@@ -175,6 +185,42 @@ export function DesktopShell() {
     setTab('sessions')
     setSelection({ type: 'new' })
   }
+
+  const detachToList = useCallback(() => {
+    const id = selection.type === 'session' ? selection.id : null
+    setSelection({ type: 'new' })
+    if (id) {
+      const idx = sessions.findIndex((s) => s.id === id)
+      if (idx >= 0) setHighlightedIndex(idx)
+    }
+    setDispatchFocusNonce((n) => n + 1) // return focus to DispatchBar for ↑/↓ nav
+  }, [selection, sessions])
+
+  // In-session detach gestures (desktop): ← / Esc / Ctrl+Z return to the list.
+  // Active only while a session is focused. Guards: yield to the composer while it
+  // holds a draft (cursor move / undo). Faithful detach → main pane shows WelcomePane.
+  useEffect(() => {
+    const active = tab === 'sessions' && selection.type === 'session'
+    if (!active) return
+    function onKey(e: KeyboardEvent) {
+      const ae = document.activeElement as HTMLTextAreaElement | null
+      const inComposerWithText =
+        ae?.getAttribute('aria-label') === 'Message' && (ae?.value ?? '') !== ''
+      if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
+        if (inComposerWithText) return
+        e.preventDefault()
+        detachToList()
+        return
+      }
+      if (e.key === 'ArrowLeft' || e.key === 'Escape') {
+        if (inComposerWithText) return
+        e.preventDefault()
+        detachToList()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [tab, selection, detachToList])
 
   const handleClose = useCallback((id: string) => {
     closeSession.mutate(id)
@@ -188,6 +234,26 @@ export function DesktopShell() {
 
   function handleRenameSubmit(id: string, name: string) {
     renameSession.mutate({ id, name }, { onSuccess: () => setRenameTarget(null) })
+  }
+
+  // Permanent delete is destructive, so it goes through the same confirm dialog
+  // as Dashboard: open the dialog here, run the mutation only on confirm.
+  function handleDelete(id: string) {
+    const session = sessions.find((s) => s.id === id)
+    setSessionDeleteTarget({ id, name: session?.name ?? id.slice(0, 8) })
+  }
+
+  function confirmSessionDelete() {
+    if (!sessionDeleteTarget) return
+    const id = sessionDeleteTarget.id
+    permanentDeleteSession.mutate(id, {
+      onSuccess: () => {
+        setSessionDeleteTarget(null)
+        // If the deleted session was selected, fall back to the new-session slot.
+        setSelection((cur) => (cur.type === 'session' && cur.id === id ? { type: 'new' } : cur))
+      },
+      onError: () => setSessionDeleteTarget(null),
+    })
   }
 
   // ── DispatchBar handlers (new-session mode) ─────────────────────────────────
@@ -236,7 +302,7 @@ export function DesktopShell() {
     }
   }
 
-  function handleDispatch({ initialPrompt, repo, images }: { initialPrompt: string; repo: string | null; images: { sha: string; mime: string; name: string }[] }) {
+  function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
     clearPendingDelete()
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     createSession.mutate(
@@ -244,12 +310,12 @@ export function DesktopShell() {
         initialPrompt,
         repo: repo ?? undefined,
         branch: repoInfo?.defaultBranch ?? undefined,
-        images: images.length ? images : undefined,
+        attachmentIds: attachmentIds.length ? attachmentIds : undefined,
       },
       {
         onSuccess: (session) => {
           if (repo) setLastRepo(repo)
-          focusSession(session.id)
+          focusSession(session.id, initialPrompt)
         },
         onError: (err) => {
           if (err.status === 409) {
@@ -303,15 +369,6 @@ export function DesktopShell() {
             )}
           </button>
         ))}
-        <button
-          ref={settingsButtonRef}
-          type="button"
-          onClick={() => setShowSettings(true)}
-          aria-label="Settings"
-          className="ml-auto px-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-        >
-          <Settings size={16} aria-hidden="true" />
-        </button>
       </div>
 
       {/* Session list with permanent New Session slot */}
@@ -342,6 +399,7 @@ export function DesktopShell() {
           onOpen={focusSession}
           onRename={handleRename}
           onClose={handleClose}
+          onDelete={handleDelete}
         />
       </div>
     </aside>
@@ -377,14 +435,29 @@ export function DesktopShell() {
         pendingDelete && highlighted?.id === pendingDelete.id ? highlighted.name : null
       }
       activeDescendantId={highlighted ? `row-${highlighted.id}` : undefined}
+      autoFocusKey={dispatchFocusNonce}
       isPending={createSession.isPending}
     />
   )
 
   const shell = (
     <div className="flex flex-col h-screen bg-background text-foreground">
-      <header className="p-4 border-b border-border flex-shrink-0">
-        <h1 className="text-2xl font-bold tracking-tight">ccswitch</h1>
+      <header className="flex items-center justify-between px-4 py-2 border-b border-border flex-shrink-0">
+        <h1 className="text-lg font-bold tracking-tight">ccswitch</h1>
+        <button
+          ref={settingsButtonRef}
+          type="button"
+          onClick={() => setShowSettings(true)}
+          aria-label="Settings"
+          className={cn(
+            'flex items-center justify-center h-9 w-9 rounded-md',
+            'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
+            'hover:bg-gray-100 dark:hover:bg-gray-800',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+          )}
+        >
+          <Settings size={18} aria-hidden="true" />
+        </button>
       </header>
 
       {allLimitedReset !== undefined && (
@@ -410,6 +483,14 @@ export function DesktopShell() {
           isPending={renameSession.isPending}
         />
       )}
+      {sessionDeleteTarget && (
+        <PermanentDeleteDialog
+          sessionName={sessionDeleteTarget.name}
+          onClose={() => setSessionDeleteTarget(null)}
+          onConfirm={confirmSessionDelete}
+          isPending={permanentDeleteSession.isPending}
+        />
+      )}
       {showHelp && <ShortcutsHelp onClose={() => setShowHelp(false)} />}
       {showSettings && (
         <SettingsPanel onClose={() => { setShowSettings(false); settingsButtonRef.current?.focus() }} />
@@ -420,6 +501,6 @@ export function DesktopShell() {
   // One SessionRuntimeProvider mounted at a time, keyed by the focused id so each
   // session gets a fresh reducer + clean attach/detach.
   return sessionActive
-    ? <SessionRuntimeProvider key={selection.id} sessionId={selection.id}>{shell}</SessionRuntimeProvider>
+    ? <SessionRuntimeProvider key={selection.id} sessionId={selection.id} initialPrompt={selection.initialPrompt}>{shell}</SessionRuntimeProvider>
     : shell
 }

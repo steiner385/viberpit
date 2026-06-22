@@ -494,6 +494,38 @@ def test_reattach_reemits_pending_question(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# Reattach emits the current live status (regression: stale 'Ready' mid-turn)
+# ---------------------------------------------------------------------------
+
+def test_attach_emits_live_status(ws_env):
+    """Attaching to a session whose driver is blocked mid-turn emits a live status
+    frame so the in-session header reflects the true state (regression: stale 'Ready')."""
+    _app, orch, client = ws_env([], client_cls=_QuestionBlockingFakeClient)
+    session = client.portal.call(
+        lambda: orch.create_session("test-attach-status", identity="wstest@example.com")
+    )
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+        # Drive the turn until it blocks on the question.
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "go"}))
+        _drain_events(ws, until_type="question", timeout=8.0)
+        ws.send_text(json.dumps({"type": "detach", "sessionId": session_id}))
+
+    # Reattach — a status frame must now be emitted, carrying the blocked state.
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="status", timeout=6.0)
+        status_evs = [e for e in events if e.get("type") == "status"]
+        assert status_evs, f"no status frame on attach — {[e.get('type') for e in events]}"
+        assert status_evs[-1]["state"] in ("waiting_question", "waiting_input"), (
+            f"expected a needs-you state, got {status_evs[-1]['state']}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Frame larger than 256KB is rejected, socket stays open
 # ---------------------------------------------------------------------------
 
@@ -562,8 +594,6 @@ def test_attach_rehydrated_session_gets_replay_complete(tmp_path):
     cfg_dir = tmp_path / "cfg" / "alpha"
     cfg_dir.mkdir(parents=True)
 
-    _seed_account("alpha")
-
     env = {
         "CCSWITCH_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
@@ -575,6 +605,11 @@ def test_attach_rehydrated_session_gets_replay_complete(tmp_path):
          patch("server.sessions.orchestrator.select_account", return_value="alpha"), \
          patch("ccswitch.accounts.usage_for", side_effect=_fake_usage):
 
+        # Seed INSIDE the CCSWITCH_HOME patch so paths.slot_path() resolves to the
+        # temp store — otherwise it leaks an "alpha" account into the real store
+        # (the conftest guard now fails the test if this regresses).
+        _seed_account("alpha")
+
         orch = _make_orch([])
         app = create_app(orchestrator=orch)
         with TestClient(app, raise_server_exceptions=False) as client:
@@ -584,3 +619,33 @@ def test_attach_rehydrated_session_gets_replay_complete(tmp_path):
                 assert any(e.get("type") == "replayComplete" for e in events), (
                     f"replayComplete not in {[e.get('type') for e in events]}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Live-forwarder: a crash mid-stream still reaches the UI as an error frame
+# ---------------------------------------------------------------------------
+
+def test_forward_live_emits_error_frame_on_crash():
+    """If the driver's live event stream raises, the forwarder must enqueue an
+    error wire frame — not log-and-swallow, which leaves the UI silent."""
+    import asyncio
+    from server.bridge.ws import _forward_live
+
+    class _BoomDriver:
+        async def events(self):
+            raise RuntimeError("pty closed unexpectedly")
+            yield  # pragma: no cover — makes this an async generator
+
+    async def run():
+        out_q: asyncio.Queue = asyncio.Queue()
+        await _forward_live(_BoomDriver(), out_q, "sx")
+        frames = []
+        while not out_q.empty():
+            frames.append(out_q.get_nowait())
+        return frames
+
+    frames = asyncio.run(run())
+    errs = [fr for fr in frames if fr.get("type") == "error"]
+    assert errs, f"expected an error frame, got {[fr.get('type') for fr in frames]}"
+    assert "RuntimeError" in errs[0]["message"]
+    assert "pty closed unexpectedly" in errs[0]["message"]

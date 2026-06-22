@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Plus, RefreshCw, Settings, Pencil, Check, X, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -34,7 +34,9 @@ import {
 } from '@/api/hooks'
 import type { Account, Session, ArchivedSession } from '@/api/types'
 import { PERMISSION_MODES } from '@/session/permissionModes'
+import { sortSessionsByTier } from '@/session/statusTier'
 import { setLastRepo } from '@/lib/lastRepo'
+import { useNeedsYouTitle } from '@/hooks/useNeedsYouTitle'
 
 // ── New Session Dialog ──────────────────────────────────────────────────────
 
@@ -329,7 +331,7 @@ interface RenameDialogProps {
   isPending: boolean
 }
 
-function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPending }: RenameDialogProps) {
+export function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPending }: RenameDialogProps) {
   const [name, setName] = useState(currentName)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -672,8 +674,16 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
             <StatusPill status={account.status} />
             {account.usage && (
               <>
-                <UsageBadge pct={account.usage.session.pct} label="session" />
-                <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
+                <UsageBadge
+                  pct={account.usage.session.pct}
+                  label="session"
+                  resetsAt={account.usage.session.resetsAt}
+                />
+                <UsageBadge
+                  pct={account.usage.weekly.pct}
+                  label="weekly"
+                  resetsAt={account.usage.weekly.resetsAt}
+                />
               </>
             )}
             {needsReauth && (
@@ -814,7 +824,10 @@ interface PermanentDeleteDialogProps {
   isPending: boolean
 }
 
-function PermanentDeleteDialog({ sessionName, onClose, onConfirm, isPending }: PermanentDeleteDialogProps) {
+// Exported so DesktopShell reuses this exact confirm dialog (mirrors RenameDialog).
+// NOTE: ArchivedManager.tsx still carries its own private copy — consolidating the
+// two into a shared module is follow-up cleanup, tracked separately.
+export function PermanentDeleteDialog({ sessionName, onClose, onConfirm, isPending }: PermanentDeleteDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
 
@@ -924,8 +937,9 @@ function ArchivedList({ sessions, onReview, onUnarchive, onPermanentDelete, unar
     <ul className="space-y-2" aria-label="Archived sessions">
       {sessions.map((s) => {
         const displayName = s.name || s.id.slice(0, 8)
-        const archivedDate = new Date(s.archivedAt).toLocaleDateString(undefined, {
+        const archivedDate = new Date(s.archivedAt).toLocaleString(undefined, {
           year: 'numeric', month: 'short', day: 'numeric',
+          hour: 'numeric', minute: '2-digit',
         })
         return (
           <li
@@ -999,8 +1013,10 @@ function ArchivedList({ sessions, onReview, onUnarchive, onPermanentDelete, unar
 export type TabId = 'sessions' | 'accounts' | 'archived'
 
 interface DashboardProps {
-  /** Called when the user opens a session (navigates to Terminal view). */
-  onOpenSession?: (sessionId: string) => void
+  /** Called when the user opens a session (navigates to Terminal view).
+   *  `initialPrompt` is passed when opening straight from create, so the prompt
+   *  can be shown immediately in the conversation. */
+  onOpenSession?: (sessionId: string, initialPrompt?: string) => void
   /** Bump this to re-focus the dispatch bar (e.g. after returning from a session). */
   focusDispatchSignal?: unknown
   /** Called when the user wants to review an archived session. */
@@ -1020,6 +1036,8 @@ interface DashboardProps {
 export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab, activeTab: activeTabProp, onTabChange, dialog, onDialogChange }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
+  const orderedSessions = useMemo(() => sortSessionsByTier(sessions), [sessions])
+  useNeedsYouTitle(sessions)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const { data: settingsData } = useSettings()
   const reposQuery = useGithubRepos()
@@ -1055,11 +1073,13 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const [branchError, setBranchError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
   const [permDeleteTarget, setPermDeleteTarget] = useState<ArchivedSession | null>(null)
+  // Permanent-delete confirmation for a live (non-archived) session card.
+  const [sessionDeleteTarget, setSessionDeleteTarget] = useState<{ id: string; name: string } | null>(null)
   const [unarchivingId, setUnarchivingId] = useState<string | null>(null)
 
   // ── Keyboard selection state ─────────────────────────────────────────────────
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
-  const selectedSession = highlightedIndex >= 0 ? sessions[highlightedIndex] : undefined
+  const selectedSession = highlightedIndex >= 0 ? orderedSessions[highlightedIndex] : undefined
   const selectedId = selectedSession?.id ?? null
 
   // ── Press-twice delete guard ──────────────────────────────────────────────────
@@ -1125,9 +1145,10 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   function handleCreateSubmit(input: CreateSessionInput) {
     createSession.mutate(input, {
-      onSuccess: () => {
+      onSuccess: (session) => {
         dismissNewDialog()
-        newButtonRef.current?.focus()
+        // Auto-open the new session and carry the prompt so it shows immediately.
+        if (onOpenSession) onOpenSession(session.id, input.initialPrompt)
       },
       onError: (err) => {
         if (err.status === 409) {
@@ -1163,6 +1184,20 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     closeSession.mutate(id)
   }, [closeSession])
 
+  // Open the permanent-delete confirmation for a live session card.
+  const handleSessionDelete = useCallback((id: string) => {
+    const session = sessions.find((s) => s.id === id)
+    setSessionDeleteTarget({ id, name: session?.name ?? id.slice(0, 8) })
+  }, [sessions])
+
+  function confirmSessionDelete() {
+    if (!sessionDeleteTarget) return
+    permanentDeleteSession.mutate(sessionDeleteTarget.id, {
+      onSuccess: () => setSessionDeleteTarget(null),
+      onError: () => setSessionDeleteTarget(null),
+    })
+  }
+
   // ── DispatchBar handlers ─────────────────────────────────────────────────────
 
   function handleNavigate(dir: 'up' | 'down') {
@@ -1178,6 +1213,31 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       return Math.min(sessions.length - 1, i + 1)
     })
   }
+
+  // Up/Down arrows navigate the session list even when real focus is NOT in the
+  // dispatch textarea — e.g. the user reached the list via the tab bar (where ←/→
+  // cycles tabs) and focus is parked on the "Sessions" tab button. The DispatchBar
+  // textarea handles its own ↑/↓ (and the repo <select> drives itself), so we bail
+  // out whenever focus is inside any editable/form control or an open dialog; that
+  // also prevents double-handling when the textarea already consumed the key.
+  useEffect(() => {
+    if (activeTab !== 'sessions') return
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+      if (e.defaultPrevented) return
+      const t = e.target as HTMLElement | null
+      const tag = t?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable) return
+      // A modal traps its own focus; never move the background highlight under it.
+      if (document.querySelector('[role="dialog"]')) return
+      e.preventDefault()
+      handleNavigate(e.key === 'ArrowUp' ? 'up' : 'down')
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+    // Re-subscribe when the list length changes so handleNavigate's clamp stays correct.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, sessions.length])
 
   function handleOpenHighlighted() {
     if (selectedSession) handleOpen(selectedSession.id)
@@ -1222,7 +1282,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         clearTimeout(pendingDeleteTimeoutRef.current)
         pendingDeleteTimeoutRef.current = null
       }
-      const s = sessions[action.index]
+      const s = orderedSessions[action.index]
       if (s) {
         setHighlightedIndex(action.index)
         handleOpen(s.id)
@@ -1238,7 +1298,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     }
   }
 
-  function handleDispatch({ initialPrompt, repo, images }: { initialPrompt: string; repo: string | null; images: { sha: string; mime: string; name: string }[] }) {
+  function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
     clearPendingDelete()
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     createSession.mutate(
@@ -1246,12 +1306,12 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         initialPrompt,
         repo: repo ?? undefined,
         branch: repoInfo?.defaultBranch ?? undefined,
-        images: images.length ? images : undefined,
+        attachmentIds: attachmentIds.length ? attachmentIds : undefined,
       },
       {
         onSuccess: (session) => {
           if (repo) setLastRepo(repo)
-          if (onOpenSession) onOpenSession(session.id)
+          if (onOpenSession) onOpenSession(session.id, initialPrompt)
         },
       },
     )
@@ -1441,7 +1501,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           </div>
 
           <SessionList
-            sessions={sessions}
+            sessions={orderedSessions}
             accounts={accounts}
             isLoading={isLoading}
             selectedId={selectedId}
@@ -1449,6 +1509,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             onOpen={handleOpen}
             onRename={handleRename}
             onClose={handleClose}
+            onDelete={handleSessionDelete}
           />
 
           <AdoptPanel />
@@ -1556,6 +1617,15 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           sessionName={permDeleteTarget.name || permDeleteTarget.id.slice(0, 8)}
           onClose={() => setPermDeleteTarget(null)}
           onConfirm={confirmPermanentDelete}
+          isPending={permanentDeleteSession.isPending}
+        />
+      )}
+
+      {sessionDeleteTarget && (
+        <PermanentDeleteDialog
+          sessionName={sessionDeleteTarget.name}
+          onClose={() => setSessionDeleteTarget(null)}
+          onConfirm={confirmSessionDelete}
           isPending={permanentDeleteSession.isPending}
         />
       )}

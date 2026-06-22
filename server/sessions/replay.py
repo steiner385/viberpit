@@ -17,6 +17,8 @@ def _parse(path: str, max_turns: int) -> list:
     out: list = []
     meta_event = None
     for o in lines:
+        if o.get("isSidechain"):
+            continue
         typ = o.get("type")
         msg = o.get("message") or {}
         # Claude transcripts use TWO shapes for `content`: a plain string (common for
@@ -63,8 +65,28 @@ def _parse(path: str, max_turns: int) -> list:
                 elif t == "thinking":
                     out.append(ev.ThinkingDelta(uuid, b.get("thinking", ""), uuid))
                 elif t == "tool_use":
-                    out.append(ev.ToolCall(uuid, b.get("id", ""), b.get("name", ""), ev.tool_kind(b.get("name", "")),
-                                           b.get("input", {}), uuid))
+                    if b.get("name") == "AskUserQuestion":
+                        # Mirror the live translator: AskUserQuestion is presented as
+                        # the selectable QuestionCard via Question events, never a raw
+                        # ToolCall (which renders the input as JSON). Reconstruct the
+                        # Question event(s) from the tool_use input so a detached /
+                        # reloaded session shows the question, not the raw JSON.
+                        for qi, q in enumerate((b.get("input") or {}).get("questions") or []):
+                            if not isinstance(q, dict):
+                                continue
+                            opts = [o if isinstance(o, dict) else {"label": str(o)}
+                                    for o in (q.get("options") or [])]
+                            out.append(ev.Question(
+                                question_id=f"{b.get('id') or uuid}-{qi}",
+                                turn_id=uuid,
+                                header=q.get("header", ""),
+                                question=q.get("question", ""),
+                                options=opts,
+                                multi_select=bool(q.get("multiSelect", False)),
+                            ))
+                    else:
+                        out.append(ev.ToolCall(uuid, b.get("id", ""), b.get("name", ""),
+                                               ev.tool_kind(b.get("name", "")), b.get("input", {}), uuid))
             usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
             out.append(ev.TurnEnd(uuid, usage, None, uuid))
     # keep only the last max_turns assistant turns' worth — for the small fixture this is a no-op;

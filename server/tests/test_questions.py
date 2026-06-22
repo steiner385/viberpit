@@ -31,7 +31,7 @@ def test_request_resolve_sets_future_to_selected_list():
         reg.resolve(qid, ["Option A"], "me")
         return await fut
     result = asyncio.run(run())
-    assert result == ["Option A"]
+    assert result == (["Option A"], "option")
 
 
 def test_request_resolve_multi_select():
@@ -41,7 +41,7 @@ def test_request_resolve_multi_select():
         reg.resolve(qid, ["A", "B"], "me")
         return await fut
     result = asyncio.run(run())
-    assert result == ["A", "B"]
+    assert result == (["A", "B"], "option")
 
 
 def test_resolve_wrong_identity_returns_false():
@@ -126,8 +126,8 @@ def test_multiple_questions_same_session():
         reg.resolve(qid2, ["Second"], "me")
         return await fut1, await fut2
     r1, r2 = asyncio.run(run())
-    assert r1 == ["First"]
-    assert r2 == ["Second"]
+    assert r1 == (["First"], "option")
+    assert r2 == (["Second"], "option")
 
 
 # ---------------------------------------------------------------------------
@@ -212,3 +212,110 @@ def test_pending_empty_when_no_questions():
     """pending() on a session with no registered questions returns []."""
     reg = QuestionRegistry()
     assert reg.pending("no-such-session") == []
+
+
+def test_resolve_carries_mode_to_future():
+    """resolve(..., mode='chat') resolves the future to (selected, mode)."""
+    reg = QuestionRegistry()
+    async def run():
+        qid, fut = _req(reg)
+        ok = reg.resolve(qid, ["typed text"], "me", mode="chat")
+        return ok, await fut
+    ok, result = asyncio.run(run())
+    assert ok is True
+    assert result == (["typed text"], "chat")
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation: answering a transcript-rebuilt card (replay-derived id) must
+# still resolve the live waiter. Regression for "Waiting for input" sessions that
+# went stuck after reattach — the replay id ({tool_use_id}-{index}) never matches
+# the live registry's random uuid id, so the answer was silently dropped.
+# ---------------------------------------------------------------------------
+
+def test_resolve_reconciles_replayed_id_to_sole_pending_question():
+    """Single-question turn: answering the transcript-rebuilt card (replay-derived id)
+    resolves the sole live waiter even though the ids differ."""
+    reg = QuestionRegistry()
+    async def run():
+        qid, fut = _req(reg, session_id="s1")  # live random uuid id
+        # User answers the REPLAYED card, whose id is tool-use-derived, not qid.
+        ok = reg.resolve("toolu_01ABCdef-0", ["Option A"], "me", session_id="s1")
+        return ok, await fut
+    ok, result = asyncio.run(run())
+    assert ok is True
+    assert result == (["Option A"], "option")
+
+
+def test_resolve_multi_question_requires_exact_id_no_positional_guess():
+    """Safety: with several questions pending (a multi-question turn), an unrecognized
+    id is NOT reconciled by position — that could mis-route a stale/duplicate answer to
+    the wrong remaining question. The answerable cards carry exact live ids, so exact
+    lookup handles them; an unknown id resolves nothing."""
+    reg = QuestionRegistry()
+    async def run():
+        qid0, fut0 = _req(reg, question="Q0?", session_id="s1")
+        qid1, fut1 = _req(reg, question="Q1?", session_id="s1")
+        # An unrecognized (replay-style) id while two are pending must NOT resolve either.
+        guessed = reg.resolve("toolu_xyz-1", ["Second"], "me", session_id="s1")
+        # The exact live ids still resolve their own question, in any order.
+        ok1 = reg.resolve(qid1, ["Second"], "me", session_id="s1")
+        ok0 = reg.resolve(qid0, ["First"], "me", session_id="s1")
+        return guessed, ok0, ok1, fut0, fut1
+    guessed, ok0, ok1, fut0, fut1 = asyncio.run(run())
+    assert guessed is False           # no positional guess
+    assert ok0 is True and ok1 is True
+    assert fut0.result() == (["First"], "option")
+    assert fut1.result() == (["Second"], "option")
+
+
+def test_resolve_reconciles_single_pending_without_parseable_index():
+    """An unmatched id with no usable trailing index resolves the sole pending question."""
+    reg = QuestionRegistry()
+    async def run():
+        qid, fut = _req(reg, session_id="s1")
+        ok = reg.resolve("mystery-id-tail-x", ["A"], "me", session_id="s1")
+        return ok, await fut
+    ok, result = asyncio.run(run())
+    assert ok is True
+    assert result == (["A"], "option")
+
+
+def test_resolve_reconcile_ambiguous_multi_returns_false():
+    """Multiple pending and no usable index → refuse to guess (returns False, nothing resolved)."""
+    reg = QuestionRegistry()
+    async def run():
+        _req(reg, question="Q0?", session_id="s1")
+        _req(reg, question="Q1?", session_id="s1")
+        ok = reg.resolve("mystery", ["A"], "me", session_id="s1")
+        return ok
+    ok = asyncio.run(run())
+    assert ok is False
+    assert len(reg.pending("s1")) == 2  # both untouched
+    reg.deny_all("s1")
+
+
+def test_resolve_reconcile_respects_identity():
+    """Reconciliation must still enforce identity ownership."""
+    reg = QuestionRegistry()
+    async def run():
+        qid, fut = _req(reg, session_id="s1", identity="owner")
+        ok = reg.resolve("toolu_abc-0", ["X"], "attacker", session_id="s1")
+        return ok, fut
+    ok, fut = asyncio.run(run())
+    assert ok is False
+    assert not fut.done()
+    reg.deny_all("s1")
+
+
+def test_resolve_unknown_id_without_session_id_still_false():
+    """Backward-compat: without session_id, an unknown id never reconciles."""
+    reg = QuestionRegistry()
+    async def run():
+        qid, fut = _req(reg, session_id="s1")
+        ok = reg.resolve("toolu_abc-0", ["X"], "me")  # no session_id passed
+        return ok, fut
+    ok, fut = asyncio.run(run())
+    assert ok is False
+    assert not fut.done()
+    reg.deny_all("s1")

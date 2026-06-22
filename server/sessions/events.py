@@ -4,21 +4,28 @@ from enum import Enum
 
 class ToolKind(str, Enum):
     EDIT = "edit"; WRITE = "write"; READ = "read"; BASH = "bash"
-    TODO = "todo"; SEARCH = "search"; UNKNOWN = "unknown"
+    TODO = "todo"; SEARCH = "search"; WEB = "web"; TASK = "task"
+    MCP = "mcp"; UNKNOWN = "unknown"
 
 _TOOL_KIND = {
     "Edit": ToolKind.EDIT, "MultiEdit": ToolKind.EDIT, "NotebookEdit": ToolKind.EDIT,
     "Write": ToolKind.WRITE, "Read": ToolKind.READ, "Bash": ToolKind.BASH,
     "TodoWrite": ToolKind.TODO, "Grep": ToolKind.SEARCH, "Glob": ToolKind.SEARCH,
-    "LS": ToolKind.SEARCH,
+    "LS": ToolKind.SEARCH, "WebFetch": ToolKind.WEB, "WebSearch": ToolKind.WEB,
+    "Task": ToolKind.TASK,
 }
 def tool_kind(name: str) -> ToolKind:
+    # MCP tools are namespaced `mcp__<server>__<tool>`; the server/tool parts are
+    # open-ended, so match the prefix rather than enumerate every name.
+    if name.startswith("mcp__"):
+        return ToolKind.MCP
     return _TOOL_KIND.get(name, ToolKind.UNKNOWN)
 
 @dataclass
 class TurnStart:
-    turn_id: str; src_uuid: str | None = None
-    def to_wire(self): return {"type": "turnStart", "turnId": self.turn_id, "srcUuid": self.src_uuid}
+    turn_id: str; src_uuid: str | None = None; parent_tool_use_id: str | None = None
+    def to_wire(self): return {"type": "turnStart", "turnId": self.turn_id,
+                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id}
 
 @dataclass
 class SessionMeta:
@@ -27,30 +34,39 @@ class SessionMeta:
 
 @dataclass
 class TurnEnd:
-    turn_id: str; usage: dict | None = None; cost_usd: float | None = None; src_uuid: str | None = None
+    turn_id: str; usage: dict | None = None; cost_usd: float | None = None
+    src_uuid: str | None = None; parent_tool_use_id: str | None = None; outcome: str = "success"
     def to_wire(self): return {"type": "turnEnd", "turnId": self.turn_id, "usage": self.usage,
-                               "costUsd": self.cost_usd, "srcUuid": self.src_uuid}
+                               "costUsd": self.cost_usd, "srcUuid": self.src_uuid,
+                               "parentToolUseId": self.parent_tool_use_id, "outcome": self.outcome}
 
 @dataclass
 class TextDelta:
-    turn_id: str; text: str; src_uuid: str | None = None
-    def to_wire(self): return {"type": "textDelta", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid}
+    turn_id: str; text: str; src_uuid: str | None = None; parent_tool_use_id: str | None = None
+    def to_wire(self): return {"type": "textDelta", "turnId": self.turn_id, "text": self.text,
+                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id}
 
 @dataclass
 class ThinkingDelta:
-    turn_id: str; text: str; src_uuid: str | None = None
-    def to_wire(self): return {"type": "thinkingDelta", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid}
+    turn_id: str; text: str; src_uuid: str | None = None; parent_tool_use_id: str | None = None
+    def to_wire(self): return {"type": "thinkingDelta", "turnId": self.turn_id, "text": self.text,
+                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id}
 
 @dataclass
 class ToolCall:
-    turn_id: str; tool_id: str; name: str; kind: ToolKind; input: dict; src_uuid: str | None = None
+    turn_id: str; tool_id: str; name: str; kind: ToolKind; input: dict
+    src_uuid: str | None = None; parent_tool_use_id: str | None = None
     def to_wire(self): return {"type": "toolCall", "turnId": self.turn_id, "toolId": self.tool_id,
-                               "name": self.name, "toolKind": self.kind.value, "input": self.input, "srcUuid": self.src_uuid}
+                               "name": self.name, "toolKind": self.kind.value, "input": self.input,
+                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id}
 
 @dataclass
 class ToolResult:
     tool_id: str; ok: bool; payload: dict; src_uuid: str | None = None
-    def to_wire(self): return {"type": "toolResult", "toolId": self.tool_id, "ok": self.ok, "payload": self.payload, "srcUuid": self.src_uuid}
+    parent_tool_use_id: str | None = None
+    def to_wire(self): return {"type": "toolResult", "toolId": self.tool_id, "ok": self.ok,
+                               "payload": self.payload, "srcUuid": self.src_uuid,
+                               "parentToolUseId": self.parent_tool_use_id}
 
 @dataclass
 class PermissionRequest:
@@ -82,8 +98,9 @@ class Rotated:
 
 @dataclass
 class ErrorEvent:
-    code: str; message: str; resets_at: str | None = None
-    def to_wire(self): return {"type": "error", "code": self.code, "message": self.message, "resetsAt": self.resets_at}
+    code: str; message: str; resets_at: str | None = None; turn_id: str | None = None
+    def to_wire(self): return {"type": "error", "code": self.code, "message": self.message,
+                               "resetsAt": self.resets_at, "turnId": self.turn_id}
 
 @dataclass
 class ReplayComplete:
