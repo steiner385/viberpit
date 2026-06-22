@@ -562,8 +562,6 @@ def test_attach_rehydrated_session_gets_replay_complete(tmp_path):
     cfg_dir = tmp_path / "cfg" / "alpha"
     cfg_dir.mkdir(parents=True)
 
-    _seed_account("alpha")
-
     env = {
         "CCSWITCH_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
@@ -574,6 +572,11 @@ def test_attach_rehydrated_session_gets_replay_complete(tmp_path):
          patch("server.sessions.orchestrator.configdir"), \
          patch("server.sessions.orchestrator.select_account", return_value="alpha"), \
          patch("ccswitch.accounts.usage_for", side_effect=_fake_usage):
+
+        # Seed INSIDE the CCSWITCH_HOME patch so paths.slot_path() resolves to the
+        # temp store — otherwise it leaks an "alpha" account into the real store
+        # (the conftest guard now fails the test if this regresses).
+        _seed_account("alpha")
 
         orch = _make_orch([])
         app = create_app(orchestrator=orch)
