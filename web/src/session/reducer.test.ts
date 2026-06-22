@@ -138,6 +138,56 @@ describe('transcriptReducer', () => {
     expect(s.title).toBe('My Session')
   })
 
+  // ── replayReset / reconnect re-replay ──────────────────────────────────────
+
+  it('re-replaying the same transcript on reconnect does NOT duplicate content', () => {
+    // A small completed turn as replay would emit it (one coalesced textDelta
+    // carrying the full block text, plus a thinking block).
+    const replay: SessionEvent[] = [
+      { type: 'turnStart',     turnId: 't1' },
+      { type: 'thinkingDelta', turnId: 't1', text: 'Let me think.' },
+      { type: 'textDelta',     turnId: 't1', text: 'Hello world' },
+      { type: 'turnEnd',       turnId: 't1' },
+      { type: 'replayComplete' },
+    ]
+
+    const first = reduce(replay)
+    expect(first.turns).toHaveLength(1)
+    expect(first.turns[0].blocks).toHaveLength(2) // thinking + text
+
+    // Reconnect: the server prepends a replayReset, then replays the identical
+    // transcript. The reducer must rebuild — not append a second copy.
+    const reconnect = reduce(
+      [{ type: 'replayReset' } as SessionEvent, ...replay],
+      first,
+    )
+    expect(reconnect.turns).toHaveLength(1)
+    expect(reconnect.turns[0].blocks).toHaveLength(2)
+    const text = reconnect.turns[0].blocks.find((b) => b.kind === 'text')
+    expect(text && text.kind === 'text' && text.text).toBe('Hello world')
+    const thinking = reconnect.turns[0].blocks.find((b) => b.kind === 'thinking')
+    expect(thinking && thinking.kind === 'thinking' && thinking.text).toBe('Let me think.')
+  })
+
+  it('replayReset clears turns and re-enters replaying, preserving rotations', () => {
+    const built = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'textDelta', turnId: 't1', text: 'hi' },
+      { type: 'replayComplete' },
+      { type: '_rotation', from: 'a', to: 'b' },
+    ])
+    expect(built.turns).toHaveLength(1)
+    expect(built.replaying).toBe(false)
+    expect(built.rotations).toHaveLength(1)
+
+    const reset = transcriptReducer(built, { type: 'replayReset' } as SessionEvent)
+    expect(reset.turns).toHaveLength(0)
+    expect(reset.openBlockId).toBeNull()
+    expect(reset.replaying).toBe(true)
+    // Rotations are live-only (never re-emitted on reattach) — must survive reset.
+    expect(reset.rotations).toHaveLength(1)
+  })
+
   // ── referential stability of untouched turns ───────────────────────────────
 
   it('prior turns are referentially stable after a delta to the latest turn', () => {

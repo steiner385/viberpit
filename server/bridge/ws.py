@@ -182,7 +182,16 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 path = await orchestrator.transcript_path(session_id)
                 events = await replay_events(path) if path else []
                 if events:
-                    redacted_replay = [redact_event(e.to_wire()) for e in events]
+                    # Lead the replay with a reset. attach is re-sent on every WS
+                    # reconnect (client.ts onopen), so the same transcript is
+                    # replayed repeatedly into a reducer that is never recreated.
+                    # Streamed text/thinking deltas are append-only, so without a
+                    # reset each reconnect re-appends a full copy of every assistant
+                    # block — the "sessions duplicating content" bug. The reset is the
+                    # first event of this single batch frame, so the client clears and
+                    # rebuilds atomically (no flicker, no duplication).
+                    redacted_replay = [{"type": "replayReset"}]
+                    redacted_replay += [redact_event(e.to_wire()) for e in events]
                     await _send({"type": "batch", "events": redacted_replay})
             except Exception:
                 log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
