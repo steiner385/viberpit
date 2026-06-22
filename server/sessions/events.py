@@ -17,8 +17,8 @@ def tool_kind(name: str) -> ToolKind:
 
 @dataclass
 class TurnStart:
-    turn_id: str; src_uuid: str | None = None
-    def to_wire(self): return {"type": "turnStart", "turnId": self.turn_id, "srcUuid": self.src_uuid}
+    turn_id: str; src_uuid: str | None = None; agent_id: str | None = None
+    def to_wire(self): return {"type": "turnStart", "turnId": self.turn_id, "srcUuid": self.src_uuid, "agentId": self.agent_id}
 
 @dataclass
 class SessionMeta:
@@ -27,30 +27,35 @@ class SessionMeta:
 
 @dataclass
 class TurnEnd:
-    turn_id: str; usage: dict | None = None; cost_usd: float | None = None; src_uuid: str | None = None
+    turn_id: str; usage: dict | None = None; cost_usd: float | None = None; src_uuid: str | None = None; agent_id: str | None = None
     def to_wire(self): return {"type": "turnEnd", "turnId": self.turn_id, "usage": self.usage,
-                               "costUsd": self.cost_usd, "srcUuid": self.src_uuid}
+                               "costUsd": self.cost_usd, "srcUuid": self.src_uuid, "agentId": self.agent_id}
 
 @dataclass
 class TextDelta:
-    turn_id: str; text: str; src_uuid: str | None = None
-    def to_wire(self): return {"type": "textDelta", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid}
+    turn_id: str; text: str; src_uuid: str | None = None; agent_id: str | None = None
+    def to_wire(self): return {"type": "textDelta", "turnId": self.turn_id, "text": self.text,
+                               "srcUuid": self.src_uuid, "agentId": self.agent_id}
 
 @dataclass
 class ThinkingDelta:
-    turn_id: str; text: str; src_uuid: str | None = None
-    def to_wire(self): return {"type": "thinkingDelta", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid}
+    turn_id: str; text: str; src_uuid: str | None = None; agent_id: str | None = None
+    def to_wire(self): return {"type": "thinkingDelta", "turnId": self.turn_id, "text": self.text,
+                               "srcUuid": self.src_uuid, "agentId": self.agent_id}
 
 @dataclass
 class ToolCall:
-    turn_id: str; tool_id: str; name: str; kind: ToolKind; input: dict; src_uuid: str | None = None
+    turn_id: str; tool_id: str; name: str; kind: ToolKind; input: dict
+    src_uuid: str | None = None; agent_id: str | None = None
     def to_wire(self): return {"type": "toolCall", "turnId": self.turn_id, "toolId": self.tool_id,
-                               "name": self.name, "toolKind": self.kind.value, "input": self.input, "srcUuid": self.src_uuid}
+                               "name": self.name, "toolKind": self.kind.value, "input": self.input,
+                               "srcUuid": self.src_uuid, "agentId": self.agent_id}
 
 @dataclass
 class ToolResult:
-    tool_id: str; ok: bool; payload: dict; src_uuid: str | None = None
-    def to_wire(self): return {"type": "toolResult", "toolId": self.tool_id, "ok": self.ok, "payload": self.payload, "srcUuid": self.src_uuid}
+    tool_id: str; ok: bool; payload: dict; src_uuid: str | None = None; agent_id: str | None = None
+    def to_wire(self): return {"type": "toolResult", "toolId": self.tool_id, "ok": self.ok, "payload": self.payload,
+                               "srcUuid": self.src_uuid, "agentId": self.agent_id}
 
 @dataclass
 class PermissionRequest:
@@ -91,8 +96,21 @@ class ReplayComplete:
 
 @dataclass
 class UserMessage:
-    turn_id: str; text: str; src_uuid: str | None = None
-    def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid}
+    turn_id: str; text: str; src_uuid: str | None = None; agent_id: str | None = None
+    def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text,
+                               "srcUuid": self.src_uuid, "agentId": self.agent_id}
+
+@dataclass
+class SubAgentUpdate:
+    agent_id: str
+    parent_agent_id: str | None
+    agent_type: str
+    description: str
+    status: str  # "running" | "done" | "failed"
+    def to_wire(self):
+        return {"type": "subAgentUpdate", "agentId": self.agent_id,
+                "parentAgentId": self.parent_agent_id, "agentType": self.agent_type,
+                "description": self.description, "status": self.status}
 
 @dataclass
 class QueueUpdate:

@@ -8,7 +8,7 @@ def test_tool_kind_maps_known_names():
 
 def test_textdelta_to_wire():
     e = TextDelta(turn_id="t1", text="hi", src_uuid="u1")
-    assert e.to_wire() == {"type": "textDelta", "turnId": "t1", "text": "hi", "srcUuid": "u1"}
+    assert e.to_wire() == {"type": "textDelta", "turnId": "t1", "text": "hi", "srcUuid": "u1", "agentId": None}
 
 def test_status_to_wire_is_structured():
     assert Status(state="queued", count=2).to_wire() == {"type": "status", "state": "queued", "count": 2}
