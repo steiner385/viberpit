@@ -1209,6 +1209,31 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     })
   }
 
+  // Up/Down arrows navigate the session list even when real focus is NOT in the
+  // dispatch textarea — e.g. the user reached the list via the tab bar (where ←/→
+  // cycles tabs) and focus is parked on the "Sessions" tab button. The DispatchBar
+  // textarea handles its own ↑/↓ (and the repo <select> drives itself), so we bail
+  // out whenever focus is inside any editable/form control or an open dialog; that
+  // also prevents double-handling when the textarea already consumed the key.
+  useEffect(() => {
+    if (activeTab !== 'sessions') return
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+      if (e.defaultPrevented) return
+      const t = e.target as HTMLElement | null
+      const tag = t?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable) return
+      // A modal traps its own focus; never move the background highlight under it.
+      if (document.querySelector('[role="dialog"]')) return
+      e.preventDefault()
+      handleNavigate(e.key === 'ArrowUp' ? 'up' : 'down')
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+    // Re-subscribe when the list length changes so handleNavigate's clamp stays correct.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, sessions.length])
+
   function handleOpenHighlighted() {
     if (selectedSession) handleOpen(selectedSession.id)
   }
