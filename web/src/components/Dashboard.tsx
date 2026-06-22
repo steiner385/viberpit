@@ -935,8 +935,9 @@ function ArchivedList({ sessions, onReview, onUnarchive, onPermanentDelete, unar
     <ul className="space-y-2" aria-label="Archived sessions">
       {sessions.map((s) => {
         const displayName = s.name || s.id.slice(0, 8)
-        const archivedDate = new Date(s.archivedAt).toLocaleDateString(undefined, {
+        const archivedDate = new Date(s.archivedAt).toLocaleString(undefined, {
           year: 'numeric', month: 'short', day: 'numeric',
+          hour: 'numeric', minute: '2-digit',
         })
         return (
           <li
