@@ -13,7 +13,8 @@ interface Props {
   streamingBlockId?: string | null
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
-  subAgents: Record<string, SubThread>
+  /** Nested sub-agent threads keyed by spawning Task toolId. Absent in read-only views (e.g. ReviewView). */
+  subAgents?: Record<string, SubThread>
 }
 
 /**
@@ -36,7 +37,7 @@ function groupRotationsByAnchor(rotations: RotationMarker[]) {
   return { byTurn, top }
 }
 
-export function TranscriptView({ turns, rotations = [], permissionMode, toolDetailMode, streamingBlockId = null, onDecision, onAnswer, subAgents }: Props) {
+export function TranscriptView({ turns, rotations = [], permissionMode, toolDetailMode, streamingBlockId = null, onDecision, onAnswer, subAgents = {} }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
   const isNearBottomRef = useRef(true)
