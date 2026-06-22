@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiRequestError } from './client'
 import type {
-  Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome,
+  Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption,
 } from './types'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
@@ -9,6 +9,7 @@ import type { ToolDetailMode } from '@/session/groupBlocks'
 // Query keys
 export const QK = {
   accounts: ['accounts'] as const,
+  models: ['models'] as const,
   sessions: ['sessions'] as const,
   archived: ['archived-sessions'] as const,
   adoptable: ['adoptable-sessions'] as const,
@@ -16,6 +17,14 @@ export const QK = {
   githubRepos: ['github-repos'] as const,
   githubBranches: (repo?: string) => ['github-branches', repo] as const,
   settings: ['settings'] as const,
+}
+
+export function useModels() {
+  return useQuery<ModelOption[]>({
+    queryKey: QK.models,
+    queryFn: () => api.get<ModelOption[]>('/models'),
+    staleTime: 5 * 60_000,   // curated list rarely changes
+  })
 }
 
 export function useAccounts() {

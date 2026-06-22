@@ -93,6 +93,8 @@ export interface AdoptOutcome {
   terminatedPid: number | null
 }
 
+export interface ModelOption { id: string; label: string }
+
 export interface ApiError {
   status: number
   error: { code: string; message: string }
