@@ -498,6 +498,18 @@ export function transcriptReducer(
       return { ...state, openBlockId: null, usage }
     }
 
+    // ── replayReset ───────────────────────────────────────────────────────────
+    case 'replayReset': {
+      // The server prepends this to every transcript replay (sent on each
+      // attach, including reconnect re-attaches). Streamed text/thinking deltas
+      // are append-only — without a reset, a second replay re-appends a full
+      // copy of every assistant block (the "duplicating content" bug). Clear the
+      // transcript-rebuildable state so the following replay events rebuild it
+      // cleanly. Live-only state that the replay does NOT re-emit (rotations,
+      // queue, banner) is preserved.
+      return { ...state, turns: [], openBlockId: null, subAgents: {}, replaying: true }
+    }
+
     // ── replayComplete ────────────────────────────────────────────────────────
     case 'replayComplete': {
       return { ...state, replaying: false }
