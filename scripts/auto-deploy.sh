@@ -9,6 +9,11 @@
 # wedge future deploys: because HEAD is restored to the previous commit, the
 # next timer tick again sees HEAD != origin/master and re-attempts the upgrade.
 # The deploy therefore self-heals the moment master goes green again.
+#
+# That self-healing only covers gate failures AFTER a successful fast-forward.
+# A dirty working tree fails the fast-forward ITSELF ("local changes would be
+# overwritten"), before any gate — so a pre-pull guard below discards stray
+# tracked edits in this checkout, ensuring a dirty tree can't wedge the pull.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,7 +38,35 @@ rollback_to_local() {
 }
 
 echo "[deploy] ${LOCAL:0:9} -> ${REMOTE:0:9}"
-git pull --ff-only origin master
+
+# Working-tree guard. This deploy checkout is a pristine mirror of master, so any
+# tracked-file modification is unintended drift (a stray edit, an interrupted run,
+# a WIP applied here by mistake). Left in place it makes `git pull --ff-only` abort
+# with "local changes would be overwritten" on EVERY tick — a silent, permanent
+# wedge the gate-failure rollback does NOT cover (that only runs after a successful
+# fast-forward). Discard tracked changes so the pull always proceeds; untracked
+# files (e.g. the .venv) are left untouched.
+if ! git diff --quiet HEAD --; then
+  echo "[deploy] WARNING: discarding unexpected local changes before pull:" >&2
+  git status --short --untracked-files=no >&2
+  git reset --hard HEAD
+fi
+
+# Fast-forward. Wrapped in `if !` so an unexpected pull failure self-heals via the
+# rollback path instead of crashing under `set -e` and leaving the tree mid-state.
+if ! git pull --ff-only origin master; then
+  echo "[deploy] fast-forward pull failed unexpectedly" >&2
+  rollback_to_local
+  exit 1
+fi
+
+# Test hook: stop after the working tree is synced + fast-forwarded, so the guard
+# and pull can be exercised in isolation without the build/test/restart side
+# effects (npm, pytest, sudo systemctl). Unset in production.
+if [ -n "${CCSWITCH_DEPLOY_TEST_STOP_AFTER_SYNC:-}" ]; then
+  echo "[deploy] TEST: synced + fast-forwarded to $(git rev-parse --short HEAD), stopping"
+  exit 0
+fi
 
 # Frontend gate — regenerates web/dist (served by the backend via StaticFiles).
 # `if !` keeps the failure out of `set -e` so the rollback below actually runs.
