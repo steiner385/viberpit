@@ -225,6 +225,22 @@ def create_app(
         x11 = getattr(app.state, "x11", None)
         return x11.metrics() if x11 else {"enabled": False}
 
+    from fastapi import Body, HTTPException  # noqa: PLC0415 — local import avoids top-level churn
+
+    @app.post("/api/sessions/{session_id}/browser/open")
+    async def open_browser(
+        session_id: str,
+        payload: dict = Body(default={}),
+        _identity: str = Depends(current_identity),
+    ) -> dict:
+        x11 = getattr(app.state, "x11", None)
+        if x11 is None or x11.display_for(session_id) is None:
+            raise HTTPException(status_code=409, detail="no display for session")
+        ok = await x11.launch_browser(session_id, payload.get("url"))
+        if not ok:
+            raise HTTPException(status_code=409, detail="browser cap reached")
+        return {"ok": True}
+
     # SPA static files with client-side-routing fallback — optional; guarded so a
     # missing build (dev/test) doesn't break startup. Registered AFTER the API/WS
     # routers so /api/* and /ws/* keep precedence.
