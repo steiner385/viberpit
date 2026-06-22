@@ -17,10 +17,12 @@ def register_orchestrator_rpc(app, orch) -> None:
     async def ensure_driver(params: dict) -> dict:
         session_id = params["session_id"]
         driver = await orch.ensure_driver(session_id, params.get("identity", "system"))
-        if driver is not None and session_id not in app.state.pumped:
+        if driver is None:
+            return {"found": False}
+        if session_id not in app.state.pumped:
             app.state.pumped.add(session_id)
             asyncio.create_task(_pump(session_id, driver), name=f"pump-{session_id}")
-        return {"found": driver is not None}
+        return {"found": True, "status": driver.current_status(), "queued": driver.queued()}
 
     async def list_sessions(params: dict) -> dict:
         return {"sessions": [r.to_dict() for r in orch.list_sessions()]}

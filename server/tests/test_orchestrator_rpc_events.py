@@ -12,6 +12,9 @@ class _FakeEvent:
 
 
 class _FakeDriver:
+    def current_status(self): return "idle"
+    def queued(self): return []
+
     async def events(self):
         for i in range(3):
             yield _FakeEvent(i)
@@ -29,7 +32,7 @@ def test_ensure_driver_pumps_events_to_subscriber():
                 ws.send_text(json.dumps({"type": "subscribe", "stream": "s1"}))
                 found = c.post("/rpc/ensure_driver", json={"session_id": "s1"}).json()
                 got = [json.loads(ws.receive_text()) for _ in range(3)]
-    assert found["result"] == {"found": True}
+    assert found["result"]["found"] is True
     assert [f["event"]["i"] for f in got] == [0, 1, 2]
     assert all(f["stream"] == "s1" for f in got)
 

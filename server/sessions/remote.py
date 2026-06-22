@@ -7,19 +7,36 @@ the vertical-slice methods only.
 from server.sessions.types import SessionRecord
 
 
+class _WireEvent:
+    """Wraps an already-serialized event dict so ws.py's e.to_wire() works."""
+    def __init__(self, wire: dict):
+        self._wire = wire
+
+    def to_wire(self) -> dict:
+        return self._wire
+
+
 class RemoteDriver:
     """Driver-shaped shim so ws.py can consume a remote session like a local one.
 
-    ws.py only needs ``.events()`` (an async generator of wire dicts) and a
-    non-None object; this wraps the daemon's per-session event stream.
+    ws.py needs ``.events()`` (an async generator of objects with ``.to_wire()``),
+    ``.current_status()`` (sync, returns str), and ``.queued()`` (sync, returns list).
     """
-    def __init__(self, client, session_id: str):
+    def __init__(self, client, session_id: str, status="idle", queued=None):
         self._client = client
         self._session_id = session_id
+        self._status = status
+        self._queued = queued or []
+
+    def current_status(self) -> str:
+        return self._status
+
+    def queued(self) -> list:
+        return self._queued
 
     async def events(self):
         async for wire in self._client.subscribe(self._session_id):
-            yield wire
+            yield _WireEvent(wire)
 
 
 class RemoteOrchestrator:
@@ -43,7 +60,9 @@ class RemoteOrchestrator:
 
     async def ensure_driver(self, session_id: str, identity: str = "system") -> "RemoteDriver | None":
         r = await self._client.call("ensure_driver", session_id=session_id, identity=identity)
-        return RemoteDriver(self._client, session_id) if r["found"] else None
+        if not r["found"]:
+            return None
+        return RemoteDriver(self._client, session_id, status=r["status"], queued=r["queued"])
 
     async def archive_session(self, session_id):
         return await self._client.call("archive_session", session_id=session_id)
