@@ -115,3 +115,9 @@ class UserMessage:
 class QueueUpdate:
     items: list[str]
     def to_wire(self): return {"type": "queueUpdate", "items": self.items}
+
+@dataclass
+class Suggestions:
+    session_id: str; turn_id: str; items: list[str]
+    def to_wire(self): return {"type": "suggestions", "sessionId": self.session_id,
+                               "turnId": self.turn_id, "items": self.items}
