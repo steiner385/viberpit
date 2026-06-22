@@ -94,25 +94,23 @@ class QuestionRegistry:
         return False
 
     def _reconcile(self, question_id: str, session_id: str) -> tuple[str, dict | None]:
-        """Map a replay-derived question id onto a live pending question.
+        """Map an unrecognized question id onto the session's pending question.
 
-        The transcript card and the live registry use different id schemes
-        (``{tool_use_id}-{index}`` vs. a random uuid), so an exact lookup misses
-        on reattach. Match by the trailing ``-<index>`` when present (handles a
-        multi-question turn), else fall back to the sole pending question. Returns
-        ``(live_question_id, record)``, or ``(question_id, None)`` when it can't
-        disambiguate (e.g. several pending questions and no usable index).
+        A card rebuilt from the transcript carries a replay-derived id
+        (``{tool_use_id}-{index}``) that never matches the live registry's random
+        uuid, so an exact lookup misses on reattach. Reconcile ONLY when exactly one
+        question is pending for the session — then the target is unambiguous.
+
+        With several pending (a multi-question turn) we deliberately refuse to guess.
+        Matching by position is unsafe: the pending list shrinks as questions are
+        answered, so a stale or duplicate answer could resolve the WRONG remaining
+        question. It is also unnecessary — the answerable cards in a multi-question
+        turn carry exact live ids, so they hit the exact lookup above and never reach
+        reconciliation. Returns ``(live_question_id, record)`` or
+        ``(question_id, None)`` when it won't disambiguate.
         """
         pend = [(qid, r) for qid, r in self._pending.items()
                 if r["session_id"] == session_id]
-        if not pend:
-            return question_id, None
-        tail = question_id.rsplit("-", 1)[-1] if "-" in question_id else ""
-        if tail.isdigit():
-            idx = int(tail)
-            if 0 <= idx < len(pend):
-                return pend[idx]
-            return question_id, None
         if len(pend) == 1:
             return pend[0]
         return question_id, None
