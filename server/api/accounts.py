@@ -69,7 +69,7 @@ def _account_response(name: str, status_str: str, usage, nickname: str | None = 
 
 
 def _get_orchestrator(request: Request):
-    return request.app.state.orchestrator
+    return request.app.state.sessions
 
 
 def _get_reauth(request: Request):
@@ -118,7 +118,7 @@ async def get_accounts(
         nickname = acct.get("nickname")
 
         # Fetch fresh usage via the poller (async, deduplicates concurrent fetches)
-        usage = await orch.poller.get(name)
+        usage = await orch.usage(name)
 
         result.append(_account_response(name, acct_status, usage, nickname))
 
@@ -140,7 +140,7 @@ async def refresh_account(
     orch = _get_orchestrator(request)
 
     # Force a fresh fetch (bypasses cache by going through the poller lock)
-    usage = await orch.poller.get(name)
+    usage = await orch.usage(name)
 
     # Determine status and nickname from the ledger
     accounts_info = list_accounts()
