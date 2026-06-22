@@ -18,6 +18,7 @@ from server.audit import install_redacting_filter
 from server.auth.middleware import IdentityMiddleware, current_identity
 from server.bridge.ws import build_ws_router
 from server.db import init_db
+from server.ipc.client import DaemonUnavailable
 from server.reauth import ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
 
@@ -59,6 +60,11 @@ async def _lifespan(app: FastAPI):
     """App startup/shutdown: init DB, install log filter, start orchestrator."""
     install_redacting_filter()
 
+    # An app not built by create_app (e.g. tests constructing FastAPI(lifespan=_lifespan)
+    # directly) never sets app.state.remote_mode — default it to in-process. The local
+    # persists across the yield, so the shutdown branch reads it too.
+    remote_mode = getattr(app.state, "remote_mode", False)
+
     # F1: the identity header is only trustworthy behind `tailscale serve` on a
     # loopback bind.  Hard-fail if neither an allowlist nor a loopback host is set
     # (unless the operator explicitly opts out with CCSWITCH_DEV=1).
@@ -88,12 +94,14 @@ async def _lifespan(app: FastAPI):
     await init_db(db_url=db_url)
 
     # Rehydrate persisted sessions (lazy — drivers are created on attach, not here).
-    try:
-        await app.state.orchestrator.rehydrate()
-    except Exception:
-        _logging.getLogger("server").error(
-            "rehydrate() failed — starting with no sessions restored", exc_info=True
-        )
+    # In remote mode the daemon owns the orchestrator lifecycle, so skip it here.
+    if not remote_mode:
+        try:
+            await app.state.orchestrator.rehydrate()
+        except Exception:
+            _logging.getLogger("server").error(
+                "rehydrate() failed — starting with no sessions restored", exc_info=True
+            )
 
     # Sweep stale reauth-tmp dirs (from crashed previous runs)
     app.state.reauth.sweep_stale()
@@ -111,8 +119,10 @@ async def _lifespan(app: FastAPI):
         # Signal handlers are not available on Windows or in some test contexts
         pass
 
-    # Start the singleton orchestrator (usage poller + rotation monitor)
-    await app.state.orchestrator.start()
+    # Start the singleton orchestrator (usage poller + rotation monitor).
+    # In remote mode the daemon runs these, not the edge.
+    if not remote_mode:
+        await app.state.orchestrator.start()
 
     # Sweep stale X lock/socket files from crashed previous runs
     if getattr(app.state, "x11", None) is not None:
@@ -141,18 +151,21 @@ async def _lifespan(app: FastAPI):
     yield
     # Shutdown
     await app.state.reauth.shutdown()
+    if remote_mode:
+        # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
+        await app.state.sessions.aclose()
+    else:
+        # Close live sessions before stopping orchestrator — triggers stop_display for each
+        if getattr(app.state, "x11", None) is not None:
+            for sid in list(app.state.orchestrator._drivers.keys()):
+                try:
+                    await app.state.orchestrator.close_session(sid)
+                except Exception:
+                    _logging.getLogger("server").warning(
+                        "shutdown: close %s failed", sid, exc_info=True
+                    )
 
-    # Close live sessions before stopping orchestrator — triggers stop_display for each
-    if getattr(app.state, "x11", None) is not None:
-        for sid in list(app.state.orchestrator._drivers.keys()):
-            try:
-                await app.state.orchestrator.close_session(sid)
-            except Exception:
-                _logging.getLogger("server").warning(
-                    "shutdown: close %s failed", sid, exc_info=True
-                )
-
-    await app.state.orchestrator.stop()
+        await app.state.orchestrator.stop()
 
 
 def create_app(
@@ -161,18 +174,34 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="ccswitch", version="0.1.0", lifespan=_lifespan)
 
-    # Attach the singleton orchestrator (allows tests to inject a custom one)
-    if orchestrator is None:
-        orchestrator = SessionOrchestrator()
-    app.state.orchestrator = orchestrator
+    # Attach the session facade. CCSWITCH_SESSIOND_SOCKET selects remote mode:
+    # the edge drives an orchestrator living in the session daemon over a Unix
+    # socket. An explicitly injected orchestrator always wins (in-process), so
+    # tests that pass one are unaffected.
     from server.sessions.facade import InProcessOrchestratorAdapter
-    app.state.sessions = InProcessOrchestratorAdapter(orchestrator)
+
+    socket_path = os.environ.get("CCSWITCH_SESSIOND_SOCKET")
+    if orchestrator is None and socket_path:
+        from server.ipc.client import DaemonClient
+        from server.sessions.remote import RemoteOrchestrator
+        app.state.remote_mode = True
+        app.state.orchestrator = None
+        app.state.sessions = RemoteOrchestrator(DaemonClient(socket_path))
+    else:
+        if orchestrator is None:
+            orchestrator = SessionOrchestrator()
+        app.state.remote_mode = False
+        app.state.orchestrator = orchestrator
+        app.state.sessions = InProcessOrchestratorAdapter(orchestrator)
 
     # X11 manager — None when feature is disabled or preflight fails (fail-loud warning)
     from server.config import get_settings as _gs
     from server.sessions.x11manager import build_x11_manager
     app.state.x11 = build_x11_manager(_gs())
-    orchestrator._x11 = app.state.x11  # share the manager with the orchestrator
+    if orchestrator is not None:
+        # Share the manager with the in-process orchestrator. In remote mode the
+        # daemon owns the orchestrator (and its x11), so there is nothing to share.
+        orchestrator._x11 = app.state.x11
 
     # Attach the ReauthManager (allows tests to inject a fake)
     if reauth_manager is None:
@@ -183,6 +212,13 @@ def create_app(
     # Identity middleware — wraps all routes
     app.add_middleware(IdentityMiddleware)
 
+    # In remote mode an unreachable daemon surfaces as DaemonUnavailable from any
+    # facade RPC; map it to 503 so clients see "try again", not a 500. Harmless
+    # in-process (never raised there).
+    @app.exception_handler(DaemonUnavailable)
+    async def _daemon_unavailable_handler(_request, _exc):  # noqa: ANN001
+        return JSONResponse(status_code=503, content={"detail": "session daemon unavailable"})
+
     @app.get("/api/health")
     async def health(_identity: str = Depends(current_identity)) -> dict:
         return {"ok": True, "version": "0.1.0"}
@@ -190,18 +226,30 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
         # Exercises every Session model column; a drifted DB raises → 500.
-        orch = getattr(app.state, "orchestrator", None)
-        active = orch.active_session_count() if orch is not None else 0
+        # Active count comes through the facade (async) so it works in both modes;
+        # in remote mode an unreachable daemon degrades gracefully (200 + flag).
+        active = 0
+        daemon_state = None
+        try:
+            active = await app.state.sessions.active_session_count()
+            if app.state.remote_mode:
+                daemon_state = "ok"
+        except DaemonUnavailable:
+            active = 0
+            daemon_state = "unavailable"
         x11 = getattr(app.state, "x11", None)
         vnc_attached = bool(x11 and x11.metrics().get("vnc_clients_attached", 0) > 0)
         try:
             async with _db.db_session() as db:
                 await db.execute(_sa_select(_SessionModel).limit(1))
-            return JSONResponse({
+            payload = {
                 "status": "ok", "sha": running_git_sha(),
                 "busy": active > 0, "activeSessions": active,
                 "vncAttached": vnc_attached,
-            })
+            }
+            if daemon_state is not None:
+                payload["daemon"] = daemon_state
+            return JSONResponse(payload)
         except Exception as exc:  # noqa: BLE001 — any DB/schema failure is unhealthy
             logging.getLogger("server").warning("healthz schema check failed", exc_info=exc)
             return JSONResponse({"status": "schema_error", "sha": running_git_sha()}, status_code=500)
