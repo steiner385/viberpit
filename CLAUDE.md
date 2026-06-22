@@ -32,7 +32,10 @@ When a unit of work is complete and verified (tests + lint green), finish it wit
 1. Branch off `master` — never commit feature work directly to `master`.
 2. Commit (end message with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`).
 3. Push and open a PR via `gh pr create` (end body with the Claude Code trailer).
-4. Enable auto-merge so the PR lands itself once required checks pass: `gh pr merge <#> --squash --auto`.
+4. ALWAYS mark the PR ready for review (never leave it a draft) and ALWAYS flip auto-merge on
+   once work is complete: open non-draft (omit `--draft`; if one slipped through, run
+   `gh pr ready <#>`), then `gh pr merge <#> --squash --auto`. Both are required on every completed
+   PR — a ready PR with auto-merge armed is the finished state.
 Only hold off if the user said it's a prototype/WIP, or if verification is failing.
 
 `master` is protected: PRs need the `lint-and-test` and `frontend` CI checks green and the branch
