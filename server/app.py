@@ -88,12 +88,14 @@ async def _lifespan(app: FastAPI):
     await init_db(db_url=db_url)
 
     # Rehydrate persisted sessions (lazy — drivers are created on attach, not here).
-    try:
-        await app.state.orchestrator.rehydrate()
-    except Exception:
-        _logging.getLogger("server").error(
-            "rehydrate() failed — starting with no sessions restored", exc_info=True
-        )
+    # In remote mode the daemon owns the orchestrator lifecycle, so skip it here.
+    if not app.state.remote_mode:
+        try:
+            await app.state.orchestrator.rehydrate()
+        except Exception:
+            _logging.getLogger("server").error(
+                "rehydrate() failed — starting with no sessions restored", exc_info=True
+            )
 
     # Sweep stale reauth-tmp dirs (from crashed previous runs)
     app.state.reauth.sweep_stale()
@@ -111,8 +113,10 @@ async def _lifespan(app: FastAPI):
         # Signal handlers are not available on Windows or in some test contexts
         pass
 
-    # Start the singleton orchestrator (usage poller + rotation monitor)
-    await app.state.orchestrator.start()
+    # Start the singleton orchestrator (usage poller + rotation monitor).
+    # In remote mode the daemon runs these, not the edge.
+    if not app.state.remote_mode:
+        await app.state.orchestrator.start()
 
     # Sweep stale X lock/socket files from crashed previous runs
     if getattr(app.state, "x11", None) is not None:
@@ -141,18 +145,21 @@ async def _lifespan(app: FastAPI):
     yield
     # Shutdown
     await app.state.reauth.shutdown()
+    if app.state.remote_mode:
+        # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
+        await app.state.sessions.aclose()
+    else:
+        # Close live sessions before stopping orchestrator — triggers stop_display for each
+        if getattr(app.state, "x11", None) is not None:
+            for sid in list(app.state.orchestrator._drivers.keys()):
+                try:
+                    await app.state.orchestrator.close_session(sid)
+                except Exception:
+                    _logging.getLogger("server").warning(
+                        "shutdown: close %s failed", sid, exc_info=True
+                    )
 
-    # Close live sessions before stopping orchestrator — triggers stop_display for each
-    if getattr(app.state, "x11", None) is not None:
-        for sid in list(app.state.orchestrator._drivers.keys()):
-            try:
-                await app.state.orchestrator.close_session(sid)
-            except Exception:
-                _logging.getLogger("server").warning(
-                    "shutdown: close %s failed", sid, exc_info=True
-                )
-
-    await app.state.orchestrator.stop()
+        await app.state.orchestrator.stop()
 
 
 def create_app(

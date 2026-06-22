@@ -3,6 +3,8 @@ from unittest import mock
 from server.app import create_app
 from server.sessions.facade import InProcessOrchestratorAdapter
 from server.sessions.remote import RemoteOrchestrator
+import pytest
+from starlette.testclient import TestClient
 
 
 def test_flag_set_selects_remote_facade():
@@ -30,3 +32,28 @@ def test_injected_orchestrator_wins_over_flag():
     assert app.state.remote_mode is False
     assert app.state.orchestrator is orch
     assert isinstance(app.state.sessions, InProcessOrchestratorAdapter)
+
+
+@pytest.mark.asyncio
+async def test_remote_lifespan_skips_orchestrator_and_closes_facade(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}"
+    env = {
+        "CCSWITCH_SESSIOND_SOCKET": str(tmp_path / "dead.sock"),  # no daemon listening
+        "CCSWITCH_DB_URL": db_url,
+        "CCSWITCH_DEV": "1",  # allow empty allowlist on the default bind
+    }
+    with mock.patch.dict(os.environ, env):
+        app = create_app()
+        closed = {}
+        real_aclose = app.state.sessions.aclose
+
+        async def _spy_aclose():
+            closed["called"] = True
+            await real_aclose()
+
+        app.state.sessions.aclose = _spy_aclose
+        # TestClient runs lifespan startup on enter, shutdown on exit.
+        with TestClient(app):
+            assert app.state.remote_mode is True
+            assert app.state.orchestrator is None
+        assert closed.get("called") is True
