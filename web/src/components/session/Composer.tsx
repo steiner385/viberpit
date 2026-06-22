@@ -42,6 +42,11 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   const pickingCommand = slash && !/\s/.test(afterSlash)
   const slashQuery = afterSlash.split(/\s+/)[0] ?? ''
 
+  const ghost =
+    !isWorking && text === '' && suggestions && suggestions.length > 0
+      ? suggestions[0]
+      : null
+
   // Focus the prompt on mount (and when the active session changes) so the user
   // can start typing immediately on entering a session.
   useEffect(() => {
@@ -102,6 +107,11 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (ghost && ((e.key === 'Tab' && !e.shiftKey) || e.key === 'ArrowRight')) {
+      e.preventDefault()
+      prefill(ghost)
+      return
+    }
     if (pickingCommand && paletteRef.current?.handleKeyDown(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -155,28 +165,6 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
 
       <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
 
-      {suggestions && suggestions.length > 0 && !isWorking && (
-        <div data-testid="suggestion-chips" className="flex flex-wrap gap-2">
-          {suggestions.map((s) => (
-            <button
-              key={s}
-              type="button"
-              aria-label={s}
-              onClick={() => prefill(s)}
-              className={cn(
-                'inline-flex items-center justify-center rounded-full px-3 py-1 text-xs min-h-[44px]',
-                'border border-blue-300 dark:border-blue-700',
-                'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
-                'hover:bg-blue-100 dark:hover:bg-blue-900/50',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-              )}
-            >
-              {s.length > 60 ? s.slice(0, 60) + '…' : s}
-            </button>
-          ))}
-        </div>
-      )}
-
       <div className="relative flex items-end gap-2">
         {pickingCommand && (
           <CommandPalette
@@ -188,25 +176,45 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
             onDismiss={() => { /* keep text; palette hides when slash becomes false */ }}
           />
         )}
-        <textarea
-          ref={textareaRef}
-          aria-label="Message"
-          value={text}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          rows={1}
-          placeholder={chatArmed ? 'Reply in chat…' : 'Send a message…'}
-          className={cn(
-            'flex-1 resize-none rounded-md border border-gray-300 dark:border-gray-600',
-            'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',
-            'px-3 py-2 text-sm',
-            'placeholder:text-gray-400 dark:placeholder:text-gray-500',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-            'min-h-[44px] overflow-y-auto',
+        <div className="relative flex-1">
+          <textarea
+            ref={textareaRef}
+            aria-label="Message"
+            value={text}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            rows={1}
+            placeholder={ghost ? '' : (chatArmed ? 'Reply in chat…' : 'Send a message…')}
+            className={cn(
+              'w-full resize-none rounded-md border border-gray-300 dark:border-gray-600',
+              'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',
+              'px-3 py-2 text-sm',
+              'placeholder:text-gray-400 dark:placeholder:text-gray-500',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              'min-h-[44px] overflow-y-auto',
+            )}
+            style={{ maxHeight: '192px' }}
+          />
+          {ghost && (
+            <div
+              data-testid="ghost-suggestion"
+              aria-hidden="true"
+              className={cn(
+                'pointer-events-none absolute inset-0 flex items-center justify-between gap-2',
+                'px-3 py-2 text-sm',
+              )}
+            >
+              <span className="truncate text-gray-400 dark:text-gray-500">{ghost}</span>
+              <span className={cn(
+                'flex-shrink-0 rounded border px-1 text-[10px] leading-tight',
+                'border-gray-300 dark:border-gray-600 text-gray-400 dark:text-gray-500',
+              )}>
+                ⇥ Tab
+              </span>
+            </div>
           )}
-          style={{ maxHeight: '192px' }}
-        />
+        </div>
 
         <MicButton
           supported={voice.supported}
