@@ -1102,9 +1102,9 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   function handleCreateSubmit(input: CreateSessionInput) {
     createSession.mutate(input, {
-      onSuccess: () => {
+      onSuccess: (session) => {
         setShowNewDialog(false)
-        newButtonRef.current?.focus()
+        if (onOpenSession) onOpenSession(session.id, input.initialPrompt)
       },
       onError: (err) => {
         if (err.status === 409) {
@@ -1227,7 +1227,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       {
         onSuccess: (session) => {
           if (repo) setLastRepo(repo)
-          if (onOpenSession) onOpenSession(session.id)
+          if (onOpenSession) onOpenSession(session.id, initialPrompt)
         },
       },
     )
