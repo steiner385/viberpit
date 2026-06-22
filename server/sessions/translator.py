@@ -107,8 +107,55 @@ class Translator:
             else:
                 outcome = "success"
             self._reset()
-            return [ev.TurnEnd(tid, _usage_dict(msg.usage),
-                               getattr(msg, "total_cost_usd", None), getattr(msg, "uuid", None),
-                               outcome)]
+            out = []
+            # An error result carries the agent's failure (max-turns, execution error,
+            # or a failing API call's HTTP status). The SDK reports it on the terminal
+            # ResultMessage; without surfacing it here the UI sees a normal turnEnd and
+            # the user gets silence. Emit it inline (anchored to this turn) BEFORE the
+            # turnEnd so it renders in place, then still close the turn with usage/cost
+            # (and the coarse outcome classification).
+            err = _error_from_result(msg, tid)
+            if err is not None:
+                out.append(err)
+            out.append(ev.TurnEnd(tid, _usage_dict(msg.usage),
+                                  getattr(msg, "total_cost_usd", None), getattr(msg, "uuid", None),
+                                  outcome))
+            return out
 
         return []
+
+
+def _error_from_result(msg, turn_id: str):
+    """Map a ResultMessage's error surface to an ev.ErrorEvent, or None on success.
+
+    Returns None unless the result is an error (``is_error`` true or an
+    ``api_error_status`` is present). A successful result's text already streamed
+    via deltas, so nothing new is emitted for it.
+    """
+    api_status = getattr(msg, "api_error_status", None)
+    if not getattr(msg, "is_error", False) and api_status is None:
+        return None
+
+    subtype = getattr(msg, "subtype", None) or ""
+    if api_status is not None:
+        code = f"api_{api_status}"
+        default = f"The model API returned an error (HTTP {api_status})."
+    elif subtype == "error_max_turns":
+        code = "max_turns"
+        default = "The agent reached the maximum number of turns."
+    elif subtype == "error_during_execution":
+        code = "execution_error"
+        default = "The agent stopped on an execution error."
+    else:
+        code = "agent_error"
+        default = "The agent ended with an error."
+
+    message = getattr(msg, "result", None)
+    if not message:
+        errors = getattr(msg, "errors", None)
+        if errors:
+            message = "; ".join(str(e) for e in errors)
+    if not message:
+        message = default
+
+    return ev.ErrorEvent(code=code, message=message, turn_id=turn_id)

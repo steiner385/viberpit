@@ -11,6 +11,7 @@ export type Block =
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown> } }
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean }
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean }
+  | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null }
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
@@ -349,7 +350,20 @@ export function transcriptReducer(
 
     // ── error ─────────────────────────────────────────────────────────────────
     case 'error': {
-      return { ...state, error: { code: ev.code, message: ev.message, resetsAt: ev.resetsAt } }
+      // Always raise the banner (the prominent, dismissable surface). When the error
+      // is anchored to a turn, ALSO drop an inline block into that turn's timeline so
+      // it stays visible in place and a later error can't erase it (the banner is a
+      // single slot; the timeline is append-only).
+      const banner = { code: ev.code, message: ev.message, resetsAt: ev.resetsAt }
+      if (!ev.turnId) return { ...state, error: banner }
+      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId)
+      const turn = withTurn[idx]
+      const errBlock: Block = {
+        kind: 'error', id: `${ev.turnId}:err:${turn.blocks.length}`,
+        code: ev.code, message: ev.message, resetsAt: ev.resetsAt,
+      }
+      const turns = replaceTurn(withTurn, idx, (t) => ({ ...t, blocks: [...t.blocks, errBlock] }))
+      return { ...state, turns, error: banner }
     }
 
     // ── queueUpdate ───────────────────────────────────────────────────────────
