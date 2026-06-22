@@ -170,8 +170,13 @@ class SessionDriver:
 
     def answer_question(self, question_id: str, selected: list[str], identity: str,
                         mode: str = "option") -> bool:
-        """Resolve a pending question with the user's selection and mode. Mirrors resolve_permission."""
-        return self._qreg.resolve(question_id, selected, identity, mode)
+        """Resolve a pending question with the user's selection and mode. Mirrors resolve_permission.
+
+        Passes session_id so the registry can reconcile a replay-derived question id
+        (from a transcript-rebuilt card on reattach) onto the live pending waiter.
+        """
+        return self._qreg.resolve(question_id, selected, identity, mode,
+                                  session_id=self.session_id)
 
     def pending_questions(self) -> list[dict]:
         """Return still-pending question payloads for this session (parallel to pending permissions).
