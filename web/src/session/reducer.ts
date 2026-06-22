@@ -103,8 +103,9 @@ export function transcriptReducer(
       const userBlock: Block = { kind: 'text', id: `${turnId}:u`, text }
 
       // Adopt an optimistic seed turn if present: re-key it in place to the real
-      // server turnId instead of appending a duplicate. Only one ever exists, so
-      // the first real user event after a seed is unambiguously that prompt.
+      // server turnId instead of appending a duplicate. Unconditional adoption is
+      // safe because a brand-new session starts with an empty replay — the first
+      // user event is always the seeded prompt — and only one optimistic turn exists.
       const optIdx = findTurnIdx(state.turns, OPTIMISTIC_USER_ID)
       if (optIdx !== -1) {
         const nextTurns = replaceTurn(state.turns, optIdx, () => ({

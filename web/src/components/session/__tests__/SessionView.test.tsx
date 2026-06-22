@@ -244,7 +244,22 @@ describe('SessionView', () => {
 describe('SessionView — optimistic initial prompt', () => {
   beforeEach(() => {
     capturedHandlers = {}
-    vi.clearAllMocks()
+    // Reset individual spies manually — vi.clearAllMocks() would also clear
+    // mockOn's implementation, breaking handler capture in subsequent tests.
+    mockPermissionResponse.mockClear()
+    mockAnswerQuestion.mockClear()
+    mockPrompt.mockClear()
+    mockSendInterrupt.mockClear()
+    mockSetPermissionMode.mockClear()
+    mockAttach.mockClear()
+    mockDetach.mockClear()
+    mockOff.mockClear()
+    mockOn.mockClear()
+    // Restore mockOn's implementation after clearing
+    mockOn.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+      if (!capturedHandlers[event]) capturedHandlers[event] = []
+      capturedHandlers[event].push(cb)
+    })
   })
 
   it('renders the initial prompt immediately as a user message', () => {
