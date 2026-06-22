@@ -63,6 +63,8 @@ export const Turn = memo(function Turn({
             return isUser
               ? <UserBubble key={block.id} text={block.text} />
               : <AssistantText key={block.id} text={block.text} streaming={block.id === streamingBlockId} />
+          case 'image':
+            return <UserBubble key={block.id} images={block.images} />
           case 'thinking':
             return <ThinkingBlock key={block.id} text={block.text} defaultCollapsed={thinkingCollapsed} />
           case 'tool':
