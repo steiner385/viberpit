@@ -58,17 +58,9 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
   //   Esc  → back to session list (guard: skip if composer textarea has text mid-draft,
   //           or if a permission/question card is pending — let user act on the card first)
   //   Shift+Tab → cycle permission mode through PERMISSION_MODES
-  //   c/C → toggle tool-detail mode (collapse/expand all tool calls)
-  const { hasOpenAction, onSetMode, toggleToolDetail } = rt
+  const { hasOpenAction, onSetMode } = rt
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const ae = document.activeElement as HTMLElement | null
-      const typing = !!ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.isContentEditable)
-      if (!typing && (e.key === 'c' || e.key === 'C') && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        e.preventDefault()
-        toggleToolDetail()
-        return
-      }
       if (e.key === 'Tab' && e.shiftKey) {
         e.preventDefault()
         const next = nextPermissionMode(modeRef.current)
@@ -89,16 +81,7 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onSetMode, handleBack, hasOpenAction, toggleToolDetail])
-
-  const toolToggleText =
-    rt.toolDetailMode === 'auto' ? 'Collapse tools'
-    : rt.toolDetailMode === 'all-closed' ? 'Expand tools'
-    : 'Auto-fold'
-  const toolToggleAria =
-    rt.toolDetailMode === 'auto' ? 'Collapse tool calls'
-    : rt.toolDetailMode === 'all-closed' ? 'Expand tool calls'
-    : 'Auto-fold tool calls'
+  }, [onSetMode, handleBack, hasOpenAction])
 
   return (
     <div className="flex flex-col h-dvh bg-white dark:bg-gray-950">
@@ -123,20 +106,6 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
         </button>
 
         <span className="text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
-
-        <button
-          type="button"
-          onClick={toggleToolDetail}
-          aria-label={toolToggleAria}
-          className={cn(
-            'ml-auto flex items-center gap-1.5 px-3 py-2 rounded-md min-h-[44px]',
-            'text-sm font-medium text-gray-200',
-            'hover:bg-gray-700 active:bg-gray-600',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-          )}
-        >
-          {toolToggleText}
-        </button>
       </div>
 
       {/* Transcript + status strip + banners */}

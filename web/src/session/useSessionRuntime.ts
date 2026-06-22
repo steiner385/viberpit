@@ -17,7 +17,7 @@ import type { TranscriptState } from '@/session/reducer'
 import type { SessionEvent } from '@/session/events'
 import { selectSubAgents } from '@/session/selectors'
 import { remainingContextPct } from '@/lib/contextWindow'
-import { useSessions, useAccounts } from '@/api/hooks'
+import { useSessions, useAccounts, useSettings } from '@/api/hooks'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 
 export type ImageRef = { sha: string; mime: string; name: string }
@@ -27,7 +27,7 @@ export interface SessionRuntime {
   state: TranscriptState
   mode: string
   toolDetailMode: ToolDetailMode
-  toggleToolDetail: () => void
+  thinkingCollapsed: boolean
   connectionState: ConnectionState
   title: string
   account: string
@@ -70,14 +70,6 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   const [mode, setMode] = useState('interactive')
   const [armedQuestionId, setArmedQuestionId] = useState<string | null>(null)
   const modeRef = useRef('interactive')
-  const [toolDetailMode, setToolDetailMode] = useState<ToolDetailMode>('auto')
-  const toggleToolDetail = useCallback(
-    () => setToolDetailMode((m) =>
-      m === 'auto' ? 'all-closed' : m === 'all-closed' ? 'all-open' : 'auto',
-    ),
-    [],
-  )
-
   // Attach / detach + subscribe to session events
   useEffect(() => {
     const onEvent = (e: SessionEvent) => dispatch(e)
@@ -205,6 +197,9 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   // Account: the session record's account, overridden by the latest rotation.
   const { data: sessions } = useSessions()
   const { data: accounts } = useAccounts()
+  const { data: appSettings } = useSettings()
+  const toolDetailMode: ToolDetailMode = appSettings?.defaultToolDetail ?? 'auto'
+  const thinkingCollapsed = appSettings?.thinkingCollapsed ?? true
   const sessionRecord = sessions?.find((s) => s.id === sessionId)
 
   // Header title: prefer the session's name (the AI-generated/auto title, the
@@ -228,7 +223,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     state,
     mode,
     toolDetailMode,
-    toggleToolDetail,
+    thinkingCollapsed,
     connectionState,
     title,
     account,
