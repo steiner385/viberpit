@@ -11,6 +11,7 @@ describe('isFilePathRef', () => {
     'src/lib/bar.ts',
     'App.tsx:12:4',
     '~/notes.md',
+    'foo.123',            // numeric extension accepted (e.g. split-archive names)
   ])('accepts path-like token %j', (s) => {
     expect(isFilePathRef(s)).toBe(true)
   })
@@ -23,6 +24,8 @@ describe('isFilePathRef', () => {
     '',                   // empty
     'a.b c.d',            // whitespace
     'https://example.com',// URL, not a file path
+    'foo.py\n',           // trailing newline disqualifies (guards fenced-block leak fix)
+    ' foo.py',            // leading whitespace disqualifies (guards fenced-block leak fix)
   ])('rejects non-path token %j', (s) => {
     expect(isFilePathRef(s)).toBe(false)
   })

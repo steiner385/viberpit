@@ -73,4 +73,13 @@ describe('AssistantText', () => {
     expect(el.tagName).toBe('CODE')
     expect(el).not.toHaveAttribute('role')
   })
+
+  it('does not turn a fenced code block of a single path into a copy button', async () => {
+    const { container } = render(
+      <AssistantText text={'```\nweb/src/foo.tsx:60\n```'} streaming={false} />,
+    )
+    // It must render as a plain block <code> inside <pre>, never a CopyablePath.
+    expect(container.querySelector('code[role="button"]')).toBeNull()
+    expect(container.querySelector('pre code')).not.toBeNull()
+  })
 })

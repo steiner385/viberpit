@@ -5,8 +5,13 @@
 const LINE_SUFFIX = /(:\d+){0,2}$/
 
 export function isFilePathRef(text: string): boolean {
-  const token = text.trim()
-  if (token === '' || /\s/.test(token)) return false
+  // Whitespace anywhere — including a trailing newline — disqualifies. Checked
+  // on the RAW input before any trim: a language-less fenced code block keeps a
+  // plain-string child with a trailing "\n", and that newline is the only
+  // signal distinguishing it from a genuine inline code span. Trimming first
+  // would erase that signal and let block code leak through as a copy target.
+  if (text === '' || /\s/.test(text)) return false
+  const token = text
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) return false // URL scheme (http://, etc.)
 
   const path = token.replace(LINE_SUFFIX, '')
@@ -16,8 +21,11 @@ export function isFilePathRef(text: string): boolean {
   const hasExtension = /\.[A-Za-z0-9]+$/.test(last)
   const hasSeparator = path.includes('/') && /\/[^/]/.test(path) // a real segment after a slash
 
-  // For paths with separators, we need at least one segment that looks like part of a path
-  // (not just digits): starts with ., ~, /, or contains letters.
+  // For paths with separators, require at least one segment that looks like part
+  // of a path (starts with ./~, contains letters, or is an empty boundary
+  // segment) — not purely digits. This rejects ratios like "1/2" and
+  // intentionally supersedes the plan's Task 1 draft, which lacked this guard
+  // and would have accepted "1/2".
   if (hasSeparator) {
     const segments = path.split('/')
     const hasPathLike = segments.some((seg) => /[.~a-zA-Z]/.test(seg) || seg === '')
