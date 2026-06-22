@@ -148,8 +148,9 @@ export class SessionSocket {
     this._send({ type: 'permissionResponse', sessionId, permId, decision })
   }
 
-  answerQuestion(sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') {
-    this._send({ type: 'answerQuestion', sessionId, questionId, selected, mode })
+  /** Returns true if the answer was actually written to an open socket. */
+  answerQuestion(sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option'): boolean {
+    return this._send({ type: 'answerQuestion', sessionId, questionId, selected, mode })
   }
 
   setPermissionMode(sessionId: string, mode: string) {
@@ -175,10 +176,13 @@ export class SessionSocket {
 
   // ── Private helpers ─────────────────────────────────────────────────────────
 
-  private _send(msg: object) {
+  /** Returns true if the frame was written to an open socket, false if dropped. */
+  private _send(msg: object): boolean {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg))
+      return true
     }
+    return false
   }
 
   private _setConnectionState(state: ConnectionState) {

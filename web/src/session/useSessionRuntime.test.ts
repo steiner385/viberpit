@@ -49,7 +49,8 @@ function wrapper({ children }: { children: React.ReactNode }) {
 
 describe('useSessionRuntime.onAnswer', () => {
   beforeEach(() => {
-    mockAnswerQuestion.mockClear()
+    mockAnswerQuestion.mockReset()
+    mockAnswerQuestion.mockReturnValue(true) // socket open: send succeeds by default
     capturedSessionEventHandler = undefined
   })
 
@@ -100,5 +101,30 @@ describe('useSessionRuntime.onAnswer', () => {
     expect(result.current.armedQuestionId).toBeNull()
     // Assert the question block is no longer in state (cleared by _resolveQuestion).
     expect(result.current.state.turns.flatMap((t) => t.blocks).some((b) => b.kind === 'question' && b.questionId === 'q2')).toBe(false)
+  })
+
+  it('keeps the question and surfaces a notice when the WS send is dropped', () => {
+    mockAnswerQuestion.mockReturnValue(false) // socket not open → frame dropped
+    const { result } = renderHook(() => useSessionRuntime('sess3'), { wrapper })
+
+    act(() => {
+      capturedSessionEventHandler?.({ type: 'replayComplete' })
+      capturedSessionEventHandler?.({
+        type: 'question',
+        questionId: 'q3',
+        turnId: 'turn-1',
+        header: 'Q',
+        question: 'Q?',
+        options: [{ label: 'Yes' }],
+        multiSelect: false,
+      })
+    })
+
+    act(() => { result.current.onAnswer('q3', ['Yes']) })
+
+    // The answer never left the browser — the question must stay in state so the
+    // user can retry, and a notice must be surfaced.
+    expect(result.current.state.turns.flatMap((t) => t.blocks).some((b) => b.kind === 'question' && b.questionId === 'q3')).toBe(true)
+    expect(result.current.state.error?.code).toBe('answer_not_sent')
   })
 })

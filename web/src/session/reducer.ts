@@ -299,8 +299,22 @@ export function transcriptReducer(
       const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
       const turn = turns[idx]
 
-      // Idempotent by questionId
-      if (turn.blocks.some((b) => b.kind === 'question' && b.questionId === questionId)) {
+      // Idempotent by questionId — but the server re-emits a still-pending
+      // question after replayComplete. The replay copy was created live:false
+      // (replaying was true); the re-emit (replaying now false) must upgrade it
+      // to live:true, otherwise a question pending across a refresh/reconnect
+      // renders read-only forever. Only ever flip false→true; never downgrade.
+      const existing = turn.blocks.find((b) => b.kind === 'question' && b.questionId === questionId)
+      if (existing) {
+        if (existing.kind === 'question' && !existing.live && !state.replaying) {
+          const nextTurns = replaceTurn(turns, idx, (t) => ({
+            ...t,
+            blocks: t.blocks.map((b) =>
+              b.kind === 'question' && b.questionId === questionId ? { ...b, live: true } : b,
+            ),
+          }))
+          return { ...state, turns: nextTurns }
+        }
         return { ...state, turns }
       }
 
