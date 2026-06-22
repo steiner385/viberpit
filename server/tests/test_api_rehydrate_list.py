@@ -79,18 +79,6 @@ def test_create_session_status_reflects_initial_prompt(tmp_path):
     (shared_base / "settings.json").write_text("{}")
     (shared_base / "projects").mkdir()
 
-    # Seed a fake account credential
-    now_ms = int(_time.time() * 1000)
-    write_json_secure(paths.slot_path("alpha"), {
-        "accessToken": "alpha-tok",
-        "refreshToken": "alpha-ref",
-        "expiresAt": now_ms + 9_000_000,
-        "subscriptionType": "max",
-    })
-    shared_mcp = paths.shared_mcp_path()
-    if not shared_mcp.exists():
-        write_json_secure(shared_mcp, {})
-
     def _fake_usage(account):
         from datetime import timedelta, timezone
         from ccswitch.oauth import Usage
@@ -107,6 +95,20 @@ def test_create_session_status_reflects_initial_prompt(tmp_path):
          patch("server.sessions.orchestrator.configdir"), \
          patch("server.sessions.orchestrator.select_account", return_value="alpha"), \
          patch("ccswitch.accounts.usage_for", side_effect=_fake_usage):
+
+        # Seed a fake account credential — MUST be inside the CCSWITCH_HOME patch,
+        # otherwise paths.slot_path() resolves to the real store and leaks an
+        # "alpha" account into the user's ~/.claude-accounts.
+        now_ms = int(_time.time() * 1000)
+        write_json_secure(paths.slot_path("alpha"), {
+            "accessToken": "alpha-tok",
+            "refreshToken": "alpha-ref",
+            "expiresAt": now_ms + 9_000_000,
+            "subscriptionType": "max",
+        })
+        shared_mcp = paths.shared_mcp_path()
+        if not shared_mcp.exists():
+            write_json_secure(shared_mcp, {})
 
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         app = create_app(orchestrator=orch)
