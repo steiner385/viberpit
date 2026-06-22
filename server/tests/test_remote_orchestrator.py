@@ -20,6 +20,9 @@ class _FakeEvent:
 
 
 class _FakeDriver:
+    def current_status(self): return "idle"
+    def queued(self): return []
+
     async def events(self):
         yield _FakeEvent()
 
