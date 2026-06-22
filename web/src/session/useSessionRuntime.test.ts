@@ -94,9 +94,11 @@ describe('useSessionRuntime.onAnswer', () => {
     act(() => { result.current.onChat('q2') })
     expect(result.current.armedQuestionId).toBe('q2')
 
-    // Answer it — WS send fires + armed id is cleared.
+    // Answer it — WS send fires + armed id is cleared + the block is removed from state.
     act(() => { result.current.onAnswer('q2', ['Yes']) })
     expect(mockAnswerQuestion).toHaveBeenCalledWith('sess2', 'q2', ['Yes'], 'option')
     expect(result.current.armedQuestionId).toBeNull()
+    // Assert the question block is no longer in state (cleared by _resolveQuestion).
+    expect(result.current.state.turns.flatMap((t) => t.blocks).some((b) => b.kind === 'question' && b.questionId === 'q2')).toBe(false)
   })
 })

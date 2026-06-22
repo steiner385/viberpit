@@ -7,7 +7,8 @@ const q = (id: string, live: boolean) => ({
   kind: 'question' as const, id, questionId: id, header: id, question: `${id}?`,
   options: [{ label: 'Yes' }], multiSelect: false, live,
 })
-const turn = (...blocks: ReturnType<typeof q>[]) => ({ id: `t-${Math.random()}`, role: 'assistant' as const, blocks })
+let _tid = 0
+const turn = (...blocks: ReturnType<typeof q>[]) => ({ id: `t-${_tid++}`, role: 'assistant' as const, blocks })
 
 describe('PendingQuestionPanel', () => {
   it('renders nothing when there is no live question (detached/replay)', () => {
