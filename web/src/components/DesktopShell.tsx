@@ -31,7 +31,6 @@ import { ReviewView } from './ReviewView'
 import { RenameDialog, PermanentDeleteDialog } from './Dashboard'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from './session/SessionRuntimeProvider'
 import { SessionBody } from './session/SessionBody'
-import { StatusBar } from './session/StatusBar'
 import { Composer } from './session/Composer'
 import {
   useAccounts,
@@ -80,7 +79,6 @@ function MainPaneSession() {
         >
           {toolToggleText}
         </button>
-        <StatusBar status={rt.state.status} connectionState={rt.connectionState} />
       </div>
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-gray-950">
         <SessionBody rt={rt} />

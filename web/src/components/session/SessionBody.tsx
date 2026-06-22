@@ -9,6 +9,7 @@
 import { cn } from '@/lib/utils'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SessionMeta } from './SessionMeta'
+import { StatusBar } from './StatusBar'
 import { TranscriptView } from './TranscriptView'
 import { SessionPlaceholder } from './SessionPlaceholder'
 import { WorkingIndicator } from './WorkingIndicator'
@@ -17,7 +18,9 @@ import { SessionAriaLive } from './SessionAriaLive'
 export function SessionBody({ rt }: { rt: SessionRuntime }) {
   return (
     <>
-      {/* Status strip: account · model · context · quota · sub-agents */}
+      {/* Status strip: account · model · context · quota · live status · sub-agents.
+          The live StatusBar is folded into the right of this strip so the session
+          pane shows a single status line rather than two stacked bars. */}
       <div className="flex-shrink-0">
         <SessionMeta
           account={rt.account}
@@ -25,6 +28,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           contextPct={rt.contextPct}
           quota={rt.quota}
           subAgents={rt.subAgents}
+          statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} />}
         />
       </div>
 

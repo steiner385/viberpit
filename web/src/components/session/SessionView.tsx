@@ -18,7 +18,6 @@ import { cn } from '@/lib/utils'
 import { useSessionSocket } from '@/ws/client'
 import { useSessionRuntime } from '@/session/useSessionRuntime'
 import { PERMISSION_MODES } from '@/session/permissionModes'
-import { StatusBar } from './StatusBar'
 import { Composer } from './Composer'
 import { SessionBody } from './SessionBody'
 import { PendingQuestionPanel } from './PendingQuestionPanel'
@@ -137,10 +136,6 @@ export function SessionView({ sessionId, onBack }: Props) {
         >
           {toolToggleText}
         </button>
-
-        <div>
-          <StatusBar status={rt.state.status} connectionState={rt.connectionState} />
-        </div>
       </div>
 
       {/* Transcript + status strip + banners */}

@@ -22,6 +22,10 @@ interface Props {
   contextPct: number | null
   quota: Quota | null
   subAgents: SubAgent[]
+  /** Live status node (the StatusBar) folded into this strip so the session pane
+   *  has a single status line instead of two stacked bars. Optional so the
+   *  component stays usable standalone. */
+  statusSlot?: React.ReactNode
 }
 
 const DASH = '—'
@@ -39,7 +43,7 @@ const DOT_CLASS: Record<SubAgentStatus, string> = {
   failed: 'bg-red-500',
 }
 
-export function SessionMeta({ account, model, contextPct, quota, subAgents }: Props) {
+export function SessionMeta({ account, model, contextPct, quota, subAgents, statusSlot }: Props) {
   const [open, setOpen] = useState(false)
   const agentCount = subAgents.length
 
@@ -82,23 +86,28 @@ export function SessionMeta({ account, model, contextPct, quota, subAgents }: Pr
           </span>
         )}
 
-        {/* Sub-agents toggle */}
-        {agentCount > 0 && (
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            aria-expanded={open}
-            aria-label={`${agentCount} sub-agents`}
-            className={cn(
-              'ml-auto inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md min-h-[28px]',
-              'hover:bg-gray-200 dark:hover:bg-gray-700 active:bg-gray-300 dark:active:bg-gray-600',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+        {/* Right cluster: live status (folded-in StatusBar) + sub-agents toggle */}
+        {(statusSlot || agentCount > 0) && (
+          <div className="ml-auto flex items-center gap-2">
+            {statusSlot}
+            {agentCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setOpen((v) => !v)}
+                aria-expanded={open}
+                aria-label={`${agentCount} sub-agents`}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md min-h-[28px]',
+                  'hover:bg-gray-200 dark:hover:bg-gray-700 active:bg-gray-300 dark:active:bg-gray-600',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+                )}
+              >
+                <span className={cn('h-2 w-2 rounded-full', DOT_CLASS[summaryDot(subAgents)])} aria-hidden="true" />
+                <span className="tabular-nums text-gray-900 dark:text-gray-100">{agentCount}</span>
+                <span className="text-gray-500 dark:text-gray-400">{agentCount === 1 ? 'agent' : 'agents'}</span>
+              </button>
             )}
-          >
-            <span className={cn('h-2 w-2 rounded-full', DOT_CLASS[summaryDot(subAgents)])} aria-hidden="true" />
-            <span className="tabular-nums text-gray-900 dark:text-gray-100">{agentCount}</span>
-            <span className="text-gray-500 dark:text-gray-400">{agentCount === 1 ? 'agent' : 'agents'}</span>
-          </button>
+          </div>
         )}
       </div>
 
