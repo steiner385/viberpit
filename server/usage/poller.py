@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from typing import Any, Callable
 
 from ccswitch.accounts import list_accounts
@@ -33,9 +34,16 @@ class UsagePoller:
         self,
         poll_interval: float = 60.0,
         usage_fn: Callable[[str], Usage | None] | None = None,
+        *,
+        jitter_frac: float = 0.1,
+        rng: Callable[[], float] = random.random,
     ) -> None:
         self._poll_interval = poll_interval
         self._usage_fn = usage_fn if usage_fn is not None else _default_usage_fn
+        # Spread sweeps by up to jitter_frac of the interval so multiple pollers /
+        # account refreshes don't resync into a lockstep burst that self-triggers 429s.
+        self._jitter_frac = jitter_frac
+        self._rng = rng
 
         # Last-known usage per account
         self._cache: dict[str, Usage | None] = {}
@@ -128,14 +136,18 @@ class UsagePoller:
     # Internal
     # ------------------------------------------------------------------
 
+    def _next_delay(self) -> float:
+        """Poll interval plus up to ``jitter_frac`` extra — never less than the interval."""
+        return self._poll_interval * (1.0 + self._jitter_frac * self._rng())
+
     async def _loop(self) -> None:
-        """Poll all accounts every ``_poll_interval`` seconds."""
+        """Poll all accounts every ``_poll_interval`` seconds (plus jitter)."""
         while True:
             try:
                 await self.all()
             except Exception:  # pragma: no cover
                 log.exception("UsagePoller: error during sweep")
-            await asyncio.sleep(self._poll_interval)
+            await asyncio.sleep(self._next_delay())
 
     def _publish(self, account: str, usage: Usage | None) -> None:
         event = {"account": account, "usage": usage}
