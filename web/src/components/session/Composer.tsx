@@ -113,11 +113,10 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
       />
 
       <div className="flex items-end gap-2">
-        {/* Attach button — visible trigger for the sr-only file input (aria-hidden: SR uses the input directly) */}
+        {/* Attach button — focusable visible trigger for the sr-only file input */}
         <button
           type="button"
-          aria-hidden="true"
-          tabIndex={-1}
+          aria-label="Choose image to attach"
           onClick={() => fileRef.current?.click()}
           className="flex-shrink-0 rounded-md px-3 py-2 text-sm min-h-[44px]"
         >
@@ -132,6 +131,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
           onKeyDown={handleKeyDown}
           onPaste={onPaste}
           onDrop={onDrop}
+          onDragOver={(e) => e.preventDefault()}
           rows={1}
           placeholder="Send a message…"
           className={cn(
