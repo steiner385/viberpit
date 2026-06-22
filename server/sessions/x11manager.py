@@ -97,6 +97,7 @@ class X11Manager:
         self._ready_interval_s = ready_interval_s
         self._specs: dict[str, DisplaySpec] = {}
         self._lock = asyncio.Lock()
+        self._idle_tasks: set = set()
         self._display_start = allocator._start
         self._display_count = len(allocator._free) + allocator.in_use()
 
@@ -183,10 +184,10 @@ class X11Manager:
         await self._allocator.release(spec.lease)
 
     async def ensure_vnc(self, session_id: str) -> int | None:
-        spec = self._specs.get(session_id)
-        if spec is None:
-            return None
         async with self._lock:
+            spec = self._specs.get(session_id)
+            if spec is None:
+                return None
             if spec.x11vnc is None:
                 spec.x11vnc = await self._spawn(
                     "x11vnc", "-display", f":{spec.lease.display}",
@@ -210,7 +211,9 @@ class X11Manager:
             return
         spec.vnc_clients = max(0, spec.vnc_clients - 1)
         if spec.vnc_clients == 0:
-            asyncio.create_task(self._idle_teardown(session_id))
+            t = asyncio.create_task(self._idle_teardown(session_id))
+            self._idle_tasks.add(t)
+            t.add_done_callback(self._idle_tasks.discard)
 
     async def _idle_teardown(self, session_id: str, timeout: float | None = None) -> None:
         await asyncio.sleep(timeout if timeout is not None else self._vnc_idle_timeout_s)
@@ -223,7 +226,7 @@ class X11Manager:
         spec = self._specs.get(session_id)
         if spec is None or len(spec.browsers) >= self._max_browsers:
             return False
-        argv = ["chromium", f"--display=:{spec.lease.display}",
+        argv = ["chromium",
                 "--disable-dev-shm-usage", "--no-first-run", "--start-maximized"]
         if url:
             argv.append(url)
