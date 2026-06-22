@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 import { useImageAttachments } from './useImageAttachments'
 import { AttachmentChips } from './AttachmentChips'
 import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
+import { statusTier } from '@/session/statusTier'
 import type { Command } from '@/session/events'
 
 interface Props {
@@ -26,7 +27,10 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const paletteRef = useRef<CommandPaletteHandle>(null)
-  const isWorking = status.state === 'working'
+  // "Working" for the composer = the agent is actively running (the busy tier).
+  // Sourced from the shared tier map so it tracks the rich live status, not the
+  // old binary 'working' literal.
+  const isWorking = statusTier(status.state) === 'busy'
   const att = useImageAttachments()
   const slash = text.startsWith('/') && !text.includes('\n')
   const afterSlash = slash ? text.slice(1) : ''

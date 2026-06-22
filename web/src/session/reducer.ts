@@ -67,7 +67,11 @@ export interface TranscriptState {
 export const initialTranscript: TranscriptState = {
   turns: [],
   openBlockId: null,
-  status: { state: 'idle', count: 0 },
+  // Quiet placeholder ('' → StatusBar renders "…") until the first live status
+  // frame arrives. The attach sequence re-emits the driver's current rich status
+  // right after replay, so a mid-turn session resolves to its true tier rather
+  // than flashing a misleading "Ready" (the stale-"Ready" bug).
+  status: { state: '', count: 0 },
   title: null,
   model: null,
   usage: null,

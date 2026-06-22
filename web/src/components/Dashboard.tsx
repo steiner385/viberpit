@@ -11,9 +11,9 @@ import { AllLimitedBanner } from './AllLimitedBanner'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { DispatchBar } from './DispatchBar'
 import { ShortcutsHelp } from './ShortcutsHelp'
+import { useSortedSessions } from '@/hooks/useSortedSessions'
 import {
   useAccounts,
-  useSessions,
   useCreateSession,
   useRenameSession,
   useCloseSession,
@@ -1033,7 +1033,7 @@ interface DashboardProps {
 
 export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab, activeTab: activeTabProp, onTabChange, dialog, onDialogChange }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
-  const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
+  const { data: sessions = [], isLoading: sessionsLoading } = useSortedSessions()
   const { data: archivedSessions = [] } = useArchivedSessions()
   const { data: settingsData } = useSettings()
   const reposQuery = useGithubRepos()

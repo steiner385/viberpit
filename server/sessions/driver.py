@@ -66,9 +66,28 @@ class SessionDriver:
 
     async def _put_status(self, state: str, count: int) -> None:
         """Emit a live Status event (for the in-session StatusBar) AND refresh the
-        derived dashboard status so the session LIST reflects the driver's real state."""
-        await self._out.put(ev.Status(state=state, count=count))
+        derived dashboard status so the session LIST reflects the driver's real state.
+
+        Single source of truth: the live Status now carries the SAME rich derived
+        vocabulary (in_progress / waiting_input / ready_review / done / complete /
+        needs_attention / idle) as the dashboard status, rather than a binary
+        working/idle. The ``state`` argument is now only a legacy call-site hint;
+        the emitted value is derived from the current signals so the StatusBar and
+        the session-list pill can never disagree. ``count`` (queue depth) is
+        preserved for the busy label.
+        """
+        derived = derive_status(self._dash_signals())
+        await self._out.put(ev.Status(state=derived, count=count))
         await self._emit_dashboard_status()
+
+    def current_status(self) -> str:
+        """The driver's current rich derived status (in_progress / waiting_input /
+        ready_review / done / complete / needs_attention / idle).
+
+        Used by the WS bridge to re-emit a live ``status`` frame on attach so a
+        client opening or reconnecting to a mid-turn session immediately renders
+        the true tier (fixes the stale-"Ready" bug)."""
+        return derive_status(self._dash_signals())
 
     @staticmethod
     def _normalize_option(opt) -> dict:

@@ -494,6 +494,55 @@ def test_reattach_reemits_pending_question(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# Attach re-emits the driver's CURRENT live status (stale-"Ready" regression)
+# ---------------------------------------------------------------------------
+
+def test_attach_reemits_live_status_when_mid_turn(ws_env):
+    """Attaching to a session whose driver is blocked mid-turn (a question is
+    pending → waiting_input) must emit a live ``status`` frame carrying that rich
+    status. This is the guard that the stale-"Ready" bug stays dead: a client
+    opening/reconnecting to a mid-turn session renders the true tier immediately
+    instead of keeping its initial idle/placeholder state for the whole turn."""
+    _app, orch, client = ws_env([], client_cls=_QuestionBlockingFakeClient)
+    session = client.portal.call(
+        lambda: orch.create_session("test-attach-status", identity="wstest@example.com")
+    )
+    session_id = session.id
+
+    # --- First connection: attach, prompt, see the question, then disconnect. ---
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "go"}))
+        events = _drain_events(ws, until_type="question", timeout=8.0)
+        assert any(e.get("type") == "question" for e in events), (
+            f"setup: no question — {[e.get('type') for e in events]}"
+        )
+        ws.send_text(json.dumps({"type": "detach", "sessionId": session_id}))
+
+    # The driver is now blocked with a pending question → its current status is waiting_input.
+    assert orch.driver(session_id).current_status() == "waiting_input"
+
+    # --- Reattach: the bridge must re-emit a status frame carrying waiting_input. ---
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        all_events: list[dict] = []
+        all_events.extend(_drain_events(ws, until_type="replayComplete"))
+        all_events.extend(_drain_events(ws, until_type="status", timeout=4.0))
+
+        status_frame = next((e for e in all_events if e.get("type") == "status"), None)
+        assert status_frame is not None, (
+            f"attach did not re-emit a live status frame — "
+            f"{[e.get('type') for e in all_events]}"
+        )
+        assert status_frame.get("state") == "waiting_input", (
+            f"re-emitted status must carry the rich mid-turn value, got {status_frame!r}"
+        )
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
 # Frame larger than 256KB is rejected, socket stays open
 # ---------------------------------------------------------------------------
 

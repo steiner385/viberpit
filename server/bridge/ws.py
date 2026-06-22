@@ -220,6 +220,20 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 ).to_wire())
                 await _send(q_wire)
 
+            # 2bb) Re-emit the session's CURRENT live status as a status frame.
+            #      The replay/transcript carries no live status, and the reducer
+            #      starts quiet ("…") — without this, a client attaching to a
+            #      mid-turn session would keep showing the placeholder/"Ready" for
+            #      the whole in-flight turn while the polled list correctly shows
+            #      "In progress" (the stale-"Ready" bug). Best-effort: a failure
+            #      here must never break the attach.
+            try:
+                await _send(redact_event({
+                    "type": "status", "state": driver.current_status(), "count": 0,
+                }))
+            except Exception:
+                log.warning("ws.attach: status re-emit failed for %s", session_id, exc_info=True)
+
             # 2c) Send the deferred initial prompt (if any) now that the client is
             #     watching.  The prompt was stored in create_session instead of being
             #     sent immediately so that its events stream live to this first attach

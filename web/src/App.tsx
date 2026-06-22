@@ -4,6 +4,7 @@ import { DesktopShell } from './components/DesktopShell'
 import { SessionView } from './components/session/SessionView'
 import { ReviewView } from './components/ReviewView'
 import { useMediaQuery } from './lib/useMediaQuery'
+import { useNeedsYouTitle } from './hooks/useNeedsYouTitle'
 
 // Routing is the source of truth for which view is shown:
 //   /sessions | /accounts | /archived  → dashboard with that tab active
@@ -72,6 +73,8 @@ function ReviewRoute() {
 }
 
 function App() {
+  // Reflect "N sessions need you" in the browser tab title (across all views).
+  useNeedsYouTitle()
   // Wide screens get the master-detail DesktopShell; narrow screens keep the
   // routed full-screen views below. useMediaQuery returns false when matchMedia
   // is unavailable (jsdom), so tests default to the mobile/routed branch.

@@ -342,8 +342,14 @@ describe('SessionView', () => {
     await waitFor(() => expect(live).toHaveTextContent('the latest reply'))
   })
 
-  it('renders StatusBar with Ready for idle state', () => {
+  it('renders a quiet placeholder before any status frame, then "Ready" once idle arrives', () => {
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    // Before the attach re-emits a live status, the StatusBar shows the quiet
+    // placeholder rather than flashing a misleading "Ready" (stale-"Ready" fix).
+    expect(screen.getByRole('status')).toHaveTextContent('…')
+    expect(screen.getByRole('status')).not.toHaveTextContent('Ready')
+    // Once a live idle status frame arrives, it resolves to the calm "Ready".
+    emitSessionEvent({ type: 'status', state: 'idle', count: 0 })
     expect(screen.getByRole('status')).toHaveTextContent('Ready')
   })
 

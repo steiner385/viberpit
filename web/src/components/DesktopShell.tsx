@@ -35,7 +35,6 @@ import { Composer } from './session/Composer'
 import { CommandResultOverlay } from './session/CommandResultOverlay'
 import {
   useAccounts,
-  useSessions,
   useArchivedSessions,
   useCreateSession,
   useRenameSession,
@@ -43,6 +42,7 @@ import {
   usePermanentDeleteSession,
   useGithubRepos,
 } from '@/api/hooks'
+import { useSortedSessions } from '@/hooks/useSortedSessions'
 import { setLastRepo } from '@/lib/lastRepo'
 
 type TabId = 'sessions' | 'accounts' | 'archived'
@@ -126,7 +126,7 @@ function WelcomePane() {
 
 export function DesktopShell() {
   const { data: accounts = [] } = useAccounts()
-  const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
+  const { data: sessions = [], isLoading: sessionsLoading } = useSortedSessions()
   const { data: archivedSessions = [] } = useArchivedSessions()
   const reposQuery = useGithubRepos()
 

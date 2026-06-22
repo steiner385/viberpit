@@ -70,21 +70,30 @@ describe('UsageBadge', () => {
 })
 
 describe('StatusPill — session status tiers', () => {
-  it('renders Complete with emerald text', () => {
+  it('renders the your-turn tier (complete) with emerald text', () => {
     const { container } = render(<StatusPill status="complete" />)
-    expect(screen.getByText('Complete')).toBeInTheDocument()
+    expect(screen.getByText('Your turn')).toBeInTheDocument()
     expect(container.querySelector('.text-emerald-700')).toBeTruthy()
   })
 
-  it('renders Needs attention with amber text', () => {
+  it('renders the error tier (needs_attention) loud red and pulsing', () => {
     const { container } = render(<StatusPill status="needs_attention" />)
-    expect(screen.getByText('Needs attention')).toBeInTheDocument()
-    expect(container.querySelector('.text-amber-700')).toBeTruthy()
+    expect(screen.getByText('Turn failed')).toBeInTheDocument()
+    expect(container.querySelector('.text-red-700')).toBeTruthy()
+    // Error/needs-you tiers pulse (motion-safe so reduced-motion drops it).
+    expect(container.querySelector('.motion-safe\\:animate-pulse')).toBeTruthy()
   })
 
-  it('renders Done with neutral (non-emerald) text', () => {
+  it('renders the needs-you tier (waiting_input) amber and pulsing', () => {
+    const { container } = render(<StatusPill status="waiting_input" />)
+    expect(screen.getByText('Permission needed')).toBeInTheDocument()
+    expect(container.querySelector('.text-amber-700')).toBeTruthy()
+    expect(container.querySelector('.motion-safe\\:animate-pulse')).toBeTruthy()
+  })
+
+  it('does NOT pulse the calm your-turn tier (done)', () => {
     const { container } = render(<StatusPill status="done" />)
-    expect(screen.getByText('Done')).toBeInTheDocument()
-    expect(container.querySelector('.text-emerald-700')).toBeFalsy()
+    expect(screen.getByText('Your turn')).toBeInTheDocument()
+    expect(container.querySelector('.motion-safe\\:animate-pulse')).toBeFalsy()
   })
 })

@@ -6,6 +6,9 @@ from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
 from claude_agent_sdk import TextBlock
 
+# A finished turn now emits a rich terminal status (done/complete/…), not "idle".
+_TERMINAL_STATUS = {"idle", "done", "complete", "needs_attention"}
+
 PNG_B64 = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
            "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 
@@ -40,7 +43,7 @@ def test_images_sent_as_content_blocks(tmp_path):
         await d.send_prompt("look at this", images)
         async for e in d.events():
             seen.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in _TERMINAL_STATUS:
                 break
         await d.aclose()
         return seen
@@ -65,7 +68,7 @@ def test_text_only_unchanged(tmp_path):
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start(); await d.send_prompt("hello")  # no images arg
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in _TERMINAL_STATUS:
                 break
         await d.aclose()
     asyncio.run(run())  # must not raise

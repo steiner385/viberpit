@@ -87,8 +87,8 @@ describe('SessionList', () => {
       { wrapper },
     )
 
-    expect(screen.getByText('In progress')).toBeInTheDocument()
-    expect(screen.getByText('Idle')).toBeInTheDocument()
+    expect(screen.getByText('Working…')).toBeInTheDocument()
+    expect(screen.getByText('Ready')).toBeInTheDocument()
   })
 
   it('calls onOpen when the session main button is clicked', async () => {

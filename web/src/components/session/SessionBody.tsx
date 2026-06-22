@@ -7,6 +7,7 @@
  */
 
 import { cn } from '@/lib/utils'
+import { statusTier } from '@/session/statusTier'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SessionMeta } from './SessionMeta'
 import { StatusBar } from './StatusBar'
@@ -79,7 +80,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
       )}
 
       {/* Prominent "waiting for Claude" indicator shown below the last turn */}
-      {rt.state.status.state === 'working' && (
+      {statusTier(rt.state.status.state) === 'busy' && (
         <div
           aria-hidden="true"
           className={cn(

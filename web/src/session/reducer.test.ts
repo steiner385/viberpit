@@ -127,6 +127,17 @@ describe('transcriptReducer', () => {
     expect(s.status).toEqual({ state: 'running', count: 3 })
   })
 
+  it('starts with a quiet placeholder status (empty state), not a "Ready"-like idle', () => {
+    // While replaying and before any live status frame, the StatusBar renders
+    // "…" from this empty state instead of flashing a misleading "Ready".
+    expect(initialTranscript.status).toEqual({ state: '', count: 0 })
+  })
+
+  it('carries the rich status value through the status event', () => {
+    const s = transcriptReducer(initialTranscript, { type: 'status', state: 'in_progress', count: 0 })
+    expect(s.status.state).toBe('in_progress')
+  })
+
   it('replayComplete flips replaying to false', () => {
     expect(initialTranscript.replaying).toBe(true)
     const s = transcriptReducer(initialTranscript, { type: 'replayComplete' })

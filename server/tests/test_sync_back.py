@@ -25,6 +25,12 @@ from server.tests.fakes import fake_sdk as f
 # Helpers
 # ---------------------------------------------------------------------------
 
+# The live Status now carries the RICH derived vocabulary, so a finished turn
+# emits a terminal status (done / complete / needs_attention) rather than the
+# old binary "idle". Tests use this set as the "turn finished" loop sentinel.
+_TERMINAL_STATUS = {"idle", "done", "complete", "needs_attention"}
+
+
 def _factory(msgs):
     def make(cwd, config_dir, can_use_tool, mode, resume):
         from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -59,7 +65,7 @@ def test_on_sync_back_called_after_turn():
         await d.send_prompt("hello")
         # Drain until idle
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in _TERMINAL_STATUS:
                 break
         await d.aclose()
         return calls
@@ -118,14 +124,14 @@ def test_on_sync_back_failure_does_not_crash_session():
         seen = []
         async for e in d.events():
             seen.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in _TERMINAL_STATUS:
                 break
         await d.aclose()
         return seen, calls
 
     seen, calls = asyncio.run(run())
     # The stream still completed (we got idle)
-    assert any(isinstance(e, Status) and e.state == "idle" for e in seen)
+    assert any(isinstance(e, Status) and e.state in _TERMINAL_STATUS for e in seen)
     # sync_back was attempted
     assert "attempt" in calls
 
@@ -200,7 +206,7 @@ def test_on_sync_back_sdk_rotation_captured_in_slot(tmp_path):
         await d.start()
         await d.send_prompt("hello")
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in _TERMINAL_STATUS:
                 break
         await d.aclose()
 

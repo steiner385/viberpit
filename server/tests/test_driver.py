@@ -6,6 +6,11 @@ from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
 from claude_agent_sdk import TextBlock
 
+# The live Status now carries the RICH derived vocabulary, so a finished turn
+# emits a terminal status (done / complete / needs_attention) rather than the
+# old binary "idle". Tests use this set as the "turn finished" loop sentinel.
+_TERMINAL_STATUS = {"idle", "done", "complete", "needs_attention"}
+
 
 class _RaisingClient:
     """SDK client whose stream raises partway through, to exercise _drain's except."""
@@ -70,7 +75,7 @@ def test_driver_streams_turn_and_sets_session_id():
     names = [type(e).__name__ for e in seen]
     # C3: first event is now Title (auto-title from first prompt)
     assert names[0] == "Title"
-    assert names[1] == "Status"  # working
+    assert names[1] == "Status"  # in_progress (rich live status)
     # The user's prompt is echoed as a UserMessage before the assistant turn.
     assert [n for n in names if n not in ("Status", "Title")] == [
         "UserMessage", "TurnStart", "TextDelta", "TextDelta", "TurnEnd"]
@@ -197,7 +202,7 @@ def test_queued_prompt_runs_after_first_turn():
         # Collect events until we see the final idle status (emitted after turn 2).
         # Turn 1 drain → start turn 2 (no idle). Turn 2 drain → idle.
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in _TERMINAL_STATUS:
                 break
         await d.aclose()
         return sdk.queries
@@ -259,7 +264,7 @@ def test_auto_title_emitted_on_first_prompt():
         events = []
         async for e in d.events():
             events.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in _TERMINAL_STATUS:
                 break
         await d.aclose()
         return events
@@ -305,13 +310,13 @@ def test_auto_title_only_fires_once():
         await d.send_prompt("hello world")
         async for e in d.events():
             all_events.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in _TERMINAL_STATUS:
                 break
         # Second prompt: should NOT emit another Title
         await d.send_prompt("second query")
         async for e in d.events():
             all_events.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in _TERMINAL_STATUS:
                 break
         await d.aclose()
         return all_events
@@ -334,7 +339,7 @@ def test_auto_title_first_line_only():
         events = []
         async for e in d.events():
             events.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in _TERMINAL_STATUS:
                 break
         await d.aclose()
         return events
@@ -637,7 +642,7 @@ def test_on_status_fires_in_progress_then_done():
         await d.start()
         await d.send_prompt("hi")
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in _TERMINAL_STATUS:
                 break
         if d._pump:
             await d._pump

@@ -1,16 +1,12 @@
 import {
-  Check,
   CheckCircle2,
   AlertTriangle,
   WifiOff,
   CircleAlert,
-  Clock,
-  X,
-  Eye,
-  Loader2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
+import { statusPresentation, type StatusPresentation } from '@/session/statusTier'
 import type { AccountStatus, SessionStatus } from '@/api/types'
 
 // ── UsageBadge ──────────────────────────────────────────────────────────────
@@ -73,13 +69,12 @@ export function UsageBadge({ pct, label, resetsAt, className }: UsageBadgeProps)
 
 type AnyStatus = AccountStatus | SessionStatus
 
-interface StatusConfig {
-  label: string
-  Icon: React.ComponentType<{ className?: string; size?: number }>
-  textClass: string
-}
+// Session statuses resolve through the single source of truth (statusTier);
+// account statuses keep their own table here (they are account-level, not part
+// of the session-status vocabulary). Both produce the same shape.
+type StatusConfig = StatusPresentation
 
-const ACCOUNT_STATUS_MAP: Record<AccountStatus, StatusConfig> = {
+const ACCOUNT_STATUS_MAP: Record<AccountStatus, Omit<StatusConfig, 'tier'>> = {
   ok: {
     label: 'OK',
     Icon: CheckCircle2,
@@ -112,70 +107,27 @@ const ACCOUNT_STATUS_MAP: Record<AccountStatus, StatusConfig> = {
   },
 }
 
-// Keyed by string (not SessionStatus) so the legacy live-event 'working' alias can
-// coexist with the richer dashboard vocabulary without a type error.
-const SESSION_STATUS_MAP: Record<string, StatusConfig> = {
-  idle: {
-    label: 'Idle',
-    Icon: Clock,
-    textClass: 'text-gray-600 dark:text-gray-400',
-  },
-  in_progress: {
-    label: 'In progress',
-    Icon: Loader2,
-    textClass: 'text-emerald-700 dark:text-emerald-400',
-  },
-  // Alias: the in-session StatusBar still emits the live 'working' state.
-  working: {
-    label: 'In progress',
-    Icon: Loader2,
-    textClass: 'text-emerald-700 dark:text-emerald-400',
-  },
-  waiting_input: {
-    label: 'Waiting for input',
-    Icon: CircleAlert,
-    textClass: 'text-amber-700 dark:text-amber-400',
-  },
-  ready_review: {
-    label: 'Ready for review',
-    Icon: Eye,
-    textClass: 'text-blue-700 dark:text-blue-400',
-  },
-  done: {
-    label: 'Done',
-    Icon: Check,
-    textClass: 'text-gray-600 dark:text-gray-400',
-  },
-  complete: {
-    label: 'Complete',
-    Icon: CheckCircle2,
-    textClass: 'text-emerald-700 dark:text-emerald-400',
-  },
-  needs_attention: {
-    label: 'Needs attention',
-    Icon: AlertTriangle,
-    textClass: 'text-amber-700 dark:text-amber-400',
-  },
-  limited: {
-    label: 'Limited',
-    Icon: AlertTriangle,
-    textClass: 'text-amber-700 dark:text-amber-400',
-  },
-  ended: {
-    label: 'Ended',
-    Icon: X,
-    textClass: 'text-gray-600 dark:text-gray-400',
-  },
-}
-
-const ALL_STATUS_MAP: Record<string, StatusConfig> = {
-  ...ACCOUNT_STATUS_MAP,
-  ...SESSION_STATUS_MAP,
-}
-
 interface StatusPillProps {
   status: AnyStatus
   className?: string
+}
+
+/** Account statuses key the account-level table; everything else (the session
+ *  vocabulary, its 'working' alias, and the limited/ended overlays) resolves
+ *  through the shared statusTier source of truth. */
+function resolveStatus(status: AnyStatus): Omit<StatusConfig, 'tier'> {
+  if (status in ACCOUNT_STATUS_MAP) {
+    return ACCOUNT_STATUS_MAP[status as AccountStatus]
+  }
+  return statusPresentation(status)
+}
+
+/** The needs-you and error tiers are operationally urgent; the list pulses them
+ *  (respecting prefers-reduced-motion via the `motion-safe:` variant). */
+function shouldPulse(status: AnyStatus): boolean {
+  if (status in ACCOUNT_STATUS_MAP) return false
+  const tier = statusPresentation(status).tier
+  return tier === 'needs-you' || tier === 'error'
 }
 
 /** Subtle pill background derived from the status's text-colour family, so the
@@ -189,12 +141,7 @@ function pillTone(textClass: string): string {
 }
 
 export function StatusPill({ status, className }: StatusPillProps) {
-  const config = ALL_STATUS_MAP[status] ?? {
-    label: status,
-    Icon: CircleAlert,
-    textClass: 'text-gray-600 dark:text-gray-400',
-  }
-  const { label, Icon, textClass } = config
+  const { label, Icon, textClass } = resolveStatus(status)
 
   return (
     <span
@@ -202,6 +149,9 @@ export function StatusPill({ status, className }: StatusPillProps) {
         'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
         textClass,
         pillTone(textClass),
+        // Loud, attention-grabbing pulse for the needs-you / error tiers; the
+        // motion-safe variant drops it under prefers-reduced-motion.
+        shouldPulse(status) && 'motion-safe:animate-pulse',
         className,
       )}
       aria-label={`Status: ${label}`}

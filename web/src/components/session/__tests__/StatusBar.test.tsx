@@ -20,40 +20,55 @@ beforeEach(() => {
   })
 })
 
-describe('StatusBar', () => {
-  it('shows "Ready" for idle state', () => {
+describe('StatusBar (rich tiers)', () => {
+  it('shows "Ready" for the never-ran idle state (your-turn)', () => {
     render(<StatusBar status={{ state: 'idle', count: 0 }} connectionState="connected" />)
     expect(screen.getByText('Ready')).toBeInTheDocument()
   })
 
-  it('renders the WorkingIndicator for working state with no queue', () => {
-    render(<StatusBar status={{ state: 'working', count: 0 }} connectionState="connected" />)
-    // WorkingIndicator always provides a sr-only "Working…" label
+  it('shows "Your turn" for a finished turn (done)', () => {
+    render(<StatusBar status={{ state: 'done', count: 0 }} connectionState="connected" />)
+    expect(screen.getByText('Your turn')).toBeInTheDocument()
+  })
+
+  it('renders the WorkingIndicator for the busy tier (in_progress)', () => {
+    render(<StatusBar status={{ state: 'in_progress', count: 0 }} connectionState="connected" />)
     const srEl = document.querySelector('.sr-only')
     expect(srEl).not.toBeNull()
     expect(srEl?.textContent).toBe('Working…')
   })
 
-  it('renders WorkingIndicator with queued label for working state with queued items', () => {
+  it('still renders the WorkingIndicator for the legacy "working" alias', () => {
     render(<StatusBar status={{ state: 'working', count: 2 }} connectionState="connected" />)
     const srEl = document.querySelector('.sr-only')
-    expect(srEl).not.toBeNull()
     expect(srEl?.textContent).toBe('Working, 2 queued')
   })
 
-  it('shows "Waiting for permission" for waiting-permission state', () => {
-    render(<StatusBar status={{ state: 'waiting-permission', count: 0 }} connectionState="connected" />)
-    expect(screen.getByText('Waiting for permission')).toBeInTheDocument()
+  it('shows the needs-you label for waiting_input (amber)', () => {
+    const { container } = render(
+      <StatusBar status={{ state: 'waiting_input', count: 0 }} connectionState="connected" />,
+    )
+    expect(screen.getByText('Permission needed')).toBeInTheDocument()
+    expect(container.querySelector('.text-amber-700')).toBeTruthy()
   })
 
-  it('shows count for queued state', () => {
-    render(<StatusBar status={{ state: 'queued', count: 3 }} connectionState="connected" />)
-    expect(screen.getByText('3 queued')).toBeInTheDocument()
+  it('shows "Approve plan" for ready_review (needs-you)', () => {
+    render(<StatusBar status={{ state: 'ready_review', count: 0 }} connectionState="connected" />)
+    expect(screen.getByText('Approve plan')).toBeInTheDocument()
   })
 
-  it('shows raw state string for unknown state', () => {
-    render(<StatusBar status={{ state: 'custom-state', count: 0 }} connectionState="connected" />)
-    expect(screen.getByText('custom-state')).toBeInTheDocument()
+  it('shows the error label for needs_attention (red)', () => {
+    const { container } = render(
+      <StatusBar status={{ state: 'needs_attention', count: 0 }} connectionState="connected" />,
+    )
+    expect(screen.getByText('Turn failed')).toBeInTheDocument()
+    expect(container.querySelector('.text-red-700')).toBeTruthy()
+  })
+
+  it('renders a quiet "…" placeholder for the empty replaying state, never "Ready"', () => {
+    render(<StatusBar status={{ state: '', count: 0 }} connectionState="connected" />)
+    expect(screen.getByText('…')).toBeInTheDocument()
+    expect(screen.queryByText('Ready')).not.toBeInTheDocument()
   })
 
   it('shows Reconnecting note when connectionState is reconnecting', () => {
@@ -63,6 +78,14 @@ describe('StatusBar', () => {
 
   it('shows Disconnected note when connectionState is disconnected', () => {
     render(<StatusBar status={{ state: 'idle', count: 0 }} connectionState="disconnected" />)
+    expect(screen.getByText('Disconnected')).toBeInTheDocument()
+  })
+
+  it('keeps the last tier on disconnect (does not flip to a Ready-like state)', () => {
+    // A busy session that disconnects keeps showing the working indicator + the note.
+    render(<StatusBar status={{ state: 'in_progress', count: 0 }} connectionState="disconnected" />)
+    const srEl = document.querySelector('.sr-only')
+    expect(srEl?.textContent).toBe('Working…')
     expect(screen.getByText('Disconnected')).toBeInTheDocument()
   })
 
