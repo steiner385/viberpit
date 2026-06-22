@@ -2,11 +2,11 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { Composer } from './Composer'
 
-function setup(suggestions?: string[]) {
+function setupStatus(suggestions: string[] | undefined, state = 'idle') {
   const onPrompt = vi.fn()
   render(
     <Composer
-      status={{ state: 'idle', count: 0 }}
+      status={{ state, count: 0 }}
       mode="default"
       onPrompt={onPrompt}
       onInterrupt={() => {}}
@@ -17,23 +17,52 @@ function setup(suggestions?: string[]) {
   return { onPrompt }
 }
 
-describe('Composer suggestions', () => {
-  it('renders a chip per suggestion', () => {
-    setup(['Run the tests', 'Commit it'])
-    expect(screen.getByRole('button', { name: 'Run the tests' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Commit it' })).toBeInTheDocument()
+describe('Composer ghost-text suggestion', () => {
+  it('shows the top suggestion as ghost text when idle and empty', () => {
+    setupStatus(['Run the tests', 'Commit it'])
+    const ghost = screen.getByTestId('ghost-suggestion')
+    expect(ghost).toHaveTextContent('Run the tests')
+    expect(ghost).toHaveTextContent('Tab')
   })
 
-  it('pre-fills the textarea on chip click without sending', () => {
-    const { onPrompt } = setup(['Run the tests'])
-    fireEvent.click(screen.getByRole('button', { name: 'Run the tests' }))
+  it('hides ghost text while working', () => {
+    setupStatus(['Run the tests'], 'in_progress')
+    expect(screen.queryByTestId('ghost-suggestion')).toBeNull()
+  })
+
+  it('hides ghost text when there are no suggestions', () => {
+    setupStatus([])
+    expect(screen.queryByTestId('ghost-suggestion')).toBeNull()
+  })
+
+  it('Tab fills the box without sending and hides the ghost', () => {
+    const { onPrompt } = setupStatus(['Run the tests'])
     const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
+    fireEvent.keyDown(textarea, { key: 'Tab' })
+    expect(textarea.value).toBe('Run the tests')
+    expect(onPrompt).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('ghost-suggestion')).toBeNull()
+  })
+
+  it('ArrowRight fills the box without sending', () => {
+    const { onPrompt } = setupStatus(['Run the tests'])
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
+    fireEvent.keyDown(textarea, { key: 'ArrowRight' })
     expect(textarea.value).toBe('Run the tests')
     expect(onPrompt).not.toHaveBeenCalled()
   })
 
-  it('renders no chips when suggestions is empty', () => {
-    setup([])
-    expect(screen.queryByTestId('suggestion-chips')).toBeNull()
+  it('Shift+Tab does not accept the suggestion', () => {
+    setupStatus(['Run the tests'])
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
+    fireEvent.keyDown(textarea, { key: 'Tab', shiftKey: true })
+    expect(textarea.value).toBe('')
+  })
+
+  it('hides ghost text once the user types', () => {
+    setupStatus(['Run the tests'])
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: 'h' } })
+    expect(screen.queryByTestId('ghost-suggestion')).toBeNull()
   })
 })

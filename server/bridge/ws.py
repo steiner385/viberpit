@@ -178,6 +178,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             #    can't be located or parsed must NOT crash the WS (which would close the
             #    socket → client reconnect-loop on a blank screen) — skip the history and
             #    continue; the live session still works.
+            events: list = []  # guard: keep in scope if the replay try block raises early
             try:
                 path = await orchestrator.transcript_path(session_id)
                 events = await replay_events(path) if path else []
@@ -196,6 +197,15 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             except Exception:
                 log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
             await _send({"type": "replayComplete"})
+
+            # A session resumed into an idle state has no in-memory turn context, so
+            # the turn-completion suggestion trigger never fires. Seed one suggestion
+            # from the replayed transcript tail (best-effort; driver gates + dedupes).
+            try:
+                from server.sessions.suggestions import kick_idle_suggestions
+                kick_idle_suggestions(driver, events)
+            except Exception:
+                log.warning("ws.attach: idle suggestion seeding failed for %s", session_id, exc_info=True)
 
             # Slash-command catalog (built from the SDK's get_server_info) for this session.
             try:

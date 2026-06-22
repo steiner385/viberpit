@@ -129,6 +129,51 @@ def test_new_prompt_cancels_inflight_suggestion():
     assert not any(isinstance(e, Suggestions) for e in got)
 
 
+def test_seed_idle_suggestions_emits_once(caplog):
+    sug = _StubSuggester(["Resume hint"])
+
+    async def run():
+        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(),
+                          identity="me", suggester=sug)
+        await d.start()
+        d.seed_idle_suggestions("do the thing", "earlier answer")
+        got = []
+        async def consume():
+            async for e in d.events():
+                got.append(e)
+                if isinstance(e, Suggestions):
+                    return
+        await asyncio.wait_for(asyncio.create_task(consume()), timeout=1.0)
+        d.seed_idle_suggestions("do the thing", "earlier answer")  # 2nd attach: no-op
+        await asyncio.sleep(0.05)
+        await d.aclose()
+        return got
+    with caplog.at_level("INFO"):
+        got = asyncio.run(run())
+    sug_ev = next(e for e in got if isinstance(e, Suggestions))
+    assert sug_ev.items == ["Resume hint"]
+    assert sug.calls == 1
+    assert "suggestions session=s1" in caplog.text
+
+
+def test_seed_idle_suggestions_noop_without_context():
+    sug = _StubSuggester(["x"])
+
+    async def run():
+        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(),
+                          identity="me", suggester=sug)
+        await d.start()
+        d.seed_idle_suggestions("   ", "")  # blank → no generation
+        await asyncio.sleep(0.05)
+        await d.aclose()
+        return d._suggest_task
+    task = asyncio.run(run())
+    assert task is None
+    assert sug.calls == 0
+
+
 def test_orchestrator_disabled_by_env(monkeypatch):
     monkeypatch.setenv("CCSWITCH_SUGGESTIONS", "0")
     from server.sessions.orchestrator import SessionOrchestrator
