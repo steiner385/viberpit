@@ -28,3 +28,28 @@ class SessionRecord:
     permission_mode: str = "interactive"
     created_at: datetime | None = None
     adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id, "name": self.name, "account": self.account,
+            "claudeSessionId": self.claude_session_id, "cols": self.cols, "rows": self.rows,
+            "cwd": self.cwd, "repo": self.repo, "detached": self.detached,
+            "status": self.status, "nameIsAuto": self.name_is_auto,
+            "permissionMode": self.permission_mode,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "adoptedInPlace": self.adopted_in_place,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SessionRecord":
+        from datetime import datetime
+        created = d.get("createdAt")
+        return cls(
+            id=d["id"], name=d["name"], account=d["account"],
+            claude_session_id=d["claudeSessionId"], cols=d["cols"], rows=d["rows"],
+            cwd=d["cwd"], repo=d.get("repo"), detached=d.get("detached", False),
+            status=d.get("status", "idle"), name_is_auto=d.get("nameIsAuto", True),
+            permission_mode=d.get("permissionMode", "interactive"),
+            created_at=datetime.fromisoformat(created) if created else None,
+            adopted_in_place=d.get("adoptedInPlace", False),
+        )
