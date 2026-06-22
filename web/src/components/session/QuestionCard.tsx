@@ -40,7 +40,6 @@ function MultiSelectOptions({
   const kb = useCardKeyboard({
     count: block.options.length,
     multiSelect: true,
-    onActivate: () => {},
     onToggle: (i) => toggle(optionLabel(block.options[i])),
     onSubmit: () => onAnswer(block.questionId, Array.from(checked)),
   })

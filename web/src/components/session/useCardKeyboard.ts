@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 export interface CardKeyboardOptions {
   count: number
   multiSelect?: boolean
-  onActivate: (index: number) => void
+  onActivate?: (index: number) => void
   onToggle?: (index: number) => void
   onSubmit?: () => void
 }
@@ -19,6 +19,16 @@ export interface CardKeyboardApi {
  * cards). Numbers pick an option, arrows move a wrapping highlight, Enter/Space
  * activate (single-select) or toggle/submit (multi-select). Bails on INPUT/TEXTAREA
  * targets so freeform typing is never hijacked.
+ *
+ * Propagation/default notes:
+ * - `preventDefault()` stops native browser defaults (Enter submitting a form,
+ *   Space scrolling the page).
+ * - `stopPropagation()` stops React synthetic-event bubbling up the React tree;
+ *   it does NOT reach native `window.addEventListener` handlers (e.g. SessionView's
+ *   detach listener), which sit outside React's event system entirely.
+ * - Isolation from SessionView's window-level Esc/ArrowLeft/Shift+Tab detach handler
+ *   is provided by SessionView's own `if (hasOpenAction) return` guard, which fires
+ *   whenever a permission or question block is pending — not by stopPropagation here.
  */
 export function useCardKeyboard({
   count, multiSelect = false, onActivate, onToggle, onSubmit,
@@ -49,20 +59,20 @@ export function useCardKeyboard({
       if (n < count) {
         e.preventDefault(); e.stopPropagation()
         if (multiSelect) onToggle?.(n)
-        else onActivate(n)
+        else onActivate?.(n)
       }
       return
     }
     if (e.key === 'Enter') {
       e.preventDefault(); e.stopPropagation()
       if (multiSelect) onSubmit?.()
-      else onActivate(activeIndex)
+      else onActivate?.(activeIndex)
       return
     }
     if (e.key === ' ' || e.key === 'Spacebar') {
       e.preventDefault(); e.stopPropagation()
       if (multiSelect) onToggle?.(activeIndex)
-      else onActivate(activeIndex)
+      else onActivate?.(activeIndex)
     }
   }, [count, multiSelect, onActivate, onToggle, onSubmit, activeIndex])
 
