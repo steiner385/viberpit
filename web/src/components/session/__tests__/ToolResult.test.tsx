@@ -40,18 +40,37 @@ describe('ToolResult', () => {
     expect(screen.getByText('task')).toBeInTheDocument()
   })
 
-  it('renders JSON pre for unknown kind', () => {
+  it('dispatches search → SearchResult (lines + count, no envelope)', () => {
+    render(<ToolResult kind="search" ok={true} name="Grep" input={{}} payload={{ content: 'a.ts:1: x\nb.ts:2: x' }} />)
+    expect(screen.getByText('2 matches')).toBeInTheDocument()
+    expect(screen.queryByText(/"content"/)).toBeNull()
+  })
+
+  it('dispatches task → SubagentResult (markdown, no envelope)', () => {
+    render(<ToolResult kind="task" ok={true} input={{}} payload={{ content: 'done **well**' }} />)
+    expect(screen.getByText('well').tagName).toBe('STRONG')
+  })
+
+  it('dispatches web → WebResult (shows url, no envelope)', () => {
+    render(<ToolResult kind="web" ok={true} name="WebFetch" input={{ url: 'https://x.io' }} payload={{ content: 'body' }} />)
+    expect(screen.getByText('https://x.io')).toBeInTheDocument()
+    expect(screen.queryByText(/"content"/)).toBeNull()
+  })
+
+  it('dispatches mcp → GenericResult, extracting text not the envelope', () => {
+    render(<ToolResult kind="mcp" ok={true} name="mcp__github__list_prs" input={{}} payload={{ content: 'hello' }} />)
+    expect(screen.getByText('hello')).toBeInTheDocument()
+    expect(screen.queryByText(/"content"/)).toBeNull()
+  })
+
+  it('renders an unknown kind structurally, never as the raw envelope', () => {
     render(<ToolResult kind="unknown" ok={true} input={{}} payload={{ foo: 'bar' }} />)
-    expect(screen.getByText(/foo/)).toBeInTheDocument()
+    expect(screen.getByText('foo')).toBeInTheDocument()
+    expect(screen.getByText('bar')).toBeInTheDocument()
   })
 
-  it('renders JSON pre for search kind', () => {
-    render(<ToolResult kind="search" ok={true} input={{}} payload={{ results: [] }} />)
-    expect(screen.getByText(/results/)).toBeInTheDocument()
-  })
-
-  it('styles the JSON fallback as an error when ok is false', () => {
-    const { container } = render(<ToolResult kind="unknown" ok={false} input={{}} payload={{ foo: 'bar' }} />)
+  it('styles text results as an error when ok is false', () => {
+    const { container } = render(<ToolResult kind="unknown" ok={false} input={{}} payload={{ content: 'boom' }} />)
     expect(container.querySelector('pre')).toHaveClass('bg-red-50')
   })
 

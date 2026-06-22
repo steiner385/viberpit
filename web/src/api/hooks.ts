@@ -116,7 +116,15 @@ export function useCreateSession() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, CreateSessionInput>({
     mutationFn: (input) => api.post<Session>('/sessions', input),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+    onSuccess: (session) => {
+      // Show the new card immediately instead of waiting up to 5s for the poll.
+      qc.setQueryData<Session[]>(QK.sessions, (prev) => {
+        const list = prev ?? []
+        if (list.some((s) => s.id === session.id)) return list
+        return [...list, session]
+      })
+      qc.invalidateQueries({ queryKey: QK.sessions })
+    },
   })
 }
 

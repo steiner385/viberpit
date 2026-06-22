@@ -9,14 +9,18 @@
 import { cn } from '@/lib/utils'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SessionMeta } from './SessionMeta'
+import { StatusBar } from './StatusBar'
 import { TranscriptView } from './TranscriptView'
+import { SessionPlaceholder } from './SessionPlaceholder'
 import { WorkingIndicator } from './WorkingIndicator'
 import { SessionAriaLive } from './SessionAriaLive'
 
 export function SessionBody({ rt }: { rt: SessionRuntime }) {
   return (
     <>
-      {/* Status strip: account · model · context · quota · sub-agents */}
+      {/* Status strip: account · model · context · quota · live status · sub-agents.
+          The live StatusBar is folded into the right of this strip so the session
+          pane shows a single status line rather than two stacked bars. */}
       <div className="flex-shrink-0">
         <SessionMeta
           account={rt.account}
@@ -24,6 +28,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           contextPct={rt.contextPct}
           quota={rt.quota}
           subAgents={rt.subAgents}
+          statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} />}
         />
       </div>
 
@@ -47,18 +52,29 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
         </div>
       )}
 
-      {/* Transcript — rotation dividers are interleaved inline by anchor turn */}
-      <TranscriptView
-        turns={rt.state.turns}
-        rotations={rt.state.rotations}
-        permissionMode={rt.mode}
-        toolDetailMode={rt.toolDetailMode}
-        // Only the live-open block streams as plain text; during replay the open
-        // id is meaningless, so suppress it and render everything as markdown.
-        streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
-        onDecision={rt.onDecision}
-        onAnswer={rt.onAnswer}
-      />
+      {/* Transcript — rotation dividers are interleaved inline by anchor turn.
+          With no turns to show, the transcript area would be blank; the
+          placeholder fills it with an explicit connecting/loading/empty/error
+          state instead so the user always knows what's happening. */}
+      {rt.state.turns.length === 0 && rt.state.rotations.length === 0 ? (
+        <SessionPlaceholder
+          connectionState={rt.connectionState}
+          replaying={rt.state.replaying}
+          hasError={rt.state.error !== null}
+        />
+      ) : (
+        <TranscriptView
+          turns={rt.state.turns}
+          rotations={rt.state.rotations}
+          permissionMode={rt.mode}
+          toolDetailMode={rt.toolDetailMode}
+          // Only the live-open block streams as plain text; during replay the open
+          // id is meaningless, so suppress it and render everything as markdown.
+          streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
+          onDecision={rt.onDecision}
+          onAnswer={rt.onAnswer}
+        />
+      )}
 
       {/* Prominent "waiting for Claude" indicator shown below the last turn */}
       {rt.state.status.state === 'working' && (

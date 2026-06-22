@@ -672,8 +672,16 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
             <StatusPill status={account.status} />
             {account.usage && (
               <>
-                <UsageBadge pct={account.usage.session.pct} label="session" />
-                <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
+                <UsageBadge
+                  pct={account.usage.session.pct}
+                  label="session"
+                  resetsAt={account.usage.session.resetsAt}
+                />
+                <UsageBadge
+                  pct={account.usage.weekly.pct}
+                  label="weekly"
+                  resetsAt={account.usage.weekly.resetsAt}
+                />
               </>
             )}
             {needsReauth && (
@@ -1002,8 +1010,10 @@ function ArchivedList({ sessions, onReview, onUnarchive, onPermanentDelete, unar
 export type TabId = 'sessions' | 'accounts' | 'archived'
 
 interface DashboardProps {
-  /** Called when the user opens a session (navigates to Terminal view). */
-  onOpenSession?: (sessionId: string) => void
+  /** Called when the user opens a session (navigates to Terminal view).
+   *  `initialPrompt` is passed when opening straight from create, so the prompt
+   *  can be shown immediately in the conversation. */
+  onOpenSession?: (sessionId: string, initialPrompt?: string) => void
   /** Bump this to re-focus the dispatch bar (e.g. after returning from a session). */
   focusDispatchSignal?: unknown
   /** Called when the user wants to review an archived session. */
@@ -1130,9 +1140,10 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   function handleCreateSubmit(input: CreateSessionInput) {
     createSession.mutate(input, {
-      onSuccess: () => {
+      onSuccess: (session) => {
         dismissNewDialog()
-        newButtonRef.current?.focus()
+        // Auto-open the new session and carry the prompt so it shows immediately.
+        if (onOpenSession) onOpenSession(session.id, input.initialPrompt)
       },
       onError: (err) => {
         if (err.status === 409) {
@@ -1270,7 +1281,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       {
         onSuccess: (session) => {
           if (repo) setLastRepo(repo)
-          if (onOpenSession) onOpenSession(session.id)
+          if (onOpenSession) onOpenSession(session.id, initialPrompt)
         },
       },
     )

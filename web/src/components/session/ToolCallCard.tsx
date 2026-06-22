@@ -1,8 +1,10 @@
 import { useState, useId } from 'react'
-import { ChevronDown, ChevronRight, FileEdit, FileText, Terminal, List, Search, Wrench } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileEdit, FileText, Terminal, List, Search, Globe, Bot, Plug, Wrench } from 'lucide-react'
 import type { Block } from '@/session/reducer'
+import type { ToolDetailMode } from '@/session/groupBlocks'
 import type { ToolKind } from '@/session/events'
 import { ToolResult } from './ToolResult'
+import { StructuredView } from './StructuredView'
 import { sizeHint } from '@/lib/toolContent'
 import { cn } from '@/lib/utils'
 
@@ -14,6 +16,8 @@ interface Props {
   density?: 'line' | 'card'
   /** Auto-expand the result/detail panel (use for the most recent tool call). Default false. */
   defaultResultOpen?: boolean
+  /** Global detail override: 'all-open'/'all-closed' force every panel; 'auto' uses defaultResultOpen. */
+  toolDetailMode?: ToolDetailMode
 }
 
 function kindIcon(kind: ToolKind) {
@@ -24,6 +28,9 @@ function kindIcon(kind: ToolKind) {
     case 'bash':   return <Terminal size={14} />
     case 'todo':   return <List size={14} />
     case 'search': return <Search size={14} />
+    case 'web':    return <Globe size={14} />
+    case 'task':   return <Bot size={14} />
+    case 'mcp':    return <Plug size={14} />
     default:       return <Wrench size={14} />
   }
 }
@@ -38,14 +45,29 @@ function keyArg(kind: ToolKind, input: Record<string, unknown>): string {
   return ''
 }
 
-export function ToolCallCard({ block, density = 'card', defaultResultOpen = false }: Props) {
+export function ToolCallCard({ block, density = 'card', defaultResultOpen = false, toolDetailMode }: Props) {
   const [argsOpen, setArgsOpen] = useState(false)
-  const [resultOpen, setResultOpen] = useState(defaultResultOpen)
+  // The global toggle force-overrides the per-row default; 'auto' (or no mode)
+  // falls back to defaultResultOpen so only the live tail's latest tool opens.
+  const modeResultOpen =
+    toolDetailMode === 'all-open' ? true
+    : toolDetailMode === 'all-closed' ? false
+    : defaultResultOpen
+  const [resultOpen, setResultOpen] = useState(modeResultOpen)
+  // Re-sync to the mode default when the global toggle flips (during-render reset),
+  // mirroring ToolGroup's old pattern so expand/collapse-all stays uniform.
+  const [prevMode, setPrevMode] = useState(toolDetailMode)
+  if (prevMode !== toolDetailMode) {
+    setPrevMode(toolDetailMode)
+    setResultOpen(modeResultOpen)
+  }
   const argsRegionId = useId()
   const resultRegionId = useId()
   const detailRegionId = useId()
 
   const summary = keyArg(block.toolKind, block.input)
+  // Completed tools dim to grey (Claude-Code style); a running tool stays prominent.
+  const complete = block.result !== undefined
 
   if (density === 'line') {
     const ok = block.result?.ok ?? true
@@ -59,13 +81,13 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
           aria-controls={detailRegionId}
           onClick={() => setResultOpen((v) => !v)}
           className={cn(
-            'flex w-full items-center gap-2 px-3 py-0.5 text-left',
+            'flex w-full items-center gap-2 px-3 py-1 text-left leading-tight',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-            'min-h-[44px] hover:bg-gray-50 dark:hover:bg-gray-900/40 rounded',
+            'hover:bg-gray-50 dark:hover:bg-gray-900/40 rounded',
           )}
         >
-          <span className="shrink-0 text-gray-500 dark:text-gray-400">{kindIcon(block.toolKind)}</span>
-          <span className="shrink-0 font-medium text-gray-900 dark:text-gray-100">{block.name}</span>
+          <span className={cn('shrink-0', complete ? 'text-gray-400 dark:text-gray-500' : 'text-gray-600 dark:text-gray-300')}>{kindIcon(block.toolKind)}</span>
+          <span className={cn('shrink-0 font-medium', complete ? 'text-gray-500 dark:text-gray-400' : 'text-gray-900 dark:text-gray-100')}>{block.name}</span>
           {summary && (
             <span className="truncate text-xs text-gray-500 dark:text-gray-400">{summary}</span>
           )}
@@ -85,11 +107,13 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
           hidden={!resultOpen}
           className="border-l-2 border-gray-200 dark:border-gray-700 ml-4 px-3 py-2"
         >
-          <pre className="mb-2 overflow-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-xs font-mono text-gray-800 dark:text-gray-200">
-            {JSON.stringify(block.input, null, 2)}
-          </pre>
+          {resultOpen && (
+            <div className="mb-2">
+              <StructuredView data={block.input} />
+            </div>
+          )}
           {block.result && (
-            <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} />
+            <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} name={block.name} />
           )}
         </div>
       </div>
@@ -124,9 +148,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
 
       {/* Args panel */}
       <div id={argsRegionId} hidden={!argsOpen} className="border-t border-gray-200 dark:border-gray-700 px-3 py-2">
-        <pre className="overflow-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-xs font-mono text-gray-800 dark:text-gray-200">
-          {JSON.stringify(block.input, null, 2)}
-        </pre>
+        {argsOpen && <StructuredView data={block.input} />}
       </div>
 
       {/* Result section */}
@@ -173,7 +195,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
 
             {/* Result panel */}
             <div id={resultRegionId} hidden={!resultOpen} className="border-t border-gray-200 dark:border-gray-700 px-3 py-2">
-              <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} />
+              <ToolResult kind={block.toolKind} ok={block.result.ok} input={block.input} payload={block.result.payload} name={block.name} />
             </div>
           </>
         )

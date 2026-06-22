@@ -7,7 +7,12 @@ const baseProps = {
   account: 'work-max',
   model: 'claude-sonnet-4-5',
   contextPct: 78,
-  quota: { sessionPct: 42, weeklyPct: 18 },
+  quota: {
+    sessionPct: 42,
+    weeklyPct: 18,
+    sessionResetsAt: '2026-06-19T14:30:00.000Z',
+    weeklyResetsAt: null,
+  },
   subAgents: [] as SubAgent[],
 }
 
@@ -34,6 +39,19 @@ describe('SessionMeta', () => {
     const quota = screen.getByLabelText(/account quota/i)
     expect(quota).toHaveTextContent('42%')
     expect(quota).toHaveTextContent('18%')
+  })
+
+  it('labels each quota window and shows its reset time in a tooltip', () => {
+    render(<SessionMeta {...baseProps} />)
+    // The session window has a reset time → tooltip names the window + reset.
+    const sess = screen.getByText(/sess 42%/i)
+    expect(sess.getAttribute('title')).toMatch(/session limit/i)
+    expect(sess.getAttribute('title')).toMatch(/resets/i)
+    expect(sess.getAttribute('title')).toMatch(/jun/i)
+    // The weekly window has no active reset → tooltip says so.
+    const wk = screen.getByText(/wk 18%/i)
+    expect(wk.getAttribute('title')).toMatch(/weekly limit/i)
+    expect(wk.getAttribute('title')).toMatch(/no active window/i)
   })
 
   it('omits the quota segment when quota is null', () => {

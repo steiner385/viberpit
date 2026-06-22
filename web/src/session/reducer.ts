@@ -1,5 +1,8 @@
 import type { SessionEvent, ToolKind } from './events'
 
+/** Sentinel id for the optimistic user turn seeded before the SDK echoes the prompt. */
+export const OPTIMISTIC_USER_ID = 'optimistic:user'
+
 // ── Block types ───────────────────────────────────────────────────────────────
 
 export type Block =
@@ -9,6 +12,7 @@ export type Block =
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean }
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean }
   | { kind: 'notice';     id: string; text: string }
+  | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null }
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
@@ -77,6 +81,8 @@ function num(v: unknown): number {
 export type LocalAction =
   | { type: '_resolvePermission'; permId: string }
   | { type: '_resolveQuestion';   questionId: string }
+  | { type: '_clearError' }
+  | { type: '_seedUserPrompt';    text: string }
   | { type: '_rotation';          from: string; to: string; reason?: string }
   | { type: '_notice'; text: string }
   | { type: '_clear';  text: string }
@@ -120,6 +126,21 @@ export function transcriptReducer(
     case 'user': {
       const { turnId, text } = ev
       const userBlock: Block = { kind: 'text', id: `${turnId}:u`, text }
+
+      // Adopt an optimistic seed turn if present: re-key it in place to the real
+      // server turnId instead of appending a duplicate. Unconditional adoption is
+      // safe because a brand-new session starts with an empty replay — the first
+      // user event is always the seeded prompt — and only one optimistic turn exists.
+      const optIdx = findTurnIdx(state.turns, OPTIMISTIC_USER_ID)
+      if (optIdx !== -1) {
+        const nextTurns = replaceTurn(state.turns, optIdx, () => ({
+          id: turnId,
+          role: 'user' as const,
+          blocks: [userBlock],
+        }))
+        return { ...state, turns: nextTurns, openBlockId: null }
+      }
+
       const idx = findTurnIdx(state.turns, turnId)
       let nextTurns: Turn[]
       if (idx === -1) {
@@ -282,8 +303,22 @@ export function transcriptReducer(
       const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
       const turn = turns[idx]
 
-      // Idempotent by questionId
-      if (turn.blocks.some((b) => b.kind === 'question' && b.questionId === questionId)) {
+      // Idempotent by questionId — but the server re-emits a still-pending
+      // question after replayComplete. The replay copy was created live:false
+      // (replaying was true); the re-emit (replaying now false) must upgrade it
+      // to live:true, otherwise a question pending across a refresh/reconnect
+      // renders read-only forever. Only ever flip false→true; never downgrade.
+      const existing = turn.blocks.find((b) => b.kind === 'question' && b.questionId === questionId)
+      if (existing) {
+        if (existing.kind === 'question' && !existing.live && !state.replaying) {
+          const nextTurns = replaceTurn(turns, idx, (t) => ({
+            ...t,
+            blocks: t.blocks.map((b) =>
+              b.kind === 'question' && b.questionId === questionId ? { ...b, live: true } : b,
+            ),
+          }))
+          return { ...state, turns: nextTurns }
+        }
         return { ...state, turns }
       }
 
@@ -333,7 +368,20 @@ export function transcriptReducer(
 
     // ── error ─────────────────────────────────────────────────────────────────
     case 'error': {
-      return { ...state, error: { code: ev.code, message: ev.message, resetsAt: ev.resetsAt } }
+      // Always raise the banner (the prominent, dismissable surface). When the error
+      // is anchored to a turn, ALSO drop an inline block into that turn's timeline so
+      // it stays visible in place and a later error can't erase it (the banner is a
+      // single slot; the timeline is append-only).
+      const banner = { code: ev.code, message: ev.message, resetsAt: ev.resetsAt }
+      if (!ev.turnId) return { ...state, error: banner }
+      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId)
+      const turn = withTurn[idx]
+      const errBlock: Block = {
+        kind: 'error', id: `${ev.turnId}:err:${turn.blocks.length}`,
+        code: ev.code, message: ev.message, resetsAt: ev.resetsAt,
+      }
+      const turns = replaceTurn(withTurn, idx, (t) => ({ ...t, blocks: [...t.blocks, errBlock] }))
+      return { ...state, turns, error: banner }
     }
 
     // ── queueUpdate ───────────────────────────────────────────────────────────
@@ -382,6 +430,23 @@ export function transcriptReducer(
       return {
         ...state,
         turns: [...state.turns, { id, role: 'assistant', blocks: [{ kind: 'notice', id: `${id}:n`, text: ev.text }] }],
+        openBlockId: null,
+      }
+    }
+
+    case '_clearError': {
+      // Dismiss a surfaced banner (e.g. the transient "answer queued" notice
+      // once a buffered answer has been resent). Ref-stable when already clear.
+      return state.error ? { ...state, error: null } : state
+    }
+
+    case '_seedUserPrompt': {
+      // Idempotent: never seed twice (guards React StrictMode double-invoke).
+      if (findTurnIdx(state.turns, OPTIMISTIC_USER_ID) !== -1) return state
+      const block: Block = { kind: 'text', id: `${OPTIMISTIC_USER_ID}:u`, text: ev.text }
+      return {
+        ...state,
+        turns: [...state.turns, { id: OPTIMISTIC_USER_ID, role: 'user', blocks: [block] }],
         openBlockId: null,
       }
     }

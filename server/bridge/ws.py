@@ -34,7 +34,7 @@ from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
 from server.db import db_session
-from server.sessions.events import tool_kind
+from server.sessions.events import ErrorEvent, tool_kind
 from server.sessions.replay import replay_events
 
 if TYPE_CHECKING:
@@ -46,6 +46,28 @@ log = logging.getLogger(__name__)
 _BATCH_INTERVAL = 0.016
 # Maximum inbound frame size (bytes)
 _MAX_FRAME = 262144
+
+
+async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -> None:
+    """Forward a driver's live events into *out_q* as wire dicts.
+
+    A crash in the stream must not leave the UI silent: convert the exception into
+    an ``error`` frame and enqueue it so the client learns the live stream died
+    instead of staring at a frozen transcript. Cancellation is normal (detach).
+    """
+    try:
+        async for e in driver.events():
+            out_q.put_nowait(e.to_wire())
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        log.exception("ws.live_stream session=%s", session_id)
+        detail = str(exc).strip() or "no detail"
+        out_q.put_nowait(ErrorEvent(
+            "live_stream_failed",
+            f"The live session stream stopped unexpectedly. {type(exc).__name__}: {detail[:500]}",
+            turn_id=None,
+        ).to_wire())
 
 
 def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
@@ -211,17 +233,8 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                     session_id, pending_prompt or "", pending_images)
 
             # 3) Start the live stream: forward driver events into the batcher.
-            async def _live() -> None:
-                try:
-                    async for e in driver.events():
-                        out_q.put_nowait(e.to_wire())
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    log.exception("ws.live_stream session=%s", session_id)
-
             live_tasks[session_id] = asyncio.create_task(
-                _live(), name=f"ws-live-{session_id}")
+                _forward_live(driver, out_q, session_id), name=f"ws-live-{session_id}")
 
         async def _handle_detach(session_id: str) -> None:
             task = live_tasks.pop(session_id, None)

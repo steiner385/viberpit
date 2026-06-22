@@ -4,15 +4,21 @@ from enum import Enum
 
 class ToolKind(str, Enum):
     EDIT = "edit"; WRITE = "write"; READ = "read"; BASH = "bash"
-    TODO = "todo"; SEARCH = "search"; UNKNOWN = "unknown"
+    TODO = "todo"; SEARCH = "search"; WEB = "web"; TASK = "task"
+    MCP = "mcp"; UNKNOWN = "unknown"
 
 _TOOL_KIND = {
     "Edit": ToolKind.EDIT, "MultiEdit": ToolKind.EDIT, "NotebookEdit": ToolKind.EDIT,
     "Write": ToolKind.WRITE, "Read": ToolKind.READ, "Bash": ToolKind.BASH,
     "TodoWrite": ToolKind.TODO, "Grep": ToolKind.SEARCH, "Glob": ToolKind.SEARCH,
-    "LS": ToolKind.SEARCH,
+    "LS": ToolKind.SEARCH, "WebFetch": ToolKind.WEB, "WebSearch": ToolKind.WEB,
+    "Task": ToolKind.TASK,
 }
 def tool_kind(name: str) -> ToolKind:
+    # MCP tools are namespaced `mcp__<server>__<tool>`; the server/tool parts are
+    # open-ended, so match the prefix rather than enumerate every name.
+    if name.startswith("mcp__"):
+        return ToolKind.MCP
     return _TOOL_KIND.get(name, ToolKind.UNKNOWN)
 
 @dataclass
@@ -84,8 +90,9 @@ class Rotated:
 
 @dataclass
 class ErrorEvent:
-    code: str; message: str; resets_at: str | None = None
-    def to_wire(self): return {"type": "error", "code": self.code, "message": self.message, "resetsAt": self.resets_at}
+    code: str; message: str; resets_at: str | None = None; turn_id: str | None = None
+    def to_wire(self): return {"type": "error", "code": self.code, "message": self.message,
+                               "resetsAt": self.resets_at, "turnId": self.turn_id}
 
 @dataclass
 class ReplayComplete:

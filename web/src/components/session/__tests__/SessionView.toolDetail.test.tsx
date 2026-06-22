@@ -36,6 +36,10 @@ describe('SessionView tool-detail toggle', () => {
     const user = userEvent.setup()
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
     expect(screen.getByRole('button', { name: /collapse tool calls/i })).toBeInTheDocument()
+    // The composer textarea is auto-focused on entering a session. The global
+    // "c" shortcut is intentionally suppressed while a text input is focused
+    // (SessionView's `typing` guard), so blur the composer to exercise it.
+    ;(document.activeElement as HTMLElement | null)?.blur()
     await user.keyboard('c')
     expect(screen.getByRole('button', { name: /expand tool calls/i })).toBeInTheDocument()
   })

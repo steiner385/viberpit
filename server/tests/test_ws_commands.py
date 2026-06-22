@@ -10,10 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient

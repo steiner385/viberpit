@@ -18,7 +18,6 @@ import { cn } from '@/lib/utils'
 import { useSessionSocket } from '@/ws/client'
 import { useSessionRuntime } from '@/session/useSessionRuntime'
 import { PERMISSION_MODES } from '@/session/permissionModes'
-import { StatusBar } from './StatusBar'
 import { Composer } from './Composer'
 import { SessionBody } from './SessionBody'
 import { PendingQuestionPanel } from './PendingQuestionPanel'
@@ -37,11 +36,12 @@ function nextPermissionMode(current: string): string {
 interface Props {
   sessionId: string
   onBack: () => void
+  initialPrompt?: string
 }
 
-export function SessionView({ sessionId, onBack }: Props) {
+export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
   const { detach } = useSessionSocket()
-  const rt = useSessionRuntime(sessionId)
+  const rt = useSessionRuntime(sessionId, initialPrompt)
 
   // Keep modeRef current so the keydown handler reads the latest mode without
   // needing to re-register the listener on every mode change.
@@ -74,16 +74,26 @@ export function SessionView({ sessionId, onBack }: Props) {
         e.preventDefault()
         const next = nextPermissionMode(modeRef.current)
         onSetMode(next)
-      } else if (e.key === 'Escape') {
-        // Guard 1: if the composer textarea (aria-label="Message") is focused and
-        // has non-empty text, Escape is for the composer (clearing a draft) — do
-        // NOT navigate back.
-        const ae2 = document.activeElement as HTMLTextAreaElement | null
-        const inComposerWithText =
-          ae2?.getAttribute('aria-label') === 'Message' && (ae2?.value ?? '') !== ''
+        return
+      }
+      // Composer-with-text guard, shared by ←/Esc (cursor move keeps the draft) and
+      // Ctrl+Z (yield to textarea undo while editing).
+      const ae2 = document.activeElement as HTMLTextAreaElement | null
+      const inComposerWithText =
+        ae2?.getAttribute('aria-label') === 'Message' && (ae2?.value ?? '') !== ''
+      // Ctrl+Z → unconditional force-detach escape hatch (bypasses the pending-card guard).
+      if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
         if (inComposerWithText) return
-        // Guard 2: if a permission/question card is pending, Escape is a no-op.
+        e.preventDefault()
+        handleBack()
+        return
+      }
+      // ← (empty prompt) and Esc → detach to the list. Shared guards: composer-with-text,
+      // and a pending permission/question card (answer it first).
+      if (e.key === 'ArrowLeft' || e.key === 'Escape') {
+        if (inComposerWithText) return
         if (hasOpenAction) return
+        e.preventDefault()
         handleBack()
       }
     }
@@ -143,10 +153,6 @@ export function SessionView({ sessionId, onBack }: Props) {
         >
           {toolToggleText}
         </button>
-
-        <div>
-          <StatusBar status={rt.state.status} connectionState={rt.connectionState} />
-        </div>
       </div>
 
       {/* Transcript + status strip + banners */}
@@ -173,6 +179,7 @@ export function SessionView({ sessionId, onBack }: Props) {
           chatArmed={rt.chatArmed}
           commands={rt.commands}
           onCommand={rt.onCommand}
+          autoFocusKey={sessionId}
         />
       </div>
     </div>

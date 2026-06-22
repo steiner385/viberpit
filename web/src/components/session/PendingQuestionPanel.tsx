@@ -12,7 +12,7 @@ interface Props {
 }
 
 /** First live, open question across all turns (one-at-a-time pinning). */
-export function findFirstLiveQuestion(turns: Turn[]): QuestionBlock | null {
+function findFirstLiveQuestion(turns: Turn[]): QuestionBlock | null {
   for (const t of turns) {
     for (const b of t.blocks) {
       if (b.kind === 'question' && b.live) return b

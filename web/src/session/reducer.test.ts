@@ -201,6 +201,61 @@ describe('transcriptReducer', () => {
     expect(s.error).toEqual({ code: 'rate_limit', message: 'Too many requests', resetsAt: '2024-01-01T00:00:00Z' })
   })
 
+  it('error without turnId sets only the banner, no transcript block', () => {
+    const s = transcriptReducer(initialTranscript, { type: 'error', code: 'INVALID_JSON', message: 'bad frame' })
+    expect(s.error?.code).toBe('INVALID_JSON')
+    expect(s.turns).toHaveLength(0)
+  })
+
+  it('_clearError clears a surfaced error', () => {
+    const s = transcriptReducer(initialTranscript, { type: 'error', code: 'answer_not_sent', message: 'nope' })
+    expect(s.error).not.toBeNull()
+    const cleared = transcriptReducer(s, { type: '_clearError' })
+    expect(cleared.error).toBeNull()
+  })
+
+  it('_clearError with no error returns the same state reference', () => {
+    expect(transcriptReducer(initialTranscript, { type: '_clearError' })).toBe(initialTranscript)
+  })
+
+  it('error with turnId appends an inline error block to that turn AND sets the banner', () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'textDelta', turnId: 't1', text: 'working...' },
+      { type: 'error', code: 'max_turns', message: 'Reached the maximum number of turns', turnId: 't1' },
+    ])
+    // banner
+    expect(s.error).toEqual({ code: 'max_turns', message: 'Reached the maximum number of turns', resetsAt: undefined })
+    // inline block on the failing turn
+    const turn = s.turns.find((t) => t.id === 't1')!
+    const errBlock = turn.blocks.find((b) => b.kind === 'error')!
+    expect(errBlock).toBeDefined()
+    if (errBlock.kind === 'error') {
+      expect(errBlock.code).toBe('max_turns')
+      expect(errBlock.message).toBe('Reached the maximum number of turns')
+    }
+  })
+
+  it('two errors on the same turn keep both inline blocks (timeline is not overwritten)', () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'error', code: 'api_429', message: 'rate limited', turnId: 't1' },
+      { type: 'error', code: 'execution_error', message: 'boom', turnId: 't1' },
+    ])
+    const turn = s.turns.find((t) => t.id === 't1')!
+    const errs = turn.blocks.filter((b) => b.kind === 'error')
+    expect(errs).toHaveLength(2)
+    // banner reflects the latest
+    expect(s.error?.code).toBe('execution_error')
+  })
+
+  it('error with turnId for an unseen turn creates the turn with the error block', () => {
+    const s = transcriptReducer(initialTranscript, { type: 'error', code: 'agent_error', message: 'oops', turnId: 'tX' })
+    const turn = s.turns.find((t) => t.id === 'tX')!
+    expect(turn).toBeDefined()
+    expect(turn.blocks.some((b) => b.kind === 'error')).toBe(true)
+  })
+
   // ── Orphan textDelta before turnStart ──────────────────────────────────────
 
   it('textDelta arriving BEFORE any turnStart creates the assistant turn and opens a text block', () => {
@@ -239,6 +294,23 @@ describe('transcriptReducer', () => {
     ])
     const questionBlocks = s.turns[0].blocks.filter((b) => b.kind === 'question')
     expect(questionBlocks).toHaveLength(1)
+  })
+
+  it('re-emitted question after replayComplete upgrades a replay-created block to live', () => {
+    // Reproduces the refresh/reconnect bug: during replay (replaying=true) the
+    // question is created live:false; the server then re-emits the still-pending
+    // question after replayComplete. The idempotency guard must upgrade the
+    // existing block to live:true instead of dropping the re-emit.
+    const q: SessionEvent = { type: 'question', questionId: 'q-1', turnId: 't1', header: 'Pick', question: 'Which?', options: [], multiSelect: false }
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      q,                            // replay: block created with live:false
+      { type: 'replayComplete' },   // replaying → false
+      q,                            // re-emit of the still-pending question
+    ])
+    const blocks = s.turns[0].blocks.filter((b) => b.kind === 'question')
+    expect(blocks).toHaveLength(1) // still idempotent — exactly one block
+    expect(blocks.every((b) => b.kind === 'question' && b.live)).toBe(true)
   })
 
   // ── Referential stability on no-ops ────────────────────────────────────────

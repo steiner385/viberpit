@@ -1,7 +1,7 @@
 from server.tests.fakes import fake_sdk as f
 from server.sessions.translator import Translator
 from server.sessions.events import (TurnStart, ThinkingDelta, ToolCall, ToolResult,
-                                     TurnEnd, ToolKind, SessionMeta)
+                                     TurnEnd, ToolKind, SessionMeta, ErrorEvent)
 from claude_agent_sdk import TextBlock
 
 def _run(msgs):
@@ -80,6 +80,54 @@ def test_second_turn_resets_state():
         out2 += tr.feed(m)
     assert isinstance(out2[0], TurnStart) and out2[0].turn_id == "t2"
     assert sum(1 for e in out2 if isinstance(e, ToolCall)) == 1  # not deduped across turns
+
+
+def test_success_result_emits_no_error_event():
+    msgs = [f.stream_start(uuid="t1"), f.stream_text("hi", uuid="t1"), f.result(uuid="t1")]
+    _, out = _run(msgs)
+    assert not any(isinstance(e, ErrorEvent) for e in out)
+    assert any(isinstance(e, TurnEnd) for e in out)
+
+
+def test_max_turns_error_emits_error_event_before_turn_end():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="error_max_turns", is_error=True,
+                     result="Reached the maximum number of turns")]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    end = next(e for e in out if isinstance(e, TurnEnd))
+    assert err.code == "max_turns"
+    assert "maximum number of turns" in err.message
+    assert err.turn_id == "t1"
+    # error precedes the turnEnd so the UI shows it inline before the turn closes
+    assert out.index(err) < out.index(end)
+
+
+def test_execution_error_maps_to_execution_error_code():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="error_during_execution", is_error=True,
+                     errors=["boom", "kapow"])]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    assert err.code == "execution_error"
+    assert "boom" in err.message and "kapow" in err.message
+
+
+def test_api_error_status_maps_to_api_code():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="success", is_error=True, api_error_status=429)]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    assert err.code == "api_429"
+    assert "429" in err.message
+
+
+def test_error_result_without_text_has_default_message():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="error_during_execution", is_error=True)]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    assert err.message  # non-empty fallback
 
 
 def test_askuserquestion_tool_use_emits_no_toolcall():

@@ -302,9 +302,14 @@ class SessionDriver:
                             await self._on_session_id(self.session_id, self.claude_session_id)
                         except Exception:
                             log.exception("driver.on_session_id session=%s", self.session_id)
-        except Exception:
+        except Exception as exc:
             log.exception("driver.drain session=%s", self.session_id)
-            await self._out.put(ev.ErrorEvent("driver_error", "session stream failed"))
+            # Surface the real failure to the UI, not a generic placeholder. The cause
+            # (e.g. a dead token or a closed subprocess) is exactly what the user needs
+            # to act on; redaction scrubs any secret-shaped substrings downstream.
+            detail = str(exc).strip() or "no detail"
+            await self._out.put(ev.ErrorEvent(
+                "driver_error", f"{type(exc).__name__}: {detail[:500]}", turn_id=self._turn()))
             self._last_turn_outcome = "failed"
         finally:
             # Capture any token rotation the SDK performed during this turn.

@@ -8,10 +8,14 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-# Backoff bounds for transient (429 / 5xx) retries.
+# Backoff bounds for transient (429 / 5xx / network) retries.
 _BACKOFF_BASE = 0.5   # seconds — first retry waits up to this (with jitter)
 _BACKOFF_CAP = 30.0   # seconds — never wait longer than this between retries
 _RETRY_AFTER_CAP = 120.0  # ignore absurd server-supplied Retry-After values
+# Defaults for the retry budget. Mirrored by Config (retry_max_retries /
+# retry_max_total_sec); a drift-guard test keeps the two in sync.
+_DEFAULT_MAX_RETRIES = 3
+_DEFAULT_MAX_TOTAL_SEC = 15.0  # wall-clock ceiling across all attempts
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
@@ -72,14 +76,32 @@ def _retry_delay(http_headers, attempt: int, rng=random.random) -> float:
 
 def http_request(method: str, url: str, headers: dict | None = None,
                  data: bytes | None = None, timeout: int = 15, *,
-                 max_retries: int = 3, sleep=time.sleep, rng=random.random) -> tuple[int, bytes]:
-    """Issue an HTTP request, retrying transient (429 / 5xx) responses with backoff.
+                 max_retries: int = _DEFAULT_MAX_RETRIES,
+                 max_total_sec: float = _DEFAULT_MAX_TOTAL_SEC,
+                 sleep=time.sleep, rng=random.random, clock=time.monotonic) -> tuple[int, bytes]:
+    """Issue an HTTP request, retrying transient failures with backoff.
 
-    Retries are safe for our callers: a 429/5xx means the request was throttled or
-    failed server-side before the (single-use) refresh token was consumed. Terminal
-    statuses (4xx other than 429) and 2xx return immediately. ``sleep``/``rng`` are
-    injectable for deterministic tests.
+    Retries transient HTTP statuses (429 / 5xx) AND network errors (URLError /
+    timeout). Retries are safe for our callers: such failures happen before the
+    (single-use) refresh token is consumed server-side. Terminal statuses (4xx
+    other than 429) and 2xx return immediately; a persistent network failure
+    raises TransientError so callers leave the account status unchanged.
+
+    ``max_total_sec`` bounds total wall-clock across all attempts so a stalling
+    endpoint can't turn max_retries x socket-timeout into minutes of blocking.
+    ``sleep`` / ``rng`` / ``clock`` are injectable for deterministic tests.
     """
+    start = clock()
+
+    def _retry_sleep(headers, attempt: int) -> bool:
+        # Sleep before the next attempt if the wall-clock budget allows. Returns
+        # True if a retry should proceed, False if the budget is spent.
+        remaining = max_total_sec - (clock() - start)
+        if remaining <= 0:
+            return False
+        sleep(min(_retry_delay(headers, attempt, rng), remaining))
+        return True
+
     for attempt in range(max_retries + 1):
         req = urllib.request.Request(url, method=method, headers=headers or {}, data=data)
         try:
@@ -87,10 +109,14 @@ def http_request(method: str, url: str, headers: dict | None = None,
                 return r.status, r.read()
         except urllib.error.HTTPError as e:
             status, body = e.code, e.read()
-            if attempt < max_retries and _is_transient_status(status):
-                sleep(_retry_delay(e.headers, attempt, rng))
+            if attempt < max_retries and _is_transient_status(status) and _retry_sleep(e.headers, attempt):
                 continue
             return status, body
+        except (urllib.error.URLError, TimeoutError) as e:
+            if attempt < max_retries and _retry_sleep(None, attempt):
+                continue
+            raise TransientError(
+                f"network error after {attempt + 1} attempt(s): {e}") from e
 
 
 def _parse_iso(s: str | None) -> datetime | None:
@@ -131,10 +157,12 @@ def parse_usage(payload: dict) -> Usage:
     return Usage(session_pct, session_reset, weekly_pct, weekly_reset, extra)
 
 
-def fetch_usage(access_token: str) -> Usage:
+def fetch_usage(access_token: str, *, max_retries: int = _DEFAULT_MAX_RETRIES,
+                max_total_sec: float = _DEFAULT_MAX_TOTAL_SEC) -> Usage:
     status, body = http_request(
         "GET", USAGE_URL,
         headers={"Authorization": f"Bearer {access_token}", "anthropic-beta": BETA_HEADER},
+        max_retries=max_retries, max_total_sec=max_total_sec,
     )
     if status == 401:
         raise AuthError("usage endpoint returned 401")
@@ -143,7 +171,9 @@ def fetch_usage(access_token: str) -> Usage:
     return parse_usage(json.loads(body))
 
 
-def refresh_access_token(refresh_token: str, prior: dict) -> dict:
+def refresh_access_token(refresh_token: str, prior: dict, *,
+                         max_retries: int = _DEFAULT_MAX_RETRIES,
+                         max_total_sec: float = _DEFAULT_MAX_TOTAL_SEC) -> dict:
     form = urllib.parse.urlencode({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -153,6 +183,7 @@ def refresh_access_token(refresh_token: str, prior: dict) -> dict:
         "POST", TOKEN_URL,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         data=form.encode("utf-8"),
+        max_retries=max_retries, max_total_sec=max_total_sec,
     )
     if _is_transient_status(status):
         # Rate-limit / server error: the refresh token is presumed valid. Surface

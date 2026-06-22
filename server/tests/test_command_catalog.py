@@ -1,4 +1,4 @@
-from server.sessions.commands.catalog import Command, classify, build_catalog
+from server.sessions.commands.catalog import classify, build_catalog
 
 
 def test_classify_buckets():

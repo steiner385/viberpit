@@ -11,9 +11,9 @@ import { useSessionRuntime, type SessionRuntime } from '@/session/useSessionRunt
 const Ctx = createContext<SessionRuntime | null>(null)
 
 export function SessionRuntimeProvider({
-  sessionId, children,
-}: { sessionId: string; children: React.ReactNode }) {
-  const rt = useSessionRuntime(sessionId)
+  sessionId, initialPrompt, children,
+}: { sessionId: string; initialPrompt?: string; children: React.ReactNode }) {
+  const rt = useSessionRuntime(sessionId, initialPrompt)
   return <Ctx.Provider value={rt}>{children}</Ctx.Provider>
 }
 

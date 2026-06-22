@@ -1,4 +1,5 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
+import { Paperclip, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useImageAttachments } from './useImageAttachments'
 import { AttachmentChips } from './AttachmentChips'
@@ -16,9 +17,11 @@ interface Props {
   chatArmed?: boolean
   commands?: Command[]
   onCommand?: (name: string, args: string) => void
+  /** Auto-focus the textarea when this changes / on mount (mirrors DispatchBar). */
+  autoFocusKey?: unknown
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand }: Props) {
+export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey }: Props) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -27,6 +30,12 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   const att = useImageAttachments()
   const slash = text.startsWith('/') && !text.includes('\n')
   const slashQuery = slash ? text.slice(1).split(/\s+/)[0] : ''
+
+  // Focus the prompt on mount (and when the active session changes) so the user
+  // can start typing immediately on entering a session.
+  useEffect(() => {
+    textareaRef.current?.focus()
+  }, [autoFocusKey])
 
   // Auto-grow textarea: reset height then set to scrollHeight (capped at 8 rows ~192px)
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -116,7 +125,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
                 )}
               >
-                ✕
+                <X size={16} aria-hidden="true" />
               </button>
             </div>
           ))}
@@ -176,7 +185,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
           )}
         >
-          <span aria-hidden="true">📎</span>
+          <Paperclip size={16} aria-hidden="true" />
         </button>
 
         {chatArmed ? (
