@@ -43,6 +43,7 @@ class Session(Base):
     # rename pins this False so auto-naming never overwrites a user-chosen name.
     name_is_auto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     tool_allowlist: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    sub_agents: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow

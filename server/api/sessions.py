@@ -68,6 +68,7 @@ def _record_to_dict(record) -> dict[str, Any]:
         "detached": record.detached,
         "createdAt": record.created_at.isoformat() if record.created_at else None,
         "updatedAt": None,
+        "subAgents": getattr(record, "sub_agents", None) or [],
     }
 
 

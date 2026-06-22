@@ -356,6 +356,7 @@ class SessionOrchestrator:
             )
         if status == "done":
             await self._maybe_apply_auto_name(session_id)
+            await self._persist_sub_agents(session_id)
 
     async def _maybe_apply_auto_name(self, session_id: str) -> None:
         """If the session name is still auto, adopt Claude's transcript title."""
@@ -375,6 +376,39 @@ class SessionOrchestrator:
                 sa_update(DbSession).where(DbSession.id == session_id).values(name=title)
             )
         log.info("session.auto_name id=%s title=%r", session_id, title)
+
+    async def sub_agents(self, session_id: str) -> list:
+        """Return the current sub-agent summary for session_id.
+
+        Reads the live transcript events and summarises them, so callers always
+        get up-to-date statuses without hitting the DB column (which is only
+        flushed at turn-end).  Returns [] when no transcript is found.
+        """
+        from .subagents import summarize
+        events = await self.transcript_events(session_id)
+        return summarize(events)
+
+    async def _persist_sub_agents(self, session_id: str) -> None:
+        """Best-effort: write the sub-agent summary to the DB at turn-end.
+
+        Called from _persist_status when status transitions to 'done', i.e. when
+        the main turn finishes and all sub-agents have reached their final statuses.
+        Wraps everything in a broad try/except so a failure never disrupts the
+        session loop (mirrors the best-effort pattern used elsewhere).
+        """
+        try:
+            summary = await self.sub_agents(session_id)
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await db.execute(
+                    sa_update(DbSession)
+                    .where(DbSession.id == session_id)
+                    .values(sub_agents=summary)
+                )
+        except Exception:
+            log.warning(
+                "session.sub_agents_persist_failed id=%s", session_id, exc_info=True
+            )
 
     async def _persist_claude_session_id(self, session_id: str, claude_session_id: str) -> None:
         """Callback fired by the driver the first time it captures the Claude session id.
