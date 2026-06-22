@@ -11,29 +11,33 @@ def sys_init(session_id: str = "sess-1", model: str | None = None) -> SystemMess
         data["model"] = model
     return SystemMessage(subtype="init", data=data)
 
-def stream_start(uuid: str = "u1", sid: str = "sess-1") -> StreamEvent:
-    return StreamEvent(uuid=uuid, session_id=sid, event={"type": "message_start"})
+def stream_start(uuid: str = "u1", sid: str = "sess-1", pid: str | None = None) -> StreamEvent:
+    return StreamEvent(uuid=uuid, session_id=sid, event={"type": "message_start"},
+                       parent_tool_use_id=pid)
 
-def stream_text(text: str, uuid: str = "u1", sid: str = "sess-1") -> StreamEvent:
+def stream_text(text: str, uuid: str = "u1", sid: str = "sess-1", pid: str | None = None) -> StreamEvent:
     return StreamEvent(uuid=uuid, session_id=sid,
                        event={"type": "content_block_delta", "index": 0,
-                              "delta": {"type": "text_delta", "text": text}})
+                              "delta": {"type": "text_delta", "text": text}},
+                       parent_tool_use_id=pid)
 
-def stream_thinking(text: str, uuid: str = "u1", sid: str = "sess-1") -> StreamEvent:
+def stream_thinking(text: str, uuid: str = "u1", sid: str = "sess-1", pid: str | None = None) -> StreamEvent:
     return StreamEvent(uuid=uuid, session_id=sid,
                        event={"type": "content_block_delta", "index": 0,
-                              "delta": {"type": "thinking_delta", "thinking": text}})
+                              "delta": {"type": "thinking_delta", "thinking": text}},
+                       parent_tool_use_id=pid)
 
-def assistant(*blocks, uuid: str = "u1") -> AssistantMessage:
-    return AssistantMessage(content=list(blocks), model="claude", uuid=uuid)
+def assistant(*blocks, uuid: str = "u1", pid: str | None = None) -> AssistantMessage:
+    return AssistantMessage(content=list(blocks), model="claude", uuid=uuid, parent_tool_use_id=pid)
 
-def tool_use(tool_id: str, name: str, inp: dict, uuid: str = "u1") -> AssistantMessage:
+def tool_use(tool_id: str, name: str, inp: dict, uuid: str = "u1", pid: str | None = None) -> AssistantMessage:
     return AssistantMessage(content=[ToolUseBlock(id=tool_id, name=name, input=inp)],
-                            model="claude", uuid=uuid)
+                            model="claude", uuid=uuid, parent_tool_use_id=pid)
 
-def user_tool_result(tool_id: str, content, is_error: bool = False, uuid: str = "u2") -> UserMessage:
+def user_tool_result(tool_id: str, content, is_error: bool = False, uuid: str = "u2",
+                     pid: str | None = None) -> UserMessage:
     return UserMessage(content=[ToolResultBlock(tool_use_id=tool_id, content=content, is_error=is_error)],
-                       uuid=uuid)
+                       uuid=uuid, parent_tool_use_id=pid)
 
 def result(session_id: str = "sess-1", usage: dict | None = None, uuid: str = "u9",
            cost: float | None = None) -> ResultMessage:
