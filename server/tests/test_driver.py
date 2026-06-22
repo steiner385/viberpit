@@ -1,10 +1,49 @@
 import asyncio
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
-from server.sessions.events import TurnEnd, Status, Title, QueueUpdate, UserMessage
+from server.sessions.events import TurnEnd, Status, Title, QueueUpdate, UserMessage, ErrorEvent
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
 from claude_agent_sdk import TextBlock
+
+
+class _RaisingClient:
+    """SDK client whose stream raises partway through, to exercise _drain's except."""
+    def __init__(self, exc):
+        self._exc = exc
+    async def __aenter__(self): return self
+    async def __aexit__(self, *exc): return False
+    async def query(self, prompt): pass
+    async def receive_response(self):
+        raise self._exc
+        yield  # pragma: no cover — makes this an async generator
+    async def interrupt(self): pass
+    async def set_permission_mode(self, mode): pass
+
+
+def test_drain_exception_emits_error_event_with_detail():
+    """A crash in the SDK stream must reach the UI as an ErrorEvent that names the
+    real failure — not a generic 'session stream failed' with the cause only logged."""
+    def factory(cwd, config_dir, can_use_tool, mode, resume):
+        return _RaisingClient(ValueError("token expired mid-stream"))
+
+    async def run():
+        d = SessionDriver("se", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        await d.send_prompt("go")
+        seen = []
+        async for e in d.events():
+            seen.append(e)
+            if isinstance(e, ErrorEvent):
+                break
+        await d.aclose()
+        return seen
+    seen = asyncio.run(run())
+    err = next(e for e in seen if isinstance(e, ErrorEvent))
+    assert err.code == "driver_error"
+    assert "ValueError" in err.message
+    assert "token expired mid-stream" in err.message
 
 def _factory(msgs):
     def make(cwd, config_dir, can_use_tool, mode, resume):
@@ -158,7 +197,7 @@ def test_queued_prompt_runs_after_first_turn():
         # Collect events until we see the final idle status (emitted after turn 2).
         # Turn 1 drain → start turn 2 (no idle). Turn 2 drain → idle.
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return sdk.queries
@@ -220,7 +259,7 @@ def test_auto_title_emitted_on_first_prompt():
         events = []
         async for e in d.events():
             events.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return events
@@ -266,13 +305,13 @@ def test_auto_title_only_fires_once():
         await d.send_prompt("hello world")
         async for e in d.events():
             all_events.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         # Second prompt: should NOT emit another Title
         await d.send_prompt("second query")
         async for e in d.events():
             all_events.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return all_events
@@ -295,7 +334,7 @@ def test_auto_title_first_line_only():
         events = []
         async for e in d.events():
             events.append(e)
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         await d.aclose()
         return events
@@ -598,7 +637,7 @@ def test_on_status_fires_in_progress_then_done():
         await d.start()
         await d.send_prompt("hi")
         async for e in d.events():
-            if isinstance(e, Status) and e.state == "idle":
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
         if d._pump:
             await d._pump

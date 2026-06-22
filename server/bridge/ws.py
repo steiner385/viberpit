@@ -34,7 +34,7 @@ from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
 from server.db import db_session
-from server.sessions.events import tool_kind
+from server.sessions.events import ErrorEvent, tool_kind
 from server.sessions.replay import replay_events
 
 if TYPE_CHECKING:
@@ -46,6 +46,28 @@ log = logging.getLogger(__name__)
 _BATCH_INTERVAL = 0.016
 # Maximum inbound frame size (bytes)
 _MAX_FRAME = 262144
+
+
+async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -> None:
+    """Forward a driver's live events into *out_q* as wire dicts.
+
+    A crash in the stream must not leave the UI silent: convert the exception into
+    an ``error`` frame and enqueue it so the client learns the live stream died
+    instead of staring at a frozen transcript. Cancellation is normal (detach).
+    """
+    try:
+        async for e in driver.events():
+            out_q.put_nowait(e.to_wire())
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        log.exception("ws.live_stream session=%s", session_id)
+        detail = str(exc).strip() or "no detail"
+        out_q.put_nowait(ErrorEvent(
+            "live_stream_failed",
+            f"The live session stream stopped unexpectedly. {type(exc).__name__}: {detail[:500]}",
+            turn_id=None,
+        ).to_wire())
 
 
 def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
@@ -166,6 +188,13 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
             await _send({"type": "replayComplete"})
 
+            # Slash-command catalog (built from the SDK's get_server_info) for this session.
+            try:
+                catalog = await orchestrator.command_catalog(session_id)
+                await _send(redact_event({"type": "commands", "sessionId": session_id, "commands": catalog}))
+            except Exception:
+                log.warning("ws.attach: command_catalog failed for %s", session_id, exc_info=True)
+
             # 2) Re-emit any pending permission requests for this session.
             for p in orchestrator._registry.pending(session_id):
                 perm_frame = redact_event({
@@ -191,6 +220,18 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 ).to_wire())
                 await _send(q_wire)
 
+            # 2d) Emit the current live status so a client attaching or reconnecting
+            #     mid-turn renders the true state immediately. The live status is
+            #     otherwise only pushed on transitions, so without this a mid-turn
+            #     attach would show the reducer's initial 'idle' ("Ready"). Best-effort.
+            try:
+                await _send(redact_event(ev.Status(
+                    state=driver.current_status(),
+                    count=len(driver.queued()),
+                ).to_wire()))
+            except Exception:
+                log.warning("ws.attach: live status emit failed for %s", session_id, exc_info=True)
+
             # 2c) Send the deferred initial prompt (if any) now that the client is
             #     watching.  The prompt was stored in create_session instead of being
             #     sent immediately so that its events stream live to this first attach
@@ -198,23 +239,14 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             #     consumer exists in driver._out.  Only fires on the first attach
             #     (pop clears the entry); reconnects fall through to live-stream only.
             pending_prompt = orchestrator.pop_pending_initial_prompt(session_id)
-            pending_images = orchestrator.pop_pending_initial_images(session_id)
-            if pending_prompt is not None or pending_images:
+            pending_attachment_ids = orchestrator.pop_pending_initial_attachment_ids(session_id)
+            if pending_prompt is not None or pending_attachment_ids:
                 await orchestrator.send_prompt(
-                    session_id, pending_prompt or "", pending_images)
+                    session_id, pending_prompt or "", pending_attachment_ids)
 
             # 3) Start the live stream: forward driver events into the batcher.
-            async def _live() -> None:
-                try:
-                    async for e in driver.events():
-                        out_q.put_nowait(e.to_wire())
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    log.exception("ws.live_stream session=%s", session_id)
-
             live_tasks[session_id] = asyncio.create_task(
-                _live(), name=f"ws-live-{session_id}")
+                _forward_live(driver, out_q, session_id), name=f"ws-live-{session_id}")
 
         async def _handle_detach(session_id: str) -> None:
             task = live_tasks.pop(session_id, None)
@@ -267,7 +299,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                     await _handle_detach(session_id)
                 elif msg_type == "prompt":
                     await orchestrator.send_prompt(
-                        session_id, msg.get("text", ""), msg.get("images"))
+                        session_id, msg.get("text", ""), msg.get("attachmentIds"))
                 elif msg_type == "interrupt":
                     await orchestrator.interrupt(session_id)
                     try:
@@ -317,6 +349,22 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                     index = msg.get("index")
                     if isinstance(index, int) and not isinstance(index, bool):
                         await orchestrator.cancel_queued(session_id, index)
+                elif msg_type == "command":
+                    name = msg.get("name", "")
+                    args = msg.get("args", "")
+                    try:
+                        result = await orchestrator.run_command(session_id, name, args)
+                    except KeyError:
+                        await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                                     "name": name, "ok": False, "error": "unknown command"}))
+                    except Exception:
+                        log.warning("ws.command failed session=%s name=%s", session_id, name, exc_info=True)
+                        await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                                     "name": name, "ok": False, "error": "command failed"}))
+                    else:
+                        if result is not None:
+                            await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                                         "ok": True, **result}))
                 else:
                     await _send({"type": "error", "code": "UNKNOWN_TYPE",
                                  "message": f"Unknown message type: {msg_type!r}"})

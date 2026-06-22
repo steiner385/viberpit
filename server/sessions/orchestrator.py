@@ -24,21 +24,30 @@ from typing import Callable
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, worktrees
 from ccswitch.configdir import compose
+from ccswitch.paths import shared_base
 from server.audit import record_audit
 from server.db import db_session
 from server.db.models import Session as DbSession
 from server.sessions import adopt as _adopt
-from server.sessions import uploads
+from server.sessions import attachments as _attachments
+from server.sessions import events as ev
+from server.sessions.commands import catalog as cmd_catalog
+from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory
 from server.sessions.selection import AllAccountsBusy, select_account
-from server.sessions.title_generator import generate_title
-from server.sessions.titles import read_user_prompts_from_file
+from server.sessions.titles import read_ai_title_from_file
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
 
 log = logging.getLogger(__name__)
+
+
+# Statuses that mean a session is mid-turn or awaiting user input — restarting now
+# would lose in-flight work. All other statuses (idle / ready_review / done /
+# limited / ended / archived) are restart-safe: resume + transcript replay recover them.
+_ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input"})
 
 
 class BranchSwitchError(Exception):
@@ -69,7 +78,7 @@ class SessionOrchestrator:
         poll_interval: float = 60.0,
         usage_fn: Callable[[str], object] | None = None,
         repo_root: str | None = None,
-        title_fn: Callable | None = None,
+        titling_interval: float = 15.0,
     ) -> None:
         # work_dir param is accepted for back-compat (used in tests to keep
         # the orchestrator anchored to the repo root), but is no longer stored
@@ -87,16 +96,18 @@ class SessionOrchestrator:
         # session_id → WorktreeInfo for sessions launched in an isolated worktree
         self._worktrees: dict[str, worktrees.WorktreeInfo] = {}
         self._sdk_factory = sdk_factory or real_sdk_factory
-        # Generates an AI session title from the conversation's user prompts.
-        # Injected in tests so no real `claude` is spawned.
-        self._title_fn = title_fn or self._default_title_fn
+        # Cadence (seconds) of the background titling sweep that adopts Claude's
+        # own transcript title into still-auto-named sessions. Constructor arg so
+        # tests can drive it fast.
+        self._titling_interval: float = titling_interval
         self._registry = PermissionRegistry()
         self._drivers: dict[str, SessionDriver] = {}
         self._last_prompt: dict[str, str] = {}
         # initial_prompt deferred until first WS attach so the client is watching
         # when the turn runs — avoids losing events before any consumer exists.
         self._pending_initial_prompt: dict[str, str] = {}
-        self._pending_initial_images: dict[str, list] = {}
+        # Deferred attachment ids for the initial prompt, sent on first WS attach.
+        self._pending_initial_attachment_ids: dict[str, list[str]] = {}
 
         # Build a live-session-aware usage_fn: when an account has a live session
         # the SDK owns its token family, so the poller must not independently
@@ -120,6 +131,7 @@ class SessionOrchestrator:
         self._records: dict[str, SessionRecord] = {}
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
+        self._titling_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
         # Serialises the check-build-register critical section in ensure_driver
@@ -133,21 +145,26 @@ class SessionOrchestrator:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Start the usage poller and the rotation monitor."""
+        """Start the usage poller, the rotation monitor and the titling sweep."""
         await self._poller.start()
         self._rotation_task = asyncio.create_task(
             self._rotation_monitor(), name="rotation-monitor"
         )
+        self._titling_task = asyncio.create_task(
+            self._titling_monitor(), name="titling-monitor"
+        )
 
     async def stop(self) -> None:
-        """Stop the rotation monitor and usage poller."""
-        if self._rotation_task is not None:
-            self._rotation_task.cancel()
-            try:
-                await self._rotation_task
-            except asyncio.CancelledError:
-                pass
-            self._rotation_task = None
+        """Stop the titling sweep, rotation monitor and usage poller."""
+        for attr in ("_titling_task", "_rotation_task"):
+            task = getattr(self, attr)
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                setattr(self, attr, None)
         await self._poller.stop()
 
     # ------------------------------------------------------------------
@@ -166,7 +183,7 @@ class SessionOrchestrator:
         repo: str | None = None,
         identity: str = "system",
         permission_mode: str = "interactive",
-        images: list[dict] | None = None,
+        attachment_ids: list[str] | None = None,
         name_is_auto: bool = True,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
@@ -245,8 +262,8 @@ class SessionOrchestrator:
             # the client is already watching when the turn runs — events stream
             # live, so nothing is lost.
             self._pending_initial_prompt[session_id] = initial_prompt
-        if images:
-            self._pending_initial_images[session_id] = images
+        if attachment_ids:
+            self._pending_initial_attachment_ids[session_id] = list(attachment_ids)
 
         # Persist DB row
         async with db_session() as db:
@@ -369,41 +386,22 @@ class SessionOrchestrator:
         if status == "done":
             await self._maybe_apply_auto_name(session_id)
 
-    async def _default_title_fn(self, prompts, *, account, cwd):
-        """Default title generator: a one-shot Haiku query under the account."""
-        return await generate_title(
-            prompts, config_dir=str(compose(account)), cwd=cwd
-        )
-
-    def _account_limited(self, account: str) -> bool:
-        """True if *account*'s last-known session usage is at/above the ceiling.
-
-        Best-effort: an unknown account (no cached usage) is treated as not
-        limited — a doomed title query would just degrade silently anyway.
-        """
-        usage = self._poller.cached(account)
-        return usage is not None and getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
-
     async def _maybe_apply_auto_name(self, session_id: str) -> None:
-        """If the name is still auto, generate an AI title from the user prompts.
+        """If the session name is still auto, adopt Claude's transcript title.
 
-        Skips manually-renamed sessions and accounts at their usage ceiling.
-        Best-effort: any miss (no transcript, no prompts, generator failure)
-        leaves the name unchanged and retries on the next completed turn.
+        Updates the DB + in-memory record and, when a live driver exists, pushes a
+        ``Title(source="claude")`` event so the in-session header converges with the
+        dashboard. Idempotent: a title equal to the current name is a no-op.
         """
         rec = self._records.get(session_id)
         if rec is None or not rec.name_is_auto:
             return
-        if self._account_limited(rec.account):
-            return
         path = self.transcript_path(session_id)
         if not path:
             return
-        prompts = await asyncio.to_thread(read_user_prompts_from_file, path)
-        if not prompts:
-            return
-        title = await self._title_fn(prompts, account=rec.account, cwd=rec.cwd)
-        if not title or title == rec.name:
+        title = await asyncio.to_thread(read_ai_title_from_file, path)
+        rec = self._records.get(session_id)
+        if rec is None or not rec.name_is_auto or not title or title == rec.name:
             return
         rec.name = title
         async with db_session() as db:
@@ -411,7 +409,30 @@ class SessionOrchestrator:
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(name=title)
             )
+        driver = self._drivers.get(session_id)
+        if driver is not None:
+            await driver._out.put(ev.Title(title=title, source="claude"))
         log.info("session.auto_name id=%s title=%r", session_id, title)
+
+    async def _titling_sweep(self) -> None:
+        """One titling pass: refresh the auto-name of every active, still-auto session.
+
+        The turn-boundary trigger ("done") handles the common case; this catches titles
+        Claude writes after the final turn or slowly mid-turn. Never raises.
+        """
+        for sid, rec in list(self._records.items()):
+            if rec.status == "ended" or not rec.name_is_auto:
+                continue
+            try:
+                await self._maybe_apply_auto_name(sid)
+            except Exception:  # never let one session break the sweep
+                log.warning("titling sweep failed for %s", sid, exc_info=True)
+
+    async def _titling_monitor(self) -> None:
+        """Background loop: sweep titles every ``self._titling_interval`` seconds."""
+        while True:
+            await self._titling_sweep()
+            await asyncio.sleep(self._titling_interval)
 
     async def _persist_claude_session_id(self, session_id: str, claude_session_id: str) -> None:
         """Callback fired by the driver the first time it captures the Claude session id.
@@ -500,6 +521,14 @@ class SessionOrchestrator:
             self._event_subscribers.remove(q)
         except ValueError:
             pass
+
+    def active_session_count(self) -> int:
+        """Number of sessions currently mid-turn or awaiting input (restart-blocking)."""
+        return sum(1 for r in self._records.values() if r.status in _ACTIVE_STATUSES)
+
+    def restart_safe(self) -> bool:
+        """True when a restart now would interrupt no in-flight work."""
+        return self.active_session_count() == 0
 
     def _publish_event(self, event: dict) -> None:
         """Fan an event out to all subscribers (non-blocking)."""
@@ -752,34 +781,30 @@ class SessionOrchestrator:
         """
         return self._pending_initial_prompt.pop(session_id, None)
 
-    def pop_pending_initial_images(self, session_id: str) -> list | None:
-        """Return and remove the deferred initial images for session_id, or None.
+    def pop_pending_initial_attachment_ids(self, session_id: str) -> list[str] | None:
+        """Return and remove the deferred initial attachment ids for session_id, or None.
 
         Called by the WS bridge on the first attach alongside pop_pending_initial_prompt.
         Clears the entry so subsequent attaches (reconnects) do not re-send them.
         """
-        return self._pending_initial_images.pop(session_id, None)
+        return self._pending_initial_attachment_ids.pop(session_id, None)
 
-    async def send_prompt(self, session_id, text, images=None):
+    async def send_prompt(self, session_id, text, attachment_ids=None):
         d = self._drivers.get(session_id)
         if not d:
             return
-        _raw = list(images or [])
-        if len(_raw) > uploads.MAX_IMAGES:
-            log.warning("send_prompt: truncating images from %d to %d session=%s",
-                        len(_raw), uploads.MAX_IMAGES, session_id)
-        images = _raw[:uploads.MAX_IMAGES]
+        ids = list(attachment_ids or [])
+        if len(ids) > _attachments.MAX_PER_MESSAGE:
+            log.warning("send_prompt: capping attachments from %d to %d session=%s",
+                        len(ids), _attachments.MAX_PER_MESSAGE, session_id)
         resolved: list[dict] = []
-        for ref in images:
-            try:
-                path = uploads.associate(session_id, ref["sha"], ref["mime"])
-            except Exception:
-                log.warning("send_prompt: dropping image sha=%s (associate failed) session=%s",
-                            ref.get("sha"), session_id, exc_info=True)
-                continue
-            resolved.append({
-                "sha": ref["sha"], "mime": ref["mime"], "name": ref.get("name", ""),
-                "path": str(path), "url": f"/api/sessions/{session_id}/images/{ref['sha']}"})
+        if ids:
+            # Bind rows to this session + a fresh turn id, then resolve the
+            # content-addressed on-disk paths the driver loads into image blocks.
+            turn_id = uuid.uuid4().hex
+            async with db_session() as db:
+                resolved = await _attachments.resolve_and_bind(
+                    db, session_id, turn_id, ids)
         self._last_prompt[session_id] = text
         await d.send_prompt(text, resolved)
 
@@ -792,6 +817,30 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         if d:
             await d.set_permission_mode(mode)
+
+    async def command_catalog(self, session_id) -> list[dict]:
+        """Build the per-session slash-command catalog (wire dicts). [] if no driver."""
+        d = self._drivers.get(session_id)
+        if d is None:
+            return []
+        try:
+            info = await d.server_info()
+        except Exception:
+            log.warning("command_catalog: server_info failed session=%s", session_id, exc_info=True)
+            return []
+        return [c.to_wire() for c in cmd_catalog.build_catalog(info)]
+
+    async def run_command(self, session_id, name, args) -> dict | None:
+        """Dispatch a slash command. Raises KeyError if the command is unknown."""
+        d = self._drivers.get(session_id)
+        if d is None:
+            raise KeyError(name)
+        info = await d.server_info()
+        by_name = {c.name: c for c in cmd_catalog.build_catalog(info)}
+        cmd = by_name.get(str(name).lstrip("/"))
+        if cmd is None:
+            raise KeyError(name)
+        return await cmd_dispatcher.dispatch(d, cmd, args or "")
 
     async def cancel_queued(self, session_id, index: int) -> bool:
         d = self._drivers.get(session_id)
@@ -813,6 +862,15 @@ class SessionOrchestrator:
 
         Falls back to the SessionRecord + compose(account) when the driver is absent
         or has no claude_session_id (e.g. rehydrated/detached sessions).
+
+        Each account's per-account `projects` dir is itself a symlink to the one shared
+        projects tree (configdir.SHARE_ALLOWLIST). That symlink can rot — point at itself
+        or a sibling account — which makes the glob through `<config_dir>/projects` resolve
+        nothing and silently blanks the transcript on attach (idle "Waiting for input"
+        sessions only show replayed history, so they go blank; a live session masks it by
+        streaming). Since the claude_session_id is globally unique and every transcript
+        physically lives under the shared base, we also search shared_base()/projects so
+        replay survives a broken per-account symlink.
         """
         import glob as _glob
 
@@ -825,8 +883,20 @@ class SessionOrchestrator:
                 return None
             config_dir, csid = str(compose(rec.account)), rec.claude_session_id
 
-        matches = _glob.glob(str(Path(config_dir) / "projects" / "*" / f"{csid}.jsonl"))
-        return matches[0] if matches else None
+        # Probe the per-account config dir first (the common, healthy case), then the
+        # canonical shared base as a backstop against a broken per-account symlink.
+        # Dedup by resolved path so a healthy symlink isn't globbed twice.
+        seen: set[str] = set()
+        for root in (Path(config_dir), Path(shared_base())):
+            projects = root / "projects"
+            key = str(projects.resolve()) if projects.exists() else str(projects)
+            if key in seen:
+                continue
+            seen.add(key)
+            matches = _glob.glob(str(projects / "*" / f"{csid}.jsonl"))
+            if matches:
+                return matches[0]
+        return None
 
     # ------------------------------------------------------------------
     # Rotation monitor (background task)
@@ -1099,9 +1169,15 @@ class SessionOrchestrator:
 
         async with db_session() as db:
             from sqlalchemy import delete as sa_delete
+            # Remove the session's attachment rows + (dedup-aware) on-disk files
+            # before the session row itself.
+            n_att = await _attachments.delete_for_session(db, session_id)
             await db.execute(
                 sa_delete(DbSession).where(DbSession.id == session_id)
             )
+        if n_att:
+            log.info("session.permanent_delete id=%s removed %d attachment(s)",
+                     session_id, n_att)
         log.info("session.permanent_delete id=%s db row removed", session_id)
         return True
 

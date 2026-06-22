@@ -1,4 +1,5 @@
-from server.sessions.events import ToolKind, tool_kind, TextDelta, ToolCall, Status, SessionMeta, TurnEnd
+from server.sessions.events import (ToolKind, tool_kind, TextDelta, ToolCall, Status, SessionMeta,
+                                     TurnEnd, TurnStart, ThinkingDelta, ToolResult)
 
 def test_tool_kind_maps_known_names():
     assert tool_kind("Edit") is ToolKind.EDIT
@@ -6,9 +7,17 @@ def test_tool_kind_maps_known_names():
     assert tool_kind("Grep") is ToolKind.SEARCH
     assert tool_kind("SomethingNew") is ToolKind.UNKNOWN
 
+def test_tool_kind_maps_web_task_and_mcp():
+    assert tool_kind("WebFetch") is ToolKind.WEB
+    assert tool_kind("WebSearch") is ToolKind.WEB
+    assert tool_kind("Task") is ToolKind.TASK
+    # Any mcp__<server>__<tool> name is the MCP kind, regardless of server/tool.
+    assert tool_kind("mcp__github__list_prs") is ToolKind.MCP
+    assert tool_kind("mcp__plugin_railway_railway__deploy") is ToolKind.MCP
+
 def test_textdelta_to_wire():
     e = TextDelta(turn_id="t1", text="hi", src_uuid="u1")
-    assert e.to_wire() == {"type": "textDelta", "turnId": "t1", "text": "hi", "srcUuid": "u1"}
+    assert e.to_wire() == {"type": "textDelta", "turnId": "t1", "text": "hi", "srcUuid": "u1", "parentToolUseId": None}
 
 def test_status_to_wire_is_structured():
     assert Status(state="queued", count=2).to_wire() == {"type": "status", "state": "queued", "count": 2}
@@ -27,3 +36,18 @@ def test_turn_end_to_wire_includes_cost():
     w = e.to_wire()
     assert w["type"] == "turnEnd" and w["usage"] == {"input_tokens": 5}
     assert w["costUsd"] == 0.25 and w["turnId"] == "t1"
+
+def test_block_events_carry_parent_tool_use_id_on_wire():
+    tc = ToolCall("t1", "g1", "Grep", ToolKind.SEARCH, {}, src_uuid="u1",
+                  parent_tool_use_id="task1")
+    assert tc.to_wire()["parentToolUseId"] == "task1"
+
+    td = TextDelta("t1", "hi", src_uuid="u1", parent_tool_use_id="task1")
+    assert td.to_wire()["parentToolUseId"] == "task1"
+
+    tr = ToolResult("g1", True, {"content": "x"}, src_uuid="u1", parent_tool_use_id="task1")
+    assert tr.to_wire()["parentToolUseId"] == "task1"
+
+def test_block_events_default_parent_to_none_on_wire():
+    for e in (TurnStart("t1"), TurnEnd("t1"), ThinkingDelta("t1", "z")):
+        assert e.to_wire()["parentToolUseId"] is None

@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Plus, RefreshCw, Settings, Pencil, Check, X, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -34,7 +34,9 @@ import {
 } from '@/api/hooks'
 import type { Account, Session, ArchivedSession } from '@/api/types'
 import { PERMISSION_MODES } from '@/session/permissionModes'
+import { sortSessionsByTier } from '@/session/statusTier'
 import { setLastRepo } from '@/lib/lastRepo'
+import { useNeedsYouTitle } from '@/hooks/useNeedsYouTitle'
 
 // ── New Session Dialog ──────────────────────────────────────────────────────
 
@@ -672,8 +674,16 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
             <StatusPill status={account.status} />
             {account.usage && (
               <>
-                <UsageBadge pct={account.usage.session.pct} label="session" />
-                <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
+                <UsageBadge
+                  pct={account.usage.session.pct}
+                  label="session"
+                  resetsAt={account.usage.session.resetsAt}
+                />
+                <UsageBadge
+                  pct={account.usage.weekly.pct}
+                  label="weekly"
+                  resetsAt={account.usage.weekly.resetsAt}
+                />
               </>
             )}
             {needsReauth && (
@@ -927,8 +937,9 @@ function ArchivedList({ sessions, onReview, onUnarchive, onPermanentDelete, unar
     <ul className="space-y-2" aria-label="Archived sessions">
       {sessions.map((s) => {
         const displayName = s.name || s.id.slice(0, 8)
-        const archivedDate = new Date(s.archivedAt).toLocaleDateString(undefined, {
+        const archivedDate = new Date(s.archivedAt).toLocaleString(undefined, {
           year: 'numeric', month: 'short', day: 'numeric',
+          hour: 'numeric', minute: '2-digit',
         })
         return (
           <li
@@ -1025,6 +1036,8 @@ interface DashboardProps {
 export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab, activeTab: activeTabProp, onTabChange, dialog, onDialogChange }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
+  const orderedSessions = useMemo(() => sortSessionsByTier(sessions), [sessions])
+  useNeedsYouTitle(sessions)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const { data: settingsData } = useSettings()
   const reposQuery = useGithubRepos()
@@ -1066,7 +1079,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   // ── Keyboard selection state ─────────────────────────────────────────────────
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
-  const selectedSession = highlightedIndex >= 0 ? sessions[highlightedIndex] : undefined
+  const selectedSession = highlightedIndex >= 0 ? orderedSessions[highlightedIndex] : undefined
   const selectedId = selectedSession?.id ?? null
 
   // ── Press-twice delete guard ──────────────────────────────────────────────────
@@ -1201,6 +1214,31 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     })
   }
 
+  // Up/Down arrows navigate the session list even when real focus is NOT in the
+  // dispatch textarea — e.g. the user reached the list via the tab bar (where ←/→
+  // cycles tabs) and focus is parked on the "Sessions" tab button. The DispatchBar
+  // textarea handles its own ↑/↓ (and the repo <select> drives itself), so we bail
+  // out whenever focus is inside any editable/form control or an open dialog; that
+  // also prevents double-handling when the textarea already consumed the key.
+  useEffect(() => {
+    if (activeTab !== 'sessions') return
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+      if (e.defaultPrevented) return
+      const t = e.target as HTMLElement | null
+      const tag = t?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable) return
+      // A modal traps its own focus; never move the background highlight under it.
+      if (document.querySelector('[role="dialog"]')) return
+      e.preventDefault()
+      handleNavigate(e.key === 'ArrowUp' ? 'up' : 'down')
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+    // Re-subscribe when the list length changes so handleNavigate's clamp stays correct.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, sessions.length])
+
   function handleOpenHighlighted() {
     if (selectedSession) handleOpen(selectedSession.id)
   }
@@ -1244,7 +1282,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         clearTimeout(pendingDeleteTimeoutRef.current)
         pendingDeleteTimeoutRef.current = null
       }
-      const s = sessions[action.index]
+      const s = orderedSessions[action.index]
       if (s) {
         setHighlightedIndex(action.index)
         handleOpen(s.id)
@@ -1260,7 +1298,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     }
   }
 
-  function handleDispatch({ initialPrompt, repo, images }: { initialPrompt: string; repo: string | null; images: { sha: string; mime: string; name: string }[] }) {
+  function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
     clearPendingDelete()
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     createSession.mutate(
@@ -1268,7 +1306,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         initialPrompt,
         repo: repo ?? undefined,
         branch: repoInfo?.defaultBranch ?? undefined,
-        images: images.length ? images : undefined,
+        attachmentIds: attachmentIds.length ? attachmentIds : undefined,
       },
       {
         onSuccess: (session) => {
@@ -1463,7 +1501,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           </div>
 
           <SessionList
-            sessions={sessions}
+            sessions={orderedSessions}
             accounts={accounts}
             isLoading={isLoading}
             selectedId={selectedId}

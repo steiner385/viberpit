@@ -156,4 +156,81 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
     await user.keyboard('{Escape}')
     expect(onBack).not.toHaveBeenCalled()
   })
+
+  it('ArrowLeft on an empty composer calls onBack', async () => {
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    await user.click(screen.getByRole('textbox', { name: /message/i }))
+    await user.keyboard('{ArrowLeft}')
+    expect(onBack).toHaveBeenCalledOnce()
+  })
+
+  it('ArrowLeft does NOT call onBack when the composer has text', async () => {
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    const box = screen.getByRole('textbox', { name: /message/i })
+    await user.click(box)
+    await user.type(box, 'wip')
+    await user.keyboard('{ArrowLeft}')
+    expect(onBack).not.toHaveBeenCalled()
+  })
+
+  it('ArrowLeft does NOT call onBack while a permission card is pending', async () => {
+    const { act } = await import('@testing-library/react')
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    await act(async () => {
+      capturedHandlers['sessionEvent']?.forEach((cb) => cb({ type: 'turnStart', turnId: 't1' }))
+      capturedHandlers['sessionEvent']?.forEach((cb) =>
+        cb({
+          type: 'permissionRequest',
+          permId: 'perm-1',
+          turnId: 't1',
+          tool: 'bash',
+          toolKind: 'bash',
+          input: { command: 'ls' },
+          plan: false,
+        }),
+      )
+    })
+    await user.keyboard('{ArrowLeft}')
+    expect(onBack).not.toHaveBeenCalled()
+  })
+
+  it('Ctrl+Z force-detaches even while a permission card is pending', async () => {
+    const { act } = await import('@testing-library/react')
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    await act(async () => {
+      capturedHandlers['sessionEvent']?.forEach((cb) => cb({ type: 'turnStart', turnId: 't1' }))
+      capturedHandlers['sessionEvent']?.forEach((cb) =>
+        cb({
+          type: 'permissionRequest',
+          permId: 'perm-1',
+          turnId: 't1',
+          tool: 'bash',
+          toolKind: 'bash',
+          input: { command: 'ls' },
+          plan: false,
+        }),
+      )
+    })
+    await user.keyboard('{Control>}z{/Control}')
+    expect(onBack).toHaveBeenCalledOnce()
+  })
+
+  it('Ctrl+Z does NOT detach when the composer has text (undo preserved)', async () => {
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    const box = screen.getByRole('textbox', { name: /message/i })
+    await user.click(box)
+    await user.type(box, 'wip')
+    await user.keyboard('{Control>}z{/Control}')
+    expect(onBack).not.toHaveBeenCalled()
+  })
 })

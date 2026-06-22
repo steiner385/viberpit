@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
 import asyncio
+import functools
 import logging
 import os
 import signal
+import subprocess
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
@@ -20,12 +22,36 @@ from server.reauth import ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
 
 # API routers (T036–T038)
-from server.api.sessions import router as sessions_router, uploads_router
+from server.api.sessions import router as sessions_router
+from server.api.attachments import router as attachments_router
 from server.api.accounts import router as accounts_router
 from server.api.auth import router as auth_router
 from server.api.config import router as config_router
 from server.api.repos import router as github_router
 from server.api.settings import router as settings_router
+
+
+@functools.lru_cache(maxsize=1)
+def running_git_sha() -> str:
+    """Short git SHA of the running code, for deploy verification via /healthz.
+
+    Resolved once: ``CCSWITCH_GIT_SHA`` (the deployer can inject it) wins; else
+    ``git rev-parse --short HEAD`` against this checkout; else ``"unknown"`` (e.g.
+    a source tarball with no .git). Lets a deploy assert THIS commit is live, not
+    just that some process answered.
+    """
+    env_sha = os.environ.get("CCSWITCH_GIT_SHA")
+    if env_sha:
+        return env_sha.strip()
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        return out.stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
 
 
 @asynccontextmanager
@@ -88,17 +114,19 @@ async def _lifespan(app: FastAPI):
     # Start the singleton orchestrator (usage poller + rotation monitor)
     await app.state.orchestrator.start()
 
-    # Sweep stale staged uploads left over from a previous crashed run
-    from server.sessions import uploads
+    # Sweep stale unbound attachments (uploaded but never sent) from prior runs.
+    from server.db import db_session as _db_session
+    from server.sessions import attachments as _attachments
     try:
-        n = uploads.sweep_staging()
+        async with _db_session() as _db:
+            n = await _attachments.sweep_orphans(_db)
         if n:
             _logging.getLogger("server").info(
-                "startup: swept %d stale staged upload(s)", n
+                "startup: swept %d orphan attachment(s)", n
             )
     except Exception:
         _logging.getLogger("server").warning(
-            "startup: staging sweep failed", exc_info=True
+            "startup: attachment orphan sweep failed", exc_info=True
         )
 
     yield
@@ -134,17 +162,22 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
         # Exercises every Session model column; a drifted DB raises → 500.
+        orch = getattr(app.state, "orchestrator", None)
+        active = orch.active_session_count() if orch is not None else 0
         try:
             async with _db.db_session() as db:
                 await db.execute(_sa_select(_SessionModel).limit(1))
-            return JSONResponse({"status": "ok"})
+            return JSONResponse({
+                "status": "ok", "sha": running_git_sha(),
+                "busy": active > 0, "activeSessions": active,
+            })
         except Exception as exc:  # noqa: BLE001 — any DB/schema failure is unhealthy
             logging.getLogger("server").warning("healthz schema check failed", exc_info=exc)
-            return JSONResponse({"status": "schema_error"}, status_code=500)
+            return JSONResponse({"status": "schema_error", "sha": running_git_sha()}, status_code=500)
 
     # REST API routers (T036–T038)
     app.include_router(sessions_router)
-    app.include_router(uploads_router)
+    app.include_router(attachments_router)
     app.include_router(accounts_router)
     app.include_router(auth_router)
     app.include_router(config_router)

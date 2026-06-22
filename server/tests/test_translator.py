@@ -1,7 +1,7 @@
 from server.tests.fakes import fake_sdk as f
 from server.sessions.translator import Translator
 from server.sessions.events import (TurnStart, ThinkingDelta, ToolCall, ToolResult,
-                                     TurnEnd, ToolKind, SessionMeta)
+                                     TurnEnd, ToolKind, SessionMeta, TextDelta, ErrorEvent)
 from claude_agent_sdk import TextBlock
 
 def _run(msgs):
@@ -82,6 +82,54 @@ def test_second_turn_resets_state():
     assert sum(1 for e in out2 if isinstance(e, ToolCall)) == 1  # not deduped across turns
 
 
+def test_success_result_emits_no_error_event():
+    msgs = [f.stream_start(uuid="t1"), f.stream_text("hi", uuid="t1"), f.result(uuid="t1")]
+    _, out = _run(msgs)
+    assert not any(isinstance(e, ErrorEvent) for e in out)
+    assert any(isinstance(e, TurnEnd) for e in out)
+
+
+def test_max_turns_error_emits_error_event_before_turn_end():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="error_max_turns", is_error=True,
+                     result="Reached the maximum number of turns")]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    end = next(e for e in out if isinstance(e, TurnEnd))
+    assert err.code == "max_turns"
+    assert "maximum number of turns" in err.message
+    assert err.turn_id == "t1"
+    # error precedes the turnEnd so the UI shows it inline before the turn closes
+    assert out.index(err) < out.index(end)
+
+
+def test_execution_error_maps_to_execution_error_code():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="error_during_execution", is_error=True,
+                     errors=["boom", "kapow"])]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    assert err.code == "execution_error"
+    assert "boom" in err.message and "kapow" in err.message
+
+
+def test_api_error_status_maps_to_api_code():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="success", is_error=True, api_error_status=429)]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    assert err.code == "api_429"
+    assert "429" in err.message
+
+
+def test_error_result_without_text_has_default_message():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="error_during_execution", is_error=True)]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    assert err.message  # non-empty fallback
+
+
 def test_askuserquestion_tool_use_emits_no_toolcall():
     """AskUserQuestion tool_use blocks must NOT produce a ToolCall event.
     The driver emits ev.Question instead; a raw ToolCall alongside it would make
@@ -95,6 +143,34 @@ def test_askuserquestion_tool_use_emits_no_toolcall():
     assert tool_calls == [], (
         f"expected no ToolCall for AskUserQuestion, got {tool_calls}"
     )
+
+def test_subagent_events_tagged_and_separately_turned():
+    msgs = [f.stream_start(uuid="t1"),
+            f.tool_use("task1", "Task", {"subagent_type": "Explore", "description": "x"}, uuid="t1"),
+            f.stream_start(uuid="sa1", pid="task1"),
+            f.stream_text("sub-text", uuid="sa1", pid="task1"),
+            f.tool_use("g1", "Grep", {"pattern": "foo"}, uuid="sa1", pid="task1"),
+            f.result(uuid="t1")]
+    _, out = _run(msgs)
+    task = next(e for e in out if isinstance(e, ToolCall) and e.name == "Task")
+    grep = next(e for e in out if isinstance(e, ToolCall) and e.name == "Grep")
+    assert task.parent_tool_use_id is None
+    assert grep.parent_tool_use_id == "task1"
+    sub_text = next(e for e in out if isinstance(e, TextDelta) and e.parent_tool_use_id == "task1")
+    main_start = next(e for e in out if isinstance(e, TurnStart) and e.parent_tool_use_id is None)
+    assert sub_text.turn_id != main_start.turn_id
+
+def test_parallel_subagents_get_distinct_turns():
+    msgs = [f.stream_start(uuid="t1"),
+            f.tool_use("taskA", "Task", {}, uuid="t1"),
+            f.tool_use("taskB", "Task", {}, uuid="t1"),
+            f.stream_start(uuid="saA", pid="taskA"), f.stream_text("A", uuid="saA", pid="taskA"),
+            f.stream_start(uuid="saB", pid="taskB"), f.stream_text("B", uuid="saB", pid="taskB"),
+            f.result(uuid="t1")]
+    _, out = _run(msgs)
+    starts = {e.parent_tool_use_id: e.turn_id for e in out if isinstance(e, TurnStart)}
+    assert starts["taskA"] != starts["taskB"]
+    assert starts[None] not in (starts["taskA"], starts["taskB"])
 
 
 # ---- outcome classification tests ----

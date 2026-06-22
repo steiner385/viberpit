@@ -1,26 +1,25 @@
 import {
-  Check,
   CheckCircle2,
   AlertTriangle,
   WifiOff,
   CircleAlert,
-  Clock,
-  X,
-  Eye,
-  Loader2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { formatResetTime } from '@/lib/formatReset'
 import type { AccountStatus, SessionStatus } from '@/api/types'
+import { statusPresentation, statusTier } from '@/session/statusTier'
 
 // ── UsageBadge ──────────────────────────────────────────────────────────────
 
 interface UsageBadgeProps {
   pct: number
   label?: string  // e.g. "session" or "weekly"
+  /** ISO timestamp the window resets at, or null when no window is active. */
+  resetsAt?: string | null
   className?: string
 }
 
-export function UsageBadge({ pct, label, className }: UsageBadgeProps) {
+export function UsageBadge({ pct, label, resetsAt, className }: UsageBadgeProps) {
   const clampedPct = Math.min(100, Math.max(0, pct))
   // Color classes supplementary only — text carries the info
   const barColor =
@@ -32,13 +31,28 @@ export function UsageBadge({ pct, label, className }: UsageBadgeProps) {
     ? `${label} usage: ${clampedPct}%`
     : `Usage: ${clampedPct}%`
 
+  // Tooltip is self-describing (it has no visible label next to it on hover);
+  // the aria-label already names the window, so it only appends the reset phrase.
+  const windowName = label ? `${label} limit` : 'Usage limit'
+  const resetText = formatResetTime(resetsAt)
+  const resetPhrase = resetText ? `resets ${resetText}` : 'no active window'
+  const title = `${windowName} · ${resetPhrase}`
+
   return (
     <span
       className={cn('inline-flex flex-col gap-0.5', className)}
-      aria-label={ariaLabel}
+      title={title}
+      aria-label={`${ariaLabel} — ${resetPhrase}`}
     >
-      <span className="text-xs font-medium tabular-nums leading-none text-gray-900 dark:text-gray-100">
-        {clampedPct}%
+      <span className="flex items-baseline gap-1 leading-none">
+        {label && (
+          <span className="text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            {label}
+          </span>
+        )}
+        <span className="text-xs font-medium tabular-nums text-gray-900 dark:text-gray-100">
+          {clampedPct}%
+        </span>
       </span>
       <span className="h-1 w-12 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
         <span
@@ -52,6 +66,16 @@ export function UsageBadge({ pct, label, className }: UsageBadgeProps) {
 }
 
 // ── StatusPill ───────────────────────────────────────────────────────────────
+
+/** Subtle pill background derived from the status's text-colour family, so the
+ *  badge reads as a real chip without maintaining a parallel colour table. */
+function pillTone(textClass: string): string {
+  if (textClass.includes('emerald')) return 'bg-emerald-50 dark:bg-emerald-950/40'
+  if (textClass.includes('amber')) return 'bg-amber-50 dark:bg-amber-950/40'
+  if (textClass.includes('red')) return 'bg-red-50 dark:bg-red-950/40'
+  if (textClass.includes('blue')) return 'bg-blue-50 dark:bg-blue-950/40'
+  return 'bg-gray-100 dark:bg-gray-800'
+}
 
 type AnyStatus = AccountStatus | SessionStatus
 
@@ -94,89 +118,21 @@ const ACCOUNT_STATUS_MAP: Record<AccountStatus, StatusConfig> = {
   },
 }
 
-// Keyed by string (not SessionStatus) so the legacy live-event 'working' alias can
-// coexist with the richer dashboard vocabulary without a type error.
-const SESSION_STATUS_MAP: Record<string, StatusConfig> = {
-  idle: {
-    label: 'Idle',
-    Icon: Clock,
-    textClass: 'text-gray-600 dark:text-gray-400',
-  },
-  in_progress: {
-    label: 'In progress',
-    Icon: Loader2,
-    textClass: 'text-emerald-700 dark:text-emerald-400',
-  },
-  // Alias: the in-session StatusBar still emits the live 'working' state.
-  working: {
-    label: 'In progress',
-    Icon: Loader2,
-    textClass: 'text-emerald-700 dark:text-emerald-400',
-  },
-  waiting_input: {
-    label: 'Waiting for input',
-    Icon: CircleAlert,
-    textClass: 'text-amber-700 dark:text-amber-400',
-  },
-  ready_review: {
-    label: 'Ready for review',
-    Icon: Eye,
-    textClass: 'text-blue-700 dark:text-blue-400',
-  },
-  done: {
-    label: 'Done',
-    Icon: Check,
-    textClass: 'text-gray-600 dark:text-gray-400',
-  },
-  complete: {
-    label: 'Complete',
-    Icon: CheckCircle2,
-    textClass: 'text-emerald-700 dark:text-emerald-400',
-  },
-  needs_attention: {
-    label: 'Needs attention',
-    Icon: AlertTriangle,
-    textClass: 'text-amber-700 dark:text-amber-400',
-  },
-  limited: {
-    label: 'Limited',
-    Icon: AlertTriangle,
-    textClass: 'text-amber-700 dark:text-amber-400',
-  },
-  ended: {
-    label: 'Ended',
-    Icon: X,
-    textClass: 'text-gray-600 dark:text-gray-400',
-  },
-}
-
-const ALL_STATUS_MAP: Record<string, StatusConfig> = {
-  ...ACCOUNT_STATUS_MAP,
-  ...SESSION_STATUS_MAP,
-}
-
 interface StatusPillProps {
   status: AnyStatus
   className?: string
 }
 
-/** Subtle pill background derived from the status's text-colour family, so the
- *  badge reads as a real chip without maintaining a parallel colour table. */
-function pillTone(textClass: string): string {
-  if (textClass.includes('emerald')) return 'bg-emerald-50 dark:bg-emerald-950/40'
-  if (textClass.includes('amber')) return 'bg-amber-50 dark:bg-amber-950/40'
-  if (textClass.includes('red')) return 'bg-red-50 dark:bg-red-950/40'
-  if (textClass.includes('blue')) return 'bg-blue-50 dark:bg-blue-950/40'
-  return 'bg-gray-100 dark:bg-gray-800'
-}
-
 export function StatusPill({ status, className }: StatusPillProps) {
-  const config = ALL_STATUS_MAP[status] ?? {
-    label: status,
-    Icon: CircleAlert,
-    textClass: 'text-gray-600 dark:text-gray-400',
-  }
-  const { label, Icon, textClass } = config
+  // Account statuses have their own vocabulary; session statuses use the shared map.
+  const account = (ACCOUNT_STATUS_MAP as Record<string, StatusConfig>)[status]
+  const { label, Icon, textClass, pulse } = account
+    ? { ...account, pulse: false }
+    : (() => {
+        const p = statusPresentation(status)
+        const tier = statusTier(status)
+        return { label: p.label, Icon: p.Icon, textClass: p.textClass, pulse: tier === 'needs-you' || tier === 'error' }
+      })()
 
   return (
     <span
@@ -184,6 +140,7 @@ export function StatusPill({ status, className }: StatusPillProps) {
         'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
         textClass,
         pillTone(textClass),
+        pulse && 'motion-safe:animate-pulse',
         className,
       )}
       aria-label={`Status: ${label}`}

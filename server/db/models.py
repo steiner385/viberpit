@@ -6,7 +6,7 @@ Secrets and tokens are never stored here.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -15,6 +15,11 @@ from sqlalchemy.types import JSON
 
 def _new_uuid() -> str:
     return str(uuid.uuid4())
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now (avoids the deprecated naive datetime.utcnow)."""
+    return datetime.now(timezone.utc)
 
 
 class Base(DeclarativeBase):
@@ -77,6 +82,32 @@ class AuditEvent(Base):
     type: Mapped[str] = mapped_column(String, nullable=False)
     identity: Mapped[str] = mapped_column(String, nullable=False)
     detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class Attachment(Base):
+    """An image uploaded by a user and attached to a prompt.
+
+    The DB row ``id`` (UUID) is the public API handle (``/api/attachments/{id}``).
+    On disk the bytes live at ``attachments_dir()/{sha256}.{ext}`` — content-addressed,
+    so re-uploading identical bytes reuses the existing file (dedup). Multiple rows may
+    therefore reference the same on-disk file; deletion must be reference-aware.
+    """
+
+    __tablename__ = "attachments"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    # Bound to a session+turn on send; NULL while still an unbound (orphan) upload.
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    turn_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    media_type: Mapped[str] = mapped_column(String, nullable=False)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    # sha256 of the bytes — content-addressed on-disk filename + dedup key.
+    sha256: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    uploaded_by: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
 
 
 class AppSettings(Base):

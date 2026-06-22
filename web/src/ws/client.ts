@@ -19,6 +19,8 @@ export interface WsUsageMsg        { type: 'usage';         account: string; ses
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null }
 export interface WsBatchMsg        { type: 'batch';         events: SessionEvent[] }
+export interface WsCommandsMsg      { type: 'commands';      sessionId: string; commands: import('@/session/events').Command[] }
+export interface WsCommandResultMsg { type: 'commandResult'; sessionId: string; ok: boolean; name?: string; render?: 'help' | 'context' | 'notice' | 'clear'; data?: unknown; error?: string }
 
 export type WsInboundMsg =
   | WsStatusMsg
@@ -26,6 +28,8 @@ export type WsInboundMsg =
   | WsRotatedMsg
   | WsErrorMsg
   | WsBatchMsg
+  | WsCommandsMsg
+  | WsCommandResultMsg
 
 // ── Callback registry type ───────────────────────────────────────────────────
 
@@ -36,6 +40,8 @@ type EventMap = {
   error:         (msg: WsErrorMsg) => void
   connectionStateChange: (state: ConnectionState) => void
   sessionEvent:  (e: SessionEvent) => void
+  commands:      (msg: WsCommandsMsg) => void
+  commandResult: (msg: WsCommandResultMsg) => void
 }
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting'
@@ -136,8 +142,8 @@ export class SessionSocket {
     this._send({ type: 'interrupt', sessionId })
   }
 
-  prompt(sessionId: string, text: string, images?: { sha: string; mime: string; name: string }[]) {
-    this._send({ type: 'prompt', sessionId, text, ...(images && images.length ? { images } : {}) })
+  prompt(sessionId: string, text: string, attachmentIds?: string[]) {
+    this._send({ type: 'prompt', sessionId, text, ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}) })
   }
 
   sendInterrupt(sessionId: string) {
@@ -148,8 +154,9 @@ export class SessionSocket {
     this._send({ type: 'permissionResponse', sessionId, permId, decision })
   }
 
-  answerQuestion(sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') {
-    this._send({ type: 'answerQuestion', sessionId, questionId, selected, mode })
+  /** Returns true if the answer was actually written to an open socket. */
+  answerQuestion(sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option'): boolean {
+    return this._send({ type: 'answerQuestion', sessionId, questionId, selected, mode })
   }
 
   setPermissionMode(sessionId: string, mode: string) {
@@ -158,6 +165,10 @@ export class SessionSocket {
 
   cancelQueued(sessionId: string, index: number) {
     this._send({ type: 'cancelQueued', sessionId, index })
+  }
+
+  command(sessionId: string, name: string, args: string) {
+    this._send({ type: 'command', sessionId, name, args })
   }
 
   // ── Event emitter ───────────────────────────────────────────────────────────
@@ -175,10 +186,13 @@ export class SessionSocket {
 
   // ── Private helpers ─────────────────────────────────────────────────────────
 
-  private _send(msg: object) {
+  /** Returns true if the frame was written to an open socket, false if dropped. */
+  private _send(msg: object): boolean {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg))
+      return true
     }
+    return false
   }
 
   private _setConnectionState(state: ConnectionState) {
@@ -230,6 +244,12 @@ export class SessionSocket {
         for (const e of msg.events) {
           this._emit('sessionEvent', e)
         }
+        break
+      case 'commands':
+        this._emit('commands', msg)
+        break
+      case 'commandResult':
+        this._emit('commandResult', msg)
         break
       default:
         // Fan out individual session events sent directly (not wrapped in batch)
@@ -314,12 +334,13 @@ export function useSessionSocket() {
   const attach              = useCallback((sessionId: string) => socket.attach(sessionId), [socket])
   const detach              = useCallback((sessionId: string) => socket.detach(sessionId), [socket])
   const interrupt           = useCallback((sessionId: string) => socket.interrupt(sessionId), [socket])
-  const prompt              = useCallback((sessionId: string, text: string, images?: { sha: string; mime: string; name: string }[]) => socket.prompt(sessionId, text, images), [socket])
+  const prompt              = useCallback((sessionId: string, text: string, attachmentIds?: string[]) => socket.prompt(sessionId, text, attachmentIds), [socket])
   const sendInterrupt       = useCallback((sessionId: string) => socket.sendInterrupt(sessionId), [socket])
   const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') => socket.permissionResponse(sessionId, permId, decision), [socket])
   const answerQuestion      = useCallback((sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => socket.answerQuestion(sessionId, questionId, selected, mode), [socket])
   const setPermissionMode   = useCallback((sessionId: string, mode: string) => socket.setPermissionMode(sessionId, mode), [socket])
   const cancelQueued        = useCallback((sessionId: string, index: number) => socket.cancelQueued(sessionId, index), [socket])
+  const command             = useCallback((sessionId: string, name: string, args: string) => socket.command(sessionId, name, args), [socket])
 
   const on  = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.on(event, cb), [socket])
   const off = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.off(event, cb), [socket])
@@ -327,6 +348,7 @@ export function useSessionSocket() {
   return {
     attach, detach, interrupt,
     prompt, sendInterrupt, permissionResponse, answerQuestion, setPermissionMode, cancelQueued,
+    command,
     on, off,
     connectionState,
     socket,

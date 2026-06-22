@@ -1,4 +1,6 @@
-import type { SessionEvent, ToolKind } from './events'
+import type {
+  SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult,
+} from './events'
 
 /** Sentinel id for the optimistic user turn seeded before the SDK echoes the prompt. */
 export const OPTIMISTIC_USER_ID = 'optimistic:user'
@@ -11,10 +13,15 @@ export type Block =
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown> } }
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean }
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean }
+  | { kind: 'notice';     id: string; text: string }
+  | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null }
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
 export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[] }
+
+/** A self-contained conversation thread (the main transcript, or one sub-agent). */
+export interface SubThread { turns: Turn[]; openBlockId: string | null }
 
 // ── Rotation marker ────────────────────────────────────────────────────────────
 
@@ -54,6 +61,7 @@ export interface TranscriptState {
   error: { code: string; message: string; resetsAt?: string | null } | null
   queued: string[]              // texts of prompts waiting in the server-side queue
   rotations: RotationMarker[]   // account rotations, anchored into the timeline
+  subAgents: Record<string, SubThread>   // keyed by the spawning Task toolId
 }
 
 export const initialTranscript: TranscriptState = {
@@ -67,6 +75,7 @@ export const initialTranscript: TranscriptState = {
   error: null,
   queued: [],
   rotations: [],
+  subAgents: {},
 }
 
 /** Coerce a possibly-missing numeric usage field to a finite number (0 when absent). */
@@ -79,8 +88,11 @@ function num(v: unknown): number {
 export type LocalAction =
   | { type: '_resolvePermission'; permId: string }
   | { type: '_resolveQuestion';   questionId: string }
+  | { type: '_clearError' }
   | { type: '_seedUserPrompt';    text: string }
   | { type: '_rotation';          from: string; to: string; reason?: string }
+  | { type: '_notice'; text: string }
+  | { type: '_clear';  text: string }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -110,12 +122,139 @@ function ensureAssistantTurn(turns: Turn[], turnId: string): [Turn[], number] {
   return [[...turns, { id: turnId, role: 'assistant', blocks: [] }], turns.length]
 }
 
+// ── Thread-scoped reducer ─────────────────────────────────────────────────────
+
+type BlockEvent = EvUser | EvTurnStart | EvTextDelta | EvThinkingDelta | EvToolCall | EvToolResult
+
+const BLOCK_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'user', 'turnStart', 'textDelta', 'thinkingDelta', 'toolCall', 'toolResult',
+])
+
+/** Apply a block-bearing event to a single thread. Returns the same `thread` reference on a no-op. */
+function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
+  switch (ev.type) {
+    case 'user': {
+      const { turnId, text } = ev
+      const userBlock: Block = { kind: 'text', id: `${turnId}:u`, text }
+      const idx = findTurnIdx(thread.turns, turnId)
+      const turns =
+        idx === -1
+          ? [...thread.turns, { id: turnId, role: 'user' as const, blocks: [userBlock] }]
+          : replaceTurn(thread.turns, idx, (t) => ({
+              ...t,
+              blocks: t.blocks.map((b) => (b.kind === 'text' && b.id === `${turnId}:u` ? userBlock : b)),
+            }))
+      return { turns, openBlockId: null }
+    }
+
+    case 'turnStart': {
+      const idx = findTurnIdx(thread.turns, ev.turnId)
+      if (idx !== -1) {
+        if (thread.openBlockId === null) return thread
+        return { turns: thread.turns, openBlockId: null }
+      }
+      return {
+        turns: [...thread.turns, { id: ev.turnId, role: 'assistant', blocks: [] }],
+        openBlockId: null,
+      }
+    }
+
+    case 'textDelta': {
+      const { turnId, text } = ev
+      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId)
+      const turn = turns[idx]
+      const openBlock = thread.openBlockId
+        ? turn.blocks.find((b) => b.id === thread.openBlockId && b.kind === 'text')
+        : undefined
+      if (openBlock && openBlock.kind === 'text') {
+        const nextTurns = replaceTurn(turns, idx, (t) => ({
+          ...t,
+          blocks: t.blocks.map((b) =>
+            b.id === openBlock.id && b.kind === 'text' ? { ...b, text: b.text + text } : b),
+        }))
+        return { turns: nextTurns, openBlockId: thread.openBlockId }
+      }
+      const blockId = `${turnId}:t${turn.blocks.length}`
+      const nextTurns = replaceTurn(turns, idx, (t) => ({
+        ...t, blocks: [...t.blocks, { kind: 'text', id: blockId, text }],
+      }))
+      return { turns: nextTurns, openBlockId: blockId }
+    }
+
+    case 'thinkingDelta': {
+      const { turnId, text } = ev
+      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId)
+      const turn = turns[idx]
+      const openBlock = thread.openBlockId
+        ? turn.blocks.find((b) => b.id === thread.openBlockId && b.kind === 'thinking')
+        : undefined
+      if (openBlock && openBlock.kind === 'thinking') {
+        const nextTurns = replaceTurn(turns, idx, (t) => ({
+          ...t,
+          blocks: t.blocks.map((b) =>
+            b.id === openBlock.id && b.kind === 'thinking' ? { ...b, text: b.text + text } : b),
+        }))
+        return { turns: nextTurns, openBlockId: thread.openBlockId }
+      }
+      const blockId = `${turnId}:th${turn.blocks.length}`
+      const nextTurns = replaceTurn(turns, idx, (t) => ({
+        ...t, blocks: [...t.blocks, { kind: 'thinking', id: blockId, text }],
+      }))
+      return { turns: nextTurns, openBlockId: blockId }
+    }
+
+    case 'toolCall': {
+      const { turnId, toolId, name, toolKind, input } = ev
+      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId)
+      const turn = turns[idx]
+      if (turn.blocks.some((b) => b.kind === 'tool' && b.toolId === toolId)) {
+        if (thread.openBlockId === null && turns === thread.turns) return thread
+        return { turns, openBlockId: null }
+      }
+      const newBlock: Block = { kind: 'tool', id: toolId, toolId, name, toolKind, input }
+      const nextTurns = replaceTurn(turns, idx, (t) => ({ ...t, blocks: [...t.blocks, newBlock] }))
+      return { turns: nextTurns, openBlockId: null }
+    }
+
+    case 'toolResult': {
+      const { toolId, ok, payload } = ev
+      let found = false
+      const nextTurns = thread.turns.map((turn) => {
+        const blockIdx = turn.blocks.findIndex((b) => b.kind === 'tool' && b.toolId === toolId)
+        if (blockIdx === -1) return turn
+        found = true
+        return {
+          ...turn,
+          blocks: turn.blocks.map((b, i) =>
+            i === blockIdx && b.kind === 'tool' ? { ...b, result: { ok, payload } } : b),
+        }
+      })
+      if (!found) return thread
+      return { turns: nextTurns, openBlockId: thread.openBlockId }
+    }
+  }
+}
+
 // ── Reducer ───────────────────────────────────────────────────────────────────
 
 export function transcriptReducer(
   state: TranscriptState,
   ev: SessionEvent | LocalAction,
 ): TranscriptState {
+  // Route block-bearing events tagged with a parentToolUseId to the spawning
+  // Task's sub-thread. Untagged (main-transcript) block events fall through to
+  // the full switch below, which carries the richer main-thread behaviour
+  // (optimistic-seed adoption, question live-upgrade, inline error blocks).
+  if (BLOCK_EVENT_TYPES.has(ev.type)) {
+    const pid = (ev as { parentToolUseId?: string | null }).parentToolUseId
+    if (pid) {
+      const cur = state.subAgents[pid] ?? { turns: [], openBlockId: null }
+      const next = applyToThread(cur, ev as BlockEvent)
+      if (next === cur) return state
+      return { ...state, subAgents: { ...state.subAgents, [pid]: next } }
+    }
+  }
+
   switch (ev.type) {
     // ── user ─────────────────────────────────────────────────────────────────
     case 'user': {
@@ -298,8 +437,22 @@ export function transcriptReducer(
       const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
       const turn = turns[idx]
 
-      // Idempotent by questionId
-      if (turn.blocks.some((b) => b.kind === 'question' && b.questionId === questionId)) {
+      // Idempotent by questionId — but the server re-emits a still-pending
+      // question after replayComplete. The replay copy was created live:false
+      // (replaying was true); the re-emit (replaying now false) must upgrade it
+      // to live:true, otherwise a question pending across a refresh/reconnect
+      // renders read-only forever. Only ever flip false→true; never downgrade.
+      const existing = turn.blocks.find((b) => b.kind === 'question' && b.questionId === questionId)
+      if (existing) {
+        if (existing.kind === 'question' && !existing.live && !state.replaying) {
+          const nextTurns = replaceTurn(turns, idx, (t) => ({
+            ...t,
+            blocks: t.blocks.map((b) =>
+              b.kind === 'question' && b.questionId === questionId ? { ...b, live: true } : b,
+            ),
+          }))
+          return { ...state, turns: nextTurns }
+        }
         return { ...state, turns }
       }
 
@@ -349,7 +502,20 @@ export function transcriptReducer(
 
     // ── error ─────────────────────────────────────────────────────────────────
     case 'error': {
-      return { ...state, error: { code: ev.code, message: ev.message, resetsAt: ev.resetsAt } }
+      // Always raise the banner (the prominent, dismissable surface). When the error
+      // is anchored to a turn, ALSO drop an inline block into that turn's timeline so
+      // it stays visible in place and a later error can't erase it (the banner is a
+      // single slot; the timeline is append-only).
+      const banner = { code: ev.code, message: ev.message, resetsAt: ev.resetsAt }
+      if (!ev.turnId) return { ...state, error: banner }
+      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId)
+      const turn = withTurn[idx]
+      const errBlock: Block = {
+        kind: 'error', id: `${ev.turnId}:err:${turn.blocks.length}`,
+        code: ev.code, message: ev.message, resetsAt: ev.resetsAt,
+      }
+      const turns = replaceTurn(withTurn, idx, (t) => ({ ...t, blocks: [...t.blocks, errBlock] }))
+      return { ...state, turns, error: banner }
     }
 
     // ── queueUpdate ───────────────────────────────────────────────────────────
@@ -393,6 +559,21 @@ export function transcriptReducer(
       return { ...state, turns: nextTurns }
     }
 
+    case '_notice': {
+      const id = `notice:${state.turns.length}`
+      return {
+        ...state,
+        turns: [...state.turns, { id, role: 'assistant', blocks: [{ kind: 'notice', id: `${id}:n`, text: ev.text }] }],
+        openBlockId: null,
+      }
+    }
+
+    case '_clearError': {
+      // Dismiss a surfaced banner (e.g. the transient "answer queued" notice
+      // once a buffered answer has been resent). Ref-stable when already clear.
+      return state.error ? { ...state, error: null } : state
+    }
+
     case '_seedUserPrompt': {
       // Idempotent: never seed twice (guards React StrictMode double-invoke).
       if (findTurnIdx(state.turns, OPTIMISTIC_USER_ID) !== -1) return state
@@ -401,6 +582,15 @@ export function transcriptReducer(
         ...state,
         turns: [...state.turns, { id: OPTIMISTIC_USER_ID, role: 'user', blocks: [block] }],
         openBlockId: null,
+      }
+    }
+
+    case '_clear': {
+      const id = 'notice:clear'
+      return {
+        ...initialTranscript,
+        replaying: false,
+        turns: [{ id, role: 'assistant', blocks: [{ kind: 'notice', id: `${id}:n`, text: ev.text }] }],
       }
     }
 

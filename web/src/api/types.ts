@@ -25,6 +25,7 @@ export type SessionStatus =
   | 'idle'
   | 'in_progress'
   | 'waiting_input'
+  | 'waiting_question'
   | 'ready_review'
   | 'done'
   | 'complete'

@@ -26,34 +26,41 @@ describe('StatusBar', () => {
     expect(screen.getByText('Ready')).toBeInTheDocument()
   })
 
-  it('renders the WorkingIndicator for working state with no queue', () => {
-    render(<StatusBar status={{ state: 'working', count: 0 }} connectionState="connected" />)
-    // WorkingIndicator always provides a sr-only "Working…" label
+  it('renders the WorkingIndicator for in_progress with no queue', () => {
+    render(<StatusBar status={{ state: 'in_progress', count: 0 }} connectionState="connected" />)
     const srEl = document.querySelector('.sr-only')
-    expect(srEl).not.toBeNull()
     expect(srEl?.textContent).toBe('Working…')
   })
 
-  it('renders WorkingIndicator with queued label for working state with queued items', () => {
-    render(<StatusBar status={{ state: 'working', count: 2 }} connectionState="connected" />)
+  it('renders WorkingIndicator with queued label for in_progress with queued items', () => {
+    render(<StatusBar status={{ state: 'in_progress', count: 2 }} connectionState="connected" />)
     const srEl = document.querySelector('.sr-only')
-    expect(srEl).not.toBeNull()
     expect(srEl?.textContent).toBe('Working, 2 queued')
   })
 
-  it('shows "Waiting for permission" for waiting-permission state', () => {
-    render(<StatusBar status={{ state: 'waiting-permission', count: 0 }} connectionState="connected" />)
-    expect(screen.getByText('Waiting for permission')).toBeInTheDocument()
+  it('shows "Permission needed" for waiting_input', () => {
+    render(<StatusBar status={{ state: 'waiting_input', count: 0 }} connectionState="connected" />)
+    expect(screen.getByText('Permission needed')).toBeInTheDocument()
   })
 
-  it('shows count for queued state', () => {
-    render(<StatusBar status={{ state: 'queued', count: 3 }} connectionState="connected" />)
-    expect(screen.getByText('3 queued')).toBeInTheDocument()
+  it('shows "Answer needed" for waiting_question', () => {
+    render(<StatusBar status={{ state: 'waiting_question', count: 0 }} connectionState="connected" />)
+    expect(screen.getByText('Answer needed')).toBeInTheDocument()
   })
 
-  it('shows raw state string for unknown state', () => {
-    render(<StatusBar status={{ state: 'custom-state', count: 0 }} connectionState="connected" />)
-    expect(screen.getByText('custom-state')).toBeInTheDocument()
+  it('shows "Approve plan" for ready_review', () => {
+    render(<StatusBar status={{ state: 'ready_review', count: 0 }} connectionState="connected" />)
+    expect(screen.getByText('Approve plan')).toBeInTheDocument()
+  })
+
+  it('shows "Your turn" for done', () => {
+    render(<StatusBar status={{ state: 'done', count: 0 }} connectionState="connected" />)
+    expect(screen.getByText('Your turn')).toBeInTheDocument()
+  })
+
+  it('shows "Turn failed" for needs_attention', () => {
+    render(<StatusBar status={{ state: 'needs_attention', count: 0 }} connectionState="connected" />)
+    expect(screen.getByText('Turn failed')).toBeInTheDocument()
   })
 
   it('shows Reconnecting note when connectionState is reconnecting', () => {

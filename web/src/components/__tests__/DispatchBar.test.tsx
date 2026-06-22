@@ -64,7 +64,7 @@ describe('DispatchBar', () => {
     await user.click(box)
     await user.type(box, 'fix the bug')
     await user.keyboard('{Enter}')
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, images: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, attachmentIds: [] })
     expect(box).toHaveValue('')
   })
 
@@ -101,7 +101,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'fix the bug')
     expect(create).toBeEnabled()
     await user.click(create)
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, images: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, attachmentIds: [] })
     expect(box).toHaveValue('')
   })
 
@@ -181,26 +181,45 @@ describe('DispatchBar', () => {
     expect(onRowAction).toHaveBeenCalledWith({ type: 'jump', index: 1 })
   })
 
-  it('r on an empty prompt triggers rename action', async () => {
+  it('Ctrl+R on an empty prompt triggers rename action', async () => {
     const user = userEvent.setup()
     const onRowAction = vi.fn()
     render(<DispatchBar {...makeProps({ onRowAction })} />)
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('r')
+    await user.keyboard('{Control>}r{/Control}')
     expect(onRowAction).toHaveBeenCalledWith({ type: 'rename' })
   })
 
-  it('r when the prompt already has text does NOT trigger rename', async () => {
+  it('Ctrl+R when the prompt has text does NOT rename and inserts no char', async () => {
     const user = userEvent.setup()
     const onRowAction = vi.fn()
     render(<DispatchBar {...makeProps({ onRowAction })} />)
     const box = screen.getByRole('textbox', { name: /new session prompt/i })
     await user.click(box)
-    // Type some text first, then press r — should NOT trigger rename since prompt is non-empty
     await user.type(box, 'fix ')
-    await user.keyboard('r')
+    await user.keyboard('{Control>}r{/Control}')
     expect(onRowAction).not.toHaveBeenCalled()
-    expect(box).toHaveValue('fix r')
+    expect(box).toHaveValue('fix ')
+  })
+
+  it('Ctrl+X on an empty prompt triggers delete action', async () => {
+    const user = userEvent.setup()
+    const onRowAction = vi.fn()
+    render(<DispatchBar {...makeProps({ onRowAction })} />)
+    await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
+    await user.keyboard('{Control>}x{/Control}')
+    expect(onRowAction).toHaveBeenCalledWith({ type: 'delete' })
+  })
+
+  it('Ctrl+X when the prompt has text does NOT delete (native cut)', async () => {
+    const user = userEvent.setup()
+    const onRowAction = vi.fn()
+    render(<DispatchBar {...makeProps({ onRowAction })} />)
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(box)
+    await user.type(box, 'hi')
+    await user.keyboard('{Control>}x{/Control}')
+    expect(onRowAction).not.toHaveBeenCalled()
   })
 
   it('seeds the repo select from getLastRepo()', () => {

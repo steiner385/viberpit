@@ -38,7 +38,16 @@ setup() {
 teardown() { rm -rf "$TMP"; }
 
 run_deploy() {
-  run env CCSWITCH_DEPLOY_TEST_STOP_AFTER_SYNC=1 \
+  # CCSWITCH_DEPLOY_CI_OK=1 stubs the GitHub CI gate green (no gh call against the
+  # local seed repo); STOP_AFTER_SYNC halts before dep-sync/build/restart.
+  run env CCSWITCH_DEPLOY_CI_OK=1 CCSWITCH_DEPLOY_TEST_STOP_AFTER_SYNC=1 \
+      CCSWITCH_HOST=127.0.0.1 CCSWITCH_PORT=0 \
+      bash "$DEPLOY/scripts/auto-deploy.sh"
+}
+
+# Run with a forced CI verdict and NO stop hook, to exercise the gate itself.
+run_deploy_ci() {
+  run env CCSWITCH_DEPLOY_CI_OK="$1" \
       CCSWITCH_HOST=127.0.0.1 CCSWITCH_PORT=0 \
       bash "$DEPLOY/scripts/auto-deploy.sh"
 }
@@ -82,4 +91,22 @@ run_deploy() {
   [ "$status" -eq 0 ]
   [[ "$output" != *"discarding unexpected local changes"* ]]
   [ "$(git -C "$DEPLOY" rev-parse HEAD)" = "$(git -C "$DEPLOY" rev-parse origin/master)" ]
+}
+
+@test "a RED CI verdict does NOT deploy (no fast-forward), exits 0 to retry" {
+  run_deploy_ci red
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"CI is RED"* ]]
+  # HEAD must stay behind origin/master — the red commit was not pulled.
+  [ "$(git -C "$DEPLOY" rev-parse HEAD)" != "$(git -C "$DEPLOY" rev-parse origin/master)" ]
+  [ "$(cat "$DEPLOY/tracked.txt")" = "v1" ]
+}
+
+@test "a PENDING CI verdict skips this tick (no fast-forward)" {
+  run_deploy_ci pending
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"still running"* ]]
+  [ "$(git -C "$DEPLOY" rev-parse HEAD)" != "$(git -C "$DEPLOY" rev-parse origin/master)" ]
 }
