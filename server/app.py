@@ -198,7 +198,10 @@ def create_app(
     from server.config import get_settings as _gs
     from server.sessions.x11manager import build_x11_manager
     app.state.x11 = build_x11_manager(_gs())
-    orchestrator._x11 = app.state.x11  # share the manager with the orchestrator
+    if orchestrator is not None:
+        # Share the manager with the in-process orchestrator. In remote mode the
+        # daemon owns the orchestrator (and its x11), so there is nothing to share.
+        orchestrator._x11 = app.state.x11
 
     # Attach the ReauthManager (allows tests to inject a fake)
     if reauth_manager is None:
