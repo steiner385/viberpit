@@ -20,7 +20,6 @@ import { useSessionRuntime } from '@/session/useSessionRuntime'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { Composer } from './Composer'
 import { SessionBody } from './SessionBody'
-import { PendingQuestionPanel } from './PendingQuestionPanel'
 import { CommandResultOverlay } from './CommandResultOverlay'
 
 /**
@@ -155,16 +154,9 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
         </button>
       </div>
 
-      {/* Transcript + status strip + banners */}
+      {/* Transcript + status strip + banners + pinned live-question panel
+          (the panel lives in SessionBody so desktop + mobile share it). */}
       <SessionBody rt={rt} />
-
-      {/* Pinned answer panel for the live open question (answer in place) */}
-      <PendingQuestionPanel
-        turns={rt.state.turns}
-        onAnswer={rt.onAnswer}
-        onChat={rt.onChat}
-        armedQuestionId={rt.armedQuestionId}
-      />
 
       {/* Composer */}
       <div className="flex-shrink-0">

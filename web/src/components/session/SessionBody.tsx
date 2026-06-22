@@ -13,6 +13,7 @@ import { StatusBar } from './StatusBar'
 import { TranscriptView } from './TranscriptView'
 import { SessionPlaceholder } from './SessionPlaceholder'
 import { WorkingIndicator } from './WorkingIndicator'
+import { PendingQuestionPanel } from './PendingQuestionPanel'
 import { SessionAriaLive } from './SessionAriaLive'
 
 export function SessionBody({ rt }: { rt: SessionRuntime }) {
@@ -104,6 +105,18 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           Action needed — scroll up to respond
         </div>
       )}
+
+      {/* Pinned answer panel for the live open question (answer in place). Lives
+          here in SessionBody so BOTH the mobile SessionView and the desktop
+          master-detail shell render it — the desktop shell previously had no panel,
+          so a live AskUserQuestion (filtered out of the inline transcript by Turn)
+          rendered nowhere and was unanswerable. */}
+      <PendingQuestionPanel
+        turns={rt.state.turns}
+        onAnswer={rt.onAnswer}
+        onChat={rt.onChat}
+        armedQuestionId={rt.armedQuestionId}
+      />
 
       {/* sr-only aria-live mirror (owns its own ref + effect) */}
       <SessionAriaLive turns={rt.state.turns} replaying={rt.state.replaying} />
