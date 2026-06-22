@@ -17,9 +17,9 @@ def S(**kw):
     (S(turn_active=True),                                             "in_progress"),
     (S(turn_active=True, turns_completed=2),                         "in_progress"),
     (S(turn_active=True, pending_permission=True),                  "waiting_input"),
-    (S(turn_active=True, pending_question=True),                    "waiting_input"),
+    (S(turn_active=True, pending_question=True),                    "waiting_question"),
     (S(pending_permission=True),                                     "waiting_input"),
-    (S(pending_question=True),                                       "waiting_input"),
+    (S(pending_question=True),                                       "waiting_question"),
     (S(turn_active=True, pending_permission=True, pending_plan=True), "ready_review"),
     (S(pending_plan=True),                                           "ready_review"),
     # precedence: plan outranks a plain pending permission
@@ -30,10 +30,28 @@ def S(**kw):
     (S(turns_completed=1, last_turn_outcome="failed"),                "needs_attention"),
     # an active turn still outranks any terminal outcome
     (S(turn_active=True, turns_completed=1, last_turn_outcome="failed"),   "in_progress"),
-    # a pending prompt still outranks a 'complete' outcome
-    (S(turns_completed=1, last_turn_outcome="complete", pending_question=True), "waiting_input"),
+    # a pending question still outranks a 'complete' outcome
+    (S(turns_completed=1, last_turn_outcome="complete", pending_question=True), "waiting_question"),
     # outcome is ignored before the first completed turn
     (S(turns_completed=0, last_turn_outcome="complete"),             "idle"),
 ])
 def test_derive_status(sig, expected):
     assert derive_status(sig) == expected
+
+
+def test_pending_question_is_waiting_question():
+    sig = StatusSignals(turn_active=True, pending_permission=False,
+                        pending_question=True, pending_plan=False, turns_completed=0)
+    assert derive_status(sig) == "waiting_question"
+
+
+def test_pending_permission_is_waiting_input():
+    sig = StatusSignals(turn_active=True, pending_permission=True,
+                        pending_question=False, pending_plan=False, turns_completed=0)
+    assert derive_status(sig) == "waiting_input"
+
+
+def test_pending_plan_beats_question():
+    sig = StatusSignals(turn_active=True, pending_permission=True,
+                        pending_question=True, pending_plan=True, turns_completed=0)
+    assert derive_status(sig) == "ready_review"

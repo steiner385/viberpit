@@ -28,6 +28,15 @@ RECONCILE_EXEMPT: set[str] = {
     "app_sessions.expires_at", # required at login; computed from TTL, no sane default
     "audit_events.type",       # required at audit event write; no sane default
     "audit_events.identity",   # required at audit event write; no sane default
+    # attachments: a NEW table (create_all builds it fully-formed on dev SQLite;
+    # Alembic 0001_create_attachments builds it on prod). These NOT NULL columns are
+    # part of the initial CREATE TABLE and are never ALTER-added to a populated table,
+    # and each is mandatory at INSERT (set from the upload), so no synthesizable default.
+    "attachments.media_type",  # required at upload; sniffed type
+    "attachments.filename",    # required at upload; original filename
+    "attachments.byte_size",   # required at upload; computed
+    "attachments.sha256",      # required at upload; content hash
+    "attachments.uploaded_by", # required at upload; uploader identity
 }
 
 

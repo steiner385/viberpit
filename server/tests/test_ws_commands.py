@@ -72,7 +72,7 @@ class FakeOrch:
     def pop_pending_initial_prompt(self, session_id):
         return None
 
-    def pop_pending_initial_images(self, session_id):
+    def pop_pending_initial_attachment_ids(self, session_id):
         return None
 
     # -- Task 6 surface --

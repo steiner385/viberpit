@@ -64,7 +64,7 @@ describe('DispatchBar', () => {
     await user.click(box)
     await user.type(box, 'fix the bug')
     await user.keyboard('{Enter}')
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, images: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, attachmentIds: [] })
     expect(box).toHaveValue('')
   })
 
@@ -101,7 +101,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'fix the bug')
     expect(create).toBeEnabled()
     await user.click(create)
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, images: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, attachmentIds: [] })
     expect(box).toHaveValue('')
   })
 

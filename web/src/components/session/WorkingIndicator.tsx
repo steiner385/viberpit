@@ -10,6 +10,9 @@ let lastWord: string | undefined
 interface Props {
   /** Number of queued prompts (shows "· N queued" when > 0). */
   count?: number
+  /** Number of running sub-agents. When > 0, overrides the whimsical phrase
+   *  with "Running a sub-agent…" / "Running N sub-agents…". */
+  subAgentCount?: number
   className?: string
 }
 
@@ -19,17 +22,22 @@ interface Props {
  *
  * Phrase lifecycle: a word is chosen once when this component mounts (i.e. when a
  * new working period begins) and stays fixed for the whole period. Because the
- * indicator is only mounted while status === 'working', each new "waiting for
+ * indicator is only mounted while the session is busy, each new "waiting for
  * Claude" instance naturally gets a fresh phrase — and never the same one twice
  * in a row (see module-level `lastWord`). There is no periodic phrase rotation.
  *
+ * When `subAgentCount > 0`, the phrase is replaced with a more informative
+ * "Running a sub-agent…" / "Running N sub-agents…" label so the user can tell
+ * a background sub-agent is what's currently in flight.
+ *
  * Accessibility:
  *   - The animated visuals are aria-hidden; an sr-only element carries the stable
- *     announcement ("Working…" / "Working, N queued") for screen readers. The
- *     elapsed readout is visual-only so AT doesn't announce every tick.
+ *     announcement ("Working…" / "Working, N queued" / "Running a sub-agent…")
+ *     for screen readers. The elapsed readout is visual-only so AT doesn't
+ *     announce every tick.
  *   - prefers-reduced-motion: static spinner glyph, no shimmer, no spinner frames.
  */
-export function WorkingIndicator({ count = 0, className }: Props) {
+export function WorkingIndicator({ count = 0, subAgentCount = 0, className }: Props) {
   const reducedMotion = prefersReducedMotion()
 
   // Pick the phrase once on mount; remember it so the next wait won't repeat it.
@@ -55,7 +63,14 @@ export function WorkingIndicator({ count = 0, className }: Props) {
     return () => clearInterval(id)
   }, [])
 
-  const srLabel = count > 0 ? `Working, ${count} queued` : 'Working…'
+  // A running sub-agent is the more informative thing to surface.
+  const subAgentPhrase = subAgentCount > 0
+    ? (subAgentCount === 1 ? 'Running a sub-agent' : `Running ${subAgentCount} sub-agents`)
+    : null
+  const phrase = subAgentPhrase ?? word
+  const srLabel = subAgentPhrase
+    ? `${subAgentPhrase}…`
+    : (count > 0 ? `Working, ${count} queued` : 'Working…')
 
   return (
     <span className={cn('inline-flex items-center gap-1.5', className)}>
@@ -70,7 +85,7 @@ export function WorkingIndicator({ count = 0, className }: Props) {
         </span>
 
         {/* Phrase + ellipsis (shimmers unless reduced-motion) */}
-        <span className={cn(!reducedMotion && 'working-shimmer')}>{word}…</span>
+        <span className={cn(!reducedMotion && 'working-shimmer')}>{phrase}…</span>
 
         {/* Live elapsed-time readout */}
         <span data-testid="working-elapsed" className="opacity-60 tabular-nums">

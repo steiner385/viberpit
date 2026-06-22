@@ -4,12 +4,15 @@ import { cn } from '@/lib/utils'
 import { useImageAttachments } from './useImageAttachments'
 import { AttachmentChips } from './AttachmentChips'
 import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
+import { MicButton } from './MicButton'
+import { useDictationField } from '@/lib/useDictationField'
 import type { Command } from '@/session/events'
+import { statusTier } from '@/session/statusTier'
 
 interface Props {
   status: { state: string; count: number }
   mode: string
-  onPrompt: (text: string, images: { sha: string; mime: string; name: string }[]) => void
+  onPrompt: (text: string, attachmentIds: string[]) => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   queued?: string[]
@@ -26,10 +29,17 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const paletteRef = useRef<CommandPaletteHandle>(null)
-  const isWorking = status.state === 'working'
+  const isWorking = statusTier(status.state) === 'busy'
   const att = useImageAttachments()
+  const voice = useDictationField({ value: text, setValue: setText, textareaRef })
   const slash = text.startsWith('/') && !text.includes('\n')
-  const slashQuery = slash ? text.slice(1).split(/\s+/)[0] : ''
+  const afterSlash = slash ? text.slice(1) : ''
+  // The palette is the keyboard owner only while the user is still typing the
+  // command NAME (no space yet). Once a space is typed they're entering args, so
+  // Enter must submit the command (with its args) instead of re-selecting from
+  // the palette — otherwise the trailing text is silently dropped.
+  const pickingCommand = slash && !/\s/.test(afterSlash)
+  const slashQuery = afterSlash.split(/\s+/)[0] ?? ''
 
   // Focus the prompt on mount (and when the active session changes) so the user
   // can start typing immediately on entering a session.
@@ -81,7 +91,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (slash && paletteRef.current?.handleKeyDown(e)) return
+    if (pickingCommand && paletteRef.current?.handleKeyDown(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       submit()
@@ -135,7 +145,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
       <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
 
       <div className="relative flex items-end gap-2">
-        {slash && (
+        {pickingCommand && (
           <CommandPalette
             ref={paletteRef}
             commands={commands}
@@ -163,6 +173,13 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
             'min-h-[44px] overflow-y-auto',
           )}
           style={{ maxHeight: '192px' }}
+        />
+
+        <MicButton
+          supported={voice.supported}
+          listening={voice.listening}
+          error={voice.error}
+          onToggle={voice.toggle}
         />
 
         <input

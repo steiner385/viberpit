@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import type { Turn as TurnType } from '@/session/reducer'
+import type { Turn as TurnType, SubThread } from '@/session/reducer'
 import { groupBlocks, type ToolDetailMode } from '@/session/groupBlocks'
 import { AssistantText } from './AssistantText'
 import { UserBubble } from './UserBubble'
@@ -20,11 +20,12 @@ interface Props {
   streamingBlockId?: string | null
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
+  subAgents?: Record<string, SubThread>
 }
 
 export const Turn = memo(function Turn({
   turn, permissionMode, isLastTurn, toolDetailMode, streamingBlockId = null,
-  onDecision, onAnswer,
+  onDecision, onAnswer, subAgents,
 }: Props) {
   const isUser = turn.role === 'user'
   // Suppress live questions inline — they are rendered by the pinned
@@ -49,6 +50,7 @@ export const Turn = memo(function Turn({
               tools={item.tools}
               isLiveTail={isLiveTail}
               toolDetailMode={toolDetailMode}
+              subAgents={subAgents}
             />
           )
         }
@@ -63,7 +65,7 @@ export const Turn = memo(function Turn({
             return <ThinkingBlock key={block.id} text={block.text} />
           case 'tool':
             // Unreachable: tool blocks are coalesced into toolGroup items above.
-            return <ToolCallCard key={block.id} block={block} density="line" />
+            return <ToolCallCard key={block.id} block={block} density="line" subThread={subAgents?.[block.toolId]} />
           case 'permission':
             return <PermissionCard key={block.id} block={block} mode={permissionMode} onDecision={onDecision} />
           case 'question':

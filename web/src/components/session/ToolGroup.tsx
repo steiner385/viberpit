@@ -1,4 +1,5 @@
 import type { ToolBlock, ToolDetailMode } from '@/session/groupBlocks'
+import type { SubThread } from '@/session/reducer'
 import { ToolCallCard } from './ToolCallCard'
 
 interface ToolGroupProps {
@@ -6,6 +7,8 @@ interface ToolGroupProps {
   /** True when this group is the newest activity (last group of the last turn). */
   isLiveTail: boolean
   toolDetailMode: ToolDetailMode
+  /** Sub-agent threads keyed by the spawning Task toolId (for nested rendering). */
+  subAgents?: Record<string, SubThread>
 }
 
 /**
@@ -15,7 +18,7 @@ interface ToolGroupProps {
  * global `toolDetailMode` force-opens/closes every result panel; in 'auto' only
  * the live tail's most recent tool auto-opens its output.
  */
-export function ToolGroup({ tools, isLiveTail, toolDetailMode }: ToolGroupProps) {
+export function ToolGroup({ tools, isLiveTail, toolDetailMode, subAgents }: ToolGroupProps) {
   return (
     <div className="my-0.5">
       {tools.map((t, i) => (
@@ -25,6 +28,7 @@ export function ToolGroup({ tools, isLiveTail, toolDetailMode }: ToolGroupProps)
           density="line"
           toolDetailMode={toolDetailMode}
           defaultResultOpen={isLiveTail && i === tools.length - 1}
+          subThread={subAgents?.[t.toolId]}
         />
       ))}
     </div>
