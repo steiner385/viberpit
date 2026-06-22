@@ -101,3 +101,42 @@ def test_transcript_path_found_under_nonmatching_project_dir(tmp_path):
         "transcript_path must find the transcript by its unique session id regardless "
         "of the project-dir naming or a cwd/project mismatch"
     )
+
+
+def test_transcript_path_resolves_via_shared_base_when_account_symlink_broken(tmp_path):
+    """Regression (blank "Waiting for input" sessions): every account's per-account
+    ``projects`` dir is a symlink to the one shared projects tree, but that symlink can
+    rot — point at itself or a sibling account — which silently breaks replay on attach
+    and leaves the transcript blank. The transcript physically lives in the shared base,
+    so transcript_path must resolve by the globally-unique claude_session_id there even
+    when the per-account symlink is broken.
+    """
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    cwd = "/mnt/ssk-ssd/tony/GitHub/cc-account-switcher"
+    claude_sid = "uuid-shared-base-regression"
+    session_id = "sess-broken-symlink"
+
+    # The transcript physically lives in the shared base's projects tree.
+    shared = tmp_path / "shared-claude"
+    shared_projects = shared / "projects" / "-mnt-ssk-ssd-tony-GitHub-cc-account-switcher"
+    shared_projects.mkdir(parents=True)
+    transcript_file = shared_projects / f"{claude_sid}.jsonl"
+    transcript_file.write_text('{"type":"text"}\n')
+
+    # The per-account config dir's ``projects`` is a BROKEN symlink (self-referential),
+    # mirroring the observed corruption — glob through it finds nothing.
+    account_cfg = tmp_path / "cfg" / "secondary"
+    account_cfg.mkdir(parents=True)
+    broken_link = account_cfg / "projects"
+    broken_link.symlink_to(broken_link)  # points at itself → unresolvable
+    assert not broken_link.exists()
+
+    orch = _seed_and_rehydrate(db_url, session_id, cwd, claude_sid)
+    with patch("server.sessions.orchestrator.compose", return_value=account_cfg), \
+         patch("server.sessions.orchestrator.shared_base", return_value=shared):
+        result = orch.transcript_path(session_id)
+
+    assert result == str(transcript_file), (
+        "transcript_path must fall back to the shared projects base (the physical home "
+        "of every transcript) when the per-account projects symlink is broken"
+    )
