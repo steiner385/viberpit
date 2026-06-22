@@ -77,6 +77,8 @@ def _parse(path: str, max_turns: int) -> list:
     out: list = []
     meta_emitted = False
     tasks: dict = {}
+    # Map Task tool_use_id -> {"type": ..., "description": ..., "issuing_aid": ...}
+    # "issuing_aid" is the agent_id of the entry that issued the Task (None = main).
     for o in lines:
         typ = o.get("type")
         msg = o.get("message") or {}
@@ -103,8 +105,11 @@ def _parse(path: str, max_turns: int) -> list:
                 out.append(ev.ToolResult(r["tool_use_id"], ok, {"content": r.get("content")}, uuid, agent_id=aid))
                 task = tasks.get(r["tool_use_id"])
                 if task is not None:
-                    out.append(ev.SubAgentUpdate(r["tool_use_id"], None, str(task["type"]),
-                                                 str(task["description"]), "done" if ok else "failed"))
+                    # Use the issuing_aid recorded when the Task was created so the
+                    # terminal update carries the correct parent_agent_id for nested tasks.
+                    out.append(ev.SubAgentUpdate(r["tool_use_id"], task["issuing_aid"],
+                                                 str(task["type"]), str(task["description"]),
+                                                 "done" if ok else "failed"))
         elif typ == "assistant":
             # Reconstruct the model once (status strip needs it after re-attach).
             model = msg.get("model")
@@ -121,11 +126,23 @@ def _parse(path: str, max_turns: int) -> list:
                 elif t == "tool_use":
                     out.append(ev.ToolCall(uuid, b.get("id", ""), b.get("name", ""),
                                            ev.tool_kind(b.get("name", "")), b.get("input", {}), uuid, agent_id=aid))
-                    if b.get("name") == "Task" and aid is None:
+                    if b.get("name") == "Task":
+                        # Emit SubAgentUpdate(running) for EVERY Task tool_use, regardless of
+                        # whether the issuing entry is from main (aid=None) or a nested sub-agent.
+                        # parent_agent_id = aid (the agent_id of the issuing entry) so the tree
+                        # node is placed correctly: None for main-issued Tasks, the parent sub-agent
+                        # id for nested Tasks.  Track issuing_aid so the terminal update (from the
+                        # tool_result in a later user entry) uses the same parent.
+                        # NOTE for isSidechain (branch 2): deep (>1 level) nesting via the
+                        # isSidechain fallback is flattened to the nearest resolvable Task because
+                        # root_of() only climbs to the outermost sidechain root.  The authoritative
+                        # nesting path is parent_tool_use_id (branch 1), which is fully correct.
                         inp = b.get("input") or {}
                         tasks[b.get("id", "")] = {"type": inp.get("subagent_type") or "agent",
-                                                  "description": inp.get("description") or ""}
-                        out.append(ev.SubAgentUpdate(b.get("id", ""), None, str(inp.get("subagent_type") or "agent"),
+                                                  "description": inp.get("description") or "",
+                                                  "issuing_aid": aid}
+                        out.append(ev.SubAgentUpdate(b.get("id", ""), aid,
+                                                     str(inp.get("subagent_type") or "agent"),
                                                      str(inp.get("description") or ""), "running"))
             usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
             out.append(ev.TurnEnd(uuid, usage, None, uuid, agent_id=aid))

@@ -356,7 +356,11 @@ class SessionOrchestrator:
             )
         if status == "done":
             await self._maybe_apply_auto_name(session_id)
-            await self._persist_sub_agents(session_id)
+        # Refresh sub-agent summary on every status persist (not only "done") so the
+        # in-memory record seen by the dashboard's 5s poll reflects live sub-agent rows
+        # while the session is still running.  Status transitions are bounded, so the
+        # transcript read cost is acceptable.  _persist_sub_agents is already best-effort.
+        await self._persist_sub_agents(session_id)
 
     async def _maybe_apply_auto_name(self, session_id: str) -> None:
         """If the session name is still auto, adopt Claude's transcript title."""

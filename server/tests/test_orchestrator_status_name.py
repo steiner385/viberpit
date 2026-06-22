@@ -75,3 +75,37 @@ def test_auto_name_not_applied_when_manual(tmp_path):
         await orch._persist_status("s1", "done")
         return orch.record("s1").name
     assert asyncio.run(run()) == "Hand Picked"
+
+
+def test_persist_sub_agents_called_on_non_done_status(tmp_path):
+    """FIX C: _persist_sub_agents must be called on every status persist, not only 'done'.
+
+    Verifies that after a non-'done' status (e.g. 'working'), the in-memory record's
+    sub_agents field is refreshed so the dashboard list (polled every 5s) shows
+    sub-agent rows while the session is still active.
+
+    We patch sub_agents() to return a fake summary and confirm it lands on the record
+    after a 'working' status persist.
+    """
+    import asyncio as _asyncio
+
+    async def run():
+        orch = await _build_orch(tmp_path)
+        fake_summary = [{"agentId": "toolu_live", "parentAgentId": None,
+                         "agentType": "Explore", "description": "live task", "status": "running"}]
+
+        # Patch sub_agents() to return our fake summary synchronously.
+        async def _fake_sub_agents(session_id):
+            return fake_summary
+
+        orch.sub_agents = _fake_sub_agents
+
+        # Trigger a non-'done' status persist.
+        await orch._persist_status("s1", "working")
+        return orch.record("s1").sub_agents
+
+    result = asyncio.run(run())
+    assert result == [{"agentId": "toolu_live", "parentAgentId": None,
+                       "agentType": "Explore", "description": "live task", "status": "running"}], (
+        f"sub_agents must be refreshed on 'working' status persist; got {result!r}"
+    )
