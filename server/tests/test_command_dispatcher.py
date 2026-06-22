@@ -72,3 +72,13 @@ async def test_passthrough_no_args():
     d = FakeDriver()
     await dispatch(d, _cmd("compact", "passthrough"), "")
     assert d.prompts == ["/compact"]
+
+
+@pytest.mark.anyio
+async def test_unknown_control_raises():
+    """A control-kind command with no matching branch must raise, not silently passthrough."""
+    d = FakeDriver()
+    with pytest.raises(ValueError, match="unhandled control command"):
+        await dispatch(d, _cmd("future-control", "control"), "")
+    # Must NOT have sent any prompt.
+    assert d.prompts == []

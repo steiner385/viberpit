@@ -169,7 +169,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             # Slash-command catalog (built from the SDK's get_server_info) for this session.
             try:
                 catalog = await orchestrator.command_catalog(session_id)
-                await _send({"type": "commands", "sessionId": session_id, "commands": catalog})
+                await _send(redact_event({"type": "commands", "sessionId": session_id, "commands": catalog}))
             except Exception:
                 log.warning("ws.attach: command_catalog failed for %s", session_id, exc_info=True)
 
@@ -330,16 +330,16 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                     try:
                         result = await orchestrator.run_command(session_id, name, args)
                     except KeyError:
-                        await _send({"type": "commandResult", "sessionId": session_id,
-                                     "name": name, "ok": False, "error": "unknown command"})
+                        await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                                     "name": name, "ok": False, "error": "unknown command"}))
                     except Exception:
                         log.warning("ws.command failed session=%s name=%s", session_id, name, exc_info=True)
-                        await _send({"type": "commandResult", "sessionId": session_id,
-                                     "name": name, "ok": False, "error": "command failed"})
+                        await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                                     "name": name, "ok": False, "error": "command failed"}))
                     else:
                         if result is not None:
-                            await _send({"type": "commandResult", "sessionId": session_id,
-                                         "ok": True, **result})
+                            await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                                         "ok": True, **result}))
                 else:
                     await _send({"type": "error", "code": "UNKNOWN_TYPE",
                                  "message": f"Unknown message type: {msg_type!r}"})

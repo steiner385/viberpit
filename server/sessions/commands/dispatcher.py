@@ -24,6 +24,7 @@ async def dispatch(driver, cmd: Command, args: str) -> dict | None:
         if cmd.name == "clear":
             await driver.reconnect()
             return {"name": "clear", "render": "clear", "data": {"text": "Conversation cleared"}}
+        raise ValueError(f"unhandled control command: {cmd.name}")
 
     # passthrough — custom commands, skills, /compact: stream as a normal turn.
     text = f"/{cmd.name}" + (f" {args}" if args else "")

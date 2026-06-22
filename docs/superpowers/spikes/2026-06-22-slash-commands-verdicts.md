@@ -44,9 +44,13 @@ proceed.
 
 **Assumed UNVERIFIED — kept in `passthrough` bucket but FLAGGED.**
 
-`/compact` is in the `passthrough` bucket (Task 2 `EXCLUDED` list has only `clear`, `logout`,
-and `quit` by default). If the real run shows `/compact` produces no `AssistantMessage` (i.e.,
-the stream is empty or only system messages), add `"compact"` to `EXCLUDED` in Task 2.
+`/compact` is currently classified `passthrough` (it is NOT in `EXCLUDED`). The actual `EXCLUDED`
+set in `server/sessions/commands/catalog.py` contains 18 entries: `login`, `logout`, `config`,
+`doctor`, `bug`, `init`, `ide`, `terminal-setup`, `vim`, `resume`, `exit`, `quit`, `upgrade`,
+`release-notes`, `status`, `cost`, `export`, `add-dir`. The `CONTROL` set contains `model` and
+`clear` (not `quit`). If the real run shows `/compact` produces no `AssistantMessage` (i.e.,
+the stream is empty or only system messages), add `"compact"` to `EXCLUDED` in
+`server/sessions/commands/catalog.py`.
 
 **To confirm:** check `COMPACT STREAM:` in spike output. If the list contains `AssistantMessage`,
 the command streams correctly. If empty or only `SystemMessage`/`ResultMessage`, it is a no-op
