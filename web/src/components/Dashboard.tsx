@@ -36,6 +36,7 @@ import type { Account, Session, ArchivedSession } from '@/api/types'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { sortSessionsByTier } from '@/session/statusTier'
 import { setLastRepo } from '@/lib/lastRepo'
+import { useNeedsYouTitle } from '@/hooks/useNeedsYouTitle'
 
 // ── New Session Dialog ──────────────────────────────────────────────────────
 
@@ -1036,6 +1037,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const orderedSessions = useMemo(() => sortSessionsByTier(sessions), [sessions])
+  useNeedsYouTitle(sessions)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const { data: settingsData } = useSettings()
   const reposQuery = useGithubRepos()
