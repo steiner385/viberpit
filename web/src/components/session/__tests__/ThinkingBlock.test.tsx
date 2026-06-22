@@ -7,14 +7,14 @@ describe('ThinkingBlock', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
   it('is collapsed by default — text not visible', () => {
-    render(<ThinkingBlock text="secret thought" />)
+    render(<ThinkingBlock text="secret thought" defaultCollapsed={true} />)
     // The region should be hidden
     const toggle = screen.getByRole('button', { name: /thinking/i })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('hides content region by default', () => {
-    render(<ThinkingBlock text="hidden content" />)
+    render(<ThinkingBlock text="hidden content" defaultCollapsed={true} />)
     const regionId = screen.getByRole('button', { name: /thinking/i }).getAttribute('aria-controls')!
     const region = document.getElementById(regionId)
     expect(region).not.toBeNull()
@@ -23,7 +23,7 @@ describe('ThinkingBlock', () => {
 
   it('reveals content and flips aria-expanded on toggle click', async () => {
     const user = userEvent.setup()
-    render(<ThinkingBlock text="revealed thought" />)
+    render(<ThinkingBlock text="revealed thought" defaultCollapsed={true} />)
     const toggle = screen.getByRole('button', { name: /thinking/i })
     await user.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
@@ -34,10 +34,29 @@ describe('ThinkingBlock', () => {
 
   it('collapses again on second click', async () => {
     const user = userEvent.setup()
-    render(<ThinkingBlock text="toggle me" />)
+    render(<ThinkingBlock text="toggle me" defaultCollapsed={true} />)
     const toggle = screen.getByRole('button', { name: /thinking/i })
     await user.click(toggle)
     await user.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  })
+})
+
+describe('ThinkingBlock defaultCollapsed', () => {
+  it('starts collapsed when defaultCollapsed is true', () => {
+    render(<ThinkingBlock text="secret reasoning" defaultCollapsed={true} />)
+    expect(screen.getByRole('button', { name: /thinking/i })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('starts expanded when defaultCollapsed is false', () => {
+    render(<ThinkingBlock text="secret reasoning" defaultCollapsed={false} />)
+    expect(screen.getByRole('button', { name: /thinking/i })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('a manual toggle overrides the default', async () => {
+    const user = userEvent.setup()
+    render(<ThinkingBlock text="secret reasoning" defaultCollapsed={true} />)
+    await user.click(screen.getByRole('button', { name: /thinking/i }))
+    expect(screen.getByRole('button', { name: /thinking/i })).toHaveAttribute('aria-expanded', 'true')
   })
 })

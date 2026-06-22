@@ -68,6 +68,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           rotations={rt.state.rotations}
           permissionMode={rt.mode}
           toolDetailMode={rt.toolDetailMode}
+          thinkingCollapsed={rt.thinkingCollapsed}
           // Only the live-open block streams as plain text; during replay the open
           // id is meaningless, so suppress it and render everything as markdown.
           streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}

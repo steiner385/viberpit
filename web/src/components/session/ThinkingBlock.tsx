@@ -2,14 +2,16 @@ import { useState, useId } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-interface Props { text: string }
+interface Props { text: string; defaultCollapsed: boolean }
 
 /**
  * Reasoning trace, rendered Claude-Code style: a compact, dim, italic one-liner
  * (`✻ Thinking`) that expands to the full text on click — no heavy bordered box.
  */
-export function ThinkingBlock({ text }: Props) {
-  const [open, setOpen] = useState(false)
+export function ThinkingBlock({ text, defaultCollapsed }: Props) {
+  // Honor the persisted default until the user manually toggles, then stick.
+  const [userToggled, setUserToggled] = useState<boolean | null>(null)
+  const open = userToggled ?? !defaultCollapsed
   const regionId = useId()
 
   return (
@@ -18,7 +20,7 @@ export function ThinkingBlock({ text }: Props) {
         type="button"
         aria-expanded={open}
         aria-controls={regionId}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setUserToggled(!open)}
         className={cn(
           'flex w-full items-center gap-1.5 px-3 py-1 text-left text-xs italic',
           'text-gray-400 dark:text-gray-500 leading-tight',

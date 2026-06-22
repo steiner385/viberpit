@@ -15,6 +15,7 @@ interface Props {
   permissionMode: string
   isLastTurn: boolean
   toolDetailMode: ToolDetailMode
+  thinkingCollapsed: boolean
   /** Id of the block currently being streamed live (renders as plain text);
    *  null/absent means every text block is finalized and rendered as markdown. */
   streamingBlockId?: string | null
@@ -23,7 +24,7 @@ interface Props {
 }
 
 export const Turn = memo(function Turn({
-  turn, permissionMode, isLastTurn, toolDetailMode, streamingBlockId = null,
+  turn, permissionMode, isLastTurn, toolDetailMode, thinkingCollapsed, streamingBlockId = null,
   onDecision, onAnswer,
 }: Props) {
   const isUser = turn.role === 'user'
@@ -60,7 +61,7 @@ export const Turn = memo(function Turn({
               ? <UserBubble key={block.id} text={block.text} />
               : <AssistantText key={block.id} text={block.text} streaming={block.id === streamingBlockId} />
           case 'thinking':
-            return <ThinkingBlock key={block.id} text={block.text} />
+            return <ThinkingBlock key={block.id} text={block.text} defaultCollapsed={thinkingCollapsed} />
           case 'tool':
             // Unreachable: tool blocks are coalesced into toolGroup items above.
             return <ToolCallCard key={block.id} block={block} density="line" />
