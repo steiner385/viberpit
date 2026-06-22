@@ -58,4 +58,19 @@ describe('AssistantText', () => {
     expect(link.getAttribute('rel') ?? '').toContain('noopener')
     expect(link.getAttribute('rel') ?? '').toContain('noreferrer')
   })
+
+  it('renders a path-like inline code span as a clickable copy target', async () => {
+    render(<AssistantText text={'see `web/src/foo.tsx:60` here'} streaming={false} />)
+    const el = await screen.findByText('web/src/foo.tsx:60')
+    expect(el.tagName).toBe('CODE')
+    expect(el).toHaveAttribute('role', 'button')
+    expect(el).toHaveAttribute('title', 'Copy path')
+  })
+
+  it('leaves a non-path inline code span as a plain code element', async () => {
+    render(<AssistantText text={'run `npm install` now'} streaming={false} />)
+    const el = await screen.findByText('npm install')
+    expect(el.tagName).toBe('CODE')
+    expect(el).not.toHaveAttribute('role')
+  })
 })
