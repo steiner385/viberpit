@@ -70,9 +70,9 @@ describe('UsageBadge', () => {
 })
 
 describe('StatusPill — session status tiers', () => {
-  it('renders complete as "Your turn" with neutral text', () => {
+  it('renders complete as "Complete" with neutral text', () => {
     const { container } = render(<StatusPill status="complete" />)
-    expect(screen.getByText('Your turn')).toBeInTheDocument()
+    expect(screen.getByText('Complete')).toBeInTheDocument()
     expect(container.querySelector('.text-emerald-700')).toBeFalsy()
   })
 
