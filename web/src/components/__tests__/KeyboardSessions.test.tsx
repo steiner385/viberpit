@@ -166,6 +166,35 @@ describe('Task 3 — session-list selection + keyboard nav', () => {
     await user.keyboard('{ArrowDown}{Enter}')
     expect(onOpen).not.toHaveBeenCalled()
   })
+
+  it('ArrowDown navigates the list even when focus is on the Sessions tab (not the prompt)', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    render(<Dashboard />, { wrapper })
+    // Reach the list the way a keyboard user does: focus the Sessions tab button,
+    // NOT the prompt textarea. Up/Down should still move the highlight.
+    await user.click(screen.getByRole('tab', { name: /sessions/i }))
+    await user.keyboard('{ArrowDown}')
+    expect(screen.getByLabelText(/open session one/i)).toHaveAttribute('data-selected', 'true')
+    await user.keyboard('{ArrowDown}')
+    expect(screen.getByLabelText(/open session two/i)).toHaveAttribute('data-selected', 'true')
+    await user.keyboard('{ArrowUp}')
+    expect(screen.getByLabelText(/open session one/i)).toHaveAttribute('data-selected', 'true')
+  })
+
+  it('ArrowDown while focused in the Repository select is NOT hijacked by list nav', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    render(<Dashboard />, { wrapper })
+    // Arrow keys inside a form control (the repo <select>) must drive that control,
+    // not the session list — otherwise picking a repo by keyboard is impossible.
+    const select = screen.getByLabelText('Repository')
+    select.focus()
+    await user.keyboard('{ArrowDown}')
+    for (const sess of THREE) {
+      expect(screen.getByLabelText(`Open session ${sess.name}`)).not.toHaveAttribute('data-selected', 'true')
+    }
+  })
 })
 
 // ── Task 4: Row actions ───────────────────────────────────────────────────────
