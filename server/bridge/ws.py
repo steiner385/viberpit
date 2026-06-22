@@ -90,11 +90,17 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
         # Subscribe to orchestrator lifecycle events (rotated, etc.)
         event_q = await orchestrator.subscribe_events()
 
+        # Serialises all websocket writes. The batcher, the attach/replay path, and
+        # the lifecycle forwarder all call _send concurrently; interleaved send_text
+        # calls on one socket can raise or corrupt frames.
+        send_lock = asyncio.Lock()
+
         async def _send(msg: dict) -> None:
             """Send a JSON message; ignore send errors after disconnect."""
             try:
                 if websocket.client_state == WebSocketState.CONNECTED:
-                    await websocket.send_text(json.dumps(msg))
+                    async with send_lock:
+                        await websocket.send_text(json.dumps(msg))
             except Exception:
                 pass
 
@@ -124,14 +130,19 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
         batcher_task = asyncio.create_task(_batcher(), name="ws-batcher")
 
         # ------------------------------------------------------------------
-        # Lifecycle event forwarder (rotated, etc.) → batcher
+        # Lifecycle event forwarder (status, rotated, …) → top-level frames
         # ------------------------------------------------------------------
 
         async def _forward_events() -> None:
             try:
                 while True:
                     event = await event_q.get()
-                    out_q.put_nowait(event)
+                    # Lifecycle/control frames (status, rotated, …) must reach the
+                    # client as TOP-LEVEL frames so their dedicated handlers fire —
+                    # e.g. status → _patchSessionStatus, which live-updates the session
+                    # LIST. Routing them through out_q would wrap them in a 'batch'
+                    # frame, which the client treats as events for the OPEN session only.
+                    await _send(redact_event(event))
             except asyncio.CancelledError:
                 pass
 

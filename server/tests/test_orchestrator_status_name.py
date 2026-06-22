@@ -51,6 +51,31 @@ def test_persist_status_never_overwrites_ended(tmp_path):
     assert asyncio.run(run()) == "ended"
 
 
+def test_persist_status_broadcasts_status_event(tmp_path):
+    """A status change is published on the lifecycle event bus so every connected
+    dashboard live-patches the session LIST immediately, instead of waiting for the
+    (background-throttled) 5s poll. Without this push the list goes stale — e.g.
+    stuck on 'Working…' — until the user opens the session."""
+    async def run():
+        orch = await _build_orch(tmp_path)
+        q = orch.subscribe_events()
+        await orch._persist_status("s1", "waiting_input")
+        return q.get_nowait()
+    event = asyncio.run(run())
+    assert event == {"type": "status", "sessionId": "s1", "status": "waiting_input"}
+
+
+def test_persist_status_ended_does_not_broadcast(tmp_path):
+    """An already-ended session is terminal: no further status broadcasts."""
+    async def run():
+        orch = await _build_orch(tmp_path)
+        await orch._persist_status("s1", "ended")
+        q = orch.subscribe_events()
+        await orch._persist_status("s1", "in_progress")  # ignored — terminal
+        return q.empty()
+    assert asyncio.run(run()) is True
+
+
 def test_rename_pins_name_is_auto_false(tmp_path):
     async def run():
         orch = await _build_orch(tmp_path)
