@@ -32,8 +32,15 @@ When a unit of work is complete and verified (tests + lint green), finish it wit
 1. Branch off `master` — never commit feature work directly to `master`.
 2. Commit (end message with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`).
 3. Push and open a PR via `gh pr create` (end body with the Claude Code trailer).
-4. Merge to `master` once mergeable: `gh pr merge --merge --delete-branch`.
+4. Enable auto-merge so the PR lands itself once required checks pass: `gh pr merge <#> --squash --auto`.
 Only hold off if the user said it's a prototype/WIP, or if verification is failing.
+
+`master` is protected: PRs need the `lint-and-test` and `frontend` CI checks green and the branch
+up to date with `master` before merging. `allow_update_branch` auto-rebases an out-of-date PR and
+re-runs CI, so a green `--auto` PR lands without manual "Update branch" clicks. Branches are deleted
+server-side on merge — don't pass `--delete-branch` (the `master` deploy worktree makes the local
+delete fail). Merge queue is unavailable (user-owned repo), so auto-merge + strict required checks
+is the equivalent. Admins may push directly in emergencies.
 
 ## Dev / testing
 
