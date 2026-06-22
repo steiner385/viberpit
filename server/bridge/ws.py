@@ -220,6 +220,18 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 ).to_wire())
                 await _send(q_wire)
 
+            # 2d) Emit the current live status so a client attaching or reconnecting
+            #     mid-turn renders the true state immediately. The live status is
+            #     otherwise only pushed on transitions, so without this a mid-turn
+            #     attach would show the reducer's initial 'idle' ("Ready"). Best-effort.
+            try:
+                await _send(redact_event(ev.Status(
+                    state=driver.current_status(),
+                    count=len(driver.queued()),
+                ).to_wire()))
+            except Exception:
+                log.warning("ws.attach: live status emit failed for %s", session_id, exc_info=True)
+
             # 2c) Send the deferred initial prompt (if any) now that the client is
             #     watching.  The prompt was stored in create_session instead of being
             #     sent immediately so that its events stream live to this first attach
