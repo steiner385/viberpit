@@ -41,7 +41,7 @@ async def upload_attachment(
             media_type = sniff_media_type(bytes(buf[:12]))
         if len(buf) > MAX_BYTES:
             return JSONResponse(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 content={"error": {"code": "too_large",
                                    "message": f"image exceeds {MAX_BYTES} bytes"}},
             )

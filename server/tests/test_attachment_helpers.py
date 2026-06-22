@@ -1,4 +1,3 @@
-import base64
 from server.sessions.attachments import (
     sniff_media_type, ext_for, image_block, MAX_BYTES, MAX_PER_MESSAGE,
 )

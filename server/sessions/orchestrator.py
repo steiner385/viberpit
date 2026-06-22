@@ -627,8 +627,7 @@ class SessionOrchestrator:
         self._last_prompt[session_id] = text
         attachments = []
         if attachment_ids:
-            import uuid as _uuid
-            turn_id = _uuid.uuid4().hex
+            turn_id = uuid.uuid4().hex
             async with db_session() as db:
                 attachments = await resolve_and_bind(db, session_id, turn_id, attachment_ids)
                 await db.commit()

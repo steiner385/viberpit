@@ -1,6 +1,7 @@
 """Fake SDK client + builders emitting REAL claude_agent_sdk message objects.
 Lets the translator/driver be tested without spawning `claude` or spending quota."""
 from __future__ import annotations
+from typing import Any, AsyncIterable
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
                               ResultMessage, ToolUseBlock, ToolResultBlock)
 
@@ -59,7 +60,7 @@ class FakeSDKClient:
 
     async def __aenter__(self): return self
     async def __aexit__(self, *exc): return False
-    async def query(self, prompt):
+    async def query(self, prompt: str | AsyncIterable[dict[str, Any]]):
         if isinstance(prompt, str):
             self.sent.append(prompt)
         else:
