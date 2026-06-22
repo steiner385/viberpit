@@ -134,3 +134,17 @@ def test_rest_call_returns_503_when_daemon_down(dead_socket_edge):
     resp = dead_socket_edge.get("/api/sessions", headers=_IDENT)
     assert resp.status_code == 503, resp.text
     assert resp.json()["detail"] == "session daemon unavailable"
+
+
+import json as _json
+from starlette.websockets import WebSocketDisconnect
+
+
+def test_ws_connect_closes_1013_when_daemon_down(dead_socket_edge):
+    # Attaching to a session triggers ensure_driver() → DaemonUnavailable.
+    # The guard must close 1013 (try again later), not crash the handler.
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with dead_socket_edge.websocket_connect("/ws", headers=_IDENT) as ws:
+            ws.send_text(_json.dumps({"type": "attach", "sessionId": "s1"}))
+            ws.receive_text()  # forces the server frames to be read
+    assert exc.value.code == 1013
