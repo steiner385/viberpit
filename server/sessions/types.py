@@ -28,6 +28,7 @@ class SessionRecord:
     permission_mode: str = "interactive"
     created_at: datetime | None = None
     adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
+    sub_agents: list | None = None   # [{agentId,parentAgentId,agentType,description,status}], refreshed at status changes
 
     def to_dict(self) -> dict:
         return {
