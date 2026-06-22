@@ -31,6 +31,9 @@ export const Turn = memo(function Turn({ turn, permissionMode, onDecision, onAns
               ? <UserBubble key={block.id} text={block.text} />
               : <AssistantText key={block.id} text={block.text} streaming={false} />
 
+          case 'image':
+            return <UserBubble key={block.id} images={block.attachments} />
+
           case 'thinking':
             return <ThinkingBlock key={block.id} text={block.text} />
 

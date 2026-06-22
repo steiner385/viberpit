@@ -15,4 +15,10 @@ describe('UserBubble', () => {
     const el = screen.getByText(/line1/)
     expect(el).toBeInTheDocument()
   })
+
+  it('renders attached image thumbnails', () => {
+    render(<UserBubble text="look" images={[{ id: 'a1', mediaType: 'image/png', filename: 'a.png' }]} />)
+    const img = screen.getByAltText('a.png') as HTMLImageElement
+    expect(img.getAttribute('src')).toBe('/api/attachments/a1')
+  })
 })
