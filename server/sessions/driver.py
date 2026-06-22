@@ -59,6 +59,7 @@ class SessionDriver:
         self._queue: list[tuple[str, list[dict]]] = []
         self._turn_active: bool = False
         self._turns_completed: int = 0
+        self._last_turn_outcome: str = "success"
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -189,6 +190,7 @@ class SessionDriver:
             pending_question=bool(self._qreg.pending(self.session_id)),
             pending_plan=any(p.get("tool") == "ExitPlanMode" for p in perms),
             turns_completed=self._turns_completed,
+            last_turn_outcome=self._last_turn_outcome,
         )
 
     async def _emit_dashboard_status(self) -> None:
@@ -248,6 +250,7 @@ class SessionDriver:
         """Echo the user prompt, emit working status, query the SDK, drain."""
         images = images or []
         self._turn_active = True
+        self._last_turn_outcome = "success"
         await self._put_status("working", len(self._queue))
         # Build the live UserMessage image refs (url/mime/name only).
         wire_images = [{"url": im["url"], "mime": im["mime"], "name": im.get("name", "")}
@@ -289,6 +292,8 @@ class SessionDriver:
         try:
             async for msg in self._client.receive_response():
                 for e in self._tr.feed(msg):
+                    if isinstance(e, ev.TurnEnd):
+                        self._last_turn_outcome = e.outcome
                     await self._out.put(e)
                 if self.claude_session_id is None and self._tr.session_id:
                     self.claude_session_id = self._tr.session_id
@@ -300,6 +305,7 @@ class SessionDriver:
         except Exception:
             log.exception("driver.drain session=%s", self.session_id)
             await self._out.put(ev.ErrorEvent("driver_error", "session stream failed"))
+            self._last_turn_outcome = "failed"
         finally:
             # Capture any token rotation the SDK performed during this turn.
             await self._call_sync_back()
