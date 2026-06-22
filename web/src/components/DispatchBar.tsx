@@ -179,6 +179,12 @@ export function DispatchBar({
   const persistedRepo = repo
   const repoIsKnown = repos.some((r) => r.nameWithOwner === persistedRepo)
 
+  // The Create button is a click affordance for the same action as pressing Enter.
+  // Unlike Enter (which falls back to opening the highlighted row when empty), the
+  // button is enabled ONLY when there is something to dispatch — a labelled "Create"
+  // control should never silently open an existing session.
+  const canSubmit = !isPending && (text.trim().length > 0 || att.refs().length > 0)
+
   return (
     <div
       className={cn(
@@ -297,6 +303,21 @@ export function DispatchBar({
           )}
         >
           <span aria-hidden="true">📎</span>
+        </button>
+        <button
+          type="button"
+          aria-label="Create session"
+          onClick={dispatchNow}
+          disabled={!canSubmit}
+          className={cn(
+            'flex-shrink-0 rounded-md px-4 py-2 text-sm font-medium min-h-[44px]',
+            'bg-blue-600 text-white',
+            'hover:bg-blue-700',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            'disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-blue-600',
+          )}
+        >
+          Create
         </button>
       </div>
     </div>
