@@ -367,51 +367,51 @@ In `server/sessions/remote.py`, add the 18 proxy methods to `RemoteOrchestrator`
 
 ```python
     async def archive_session(self, session_id):
-        return (await self._client.call("archive_session", session_id=session_id))["result"]
+        return await self._client.call("archive_session", session_id=session_id)
 
     async def permanent_delete(self, session_id):
-        return (await self._client.call("permanent_delete", session_id=session_id))["result"]
+        return await self._client.call("permanent_delete", session_id=session_id)
 
     async def rename_session(self, session_id, name):
-        return (await self._client.call("rename_session", session_id=session_id, name=name))["result"]
+        return await self._client.call("rename_session", session_id=session_id, name=name)
 
     async def interrupt(self, session_id):
-        return (await self._client.call("interrupt", session_id=session_id))["result"]
+        return await self._client.call("interrupt", session_id=session_id)
 
     async def set_permission_mode(self, session_id, mode):
-        return (await self._client.call("set_permission_mode", session_id=session_id, mode=mode))["result"]
+        return await self._client.call("set_permission_mode", session_id=session_id, mode=mode)
 
     async def cancel_queued(self, session_id, index):
-        return (await self._client.call("cancel_queued", session_id=session_id, index=index))["result"]
+        return await self._client.call("cancel_queued", session_id=session_id, index=index)
 
     async def resolve_permission(self, session_id, perm_id, decision, identity):
-        return (await self._client.call("resolve_permission", session_id=session_id, perm_id=perm_id,
-                                        decision=decision, identity=identity))["result"]
+        return await self._client.call("resolve_permission", session_id=session_id, perm_id=perm_id,
+                                        decision=decision, identity=identity)
 
     async def answer_question(self, session_id, question_id, selected, identity, mode="option"):
-        return (await self._client.call("answer_question", session_id=session_id, question_id=question_id,
-                                        selected=selected, identity=identity, mode=mode))["result"]
+        return await self._client.call("answer_question", session_id=session_id, question_id=question_id,
+                                        selected=selected, identity=identity, mode=mode)
 
     async def transcript_path(self, session_id):
-        return (await self._client.call("transcript_path", session_id=session_id))["result"]
+        return await self._client.call("transcript_path", session_id=session_id)
 
     async def pending_questions(self, session_id):
-        return (await self._client.call("pending_questions", session_id=session_id))["result"]
+        return await self._client.call("pending_questions", session_id=session_id)
 
     async def pop_pending_initial_prompt(self, session_id):
-        return (await self._client.call("pop_pending_initial_prompt", session_id=session_id))["result"]
+        return await self._client.call("pop_pending_initial_prompt", session_id=session_id)
 
     async def pop_pending_initial_attachment_ids(self, session_id):
-        return (await self._client.call("pop_pending_initial_attachment_ids", session_id=session_id))["result"]
+        return await self._client.call("pop_pending_initial_attachment_ids", session_id=session_id)
 
     async def command_catalog(self, session_id):
-        return (await self._client.call("command_catalog", session_id=session_id))["result"]
+        return await self._client.call("command_catalog", session_id=session_id)
 
     async def run_command(self, session_id, name, args):
-        return (await self._client.call("run_command", session_id=session_id, name=name, args=args))["result"]
+        return await self._client.call("run_command", session_id=session_id, name=name, args=args)
 
     async def list_archived(self):
-        return (await self._client.call("list_archived"))["result"]
+        return await self._client.call("list_archived")
 
     async def unarchive(self, session_id):
         r = await self._client.call("unarchive", session_id=session_id)
@@ -422,7 +422,7 @@ In `server/sessions/remote.py`, add the 18 proxy methods to `RemoteOrchestrator`
         return SessionRecord.from_dict(r["record"]), r["metadata"]
 
     async def transcript_events(self, session_id):
-        return (await self._client.call("transcript_events", session_id=session_id))["events"]
+        return await self._client.call("transcript_events", session_id=session_id))["events"]
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
