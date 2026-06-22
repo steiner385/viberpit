@@ -22,7 +22,8 @@ from server.reauth import ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
 
 # API routers (T036–T038)
-from server.api.sessions import router as sessions_router, uploads_router
+from server.api.sessions import router as sessions_router
+from server.api.attachments import router as attachments_router
 from server.api.accounts import router as accounts_router
 from server.api.auth import router as auth_router
 from server.api.config import router as config_router
@@ -113,17 +114,19 @@ async def _lifespan(app: FastAPI):
     # Start the singleton orchestrator (usage poller + rotation monitor)
     await app.state.orchestrator.start()
 
-    # Sweep stale staged uploads left over from a previous crashed run
-    from server.sessions import uploads
+    # Sweep stale unbound attachments (uploaded but never sent) from prior runs.
+    from server.db import db_session as _db_session
+    from server.sessions import attachments as _attachments
     try:
-        n = uploads.sweep_staging()
+        async with _db_session() as _db:
+            n = await _attachments.sweep_orphans(_db)
         if n:
             _logging.getLogger("server").info(
-                "startup: swept %d stale staged upload(s)", n
+                "startup: swept %d orphan attachment(s)", n
             )
     except Exception:
         _logging.getLogger("server").warning(
-            "startup: staging sweep failed", exc_info=True
+            "startup: attachment orphan sweep failed", exc_info=True
         )
 
     yield
@@ -174,7 +177,7 @@ def create_app(
 
     # REST API routers (T036–T038)
     app.include_router(sessions_router)
-    app.include_router(uploads_router)
+    app.include_router(attachments_router)
     app.include_router(accounts_router)
     app.include_router(auth_router)
     app.include_router(config_router)

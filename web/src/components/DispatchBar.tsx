@@ -11,7 +11,7 @@ export interface DispatchBarProps {
   reposLoading: boolean
   reposError: boolean
   /** Fired on Enter when the prompt has text or images are attached. */
-  onDispatch: (input: { initialPrompt: string; repo: string | null; images: { sha: string; mime: string; name: string }[] }) => void
+  onDispatch: (input: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) => void
   /** ↑/↓ at a line boundary (or empty prompt). */
   onNavigate: (dir: 'up' | 'down') => void
   /** Enter on an EMPTY prompt, or →. */
@@ -84,7 +84,7 @@ export function DispatchBar({
       onOpenHighlighted()
       return
     }
-    onDispatch({ initialPrompt: trimmed, repo: repo || null, images: refs })
+    onDispatch({ initialPrompt: trimmed, repo: repo || null, attachmentIds: refs })
     setText('')
     att.clear()
     // Reset textarea height
