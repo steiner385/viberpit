@@ -1005,9 +1005,11 @@ interface DashboardProps {
   onReviewSession?: (sessionId: string) => void
   /** If set, the archived tab is selected on mount. */
   initialTab?: TabId
+  /** Called when the user clicks a sub-agent row to open its transcript. */
+  onOpenSubAgent?: (sessionId: string, agentId: string) => void
 }
 
-export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab }: DashboardProps) {
+export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab, onOpenSubAgent }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const { data: archivedSessions = [] } = useArchivedSessions()
@@ -1425,6 +1427,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             onOpen={handleOpen}
             onRename={handleRename}
             onClose={handleClose}
+            onOpenSubAgent={onOpenSubAgent}
           />
 
           <DispatchBar

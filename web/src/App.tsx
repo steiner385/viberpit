@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Dashboard } from './components/Dashboard'
 import { SessionView } from './components/session/SessionView'
+import { SubSessionView } from './components/session/SubSessionView'
 import { ReviewView } from './components/ReviewView'
 
 // ── View state machine ───────────────────────────────────────────────────────
@@ -15,6 +16,7 @@ type View =
   | { type: 'dashboard' }
   | { type: 'session'; sessionId: string; originElementId?: string }
   | { type: 'review'; sessionId: string }
+  | { type: 'subSession'; sessionId: string; agentId: string }
 
 function App() {
   const [view, setView] = useState<View>({ type: 'dashboard' })
@@ -49,12 +51,23 @@ function App() {
     setFocusDispatchNonce((n) => n + 1)
   }, [])
 
+  const handleOpenSubAgent = useCallback((sessionId: string, agentId: string) => {
+    setView({ type: 'subSession', sessionId, agentId })
+  }, [])
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       {view.type === 'session' ? (
         <SessionView sessionId={view.sessionId} onBack={handleBack} />
       ) : view.type === 'review' ? (
         <ReviewView sessionId={view.sessionId} onBack={handleBackFromReview} />
+      ) : view.type === 'subSession' ? (
+        <SubSessionView
+          sessionId={view.sessionId}
+          agentId={view.agentId}
+          parentTitle={view.sessionId.slice(0, 8)}
+          onBack={handleBack}
+        />
       ) : (
         <>
           <header className="p-4 border-b border-border">
@@ -64,6 +77,7 @@ function App() {
             <Dashboard
               onOpenSession={handleOpenSession}
               onReviewSession={handleReviewSession}
+              onOpenSubAgent={handleOpenSubAgent}
               focusDispatchSignal={focusDispatchNonce}
             />
           </main>
