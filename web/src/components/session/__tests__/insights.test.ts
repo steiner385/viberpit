@@ -46,4 +46,31 @@ describe('parseInsights', () => {
     const input = ['★ Insight ----------', 'body', '----------'].join('\n')
     expect(parseInsights(input)).toEqual([{ kind: 'prose', text: input }])
   })
+
+  it('detects delimiters wrapped in markdown backticks', () => {
+    // The insight-generation prompt instructs agents to emit the delimiter
+    // lines wrapped in backticks, e.g. `★ Insight ─────` … `─────`.
+    const input = ['`★ Insight ─────────`', 'point one', '`─────────`'].join('\n')
+    expect(parseInsights(input)).toEqual([{ kind: 'insight', text: 'point one' }])
+  })
+
+  it('detects em-dash and en-dash delimiters', () => {
+    const emInput = ['★ Insight —————————', 'em body', '—————————'].join('\n')
+    expect(parseInsights(emInput)).toEqual([{ kind: 'insight', text: 'em body' }])
+
+    const enInput = ['★ Insight –––––––––', 'en body', '–––––––––'].join('\n')
+    expect(parseInsights(enInput)).toEqual([{ kind: 'insight', text: 'en body' }])
+  })
+
+  it('detects a backtick-wrapped opener with a bare closer (mixed)', () => {
+    const input = ['`★ Insight ─────────`', 'mixed body', '─────────'].join('\n')
+    expect(parseInsights(input)).toEqual([{ kind: 'insight', text: 'mixed body' }])
+  })
+
+  it('still rejects prose that merely mentions an em-dash after Insight', () => {
+    // "★ Insight" followed by real sentence content (not pure decoration)
+    // must not be mistaken for an opener, even with a dash-line nearby.
+    const input = ['★ Insight — this is a sentence, not a delimiter.', '—————————'].join('\n')
+    expect(parseInsights(input)).toEqual([{ kind: 'prose', text: input }])
+  })
 })

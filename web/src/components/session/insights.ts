@@ -2,10 +2,18 @@ export type Segment =
   | { kind: 'prose'; text: string }
   | { kind: 'insight'; text: string }
 
-// Opener: a line containing ★, the word Insight, and at least one box-drawing ─.
-const OPENER = /^\s*★\s*Insight\b[^\n]*─[^\n]*$/
-// Closer: a line of only box-drawing ─ (plus optional surrounding whitespace).
-const CLOSER = /^\s*─+\s*$/
+// Rule glyphs we accept as delimiter "dashes": box-drawing ─, em —, and en –.
+// (ASCII hyphens are intentionally excluded — they collide with Markdown rules,
+// table separators, and front-matter fences.)
+const RULE = '─—–'
+// Decoration allowed around the anchor on a delimiter line: whitespace, the rule
+// glyphs, and optional Markdown backticks (the insight-generation prompt wraps
+// the delimiter lines in backticks).
+// Opener: an optionally backtick-wrapped line that is "★ Insight" followed only
+// by rule decoration (which must include at least one rule glyph).
+const OPENER = new RegExp(`^\\s*\`?\\s*★\\s*Insight\\b[\`\\s${RULE}]*[${RULE}][\`\\s${RULE}]*$`)
+// Closer: an optionally backtick-wrapped line of only rule glyphs.
+const CLOSER = new RegExp(`^\\s*\`?\\s*[${RULE}]+\\s*\`?\\s*$`)
 
 export function parseInsights(text: string): Segment[] {
   const lines = text.split('\n')
