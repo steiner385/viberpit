@@ -29,6 +29,7 @@ const SETTINGS = {
   defaultPermissionMode: 'interactive',
   thinkingCollapsed: false,
   repoRoot: '/home/user/repos',
+  defaultToolDetail: 'auto',
 }
 
 function makeWrapper() {
@@ -59,6 +60,7 @@ describe('useSettings', () => {
     expect(result.current.data?.defaultPermissionMode).toBe('interactive')
     expect(result.current.data?.thinkingCollapsed).toBe(false)
     expect(result.current.data?.repoRoot).toBe('/home/user/repos')
+    expect(result.current.data?.defaultToolDetail).toBe('auto')
   })
 })
 

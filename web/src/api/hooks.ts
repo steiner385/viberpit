@@ -4,6 +4,7 @@ import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome,
 } from './types'
 import type { SessionEvent } from '@/session/events'
+import type { ToolDetailMode } from '@/session/groupBlocks'
 
 // Query keys
 export const QK = {
@@ -84,6 +85,7 @@ export interface AppSettings {
   defaultPermissionMode: string
   thinkingCollapsed: boolean
   repoRoot: string | null
+  defaultToolDetail: ToolDetailMode
 }
 
 export function useSettings() {
