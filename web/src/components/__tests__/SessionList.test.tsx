@@ -317,6 +317,87 @@ describe('SessionList — repo label', () => {
   })
 })
 
+describe('SessionList — tier sort', () => {
+  const onNew = vi.fn()
+  const onOpen = vi.fn()
+  const onRename = vi.fn()
+  const onClose = vi.fn()
+  const onDelete = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('sorts needs-you and error to the top, busy to the bottom, stable within tier', () => {
+    const sessions: Session[] = [
+      {
+        id: 'a',
+        name: 'A busy',
+        accountName: 'alice',
+        status: 'in_progress',
+        createdAt: '2026-06-19T10:00:00Z',
+        updatedAt: '2026-06-19T10:00:00Z',
+      },
+      {
+        id: 'b',
+        name: 'B done',
+        accountName: 'alice',
+        status: 'done',
+        createdAt: '2026-06-19T10:00:00Z',
+        updatedAt: '2026-06-19T10:00:00Z',
+      },
+      {
+        id: 'c',
+        name: 'C blocked',
+        accountName: 'alice',
+        status: 'waiting_input',
+        createdAt: '2026-06-19T10:00:00Z',
+        updatedAt: '2026-06-19T10:00:00Z',
+      },
+      {
+        id: 'd',
+        name: 'D busy2',
+        accountName: 'alice',
+        status: 'in_progress',
+        createdAt: '2026-06-19T10:00:00Z',
+        updatedAt: '2026-06-19T10:00:00Z',
+      },
+      {
+        id: 'e',
+        name: 'E error',
+        accountName: 'alice',
+        status: 'needs_attention',
+        createdAt: '2026-06-19T10:00:00Z',
+        updatedAt: '2026-06-19T10:00:00Z',
+      },
+    ]
+    render(
+      <SessionList
+        sessions={sessions}
+        accounts={[]}
+        onNew={onNew}
+        onOpen={onOpen}
+        onRename={onRename}
+        onClose={onClose}
+        onDelete={onDelete}
+      />,
+      { wrapper },
+    )
+    const order = screen.getAllByRole('button', { name: /Open session/ }).map(
+      (b) => b.getAttribute('aria-label'),
+    )
+    // needs-you (C) + error (E) first (original relative order C before E),
+    // then your-turn (B), then busy (A before D).
+    expect(order).toEqual([
+      'Open session C blocked',
+      'Open session E error',
+      'Open session B done',
+      'Open session A busy',
+      'Open session D busy2',
+    ])
+  })
+})
+
 describe('SessionCard — null usage guard (needs-reauth account)', () => {
   // Regression: before the fix, a session whose account has usage:null
   // crashed SessionCard with "Cannot read properties of null (reading 'session')".
