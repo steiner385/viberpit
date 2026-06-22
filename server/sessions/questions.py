@@ -64,7 +64,7 @@ class QuestionRegistry:
         ]
 
     def resolve(self, question_id: str, selected: list[str], identity: str,
-                mode: str = "option") -> bool:
+                mode: str = "option", session_id: str | None = None) -> bool:
         """Resolve a pending question with the user's selection and answer mode.
 
         ``mode`` is one of "option" (picked a predefined option), "freeform"
@@ -72,9 +72,19 @@ class QuestionRegistry:
         rather than pick). The future resolves to the tuple ``(selected, mode)``;
         ``deny_all`` instead resolves to ``None`` (dismissed sentinel).
 
+        When ``session_id`` is given and the exact ``question_id`` has no live
+        waiter, the answer is reconciled against the session's pending question(s)
+        — see ``_reconcile``. This is what unsticks a reattached session: a question
+        card rebuilt from the saved transcript carries a replay-derived id
+        (``{tool_use_id}-{index}``) that never matches the live registry's random
+        uuid id, so an exact lookup misses and the answer would otherwise be dropped,
+        leaving the turn blocked forever.
+
         Returns True if resolved, False if unknown id, identity mismatch, or already done.
         """
         rec = self._pending.get(question_id)
+        if rec is None and session_id is not None:
+            question_id, rec = self._reconcile(question_id, session_id)
         if rec is None or rec["identity"] != identity:
             return False
         del self._pending[question_id]
@@ -82,6 +92,30 @@ class QuestionRegistry:
             rec["future"].set_result((selected, mode))
             return True
         return False
+
+    def _reconcile(self, question_id: str, session_id: str) -> tuple[str, dict | None]:
+        """Map a replay-derived question id onto a live pending question.
+
+        The transcript card and the live registry use different id schemes
+        (``{tool_use_id}-{index}`` vs. a random uuid), so an exact lookup misses
+        on reattach. Match by the trailing ``-<index>`` when present (handles a
+        multi-question turn), else fall back to the sole pending question. Returns
+        ``(live_question_id, record)``, or ``(question_id, None)`` when it can't
+        disambiguate (e.g. several pending questions and no usable index).
+        """
+        pend = [(qid, r) for qid, r in self._pending.items()
+                if r["session_id"] == session_id]
+        if not pend:
+            return question_id, None
+        tail = question_id.rsplit("-", 1)[-1] if "-" in question_id else ""
+        if tail.isdigit():
+            idx = int(tail)
+            if 0 <= idx < len(pend):
+                return pend[idx]
+            return question_id, None
+        if len(pend) == 1:
+            return pend[0]
+        return question_id, None
 
     def deny_all(self, session_id: str) -> None:
         """Resolve all pending questions for session_id with None (dismissed sentinel).
