@@ -1,18 +1,10 @@
 import { cn } from '@/lib/utils'
 import { WorkingIndicator } from './WorkingIndicator'
+import { statusPresentation } from '@/session/statusTier'
 
 interface Props {
   status: { state: string; count: number }
   connectionState: string
-}
-
-function statusText(status: { state: string; count: number }): string {
-  switch (status.state) {
-    case 'idle':               return 'Ready'
-    case 'waiting-permission': return 'Waiting for permission'
-    case 'queued':             return `${status.count} queued`
-    default:                   return status.state
-  }
 }
 
 export function StatusBar({ status, connectionState }: Props) {
@@ -23,23 +15,28 @@ export function StatusBar({ status, connectionState }: Props) {
       ? 'Reconnecting…'
       : 'Disconnected'
 
+  const { tier, label, Icon, textClass } = statusPresentation(status.state)
+
   return (
     <div
       role="status"
       aria-live="polite"
       aria-atomic="true"
       className={cn(
-        'flex items-center gap-2 text-xs',
-        'text-gray-500 dark:text-gray-400',
+        'flex items-center gap-2 px-3 py-1 text-xs',
+        tier === 'needs-you' || tier === 'error' ? textClass : 'text-gray-500 dark:text-gray-400',
       )}
     >
-      {status.state === 'working' ? (
+      {tier === 'busy' ? (
         <WorkingIndicator count={status.count} />
       ) : (
-        <span>{statusText(status)}</span>
+        <span className={cn('inline-flex items-center gap-1', tier !== 'your-turn' && 'font-medium')}>
+          <Icon size={12} aria-hidden="true" />
+          {label}
+        </span>
       )}
       {connectionNote && (
-        <span className="text-amber-600 dark:text-amber-400 font-medium">
+        <span className="ml-auto text-amber-600 dark:text-amber-400 font-medium">
           {connectionNote}
         </span>
       )}

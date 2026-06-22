@@ -5,6 +5,7 @@ import { useImageAttachments } from './useImageAttachments'
 import { AttachmentChips } from './AttachmentChips'
 import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
 import type { Command } from '@/session/events'
+import { statusTier } from '@/session/statusTier'
 
 interface Props {
   status: { state: string; count: number }
@@ -26,7 +27,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const paletteRef = useRef<CommandPaletteHandle>(null)
-  const isWorking = status.state === 'working'
+  const isWorking = statusTier(status.state) === 'busy'
   const att = useImageAttachments()
   const slash = text.startsWith('/') && !text.includes('\n')
   const afterSlash = slash ? text.slice(1) : ''

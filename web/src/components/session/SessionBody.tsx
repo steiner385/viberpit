@@ -15,6 +15,7 @@ import { SessionPlaceholder } from './SessionPlaceholder'
 import { WorkingIndicator } from './WorkingIndicator'
 import { PendingQuestionPanel } from './PendingQuestionPanel'
 import { SessionAriaLive } from './SessionAriaLive'
+import { statusTier } from '@/session/statusTier'
 
 export function SessionBody({ rt }: { rt: SessionRuntime }) {
   return (
@@ -79,7 +80,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
       )}
 
       {/* Prominent "waiting for Claude" indicator shown below the last turn */}
-      {rt.state.status.state === 'working' && (
+      {statusTier(rt.state.status.state) === 'busy' && (
         <div
           aria-hidden="true"
           className={cn(
