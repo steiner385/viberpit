@@ -467,7 +467,7 @@ def test_transcript_events_returns_replayed_events(tmp_path):
                     new=AsyncMock(return_value=[fake_event]),
                 ) as mock_replay:
                     events = await orch.transcript_events("t1")
-                    mock_replay.assert_called_once_with("/fake/path.jsonl")
+                    mock_replay.assert_called_once_with("/fake/path.jsonl", session_id="t1")
             return events
 
     events = asyncio.run(run())

@@ -992,7 +992,7 @@ class SessionOrchestrator:
         if not path:
             return []
         try:
-            return await replay_events(path)
+            return await replay_events(path, session_id=session_id)
         except Exception:
             log.warning("session.transcript_events id=%s replay failed", session_id, exc_info=True)
             return []

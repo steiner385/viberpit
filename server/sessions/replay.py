@@ -1,9 +1,15 @@
 from __future__ import annotations
-import json, asyncio
+import json, asyncio, base64, hashlib
 from . import events as ev
 
 
-def _parse(path: str, max_turns: int) -> list:
+def _parse(path: str, max_turns: int) -> tuple[list, dict]:
+    """Parse transcript JSONL into events and a map of turn_id → decoded image bytes.
+
+    Returns (events, image_data) where image_data maps each user turn_id to a list
+    of raw bytes for each inline base64 image block found.  The async caller uses
+    image_data to look up Attachment rows and patch UserMessage.attachments.
+    """
     lines = []
     with open(path, errors="ignore") as f:
         for raw in f:
@@ -15,6 +21,8 @@ def _parse(path: str, max_turns: int) -> list:
             except json.JSONDecodeError:
                 continue
     out: list = []
+    # turn_id → list of decoded bytes for each inline base64 image block
+    image_data: dict[str, list[bytes]] = {}
     meta_emitted = False
     for o in lines:
         typ = o.get("type")
@@ -34,7 +42,19 @@ def _parse(path: str, max_turns: int) -> list:
         if typ == "user":
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
             results = [b for b in content if b.get("type") == "tool_result"]
-            if text:
+            # Collect inline base64 image blocks; guard decode errors gracefully.
+            images = [b for b in content
+                      if b.get("type") == "image"
+                      and b.get("source", {}).get("type") == "base64"]
+            decoded: list[bytes] = []
+            for img in images:
+                try:
+                    decoded.append(base64.b64decode(img["source"]["data"]))
+                except Exception:
+                    pass  # malformed/large block — skip silently
+            if decoded:
+                image_data[uuid] = decoded
+            if text or decoded:
                 out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid))
             for r in results:
                 out.append(ev.ToolResult(r["tool_use_id"], not r.get("is_error", False),
@@ -62,8 +82,54 @@ def _parse(path: str, max_turns: int) -> list:
     starts = [i for i, e in enumerate(out) if isinstance(e, ev.TurnStart)]
     if len(starts) > max_turns:
         out = out[starts[-max_turns]:]
+    return out, image_data
+
+
+async def replay_events(jsonl_path: str, *, max_turns: int = 20,
+                        session_id: str | None = None) -> list:
+    """Replay a claude transcript JSONL as a list of events.
+
+    When *session_id* is provided, inline base64 image blocks found in user turns
+    are hashed and matched against Attachment rows in the DB so that a reloaded
+    page can re-render thumbnails.  If session_id is None, or no matching row is
+    found, the UserMessage is emitted text-only (graceful degradation, no crash).
+    """
+    out, image_data = await asyncio.to_thread(_parse, jsonl_path, max_turns)
+
+    if not session_id or not image_data:
+        return out
+
+    # Patch UserMessage events: look up Attachment by sha256 scoped to session_id.
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Attachment
+
+    async with db_session() as db:
+        for event in out:
+            if not isinstance(event, ev.UserMessage):
+                continue
+            raw_images = image_data.get(event.turn_id)
+            if not raw_images:
+                continue
+            attachments: list[dict] = []
+            for data in raw_images:
+                sha = hashlib.sha256(data).hexdigest()
+                try:
+                    row = (await db.execute(
+                        select(Attachment).where(
+                            Attachment.session_id == session_id,
+                            Attachment.sha256 == sha,
+                        )
+                    )).scalars().first()
+                except Exception:
+                    row = None
+                if row:
+                    attachments.append({
+                        "id": row.id,
+                        "mediaType": row.media_type,
+                        "filename": row.filename,
+                    })
+            if attachments:
+                event.attachments = attachments
+
     return out
-
-
-async def replay_events(jsonl_path: str, *, max_turns: int = 20) -> list:
-    return await asyncio.to_thread(_parse, jsonl_path, max_turns)

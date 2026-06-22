@@ -158,7 +158,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             #    continue; the live session still works.
             try:
                 path = orchestrator.transcript_path(session_id)
-                events = await replay_events(path) if path else []
+                events = await replay_events(path, session_id=session_id) if path else []
                 if events:
                     redacted_replay = [redact_event(e.to_wire()) for e in events]
                     await _send({"type": "batch", "events": redacted_replay})
