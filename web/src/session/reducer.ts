@@ -62,6 +62,7 @@ export interface TranscriptState {
   queued: string[]              // texts of prompts waiting in the server-side queue
   rotations: RotationMarker[]   // account rotations, anchored into the timeline
   subAgents: Record<string, SubThread>   // keyed by the spawning Task toolId
+  latestSuggestions: string[]  // next-prompt chips for the current idle turn
 }
 
 export const initialTranscript: TranscriptState = {
@@ -76,6 +77,7 @@ export const initialTranscript: TranscriptState = {
   queued: [],
   rotations: [],
   subAgents: {},
+  latestSuggestions: [],
 }
 
 /** Coerce a possibly-missing numeric usage field to a finite number (0 when absent). */
@@ -272,7 +274,7 @@ export function transcriptReducer(
           role: 'user' as const,
           blocks: [userBlock],
         }))
-        return { ...state, turns: nextTurns, openBlockId: null }
+        return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [] }
       }
 
       const idx = findTurnIdx(state.turns, turnId)
@@ -287,7 +289,7 @@ export function transcriptReducer(
           blocks: t.blocks.map((b) => (b.kind === 'text' && b.id === `${turnId}:u` ? userBlock : b)),
         }))
       }
-      return { ...state, turns: nextTurns, openBlockId: null }
+      return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [] }
     }
 
     // ── turnStart ─────────────────────────────────────────────────────────────
@@ -297,12 +299,13 @@ export function transcriptReducer(
       if (idx !== -1) {
         // Idempotent — turn already exists. If openBlockId is already null, return state unchanged.
         if (state.openBlockId === null) return state
-        return { ...state, openBlockId: null }
+        return { ...state, openBlockId: null, latestSuggestions: [] }
       }
       return {
         ...state,
         turns: [...state.turns, { id: turnId, role: 'assistant', blocks: [] }],
         openBlockId: null,
+        latestSuggestions: [],
       }
     }
 
@@ -522,6 +525,10 @@ export function transcriptReducer(
     case 'queueUpdate': {
       return { ...state, queued: ev.items }
     }
+
+    // ── suggestions ───────────────────────────────────────────────────────────
+    case 'suggestions':
+      return { ...state, latestSuggestions: ev.items }
 
     // ── Local synthetic actions ────────────────────────────────────────────────
 
