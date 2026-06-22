@@ -106,194 +106,124 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
         </div>
       )}
 
-      {/* Browser tab panel */}
-      {browserEnabled && activeTab === 'browser' ? (
-        <div id="tab-panel-browser" role="tabpanel" aria-labelledby="tab-browser" className="flex-1 min-h-0">
-          <BrowserTab sessionId={rt.sessionId} statusState={rt.state.status.state} />
-        </div>
-      ) : browserEnabled ? (
-        <div id="tab-panel-conversation" role="tabpanel" aria-labelledby="tab-conversation" className="flex-1 min-h-0 flex flex-col">
-          {/* Error banner */}
-          {rt.state.error && (
-            <div
-              role="alert"
-              className={cn(
-                'flex-shrink-0 px-4 py-3 text-sm',
-                'bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-300',
-                'border-b border-red-200 dark:border-red-800',
-              )}
-            >
-              <span className="font-medium">Error: </span>
-              {rt.state.error.message}
-              {rt.state.error.resetsAt && (
-                <span className="ml-2 text-xs opacity-75">
-                  (Resets at {new Date(rt.state.error.resetsAt).toLocaleTimeString()})
-                </span>
-              )}
-            </div>
-          )}
+      {/* Conversation panel content — defined once, rendered in either a plain div
+          or a tab-panel wrapper depending on whether browser tabs are active. */}
+      {(() => {
+        const conversationPanel = (
+          <>
+            {/* Error banner */}
+            {rt.state.error && (
+              <div
+                role="alert"
+                className={cn(
+                  'flex-shrink-0 px-4 py-3 text-sm',
+                  'bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-300',
+                  'border-b border-red-200 dark:border-red-800',
+                )}
+              >
+                <span className="font-medium">Error: </span>
+                {rt.state.error.message}
+                {rt.state.error.resetsAt && (
+                  <span className="ml-2 text-xs opacity-75">
+                    (Resets at {new Date(rt.state.error.resetsAt).toLocaleTimeString()})
+                  </span>
+                )}
+              </div>
+            )}
 
-          {/* Transcript — rotation dividers are interleaved inline by anchor turn.
-              With no turns to show, the transcript area would be blank; the
-              placeholder fills it with an explicit connecting/loading/empty/error
-              state instead so the user always knows what's happening. */}
-          {rt.state.turns.length === 0 && rt.state.rotations.length === 0 ? (
-            <SessionPlaceholder
-              connectionState={rt.connectionState}
-              replaying={rt.state.replaying}
-              hasError={rt.state.error !== null}
-            />
-          ) : (
-            <TranscriptView
+            {/* Transcript — rotation dividers are interleaved inline by anchor turn.
+                With no turns to show, the transcript area would be blank; the
+                placeholder fills it with an explicit connecting/loading/empty/error
+                state instead so the user always knows what's happening. */}
+            {rt.state.turns.length === 0 && rt.state.rotations.length === 0 ? (
+              <SessionPlaceholder
+                connectionState={rt.connectionState}
+                replaying={rt.state.replaying}
+                hasError={rt.state.error !== null}
+              />
+            ) : (
+              <TranscriptView
+                turns={rt.state.turns}
+                rotations={rt.state.rotations}
+                permissionMode={rt.mode}
+                toolDetailMode={rt.toolDetailMode}
+                // Only the live-open block streams as plain text; during replay the open
+                // id is meaningless, so suppress it and render everything as markdown.
+                streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
+                onDecision={rt.onDecision}
+                onAnswer={rt.onAnswer}
+                subAgents={rt.state.subAgents}
+              />
+            )}
+
+            {/* Prominent "waiting for Claude" indicator shown below the last turn */}
+            {statusTier(rt.state.status.state) === 'busy' && (
+              <div
+                aria-hidden="true"
+                className={cn(
+                  'flex-shrink-0 flex items-center px-4 py-2',
+                  'text-xs text-gray-400 dark:text-gray-500',
+                )}
+              >
+                <WorkingIndicator count={rt.state.status.count} subAgentCount={runningSubAgents} />
+              </div>
+            )}
+
+            {/* "Action needed" sticky banner when an open permission is pending.
+                Live questions are pinned in PendingQuestionPanel (Task 4) — they no
+                longer need the banner for discoverability. */}
+            {rt.hasOpenPermission && (
+              <div
+                aria-live="polite"
+                className={cn(
+                  'flex-shrink-0 px-4 py-2 text-xs font-medium',
+                  'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300',
+                  'border-t border-amber-200 dark:border-amber-800',
+                )}
+              >
+                Action needed — scroll up to respond
+              </div>
+            )}
+
+            {/* Pinned answer panel for the live open question (answer in place). Lives
+                here in SessionBody so BOTH the mobile SessionView and the desktop
+                master-detail shell render it — the desktop shell previously had no panel,
+                so a live AskUserQuestion (filtered out of the inline transcript by Turn)
+                rendered nowhere and was unanswerable. */}
+            <PendingQuestionPanel
               turns={rt.state.turns}
-              rotations={rt.state.rotations}
-              permissionMode={rt.mode}
-              toolDetailMode={rt.toolDetailMode}
-              // Only the live-open block streams as plain text; during replay the open
-              // id is meaningless, so suppress it and render everything as markdown.
-              streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
-              onDecision={rt.onDecision}
               onAnswer={rt.onAnswer}
-              subAgents={rt.state.subAgents}
+              onChat={rt.onChat}
+              armedQuestionId={rt.armedQuestionId}
             />
-          )}
 
-          {/* Prominent "waiting for Claude" indicator shown below the last turn */}
-          {statusTier(rt.state.status.state) === 'busy' && (
-            <div
-              aria-hidden="true"
-              className={cn(
-                'flex-shrink-0 flex items-center px-4 py-2',
-                'text-xs text-gray-400 dark:text-gray-500',
-              )}
-            >
-              <WorkingIndicator count={rt.state.status.count} subAgentCount={runningSubAgents} />
+            {/* sr-only aria-live mirror (owns its own ref + effect) */}
+            <SessionAriaLive turns={rt.state.turns} replaying={rt.state.replaying} />
+          </>
+        )
+
+        /* Browser tab panel */
+        if (browserEnabled && activeTab === 'browser') {
+          return (
+            <div id="tab-panel-browser" role="tabpanel" aria-labelledby="tab-browser" className="flex-1 min-h-0">
+              <BrowserTab sessionId={rt.sessionId} statusState={rt.state.status.state} />
             </div>
-          )}
+          )
+        }
 
-          {/* "Action needed" sticky banner when an open permission is pending.
-              Live questions are pinned in PendingQuestionPanel (Task 4) — they no
-              longer need the banner for discoverability. */}
-          {rt.hasOpenPermission && (
-            <div
-              aria-live="polite"
-              className={cn(
-                'flex-shrink-0 px-4 py-2 text-xs font-medium',
-                'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300',
-                'border-t border-amber-200 dark:border-amber-800',
-              )}
-            >
-              Action needed — scroll up to respond
-            </div>
-          )}
+        /* Conversation tab panel — with tabpanel ARIA when browser tabs are shown,
+           plain wrapper div when browser is not available. */
+        const convoWrapperProps = browserEnabled
+          ? {
+              role: 'tabpanel' as const,
+              id: 'tab-panel-conversation',
+              'aria-labelledby': 'tab-conversation',
+              className: 'flex-1 min-h-0 flex flex-col',
+            }
+          : { className: 'flex-1 min-h-0 flex flex-col' }
 
-          {/* Pinned answer panel for the live open question (answer in place). Lives
-              here in SessionBody so BOTH the mobile SessionView and the desktop
-              master-detail shell render it — the desktop shell previously had no panel,
-              so a live AskUserQuestion (filtered out of the inline transcript by Turn)
-              rendered nowhere and was unanswerable. */}
-          <PendingQuestionPanel
-            turns={rt.state.turns}
-            onAnswer={rt.onAnswer}
-            onChat={rt.onChat}
-            armedQuestionId={rt.armedQuestionId}
-          />
-
-          {/* sr-only aria-live mirror (owns its own ref + effect) */}
-          <SessionAriaLive turns={rt.state.turns} replaying={rt.state.replaying} />
-        </div>
-      ) : (
-        <div className="flex-1 min-h-0 flex flex-col">
-          {/* Error banner */}
-          {rt.state.error && (
-            <div
-              role="alert"
-              className={cn(
-                'flex-shrink-0 px-4 py-3 text-sm',
-                'bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-300',
-                'border-b border-red-200 dark:border-red-800',
-              )}
-            >
-              <span className="font-medium">Error: </span>
-              {rt.state.error.message}
-              {rt.state.error.resetsAt && (
-                <span className="ml-2 text-xs opacity-75">
-                  (Resets at {new Date(rt.state.error.resetsAt).toLocaleTimeString()})
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Transcript — rotation dividers are interleaved inline by anchor turn.
-              With no turns to show, the transcript area would be blank; the
-              placeholder fills it with an explicit connecting/loading/empty/error
-              state instead so the user always knows what's happening. */}
-          {rt.state.turns.length === 0 && rt.state.rotations.length === 0 ? (
-            <SessionPlaceholder
-              connectionState={rt.connectionState}
-              replaying={rt.state.replaying}
-              hasError={rt.state.error !== null}
-            />
-          ) : (
-            <TranscriptView
-              turns={rt.state.turns}
-              rotations={rt.state.rotations}
-              permissionMode={rt.mode}
-              toolDetailMode={rt.toolDetailMode}
-              // Only the live-open block streams as plain text; during replay the open
-              // id is meaningless, so suppress it and render everything as markdown.
-              streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
-              onDecision={rt.onDecision}
-              onAnswer={rt.onAnswer}
-              subAgents={rt.state.subAgents}
-            />
-          )}
-
-          {/* Prominent "waiting for Claude" indicator shown below the last turn */}
-          {statusTier(rt.state.status.state) === 'busy' && (
-            <div
-              aria-hidden="true"
-              className={cn(
-                'flex-shrink-0 flex items-center px-4 py-2',
-                'text-xs text-gray-400 dark:text-gray-500',
-              )}
-            >
-              <WorkingIndicator count={rt.state.status.count} subAgentCount={runningSubAgents} />
-            </div>
-          )}
-
-          {/* "Action needed" sticky banner when an open permission is pending.
-              Live questions are pinned in PendingQuestionPanel (Task 4) — they no
-              longer need the banner for discoverability. */}
-          {rt.hasOpenPermission && (
-            <div
-              aria-live="polite"
-              className={cn(
-                'flex-shrink-0 px-4 py-2 text-xs font-medium',
-                'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300',
-                'border-t border-amber-200 dark:border-amber-800',
-              )}
-            >
-              Action needed — scroll up to respond
-            </div>
-          )}
-
-          {/* Pinned answer panel for the live open question (answer in place). Lives
-              here in SessionBody so BOTH the mobile SessionView and the desktop
-              master-detail shell render it — the desktop shell previously had no panel,
-              so a live AskUserQuestion (filtered out of the inline transcript by Turn)
-              rendered nowhere and was unanswerable. */}
-          <PendingQuestionPanel
-            turns={rt.state.turns}
-            onAnswer={rt.onAnswer}
-            onChat={rt.onChat}
-            armedQuestionId={rt.armedQuestionId}
-          />
-
-          {/* sr-only aria-live mirror (owns its own ref + effect) */}
-          <SessionAriaLive turns={rt.state.turns} replaying={rt.state.replaying} />
-        </div>
-      )}
+        return <div {...convoWrapperProps}>{conversationPanel}</div>
+      })()}
     </>
   )
 }
