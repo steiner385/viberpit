@@ -1,6 +1,8 @@
 """Helpers for image attachments — pure helpers plus async DB/file helpers."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from sqlalchemy import select
 
 from ccswitch import paths
@@ -50,6 +52,23 @@ async def resolve_and_bind(db, session_id, turn_id, ids) -> list[dict]:
             "path": str(paths.attachments_dir() / f"{row.id}.{ext_for(row.media_type)}"),
         })
     return out
+
+
+async def sweep_orphans(db, older_than_seconds: int = 86400) -> int:
+    """Delete unbound (session_id IS NULL) attachments older than cutoff; return count."""
+    cutoff = datetime.now() - timedelta(seconds=older_than_seconds)
+    rows = (await db.execute(
+        select(Attachment).where(
+            Attachment.session_id.is_(None), Attachment.created_at < cutoff)
+    )).scalars().all()
+    for row in rows:
+        p = paths.attachments_dir() / f"{row.id}.{ext_for(row.media_type)}"
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+        await db.delete(row)
+    return len(rows)
 
 
 async def delete_for_session(db, session_id) -> int:

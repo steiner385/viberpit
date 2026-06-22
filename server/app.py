@@ -34,6 +34,20 @@ async def _lifespan(app: FastAPI):
     # (unless the operator explicitly opts out with CCSWITCH_DEV=1).
     import logging as _logging
 
+    async def _attachment_sweep_loop():
+        from server.db import db_session
+        from server.sessions.attachments import sweep_orphans
+        while True:
+            try:
+                async with db_session() as db:
+                    await sweep_orphans(db)
+                    await db.commit()
+            except Exception:
+                _logging.getLogger("server").warning(
+                    "attachment sweep failed", exc_info=True
+                )
+            await asyncio.sleep(3600)
+
     from server.config import get_settings as _get_settings
 
     _s = _get_settings()
@@ -83,8 +97,16 @@ async def _lifespan(app: FastAPI):
 
     # Start the singleton orchestrator (usage poller + rotation monitor)
     await app.state.orchestrator.start()
+    sweep_task = asyncio.get_running_loop().create_task(
+        _attachment_sweep_loop(), name="attachment-sweep"
+    )
     yield
     # Shutdown
+    sweep_task.cancel()
+    try:
+        await sweep_task
+    except asyncio.CancelledError:
+        pass
     await app.state.reauth.shutdown()
     await app.state.orchestrator.stop()
 
