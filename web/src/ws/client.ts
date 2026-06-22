@@ -19,6 +19,8 @@ export interface WsUsageMsg        { type: 'usage';         account: string; ses
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null }
 export interface WsBatchMsg        { type: 'batch';         events: SessionEvent[] }
+export interface WsCommandsMsg      { type: 'commands';      sessionId: string; commands: import('@/session/events').Command[] }
+export interface WsCommandResultMsg { type: 'commandResult'; sessionId: string; ok: boolean; name?: string; render?: 'help' | 'context' | 'notice' | 'clear'; data?: unknown; error?: string }
 
 export type WsInboundMsg =
   | WsStatusMsg
@@ -26,6 +28,8 @@ export type WsInboundMsg =
   | WsRotatedMsg
   | WsErrorMsg
   | WsBatchMsg
+  | WsCommandsMsg
+  | WsCommandResultMsg
 
 // ── Callback registry type ───────────────────────────────────────────────────
 
@@ -36,6 +40,8 @@ type EventMap = {
   error:         (msg: WsErrorMsg) => void
   connectionStateChange: (state: ConnectionState) => void
   sessionEvent:  (e: SessionEvent) => void
+  commands:      (msg: WsCommandsMsg) => void
+  commandResult: (msg: WsCommandResultMsg) => void
 }
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting'
@@ -160,6 +166,10 @@ export class SessionSocket {
     this._send({ type: 'cancelQueued', sessionId, index })
   }
 
+  command(sessionId: string, name: string, args: string) {
+    this._send({ type: 'command', sessionId, name, args })
+  }
+
   // ── Event emitter ───────────────────────────────────────────────────────────
 
   on<K extends keyof EventMap>(event: K, cb: EventMap[K]) {
@@ -230,6 +240,12 @@ export class SessionSocket {
         for (const e of msg.events) {
           this._emit('sessionEvent', e)
         }
+        break
+      case 'commands':
+        this._emit('commands', msg)
+        break
+      case 'commandResult':
+        this._emit('commandResult', msg)
         break
       default:
         // Fan out individual session events sent directly (not wrapped in batch)
@@ -320,6 +336,7 @@ export function useSessionSocket() {
   const answerQuestion      = useCallback((sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => socket.answerQuestion(sessionId, questionId, selected, mode), [socket])
   const setPermissionMode   = useCallback((sessionId: string, mode: string) => socket.setPermissionMode(sessionId, mode), [socket])
   const cancelQueued        = useCallback((sessionId: string, index: number) => socket.cancelQueued(sessionId, index), [socket])
+  const command             = useCallback((sessionId: string, name: string, args: string) => socket.command(sessionId, name, args), [socket])
 
   const on  = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.on(event, cb), [socket])
   const off = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.off(event, cb), [socket])
@@ -327,6 +344,7 @@ export function useSessionSocket() {
   return {
     attach, detach, interrupt,
     prompt, sendInterrupt, permissionResponse, answerQuestion, setPermissionMode, cancelQueued,
+    command,
     on, off,
     connectionState,
     socket,

@@ -22,6 +22,13 @@ export type SessionEvent =
   | EvToolCall | EvToolResult | EvPermissionRequest | EvQuestion
   | EvSessionMeta | EvTitle | EvStatus | EvReplayComplete | EvError | EvQueueUpdate
 
+export interface Command {
+  name: string
+  description: string
+  argumentHint: string | null
+  kind: 'client' | 'control' | 'passthrough'
+}
+
 // The set of `type` strings that are session events (used by the WS fan-out).
 export const SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   'user','turnStart','turnEnd','textDelta','thinkingDelta','toolCall','toolResult',
