@@ -8,6 +8,7 @@ export type Block =
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown> } }
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean }
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean }
+  | { kind: 'notice';     id: string; text: string }
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
@@ -77,6 +78,8 @@ export type LocalAction =
   | { type: '_resolvePermission'; permId: string }
   | { type: '_resolveQuestion';   questionId: string }
   | { type: '_rotation';          from: string; to: string; reason?: string }
+  | { type: '_notice'; text: string }
+  | { type: '_clear';  text: string }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -372,6 +375,24 @@ export function transcriptReducer(
       })
       if (!changed) return state // No matching question block found; return unchanged state
       return { ...state, turns: nextTurns }
+    }
+
+    case '_notice': {
+      const id = `notice:${state.turns.length}`
+      return {
+        ...state,
+        turns: [...state.turns, { id, role: 'assistant', blocks: [{ kind: 'notice', id: `${id}:n`, text: ev.text }] }],
+        openBlockId: null,
+      }
+    }
+
+    case '_clear': {
+      const id = 'notice:clear'
+      return {
+        ...initialTranscript,
+        replaying: false,
+        turns: [{ id, role: 'assistant', blocks: [{ kind: 'notice', id: `${id}:n`, text: ev.text }] }],
+      }
     }
 
     default:
