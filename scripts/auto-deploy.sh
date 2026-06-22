@@ -19,6 +19,13 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
+# Transient busy-defer state file. Resolve it inside git's real dir via
+# --absolute-git-dir so it lands in a writable directory even when $REPO is a git
+# WORKTREE — there ".git" is a FILE (a gitdir pointer), so the old
+# "$REPO/.git/ccswitch-deploy-defer" path treats a regular file as a directory and
+# the write fails with "Not a directory", which wedged the deploy timer (issue #95).
+DEFER_FILE="${CCSWITCH_DEPLOY_DEFER_FILE:-$(git rev-parse --absolute-git-dir)/ccswitch-deploy-defer}"
+
 git fetch --quiet origin master
 LOCAL="$(git rev-parse @)"
 REMOTE="$(git rev-parse origin/master)"
@@ -76,7 +83,6 @@ busy_verdict() {
 }
 
 if [ "$(busy_verdict)" = "busy" ]; then
-  DEFER_FILE="${CCSWITCH_DEPLOY_DEFER_FILE:-$REPO/.git/ccswitch-deploy-defer}"
   MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
   now="$(date +%s)"
   msha=""; mts=0
@@ -183,4 +189,4 @@ if [ "$healthy" -ne 1 ]; then
 fi
 
 echo "[deploy] live + healthy at ${REMOTE:0:9}"
-rm -f "${CCSWITCH_DEPLOY_DEFER_FILE:-$REPO/.git/ccswitch-deploy-defer}"
+rm -f "$DEFER_FILE"
