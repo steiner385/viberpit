@@ -1,10 +1,10 @@
 # Fresh-from-origin session worktrees
 
 **Date:** 2026-06-22
-**Status:** Implemented (PR #125), amended by PR #126
+**Status:** Implemented (PR #125), amended by PR #127
 **Area:** `src/ccswitch/worktrees.py` (`create_worktree`)
 
-> **Amendment (PR #126) — fetch failure is best-effort, not fatal.** The original
+> **Amendment (PR #127) — fetch failure is best-effort, not fatal.** The original
 > Rule 2 below made a `git fetch` failure against a configured `origin` abort the
 > session (`WorktreeError`). In practice `git fetch` fails for any origin that isn't
 > fetchable non-interactively — private repos with no cached credentials, the
