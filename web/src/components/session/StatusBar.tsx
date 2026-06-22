@@ -5,9 +5,11 @@ import { statusPresentation } from '@/session/statusTier'
 interface Props {
   status: { state: string; count: number }
   connectionState: string
+  /** Forwarded to WorkingIndicator to show a sub-agent-specific phrase. */
+  subAgentCount?: number
 }
 
-export function StatusBar({ status, connectionState }: Props) {
+export function StatusBar({ status, connectionState, subAgentCount }: Props) {
   const connected = connectionState === 'connected'
   const connectionNote = connected
     ? null
@@ -28,7 +30,7 @@ export function StatusBar({ status, connectionState }: Props) {
       )}
     >
       {tier === 'busy' ? (
-        <WorkingIndicator count={status.count} />
+        <WorkingIndicator count={status.count} subAgentCount={subAgentCount} />
       ) : (
         <span className={cn('inline-flex items-center gap-1', tier !== 'your-turn' && 'font-medium')}>
           <Icon size={12} aria-hidden="true" />

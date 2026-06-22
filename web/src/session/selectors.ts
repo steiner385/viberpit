@@ -12,19 +12,21 @@ export interface SubAgent {
   status: SubAgentStatus
 }
 
+const SUBAGENT_TOOL_NAMES = new Set(['Task', 'Agent'])
+
 /**
  * Extract the list of sub-agents from the transcript.
  *
- * Sub-agents surface to the parent session as `Task` tool calls; the parent
- * never sees their internal steps, only the spawn and (eventually) the result.
- * Status is derived from the paired tool result: present+ok → done,
- * present+!ok → failed, absent → still running.
+ * Sub-agents surface to the parent session as `Task` or `Agent` tool calls;
+ * the parent never sees their internal steps, only the spawn and (eventually)
+ * the result. Status is derived from the paired tool result: present+ok →
+ * done, present+!ok → failed, absent → still running.
  */
 export function selectSubAgents(turns: Turn[]): SubAgent[] {
   const out: SubAgent[] = []
   for (const turn of turns) {
     for (const b of turn.blocks) {
-      if (b.kind !== 'tool' || b.name !== 'Task') continue
+      if (b.kind !== 'tool' || !SUBAGENT_TOOL_NAMES.has(b.name)) continue
       const input = b.input as { subagent_type?: unknown; description?: unknown }
       const type = typeof input.subagent_type === 'string' ? input.subagent_type : 'agent'
       const description = typeof input.description === 'string' ? input.description : ''
@@ -34,4 +36,12 @@ export function selectSubAgents(turns: Turn[]): SubAgent[] {
     }
   }
   return out
+}
+
+/**
+ * Count sub-agents (Task or Agent tool calls) that are still running (no
+ * result yet). Used by the busy indicator to show a more specific label.
+ */
+export function selectRunningSubAgentCount(turns: Turn[]): number {
+  return selectSubAgents(turns).filter((a) => a.status === 'running').length
 }
