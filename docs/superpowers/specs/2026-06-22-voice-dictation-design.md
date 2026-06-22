@@ -122,3 +122,21 @@ already flows into the existing `prompt()` call (`web/src/ws/client.ts:139`).
   this is the browser's behavior, not ccswitch's, but worth noting in UX copy if
   privacy-sensitive. Audio never touches the ccswitch server.
 - iOS Safari support is partial/absent; graceful hiding is the mitigation.
+
+### Known v1 limitations (accepted)
+
+- **Typing while dictating can desync the insertion anchor.** The caret anchor
+  is captured when dictation starts and is not updated by user keystrokes or
+  caret moves made while listening. The intended flow is tap → talk → tap →
+  then edit. Editing mid-utterance may splice the next transcript at the wrong
+  offset. A future hardening could re-anchor on textarea `input`/`select` while
+  listening.
+- **Stopping mid-interim can leave un-finalized text.** If recognition ends
+  while an interim (not-yet-final) chunk is shown, that text stays in the box as
+  ordinary editable text. Chrome usually emits a final result on stop, so this
+  is rare; because nothing auto-sends, the worst case is a stray word the user
+  edits before sending.
+- **Error visibility on touch devices.** Recognition errors surface via the
+  button's `title` (hover) plus an amber border; touch devices have no hover, so
+  a denied-permission error is subtle. Acceptable for v1; a visible hint / live
+  region is a future improvement.
