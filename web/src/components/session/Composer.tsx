@@ -19,9 +19,10 @@ interface Props {
   onCommand?: (name: string, args: string) => void
   /** Auto-focus the textarea when this changes / on mount (mirrors DispatchBar). */
   autoFocusKey?: unknown
+  suggestions?: string[]
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey }: Props) {
+export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions }: Props) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -75,6 +76,16 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
       textareaRef.current.style.height = 'auto'
     }
   }, [text, onPrompt, att, runCommandFromText])
+
+  const prefill = useCallback((value: string) => {
+    setText(value)
+    const el = textareaRef.current
+    if (el) {
+      el.focus()
+      el.style.height = 'auto'
+      el.style.height = `${Math.min(el.scrollHeight, 192)}px`
+    }
+  }, [])
 
   function handlePaste(e: React.ClipboardEvent) {
     const files = Array.from(e.clipboardData?.files || [])
@@ -139,6 +150,28 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
       )}
 
       <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
+
+      {suggestions && suggestions.length > 0 && !isWorking && (
+        <div data-testid="suggestion-chips" className="flex flex-wrap gap-2">
+          {suggestions.map((s, i) => (
+            <button
+              key={`${i}-${s.slice(0, 24)}`}
+              type="button"
+              aria-label={s}
+              onClick={() => prefill(s)}
+              className={cn(
+                'rounded-full px-3 py-1 text-xs min-h-[44px]',
+                'border border-blue-300 dark:border-blue-700',
+                'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
+                'hover:bg-blue-100 dark:hover:bg-blue-900/50',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              )}
+            >
+              {s.length > 60 ? s.slice(0, 60) + '…' : s}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="relative flex items-end gap-2">
         {pickingCommand && (
