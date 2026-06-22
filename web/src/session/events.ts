@@ -14,7 +14,7 @@ export interface EvSessionMeta   { type: 'sessionMeta';   model: string; session
 export interface EvTitle         { type: 'title';         title: string; source: string }
 export interface EvStatus        { type: 'status';        state: string; count: number }
 export interface EvReplayComplete { type: 'replayComplete' }
-export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null }
+export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null; turnId?: string | null }
 export interface EvQueueUpdate   { type: 'queueUpdate';   items: string[] }
 
 export type SessionEvent =

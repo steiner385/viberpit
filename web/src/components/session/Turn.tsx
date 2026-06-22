@@ -8,6 +8,7 @@ import { ToolCallCard } from './ToolCallCard'
 import { ToolGroup } from './ToolGroup'
 import { PermissionCard } from './PermissionCard'
 import { QuestionCard } from './QuestionCard'
+import { ErrorCard } from './ErrorCard'
 
 interface Props {
   turn: TurnType
@@ -70,6 +71,8 @@ export const Turn = memo(function Turn({
             // above the composer — omit it inline to avoid a duplicate. Historical
             // (replayed) questions render inline, read-only.
             return <QuestionCard key={block.id} block={block} onAnswer={onAnswer} readOnly />
+          case 'error':
+            return <ErrorCard key={block.id} code={block.code} message={block.message} resetsAt={block.resetsAt} />
           default:
             return null
         }

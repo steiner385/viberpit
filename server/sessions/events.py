@@ -84,8 +84,9 @@ class Rotated:
 
 @dataclass
 class ErrorEvent:
-    code: str; message: str; resets_at: str | None = None
-    def to_wire(self): return {"type": "error", "code": self.code, "message": self.message, "resetsAt": self.resets_at}
+    code: str; message: str; resets_at: str | None = None; turn_id: str | None = None
+    def to_wire(self): return {"type": "error", "code": self.code, "message": self.message,
+                               "resetsAt": self.resets_at, "turnId": self.turn_id}
 
 @dataclass
 class ReplayComplete:
