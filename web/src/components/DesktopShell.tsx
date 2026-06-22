@@ -33,6 +33,7 @@ import { SessionRuntimeProvider, useSessionRuntimeContext } from './session/Sess
 import { SessionBody } from './session/SessionBody'
 import { StatusBar } from './session/StatusBar'
 import { Composer } from './session/Composer'
+import { CommandResultOverlay } from './session/CommandResultOverlay'
 import {
   useAccounts,
   useSessions,
@@ -85,6 +86,11 @@ function MainPaneSession() {
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-gray-950">
         <SessionBody rt={rt} />
       </div>
+      <CommandResultOverlay
+        result={rt.commandResult}
+        commands={rt.commands}
+        onClose={rt.dismissCommandResult}
+      />
     </div>
   )
 }
