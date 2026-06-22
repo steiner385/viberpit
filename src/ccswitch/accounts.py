@@ -146,14 +146,15 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
     return u
 
 
-def pick_account(cfg: Config, exclude: set[str] = frozenset()) -> str:
+def pick_account(cfg: Config, exclude: set[str] = frozenset(),
+                 load: dict[str, float] | None = None) -> str:
     names = _account_names()
     usages = {n: usage_for(n) for n in names}
     now = datetime.now(timezone.utc)
     now_ts = time.time()
     with ledger.locked_ledger() as led:
         reserved = {n for n in names if ledger.reservation_active(led, n, now_ts)}
-        name = select_best(usages, reserved, cfg, now, exclude)
+        name = select_best(usages, reserved, cfg, now, exclude, load or {})
         ledger.reserve(led, name, now_ts + cfg.reservation_ttl_sec)
     return name
 
