@@ -67,6 +67,16 @@ export function UsageBadge({ pct, label, resetsAt, className }: UsageBadgeProps)
 
 // ── StatusPill ───────────────────────────────────────────────────────────────
 
+/** Subtle pill background derived from the status's text-colour family, so the
+ *  badge reads as a real chip without maintaining a parallel colour table. */
+function pillTone(textClass: string): string {
+  if (textClass.includes('emerald')) return 'bg-emerald-50 dark:bg-emerald-950/40'
+  if (textClass.includes('amber')) return 'bg-amber-50 dark:bg-amber-950/40'
+  if (textClass.includes('red')) return 'bg-red-50 dark:bg-red-950/40'
+  if (textClass.includes('blue')) return 'bg-blue-50 dark:bg-blue-950/40'
+  return 'bg-gray-100 dark:bg-gray-800'
+}
+
 type AnyStatus = AccountStatus | SessionStatus
 
 interface StatusConfig {
@@ -127,8 +137,9 @@ export function StatusPill({ status, className }: StatusPillProps) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 text-xs font-medium',
+        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
         textClass,
+        pillTone(textClass),
         pulse && 'motion-safe:animate-pulse',
         className,
       )}
