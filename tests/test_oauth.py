@@ -137,7 +137,7 @@ class TestOAuth(unittest.TestCase):
         resp = {"access_token": "newA", "expires_in": 3600}
         captured = {}
 
-        def fake_http(method, url, headers=None, data=None, timeout=15):
+        def fake_http(method, url, headers=None, data=None, timeout=15, **kwargs):
             captured["data"] = data
             return 200, json.dumps(resp).encode()
 
@@ -209,6 +209,66 @@ class TestHttpRequestRetry(unittest.TestCase):
             )
         self.assertEqual(status, 400)
         self.assertEqual(slept, [])  # 400 is terminal — no retry
+
+    def test_retries_on_network_error_then_succeeds(self):
+        """A connection-level failure (URLError) is transient — retry, don't crash."""
+        from ccswitch import oauth
+        slept = []
+        responses = [urllib.error.URLError("connection refused"), _FakeResp(200, b'{"ok":1}')]
+        with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=responses):
+            status, body = oauth.http_request(
+                "GET", "https://x", max_retries=3, sleep=slept.append, rng=lambda: 0.5
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(slept), 1)
+
+    def test_timeout_error_is_retried(self):
+        from ccswitch import oauth
+        slept = []
+        responses = [TimeoutError("timed out"), _FakeResp(200, b'{"ok":1}')]
+        with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=responses):
+            status, _ = oauth.http_request(
+                "GET", "https://x", max_retries=3, sleep=slept.append, rng=lambda: 0.5
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(slept), 1)
+
+    def test_network_error_exhausted_raises_transient(self):
+        """Persistent network failure must surface as TransientError (token presumed
+        valid), NOT propagate a raw URLError that crashes callers."""
+        from ccswitch import oauth
+        slept = []
+        responses = [urllib.error.URLError("down")] * 4
+        with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=responses):
+            with self.assertRaises(oauth.TransientError):
+                oauth.http_request(
+                    "GET", "https://x", max_retries=3, sleep=slept.append, rng=lambda: 0.5
+                )
+        self.assertEqual(len(slept), 3)  # 3 retries, then give up
+
+    def test_wall_clock_budget_stops_retrying(self):
+        """max_total_sec bounds total time so a stalling endpoint can't turn
+        max_retries x socket-timeout into minutes of blocking."""
+        from ccswitch import oauth
+        slept = []
+        # clock: start=0, then elapsed 4, 8, 12 ... — budget 10s allows 2 retries.
+        times = iter([0.0, 4.0, 8.0, 12.0, 16.0, 20.0])
+        responses = [_http_error(503) for _ in range(10)]
+        with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=responses) as uo:
+            status, _ = oauth.http_request(
+                "GET", "https://x", max_retries=9, max_total_sec=10.0,
+                sleep=slept.append, rng=lambda: 0.5, clock=lambda: next(times),
+            )
+        self.assertEqual(status, 503)
+        self.assertEqual(uo.call_count, 3)   # elapsed 12 >= 10 → stop after 3rd attempt
+        self.assertEqual(len(slept), 2)
+
+    def test_config_defaults_match_oauth_retry_defaults(self):
+        """Single source of truth: Config retry knobs and oauth defaults must not drift."""
+        from ccswitch import oauth
+        from ccswitch.config import Config
+        self.assertEqual(Config().retry_max_retries, oauth._DEFAULT_MAX_RETRIES)
+        self.assertEqual(Config().retry_max_total_sec, oauth._DEFAULT_MAX_TOTAL_SEC)
 
 
 class TestUsageNullReset(unittest.TestCase):
