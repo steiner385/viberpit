@@ -52,7 +52,7 @@ describe('useSettings', () => {
     expect(result.current.data).toEqual(SETTINGS)
   })
 
-  it('exposes defaultPermissionMode, thinkingCollapsed, and repoRoot', async () => {
+  it('exposes defaultPermissionMode, thinkingCollapsed, repoRoot, and defaultToolDetail', async () => {
     const { result } = renderHook(() => useSettings(), { wrapper: makeWrapper() })
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
