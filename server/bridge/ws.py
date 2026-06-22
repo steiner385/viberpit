@@ -227,10 +227,10 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             #     consumer exists in driver._out.  Only fires on the first attach
             #     (pop clears the entry); reconnects fall through to live-stream only.
             pending_prompt = orchestrator.pop_pending_initial_prompt(session_id)
-            pending_images = orchestrator.pop_pending_initial_images(session_id)
-            if pending_prompt is not None or pending_images:
+            pending_attachment_ids = orchestrator.pop_pending_initial_attachment_ids(session_id)
+            if pending_prompt is not None or pending_attachment_ids:
                 await orchestrator.send_prompt(
-                    session_id, pending_prompt or "", pending_images)
+                    session_id, pending_prompt or "", pending_attachment_ids)
 
             # 3) Start the live stream: forward driver events into the batcher.
             live_tasks[session_id] = asyncio.create_task(
@@ -287,7 +287,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                     await _handle_detach(session_id)
                 elif msg_type == "prompt":
                     await orchestrator.send_prompt(
-                        session_id, msg.get("text", ""), msg.get("images"))
+                        session_id, msg.get("text", ""), msg.get("attachmentIds"))
                 elif msg_type == "interrupt":
                     await orchestrator.interrupt(session_id)
                     try:

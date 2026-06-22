@@ -29,8 +29,8 @@ from server.audit import record_audit
 from server.db import db_session
 from server.db.models import Session as DbSession
 from server.sessions import adopt as _adopt
+from server.sessions import attachments as _attachments
 from server.sessions import events as ev
-from server.sessions import uploads
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.driver import SessionDriver
@@ -106,7 +106,8 @@ class SessionOrchestrator:
         # initial_prompt deferred until first WS attach so the client is watching
         # when the turn runs — avoids losing events before any consumer exists.
         self._pending_initial_prompt: dict[str, str] = {}
-        self._pending_initial_images: dict[str, list] = {}
+        # Deferred attachment ids for the initial prompt, sent on first WS attach.
+        self._pending_initial_attachment_ids: dict[str, list[str]] = {}
 
         # Build a live-session-aware usage_fn: when an account has a live session
         # the SDK owns its token family, so the poller must not independently
@@ -182,7 +183,7 @@ class SessionOrchestrator:
         repo: str | None = None,
         identity: str = "system",
         permission_mode: str = "interactive",
-        images: list[dict] | None = None,
+        attachment_ids: list[str] | None = None,
         name_is_auto: bool = True,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
@@ -261,8 +262,8 @@ class SessionOrchestrator:
             # the client is already watching when the turn runs — events stream
             # live, so nothing is lost.
             self._pending_initial_prompt[session_id] = initial_prompt
-        if images:
-            self._pending_initial_images[session_id] = images
+        if attachment_ids:
+            self._pending_initial_attachment_ids[session_id] = list(attachment_ids)
 
         # Persist DB row
         async with db_session() as db:
@@ -780,34 +781,30 @@ class SessionOrchestrator:
         """
         return self._pending_initial_prompt.pop(session_id, None)
 
-    def pop_pending_initial_images(self, session_id: str) -> list | None:
-        """Return and remove the deferred initial images for session_id, or None.
+    def pop_pending_initial_attachment_ids(self, session_id: str) -> list[str] | None:
+        """Return and remove the deferred initial attachment ids for session_id, or None.
 
         Called by the WS bridge on the first attach alongside pop_pending_initial_prompt.
         Clears the entry so subsequent attaches (reconnects) do not re-send them.
         """
-        return self._pending_initial_images.pop(session_id, None)
+        return self._pending_initial_attachment_ids.pop(session_id, None)
 
-    async def send_prompt(self, session_id, text, images=None):
+    async def send_prompt(self, session_id, text, attachment_ids=None):
         d = self._drivers.get(session_id)
         if not d:
             return
-        _raw = list(images or [])
-        if len(_raw) > uploads.MAX_IMAGES:
-            log.warning("send_prompt: truncating images from %d to %d session=%s",
-                        len(_raw), uploads.MAX_IMAGES, session_id)
-        images = _raw[:uploads.MAX_IMAGES]
+        ids = list(attachment_ids or [])
+        if len(ids) > _attachments.MAX_PER_MESSAGE:
+            log.warning("send_prompt: capping attachments from %d to %d session=%s",
+                        len(ids), _attachments.MAX_PER_MESSAGE, session_id)
         resolved: list[dict] = []
-        for ref in images:
-            try:
-                path = uploads.associate(session_id, ref["sha"], ref["mime"])
-            except Exception:
-                log.warning("send_prompt: dropping image sha=%s (associate failed) session=%s",
-                            ref.get("sha"), session_id, exc_info=True)
-                continue
-            resolved.append({
-                "sha": ref["sha"], "mime": ref["mime"], "name": ref.get("name", ""),
-                "path": str(path), "url": f"/api/sessions/{session_id}/images/{ref['sha']}"})
+        if ids:
+            # Bind rows to this session + a fresh turn id, then resolve the
+            # content-addressed on-disk paths the driver loads into image blocks.
+            turn_id = uuid.uuid4().hex
+            async with db_session() as db:
+                resolved = await _attachments.resolve_and_bind(
+                    db, session_id, turn_id, ids)
         self._last_prompt[session_id] = text
         await d.send_prompt(text, resolved)
 
@@ -1172,9 +1169,15 @@ class SessionOrchestrator:
 
         async with db_session() as db:
             from sqlalchemy import delete as sa_delete
+            # Remove the session's attachment rows + (dedup-aware) on-disk files
+            # before the session row itself.
+            n_att = await _attachments.delete_for_session(db, session_id)
             await db.execute(
                 sa_delete(DbSession).where(DbSession.id == session_id)
             )
+        if n_att:
+            log.info("session.permanent_delete id=%s removed %d attachment(s)",
+                     session_id, n_att)
         log.info("session.permanent_delete id=%s db row removed", session_id)
         return True
 

@@ -20,7 +20,8 @@ import { remainingContextPct } from '@/lib/contextWindow'
 import { useSessions, useAccounts } from '@/api/hooks'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 
-export type ImageRef = { sha: string; mime: string; name: string }
+// Dispatch payload for attached images: the DB-backed attachment ids.
+export type AttachmentIds = string[]
 
 export interface SessionRuntime {
   sessionId: string
@@ -50,7 +51,7 @@ export interface SessionRuntime {
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
   /** Set/clear the chat-armed question (toggles off if the same id is passed again). */
   onChat: (questionId: string) => void
-  onPrompt: (text: string, images: ImageRef[]) => void
+  onPrompt: (text: string, attachmentIds: AttachmentIds) => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   onCancelQueued: (index: number) => void
@@ -213,9 +214,9 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
 
   // Composer handlers — when a question is armed for chat, the next message answers
   // that question (mode='chat') and unblocks the turn; otherwise it's a normal prompt.
-  // (Chat replies go through the answer channel, which carries no images.)
+  // (Chat replies go through the answer channel, which carries no attachments.)
   const onPrompt = useCallback(
-    (text: string, images: ImageRef[]) => {
+    (text: string, attachmentIds: AttachmentIds) => {
       if (armedQuestionId) {
         answerQuestion(sessionId, armedQuestionId, [text], 'chat')
         dispatch({ type: '_resolveQuestion', questionId: armedQuestionId })
@@ -223,7 +224,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
         setArmedQuestionId(null)
         return
       }
-      prompt(sessionId, text, images)
+      prompt(sessionId, text, attachmentIds)
     },
     [sessionId, prompt, answerQuestion, armedQuestionId],
   )
