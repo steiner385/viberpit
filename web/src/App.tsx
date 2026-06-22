@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearch
 import { Dashboard, type TabId } from './components/Dashboard'
 import { DesktopShell } from './components/DesktopShell'
 import { SessionView } from './components/session/SessionView'
+import { SubSessionView } from './components/session/SubSessionView'
 import { ReviewView } from './components/ReviewView'
 import { useMediaQuery } from './lib/useMediaQuery'
 
@@ -71,6 +72,17 @@ function ReviewRoute() {
   )
 }
 
+function SubSessionRoute() {
+  const { sessionId, agentId } = useParams()
+  const navigate = useNavigate()
+  if (!sessionId || !agentId) return <Navigate to="/sessions" replace />
+  return (
+    <div className="min-h-dvh bg-background text-foreground">
+      <SubSessionView sessionId={sessionId} agentId={agentId} onBack={() => navigate(`/session/${sessionId}`)} />
+    </div>
+  )
+}
+
 function App() {
   // Wide screens get the master-detail DesktopShell; narrow screens keep the
   // routed full-screen views below. useMediaQuery returns false when matchMedia
@@ -87,6 +99,7 @@ function App() {
       <Route path="/accounts" element={<DashboardRoute tab="accounts" />} />
       <Route path="/archived" element={<DashboardRoute tab="archived" />} />
       <Route path="/session/:sessionId" element={<SessionRoute />} />
+      <Route path="/session/:sessionId/subagent/:agentId" element={<SubSessionRoute />} />
       <Route path="/review/:sessionId" element={<ReviewRoute />} />
       <Route path="*" element={<Navigate to="/sessions" replace />} />
     </Routes>

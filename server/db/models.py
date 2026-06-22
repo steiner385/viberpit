@@ -52,6 +52,10 @@ class Session(Base):
     # Nullable so init_db backfills it on the dev SQLite DB without a migration.
     adopted_in_place: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     tool_allowlist: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # Per-sub-agent summary [{agentId, parentAgentId, agentType, description, status}],
+    # refreshed from the transcript on status changes. Nullable so init_db backfills
+    # it on the dev SQLite DB without a migration.
+    sub_agents: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow

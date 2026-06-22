@@ -33,6 +33,15 @@ export type SessionStatus =
   | 'limited'
   | 'ended'
 
+/** A sub-agent (Task/Agent call) summary, nested under its session in the list. */
+export interface SubAgentSummary {
+  agentId: string            // the spawning Task tool-use id (= key into reducer state.subAgents)
+  parentAgentId: string | null
+  agentType: string
+  description: string
+  status: 'running' | 'done' | 'failed'
+}
+
 export interface Session {
   id: string
   name: string
@@ -44,6 +53,8 @@ export interface Session {
   updatedAt: string
   detached?: boolean
   nameIsAuto?: boolean
+  /** Sub-agents spawned in this session, for hierarchical drill-down (empty when none). */
+  subAgents?: SubAgentSummary[]
 }
 
 export interface ArchivedSession {

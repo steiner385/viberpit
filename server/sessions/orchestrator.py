@@ -390,8 +390,29 @@ class SessionOrchestrator:
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(status=status)
             )
+        # Refresh the per-sub-agent summary so the dashboard list can nest sub-agents
+        # under this session. Best-effort: a failure must never break the session loop.
+        await self._persist_sub_agents(session_id)
         if status == "done":
             await self._maybe_apply_auto_name(session_id)
+
+    async def _persist_sub_agents(self, session_id: str) -> None:
+        """Recompute the session's sub-agent summary from the transcript and persist
+        it to the in-memory record + DB row. Best-effort; swallows all errors."""
+        try:
+            from .subagents import summarize_transcript
+            events = await self.transcript_events(session_id)
+            summary = summarize_transcript(events)
+            rec = self._records.get(session_id)
+            if rec is not None:
+                rec.sub_agents = summary
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await db.execute(
+                    sa_update(DbSession).where(DbSession.id == session_id).values(sub_agents=summary)
+                )
+        except Exception:
+            log.debug("persist_sub_agents failed (non-fatal) session=%s", session_id, exc_info=True)
 
     async def _maybe_apply_auto_name(self, session_id: str) -> None:
         """If the session name is still auto, adopt Claude's transcript title.
