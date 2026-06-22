@@ -138,3 +138,66 @@ class TestSelector(unittest.TestCase):
             "soon": Usage(50.0, soon, 20.0, soon, False),
         }
         self.assertEqual(select_best(usages, set(), self.cfg, self.now), "later")
+
+    # --- load-aware selection (live-session count discounts perishability) ---
+
+    def test_load_demotes_busy_perishable_account(self):
+        # Two equally-perishable accounts; the one already carrying live load is demoted.
+        from ccswitch.oauth import Usage
+        from ccswitch.selector import select_best
+        soon = self.now + timedelta(minutes=30)
+        usages = {
+            "busy": Usage(40.0, soon, 20.0, soon, False),
+            "free": Usage(40.0, soon, 20.0, soon, False),
+        }
+        self.assertEqual(
+            select_best(usages, set(), self.cfg, self.now, load={"busy": 2.0}), "free")
+
+    def test_empty_load_reproduces_legacy_order(self):
+        # load={} must rank identically to the no-load call (regression guard).
+        from ccswitch.oauth import Usage
+        from ccswitch.selector import select_best
+        soon = self.now + timedelta(minutes=20)
+        later = self.now + timedelta(hours=5)
+        usages = {
+            "later": Usage(50.0, later, 20.0, later, False),
+            "soon": Usage(50.0, soon, 20.0, soon, False),
+        }
+        self.assertEqual(
+            select_best(usages, set(), self.cfg, self.now, load={}),
+            select_best(usages, set(), self.cfg, self.now))
+
+    def test_load_breaks_ties_when_perishability_off(self):
+        # prefer_soon_reset off -> all composite scores 0; load (fewest sessions) decides.
+        from ccswitch.selector import select_best
+        self.cfg.prefer_soon_reset = False
+        usages = {"alpha": usage(session=30.0), "beta": usage(session=30.0)}
+        self.assertEqual(
+            select_best(usages, set(), self.cfg, self.now,
+                        load={"alpha": 1.0}), "beta")
+
+    def test_heavier_load_loses_even_with_better_usage(self):
+        # 'low' has better usage but heavy load; 'high' is idle and resets equally soon.
+        # The load discount must outweigh the small usage edge.
+        from ccswitch.oauth import Usage
+        from ccswitch.selector import select_best
+        soon = self.now + timedelta(minutes=30)
+        usages = {
+            "low": Usage(20.0, soon, 10.0, soon, False),
+            "high": Usage(30.0, soon, 10.0, soon, False),
+        }
+        self.assertEqual(
+            select_best(usages, set(), self.cfg, self.now, load={"low": 3.0}), "high")
+
+    def test_large_load_is_bounded_no_crash(self):
+        # A huge load value must not raise / produce NaN; it just sorts last.
+        from ccswitch.oauth import Usage
+        from ccswitch.selector import select_best
+        soon = self.now + timedelta(minutes=30)
+        usages = {
+            "swamped": Usage(40.0, soon, 20.0, soon, False),
+            "calm": Usage(40.0, soon, 20.0, soon, False),
+        }
+        self.assertEqual(
+            select_best(usages, set(), self.cfg, self.now,
+                        load={"swamped": 1e9}), "calm")

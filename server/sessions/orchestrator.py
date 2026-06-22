@@ -24,6 +24,7 @@ from typing import Callable
 
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, worktrees
+from ccswitch.config import load_config
 from ccswitch.configdir import compose
 from ccswitch.paths import shared_base
 from server.audit import record_audit
@@ -276,7 +277,9 @@ class SessionOrchestrator:
         if account is None:
             # Skip accounts currently quarantined for a 429/401 so a fresh session
             # doesn't land on an account we already know is struggling.
-            account = select_account(exclude=self._recovery.quarantined(now=self._clock()))
+            account = select_account(
+                exclude=self._recovery.quarantined(now=self._clock()),
+                load=self.live_session_load())
         else:
             # Verify the given account exists (will raise if cred file missing — acceptable)
             pass
@@ -680,6 +683,27 @@ class SessionOrchestrator:
         # Iterating the live dict while the event loop mutates it raises
         # RuntimeError: dictionary changed size during iteration.
         return any(d.account == account for d in list(self._drivers.values()))
+
+    def live_session_load(self) -> dict[str, float]:
+        """Weighted count of live sessions per account, for load-aware selection.
+
+        A live session is one with an entry in ``_drivers`` (same liveness notion as
+        ``has_live_session``). Actively-working sessions (_ACTIVE_STATUSES) weigh 1.0;
+        idle live sessions weigh ``cfg.idle_session_weight``. Accounts with no live
+        session are absent from the map (treated as load 0 by the selector).
+
+        Snapshots ``_drivers`` before iterating — the event loop mutates it while this
+        may run from a threadpool thread (see ``has_live_session``).
+        """
+        cfg = load_config()
+        load: dict[str, float] = {}
+        for sid in list(self._drivers.keys()):
+            rec = self._records.get(sid)
+            if rec is None:
+                continue
+            weight = 1.0 if rec.status in _ACTIVE_STATUSES else cfg.idle_session_weight
+            load[rec.account] = load.get(rec.account, 0.0) + weight
+        return load
 
     def driver(self, session_id: str) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, or None."""
@@ -1141,7 +1165,7 @@ class SessionOrchestrator:
         old = record.account
         exclude = self._recovery.quarantined(now=now) | frozenset({old})
         try:
-            new_account = select_account(exclude=exclude)
+            new_account = select_account(exclude=exclude, load=self.live_session_load())
         except AllAccountsBusy as e:
             await self._pause_session(record, reason="all_accounts_busy",
                                       earliest_reset=e.earliest_reset)
