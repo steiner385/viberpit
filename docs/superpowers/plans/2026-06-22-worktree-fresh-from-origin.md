@@ -14,7 +14,7 @@
 - Keep the `-`-prefixed branch-name injection guard and the `--` option/commit-ish separator on every `worktree add`.
 - New behavior applies only when an `origin` remote is configured; remoteless repos are unchanged (offline-capable).
 - A `git fetch` failure against a configured `origin` is fatal (`WorktreeError`); the session must not start.
-- Tests run against the main checkout's prebuilt env: `/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest …` (a fresh worktree has no built env). Verify the path exists; otherwise use any `.venv` python on PATH.
+- Tests run against the main checkout's prebuilt env, but that env's `ccswitch` resolves to the **deploy** checkout, so you MUST prepend `PYTHONPATH=<this-worktree>/src` to force-import the worktree's source. **Exact command (use verbatim, every pytest step below is shorthand for this):** `PYTHONPATH=/mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/e15be2a4/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest …`. Verified: this runs the 9 existing `tests/test_worktrees.py` green against the worktree source.
 - Branch: `feat/worktree-fresh-from-origin` (already created off `origin/master`).
 
 ---
