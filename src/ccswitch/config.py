@@ -16,6 +16,9 @@ class Config:
     timezone: str = "America/New_York"
     claude_bin: str = "claude"
     prefer_soon_reset: bool = True
+    # Auto-retry budget for Anthropic API requests (see oauth.http_request).
+    retry_max_retries: int = 3
+    retry_max_total_sec: float = 15.0
 
 
 def load_config() -> Config:

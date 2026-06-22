@@ -82,6 +82,19 @@ class TestAccounts(unittest.TestCase):
             # Status stays "ok" (a rate-limit is not an auth failure).
             self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
 
+    def test_usage_for_fetch_transient_returns_none_without_changing_status(self):
+        """A persistent network failure exhausts retries inside http_request and
+        surfaces as TransientError from fetch_usage. usage_for must treat it like a
+        rate-limit: return None, leave status unchanged, never 500 or mark reauth."""
+        with temp_env():
+            from ccswitch import accounts, oauth, ledger
+            _seed_account("alpha")
+            with ledger.locked_ledger() as led:
+                ledger.set_status(led, "alpha", "ok")
+            with mock.patch.object(oauth, "fetch_usage", side_effect=oauth.TransientError("network error after 4 attempt(s)")):
+                self.assertIsNone(accounts.usage_for("alpha"))
+            self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
+
     def test_usage_for_ensure_valid_token_autherror_no_double_refresh(self):
         """Expired token + dead refresh: ensure_valid_token raises AuthError → needs-reauth,
         fetch_usage is never called, refresh_access_token called exactly once."""
@@ -134,7 +147,7 @@ class TestRefreshSerialization(unittest.TestCase):
                 "accessToken": "old", "refreshToken": "r",
                 "expiresAt": now_ms - 1, "subscriptionType": "max"})
             calls = []
-            def fake_refresh(rt, prior):
+            def fake_refresh(rt, prior, **kwargs):
                 calls.append(rt); _t.sleep(0.05)
                 return {"accessToken": "new", "refreshToken": "r2",
                         "expiresAt": now_ms + 10_000_000, "subscriptionType": "max"}
