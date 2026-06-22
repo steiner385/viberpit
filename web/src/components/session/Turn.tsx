@@ -19,13 +19,11 @@ interface Props {
   streamingBlockId?: string | null
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
-  onChat: (questionId: string) => void
-  armedQuestionId: string | null
 }
 
 export const Turn = memo(function Turn({
   turn, permissionMode, isLastTurn, toolDetailMode, streamingBlockId = null,
-  onDecision, onAnswer, onChat, armedQuestionId,
+  onDecision, onAnswer,
 }: Props) {
   const isUser = turn.role === 'user'
   // Suppress live questions inline — they are rendered by the pinned

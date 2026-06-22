@@ -58,8 +58,6 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
         streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
         onDecision={rt.onDecision}
         onAnswer={rt.onAnswer}
-        onChat={rt.onChat}
-        armedQuestionId={rt.armedQuestionId}
       />
 
       {/* Prominent "waiting for Claude" indicator shown below the last turn */}

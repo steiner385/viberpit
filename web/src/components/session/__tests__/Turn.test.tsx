@@ -131,8 +131,6 @@ describe('Turn question rendering', () => {
         toolDetailMode="auto"
         onDecision={noop}
         onAnswer={noop}
-        onChat={noop}
-        armedQuestionId={null}
       />,
     )
     expect(screen.queryByText('Two-pane?')).toBeNull()
@@ -149,8 +147,6 @@ describe('Turn question rendering', () => {
         toolDetailMode="auto"
         onDecision={noop}
         onAnswer={vi.fn()}
-        onChat={noop}
-        armedQuestionId={null}
       />,
     )
     expect(screen.getByText('Two-pane?')).toBeInTheDocument()
