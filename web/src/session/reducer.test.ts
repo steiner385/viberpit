@@ -350,17 +350,22 @@ describe('transcriptReducer', () => {
     const qEvent = { type: 'question', questionId: 'q1', turnId: 't1', header: 'H', question: 'Q?', options: [{ label: 'A' }], multiSelect: false } as const
 
     it('marks a question received during replay as not live', () => {
-      // initialTranscript.replaying === true
+      // Precondition: the initial transcript must be in replaying mode
+      expect(initialTranscript.replaying).toBe(true)
+
       const s = transcriptReducer(initialTranscript, qEvent)
       const block = s.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question')
-      expect(block && 'live' in block && block.live).toBe(false)
+      expect(block).toMatchObject({ kind: 'question', live: false })
     })
 
     it('marks a question received after replayComplete as live', () => {
+      // Precondition: the initial transcript must be in replaying mode
+      expect(initialTranscript.replaying).toBe(true)
+
       const afterReplay = transcriptReducer(initialTranscript, { type: 'replayComplete' } as const)
       const s = transcriptReducer(afterReplay, qEvent)
       const block = s.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question')
-      expect(block && 'live' in block && block.live).toBe(true)
+      expect(block).toMatchObject({ kind: 'question', live: true })
     })
   })
 })
