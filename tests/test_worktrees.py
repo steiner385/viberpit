@@ -177,17 +177,23 @@ class WorktreeFreshFromOriginTests(unittest.TestCase):
         self.assertEqual(_rev(self.repo, "main"), self.local_sha)
         self.assertEqual(_rev(self.repo, "refs/remotes/origin/main"), self.origin_sha)
 
-    def test_fetch_failure_is_fatal(self) -> None:
-        """A configured-but-unreachable origin aborts session start; no worktree left."""
+    def test_fetch_failure_falls_back_to_local(self) -> None:
+        """A configured-but-unreachable origin does NOT abort the session: fetch is
+        best-effort, so we fall back to a local-ref worktree and log a warning.
+
+        Many real origins are not fetchable non-interactively (private repos, no
+        cached credentials, the credential-less deploy box, offline) — refusing to
+        start a session in those cases would be far worse than a slightly-stale base.
+        """
         _git("remote", "set-url", "origin", str(self.root / "does-not-exist.git"),
              cwd=str(self.repo))
-        with self.assertRaises(worktrees.WorktreeError):
-            worktrees.create_worktree(str(self.repo), "main", "aaaaaaaa-0001", str(self.root))
-        listing = subprocess.run(
-            ["git", "-C", str(self.repo), "worktree", "list"],
-            capture_output=True, text=True,
-        ).stdout
-        self.assertEqual(len(listing.strip().splitlines()), 1, "no extra worktree expected")
+        with self.assertLogs("ccswitch.worktrees", level="WARNING") as cm:
+            info = worktrees.create_worktree(str(self.repo), "main", "aaaaaaaa-0001", str(self.root))
+        # Session started, based on the LOCAL ref (origin tip was never reachable).
+        self.assertEqual(_rev(Path(info.path), "HEAD"), self.local_sha)
+        self.assertNotEqual(_rev(Path(info.path), "HEAD"), self.origin_sha)
+        # The operator is warned that the base could not be refreshed from origin.
+        self.assertTrue(any("fetch" in line.lower() for line in cm.output))
 
     def test_local_only_branch_uses_local_base(self) -> None:
         """A branch that exists only locally (not on origin) is based off the local

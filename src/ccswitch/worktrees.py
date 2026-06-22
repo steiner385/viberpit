@@ -50,28 +50,35 @@ def _has_origin(repo_top: str) -> bool:
     return _run(["git", "-C", repo_top, "remote", "get-url", "origin"]).returncode == 0
 
 
-def _remote_default_ref(repo_top: str) -> str:
-    """Return the remote default branch ref (e.g. 'origin/master').
+def _remote_default_ref(repo_top: str) -> str | None:
+    """Return the remote default branch ref (e.g. 'origin/master'), or None if it
+    cannot be resolved.
 
     Repairs origin/HEAD with `set-head --auto` first in case the clone never
-    recorded it. Raises WorktreeError if it cannot be resolved.
+    recorded it. Returning None (rather than raising) lets the caller fall back to
+    the local ref instead of aborting the session.
     """
     _run(["git", "-C", repo_top, "remote", "set-head", "origin", "--auto"])
     r = _run(["git", "-C", repo_top, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
     if r.returncode != 0 or not r.stdout.strip():
-        raise WorktreeError("could not resolve origin/HEAD (remote default branch)")
+        return None
     return r.stdout.strip()
 
 
-def _fetch_origin(repo_top: str) -> None:
-    """Fetch `origin`; raise WorktreeError if it fails.
+def _try_fetch_origin(repo_top: str) -> bool:
+    """Fetch `origin`; return True on success.
 
-    A configured-but-unreachable origin is fatal: we refuse to silently base a
-    session on a stale local ref.
+    A fetch failure is best-effort, NOT fatal: many real origins are not fetchable
+    non-interactively (private repos with no cached credentials, the credential-less
+    deploy box, offline). On failure we log a warning and return False so the caller
+    bases the session on the local ref rather than refusing to start it.
     """
     r = _run(["git", "-C", repo_top, "fetch", "origin"])
     if r.returncode != 0:
-        raise WorktreeError(f"git fetch origin failed: {r.stderr.strip()}")
+        log.warning("worktree.fetch_failed repo=%s — basing on local ref: %s",
+                    repo_top, r.stderr.strip())
+        return False
+    return True
 
 
 def _branch_on_origin(repo_top: str, branch: str) -> bool:
@@ -140,19 +147,21 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
     # (e.g. a previous crash) so a reused path doesn't collide.
     _run(["git", "-C", repo_top, "worktree", "prune"])
 
-    # Fetch-first: a session must start from the true remote tip. If origin is
-    # configured we fetch and (below) base on remote refs; a fetch failure is
-    # fatal — never silently fall back to a stale local ref. A repo with NO
-    # origin has nothing to be stale against and keeps the local-ref behavior.
+    # Fetch-first (best-effort): a session should start from the true remote tip,
+    # so when origin is configured we fetch and (below) base on remote refs. But a
+    # fetch failure (offline, no non-interactive credentials, unreachable origin)
+    # must NOT block the session — we warn and fall back to the local ref. A repo
+    # with NO origin has nothing to refresh and uses the local ref directly.
+    # `use_remote` is true only when we have origin AND the fetch actually succeeded.
     has_origin = _has_origin(repo_top)
-    if has_origin:
-        _fetch_origin(repo_top)
+    use_remote = has_origin and _try_fetch_origin(repo_top)
 
-    # 0) No branch selected → detached worktree. With origin, detach at the remote
-    # default tip (origin/HEAD); without origin, off the local current HEAD.
+    # 0) No branch selected → detached worktree. When we fetched origin, detach at
+    # the remote default tip (origin/HEAD); otherwise (no origin, fetch failed, or
+    # origin/HEAD unresolvable) off the local current HEAD.
     if branch is None:
-        if has_origin:
-            base = _remote_default_ref(repo_top)
+        base = _remote_default_ref(repo_top) if use_remote else None
+        if base is not None:
             rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach",
                        str(dest), "--", base])
         else:
@@ -165,7 +174,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
     # 1) Remote-backed branch → isolated per-session child branch based at the
     # remote tip origin/<branch>. This is the normal path (not just a fallback):
     # a fresh, writable, isolated branch without moving the user's local <branch>.
-    if has_origin and _branch_on_origin(repo_top, branch):
+    if use_remote and _branch_on_origin(repo_top, branch):
         child = f"ccswitch/{branch}-{_short(session_id)}"
         r = _run(["git", "-C", repo_top, "worktree", "add", "-b", child,
                   str(dest), "--", f"origin/{branch}"])
