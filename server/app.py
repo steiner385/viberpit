@@ -216,6 +216,15 @@ def create_app(
     ws_router = build_ws_router(app.state.sessions)
     app.include_router(ws_router)
 
+    # VNC WebSocket bridge — gated by x11 state at call time
+    from server.bridge.vnc_ws import build_vnc_ws_router
+    app.include_router(build_vnc_ws_router(lambda: getattr(app.state, "x11", None)))
+
+    @app.get("/api/x11/metrics")
+    async def x11_metrics(_identity: str = Depends(current_identity)) -> dict:
+        x11 = getattr(app.state, "x11", None)
+        return x11.metrics() if x11 else {"enabled": False}
+
     # SPA static files with client-side-routing fallback — optional; guarded so a
     # missing build (dev/test) doesn't break startup. Registered AFTER the API/WS
     # routers so /api/* and /ws/* keep precedence.
