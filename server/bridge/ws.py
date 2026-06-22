@@ -88,7 +88,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
         live_tasks: dict[str, asyncio.Task] = {}
 
         # Subscribe to orchestrator lifecycle events (rotated, etc.)
-        event_q = orchestrator.subscribe_events()
+        event_q = await orchestrator.subscribe_events()
 
         async def _send(msg: dict) -> None:
             """Send a JSON message; ignore send errors after disconnect."""
@@ -158,7 +158,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 # the client reconnect-loop forever on a blank screen. Report it and
                 # keep the socket alive (replayComplete clears the loading state).
                 log.warning("ws.attach: ensure_driver failed for %s", session_id, exc_info=True)
-                rec = orchestrator.get_session(session_id)
+                rec = await orchestrator.get_session(session_id)
                 acct = rec.account if rec else None
                 hint = (f" Its account '{acct}' may need re-authentication — check the Accounts tab."
                         if acct else "")
@@ -179,7 +179,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             #    socket → client reconnect-loop on a blank screen) — skip the history and
             #    continue; the live session still works.
             try:
-                path = orchestrator.transcript_path(session_id)
+                path = await orchestrator.transcript_path(session_id)
                 events = await replay_events(path) if path else []
                 if events:
                     redacted_replay = [redact_event(e.to_wire()) for e in events]
@@ -196,7 +196,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 log.warning("ws.attach: command_catalog failed for %s", session_id, exc_info=True)
 
             # 2) Re-emit any pending permission requests for this session.
-            for p in orchestrator._registry.pending(session_id):
+            for p in await orchestrator.pending_permissions(session_id):
                 perm_frame = redact_event({
                     "type": "permissionRequest", "permId": p["permId"],
                     "turnId": p["turn_id"], "tool": p["tool"],
@@ -209,7 +209,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             #     Mirrors the permission re-emit above so a refresh/reattach while the
             #     model is blocked in _handle_ask_user_question never silently hangs.
             from server.sessions import events as ev
-            for q in orchestrator.pending_questions(session_id):
+            for q in await orchestrator.pending_questions(session_id):
                 q_wire = redact_event(ev.Question(
                     question_id=q["question_id"],
                     turn_id=q["turn_id"],
@@ -238,8 +238,8 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             #     rather than racing the transcript-file write or arriving before any
             #     consumer exists in driver._out.  Only fires on the first attach
             #     (pop clears the entry); reconnects fall through to live-stream only.
-            pending_prompt = orchestrator.pop_pending_initial_prompt(session_id)
-            pending_attachment_ids = orchestrator.pop_pending_initial_attachment_ids(session_id)
+            pending_prompt = await orchestrator.pop_pending_initial_prompt(session_id)
+            pending_attachment_ids = await orchestrator.pop_pending_initial_attachment_ids(session_id)
             if pending_prompt is not None or pending_attachment_ids:
                 await orchestrator.send_prompt(
                     session_id, pending_prompt or "", pending_attachment_ids)
@@ -312,7 +312,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                 elif msg_type == "permissionResponse":
                     decision = msg.get("decision", "")
                     perm_id = msg.get("permId", "")
-                    orchestrator.resolve_permission(session_id, perm_id, decision, identity)
+                    await orchestrator.resolve_permission(session_id, perm_id, decision, identity)
                     try:
                         async with db_session() as db:
                             await record_audit(db, "permission." + decision, identity,
@@ -336,7 +336,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
                     mode = msg.get("mode", "option")
                     if mode not in ("option", "freeform", "chat"):
                         mode = "option"
-                    orchestrator.answer_question(session_id, question_id, selected, identity, mode)
+                    await orchestrator.answer_question(session_id, question_id, selected, identity, mode)
                     try:
                         async with db_session() as db:
                             await record_audit(db, "question.answer", identity,
@@ -386,7 +386,7 @@ def build_ws_router(orchestrator: "SessionOrchestrator") -> APIRouter:
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
 
-            orchestrator.unsubscribe_events(event_q)
+            await orchestrator.unsubscribe_events(event_q)
             log.debug("ws.disconnect identity=%s", identity)
 
     return router
