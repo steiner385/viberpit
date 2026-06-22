@@ -1,4 +1,4 @@
-import importlib, os
+import importlib
 import server.config as config
 
 def _fresh():

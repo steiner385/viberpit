@@ -1,5 +1,4 @@
 # server/tests/test_x11_manager.py
-import asyncio
 import pytest
 from server.sessions.x11manager import DisplayAllocator, X11Manager
 

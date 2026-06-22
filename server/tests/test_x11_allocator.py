@@ -1,6 +1,6 @@
 import asyncio
 import pytest
-from server.sessions.x11manager import DisplayAllocator, PoolExhausted, DisplayLease
+from server.sessions.x11manager import DisplayAllocator, PoolExhausted
 
 @pytest.mark.asyncio
 async def test_alloc_release_roundtrip():
@@ -25,4 +25,4 @@ async def test_exhaustion_raises():
 async def test_no_double_alloc_under_concurrency():
     a = DisplayAllocator(start=100, count=50, port_base=6100)
     leases = await asyncio.gather(*[a.alloc() for _ in range(50)])
-    assert len({l.display for l in leases}) == 50
+    assert len({lease.display for lease in leases}) == 50

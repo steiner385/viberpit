@@ -9,7 +9,6 @@ a connected VNC client.
 import os
 from unittest.mock import patch, MagicMock
 
-import pytest
 from fastapi.testclient import TestClient
 
 from server.tests.fakes.fake_factory import fake_sdk_factory
