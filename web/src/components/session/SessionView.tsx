@@ -35,11 +35,12 @@ function nextPermissionMode(current: string): string {
 interface Props {
   sessionId: string
   onBack: () => void
+  initialPrompt?: string
 }
 
-export function SessionView({ sessionId, onBack }: Props) {
+export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
   const { detach } = useSessionSocket()
-  const rt = useSessionRuntime(sessionId)
+  const rt = useSessionRuntime(sessionId, initialPrompt)
 
   // Keep modeRef current so the keydown handler reads the latest mode without
   // needing to re-register the listener on every mode change.

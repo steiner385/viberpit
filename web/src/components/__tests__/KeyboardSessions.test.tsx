@@ -328,7 +328,8 @@ describe('Task 6 — dispatch create-and-open', () => {
       { initialPrompt: 'add a button', repo: 'acme/web', branch: 'main' },
       expect.anything(),
     )
-    expect(onOpen).toHaveBeenCalledWith('new-1')
+    // The prompt is forwarded so the conversation can show it immediately on open.
+    expect(onOpen).toHaveBeenCalledWith('new-1', 'add a button')
   })
 
   it('dispatch with no repo selected omits repo and branch', async () => {

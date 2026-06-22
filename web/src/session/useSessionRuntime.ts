@@ -51,7 +51,7 @@ export interface SessionRuntime {
   onCancelQueued: (index: number) => void
 }
 
-export function useSessionRuntime(sessionId: string): SessionRuntime {
+export function useSessionRuntime(sessionId: string, initialPrompt?: string): SessionRuntime {
   const {
     attach,
     detach,
@@ -95,6 +95,12 @@ export function useSessionRuntime(sessionId: string): SessionRuntime {
     on('sessionEvent', onEvent)
     on('rotated', onRotated)
     on('error', onError)
+    // Seed the user's prompt optimistically so it shows the instant the session
+    // opens, before the SDK echoes it back. The reducer adopts (re-keys) this
+    // turn when the real `user` event arrives, so there's no duplicate. The seed
+    // is idempotent, so React StrictMode's double-effect is harmless. One-shot at
+    // mount: `initialPrompt` is intentionally excluded from the dep array below.
+    if (initialPrompt) dispatch({ type: '_seedUserPrompt', text: initialPrompt })
     attach(sessionId)
 
     return () => {
