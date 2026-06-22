@@ -64,25 +64,23 @@ function MainPaneSession() {
     <div className="flex flex-col h-full min-h-0">
       <div className={cn(
         'flex items-center gap-3 px-3 py-2 flex-shrink-0',
-        'bg-gray-900 border-b border-gray-700',
+        'bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700',
       )}>
-        <span className="text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
+        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{rt.title}</span>
         <button
           type="button"
           onClick={rt.toggleToolDetail}
           aria-label={toolToggleAria}
           className={cn(
             'ml-auto flex items-center gap-1.5 px-3 py-2 rounded-md min-h-[44px]',
-            'text-sm font-medium text-gray-200',
-            'hover:bg-gray-700 active:bg-gray-600',
+            'text-sm font-medium text-gray-700 dark:text-gray-200',
+            'hover:bg-gray-200 dark:hover:bg-gray-700 active:bg-gray-300 dark:active:bg-gray-600',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
           )}
         >
           {toolToggleText}
         </button>
-        <div>
-          <StatusBar status={rt.state.status} connectionState={rt.connectionState} />
-        </div>
+        <StatusBar status={rt.state.status} connectionState={rt.connectionState} />
       </div>
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-gray-950">
         <SessionBody rt={rt} />
@@ -326,15 +324,6 @@ export function DesktopShell() {
             )}
           </button>
         ))}
-        <button
-          ref={settingsButtonRef}
-          type="button"
-          onClick={() => setShowSettings(true)}
-          aria-label="Settings"
-          className="ml-auto px-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-        >
-          <Settings size={16} aria-hidden="true" />
-        </button>
       </div>
 
       {/* Session list with permanent New Session slot */}
@@ -407,8 +396,22 @@ export function DesktopShell() {
 
   const shell = (
     <div className="flex flex-col h-screen bg-background text-foreground">
-      <header className="p-4 border-b border-border flex-shrink-0">
-        <h1 className="text-2xl font-bold tracking-tight">ccswitch</h1>
+      <header className="flex items-center justify-between px-4 py-2 border-b border-border flex-shrink-0">
+        <h1 className="text-lg font-bold tracking-tight">ccswitch</h1>
+        <button
+          ref={settingsButtonRef}
+          type="button"
+          onClick={() => setShowSettings(true)}
+          aria-label="Settings"
+          className={cn(
+            'flex items-center justify-center h-9 w-9 rounded-md',
+            'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
+            'hover:bg-gray-100 dark:hover:bg-gray-800',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+          )}
+        >
+          <Settings size={18} aria-hidden="true" />
+        </button>
       </header>
 
       {allLimitedReset !== undefined && (
