@@ -9,12 +9,9 @@
  *   - Errors use `role="alert"` (assertive).
  */
 
-import { useEffect, useReducer, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { cn } from '@/lib/utils'
-import { useSessionSocket } from '@/ws/client'
-import type { WsRotatedMsg, WsErrorMsg } from '@/ws/client'
-import { transcriptReducer, initialTranscript } from '@/session/reducer'
-import type { SessionEvent } from '@/session/events'
+import { useSessionStream } from '@/session/useSessionStream'
 import { selectSubAgents } from '@/session/selectors'
 import { remainingContextPct } from '@/lib/contextWindow'
 import { useSessions, useAccounts } from '@/api/hooks'
@@ -48,54 +45,19 @@ interface Rotation {
 }
 
 export function SessionView({ sessionId, onBack }: Props) {
-  const {
-    attach,
-    detach,
-    on,
-    off,
-    connectionState,
-    prompt,
-    sendInterrupt,
-    permissionResponse,
-    answerQuestion,
-    setPermissionMode,
-    cancelQueued,
-  } = useSessionSocket()
+  const [rotations, setRotations] = useState<Rotation[]>([])
 
-  const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
+  const { state, dispatch, connectionState, prompt, sendInterrupt, permissionResponse, answerQuestion, setPermissionMode, cancelQueued, detach } = useSessionStream(
+    sessionId,
+    (m) => setRotations((p) => [...p, { from: m.fromAccount, to: m.toAccount, reason: m.reason }]),
+  )
+
   const [mode, setMode] = useState('interactive')
   const modeRef = useRef('interactive')
-  const [rotations, setRotations] = useState<Rotation[]>([])
 
   // Track whether replay just finished so we can announce "History loaded" once.
   const prevReplayingRef = useRef(true)
   const [ariaAnnouncement, setAriaAnnouncement] = useState('')
-
-  // Attach / detach + subscribe to session events
-  useEffect(() => {
-    const onEvent = (e: SessionEvent) => dispatch(e)
-    const onRotated = (msg: WsRotatedMsg) => {
-      if (msg.sessionId !== sessionId) return
-      setRotations((prev) => [...prev, { from: msg.fromAccount, to: msg.toAccount, reason: msg.reason }])
-    }
-    // I3 — surface direct `error` frames (SESSION_NOT_FOUND, frame_too_large, etc.)
-    const onError = (msg: WsErrorMsg) => {
-      dispatch({ type: 'error', code: msg.code, message: msg.message, resetsAt: msg.resetsAt ?? null })
-    }
-
-    on('sessionEvent', onEvent)
-    on('rotated', onRotated)
-    on('error', onError)
-    attach(sessionId)
-
-    return () => {
-      off('sessionEvent', onEvent)
-      off('rotated', onRotated)
-      off('error', onError)
-      detach(sessionId)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId])
 
   // aria-live mirror: announce latest assistant text after replay completes.
   useEffect(() => {
@@ -125,7 +87,7 @@ export function SessionView({ sessionId, onBack }: Props) {
       permissionResponse(sessionId, permId, decision)
       dispatch({ type: '_resolvePermission', permId })
     },
-    [sessionId, permissionResponse],
+    [sessionId, permissionResponse, dispatch],
   )
 
   // Answer handler for question cards
@@ -134,7 +96,7 @@ export function SessionView({ sessionId, onBack }: Props) {
       answerQuestion(sessionId, questionId, selected)
       dispatch({ type: '_resolveQuestion', questionId })
     },
-    [sessionId, answerQuestion],
+    [sessionId, answerQuestion, dispatch],
   )
 
   // Composer handlers
