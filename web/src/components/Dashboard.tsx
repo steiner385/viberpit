@@ -814,7 +814,10 @@ interface PermanentDeleteDialogProps {
   isPending: boolean
 }
 
-function PermanentDeleteDialog({ sessionName, onClose, onConfirm, isPending }: PermanentDeleteDialogProps) {
+// Exported so DesktopShell reuses this exact confirm dialog (mirrors RenameDialog).
+// NOTE: ArchivedManager.tsx still carries its own private copy — consolidating the
+// two into a shared module is follow-up cleanup, tracked separately.
+export function PermanentDeleteDialog({ sessionName, onClose, onConfirm, isPending }: PermanentDeleteDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
 
