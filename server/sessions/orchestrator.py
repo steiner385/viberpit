@@ -29,6 +29,7 @@ from server.audit import record_audit
 from server.db import db_session
 from server.db.models import Session as DbSession
 from server.sessions import adopt as _adopt
+from server.sessions import events as ev
 from server.sessions import uploads
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
@@ -36,8 +37,7 @@ from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory
 from server.sessions.selection import AllAccountsBusy, select_account
-from server.sessions.title_generator import generate_title
-from server.sessions.titles import read_user_prompts_from_file
+from server.sessions.titles import read_ai_title_from_file
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
 
@@ -78,7 +78,7 @@ class SessionOrchestrator:
         poll_interval: float = 60.0,
         usage_fn: Callable[[str], object] | None = None,
         repo_root: str | None = None,
-        title_fn: Callable | None = None,
+        titling_interval: float = 15.0,
     ) -> None:
         # work_dir param is accepted for back-compat (used in tests to keep
         # the orchestrator anchored to the repo root), but is no longer stored
@@ -96,9 +96,10 @@ class SessionOrchestrator:
         # session_id → WorktreeInfo for sessions launched in an isolated worktree
         self._worktrees: dict[str, worktrees.WorktreeInfo] = {}
         self._sdk_factory = sdk_factory or real_sdk_factory
-        # Generates an AI session title from the conversation's user prompts.
-        # Injected in tests so no real `claude` is spawned.
-        self._title_fn = title_fn or self._default_title_fn
+        # Cadence (seconds) of the background titling sweep that adopts Claude's
+        # own transcript title into still-auto-named sessions. Constructor arg so
+        # tests can drive it fast.
+        self._titling_interval: float = titling_interval
         self._registry = PermissionRegistry()
         self._drivers: dict[str, SessionDriver] = {}
         self._last_prompt: dict[str, str] = {}
@@ -129,6 +130,7 @@ class SessionOrchestrator:
         self._records: dict[str, SessionRecord] = {}
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
+        self._titling_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
         # Serialises the check-build-register critical section in ensure_driver
@@ -142,21 +144,26 @@ class SessionOrchestrator:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Start the usage poller and the rotation monitor."""
+        """Start the usage poller, the rotation monitor and the titling sweep."""
         await self._poller.start()
         self._rotation_task = asyncio.create_task(
             self._rotation_monitor(), name="rotation-monitor"
         )
+        self._titling_task = asyncio.create_task(
+            self._titling_monitor(), name="titling-monitor"
+        )
 
     async def stop(self) -> None:
-        """Stop the rotation monitor and usage poller."""
-        if self._rotation_task is not None:
-            self._rotation_task.cancel()
-            try:
-                await self._rotation_task
-            except asyncio.CancelledError:
-                pass
-            self._rotation_task = None
+        """Stop the titling sweep, rotation monitor and usage poller."""
+        for attr in ("_titling_task", "_rotation_task"):
+            task = getattr(self, attr)
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                setattr(self, attr, None)
         await self._poller.stop()
 
     # ------------------------------------------------------------------
@@ -378,41 +385,22 @@ class SessionOrchestrator:
         if status == "done":
             await self._maybe_apply_auto_name(session_id)
 
-    async def _default_title_fn(self, prompts, *, account, cwd):
-        """Default title generator: a one-shot Haiku query under the account."""
-        return await generate_title(
-            prompts, config_dir=str(compose(account)), cwd=cwd
-        )
-
-    def _account_limited(self, account: str) -> bool:
-        """True if *account*'s last-known session usage is at/above the ceiling.
-
-        Best-effort: an unknown account (no cached usage) is treated as not
-        limited — a doomed title query would just degrade silently anyway.
-        """
-        usage = self._poller.cached(account)
-        return usage is not None and getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
-
     async def _maybe_apply_auto_name(self, session_id: str) -> None:
-        """If the name is still auto, generate an AI title from the user prompts.
+        """If the session name is still auto, adopt Claude's transcript title.
 
-        Skips manually-renamed sessions and accounts at their usage ceiling.
-        Best-effort: any miss (no transcript, no prompts, generator failure)
-        leaves the name unchanged and retries on the next completed turn.
+        Updates the DB + in-memory record and, when a live driver exists, pushes a
+        ``Title(source="claude")`` event so the in-session header converges with the
+        dashboard. Idempotent: a title equal to the current name is a no-op.
         """
         rec = self._records.get(session_id)
         if rec is None or not rec.name_is_auto:
             return
-        if self._account_limited(rec.account):
-            return
         path = self.transcript_path(session_id)
         if not path:
             return
-        prompts = await asyncio.to_thread(read_user_prompts_from_file, path)
-        if not prompts:
-            return
-        title = await self._title_fn(prompts, account=rec.account, cwd=rec.cwd)
-        if not title or title == rec.name:
+        title = await asyncio.to_thread(read_ai_title_from_file, path)
+        rec = self._records.get(session_id)
+        if rec is None or not rec.name_is_auto or not title or title == rec.name:
             return
         rec.name = title
         async with db_session() as db:
@@ -420,7 +408,30 @@ class SessionOrchestrator:
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(name=title)
             )
+        driver = self._drivers.get(session_id)
+        if driver is not None:
+            await driver._out.put(ev.Title(title=title, source="claude"))
         log.info("session.auto_name id=%s title=%r", session_id, title)
+
+    async def _titling_sweep(self) -> None:
+        """One titling pass: refresh the auto-name of every active, still-auto session.
+
+        The turn-boundary trigger ("done") handles the common case; this catches titles
+        Claude writes after the final turn or slowly mid-turn. Never raises.
+        """
+        for sid, rec in list(self._records.items()):
+            if rec.status == "ended" or not rec.name_is_auto:
+                continue
+            try:
+                await self._maybe_apply_auto_name(sid)
+            except Exception:  # never let one session break the sweep
+                log.warning("titling sweep failed for %s", sid, exc_info=True)
+
+    async def _titling_monitor(self) -> None:
+        """Background loop: sweep titles every ``self._titling_interval`` seconds."""
+        while True:
+            await self._titling_sweep()
+            await asyncio.sleep(self._titling_interval)
 
     async def _persist_claude_session_id(self, session_id: str, claude_session_id: str) -> None:
         """Callback fired by the driver the first time it captures the Claude session id.
