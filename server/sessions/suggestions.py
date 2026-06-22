@@ -58,6 +58,16 @@ def last_turn_context(events: list) -> tuple[str, str]:
     return user_text, "".join(parts)
 
 
+def kick_idle_suggestions(driver, events: list) -> None:
+    """Trigger one idle-session suggestion generation from replayed transcript events.
+
+    Glue for the WS attach path: extract the latest-turn context and hand it to the
+    driver, which decides (once-only, gated) whether to generate.
+    """
+    user_text, assistant_text = last_turn_context(events)
+    driver.seed_idle_suggestions(user_text, assistant_text)
+
+
 class SuggestionService:
     """Generates next-prompt suggestions via a throwaway, resume-less SDK query.
 

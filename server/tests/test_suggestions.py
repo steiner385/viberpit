@@ -127,3 +127,30 @@ def test_last_turn_context_empty_when_no_user_message():
     assert last_turn_context([]) == ("", "")
     from server.sessions import events as ev
     assert last_turn_context([ev.TextDelta("t1", "orphan")]) == ("", "")
+
+
+def test_kick_idle_suggestions_passes_extracted_context():
+    from server.sessions import events as ev
+    from server.sessions.suggestions import kick_idle_suggestions
+
+    class _SpyDriver:
+        def __init__(self): self.seeded = None
+        def seed_idle_suggestions(self, user_text, assistant_text):
+            self.seeded = (user_text, assistant_text)
+
+    d = _SpyDriver()
+    kick_idle_suggestions(d, [ev.UserMessage("t1", "ship it"), ev.TextDelta("t1", "On it.")])
+    assert d.seeded == ("ship it", "On it.")
+
+
+def test_kick_idle_suggestions_blank_events_still_calls_driver():
+    from server.sessions.suggestions import kick_idle_suggestions
+
+    class _SpyDriver:
+        def __init__(self): self.seeded = None
+        def seed_idle_suggestions(self, user_text, assistant_text):
+            self.seeded = (user_text, assistant_text)
+
+    d = _SpyDriver()
+    kick_idle_suggestions(d, [])
+    assert d.seeded == ("", "")
