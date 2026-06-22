@@ -8,7 +8,6 @@ import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SessionBody } from '../SessionBody'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
-import type { Block } from '@/session/reducer'
 
 // Stub BrowserTab so noVNC and vncClient never load
 vi.mock('../../BrowserTab', () => ({

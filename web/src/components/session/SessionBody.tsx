@@ -74,9 +74,10 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           )}
         >
           <button
+            id="tab-conversation"
             role="tab"
             aria-selected={activeTab === 'conversation'}
-            aria-controls="session-tab-panel"
+            aria-controls="tab-panel-conversation"
             onClick={() => setActiveTab('conversation')}
             className={cn(
               'px-4 py-2 font-medium',
@@ -88,9 +89,10 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
             Conversation
           </button>
           <button
+            id="tab-browser"
             role="tab"
             aria-selected={activeTab === 'browser'}
-            aria-controls="session-tab-panel"
+            aria-controls="tab-panel-browser"
             onClick={() => setActiveTab('browser')}
             className={cn(
               'px-4 py-2 font-medium',
@@ -106,11 +108,11 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
 
       {/* Browser tab panel */}
       {browserEnabled && activeTab === 'browser' ? (
-        <div id="session-tab-panel" className="flex-1 min-h-0">
+        <div id="tab-panel-browser" role="tabpanel" aria-labelledby="tab-browser" className="flex-1 min-h-0">
           <BrowserTab sessionId={rt.sessionId} statusState={rt.state.status.state} />
         </div>
       ) : (
-        <>
+        <div id="tab-panel-conversation" role="tabpanel" aria-labelledby="tab-conversation" className="flex-1 min-h-0 flex flex-col">
           {/* Error banner */}
           {rt.state.error && (
             <div
@@ -199,7 +201,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
 
           {/* sr-only aria-live mirror (owns its own ref + effect) */}
           <SessionAriaLive turns={rt.state.turns} replaying={rt.state.replaying} />
-        </>
+        </div>
       )}
     </>
   )
