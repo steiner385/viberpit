@@ -97,6 +97,21 @@ class Rotated:
                                "reason": self.reason, "turnRestarted": self.turn_restarted}
 
 @dataclass
+class RateLimit:
+    """Decoded SDK RateLimitEvent. Internal carrier only: the driver consumes it for
+    retry timing (resets_at, epoch seconds) and never forwards it, so it has no
+    wire form."""
+    resets_at: int | None = None; status: str | None = None
+
+@dataclass
+class TurnFailure:
+    """A turn failed with a recoverable kind (rate_limit / auth_401). Informational
+    for the UI; the orchestrator drives the actual recovery off the same signal."""
+    kind: str; account: str; retry_after: float | None = None
+    def to_wire(self): return {"type": "turnFailure", "kind": self.kind,
+                               "account": self.account, "retryAfter": self.retry_after}
+
+@dataclass
 class ErrorEvent:
     code: str; message: str; resets_at: str | None = None; turn_id: str | None = None
     def to_wire(self): return {"type": "error", "code": self.code, "message": self.message,

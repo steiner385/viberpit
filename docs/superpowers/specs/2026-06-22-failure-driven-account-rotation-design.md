@@ -127,8 +127,11 @@ The same classification that drives rotation also closes the "falsely-healthy le
 - A transient 429 does **not** change account status (consistent with
   `ccswitch-needs-reauth-mechanics`: transient HTTP must not trip the sticky flag). It is reflected
   only via the per-session `paused`/`rotated` events, not account status.
-- Emit a `rotated` / `paused` event (already partly present) so the UI can show *why* a session
-  moved or stalled, instead of a bare error string.
+- Emit a `rotated` / `paused` event so the UI can show *why* a session moved or stalled, instead of
+  a bare error string. `rotated` reuses the existing orchestrator-bus dict already handled by the
+  frontend; `paused` is a new bus dict in the same shape; `turnFailure` is a per-session wire event
+  on the driver stream (`RateLimit` is an internal carrier, never serialized). The frontend ignores
+  unrecognized event types gracefully, so backend-only landing is safe.
 
 This keeps account status truthful (`needs-reauth` only for genuinely-bad creds) while making
 session-level failures visible.

@@ -1,0 +1,53 @@
+"""In-memory guardrail state for failure-driven account rotation.
+
+Tracks two things, both intentionally non-persistent (rate limits are transient,
+and this avoids a ledger migration / the dev-SQLite no-ALTER constraint):
+
+- a **quarantine** map of accounts that recently 429'd or failed a 401 recompose,
+  excluded from selection until a cooldown expires; and
+- a per-session **rotation cap** so a session can't thrash across accounts during a
+  storm where every account is struggling.
+
+The clock is injected (``now``) so behavior is deterministic in tests.
+"""
+from __future__ import annotations
+
+from collections import defaultdict
+
+# Recovery tunables (seconds), defined in one place.
+RETRY_AFTER_MAX: float = 30.0     # wait-and-retry the same account if Retry-After <= this
+QUARANTINE_429: float = 60.0      # cooldown after a 429 with no usable Retry-After
+QUARANTINE_401: float = 300.0     # cooldown after a recompose-failed 401 (creds genuinely bad)
+MAX_ROTATIONS: int = 3            # rotations per session allowed within ROTATION_WINDOW
+ROTATION_WINDOW: float = 300.0
+
+
+class RecoveryState:
+    def __init__(self, *, max_rotations: int = MAX_ROTATIONS, window: float = ROTATION_WINDOW) -> None:
+        self._quarantine: dict[str, float] = {}        # account -> until (absolute ts)
+        self._rotations: dict[str, list[float]] = defaultdict(list)  # session_id -> timestamps
+        self._max_rotations = max_rotations
+        self._window = window
+
+    # --- quarantine -----------------------------------------------------------
+    def quarantine(self, account: str, *, until: float) -> None:
+        """Quarantine *account* until the absolute timestamp *until* (extends if later)."""
+        self._quarantine[account] = max(self._quarantine.get(account, 0.0), until)
+
+    def quarantined(self, *, now: float) -> frozenset[str]:
+        """Accounts still in cooldown at *now* (expired entries are pruned)."""
+        expired = [a for a, until in self._quarantine.items() if until <= now]
+        for a in expired:
+            del self._quarantine[a]
+        return frozenset(self._quarantine)
+
+    # --- per-session rotation cap ---------------------------------------------
+    def record_rotation(self, session_id: str, *, now: float) -> None:
+        self._rotations[session_id].append(now)
+
+    def rotation_cap_reached(self, session_id: str, *, now: float) -> bool:
+        """True if *session_id* has already rotated ``max_rotations`` times in the window."""
+        cutoff = now - self._window
+        recent = [t for t in self._rotations.get(session_id, ()) if t > cutoff]
+        self._rotations[session_id] = recent
+        return len(recent) >= self._max_rotations

@@ -17,6 +17,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from typing import Callable
@@ -37,6 +38,9 @@ from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory
 from server.sessions.suggestions import SuggestionService
+from server.sessions.recovery import (
+    RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401,
+)
 from server.sessions.selection import AllAccountsBusy, select_account
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
@@ -118,6 +122,14 @@ class SessionOrchestrator:
         self._registry = PermissionRegistry()
         self._drivers: dict[str, SessionDriver] = {}
         self._last_prompt: dict[str, str] = {}
+        # Failure-driven recovery: quarantine + per-session rotation cap. Clock is
+        # injectable for deterministic tests; production uses wall-clock time. The
+        # recompose-attempt map distinguishes a first 401 (heal in place) from a
+        # repeat 401 (creds genuinely bad → rotate away).
+        self._clock: Callable[[], float] = time.time
+        self._recovery = RecoveryState()
+        self._recompose_attempts: dict[str, float] = {}  # session_id → last recompose ts
+        self._recompose_ttl: float = 60.0
         # initial_prompt deferred until first WS attach so the client is watching
         # when the turn runs — avoids losing events before any consumer exists.
         self._pending_initial_prompt: dict[str, str] = {}
@@ -262,7 +274,9 @@ class SessionOrchestrator:
             cwd = str(scratch_dir)
 
         if account is None:
-            account = select_account()
+            # Skip accounts currently quarantined for a 429/401 so a fresh session
+            # doesn't land on an account we already know is struggling.
+            account = select_account(exclude=self._recovery.quarantined(now=self._clock()))
         else:
             # Verify the given account exists (will raise if cred file missing — acceptable)
             pass
@@ -288,6 +302,7 @@ class SessionOrchestrator:
             on_session_id=self._persist_claude_session_id,
             on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
             on_status=self._persist_status,
+            on_recoverable_failure=self._handle_recoverable_failure,
             suggester=self._suggester,
         )
         await driver.start()
@@ -724,6 +739,7 @@ class SessionOrchestrator:
                     on_session_id=self._persist_claude_session_id,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
                     on_status=self._persist_status,
+                    on_recoverable_failure=self._handle_recoverable_failure,
                     suggester=self._suggester,
                 )
 
@@ -816,6 +832,7 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, cand.account),
                 on_status=self._persist_status,
+                on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester,
             )
 
@@ -1047,7 +1064,114 @@ class SessionOrchestrator:
             self._poller.unsubscribe(q)
 
     async def _do_rotate(self, record: SessionRecord) -> None:
-        """Rotate one session to a new account, resuming the claude session inline."""
+        """Usage-ceiling rotation entrypoint (called by the poller monitor)."""
+        await self._rotate_away(record, reason="session limit reached")
+
+    # ------------------------------------------------------------------
+    # Failure-driven recovery (429 / 401 during a live turn)
+    # ------------------------------------------------------------------
+
+    async def _handle_recoverable_failure(self, session_id: str, kind: str,
+                                          retry_after: float | None) -> None:
+        """Driver callback: a turn failed with a recoverable kind. Recover off the
+        event loop so the driver's drain is never blocked."""
+        record = self._records.get(session_id)
+        if record is None or session_id not in self._drivers:
+            return
+        asyncio.create_task(
+            self._recover_session(record, kind, retry_after),
+            name=f"recover-{session_id}",
+        )
+
+    async def _recover_session(self, record: SessionRecord, kind: str,
+                               retry_after: float | None) -> None:
+        """Apply the recovery policy for one recoverable turn failure."""
+        now = self._clock()
+        if self._recovery.rotation_cap_reached(record.id, now=now):
+            await self._pause_session(record, reason="rotation_cap")
+            return
+        if kind == "rate_limit":
+            if retry_after is not None and retry_after <= RETRY_AFTER_MAX:
+                await self._replay_same_account(record, retry_after)
+                return
+            cooldown = retry_after if (retry_after and retry_after > 0) else QUARANTINE_429
+            self._recovery.quarantine(record.account, until=now + cooldown)
+            await self._rotate_away(record, reason="rate_limit")
+            return
+        if kind == "auth_401":
+            if not self._recently_recomposed(record.id, now):
+                self._recompose_attempts[record.id] = now
+                await self._recompose_same_account(record)
+                return
+            # A 401 that survives a recompose means the stored creds are genuinely
+            # bad — quarantine, propagate to the ledger (observability), then rotate.
+            self._recompose_attempts.pop(record.id, None)
+            self._recovery.quarantine(record.account, until=now + QUARANTINE_401)
+            self._mark_needs_reauth(record.account)
+            await self._rotate_away(record, reason="auth_401")
+            return
+
+    def _recently_recomposed(self, session_id: str, now: float) -> bool:
+        ts = self._recompose_attempts.get(session_id)
+        return ts is not None and (now - ts) <= self._recompose_ttl
+
+    async def _replay_same_account(self, record: SessionRecord, retry_after: float) -> None:
+        """Wait out a short Retry-After, then re-send the last prompt on the same account."""
+        await asyncio.sleep(max(0.0, retry_after))
+        driver = self._drivers.get(record.id)
+        last = self._last_prompt.get(record.id)
+        if driver is not None and last:
+            await driver.send_prompt(last)
+
+    async def _recompose_same_account(self, record: SessionRecord) -> None:
+        """Heal a clobbered live .credentials.json: recompose from the store and relaunch
+        the same account in place (a running claude holds the bad creds in memory)."""
+        await self._reassign(record, record.account, reason="recompose")
+
+    async def _rotate_away(self, record: SessionRecord, *, reason: str) -> None:
+        """Select a healthy account (excluding quarantined + current) and reassign."""
+        now = self._clock()
+        old = record.account
+        exclude = self._recovery.quarantined(now=now) | frozenset({old})
+        try:
+            new_account = select_account(exclude=exclude)
+        except AllAccountsBusy as e:
+            await self._pause_session(record, reason="all_accounts_busy",
+                                      earliest_reset=e.earliest_reset)
+            return
+        self._recovery.record_rotation(record.id, now=now)
+        await self._reassign(record, new_account, reason=reason)
+
+    async def _pause_session(self, record: SessionRecord, *, reason: str,
+                             earliest_reset=None) -> None:
+        """No recovery possible (no healthy account / rotation cap). Flag the session
+        for the user and publish a machine-readable paused event."""
+        try:
+            await self._persist_status(record.id, "needs_attention")
+        except Exception:
+            log.warning("pause.persist_status failed session=%s", record.id, exc_info=True)
+        self._publish_event({
+            "type": "paused", "sessionId": record.id, "account": record.account,
+            "reason": reason,
+            "earliestReset": earliest_reset.isoformat() if earliest_reset else None,
+        })
+        log.warning("recover.paused session=%s reason=%s", record.id, reason)
+
+    def _mark_needs_reauth(self, account: str) -> None:
+        """Propagate a recompose-failed in-session 401 to the ledger so the dashboard
+        stops reporting a falsely-healthy 'ok' for an account whose creds are dead.
+        A transient 429 never reaches here — only a 401 that survives a recompose."""
+        try:
+            from ccswitch import ledger
+            with ledger.locked_ledger() as led:
+                ledger.set_status(led, account, "needs-reauth")
+        except Exception:
+            log.warning("recover.mark_needs_reauth failed account=%s", account, exc_info=True)
+
+    async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str) -> None:
+        """Resume the session's claude conversation on *new_account* (may equal the
+        current account, for a 401 recompose). Relaunches the driver, replays the last
+        prompt, updates the DB, and emits a rotated event."""
         old_driver = self._drivers.get(record.id)
         if old_driver is None:
             return
@@ -1056,7 +1180,6 @@ class SessionOrchestrator:
         try:
             await old_driver.interrupt()
             await old_driver.aclose()
-            new_account = select_account(exclude=frozenset({old}))
             cfg = compose(new_account)
             configdir.trust_project(new_account, old_driver.cwd)
             new_driver = SessionDriver(
@@ -1067,6 +1190,7 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
                 on_status=self._persist_status,
+                on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester,
             )
             await new_driver.start()
@@ -1082,16 +1206,15 @@ class SessionOrchestrator:
                     .where(DbSession.id == record.id)
                     .values(account_name=new_account)
                 )
-            log.info("rotation.complete session=%s %s→%s", record.id, old, new_account)
+            log.info("reassign.complete session=%s %s→%s reason=%s",
+                     record.id, old, new_account, reason)
             self._publish_event({
                 "type": "rotated", "sessionId": record.id, "fromAccount": old,
-                "toAccount": new_account, "reason": "session limit reached",
+                "toAccount": new_account, "reason": reason,
                 "turnRestarted": bool(last),
             })
-        except AllAccountsBusy:
-            log.warning("rotation.all_busy session=%s", record.id)
         except Exception:
-            log.exception("rotation.error session=%s", record.id)
+            log.exception("reassign.error session=%s", record.id)
 
     # ------------------------------------------------------------------
     # Archive / unarchive / permanent-delete
