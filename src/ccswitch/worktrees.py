@@ -45,6 +45,22 @@ def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True)
 
 
+def _has_origin(repo_top: str) -> bool:
+    """True if the repo has an `origin` remote configured."""
+    return _run(["git", "-C", repo_top, "remote", "get-url", "origin"]).returncode == 0
+
+
+def _fetch_origin(repo_top: str) -> None:
+    """Fetch `origin`; raise WorktreeError if it fails.
+
+    A configured-but-unreachable origin is fatal: we refuse to silently base a
+    session on a stale local ref.
+    """
+    r = _run(["git", "-C", repo_top, "fetch", "origin"])
+    if r.returncode != 0:
+        raise WorktreeError(f"git fetch origin failed: {r.stderr.strip()}")
+
+
 def is_git_repo(path: str) -> bool:
     """True if `path` is inside a git work tree."""
     r = _run(["git", "-C", path, "rev-parse", "--is-inside-work-tree"])
@@ -103,6 +119,14 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
     # Drop admin records for any worktree dirs that were deleted out from under git
     # (e.g. a previous crash) so a reused path doesn't collide.
     _run(["git", "-C", repo_top, "worktree", "prune"])
+
+    # Fetch-first: a session must start from the true remote tip. If origin is
+    # configured we fetch and (below) base on remote refs; a fetch failure is
+    # fatal — never silently fall back to a stale local ref. A repo with NO
+    # origin has nothing to be stale against and keeps the local-ref behavior.
+    has_origin = _has_origin(repo_top)
+    if has_origin:
+        _fetch_origin(repo_top)
 
     # 0) No branch selected → detached worktree off the current HEAD. This gives the
     # session its own working directory (per-session isolation) with no branch
