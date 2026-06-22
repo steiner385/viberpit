@@ -1,10 +1,12 @@
 import { useRef, useState, useCallback } from 'react'
 import { cn } from '@/lib/utils'
+import { useAttachments } from './useAttachments'
+import { AttachmentTray } from './AttachmentTray'
 
 interface Props {
   status: { state: string; count: number }
   mode: string
-  onPrompt: (text: string) => void
+  onPrompt: (text: string, attachmentIds: string[]) => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   queued?: string[]
@@ -14,7 +16,9 @@ interface Props {
 export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued }: Props) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
   const isWorking = status.state === 'working'
+  const att = useAttachments()
 
   // Auto-grow textarea: reset height then set to scrollHeight (capped at 8 rows ~192px)
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -26,14 +30,15 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
 
   const submit = useCallback(() => {
     const trimmed = text.trim()
-    if (!trimmed) return
-    onPrompt(trimmed)
+    if (!trimmed && att.ids.length === 0) return
+    onPrompt(trimmed, att.ids)
     setText('')
+    att.clear()
     // Reset height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [text, onPrompt])
+  }, [text, onPrompt, att])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -45,6 +50,16 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
 
   function handlePlanToggle() {
     onSetMode(mode === 'plan' ? 'default' : 'plan')
+  }
+
+  function onPaste(e: React.ClipboardEvent) {
+    const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith('image/'))
+    if (files.length) { e.preventDefault(); void att.addFiles(files) }
+  }
+
+  function onDrop(e: React.DragEvent) {
+    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'))
+    if (files.length) { e.preventDefault(); void att.addFiles(files) }
   }
 
   return (
@@ -82,13 +97,41 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
         </div>
       )}
 
+      {/* Attachment tray + error */}
+      <AttachmentTray items={att.items} onRemove={att.remove} />
+      {att.error && <p role="alert" className="text-xs text-red-600">{att.error}</p>}
+
+      {/* Visually-hidden file input (accessible to testing-library via aria-label) */}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        multiple
+        aria-label="Attach image"
+        className="sr-only"
+        onChange={(e) => { void att.addFiles(Array.from(e.target.files ?? [])); e.target.value = '' }}
+      />
+
       <div className="flex items-end gap-2">
+        {/* Attach button — visible trigger for the sr-only file input (aria-hidden: SR uses the input directly) */}
+        <button
+          type="button"
+          aria-hidden="true"
+          tabIndex={-1}
+          onClick={() => fileRef.current?.click()}
+          className="flex-shrink-0 rounded-md px-3 py-2 text-sm min-h-[44px]"
+        >
+          📎
+        </button>
+
         <textarea
           ref={textareaRef}
           aria-label="Message"
           value={text}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onPaste={onPaste}
+          onDrop={onDrop}
           rows={1}
           placeholder="Send a message…"
           className={cn(
@@ -135,10 +178,12 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
             type="button"
             aria-label="Send message"
             onClick={submit}
+            disabled={att.uploading}
             className={cn(
               'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-[44px]',
               'bg-blue-600 text-white hover:bg-blue-700',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              att.uploading && 'opacity-50 cursor-not-allowed',
             )}
           >
             Send

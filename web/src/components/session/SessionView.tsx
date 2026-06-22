@@ -139,7 +139,7 @@ export function SessionView({ sessionId, onBack }: Props) {
 
   // Composer handlers
   const handlePrompt = useCallback(
-    (text: string) => prompt(sessionId, text),
+    (text: string, attachmentIds: string[] = []) => prompt(sessionId, text, attachmentIds),
     [sessionId, prompt],
   )
   const handleInterrupt = useCallback(

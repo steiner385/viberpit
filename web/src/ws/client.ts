@@ -136,8 +136,8 @@ export class SessionSocket {
     this._send({ type: 'interrupt', sessionId })
   }
 
-  prompt(sessionId: string, text: string) {
-    this._send({ type: 'prompt', sessionId, text })
+  prompt(sessionId: string, text: string, attachmentIds?: string[]) {
+    this._send({ type: 'prompt', sessionId, text, ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}) })
   }
 
   sendInterrupt(sessionId: string) {
@@ -315,7 +315,7 @@ export function useSessionSocket() {
   const attach              = useCallback((sessionId: string) => socket.attach(sessionId), [socket])
   const detach              = useCallback((sessionId: string) => socket.detach(sessionId), [socket])
   const interrupt           = useCallback((sessionId: string) => socket.interrupt(sessionId), [socket])
-  const prompt              = useCallback((sessionId: string, text: string) => socket.prompt(sessionId, text), [socket])
+  const prompt              = useCallback((sessionId: string, text: string, attachmentIds?: string[]) => socket.prompt(sessionId, text, attachmentIds), [socket])
   const sendInterrupt       = useCallback((sessionId: string) => socket.sendInterrupt(sessionId), [socket])
   const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') => socket.permissionResponse(sessionId, permId, decision), [socket])
   const answerQuestion      = useCallback((sessionId: string, questionId: string, selected: string[]) => socket.answerQuestion(sessionId, questionId, selected), [socket])
