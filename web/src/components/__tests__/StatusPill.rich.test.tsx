@@ -16,3 +16,17 @@ describe('StatusPill rich session statuses', () => {
     expect(screen.getByText(label)).toBeInTheDocument()
   })
 })
+
+describe('StatusPill pulse behavior', () => {
+  it('ended pill does NOT have animate-pulse', () => {
+    render(<StatusPill status={'ended' as SessionStatus} />)
+    const pill = screen.getByRole('generic', { name: 'Status: Ended' })
+    expect(pill.className).not.toContain('animate-pulse')
+  })
+
+  it('needs_attention pill DOES have motion-safe:animate-pulse', () => {
+    render(<StatusPill status={'needs_attention' as SessionStatus} />)
+    const pill = screen.getByRole('generic', { name: 'Status: Turn failed' })
+    expect(pill.className).toContain('motion-safe:animate-pulse')
+  })
+})

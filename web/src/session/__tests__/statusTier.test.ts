@@ -12,7 +12,7 @@ describe('statusTier', () => {
     ['idle', 'your-turn'],
     ['needs_attention', 'error'],
     ['limited', 'error'],
-    ['ended', 'error'],
+    ['ended', 'your-turn'],
     ['working', 'busy'],            // legacy alias tolerated
   ])('maps %s -> %s', (state, tier) => {
     expect(statusTier(state)).toBe(tier)

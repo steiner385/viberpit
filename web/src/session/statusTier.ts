@@ -31,7 +31,7 @@ const PRESENTATION: Record<string, StatusPresentation> = {
   idle:             { tier: 'your-turn', label: 'Ready',             Icon: Clock,         textClass: CALM },
   needs_attention:  { tier: 'error',     label: 'Turn failed',       Icon: AlertTriangle, textClass: ERROR },
   limited:          { tier: 'error',     label: 'Usage limit',       Icon: AlertTriangle, textClass: ERROR },
-  ended:            { tier: 'error',     label: 'Ended',             Icon: X,             textClass: CALM },
+  ended:            { tier: 'your-turn', label: 'Ended',             Icon: X,             textClass: CALM },
 }
 
 const FALLBACK: StatusPresentation = {
