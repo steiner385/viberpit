@@ -74,6 +74,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
           onDecision={rt.onDecision}
           onAnswer={rt.onAnswer}
+          subAgents={rt.state.subAgents}
         />
       )}
 

@@ -1,5 +1,5 @@
 import { useRef, useEffect, Fragment } from 'react'
-import type { Turn as TurnType, RotationMarker } from '@/session/reducer'
+import type { Turn as TurnType, RotationMarker, SubThread } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { Turn } from './Turn'
 import { RotationDivider } from './RotationDivider'
@@ -13,6 +13,8 @@ interface Props {
   streamingBlockId?: string | null
   onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
+  /** Nested sub-agent threads keyed by spawning Task toolId. Absent in read-only views (e.g. ReviewView). */
+  subAgents?: Record<string, SubThread>
 }
 
 /**
@@ -35,7 +37,7 @@ function groupRotationsByAnchor(rotations: RotationMarker[]) {
   return { byTurn, top }
 }
 
-export function TranscriptView({ turns, rotations = [], permissionMode, toolDetailMode, streamingBlockId = null, onDecision, onAnswer }: Props) {
+export function TranscriptView({ turns, rotations = [], permissionMode, toolDetailMode, streamingBlockId = null, onDecision, onAnswer, subAgents = {} }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
   const isNearBottomRef = useRef(true)
@@ -86,6 +88,7 @@ export function TranscriptView({ turns, rotations = [], permissionMode, toolDeta
             streamingBlockId={idx === turns.length - 1 ? streamingBlockId : null}
             onDecision={onDecision}
             onAnswer={onAnswer}
+            subAgents={subAgents}
           />
           {(byTurn.get(turn.id) ?? []).map((r, i) => (
             <RotationDivider key={`rot-${turn.id}-${i}`} from={r.from} to={r.to} reason={r.reason} />
