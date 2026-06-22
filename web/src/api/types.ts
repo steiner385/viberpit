@@ -30,6 +30,14 @@ export type SessionStatus =
   | 'limited'
   | 'ended'
 
+export interface SubAgentSummary {
+  agentId: string
+  parentAgentId: string | null
+  agentType: string
+  description: string
+  status: 'running' | 'done' | 'failed'
+}
+
 export interface Session {
   id: string
   name: string
@@ -41,6 +49,7 @@ export interface Session {
   updatedAt: string
   detached?: boolean
   nameIsAuto?: boolean
+  subAgents?: SubAgentSummary[]
 }
 
 export interface ArchivedSession {

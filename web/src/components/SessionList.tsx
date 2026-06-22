@@ -12,6 +12,7 @@ interface SessionListProps {
   onOpen: (id: string) => void
   onRename: (id: string) => void
   onClose: (id: string) => void
+  onOpenSubAgent?: (sessionId: string, agentId: string) => void
 }
 
 function SkeletonCard() {
@@ -43,6 +44,7 @@ export function SessionList({
   onOpen,
   onRename,
   onClose,
+  onOpenSubAgent,
 }: SessionListProps) {
   if (isLoading) {
     return (
@@ -82,6 +84,8 @@ export function SessionList({
           onOpen={onOpen}
           onRename={onRename}
           onClose={onClose}
+          subAgents={session.subAgents}
+          onOpenSubAgent={onOpenSubAgent}
         />
       ))}
     </div>

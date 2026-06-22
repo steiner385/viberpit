@@ -1,10 +1,11 @@
 import * as React from 'react'
 import { useState, useRef, useEffect } from 'react'
-import { Pencil, Trash2, EllipsisVertical, FolderGit2 } from 'lucide-react'
+import { Pencil, Trash2, EllipsisVertical, FolderGit2, ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { StatusPill, UsageBadge } from './UsageBadge'
-import type { Session, Account } from '@/api/types'
+import { SubAgentRows } from './SubAgentRows'
+import type { Session, Account, SubAgentSummary } from '@/api/types'
 
 interface SessionCardProps {
   session: Session
@@ -13,13 +14,17 @@ interface SessionCardProps {
   onOpen: (id: string) => void
   onRename: (id: string) => void
   onClose: (id: string) => void
+  subAgents?: SubAgentSummary[]
+  onOpenSubAgent?: (sessionId: string, agentId: string) => void
 }
 
-export function SessionCard({ session, account, selected = false, onOpen, onRename, onClose }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, onOpen, onRename, onClose, subAgents, onOpenSubAgent }: SessionCardProps) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const menuButtonRef = useRef<HTMLButtonElement>(null)
   const articleRef = useRef<HTMLElement>(null)
+  const hasSubAgents = (subAgents?.length ?? 0) > 0
 
   // Scroll selected row into view when selection changes (jsdom doesn't implement scrollIntoView)
   useEffect(() => {
@@ -63,125 +68,159 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
     <article
       ref={articleRef}
       className={cn(
-        'flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700',
-        'bg-white dark:bg-gray-800 p-3 min-h-[44px]',
+        'flex flex-col rounded-lg border border-gray-200 dark:border-gray-700',
+        'bg-white dark:bg-gray-800 p-3',
         'focus-within:ring-2 focus-within:ring-blue-500',
         selected && 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-950/30',
       )}
     >
-      {/* Main tappable area — opens the session.
-          id is used by DispatchBar's aria-activedescendant to signal the highlighted
-          row to assistive technologies without moving DOM focus.
-          data-selected is used for CSS + testing; aria-selected is omitted on a plain
-          button because axe rejects it without role="option". The AT announcement
-          comes from the textarea's aria-activedescendant pointing to this id. */}
-      <button
-        type="button"
-        id={`row-${session.id}`}
-        tabIndex={selected ? 0 : -1}
-        data-selected={selected}
-        className={cn(
-          'flex-1 min-w-0 text-left min-h-[44px] flex flex-col justify-center gap-1',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
-        )}
-        onClick={() => onOpen(session.id)}
-        onKeyDown={handleKeyDown}
-        aria-label={`Open session ${session.name}`}
-      >
-        <div className="flex items-center gap-2 flex-wrap">
-          <span
-            className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate"
-            title={session.nameIsAuto ? 'Auto-named by Claude' : undefined}
-          >
-            {session.name}
-          </span>
-          <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
-            {session.accountName}
-          </span>
-        </div>
-        <div className="flex items-center gap-3 flex-wrap">
-          <span
+      {/* Main row: optional expand chevron + session info button + overflow menu */}
+      <div className="flex items-center gap-3 min-h-[44px]">
+        {/* Expand/collapse chevron — only shown when there are sub-agents */}
+        {hasSubAgents && (
+          <button
+            type="button"
+            aria-label="Toggle sub-agents"
+            aria-expanded={expanded}
             className={cn(
-              'inline-flex items-center gap-1 text-xs max-w-full',
-              repoLabel.isScratch
-                ? 'text-gray-400 dark:text-gray-500 italic'
-                : 'text-gray-600 dark:text-gray-300',
+              'flex-shrink-0 h-7 w-7 flex items-center justify-center rounded',
+              'text-gray-400 dark:text-gray-500',
+              'hover:bg-gray-100 dark:hover:bg-gray-700',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
             )}
-            title={repoLabel.text}
+            onClick={() => setExpanded((v) => !v)}
           >
-            <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
-            <span className="truncate">{repoLabel.text}</span>
-          </span>
-          <StatusPill status={session.status} />
-          {account?.usage && (
-            <>
-              <UsageBadge pct={account.usage.session.pct} label="session" />
-              <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
-            </>
-          )}
-        </div>
-      </button>
+            {expanded
+              ? <ChevronDown size={14} aria-hidden="true" />
+              : <ChevronRight size={14} aria-hidden="true" />
+            }
+          </button>
+        )}
 
-      {/* Overflow action menu */}
-      <div className="relative flex-shrink-0" ref={menuRef}>
+        {/* Main tappable area — opens the session.
+            id is used by DispatchBar's aria-activedescendant to signal the highlighted
+            row to assistive technologies without moving DOM focus.
+            data-selected is used for CSS + testing; aria-selected is omitted on a plain
+            button because axe rejects it without role="option". The AT announcement
+            comes from the textarea's aria-activedescendant pointing to this id. */}
         <button
-          ref={menuButtonRef}
           type="button"
+          id={`row-${session.id}`}
+          tabIndex={selected ? 0 : -1}
+          data-selected={selected}
           className={cn(
-            'h-11 w-11 flex items-center justify-center rounded-md',
-            'text-gray-500 dark:text-gray-400',
-            'hover:bg-gray-100 dark:hover:bg-gray-700',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+            'flex-1 min-w-0 text-left min-h-[44px] flex flex-col justify-center gap-1',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
           )}
-          aria-label={`Actions for session ${session.name}`}
-          aria-haspopup="true"
-          aria-expanded={menuOpen}
-          onClick={() => setMenuOpen((v) => !v)}
+          onClick={() => onOpen(session.id)}
+          onKeyDown={handleKeyDown}
+          aria-label={`Open session ${session.name}`}
         >
-          <EllipsisVertical size={16} aria-hidden="true" />
+          <div className="flex items-center gap-2 flex-wrap">
+            <span
+              className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate"
+              title={session.nameIsAuto ? 'Auto-named by Claude' : undefined}
+            >
+              {session.name}
+            </span>
+            <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
+              {session.accountName}
+            </span>
+          </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <span
+              className={cn(
+                'inline-flex items-center gap-1 text-xs max-w-full',
+                repoLabel.isScratch
+                  ? 'text-gray-400 dark:text-gray-500 italic'
+                  : 'text-gray-600 dark:text-gray-300',
+              )}
+              title={repoLabel.text}
+            >
+              <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
+              <span className="truncate">{repoLabel.text}</span>
+            </span>
+            <StatusPill status={session.status} />
+            {account?.usage && (
+              <>
+                <UsageBadge pct={account.usage.session.pct} label="session" />
+                <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
+              </>
+            )}
+          </div>
         </button>
 
-        {menuOpen && (
-          <div
+        {/* Overflow action menu */}
+        <div className="relative flex-shrink-0" ref={menuRef}>
+          <button
+            ref={menuButtonRef}
+            type="button"
             className={cn(
-              'absolute right-0 top-full mt-1 z-10 min-w-[140px]',
-              'rounded-md border border-gray-200 dark:border-gray-600',
-              'bg-white dark:bg-gray-800 shadow-lg py-1',
+              'h-11 w-11 flex items-center justify-center rounded-md',
+              'text-gray-500 dark:text-gray-400',
+              'hover:bg-gray-100 dark:hover:bg-gray-700',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
             )}
-            role="menu"
-            aria-label={`Actions for ${session.name}`}
+            aria-label={`Actions for session ${session.name}`}
+            aria-haspopup="true"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((v) => !v)}
           >
-            <button
-              type="button"
-              role="menuitem"
+            <EllipsisVertical size={16} aria-hidden="true" />
+          </button>
+
+          {menuOpen && (
+            <div
               className={cn(
-                'flex w-full items-center gap-2 px-3 py-2 text-sm min-h-[44px]',
-                'text-gray-700 dark:text-gray-200',
-                'hover:bg-gray-100 dark:hover:bg-gray-700',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500',
+                'absolute right-0 top-full mt-1 z-10 min-w-[140px]',
+                'rounded-md border border-gray-200 dark:border-gray-600',
+                'bg-white dark:bg-gray-800 shadow-lg py-1',
               )}
-              onClick={handleRename}
+              role="menu"
+              aria-label={`Actions for ${session.name}`}
             >
-              <Pencil size={14} aria-hidden="true" />
-              Rename
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className={cn(
-                'flex w-full items-center gap-2 px-3 py-2 text-sm min-h-[44px]',
-                'text-red-600 dark:text-red-400',
-                'hover:bg-red-50 dark:hover:bg-red-900/20',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500',
-              )}
-              onClick={handleClose}
-            >
-              <Trash2 size={14} aria-hidden="true" />
-              Close
-            </button>
-          </div>
-        )}
+              <button
+                type="button"
+                role="menuitem"
+                className={cn(
+                  'flex w-full items-center gap-2 px-3 py-2 text-sm min-h-[44px]',
+                  'text-gray-700 dark:text-gray-200',
+                  'hover:bg-gray-100 dark:hover:bg-gray-700',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500',
+                )}
+                onClick={handleRename}
+              >
+                <Pencil size={14} aria-hidden="true" />
+                Rename
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className={cn(
+                  'flex w-full items-center gap-2 px-3 py-2 text-sm min-h-[44px]',
+                  'text-red-600 dark:text-red-400',
+                  'hover:bg-red-50 dark:hover:bg-red-900/20',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500',
+                )}
+                onClick={handleClose}
+              >
+                <Trash2 size={14} aria-hidden="true" />
+                Close
+              </button>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Sub-agent rows — shown when expanded and sub-agents are available */}
+      {expanded && onOpenSubAgent && subAgents && (
+        <SubAgentRows
+          sessionId={session.id}
+          subAgents={subAgents}
+          depth={0}
+          onOpenSubAgent={onOpenSubAgent}
+        />
+      )}
     </article>
   )
 }

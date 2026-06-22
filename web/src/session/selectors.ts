@@ -2,6 +2,7 @@
  * Derived views over transcript state for the session status strip.
  */
 import type { TranscriptState, Turn } from './reducer'
+import type { SubAgentSummary } from '@/api/types'
 
 export type SubAgentStatus = 'running' | 'done' | 'failed'
 
@@ -50,6 +51,16 @@ export function selectSubAgentTree(subAgents: TranscriptState['subAgents']): Sub
     else roots.push(n)
   }
   return roots
+}
+
+/**
+ * Build a SubAgentNode tree from the flat SubAgentSummary[] served by the
+ * session list API (Task 5). Reused by SubAgentRows in the session list.
+ */
+export function subAgentTreeFromSummaries(list: SubAgentSummary[]): SubAgentNode[] {
+  const map: TranscriptState['subAgents'] = {}
+  for (const s of list) map[s.agentId] = s
+  return selectSubAgentTree(map)
 }
 
 export function selectSubAgents(turns: Turn[]): SubAgent[] {
