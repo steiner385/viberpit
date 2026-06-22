@@ -53,8 +53,13 @@ export const CommandPalette = forwardRef<CommandPaletteHandle, Props>(function C
       role="listbox"
       aria-label="Slash commands"
       className={cn(
-        'absolute bottom-full left-0 right-0 mb-1 max-h-64 overflow-y-auto z-20',
-        'rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg',
+        // Mobile (<sm): fixed bottom sheet anchored to viewport bottom
+        'max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:rounded-b-none max-sm:rounded-t-xl',
+        // sm+: dropdown above the composer
+        'sm:absolute sm:bottom-full sm:left-0 sm:right-0 sm:mb-1',
+        'max-h-64 overflow-y-auto z-20',
+        'border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg',
+        'rounded-md',
       )}
     >
       {matches.map((c, i) => {
