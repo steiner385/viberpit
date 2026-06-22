@@ -258,4 +258,60 @@ describe('Composer', () => {
     render(<Composer {...defaults} />)
     expect(screen.queryByRole('button', { name: /cancel queued prompt/i })).not.toBeInTheDocument()
   })
+
+  // ── History recall ───────────────────────────────────────────────────────────
+
+  it('ArrowUp on empty input recalls the most recent prompt, then older', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} history={['older', 'newer']} />)
+    const box = screen.getByRole('textbox', { name: /message/i })
+    box.focus()
+    await user.keyboard('{ArrowUp}')
+    expect(box).toHaveValue('newer')
+    await user.keyboard('{ArrowUp}')
+    expect(box).toHaveValue('older')
+    await user.keyboard('{ArrowUp}') // clamped at oldest
+    expect(box).toHaveValue('older')
+  })
+
+  it('ArrowDown walks back toward the live draft and restores it', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} history={['older', 'newer']} />)
+    const box = screen.getByRole('textbox', { name: /message/i })
+    await user.type(box, 'draft in progress')
+    await user.keyboard('{ArrowUp}')          // stashes draft, shows newest
+    expect(box).toHaveValue('newer')
+    await user.keyboard('{ArrowDown}')         // back to draft
+    expect(box).toHaveValue('draft in progress')
+  })
+
+  it('typing after a recall detaches history (next ArrowUp starts from newest)', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} history={['older', 'newer']} />)
+    const box = screen.getByRole('textbox', { name: /message/i })
+    box.focus()
+    await user.keyboard('{ArrowUp}{ArrowUp}')  // now showing 'older'
+    await user.type(box, 'X')                  // edit detaches
+    await user.keyboard('{ArrowUp}')
+    expect(box).toHaveValue('newer')
+  })
+
+  it('does not recall history while the slash-command palette is open', async () => {
+    const user = userEvent.setup()
+    const goalCmd = { name: 'goal', description: 'set goal', argumentHint: '' }
+    render(<Composer {...defaults} history={['older', 'newer']} commands={[goalCmd]} onCommand={vi.fn()} />)
+    const box = screen.getByRole('textbox', { name: /message/i })
+    await user.type(box, '/g')                 // palette is picking a command
+    await user.keyboard('{ArrowUp}')
+    expect(box).toHaveValue('/g')              // palette consumed ↑, no history recall
+  })
+
+  it('ArrowUp does nothing when there is no history', async () => {
+    const user = userEvent.setup()
+    render(<Composer {...defaults} history={[]} />)
+    const box = screen.getByRole('textbox', { name: /message/i })
+    box.focus()
+    await user.keyboard('{ArrowUp}')
+    expect(box).toHaveValue('')
+  })
 })

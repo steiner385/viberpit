@@ -8,6 +8,7 @@ import { MicButton } from './MicButton'
 import { useDictationField } from '@/lib/useDictationField'
 import type { Command } from '@/session/events'
 import { statusTier } from '@/session/statusTier'
+import { caretLineEdges } from '@/lib/caretLineEdges'
 
 interface Props {
   status: { state: string; count: number }
@@ -23,9 +24,10 @@ interface Props {
   /** Auto-focus the textarea when this changes / on mount (mirrors DispatchBar). */
   autoFocusKey?: unknown
   suggestions?: string[]
+  history?: string[]
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions }: Props) {
+export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [] }: Props) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -42,14 +44,42 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   const pickingCommand = slash && !/\s/.test(afterSlash)
   const slashQuery = afterSlash.split(/\s+/)[0] ?? ''
 
+  // History recall: histPos 0 = live draft; N = N-th entry counting back from newest.
+  // Stored in a ref (not state) because it is only read in event handlers and
+  // does not directly drive any rendered output — setText drives the display.
+  const histPosRef = useRef(0)
+  const draftRef = useRef('')
+  const caretToEndRef = useRef(false)
+
   // Focus the prompt on mount (and when the active session changes) so the user
-  // can start typing immediately on entering a session.
+  // can start typing immediately on entering a session. Also reset recall state.
   useEffect(() => {
     textareaRef.current?.focus()
+    histPosRef.current = 0
+    draftRef.current = ''
   }, [autoFocusKey])
+
+  // After a programmatic recall, grow the box and place the caret at the end.
+  useEffect(() => {
+    if (!caretToEndRef.current) return
+    caretToEndRef.current = false
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 192)}px`
+    const end = el.value.length
+    el.setSelectionRange(end, end)
+  }, [text])
+
+  const recallTo = useCallback((pos: number, value: string) => {
+    caretToEndRef.current = true
+    histPosRef.current = pos
+    setText(value)
+  }, [])
 
   // Auto-grow textarea: reset height then set to scrollHeight (capped at 8 rows ~192px)
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    if (histPosRef.current !== 0) histPosRef.current = 0
     setText(e.target.value)
     const el = e.target
     el.style.height = 'auto'
@@ -71,10 +101,12 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
     const refs = att.refs()
     if (!trimmed && refs.length === 0) return
     if (refs.length === 0 && runCommandFromText(trimmed)) {
-      setText(''); if (textareaRef.current) textareaRef.current.style.height = 'auto'; return
+      setText(''); if (textareaRef.current) textareaRef.current.style.height = 'auto'
+      histPosRef.current = 0; draftRef.current = ''; return
     }
     onPrompt(trimmed, refs)
     setText(''); att.clear()
+    histPosRef.current = 0; draftRef.current = ''
     // Reset height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
@@ -103,6 +135,26 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (pickingCommand && paletteRef.current?.handleKeyDown(e)) return
+
+    if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && history.length > 0) {
+      const el = e.currentTarget
+      const caret = el.selectionStart ?? 0
+      const empty = text === ''
+      const { atFirstLine, atLastLine } = caretLineEdges(text, caret)
+      if (e.key === 'ArrowUp' && (empty || atFirstLine) && histPosRef.current < history.length) {
+        if (histPosRef.current === 0) draftRef.current = text
+        e.preventDefault()
+        recallTo(histPosRef.current + 1, history[history.length - (histPosRef.current + 1)])
+        return
+      }
+      if (e.key === 'ArrowDown' && (empty || atLastLine) && histPosRef.current > 0) {
+        const pos = histPosRef.current - 1
+        e.preventDefault()
+        recallTo(pos, pos === 0 ? draftRef.current : history[history.length - pos])
+        return
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       submit()
