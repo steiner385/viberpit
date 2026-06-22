@@ -15,7 +15,7 @@ Response NEVER includes token/credential material (FR-023).
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
@@ -27,6 +27,9 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.reauth import ReauthBusy, ReauthNoKey
+
+if TYPE_CHECKING:
+    from server.sessions.facade import InProcessOrchestratorAdapter
 
 log = logging.getLogger(__name__)
 
@@ -68,8 +71,8 @@ def _account_response(name: str, status_str: str, usage, nickname: str | None = 
     }
 
 
-def _get_orchestrator(request: Request):
-    return request.app.state.orchestrator
+def _get_orchestrator(request: Request) -> "InProcessOrchestratorAdapter":
+    return request.app.state.sessions
 
 
 def _get_reauth(request: Request):
@@ -118,7 +121,7 @@ async def get_accounts(
         nickname = acct.get("nickname")
 
         # Fetch fresh usage via the poller (async, deduplicates concurrent fetches)
-        usage = await orch.poller.get(name)
+        usage = await orch.usage(name)
 
         result.append(_account_response(name, acct_status, usage, nickname))
 
@@ -140,7 +143,7 @@ async def refresh_account(
     orch = _get_orchestrator(request)
 
     # Force a fresh fetch (bypasses cache by going through the poller lock)
-    usage = await orch.poller.get(name)
+    usage = await orch.usage(name)
 
     # Determine status and nickname from the ledger
     accounts_info = list_accounts()

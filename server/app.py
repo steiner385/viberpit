@@ -145,6 +145,8 @@ def create_app(
     if orchestrator is None:
         orchestrator = SessionOrchestrator()
     app.state.orchestrator = orchestrator
+    from server.sessions.facade import InProcessOrchestratorAdapter
+    app.state.sessions = InProcessOrchestratorAdapter(orchestrator)
 
     # Attach the ReauthManager (allows tests to inject a fake)
     if reauth_manager is None:
@@ -185,7 +187,7 @@ def create_app(
     app.include_router(settings_router)
 
     # WebSocket bridge
-    ws_router = build_ws_router(orchestrator)
+    ws_router = build_ws_router(app.state.sessions)
     app.include_router(ws_router)
 
     # SPA static files with client-side-routing fallback — optional; guarded so a
