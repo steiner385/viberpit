@@ -11,6 +11,7 @@ interface Props {
   onAnswer: (questionId: string, selected: string[], mode?: AnswerMode) => void
   onChat?: (questionId: string) => void
   armedForChat?: boolean
+  readOnly?: boolean
 }
 
 function optionLabel(opt: Record<string, unknown>): string {
@@ -24,7 +25,7 @@ const hatchBtn = cn(
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
 )
 
-export function QuestionCard({ block, onAnswer, onChat, armedForChat = false }: Props) {
+export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, readOnly = false }: Props) {
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [writing, setWriting] = useState(false)
   const [draft, setDraft] = useState('')
@@ -40,6 +41,29 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false }: 
       <p className="mb-3 text-sm text-gray-700 dark:text-gray-300">{block.question}</p>
     </>
   )
+
+  // Read-only (historical / replayed) — show what was asked, no interaction.
+  if (readOnly) {
+    return (
+      <div role="group" aria-labelledby={headerId} className={containerClass}>
+        {heading}
+        <ul className="space-y-1">
+          {block.options.map((opt) => (
+            <li
+              key={optionLabel(opt)}
+              className={cn(
+                'rounded px-3 py-2 text-sm',
+                'bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700',
+                'text-gray-500 dark:text-gray-400',
+              )}
+            >
+              {optionLabel(opt)}
+            </li>
+          ))}
+        </ul>
+      </div>
+    )
+  }
 
   // Armed for chat: structured options collapse to a quiet banner; the user
   // types their reply in the main composer (routed back as the answer).

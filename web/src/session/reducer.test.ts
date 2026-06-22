@@ -343,4 +343,29 @@ describe('transcriptReducer', () => {
     const after = transcriptReducer(withTurn, { type: '_rotation', from: 'a', to: 'b' })
     expect(after.turns).toBe(withTurn.turns) // referentially stable
   })
+
+  // ── question live flag ─────────────────────────────────────────────────────
+
+  describe('question live flag', () => {
+    const qEvent = { type: 'question', questionId: 'q1', turnId: 't1', header: 'H', question: 'Q?', options: [{ label: 'A' }], multiSelect: false } as const
+
+    it('marks a question received during replay as not live', () => {
+      // Precondition: the initial transcript must be in replaying mode
+      expect(initialTranscript.replaying).toBe(true)
+
+      const s = transcriptReducer(initialTranscript, qEvent)
+      const block = s.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question')
+      expect(block).toMatchObject({ kind: 'question', live: false })
+    })
+
+    it('marks a question received after replayComplete as live', () => {
+      // Precondition: the initial transcript must be in replaying mode
+      expect(initialTranscript.replaying).toBe(true)
+
+      const afterReplay = transcriptReducer(initialTranscript, { type: 'replayComplete' } as const)
+      const s = transcriptReducer(afterReplay, qEvent)
+      const block = s.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question')
+      expect(block).toMatchObject({ kind: 'question', live: true })
+    })
+  })
 })

@@ -35,6 +35,8 @@ export interface SessionRuntime {
   contextPct: number | null
   subAgents: ReturnType<typeof selectSubAgents>
   hasOpenAction: boolean
+  /** True when at least one open permission block is pending (permission blocks only). */
+  hasOpenPermission: boolean
   /** Question currently armed for a free-flowing chat reply (next prompt answers it), or null. */
   armedQuestionId: string | null
   /** True when a question is armed for chat — the composer shows a "Reply" affordance. */
@@ -181,6 +183,7 @@ export function useSessionRuntime(sessionId: string): SessionRuntime {
   const hasOpenAction = state.turns.some((t) =>
     t.blocks.some((b) => b.kind === 'permission' || b.kind === 'question'),
   )
+  const hasOpenPermission = state.turns.some((t) => t.blocks.some((b) => b.kind === 'permission'))
 
   // If the armed question is no longer present (resolved/replaced), disarm.
   useEffect(() => {
@@ -227,6 +230,7 @@ export function useSessionRuntime(sessionId: string): SessionRuntime {
     contextPct,
     subAgents,
     hasOpenAction,
+    hasOpenPermission,
     armedQuestionId,
     chatArmed: armedQuestionId !== null,
     onDecision,

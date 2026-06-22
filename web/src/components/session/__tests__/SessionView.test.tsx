@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act, waitFor } from '@testing-library/react'
+import { render, screen, act, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionView } from '../SessionView'
@@ -163,6 +163,26 @@ describe('SessionView', () => {
     })
   })
 
+  it('shows "action needed" banner when an open permission exists (no question)', async () => {
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+
+    emitSessionEvent({ type: 'replayComplete' })
+    emitSessionEvent({ type: 'turnStart', turnId: 't1' })
+    emitSessionEvent({
+      type: 'permissionRequest',
+      permId: 'perm-banner',
+      turnId: 't1',
+      tool: 'bash',
+      toolKind: 'bash',
+      input: { command: 'echo hi' },
+      plan: false,
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/action needed/i)).toBeInTheDocument()
+    })
+  })
+
   it('calls permissionResponse and dispatches _resolvePermission when Yes clicked', async () => {
     const user = userEvent.setup()
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
@@ -192,10 +212,11 @@ describe('SessionView', () => {
     })
   })
 
-  it('echoes the chosen answer into the transcript when a question is answered', async () => {
-    const user = userEvent.setup()
+  it('live question is not rendered inline — it shows the "action needed" banner instead', async () => {
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
 
+    // replayComplete marks replaying=false so subsequent questions are live (live: true).
+    emitSessionEvent({ type: 'replayComplete' })
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
     emitSessionEvent({
       type: 'question',
@@ -207,26 +228,17 @@ describe('SessionView', () => {
       multiSelect: false,
     })
 
-    await waitFor(() => {
-      expect(screen.getByRole('radio', { name: 'Blue' })).toBeInTheDocument()
-    })
+    // Live questions are pinned in the PendingQuestionPanel above the composer
+    // (Task 4), rendered interactively THERE — not inline in the transcript.
+    const panel = await screen.findByTestId('pending-question-panel')
+    expect(within(panel).getByText('Which color?')).toBeInTheDocument()
+    expect(within(panel).getByRole('radio', { name: 'Red' })).toBeInTheDocument()
+    // Exactly one copy in the DOM — pinned, not duplicated inline.
+    expect(screen.getAllByText('Which color?')).toHaveLength(1)
 
-    await user.click(screen.getByRole('radio', { name: 'Blue' }))
-
-    // Answer is sent to the server (default 'option' mode for a picked option).
-    expect(mockAnswerQuestion).toHaveBeenCalledWith('s1', 'q-1', ['Blue'], 'option')
-
-    // The question card is removed…
-    await waitFor(() => {
-      expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
-    })
-
-    // …and the chosen answer is echoed into the transcript as immediate feedback,
-    // so the user sees their response register (the card label is gone by now, so
-    // a remaining "Blue" can only be the echoed user bubble).
-    await waitFor(() => {
-      expect(screen.getByText('Blue')).toBeInTheDocument()
-    })
+    // Task 5: a live question alone does NOT show the "action needed" banner —
+    // the pinned panel IS the affordance. Banner is reserved for open permissions.
+    expect(screen.queryByText(/action needed/i)).toBeNull()
   })
 
   it('shows title when title event fires', async () => {
@@ -351,6 +363,8 @@ describe('SessionView question escape hatches', () => {
 
   function renderAndAskQuestion() {
     const utils = render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    // replayComplete marks replaying=false so the question is emitted as live (live: true).
+    emitSessionEvent({ type: 'replayComplete' })
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
     emitSessionEvent({
       type: 'question', questionId: 'q-9', turnId: 't1', header: 'H',
@@ -359,27 +373,21 @@ describe('SessionView question escape hatches', () => {
     return utils
   }
 
-  it('chat: arming routes the next composer message to answerQuestion(mode=chat)', async () => {
-    const user = userEvent.setup()
-    renderAndAskQuestion()
-    await user.click(screen.getByRole('button', { name: /chat about this/i }))
-    // Card collapsed to banner.
-    expect(screen.getByText(/replying in chat/i)).toBeInTheDocument()
-    // Type in the composer and send.
-    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'lets talk instead')
-    // While armed for chat the composer offers a "Reply" affordance (not Queue/Send).
-    await user.click(screen.getByRole('button', { name: /send reply/i }))
-    expect(mockAnswerQuestion).toHaveBeenCalledWith('s1', 'q-9', ['lets talk instead'], 'chat')
-    expect(mockPrompt).not.toHaveBeenCalled()
-  })
+  // The "Chat about this" / "Write a response" escape hatches render inside the
+  // PendingQuestionPanel (Task 4), which pins the live question above the composer.
+  // (The hatch callbacks are unit-tested in PendingQuestionPanel.test.tsx.)
 
-  it('free-form: inline response calls answerQuestion(mode=freeform)', async () => {
-    const user = userEvent.setup()
+  it('live question and its escape hatches render in the pinned panel, not inline', async () => {
     renderAndAskQuestion()
-    await user.click(screen.getByRole('button', { name: /write a response/i }))
-    await user.type(screen.getByRole('textbox', { name: /write a response/i }), 'my words')
-    await user.click(screen.getByRole('button', { name: /send response/i }))
-    expect(mockAnswerQuestion).toHaveBeenCalledWith('s1', 'q-9', ['my words'], 'freeform')
+    const panel = await screen.findByTestId('pending-question-panel')
+    expect(within(panel).getByText('Pick one')).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: /chat about this/i })).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: /write a response/i })).toBeInTheDocument()
+    // Exactly one copy — pinned, not inline in the transcript.
+    expect(screen.getAllByText('Pick one')).toHaveLength(1)
+    // Task 5: a live question alone does NOT show the "action needed" banner —
+    // the pinned panel IS the affordance. Banner is reserved for open permissions.
+    expect(screen.queryByText(/action needed/i)).toBeNull()
   })
 
   it('normal prompt is unaffected when no question is armed', async () => {

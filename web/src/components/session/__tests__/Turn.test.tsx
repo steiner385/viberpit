@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { Turn } from '../Turn'
 import type { Turn as TurnType, Block } from '@/session/reducer'
@@ -108,5 +108,49 @@ describe('Turn rendering edge cases', () => {
       />,
     )
     expect(document.querySelector('strong')).not.toBeNull()
+  })
+})
+
+describe('Turn question rendering', () => {
+  const baseQ = {
+    kind: 'question' as const,
+    id: 'q1',
+    questionId: 'q1',
+    header: 'Layout',
+    question: 'Two-pane?',
+    options: [{ label: 'Yes' }],
+    multiSelect: false,
+  }
+
+  it('does not render a LIVE question inline (it is pinned elsewhere)', () => {
+    const { container } = render(
+      <Turn
+        turn={makeTurn([{ ...baseQ, live: true }])}
+        permissionMode="interactive"
+        isLastTurn
+        toolDetailMode="auto"
+        onDecision={noop}
+        onAnswer={noop}
+      />,
+    )
+    expect(screen.queryByText('Two-pane?')).toBeNull()
+    // No stray empty wrapper div either
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('renders a historical (non-live) question inline, read-only', () => {
+    render(
+      <Turn
+        turn={makeTurn([{ ...baseQ, live: false }])}
+        permissionMode="interactive"
+        isLastTurn
+        toolDetailMode="auto"
+        onDecision={noop}
+        onAnswer={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('Two-pane?')).toBeInTheDocument()
+    // Read-only: no interactive radio inputs
+    expect(screen.queryByRole('radio')).toBeNull()
   })
 })

@@ -58,8 +58,6 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
         streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
         onDecision={rt.onDecision}
         onAnswer={rt.onAnswer}
-        onChat={rt.onChat}
-        armedQuestionId={rt.armedQuestionId}
       />
 
       {/* Prominent "waiting for Claude" indicator shown below the last turn */}
@@ -75,8 +73,10 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
         </div>
       )}
 
-      {/* "Action needed" sticky banner when permission/question is pending */}
-      {rt.hasOpenAction && (
+      {/* "Action needed" sticky banner when an open permission is pending.
+          Live questions are pinned in PendingQuestionPanel (Task 4) — they no
+          longer need the banner for discoverability. */}
+      {rt.hasOpenPermission && (
         <div
           aria-live="polite"
           className={cn(

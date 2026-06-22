@@ -21,6 +21,7 @@ import { PERMISSION_MODES } from '@/session/permissionModes'
 import { StatusBar } from './StatusBar'
 import { Composer } from './Composer'
 import { SessionBody } from './SessionBody'
+import { PendingQuestionPanel } from './PendingQuestionPanel'
 
 /**
  * Cycle to the next permission mode in PERMISSION_MODES order.
@@ -144,6 +145,14 @@ export function SessionView({ sessionId, onBack }: Props) {
 
       {/* Transcript + status strip + banners */}
       <SessionBody rt={rt} />
+
+      {/* Pinned answer panel for the live open question (answer in place) */}
+      <PendingQuestionPanel
+        turns={rt.state.turns}
+        onAnswer={rt.onAnswer}
+        onChat={rt.onChat}
+        armedQuestionId={rt.armedQuestionId}
+      />
 
       {/* Composer */}
       <div className="flex-shrink-0">
