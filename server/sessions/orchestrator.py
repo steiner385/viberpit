@@ -962,16 +962,24 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         if d is None:
             raise KeyError(name)
+        if str(name).lstrip("/") == "model":
+            arg = (args or "").strip()
+            await self.set_model_for_session(session_id, arg or None)
+            return {"name": "model", "render": "notice",
+                    "data": {"text": f"Model → {arg or 'default'}"}}
+        if str(name).lstrip("/") == "account":
+            acct = (args or "").strip()
+            if not acct:
+                return {"name": "account", "render": "notice",
+                        "data": {"text": "Usage: /account <account>"}}
+            await self.switch_account_manual(session_id, acct)
+            return {"name": "account", "render": "notice",
+                    "data": {"text": f"Account → {acct}"}}
         info = await d.server_info()
         by_name = {c.name: c for c in cmd_catalog.build_catalog(info)}
         cmd = by_name.get(str(name).lstrip("/"))
         if cmd is None:
             raise KeyError(name)
-        if cmd.name == "model":
-            arg = (args or "").strip()
-            await self.set_model_for_session(session_id, arg or None)
-            return {"name": "model", "render": "notice",
-                    "data": {"text": f"Model → {arg or 'default'}"}}
         return await cmd_dispatcher.dispatch(d, cmd, args or "")
 
     async def cancel_queued(self, session_id, index: int) -> bool:
