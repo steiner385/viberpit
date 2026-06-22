@@ -60,6 +60,11 @@ async def _lifespan(app: FastAPI):
     """App startup/shutdown: init DB, install log filter, start orchestrator."""
     install_redacting_filter()
 
+    # An app not built by create_app (e.g. tests constructing FastAPI(lifespan=_lifespan)
+    # directly) never sets app.state.remote_mode — default it to in-process. The local
+    # persists across the yield, so the shutdown branch reads it too.
+    remote_mode = getattr(app.state, "remote_mode", False)
+
     # F1: the identity header is only trustworthy behind `tailscale serve` on a
     # loopback bind.  Hard-fail if neither an allowlist nor a loopback host is set
     # (unless the operator explicitly opts out with CCSWITCH_DEV=1).
@@ -90,7 +95,7 @@ async def _lifespan(app: FastAPI):
 
     # Rehydrate persisted sessions (lazy — drivers are created on attach, not here).
     # In remote mode the daemon owns the orchestrator lifecycle, so skip it here.
-    if not app.state.remote_mode:
+    if not remote_mode:
         try:
             await app.state.orchestrator.rehydrate()
         except Exception:
@@ -116,7 +121,7 @@ async def _lifespan(app: FastAPI):
 
     # Start the singleton orchestrator (usage poller + rotation monitor).
     # In remote mode the daemon runs these, not the edge.
-    if not app.state.remote_mode:
+    if not remote_mode:
         await app.state.orchestrator.start()
 
     # Sweep stale X lock/socket files from crashed previous runs
@@ -146,7 +151,7 @@ async def _lifespan(app: FastAPI):
     yield
     # Shutdown
     await app.state.reauth.shutdown()
-    if app.state.remote_mode:
+    if remote_mode:
         # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
         await app.state.sessions.aclose()
     else:
