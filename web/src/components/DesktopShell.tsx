@@ -28,7 +28,7 @@ import { SettingsPanel } from './settings/SettingsPanel'
 import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
 import { ReviewView } from './ReviewView'
-import { RenameDialog } from './Dashboard'
+import { RenameDialog, PermanentDeleteDialog } from './Dashboard'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from './session/SessionRuntimeProvider'
 import { SessionBody } from './session/SessionBody'
 import { StatusBar } from './session/StatusBar'
@@ -40,6 +40,7 @@ import {
   useCreateSession,
   useRenameSession,
   useCloseSession,
+  usePermanentDeleteSession,
   useGithubRepos,
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
@@ -128,6 +129,7 @@ export function DesktopShell() {
   const createSession = useCreateSession()
   const renameSession = useRenameSession()
   const closeSession = useCloseSession()
+  const permanentDeleteSession = usePermanentDeleteSession()
 
   const [tab, setTab] = useState<TabId>('sessions')
   const [selection, setSelection] = useState<Target>({ type: 'new' })
@@ -135,6 +137,7 @@ export function DesktopShell() {
   const [showSettings, setShowSettings] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
+  const [sessionDeleteTarget, setSessionDeleteTarget] = useState<{ id: string; name: string } | null>(null)
   const [allLimitedReset, setAllLimitedReset] = useState<string | null | undefined>(undefined)
 
   // Keyboard highlight (for the new-session DispatchBar nav affordances)
@@ -188,6 +191,26 @@ export function DesktopShell() {
 
   function handleRenameSubmit(id: string, name: string) {
     renameSession.mutate({ id, name }, { onSuccess: () => setRenameTarget(null) })
+  }
+
+  // Permanent delete is destructive, so it goes through the same confirm dialog
+  // as Dashboard: open the dialog here, run the mutation only on confirm.
+  function handleDelete(id: string) {
+    const session = sessions.find((s) => s.id === id)
+    setSessionDeleteTarget({ id, name: session?.name ?? id.slice(0, 8) })
+  }
+
+  function confirmSessionDelete() {
+    if (!sessionDeleteTarget) return
+    const id = sessionDeleteTarget.id
+    permanentDeleteSession.mutate(id, {
+      onSuccess: () => {
+        setSessionDeleteTarget(null)
+        // If the deleted session was selected, fall back to the new-session slot.
+        setSelection((cur) => (cur.type === 'session' && cur.id === id ? { type: 'new' } : cur))
+      },
+      onError: () => setSessionDeleteTarget(null),
+    })
   }
 
   // ── DispatchBar handlers (new-session mode) ─────────────────────────────────
@@ -342,6 +365,7 @@ export function DesktopShell() {
           onOpen={focusSession}
           onRename={handleRename}
           onClose={handleClose}
+          onDelete={handleDelete}
         />
       </div>
     </aside>
@@ -408,6 +432,14 @@ export function DesktopShell() {
           onClose={() => setRenameTarget(null)}
           onSubmit={handleRenameSubmit}
           isPending={renameSession.isPending}
+        />
+      )}
+      {sessionDeleteTarget && (
+        <PermanentDeleteDialog
+          sessionName={sessionDeleteTarget.name}
+          onClose={() => setSessionDeleteTarget(null)}
+          onConfirm={confirmSessionDelete}
+          isPending={permanentDeleteSession.isPending}
         />
       )}
       {showHelp && <ShortcutsHelp onClose={() => setShowHelp(false)} />}
