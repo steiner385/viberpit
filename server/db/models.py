@@ -88,3 +88,4 @@ class AppSettings(Base):
     default_permission_mode: Mapped[str] = mapped_column(String, nullable=False, default="interactive")
     thinking_collapsed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     repo_root: Mapped[str | None] = mapped_column(String, nullable=True)
+    default_tool_detail: Mapped[str | None] = mapped_column(String, nullable=True)
