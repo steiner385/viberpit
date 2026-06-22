@@ -498,13 +498,23 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 5: Render the `StatusBar` by tier
+### Task 5: Render the `StatusBar` by tier + fix all busy-tier consumers
 
 Replace the local `statusText()` switch with the shared presentation. Busy → `WorkingIndicator`; needs-you → amber label; your-turn → calm label; error → red label.
 
+**REGRESSION CONTEXT (discovered during execution):** Task 2 stopped emitting the `'working'` literal (live status is now the rich `in_progress`). Three frontend sites still gate on `status.state === 'working'` and are now silently broken — they must all switch to `statusTier(status.state) === 'busy'`:
+- `StatusBar.tsx:36` (this task's main subject).
+- `Composer.tsx:22` (`const isWorking = status.state === 'working'`, used at line ~167 to show the Stop/interrupt button instead of Send). Broken = **the user can no longer interrupt a running turn.**
+- `SessionBody.tsx:80` (`{rt.state.status.state === 'working' && …}` — the prominent "waiting for Claude" indicator below the transcript).
+
+The `state === 'running'/'success'` matches in `AccountsManager.tsx` / `Dashboard.tsx` are the unrelated re-auth state machine — **do not touch them.**
+
 **Files:**
 - Modify: `web/src/components/session/StatusBar.tsx`
+- Modify: `web/src/components/session/Composer.tsx:22` (isWorking → `statusTier(status.state) === 'busy'`)
+- Modify: `web/src/components/session/SessionBody.tsx:80` (gate → `statusTier(rt.state.status.state) === 'busy'`)
 - Test: `web/src/components/session/__tests__/StatusBar.test.tsx` (update existing assertions)
+- Test: `web/src/components/session/__tests__/Composer.test.tsx` (if present — assert the Stop control shows for `in_progress`, Send for `idle`; if absent, add a minimal one)
 
 **Interfaces:**
 - Consumes: `statusPresentation`, `statusTier` from Task 4; existing `WorkingIndicator`.
@@ -619,11 +629,206 @@ export function StatusBar({ status, connectionState }: Props) {
 Run (in `web/`): `npx vitest run src/components/session/__tests__/StatusBar.test.tsx`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Fix the other two busy-tier consumers**
+
+In `web/src/components/session/Composer.tsx`, add `import { statusTier } from '@/session/statusTier'` and change line 22:
+
+```typescript
+  const isWorking = statusTier(status.state) === 'busy'
+```
+
+In `web/src/components/session/SessionBody.tsx`, add `import { statusTier } from '@/session/statusTier'` and change the gate at line 80:
+
+```tsx
+      {statusTier(rt.state.status.state) === 'busy' && (
+```
+
+(Leave the `WorkingIndicator count={rt.state.status.count}` inside unchanged.)
+
+- [ ] **Step 6: Run the affected tests + type-check**
+
+Run (in `web/`):
+```bash
+npx vitest run src/components/session/__tests__/StatusBar.test.tsx src/components/session/__tests__/Composer.test.tsx
+npx tsc --noEmit
+```
+Expected: PASS. If a Composer test asserts the Stop control by the old `working` state, update it to `in_progress`.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add web/src/components/session/StatusBar.tsx web/src/components/session/__tests__/StatusBar.test.tsx
-git commit -m "feat(web): render StatusBar by status tier via shared map
+git add web/src/components/session/StatusBar.tsx web/src/components/session/Composer.tsx web/src/components/session/SessionBody.tsx web/src/components/session/__tests__/
+git commit -m "feat(web): render StatusBar by tier; fix busy-tier consumers (Composer interrupt, SessionBody indicator)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 5B: Sub-agent busy label ("Running a sub-agent…")
+
+When the active turn is blocked waiting on a sub-agent (an unresolved `Task`/`Agent` tool call), the busy indicator should read "Running a sub-agent… · <elapsed>" instead of the generic whimsical phrase — so the user can tell a *background sub-agent* is the thing in flight. Frontend-only; reuses the existing `selectSubAgents` selector (no parallel implementation).
+
+**Files:**
+- Modify: `web/src/session/selectors.ts` (extend `selectSubAgents` to match `name` in `{'Task','Agent'}`; add `selectRunningSubAgentCount`)
+- Modify: `web/src/components/session/WorkingIndicator.tsx` (optional `subAgentCount?: number` → overrides the phrase)
+- Modify: `web/src/components/session/StatusBar.tsx` (optional `subAgentCount?: number` prop → forwarded to `WorkingIndicator`)
+- Modify: `web/src/components/session/SessionBody.tsx` (compute count from `rt.state.turns` once; pass to both the `StatusBar` in `statusSlot` and the prominent `WorkingIndicator`)
+- Test: `web/src/session/__tests__/selectors.test.ts` (running count; `Agent`-named match)
+- Test: `web/src/components/session/__tests__/WorkingIndicator.test.tsx` (sub-agent label)
+
+**Interfaces:**
+- Consumes: `selectSubAgents` / `Turn` from `@/session/selectors`; `statusTier` from Task 4.
+- Produces: `export function selectRunningSubAgentCount(turns: Turn[]): number` returning the number of sub-agents with `status === 'running'`.
+
+**Why match `'Agent'` too:** the live transcript in this deployment names the sub-agent tool `Agent` (confirmed from a screenshot), while `selectSubAgents` currently matches only `'Task'`. Matching both fixes detection here and for the existing sub-agent list, with no downside.
+
+- [ ] **Step 1: Write the failing selector test**
+
+Add to `web/src/session/__tests__/selectors.test.ts` (create if absent, importing from `../selectors`):
+
+```typescript
+import { describe, it, expect } from 'vitest'
+import { selectSubAgents, selectRunningSubAgentCount } from '../selectors'
+import type { Turn } from '../reducer'
+
+function toolTurn(name: string, withResult: boolean): Turn {
+  return {
+    id: 't1', role: 'assistant',
+    blocks: [{
+      kind: 'tool', id: 'b1', toolId: 'x1', name, toolKind: 'unknown',
+      input: { subagent_type: 'Explore', description: 'scan' },
+      ...(withResult ? { result: { ok: true, payload: {} } } : {}),
+    }],
+  }
+}
+
+describe('selectRunningSubAgentCount', () => {
+  it('counts unresolved Task tool calls', () => {
+    expect(selectRunningSubAgentCount([toolTurn('Task', false)])).toBe(1)
+  })
+  it('counts unresolved Agent-named tool calls too', () => {
+    expect(selectRunningSubAgentCount([toolTurn('Agent', false)])).toBe(1)
+  })
+  it('does not count resolved sub-agents', () => {
+    expect(selectRunningSubAgentCount([toolTurn('Task', true)])).toBe(0)
+  })
+})
+
+describe('selectSubAgents Agent-name match', () => {
+  it('includes Agent-named tool calls', () => {
+    expect(selectSubAgents([toolTurn('Agent', false)])).toHaveLength(1)
+  })
+})
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run (in `web/`): `npx vitest run src/session/__tests__/selectors.test.ts`
+Expected: FAIL — `selectRunningSubAgentCount` undefined; `Agent` not matched.
+
+- [ ] **Step 3: Implement in `selectors.ts`**
+
+Change the match line in `selectSubAgents` and add the count helper:
+
+```typescript
+const SUBAGENT_TOOL_NAMES = new Set(['Task', 'Agent'])
+// ...inside the loop, replace `if (b.kind !== 'tool' || b.name !== 'Task') continue` with:
+      if (b.kind !== 'tool' || !SUBAGENT_TOOL_NAMES.has(b.name)) continue
+// ...at module scope, after selectSubAgents:
+export function selectRunningSubAgentCount(turns: Turn[]): number {
+  return selectSubAgents(turns).filter((a) => a.status === 'running').length
+}
+```
+
+- [ ] **Step 4: Run the selector test to verify it passes**
+
+Run (in `web/`): `npx vitest run src/session/__tests__/selectors.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Write the failing WorkingIndicator test**
+
+Add to `web/src/components/session/__tests__/WorkingIndicator.test.tsx` (the file already stubs `matchMedia`; follow its setup):
+
+```typescript
+  it('shows the sub-agent phrase when subAgentCount > 0', () => {
+    render(<WorkingIndicator subAgentCount={1} />)
+    const sr = document.querySelector('.sr-only')
+    expect(sr?.textContent).toBe('Running a sub-agent…')
+  })
+
+  it('pluralizes for multiple sub-agents', () => {
+    render(<WorkingIndicator subAgentCount={3} />)
+    const sr = document.querySelector('.sr-only')
+    expect(sr?.textContent).toBe('Running 3 sub-agents…')
+  })
+```
+
+- [ ] **Step 6: Run it to verify it fails**
+
+Run (in `web/`): `npx vitest run src/components/session/__tests__/WorkingIndicator.test.tsx`
+Expected: FAIL — `subAgentCount` prop ignored; sr text is "Working…".
+
+- [ ] **Step 7: Implement in `WorkingIndicator.tsx`**
+
+Add `subAgentCount?: number` to `Props`. When `> 0`, override the visible phrase and the sr-only label (the spinner + elapsed readout stay):
+
+```typescript
+interface Props {
+  count?: number
+  subAgentCount?: number
+  className?: string
+}
+
+export function WorkingIndicator({ count = 0, subAgentCount = 0, className }: Props) {
+  // ...existing reducedMotion, frame, elapsed hooks unchanged...
+  // Phrase: a running sub-agent is the more informative thing to surface.
+  const subAgentPhrase = subAgentCount > 0
+    ? (subAgentCount === 1 ? 'Running a sub-agent' : `Running ${subAgentCount} sub-agents`)
+    : null
+  const phrase = subAgentPhrase ?? word
+  const srLabel = subAgentPhrase
+    ? `${subAgentPhrase}…`
+    : (count > 0 ? `Working, ${count} queued` : 'Working…')
+  // ...render: replace `{word}…` with `{phrase}…`, and the sr-only with {srLabel}...
+}
+```
+
+Keep `word` (the existing `useState` phrase pick) so non-sub-agent waits are unchanged. Render `{phrase}…` where it currently renders `{word}…`, and `{srLabel}` in the `.sr-only` span.
+
+- [ ] **Step 8: Run the WorkingIndicator test to verify it passes**
+
+Run (in `web/`): `npx vitest run src/components/session/__tests__/WorkingIndicator.test.tsx`
+Expected: PASS (existing "Working…" tests still pass when `subAgentCount` is absent/0).
+
+- [ ] **Step 9: Thread the count through `StatusBar` and `SessionBody`**
+
+In `StatusBar.tsx`, add `subAgentCount?: number` to `Props` and forward it: `<WorkingIndicator count={status.count} subAgentCount={subAgentCount} />`.
+
+In `SessionBody.tsx`, add `import { selectRunningSubAgentCount } from '@/session/selectors'`, compute once inside the component:
+
+```tsx
+  const runningSubAgents = selectRunningSubAgentCount(rt.state.turns)
+```
+
+Pass it to the folded-in StatusBar and to the prominent WorkingIndicator:
+
+```tsx
+        statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} subAgentCount={runningSubAgents} />}
+// ...and in the prominent indicator block:
+          <WorkingIndicator count={rt.state.status.count} subAgentCount={runningSubAgents} />
+```
+
+- [ ] **Step 10: Type-check, lint, full web tests**
+
+Run (in `web/`): `npx tsc --noEmit && npx eslint src/session/selectors.ts src/components/session/WorkingIndicator.tsx src/components/session/StatusBar.tsx src/components/session/SessionBody.tsx && npx vitest run src/session/__tests__/selectors.test.ts src/components/session/__tests__/WorkingIndicator.test.tsx src/components/session/__tests__/StatusBar.test.tsx`
+Expected: all clean/PASS.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add web/src/session/selectors.ts web/src/session/__tests__/selectors.test.ts web/src/components/session/WorkingIndicator.tsx web/src/components/session/StatusBar.tsx web/src/components/session/SessionBody.tsx web/src/components/session/__tests__/WorkingIndicator.test.tsx
+git commit -m "feat(web): busy indicator shows 'Running a sub-agent…' for in-flight sub-agents
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
