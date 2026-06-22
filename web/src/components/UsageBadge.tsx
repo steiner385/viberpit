@@ -10,6 +10,7 @@ import {
   Loader2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { formatResetTime } from '@/lib/formatReset'
 import type { AccountStatus, SessionStatus } from '@/api/types'
 
 // ── UsageBadge ──────────────────────────────────────────────────────────────
@@ -17,10 +18,12 @@ import type { AccountStatus, SessionStatus } from '@/api/types'
 interface UsageBadgeProps {
   pct: number
   label?: string  // e.g. "session" or "weekly"
+  /** ISO timestamp the window resets at, or null when no window is active. */
+  resetsAt?: string | null
   className?: string
 }
 
-export function UsageBadge({ pct, label, className }: UsageBadgeProps) {
+export function UsageBadge({ pct, label, resetsAt, className }: UsageBadgeProps) {
   const clampedPct = Math.min(100, Math.max(0, pct))
   // Color classes supplementary only — text carries the info
   const barColor =
@@ -32,13 +35,28 @@ export function UsageBadge({ pct, label, className }: UsageBadgeProps) {
     ? `${label} usage: ${clampedPct}%`
     : `Usage: ${clampedPct}%`
 
+  // Tooltip is self-describing (it has no visible label next to it on hover);
+  // the aria-label already names the window, so it only appends the reset phrase.
+  const windowName = label ? `${label} limit` : 'Usage limit'
+  const resetText = formatResetTime(resetsAt)
+  const resetPhrase = resetText ? `resets ${resetText}` : 'no active window'
+  const title = `${windowName} · ${resetPhrase}`
+
   return (
     <span
       className={cn('inline-flex flex-col gap-0.5', className)}
-      aria-label={ariaLabel}
+      title={title}
+      aria-label={`${ariaLabel} — ${resetPhrase}`}
     >
-      <span className="text-xs font-medium tabular-nums leading-none text-gray-900 dark:text-gray-100">
-        {clampedPct}%
+      <span className="flex items-baseline gap-1 leading-none">
+        {label && (
+          <span className="text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            {label}
+          </span>
+        )}
+        <span className="text-xs font-medium tabular-nums text-gray-900 dark:text-gray-100">
+          {clampedPct}%
+        </span>
       </span>
       <span className="h-1 w-12 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
         <span

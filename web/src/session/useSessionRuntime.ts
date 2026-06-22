@@ -31,7 +31,12 @@ export interface SessionRuntime {
   connectionState: ConnectionState
   title: string
   account: string
-  quota: { sessionPct: number; weeklyPct: number } | null
+  quota: {
+    sessionPct: number
+    weeklyPct: number
+    sessionResetsAt: string | null
+    weeklyResetsAt: string | null
+  } | null
   contextPct: number | null
   subAgents: ReturnType<typeof selectSubAgents>
   hasOpenAction: boolean
@@ -228,7 +233,12 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
 
   const accountUsage = accounts?.find((a) => a.name === account)?.usage ?? null
   const quota = accountUsage
-    ? { sessionPct: accountUsage.session.pct, weeklyPct: accountUsage.weekly.pct }
+    ? {
+        sessionPct: accountUsage.session.pct,
+        weeklyPct: accountUsage.weekly.pct,
+        sessionResetsAt: accountUsage.session.resetsAt,
+        weeklyResetsAt: accountUsage.weekly.resetsAt,
+      }
     : null
 
   const contextPct = remainingContextPct(state.usage, state.model)
