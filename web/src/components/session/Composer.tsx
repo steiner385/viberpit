@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback } from 'react'
+import { Paperclip, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useImageAttachments } from './useImageAttachments'
 import { AttachmentChips } from './AttachmentChips'
@@ -96,7 +97,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
                 )}
               >
-                ✕
+                <X size={16} aria-hidden="true" />
               </button>
             </div>
           ))}
@@ -146,7 +147,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
           )}
         >
-          <span aria-hidden="true">📎</span>
+          <Paperclip size={16} aria-hidden="true" />
         </button>
 
         {chatArmed ? (

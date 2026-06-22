@@ -29,7 +29,7 @@ export function StatusBar({ status, connectionState }: Props) {
       aria-live="polite"
       aria-atomic="true"
       className={cn(
-        'flex items-center gap-2 px-3 py-1 text-xs',
+        'flex items-center gap-2 text-xs',
         'text-gray-500 dark:text-gray-400',
       )}
     >
@@ -39,7 +39,7 @@ export function StatusBar({ status, connectionState }: Props) {
         <span>{statusText(status)}</span>
       )}
       {connectionNote && (
-        <span className="ml-auto text-amber-600 dark:text-amber-400 font-medium">
+        <span className="text-amber-600 dark:text-amber-400 font-medium">
           {connectionNote}
         </span>
       )}
