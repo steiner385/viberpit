@@ -163,6 +163,26 @@ describe('SessionView', () => {
     })
   })
 
+  it('shows "action needed" banner when an open permission exists (no question)', async () => {
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+
+    emitSessionEvent({ type: 'replayComplete' })
+    emitSessionEvent({ type: 'turnStart', turnId: 't1' })
+    emitSessionEvent({
+      type: 'permissionRequest',
+      permId: 'perm-banner',
+      turnId: 't1',
+      tool: 'bash',
+      toolKind: 'bash',
+      input: { command: 'echo hi' },
+      plan: false,
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/action needed/i)).toBeInTheDocument()
+    })
+  })
+
   it('calls permissionResponse and dispatches _resolvePermission when Yes clicked', async () => {
     const user = userEvent.setup()
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
@@ -216,11 +236,9 @@ describe('SessionView', () => {
     // Exactly one copy in the DOM — pinned, not duplicated inline.
     expect(screen.getAllByText('Which color?')).toHaveLength(1)
 
-    // The "action needed" banner still signals the pending question.
-    // (Task 5 narrows the banner to open permissions only.)
-    await waitFor(() => {
-      expect(screen.getByText(/action needed/i)).toBeInTheDocument()
-    })
+    // Task 5: a live question alone does NOT show the "action needed" banner —
+    // the pinned panel IS the affordance. Banner is reserved for open permissions.
+    expect(screen.queryByText(/action needed/i)).toBeNull()
   })
 
   it('shows title when title event fires', async () => {
@@ -367,8 +385,9 @@ describe('SessionView question escape hatches', () => {
     expect(within(panel).getByRole('button', { name: /write a response/i })).toBeInTheDocument()
     // Exactly one copy — pinned, not inline in the transcript.
     expect(screen.getAllByText('Pick one')).toHaveLength(1)
-    // Banner still signals the pending action (Task 5 narrows it to permissions).
-    expect(screen.getByText(/action needed/i)).toBeInTheDocument()
+    // Task 5: a live question alone does NOT show the "action needed" banner —
+    // the pinned panel IS the affordance. Banner is reserved for open permissions.
+    expect(screen.queryByText(/action needed/i)).toBeNull()
   })
 
   it('normal prompt is unaffected when no question is armed', async () => {
