@@ -164,6 +164,19 @@ class WorktreeFreshFromOriginTests(unittest.TestCase):
         self.assertEqual(_rev(Path(info.path), "HEAD"), self.origin_sha)
         self.assertNotEqual(_rev(Path(info.path), "HEAD"), self.local_sha)
 
+    def test_remote_branch_is_fresh_child(self) -> None:
+        """branch on origin → isolated child branch based at origin/<branch> tip."""
+        info = worktrees.create_worktree(str(self.repo), "main", "cccccccc-0003", str(self.root))
+        self.assertTrue(info.is_child)
+        self.assertTrue(info.branch.startswith("ccswitch/main-"))
+        self.assertEqual(_rev(Path(info.path), "HEAD"), self.origin_sha)
+
+    def test_user_local_refs_unchanged(self) -> None:
+        """Creating a session never moves the user's local branch or tracking refs."""
+        worktrees.create_worktree(str(self.repo), "main", "dddddddd-0004", str(self.root))
+        self.assertEqual(_rev(self.repo, "main"), self.local_sha)
+        self.assertEqual(_rev(self.repo, "refs/remotes/origin/main"), self.origin_sha)
+
     def test_fetch_failure_is_fatal(self) -> None:
         """A configured-but-unreachable origin aborts session start; no worktree left."""
         _git("remote", "set-url", "origin", str(self.root / "does-not-exist.git"),

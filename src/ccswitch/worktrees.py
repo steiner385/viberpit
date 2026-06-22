@@ -74,6 +74,13 @@ def _fetch_origin(repo_top: str) -> None:
         raise WorktreeError(f"git fetch origin failed: {r.stderr.strip()}")
 
 
+def _branch_on_origin(repo_top: str, branch: str) -> bool:
+    """True if `branch` exists on origin (refs/remotes/origin/<branch>)."""
+    r = _run(["git", "-C", repo_top, "rev-parse", "--verify", "--quiet",
+              f"refs/remotes/origin/{branch}"])
+    return r.returncode == 0
+
+
 def is_git_repo(path: str) -> bool:
     """True if `path` is inside a git work tree."""
     r = _run(["git", "-C", path, "rev-parse", "--is-inside-work-tree"])
@@ -155,7 +162,21 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
             return WorktreeInfo(str(dest), None, is_child=False, repo=repo_top)
         raise WorktreeError(f"git worktree add --detach failed: {rd.stderr.strip()}")
 
-    # 1) Try to check out the selected branch directly.
+    # 1) Remote-backed branch → isolated per-session child branch based at the
+    # remote tip origin/<branch>. This is the normal path (not just a fallback):
+    # a fresh, writable, isolated branch without moving the user's local <branch>.
+    if has_origin and _branch_on_origin(repo_top, branch):
+        child = f"ccswitch/{branch}-{_short(session_id)}"
+        r = _run(["git", "-C", repo_top, "worktree", "add", "-b", child,
+                  str(dest), "--", f"origin/{branch}"])
+        if r.returncode == 0:
+            log.info("worktree.create_child repo=%s base=origin/%s child=%s path=%s",
+                     repo_name, branch, child, dest)
+            return WorktreeInfo(str(dest), child, is_child=True, repo=repo_top)
+        raise WorktreeError(
+            f"git worktree add failed for origin/{branch}: {r.stderr.strip()}")
+
+    # 2) Local-only branch (or no origin) → check out the local branch directly;
     # '--' separates options from the commit-ish so a crafted branch name cannot
     # be parsed as a git option (belt-and-suspenders with the '-' prefix guard above).
     r = _run(["git", "-C", repo_top, "worktree", "add", str(dest), "--", branch])
@@ -163,7 +184,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         log.info("worktree.create repo=%s branch=%s path=%s", repo_name, branch, dest)
         return WorktreeInfo(str(dest), branch, is_child=False, repo=repo_top)
 
-    # 2) Branch is busy (checked out elsewhere) — make a session child branch off it.
+    # 3) Branch is busy (checked out elsewhere) — make a session child branch off it.
     child = f"ccswitch/{branch}-{_short(session_id)}"
     r2 = _run(["git", "-C", repo_top, "worktree", "add", "-b", child, str(dest), "--", branch])
     if r2.returncode == 0:
