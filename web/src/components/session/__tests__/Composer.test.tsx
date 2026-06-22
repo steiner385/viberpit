@@ -306,6 +306,16 @@ describe('Composer', () => {
     expect(box).toHaveValue('/g')              // palette consumed ↑, no history recall
   })
 
+  it('does not recall history when slash-prefix matches NO command (unmatched slash)', async () => {
+    const user = userEvent.setup()
+    const goalCmd = { name: 'goal', description: 'set goal', argumentHint: '' }
+    render(<Composer {...defaults} history={['older', 'newer']} commands={[goalCmd]} onCommand={vi.fn()} />)
+    const box = screen.getByRole('textbox', { name: /message/i })
+    await user.type(box, '/zzz')               // pickingCommand=true, palette has zero matches
+    await user.keyboard('{ArrowUp}')
+    expect(box).toHaveValue('/zzz')            // typed text must be preserved — no recall
+  })
+
   it('ArrowUp does nothing when there is no history', async () => {
     const user = userEvent.setup()
     render(<Composer {...defaults} history={[]} />)

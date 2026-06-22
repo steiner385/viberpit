@@ -136,7 +136,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (pickingCommand && paletteRef.current?.handleKeyDown(e)) return
 
-    if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && history.length > 0) {
+    if (!pickingCommand && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && history.length > 0) {
       const el = e.currentTarget
       const caret = el.selectionStart ?? 0
       const empty = text === ''
