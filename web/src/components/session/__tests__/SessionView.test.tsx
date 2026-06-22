@@ -192,10 +192,11 @@ describe('SessionView', () => {
     })
   })
 
-  it('echoes the chosen answer into the transcript when a question is answered', async () => {
-    const user = userEvent.setup()
+  it('live question is not rendered inline — it shows the "action needed" banner instead', async () => {
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
 
+    // replayComplete marks replaying=false so subsequent questions are live (live: true).
+    emitSessionEvent({ type: 'replayComplete' })
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
     emitSessionEvent({
       type: 'question',
@@ -207,25 +208,16 @@ describe('SessionView', () => {
       multiSelect: false,
     })
 
+    // Live questions are pinned above the composer (Task 4 — PendingQuestionPanel).
+    // They must NOT render inline in the transcript.
     await waitFor(() => {
-      expect(screen.getByRole('radio', { name: 'Blue' })).toBeInTheDocument()
+      expect(screen.queryByText('Which color?')).toBeNull()
+      expect(screen.queryByRole('radio')).toBeNull()
     })
 
-    await user.click(screen.getByRole('radio', { name: 'Blue' }))
-
-    // Answer is sent to the server (default 'option' mode for a picked option).
-    expect(mockAnswerQuestion).toHaveBeenCalledWith('s1', 'q-1', ['Blue'], 'option')
-
-    // The question card is removed…
+    // The "action needed" banner signals the pending question.
     await waitFor(() => {
-      expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
-    })
-
-    // …and the chosen answer is echoed into the transcript as immediate feedback,
-    // so the user sees their response register (the card label is gone by now, so
-    // a remaining "Blue" can only be the echoed user bubble).
-    await waitFor(() => {
-      expect(screen.getByText('Blue')).toBeInTheDocument()
+      expect(screen.getByText(/action needed/i)).toBeInTheDocument()
     })
   })
 
@@ -351,6 +343,8 @@ describe('SessionView question escape hatches', () => {
 
   function renderAndAskQuestion() {
     const utils = render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    // replayComplete marks replaying=false so the question is emitted as live (live: true).
+    emitSessionEvent({ type: 'replayComplete' })
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
     emitSessionEvent({
       type: 'question', questionId: 'q-9', turnId: 't1', header: 'H',
@@ -359,27 +353,20 @@ describe('SessionView question escape hatches', () => {
     return utils
   }
 
-  it('chat: arming routes the next composer message to answerQuestion(mode=chat)', async () => {
-    const user = userEvent.setup()
-    renderAndAskQuestion()
-    await user.click(screen.getByRole('button', { name: /chat about this/i }))
-    // Card collapsed to banner.
-    expect(screen.getByText(/replying in chat/i)).toBeInTheDocument()
-    // Type in the composer and send.
-    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'lets talk instead')
-    // While armed for chat the composer offers a "Reply" affordance (not Queue/Send).
-    await user.click(screen.getByRole('button', { name: /send reply/i }))
-    expect(mockAnswerQuestion).toHaveBeenCalledWith('s1', 'q-9', ['lets talk instead'], 'chat')
-    expect(mockPrompt).not.toHaveBeenCalled()
-  })
+  // NOTE: The "Chat about this" and "Write a response" escape hatches are rendered
+  // by PendingQuestionPanel (Task 4), which pins the live question above the composer.
+  // These tests will be re-enabled / extended once PendingQuestionPanel is implemented.
 
-  it('free-form: inline response calls answerQuestion(mode=freeform)', async () => {
-    const user = userEvent.setup()
+  it('live question is not rendered inline in the escape-hatch context either', async () => {
     renderAndAskQuestion()
-    await user.click(screen.getByRole('button', { name: /write a response/i }))
-    await user.type(screen.getByRole('textbox', { name: /write a response/i }), 'my words')
-    await user.click(screen.getByRole('button', { name: /send response/i }))
-    expect(mockAnswerQuestion).toHaveBeenCalledWith('s1', 'q-9', ['my words'], 'freeform')
+    // Live questions are filtered from inline rendering — no interactive buttons appear in the transcript.
+    // (They will be rendered by PendingQuestionPanel in Task 4.)
+    await waitFor(() => {
+      expect(screen.queryByText('Pick one')).toBeNull()
+      expect(screen.queryByRole('button', { name: /chat about this/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /write a response/i })).toBeNull()
+      expect(screen.getByText(/action needed/i)).toBeInTheDocument()
+    })
   })
 
   it('normal prompt is unaffected when no question is armed', async () => {

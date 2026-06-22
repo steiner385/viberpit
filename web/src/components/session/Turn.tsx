@@ -28,7 +28,10 @@ export const Turn = memo(function Turn({
   onDecision, onAnswer, onChat, armedQuestionId,
 }: Props) {
   const isUser = turn.role === 'user'
-  const items = groupBlocks(turn.blocks)
+  // Suppress live questions inline — they are rendered by the pinned
+  // PendingQuestionPanel above the composer. Historical questions stay.
+  const visibleBlocks = turn.blocks.filter((b) => !(b.kind === 'question' && b.live))
+  const items = groupBlocks(visibleBlocks)
   const lastIdx = items.length - 1
 
   // An empty turn (e.g. a turnStart with no content yet, or a turn whose only
@@ -65,15 +68,10 @@ export const Turn = memo(function Turn({
           case 'permission':
             return <PermissionCard key={block.id} block={block} mode={permissionMode} onDecision={onDecision} />
           case 'question':
-            return (
-              <QuestionCard
-                key={block.id}
-                block={block}
-                onAnswer={onAnswer}
-                onChat={onChat}
-                armedForChat={block.questionId === armedQuestionId}
-              />
-            )
+            // A LIVE open question is rendered by the pinned PendingQuestionPanel
+            // above the composer — omit it inline to avoid a duplicate. Historical
+            // (replayed) questions render inline, read-only.
+            return <QuestionCard key={block.id} block={block} onAnswer={onAnswer} readOnly />
           default:
             return null
         }
