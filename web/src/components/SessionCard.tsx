@@ -5,6 +5,14 @@ import { formatRepoLabel } from '@/lib/repoLabel'
 import { StatusPill, UsageBadge } from './UsageBadge'
 import type { Session, Account } from '@/api/types'
 
+// Shared sizing for the per-session icon buttons: 44px tap target on touch,
+// a denser 32px on hover-capable (desktop) pointers.
+const actionBtn = cn(
+  'h-11 w-11 [@media(hover:hover)]:h-8 [@media(hover:hover)]:w-8',
+  'flex items-center justify-center rounded-md',
+  'focus-visible:outline-none focus-visible:ring-2',
+)
+
 interface SessionCardProps {
   session: Session
   account: Account | undefined
@@ -40,8 +48,8 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
     <article
       ref={articleRef}
       className={cn(
-        'flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700',
-        'bg-white dark:bg-gray-800 p-3 min-h-[44px]',
+        'group flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700',
+        'bg-white dark:bg-gray-800 px-3 py-2 min-h-[44px]',
         'focus-within:ring-2 focus-within:ring-blue-500',
         selected && 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-950/30',
       )}
@@ -90,27 +98,33 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
             <span className="truncate">{repoLabel.text}</span>
           </span>
           <StatusPill status={session.status} />
+          {/* Session usage only — weekly is an account-level figure shown in the
+              Accounts tab and the in-session meta strip, so repeating it on every
+              card just adds noise and forces the meta row to wrap. */}
           {account?.usage && (
-            <>
-              <UsageBadge pct={account.usage.session.pct} label="session" />
-              <UsageBadge pct={account.usage.weekly.pct} label="weekly" />
-            </>
+            <UsageBadge pct={account.usage.session.pct} label="session" />
           )}
         </div>
       </button>
 
       {/* Per-session actions — explicit buttons (no overflow menu).
-          Each is a 44px touch target with an aria-label + native title tooltip
-          so the icon-only controls stay accessible and discoverable on mobile. */}
-      <div className="flex flex-shrink-0 items-center gap-1">
+          On touch devices they stay visible at the 44px tap-target minimum. On
+          hover-capable devices (desktop) they shrink to a denser 32px and stay
+          hidden until the row is hovered, focused, or selected — so the meta row
+          gets the full card width instead of fighting three permanent buttons. */}
+      <div
+        className={cn(
+          'flex flex-shrink-0 items-center gap-0.5 transition-opacity',
+          '[@media(hover:hover)]:opacity-0',
+          '[@media(hover:hover)]:group-hover:opacity-100',
+          '[@media(hover:hover)]:group-focus-within:opacity-100',
+          selected && '[@media(hover:hover)]:opacity-100',
+        )}
+      >
         <button
           type="button"
-          className={cn(
-            'h-11 w-11 flex items-center justify-center rounded-md',
-            'text-gray-500 dark:text-gray-400',
-            'hover:bg-gray-100 dark:hover:bg-gray-700',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-          )}
+          className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
+            'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500')}
           aria-label={`Rename session ${session.name}`}
           title="Rename"
           onClick={() => onRename(session.id)}
@@ -119,12 +133,8 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
         </button>
         <button
           type="button"
-          className={cn(
-            'h-11 w-11 flex items-center justify-center rounded-md',
-            'text-gray-500 dark:text-gray-400',
-            'hover:bg-gray-100 dark:hover:bg-gray-700',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-          )}
+          className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
+            'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500')}
           aria-label={`Archive session ${session.name}`}
           title="Archive"
           onClick={() => onClose(session.id)}
@@ -133,12 +143,8 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
         </button>
         <button
           type="button"
-          className={cn(
-            'h-11 w-11 flex items-center justify-center rounded-md',
-            'text-red-600 dark:text-red-400',
-            'hover:bg-red-50 dark:hover:bg-red-900/20',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500',
-          )}
+          className={cn(actionBtn, 'text-red-600 dark:text-red-400',
+            'hover:bg-red-50 dark:hover:bg-red-900/20 focus-visible:ring-red-500')}
           aria-label={`Delete session ${session.name}`}
           title="Delete"
           onClick={() => onDelete(session.id)}
