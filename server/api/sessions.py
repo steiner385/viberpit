@@ -118,7 +118,7 @@ async def _resolve_repo(record) -> str | None:
 
 
 def _get_orchestrator(request: Request) -> SessionOrchestrator:
-    return request.app.state.orchestrator
+    return request.app.state.sessions
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ async def list_sessions(
 ) -> list[dict]:
     """Return all in-memory session records."""
     orch: SessionOrchestrator = _get_orchestrator(request)
-    records = orch.list_sessions()
+    records = await orch.list_sessions()
     # Read each session's repo live from its working dir, all in parallel.
     repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
     return [_record_to_dict(r, repo=repo) for r, repo in zip(records, repos)]
@@ -295,7 +295,7 @@ async def list_adoptable(
     """
     orch: SessionOrchestrator = _get_orchestrator(request)
     known = [a["name"] for a in _accounts.list_accounts()]
-    tracked = {r.claude_session_id for r in orch.list_sessions() if r.claude_session_id}
+    tracked = {r.claude_session_id for r in await orch.list_sessions() if r.claude_session_id}
     cands = await asyncio.to_thread(_adopt.discover_candidates, known, tracked)
     return {"candidates": [_candidate_to_dict(c) for c in cands]}
 
@@ -344,7 +344,7 @@ async def get_session(
 ) -> dict:
     """Return a single session record, or 404 if unknown."""
     orch: SessionOrchestrator = _get_orchestrator(request)
-    record = orch.get_session(session_id)
+    record = await orch.get_session(session_id)
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -362,7 +362,7 @@ async def rename_session(
 ) -> dict:
     """Rename a session. Returns 404 if unknown."""
     orch: SessionOrchestrator = _get_orchestrator(request)
-    record = orch.get_session(session_id)
+    record = await orch.get_session(session_id)
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -370,7 +370,7 @@ async def rename_session(
         )
     await orch.rename_session(session_id, body.name)
     # Re-fetch (rename_session updates in place)
-    updated = orch.get_session(session_id)
+    updated = await orch.get_session(session_id)
     final = updated or record
     return _record_to_dict(final, repo=await _resolve_repo(final))
 
@@ -384,7 +384,7 @@ async def close_session(
 ):
     """Archive a session (moves cwd to archive, keeps DB row). Returns 404 if unknown."""
     orch: SessionOrchestrator = _get_orchestrator(request)
-    record = orch.get_session(session_id)
+    record = await orch.get_session(session_id)
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -467,7 +467,7 @@ async def get_session_transcript(
     orch: SessionOrchestrator = _get_orchestrator(request)
 
     # Verify the session exists (in _records for active, or DB for archived).
-    record = orch.get_session(session_id)
+    record = await orch.get_session(session_id)
     if record is None:
         async with _db_session() as _db:
             row = (await _db.execute(
