@@ -24,6 +24,7 @@ from typing import Callable
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, worktrees
 from ccswitch.configdir import compose
+from ccswitch.paths import shared_base
 from server.audit import record_audit
 from server.db import db_session
 from server.db.models import Session as DbSession
@@ -827,6 +828,15 @@ class SessionOrchestrator:
 
         Falls back to the SessionRecord + compose(account) when the driver is absent
         or has no claude_session_id (e.g. rehydrated/detached sessions).
+
+        Each account's per-account `projects` dir is itself a symlink to the one shared
+        projects tree (configdir.SHARE_ALLOWLIST). That symlink can rot — point at itself
+        or a sibling account — which makes the glob through `<config_dir>/projects` resolve
+        nothing and silently blanks the transcript on attach (idle "Waiting for input"
+        sessions only show replayed history, so they go blank; a live session masks it by
+        streaming). Since the claude_session_id is globally unique and every transcript
+        physically lives under the shared base, we also search shared_base()/projects so
+        replay survives a broken per-account symlink.
         """
         import glob as _glob
 
@@ -839,8 +849,20 @@ class SessionOrchestrator:
                 return None
             config_dir, csid = str(compose(rec.account)), rec.claude_session_id
 
-        matches = _glob.glob(str(Path(config_dir) / "projects" / "*" / f"{csid}.jsonl"))
-        return matches[0] if matches else None
+        # Probe the per-account config dir first (the common, healthy case), then the
+        # canonical shared base as a backstop against a broken per-account symlink.
+        # Dedup by resolved path so a healthy symlink isn't globbed twice.
+        seen: set[str] = set()
+        for root in (Path(config_dir), Path(shared_base())):
+            projects = root / "projects"
+            key = str(projects.resolve()) if projects.exists() else str(projects)
+            if key in seen:
+                continue
+            seen.add(key)
+            matches = _glob.glob(str(projects / "*" / f"{csid}.jsonl"))
+            if matches:
+                return matches[0]
+        return None
 
     # ------------------------------------------------------------------
     # Rotation monitor (background task)
