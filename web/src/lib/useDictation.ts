@@ -46,12 +46,11 @@ export function useDictation({ onResult, lang = 'en-US' }: UseDictationOptions):
   const recRef = useRef<SpeechRecognitionLike | null>(null)
   const [listening, setListening] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [supported] = useState(() => getCtor() != null)
 
   // Keep the latest onResult without rebuilding the recognition instance.
   const onResultRef = useRef(onResult)
   useEffect(() => { onResultRef.current = onResult }, [onResult])
-
-  const supported = ctorRef.current != null
 
   const stop = useCallback(() => {
     recRef.current?.stop()
