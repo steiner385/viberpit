@@ -1,10 +1,12 @@
 from __future__ import annotations
 import asyncio
+import base64
 import logging
 import uuid
 from typing import Callable
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from . import events as ev
+from .attachments import image_block
 from .translator import Translator
 from .permissions import PermissionRegistry
 from .questions import QuestionRegistry
@@ -51,7 +53,7 @@ class SessionDriver:
         self._out: asyncio.Queue = asyncio.Queue()
         self._pump: asyncio.Task | None = None
         self._titled: bool = False
-        self._queue: list[str] = []
+        self._queue: list[tuple[str, list[dict]]] = []
         self._turn_active: bool = False
         self._turns_completed: int = 0
 
@@ -199,27 +201,28 @@ class SessionDriver:
         self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, self.resume)
         await self._client.__aenter__()
 
-    async def send_prompt(self, text: str):
+    async def send_prompt(self, text: str, attachments: list[dict] | None = None):
+        attachments = attachments or []
         if self._client is None:
             raise RuntimeError("SessionDriver.send_prompt called before start()")
         # C2 — FIFO queue: if a pump is live, enqueue the prompt instead of rejecting.
         if self._pump is not None and not self._pump.done():
-            self._queue.append(text)
+            self._queue.append((text, attachments))
             log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
                       self.session_id, len(self._queue))
             await self._put_status("working", len(self._queue))
-            await self._out.put(ev.QueueUpdate(list(self._queue)))
+            await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
             return
         # C3 — auto-title: emit a Title event from the first prompt (first line, max 50 chars).
         if not self._titled:
             self._titled = True
-            first_line = text.splitlines()[0] if text else text
-            title_text = first_line[:50]
-            await self._out.put(ev.Title(title=title_text, source="prompt"))
-        await self._start_turn(text)
+            first_line = (text.splitlines()[0] if text else "") or "Image prompt"
+            await self._out.put(ev.Title(title=first_line[:50], source="prompt"))
+        await self._start_turn(text, attachments)
 
-    async def _start_turn(self, text: str):
+    async def _start_turn(self, text: str, attachments: list[dict] | None = None):
         """Start a new turn: echo the user prompt, emit working status, query SDK, drain."""
+        attachments = attachments or []
         self._turn_active = True
         await self._put_status("working", len(self._queue))
         # Echo the user's prompt as a session event. The SDK never sends the human's
@@ -228,9 +231,23 @@ class SessionDriver:
         # user message is its own turn, keyed by a fresh id distinct from the assistant
         # turn the Translator assigns from the SDK's message_start uuid.
         user_turn = uuid.uuid4().hex
-        await self._out.put(ev.UserMessage(turn_id=user_turn, text=text, src_uuid=user_turn))
+        echo = [{"id": a["id"], "mediaType": a["media_type"], "filename": a["filename"]}
+                for a in attachments]
+        await self._out.put(ev.UserMessage(turn_id=user_turn, text=text,
+                                           attachments=echo, src_uuid=user_turn))
         assert self._client is not None  # _start_turn only runs once the client is connected
-        await self._client.query(text)
+        if attachments:
+            async def _read(a):
+                data = await asyncio.to_thread(lambda: open(a["path"], "rb").read())
+                return image_block(a["media_type"], base64.b64encode(data).decode())
+            blocks = [{"type": "text", "text": text}]
+            for a in attachments:
+                blocks.append(await _read(a))
+            async def _gen():
+                yield {"type": "user", "message": {"role": "user", "content": blocks}}
+            await self._client.query(_gen())
+        else:
+            await self._client.query(text)
         self._pump = asyncio.create_task(self._drain())
 
     async def _call_sync_back(self) -> None:
@@ -264,26 +281,26 @@ class SessionDriver:
             await self._call_sync_back()
             # If queued prompts remain, pop the front and start the next turn.
             if self._queue:
-                next_text = self._queue.pop(0)
+                next_text, next_atts = self._queue.pop(0)
                 log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
                           self.session_id, len(self._queue))
-                await self._out.put(ev.QueueUpdate(list(self._queue)))
-                await self._start_turn(next_text)
+                await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
+                await self._start_turn(next_text, next_atts)
             else:
                 self._turn_active = False
                 self._turns_completed += 1
                 await self._put_status("idle", 0)
 
     def queued(self) -> list[str]:
-        """Return a snapshot of the queued prompts."""
-        return list(self._queue)
+        """Return a snapshot of the queued prompt texts."""
+        return [t for t, _ in self._queue]
 
     async def cancel_queued(self, index: int) -> bool:
         """Cancel a queued prompt by index. Returns True if removed, False if index invalid."""
         if index < 0 or index >= len(self._queue):
             return False
         self._queue.pop(index)
-        await self._out.put(ev.QueueUpdate(list(self._queue)))
+        await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
         await self._put_status("working", len(self._queue))
         return True
 

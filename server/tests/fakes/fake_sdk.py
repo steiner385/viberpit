@@ -35,6 +35,11 @@ def user_tool_result(tool_id: str, content, is_error: bool = False, uuid: str = 
     return UserMessage(content=[ToolResultBlock(tool_use_id=tool_id, content=content, is_error=is_error)],
                        uuid=uuid)
 
+def asst_text(text: str, uuid: str = "u1") -> AssistantMessage:
+    """Convenience: AssistantMessage with a single TextBlock."""
+    from claude_agent_sdk import TextBlock
+    return AssistantMessage(content=[TextBlock(text=text)], model="claude", uuid=uuid)
+
 def result(session_id: str = "sess-1", usage: dict | None = None, uuid: str = "u9",
            cost: float | None = None) -> ResultMessage:
     return ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
