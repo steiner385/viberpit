@@ -126,6 +126,64 @@ describe('QuestionCard', () => {
     await user.click(screen.getByRole('button', { name: /cancel/i }))
     expect(onChat).toHaveBeenCalledWith('q-1')
   })
+
+  it('single-select: digit 2 answers with the second option', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={onAnswer} />)
+    await user.keyboard('2')
+    expect(onAnswer).toHaveBeenCalledWith('q-1', ['Option B'])
+  })
+
+  it('single-select: ArrowDown then Enter answers the highlighted option', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={onAnswer} />)
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(onAnswer).toHaveBeenCalledWith('q-1', ['Option B'])
+  })
+
+  it('single-select: first option is focused on mount', () => {
+    render(<QuestionCard block={singleQ} onAnswer={vi.fn()} />)
+    expect(screen.getByRole('radio', { name: 'Option A' })).toHaveFocus()
+  })
+
+  it('multi-select: digit toggles aria-checked', async () => {
+    const user = userEvent.setup()
+    render(<QuestionCard block={multiQ} onAnswer={vi.fn()} />)
+    const optA = screen.getByRole('checkbox', { name: /option a/i })
+    expect(optA).toHaveAttribute('aria-checked', 'false')
+    await user.keyboard('1')
+    expect(optA).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('multi-select: digit-toggle then Enter submits the checked set', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    render(<QuestionCard block={multiQ} onAnswer={onAnswer} />)
+    await user.keyboard('1')        // toggle Option A
+    await user.keyboard('{Enter}')  // submit
+    expect(onAnswer).toHaveBeenCalledWith('q-2', ['Option A'])
+  })
+
+  it('multi-select: Space toggles the highlighted option', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    render(<QuestionCard block={multiQ} onAnswer={onAnswer} />)
+    await user.keyboard(' ')        // toggle highlighted (Option A)
+    await user.keyboard('{Enter}')
+    expect(onAnswer).toHaveBeenCalledWith('q-2', ['Option A'])
+  })
+
+  it('multi-select: typing a digit into the freeform textarea does not toggle', async () => {
+    const user = userEvent.setup()
+    render(<QuestionCard block={multiQ} onAnswer={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: /write a response/i }))
+    const textarea = screen.getByRole('textbox', { name: /write a response/i })
+    await user.type(textarea, '2')
+    expect(textarea).toHaveValue('2')
+    expect(screen.getByRole('checkbox', { name: /option b/i })).toHaveAttribute('aria-checked', 'false')
+  })
 })
 
 describe('QuestionCard readOnly', () => {

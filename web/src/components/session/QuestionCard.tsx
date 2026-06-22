@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Block } from '@/session/reducer'
 import { cn } from '@/lib/utils'
+import { useCardKeyboard } from './useCardKeyboard'
 
 type QuestionBlock = Extract<Block, { kind: 'question' }>
 
@@ -25,8 +26,106 @@ const hatchBtn = cn(
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
 )
 
-export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, readOnly = false }: Props) {
+function MultiSelectOptions({
+  block, onAnswer,
+}: { block: QuestionBlock; onAnswer: Props['onAnswer'] }) {
   const [checked, setChecked] = useState<Set<string>>(new Set())
+  const toggle = (label: string) =>
+    setChecked((prev) => {
+      const next = new Set(prev)
+      if (next.has(label)) next.delete(label)
+      else next.add(label)
+      return next
+    })
+  const kb = useCardKeyboard({
+    count: block.options.length,
+    multiSelect: true,
+    onToggle: (i) => toggle(optionLabel(block.options[i])),
+    onSubmit: () => onAnswer(block.questionId, Array.from(checked)),
+  })
+  return (
+    <>
+      <div className="space-y-1 mb-3" {...kb.containerProps}>
+        {block.options.map((opt, i) => {
+          const label = optionLabel(opt)
+          const isChecked = checked.has(label)
+          return (
+            <button
+              key={i}
+              type="button"
+              role="checkbox"
+              aria-checked={isChecked}
+              {...kb.itemProps(i)}
+              onClick={() => toggle(label)}
+              className={cn(
+                'flex items-center gap-2 w-full text-left rounded px-3 py-2 text-sm',
+                'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700',
+                'text-gray-800 dark:text-gray-200',
+                'hover:bg-blue-50 dark:hover:bg-blue-900/30',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+                'min-h-[44px]',
+              )}
+            >
+              <span aria-hidden="true" className="inline-block w-4">{isChecked ? '☑' : '☐'}</span>
+              <span>{label}</span>
+            </button>
+          )
+        })}
+      </div>
+      <button
+        type="button"
+        onClick={() => onAnswer(block.questionId, Array.from(checked))}
+        className={cn(
+          'rounded px-4 py-2 text-sm font-medium',
+          'bg-blue-600 text-white hover:bg-blue-700',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+          'min-h-[44px]',
+        )}
+      >
+        Submit
+      </button>
+    </>
+  )
+}
+
+function SingleSelectOptions({
+  block, onAnswer,
+}: { block: QuestionBlock; onAnswer: Props['onAnswer'] }) {
+  const headerId = `q-header-${block.questionId}`
+  const kb = useCardKeyboard({
+    count: block.options.length,
+    onActivate: (i) => onAnswer(block.questionId, [optionLabel(block.options[i])]),
+  })
+  return (
+    <div role="radiogroup" aria-labelledby={headerId} className="space-y-1" {...kb.containerProps}>
+      {block.options.map((opt, i) => {
+        const label = optionLabel(opt)
+        return (
+          <button
+            key={i}
+            type="button"
+            role="radio"
+            aria-checked={i === kb.activeIndex}
+            {...kb.itemProps(i)}
+            onClick={() => onAnswer(block.questionId, [label])}
+            className={cn(
+              'w-full text-left rounded px-3 py-2 text-sm',
+              'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700',
+              'text-gray-800 dark:text-gray-200',
+              'hover:bg-blue-50 dark:hover:bg-blue-900/30',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              'min-h-[44px]',
+            )}
+          >
+            {label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, readOnly = false }: Props) {
   const [writing, setWriting] = useState(false)
   const [draft, setDraft] = useState('')
 
@@ -128,32 +227,9 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
 
   if (!block.multiSelect) {
     return (
-      <div role="radiogroup" aria-labelledby={headerId} className={containerClass}>
+      <div role="group" aria-labelledby={headerId} className={containerClass}>
         {heading}
-        <div className="space-y-1">
-          {block.options.map((opt, i) => {
-            const label = optionLabel(opt)
-            return (
-              <button
-                key={i}
-                type="button"
-                role="radio"
-                aria-checked={false}
-                onClick={() => onAnswer(block.questionId, [label])}
-                className={cn(
-                  'w-full text-left rounded px-3 py-2 text-sm',
-                  'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700',
-                  'text-gray-800 dark:text-gray-200',
-                  'hover:bg-blue-50 dark:hover:bg-blue-900/30',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-                  'min-h-[44px]',
-                )}
-              >
-                {label}
-              </button>
-            )
-          })}
-        </div>
+        <SingleSelectOptions block={block} onAnswer={onAnswer} />
         {escapeHatches}
       </div>
     )
@@ -162,50 +238,7 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
   return (
     <div role="group" aria-labelledby={headerId} className={containerClass}>
       {heading}
-      <div className="space-y-1 mb-3">
-        {block.options.map((opt, i) => {
-          const label = optionLabel(opt)
-          return (
-            <label
-              key={i}
-              className={cn(
-                'flex items-center gap-2 rounded px-3 py-2 text-sm cursor-pointer',
-                'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700',
-                'text-gray-800 dark:text-gray-200',
-                'hover:bg-blue-50 dark:hover:bg-blue-900/30',
-                'min-h-[44px]',
-              )}
-            >
-              <input
-                type="checkbox"
-                checked={checked.has(label)}
-                onChange={(e) => {
-                  setChecked((prev) => {
-                    const next = new Set(prev)
-                    if (e.target.checked) next.add(label)
-                    else next.delete(label)
-                    return next
-                  })
-                }}
-                className="h-4 w-4 rounded border-gray-300"
-              />
-              <span>{label}</span>
-            </label>
-          )
-        })}
-      </div>
-      <button
-        type="button"
-        onClick={() => onAnswer(block.questionId, Array.from(checked))}
-        className={cn(
-          'rounded px-4 py-2 text-sm font-medium',
-          'bg-blue-600 text-white hover:bg-blue-700',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-          'min-h-[44px]',
-        )}
-      >
-        Submit
-      </button>
+      <MultiSelectOptions block={block} onAnswer={onAnswer} />
       {escapeHatches}
     </div>
   )
