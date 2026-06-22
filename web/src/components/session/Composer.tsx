@@ -4,6 +4,8 @@ import { cn } from '@/lib/utils'
 import { useImageAttachments } from './useImageAttachments'
 import { AttachmentChips } from './AttachmentChips'
 import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
+import { MicButton } from './MicButton'
+import { useDictationField } from '@/lib/useDictationField'
 import type { Command } from '@/session/events'
 import { statusTier } from '@/session/statusTier'
 
@@ -29,6 +31,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
   const paletteRef = useRef<CommandPaletteHandle>(null)
   const isWorking = statusTier(status.state) === 'busy'
   const att = useImageAttachments()
+  const voice = useDictationField({ value: text, setValue: setText, textareaRef })
   const slash = text.startsWith('/') && !text.includes('\n')
   const afterSlash = slash ? text.slice(1) : ''
   // The palette is the keyboard owner only while the user is still typing the
@@ -170,6 +173,13 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
             'min-h-[44px] overflow-y-auto',
           )}
           style={{ maxHeight: '192px' }}
+        />
+
+        <MicButton
+          supported={voice.supported}
+          listening={voice.listening}
+          error={voice.error}
+          onToggle={voice.toggle}
         />
 
         <input
