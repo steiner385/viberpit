@@ -33,11 +33,21 @@ describe('CopyablePath', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('foo.py')
   })
 
+  it('copies on Space key', async () => {
+    render(<CopyablePath text="foo.py" />)
+    fireEvent.keyDown(screen.getByText('foo.py'), { key: ' ' })
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('foo.py')
+  })
+
   it('does not throw when the clipboard write rejects', async () => {
     Object.assign(navigator, {
       clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
     })
     render(<CopyablePath text="foo.py" />)
-    expect(() => fireEvent.click(screen.getByText('foo.py'))).not.toThrow()
+    const el = screen.getByText('foo.py')
+    expect(() => fireEvent.click(el)).not.toThrow()
+    // feedback must not appear on failure
+    await Promise.resolve()
+    expect(el).toHaveAttribute('title', 'Copy path')
   })
 })
