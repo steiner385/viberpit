@@ -35,3 +35,38 @@ def test_parse_garbage_returns_empty():
 def test_build_prompt_includes_context():
     p = build_prompt("User: hi\n\nAssistant: hello")
     assert "User: hi" in p and "Assistant: hello" in p
+
+
+import asyncio
+from server.sessions.suggestions import SuggestionService
+from server.tests.fakes.fake_sdk import FakeSDKClient
+from server.tests.fakes import fake_sdk as f
+
+
+def test_generate_parses_streamed_json():
+    msgs = [f.stream_start(uuid="t1"),
+            f.stream_text('["Run the tests", "Commit it"]', uuid="t1"),
+            f.result(uuid="t1")]
+    svc = SuggestionService(lambda cwd, cfg: FakeSDKClient(msgs))
+    out = asyncio.run(svc.generate("/tmp/r", "/tmp/cfg", "User: hi\n\nAssistant: done"))
+    assert out == ["Run the tests", "Commit it"]
+
+
+def test_generate_empty_context_skips():
+    called = {"n": 0}
+
+    def factory(cwd, cfg):
+        called["n"] += 1
+        return FakeSDKClient([])
+
+    svc = SuggestionService(factory)
+    assert asyncio.run(svc.generate("/tmp/r", "/tmp/cfg", "   ")) == []
+    assert called["n"] == 0  # never built a client
+
+
+def test_generate_swallows_errors():
+    def boom(cwd, cfg):
+        raise RuntimeError("sdk down")
+
+    svc = SuggestionService(boom)
+    assert asyncio.run(svc.generate("/tmp/r", "/tmp/cfg", "User: hi")) == []
