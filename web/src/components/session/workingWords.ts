@@ -40,7 +40,17 @@ export const WORKING_WORDS: string[] = [
   'Whirring',
 ]
 
-/** Returns a random entry from WORKING_WORDS. */
-export function pickWorkingWord(): string {
-  return WORKING_WORDS[Math.floor(Math.random() * WORKING_WORDS.length)]
+/**
+ * Returns a random entry from WORKING_WORDS.
+ *
+ * @param exclude  If given, the returned word is guaranteed to differ from it, so
+ *   a new "waiting for Claude" period never repeats the immediately-previous
+ *   period's phrase.
+ */
+export function pickWorkingWord(exclude?: string): string {
+  const pool =
+    exclude !== undefined && WORKING_WORDS.length > 1
+      ? WORKING_WORDS.filter((w) => w !== exclude)
+      : WORKING_WORDS
+  return pool[Math.floor(Math.random() * pool.length)]
 }

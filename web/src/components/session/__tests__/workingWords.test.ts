@@ -19,4 +19,15 @@ describe('workingWords', () => {
       expect(WORKING_WORDS).toContain(picked)
     }
   })
+
+  it('pickWorkingWord(exclude) never returns the excluded word', () => {
+    // So a new wait never repeats the immediately-previous wait's phrase.
+    for (const exclude of WORKING_WORDS) {
+      for (let i = 0; i < 30; i++) {
+        const picked = pickWorkingWord(exclude)
+        expect(picked).not.toBe(exclude)
+        expect(WORKING_WORDS).toContain(picked)
+      }
+    }
+  })
 })
