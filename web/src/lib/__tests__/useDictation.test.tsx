@@ -30,7 +30,7 @@ function installMock() {
       instance = new MockRecognition()
       return instance
     }
-  } as any)
+  } as unknown as new () => unknown)
 }
 
 afterEach(() => { vi.unstubAllGlobals(); instance = null })
