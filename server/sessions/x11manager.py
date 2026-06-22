@@ -83,11 +83,13 @@ async def _terminate(proc, timeout: float = 5.0) -> None:
 
 class X11Manager:
     def __init__(self, allocator: DisplayAllocator, *, resolution: str, max_browsers: int,
+                 vnc_idle_timeout_s: float = 1800.0,
                  spawn=asyncio.create_subprocess_exec, ready_check=None, run_dir: str = "/tmp",
                  ready_timeout_s: float = 2.0, ready_interval_s: float = 0.05) -> None:
         self._allocator = allocator
         self._resolution = resolution
         self._max_browsers = max_browsers
+        self._vnc_idle_timeout_s = vnc_idle_timeout_s
         self._spawn = spawn
         self._run_dir = run_dir
         self._ready_check = ready_check or (lambda d: _default_ready_check(d, run_dir))
@@ -220,3 +222,27 @@ class X11Manager:
             return False
         except PermissionError:
             return True
+
+
+import shutil  # noqa: E402 — kept here so the module stays importable without shutil at top-level scope
+
+
+def build_x11_manager(settings) -> "X11Manager | None":
+    """Factory: return None when disabled or when binaries are missing (fail-loud warning)."""
+    if not getattr(settings, "enable_xvfb", False):
+        return None
+    missing = [b for b in ("Xvfb", "x11vnc", "xauth") if shutil.which(b) is None]
+    if missing:
+        log.warning(
+            "x11: ENABLED but missing binaries %s — feature disabled. "
+            "Install: apt install xvfb x11vnc; playwright install --with-deps chromium",
+            missing,
+        )
+        return None
+    alloc = DisplayAllocator(settings.display_start, settings.display_count, settings.vnc_port_base)
+    return X11Manager(
+        alloc,
+        resolution=settings.xvfb_resolution,
+        max_browsers=settings.max_browsers,
+        vnc_idle_timeout_s=settings.vnc_idle_timeout_s,
+    )

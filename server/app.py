@@ -114,6 +114,15 @@ async def _lifespan(app: FastAPI):
     # Start the singleton orchestrator (usage poller + rotation monitor)
     await app.state.orchestrator.start()
 
+    # Sweep stale X lock/socket files from crashed previous runs
+    if getattr(app.state, "x11", None) is not None:
+        try:
+            n = app.state.x11.sweep_stale()
+            if n:
+                _logging.getLogger("server").info("startup: swept %d stale X lock/socket(s)", n)
+        except Exception:
+            _logging.getLogger("server").warning("startup: X sweep failed", exc_info=True)
+
     # Sweep stale unbound attachments (uploaded but never sent) from prior runs.
     from server.db import db_session as _db_session
     from server.sessions import attachments as _attachments
@@ -132,6 +141,17 @@ async def _lifespan(app: FastAPI):
     yield
     # Shutdown
     await app.state.reauth.shutdown()
+
+    # Close live sessions before stopping orchestrator — triggers stop_display for each
+    if getattr(app.state, "x11", None) is not None:
+        for sid in list(app.state.orchestrator._drivers.keys()):
+            try:
+                await app.state.orchestrator.close_session(sid)
+            except Exception:
+                _logging.getLogger("server").warning(
+                    "shutdown: close %s failed", sid, exc_info=True
+                )
+
     await app.state.orchestrator.stop()
 
 
@@ -147,6 +167,12 @@ def create_app(
     app.state.orchestrator = orchestrator
     from server.sessions.facade import InProcessOrchestratorAdapter
     app.state.sessions = InProcessOrchestratorAdapter(orchestrator)
+
+    # X11 manager — None when feature is disabled or preflight fails (fail-loud warning)
+    from server.config import get_settings as _gs
+    from server.sessions.x11manager import build_x11_manager
+    app.state.x11 = build_x11_manager(_gs())
+    orchestrator._x11 = app.state.x11  # share the manager with the orchestrator
 
     # Attach the ReauthManager (allows tests to inject a fake)
     if reauth_manager is None:
