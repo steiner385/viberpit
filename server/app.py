@@ -210,18 +210,32 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
         # Exercises every Session model column; a drifted DB raises → 500.
-        orch = getattr(app.state, "orchestrator", None)
-        active = orch.active_session_count() if orch is not None else 0
+        # Active count comes through the facade (async) so it works in both modes;
+        # in remote mode an unreachable daemon degrades gracefully (200 + flag).
+        from server.ipc.client import DaemonUnavailable
+
+        active = 0
+        daemon_state = None
+        try:
+            active = await app.state.sessions.active_session_count()
+            if app.state.remote_mode:
+                daemon_state = "ok"
+        except DaemonUnavailable:
+            active = 0
+            daemon_state = "unavailable"
         x11 = getattr(app.state, "x11", None)
         vnc_attached = bool(x11 and x11.metrics().get("vnc_clients_attached", 0) > 0)
         try:
             async with _db.db_session() as db:
                 await db.execute(_sa_select(_SessionModel).limit(1))
-            return JSONResponse({
+            payload = {
                 "status": "ok", "sha": running_git_sha(),
                 "busy": active > 0, "activeSessions": active,
                 "vncAttached": vnc_attached,
-            })
+            }
+            if daemon_state is not None:
+                payload["daemon"] = daemon_state
+            return JSONResponse(payload)
         except Exception as exc:  # noqa: BLE001 — any DB/schema failure is unhealthy
             logging.getLogger("server").warning("healthz schema check failed", exc_info=exc)
             return JSONResponse({"status": "schema_error", "sha": running_git_sha()}, status_code=500)
