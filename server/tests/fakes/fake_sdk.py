@@ -50,10 +50,16 @@ class FakeSDKClient:
         self.interrupted = False
         self.permission_mode = "default"
         self.sent: list[str] = []
+        self.sent_structured: list[dict] = []
 
     async def __aenter__(self): return self
     async def __aexit__(self, *exc): return False
-    async def query(self, prompt: str): self.sent.append(prompt)
+    async def query(self, prompt):
+        if isinstance(prompt, str):
+            self.sent.append(prompt)
+        else:
+            async for msg in prompt:
+                self.sent_structured.append(msg)
     async def receive_response(self):
         for m in self._messages:
             if self.interrupted: break

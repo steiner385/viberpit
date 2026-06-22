@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from server.tests.fakes import fake_sdk as f
 from server.sessions.sdk_contract import SDKClientProtocol
 from claude_agent_sdk import SystemMessage, StreamEvent, AssistantMessage, ResultMessage, TextBlock
@@ -36,3 +37,13 @@ def test_interrupt_stops_replay():
                 seen.append(m); await c.interrupt()   # interrupt after first
         return seen
     assert len(asyncio.run(run())) == 1
+
+@pytest.mark.asyncio
+async def test_fake_query_records_structured():
+    c = f.FakeSDKClient(messages=[])
+    async def _gen():
+        yield {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]}}
+    await c.query(_gen())
+    assert c.sent_structured and c.sent_structured[0]["message"]["content"][0]["text"] == "hi"
+    await c.query("plain")
+    assert c.sent == ["plain"]

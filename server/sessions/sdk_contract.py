@@ -5,7 +5,7 @@ This Protocol is what the fake SDK client (tests) and the real client must both 
 so the translator/driver are tested without spawning real `claude` or spending quota.
 """
 from __future__ import annotations
-from typing import Any, AsyncIterator, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, AsyncIterable, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -19,7 +19,7 @@ class SDKClientProtocol(Protocol):
 
     async def __aenter__(self) -> "SDKClientProtocol": ...
     async def __aexit__(self, *exc: Any) -> bool | None: ...
-    async def query(self, prompt: str) -> None: ...
+    async def query(self, prompt: str | AsyncIterable[dict[str, Any]]) -> None: ...
     def receive_response(self) -> AsyncIterator[Any]:
         """Yields, in order: SystemMessage, StreamEvent*, AssistantMessage, UserMessage,
         ResultMessage (and HookEventMessage/RateLimitEvent, which the translator ignores)."""
