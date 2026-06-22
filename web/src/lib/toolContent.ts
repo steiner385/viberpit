@@ -57,6 +57,26 @@ export function coerceText(content: unknown): string {
 }
 
 /**
+ * Extract displayable text from a tool_result `content` value, or return null
+ * when the value is structured data (a plain object, or an array whose entries
+ * are not content blocks) that a structured renderer should handle instead of
+ * dumping as JSON. Unlike `coerceText`, this NEVER falls back to JSON.stringify
+ * — null is the signal to render structurally.
+ */
+export function extractText(content: unknown): string | null {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    // Treat as a content-block array only if every entry looks like a block
+    // ({ type: string }); otherwise it's structured data (e.g. search rows).
+    const looksLikeBlocks = content.every(
+      (b) => b != null && typeof b === 'object' && typeof (b as ContentBlock).type === 'string',
+    )
+    return looksLikeBlocks ? coerceText(content) : null
+  }
+  return null
+}
+
+/**
  * Build a unified-diff line list for an Edit/Write. The diff data lives in the
  * tool's `input` (Edit: old_string/new_string, Write: content) — the result
  * payload only carries a success/error message, so it must NOT be used here.

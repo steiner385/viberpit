@@ -1,5 +1,5 @@
 // Server → client session events (the backend's normalized event wire shapes).
-export type ToolKind = 'edit' | 'write' | 'read' | 'bash' | 'todo' | 'search' | 'unknown'
+export type ToolKind = 'edit' | 'write' | 'read' | 'bash' | 'todo' | 'search' | 'web' | 'task' | 'mcp' | 'unknown'
 
 export interface EvUser          { type: 'user';          turnId: string; text: string; srcUuid?: string | null }
 export interface EvTurnStart     { type: 'turnStart';     turnId: string; srcUuid?: string | null }
