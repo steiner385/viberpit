@@ -38,7 +38,8 @@ from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory
 from server.sessions.suggestions import SuggestionService
 from server.sessions.selection import AllAccountsBusy, select_account
-from server.sessions.titles import read_ai_title_from_file
+from server.sessions.title_generator import generate_title
+from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
 
@@ -81,6 +82,7 @@ class SessionOrchestrator:
         usage_fn: Callable[[str], object] | None = None,
         repo_root: str | None = None,
         titling_interval: float = 15.0,
+        title_fn: Callable | None = None,
     ) -> None:
         # work_dir param is accepted for back-compat (used in tests to keep
         # the orchestrator anchored to the repo root), but is no longer stored
@@ -106,6 +108,11 @@ class SessionOrchestrator:
         # own transcript title into still-auto-named sessions. Constructor arg so
         # tests can drive it fast.
         self._titling_interval: float = titling_interval
+        # Fallback title generator: Claude only writes an ``ai-title`` record in
+        # the interactive CLI, so SDK-driven sessions get none. When the transcript
+        # has no title, summarize the user's own prompts with a one-shot Haiku query.
+        # Injectable so tests can stub it without a live SDK call.
+        self._title_fn: Callable = title_fn or self._default_title_fn
         self._registry = PermissionRegistry()
         self._drivers: dict[str, SessionDriver] = {}
         self._last_prompt: dict[str, str] = {}
@@ -414,12 +421,41 @@ class SessionOrchestrator:
         except Exception:
             log.debug("persist_sub_agents failed (non-fatal) session=%s", session_id, exc_info=True)
 
-    async def _maybe_apply_auto_name(self, session_id: str) -> None:
-        """If the session name is still auto, adopt Claude's transcript title.
+    async def _default_title_fn(self, prompts, *, account, cwd):
+        """Default fallback title generator: a one-shot Haiku query under the account."""
+        return await generate_title(prompts, config_dir=str(compose(account)), cwd=cwd)
 
-        Updates the DB + in-memory record and, when a live driver exists, pushes a
-        ``Title(source="claude")`` event so the in-session header converges with the
-        dashboard. Idempotent: a title equal to the current name is a no-op.
+    def _account_limited(self, account: str) -> bool:
+        """True if *account*'s last-known session usage is at/above the ceiling.
+
+        Best-effort: an unknown account (no cached usage) is treated as not
+        limited — a doomed title query would just degrade silently anyway.
+        """
+        usage = self._poller.cached(account)
+        return usage is not None and getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
+
+    async def _generate_fallback_title(self, rec: SessionRecord, path: str) -> str | None:
+        """Summarize the session's user prompts into a title, or ``None``.
+
+        Used when Claude wrote no ``ai-title`` (the common case for SDK-driven
+        sessions). Skips accounts at their usage ceiling and sessions with no
+        readable prompts. Best-effort: any miss leaves the name unchanged.
+        """
+        if self._account_limited(rec.account):
+            return None
+        prompts = await asyncio.to_thread(read_user_prompts_from_file, path)
+        if not prompts:
+            return None
+        return await self._title_fn(prompts, account=rec.account, cwd=rec.cwd)
+
+    async def _maybe_apply_auto_name(self, session_id: str) -> None:
+        """If the session name is still auto, adopt a title for it.
+
+        Prefers Claude's own transcript ``ai-title``; when absent (SDK-driven
+        sessions never get one) falls back to summarizing the user prompts. Updates
+        the DB + in-memory record and, when a live driver exists, pushes a ``Title``
+        event so the in-session header converges with the dashboard. Idempotent: a
+        title equal to the current name is a no-op.
         """
         rec = self._records.get(session_id)
         if rec is None or not rec.name_is_auto:
@@ -428,6 +464,10 @@ class SessionOrchestrator:
         if not path:
             return
         title = await asyncio.to_thread(read_ai_title_from_file, path)
+        source = "claude"
+        if not title:
+            title = await self._generate_fallback_title(rec, path)
+            source = "generated"
         rec = self._records.get(session_id)
         if rec is None or not rec.name_is_auto or not title or title == rec.name:
             return
@@ -439,8 +479,8 @@ class SessionOrchestrator:
             )
         driver = self._drivers.get(session_id)
         if driver is not None:
-            await driver._out.put(ev.Title(title=title, source="claude"))
-        log.info("session.auto_name id=%s title=%r", session_id, title)
+            await driver._out.put(ev.Title(title=title, source=source))
+        log.info("session.auto_name id=%s title=%r source=%s", session_id, title, source)
 
     async def _titling_sweep(self) -> None:
         """One titling pass: refresh the auto-name of every active, still-auto session.
