@@ -141,3 +141,32 @@ def test_marker_on_an_errored_turn_is_still_failed():
             f.assistant(TextBlock(text=f"{COMPLETION_MARKER}"), uuid="t1"),
             f.result(session_id="s", uuid="t1", subtype="error_max_turns", is_error=True)]
     assert _turn_end(_drive(msgs)).outcome == "failed"
+
+
+def test_sub_agent_marker_does_not_complete_parent_turn():
+    # A Task sub-agent emits the marker for its own sub-objective; the top-level
+    # final message has no marker. The parent turn must NOT be 'complete'.
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text=f"sub done {COMPLETION_MARKER}"), uuid="sub", parent_tool_use_id="task-1"),
+            f.assistant(TextBlock(text="top-level still working"), uuid="t1"),
+            f.result(session_id="s", uuid="t1")]
+    assert _turn_end(_drive(msgs)).outcome == "success"
+
+
+def test_marker_in_final_top_level_message_completes():
+    # Sub-agent runs, then the TOP-LEVEL agent's final message carries the marker.
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text="delegating"), uuid="sub", parent_tool_use_id="task-1"),
+            f.assistant(TextBlock(text=f"all objectives met {COMPLETION_MARKER}"), uuid="t1"),
+            f.result(session_id="s", uuid="t1")]
+    assert _turn_end(_drive(msgs)).outcome == "complete"
+
+
+def test_marker_only_in_interim_top_level_message_is_not_complete():
+    # Reset-per-message: a non-final top-level message mentions the marker, but the
+    # FINAL top-level message does not. Per spec ("final message"), not complete.
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text=f"I will end with {COMPLETION_MARKER} when done"), uuid="t1"),
+            f.assistant(TextBlock(text="actually not done yet"), uuid="t1"),
+            f.result(session_id="s", uuid="t1")]
+    assert _turn_end(_drive(msgs)).outcome == "success"

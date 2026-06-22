@@ -24,8 +24,9 @@ def stream_thinking(text: str, uuid: str = "u1", sid: str = "sess-1") -> StreamE
                        event={"type": "content_block_delta", "index": 0,
                               "delta": {"type": "thinking_delta", "thinking": text}})
 
-def assistant(*blocks, uuid: str = "u1") -> AssistantMessage:
-    return AssistantMessage(content=list(blocks), model="claude", uuid=uuid)
+def assistant(*blocks, uuid: str = "u1", parent_tool_use_id=None) -> AssistantMessage:
+    return AssistantMessage(content=list(blocks), model="claude", uuid=uuid,
+                            parent_tool_use_id=parent_tool_use_id)
 
 def tool_use(tool_id: str, name: str, inp: dict, uuid: str = "u1") -> AssistantMessage:
     return AssistantMessage(content=[ToolUseBlock(id=tool_id, name=name, input=inp)],

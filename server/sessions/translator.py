@@ -68,12 +68,16 @@ class Translator:
 
         if isinstance(msg, AssistantMessage):
             out = self._ensure_turn(getattr(msg, "uuid", None))
-            # Text/thinking blocks are intentionally NOT re-emitted here — they stream live
-            # via StreamEvent content_block_delta (driver always sets include_partial_messages=True).
-            # Only tool calls (not streamed as deltas) are emitted from the consolidated message.
+            # Only the top-level agent's OWN final message can signal completion.
+            # Sub-agent (Task) messages carry a parent_tool_use_id and may emit the
+            # marker for their own sub-objective — exclude them. Reset per top-level
+            # message so only the FINAL top-level message's text is matched.
+            if getattr(msg, "parent_tool_use_id", None) is None:
+                self._turn_text = ""
+                for b in msg.content:
+                    if isinstance(b, TextBlock):
+                        self._turn_text += b.text
             for b in msg.content:
-                if isinstance(b, TextBlock):
-                    self._turn_text += b.text
                 if isinstance(b, ToolUseBlock) and b.id not in self._seen_tools:
                     self._seen_tools.add(b.id)
                     # AskUserQuestion is handled by the driver (emits ev.Question);
