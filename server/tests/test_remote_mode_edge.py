@@ -137,6 +137,7 @@ def test_rest_call_returns_503_when_daemon_down(dead_socket_edge):
 
 
 import json as _json
+import time as _time
 from starlette.websockets import WebSocketDisconnect
 
 
@@ -148,3 +149,54 @@ def test_ws_connect_closes_1013_when_daemon_down(dead_socket_edge):
             ws.send_text(_json.dumps({"type": "attach", "sessionId": "s1"}))
             ws.receive_text()  # forces the server frames to be read
     assert exc.value.code == 1013
+
+
+def test_rest_list_and_get_round_trip(remote_edge):
+    orch, client = remote_edge
+    orch._records["s1"] = _rec("s1")
+    listed = client.get("/api/sessions", headers=_IDENT)
+    assert listed.status_code == 200, listed.text
+    assert any(s["id"] == "s1" for s in listed.json())
+    got = client.get("/api/sessions/s1", headers=_IDENT)
+    assert got.status_code == 200, got.text
+    assert got.json()["id"] == "s1"
+
+
+class _FakeEvent:
+    def to_wire(self):
+        return {"type": "textDelta", "turnId": "t1", "text": "hi", "sessionId": "s1"}
+
+
+class _FakeDriver:
+    def current_status(self):
+        return "idle"
+
+    def queued(self):
+        return []
+
+    async def events(self):
+        # Delay emission so the edge client can subscribe to the daemon channel
+        # before we publish — avoids a race where the single event is lost.
+        await asyncio.sleep(0.5)
+        yield _FakeEvent()
+
+
+def test_ws_attach_streams_event_from_daemon(remote_edge):
+    orch, client = remote_edge
+    orch._records["s1"] = _rec("s1")
+    with mock.patch.object(orch, "ensure_driver",
+                           new=mock.AsyncMock(return_value=_FakeDriver())), \
+         mock.patch.object(orch, "transcript_path", new=mock.AsyncMock(return_value=None)):
+        with client.websocket_connect("/ws", headers=_IDENT) as ws:
+            ws.send_json({"type": "attach", "sessionId": "s1"})
+            # Drain frames until the streamed textDelta arrives (batch-wrapped).
+            deadline = _time.time() + 5
+            seen = None
+            while _time.time() < deadline and seen is None:
+                msg = ws.receive_json()
+                events = msg.get("events", []) if msg.get("type") == "batch" else [msg]
+                for e in events:
+                    if e.get("type") == "textDelta" and e.get("text") == "hi":
+                        seen = e
+                        break
+            assert seen is not None, "did not receive streamed textDelta"
