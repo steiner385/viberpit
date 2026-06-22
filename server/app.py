@@ -161,12 +161,25 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="ccswitch", version="0.1.0", lifespan=_lifespan)
 
-    # Attach the singleton orchestrator (allows tests to inject a custom one)
-    if orchestrator is None:
-        orchestrator = SessionOrchestrator()
-    app.state.orchestrator = orchestrator
+    # Attach the session facade. CCSWITCH_SESSIOND_SOCKET selects remote mode:
+    # the edge drives an orchestrator living in the session daemon over a Unix
+    # socket. An explicitly injected orchestrator always wins (in-process), so
+    # tests that pass one are unaffected.
     from server.sessions.facade import InProcessOrchestratorAdapter
-    app.state.sessions = InProcessOrchestratorAdapter(orchestrator)
+
+    socket_path = os.environ.get("CCSWITCH_SESSIOND_SOCKET")
+    if orchestrator is None and socket_path:
+        from server.ipc.client import DaemonClient
+        from server.sessions.remote import RemoteOrchestrator
+        app.state.remote_mode = True
+        app.state.orchestrator = None
+        app.state.sessions = RemoteOrchestrator(DaemonClient(socket_path))
+    else:
+        if orchestrator is None:
+            orchestrator = SessionOrchestrator()
+        app.state.remote_mode = False
+        app.state.orchestrator = orchestrator
+        app.state.sessions = InProcessOrchestratorAdapter(orchestrator)
 
     # X11 manager — None when feature is disabled or preflight fails (fail-loud warning)
     from server.config import get_settings as _gs
