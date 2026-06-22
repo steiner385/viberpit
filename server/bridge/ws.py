@@ -34,6 +34,7 @@ from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
 from server.db import db_session
+from server.ipc.client import DaemonUnavailable
 from server.sessions.events import ErrorEvent, tool_kind
 from server.sessions.replay import replay_events
 
@@ -87,8 +88,15 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
         # session_id → live-stream task forwarding driver events into out_q
         live_tasks: dict[str, asyncio.Task] = {}
 
-        # Subscribe to orchestrator lifecycle events (rotated, etc.)
-        event_q = await orchestrator.subscribe_events()
+        # Subscribe to orchestrator lifecycle events (rotated, etc.). In remote
+        # mode an unreachable daemon must close the socket cleanly (1013 = try
+        # again later), not crash the handler.
+        try:
+            event_q = await orchestrator.subscribe_events()
+        except DaemonUnavailable:
+            log.warning("ws.connect: session daemon unavailable")
+            await websocket.close(code=1013)
+            return
 
         # Serialises all websocket writes. The batcher, the attach/replay path, and
         # the lifecycle forwarder all call _send concurrently; interleaved send_text
@@ -161,6 +169,10 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 # that AskUserQuestion / permission answers (registered under
                 # driver.identity, resolved with this WS identity) actually match.
                 driver = await orchestrator.ensure_driver(session_id, identity)
+            except DaemonUnavailable:
+                log.warning("ws.attach: session daemon unavailable for %s", session_id)
+                await websocket.close(code=1013)
+                return
             except Exception:
                 # A resumed/rehydrated session can fail to start its SDK subprocess —
                 # most commonly because the account's token is dead (needs re-auth) or
