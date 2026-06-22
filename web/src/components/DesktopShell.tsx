@@ -302,7 +302,7 @@ export function DesktopShell() {
     }
   }
 
-  function handleDispatch({ initialPrompt, repo, images }: { initialPrompt: string; repo: string | null; images: { sha: string; mime: string; name: string }[] }) {
+  function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
     clearPendingDelete()
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     createSession.mutate(
@@ -310,7 +310,7 @@ export function DesktopShell() {
         initialPrompt,
         repo: repo ?? undefined,
         branch: repoInfo?.defaultBranch ?? undefined,
-        images: images.length ? images : undefined,
+        attachmentIds: attachmentIds.length ? attachmentIds : undefined,
       },
       {
         onSuccess: (session) => {

@@ -10,7 +10,7 @@ import type { Command } from '@/session/events'
 interface Props {
   status: { state: string; count: number }
   mode: string
-  onPrompt: (text: string, images: { sha: string; mime: string; name: string }[]) => void
+  onPrompt: (text: string, attachmentIds: string[]) => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   queued?: string[]
