@@ -1215,7 +1215,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     }
   }
 
-  function handleDispatch({ initialPrompt, repo }: { initialPrompt: string; repo: string | null }) {
+  function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
     clearPendingDelete()
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     createSession.mutate(
@@ -1223,6 +1223,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         initialPrompt,
         repo: repo ?? undefined,
         branch: repoInfo?.defaultBranch ?? undefined,
+        attachmentIds,
       },
       {
         onSuccess: (session) => {

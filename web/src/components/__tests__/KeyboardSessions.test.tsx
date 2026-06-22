@@ -323,7 +323,7 @@ describe('Task 6 — dispatch create-and-open', () => {
     await user.type(box, 'add a button')
     await user.keyboard('{Enter}')
     expect(createMutate).toHaveBeenCalledWith(
-      { initialPrompt: 'add a button', repo: 'acme/web', branch: 'main' },
+      { initialPrompt: 'add a button', repo: 'acme/web', branch: 'main', attachmentIds: [] },
       expect.anything(),
     )
     expect(onOpen).toHaveBeenCalledWith('new-1')
@@ -339,7 +339,7 @@ describe('Task 6 — dispatch create-and-open', () => {
     await user.type(box, 'hello')
     await user.keyboard('{Enter}')
     expect(createMutate).toHaveBeenCalledWith(
-      { initialPrompt: 'hello', repo: undefined, branch: undefined },
+      { initialPrompt: 'hello', repo: undefined, branch: undefined, attachmentIds: [] },
       expect.anything(),
     )
   })

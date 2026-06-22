@@ -3,13 +3,15 @@ import { cn } from '@/lib/utils'
 import type { GithubRepo } from '@/api/hooks'
 import { getLastRepo, setLastRepo } from '@/lib/lastRepo'
 import { caretLineEdges } from '@/lib/caretLineEdges'
+import { useAttachments } from './session/useAttachments'
+import { AttachmentTray } from './session/AttachmentTray'
 
 export interface DispatchBarProps {
   repos: GithubRepo[]
   reposLoading: boolean
   reposError: boolean
-  /** Fired on Enter when the prompt has text. */
-  onDispatch: (input: { initialPrompt: string; repo: string | null }) => void
+  /** Fired on Enter when the prompt has text or attachments are present. */
+  onDispatch: (input: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) => void
   /** ↑/↓ at a line boundary (or empty prompt). */
   onNavigate: (dir: 'up' | 'down') => void
   /** Enter on an EMPTY prompt, or →. */
@@ -49,6 +51,8 @@ export function DispatchBar({
   const [text, setText] = useState('')
   const [repo, setRepo] = useState<string>(() => getLastRepo() ?? '')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const att = useAttachments()
 
   // Auto-focus when autoFocusKey changes (or on mount)
   useEffect(() => {
@@ -65,16 +69,20 @@ export function DispatchBar({
 
   function dispatchNow() {
     const trimmed = text.trim()
-    if (!trimmed) {
-      onOpenHighlighted()
-      return
-    }
-    onDispatch({ initialPrompt: trimmed, repo: repo || null })
-    setText('')
-    // Reset textarea height
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-    }
+    if (!trimmed && att.ids.length === 0) { onOpenHighlighted(); return }
+    onDispatch({ initialPrompt: trimmed, repo: repo || null, attachmentIds: att.ids })
+    setText(''); att.clear()
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+  }
+
+  function onPaste(e: React.ClipboardEvent) {
+    const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith('image/'))
+    if (files.length) { e.preventDefault(); void att.addFiles(files) }
+  }
+
+  function onDrop(e: React.DragEvent) {
+    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'))
+    if (files.length) { e.preventDefault(); void att.addFiles(files) }
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -229,30 +237,60 @@ export function DispatchBar({
         </p>
       )}
 
-      {/* Prompt textarea */}
-      <textarea
-        ref={textareaRef}
-        id="dispatch-bar-prompt"
-        aria-label="New session prompt"
-        aria-controls="session-listbox"
-        aria-activedescendant={activeDescendantId}
-        value={text}
-        onChange={handleChange}
-        onKeyDown={handleKeyDown}
-        rows={1}
-        placeholder="New session… (Enter to create, ↑↓ to navigate, ? for shortcuts)"
-        disabled={isPending}
-        className={cn(
-          'w-full resize-none rounded-md border border-gray-300 dark:border-gray-600',
-          'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',
-          'px-3 py-2 text-sm',
-          'placeholder:text-gray-400 dark:placeholder:text-gray-500',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-          'min-h-[44px] overflow-y-auto',
-          'disabled:opacity-50 disabled:cursor-not-allowed',
-        )}
-        style={{ maxHeight: '192px' }}
+      {/* Attachment tray + error */}
+      <AttachmentTray items={att.items} onRemove={att.remove} />
+      {att.error && <p role="alert" className="text-xs text-red-600">{att.error}</p>}
+
+      {/* Visually-hidden file input (accessible to testing-library via aria-label) */}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        multiple
+        aria-label="Attach image"
+        className="sr-only"
+        onChange={(e) => { void att.addFiles(Array.from(e.target.files ?? [])); e.target.value = '' }}
       />
+
+      <div className="flex items-end gap-2">
+        {/* Attach button — focusable visible trigger for the sr-only file input */}
+        <button
+          type="button"
+          aria-label="Choose image to attach"
+          onClick={() => fileRef.current?.click()}
+          className="flex-shrink-0 rounded-md px-3 py-2 text-sm min-h-[44px]"
+        >
+          📎
+        </button>
+
+        {/* Prompt textarea */}
+        <textarea
+          ref={textareaRef}
+          id="dispatch-bar-prompt"
+          aria-label="New session prompt"
+          aria-controls="session-listbox"
+          aria-activedescendant={activeDescendantId}
+          value={text}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onPaste={onPaste}
+          onDrop={onDrop}
+          onDragOver={(e) => e.preventDefault()}
+          rows={1}
+          placeholder="New session… (Enter to create, ↑↓ to navigate, ? for shortcuts)"
+          disabled={isPending}
+          className={cn(
+            'flex-1 resize-none rounded-md border border-gray-300 dark:border-gray-600',
+            'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',
+            'px-3 py-2 text-sm',
+            'placeholder:text-gray-400 dark:placeholder:text-gray-500',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+            'min-h-[44px] overflow-y-auto',
+            'disabled:opacity-50 disabled:cursor-not-allowed',
+          )}
+          style={{ maxHeight: '192px' }}
+        />
+      </div>
     </div>
   )
 }
