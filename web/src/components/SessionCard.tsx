@@ -2,6 +2,7 @@ import { useRef, useEffect, useState } from 'react'
 import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
+import { relTime } from '@/lib/relativeTime'
 import { StatusPill, UsageBadge } from './UsageBadge'
 import { SubAgentRows } from './SubAgentRows'
 import type { Session, Account } from '@/api/types'
@@ -104,6 +105,13 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
           <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
             {session.accountName}
           </span>
+          {/* Sub-agent count, visible without expanding. Only shown while
+              collapsed — once expanded, the chevron + SubAgentRows carry it. */}
+          {hasSubAgents && !expanded && (
+            <span className="text-xs tabular-nums px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
+              {subAgents.length} {subAgents.length === 1 ? 'agent' : 'agents'}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <span
@@ -128,6 +136,17 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
               label="session"
               resetsAt={account.usage.session.resetsAt}
             />
+          )}
+          {/* Last activity — helps tell live sessions from stale ones at a glance.
+              Refreshes naturally as React Query refetches the session list.
+              Guarded against a missing/invalid timestamp so we never show "NaN". */}
+          {Number.isFinite(new Date(session.updatedAt).getTime()) && (
+            <span
+              className="text-xs text-gray-400 dark:text-gray-500 tabular-nums"
+              title={`Last active ${new Date(session.updatedAt).toLocaleString()}`}
+            >
+              active {relTime(session.updatedAt)}
+            </span>
           )}
         </div>
       </button>
