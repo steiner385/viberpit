@@ -162,7 +162,13 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               {subAgents.length} {subAgents.length === 1 ? 'agent' : 'agents'}
             </span>
           )}
-          <span className="flex-shrink-0 text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
+          {/* The chip yields before the title does: capped at 45% of the row and
+              truncating, so a long account email can't starve the session name on
+              a narrow (mobile) width. `title` keeps the full value reachable. */}
+          <span
+            className="flex-shrink-0 max-w-[45%] truncate text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded"
+            title={account?.nickname || session.accountName}
+          >
             {account?.nickname || session.accountName}
           </span>
         </div>

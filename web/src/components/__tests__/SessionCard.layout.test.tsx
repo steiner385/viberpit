@@ -55,6 +55,17 @@ describe('SessionCard deterministic skeleton', () => {
     expect(within(identity).getByText('work')).toBeInTheDocument()
   })
 
+  it('caps and truncates the account chip so a long email cannot starve the title', () => {
+    // On a narrow (mobile) viewport a long account email used to be pinned at
+    // full width (`flex-shrink-0`, no cap), collapsing the session name to a few
+    // characters ("M…"). The chip must yield instead: cap its share and truncate
+    // it so the title — the primary identifier — keeps the bulk of the row.
+    renderCard({ ...base, accountName: 'tonystein85@gmail.com' })
+    const identity = screen.getByTestId('card-identity')
+    const chip = within(identity).getByText('tonystein85@gmail.com')
+    expect(chip).toHaveClass('truncate', 'max-w-[45%]')
+  })
+
   it('places the last-active timestamp in the telemetry row, not the context row', () => {
     renderCard(base)
     const telemetry = screen.getByTestId('card-telemetry')
