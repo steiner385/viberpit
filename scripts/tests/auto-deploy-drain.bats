@@ -47,3 +47,14 @@ teardown() { rm -rf "$TMP"; }
   [[ "$output" == *"cap"* ]]
   [ "$(git -C "$DEPLOY" rev-parse HEAD)" = "$(git -C "$DEPLOY" rev-parse origin/master)" ]
 }
+
+@test "remote+daemon change: drain unavailable → proceeds fail-open" {
+  run env CCSWITCH_DEPLOY_CI_OK=1 CCSWITCH_DEPLOY_REMOTE_ACTIVE=1 \
+      CCSWITCH_DEPLOY_DRAIN_RESULT=unavailable \
+      CCSWITCH_DEPLOY_TEST_STOP_AFTER_SYNC=1 \
+      CCSWITCH_HOST=127.0.0.1 CCSWITCH_PORT=0 \
+      bash "$DEPLOY/scripts/auto-deploy.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"unavailable"* ]]
+  [ "$(git -C "$DEPLOY" rev-parse HEAD)" = "$(git -C "$DEPLOY" rev-parse origin/master)" ]
+}

@@ -163,7 +163,7 @@ drain_and_wait() {
 # $1 = human-readable reason (e.g. "busy" or "vnc-attached")
 defer_across_ticks() {
   local reason="$1"
-  MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
+  local MAX_DEFER; MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
   local now; now="$(date +%s)"
   local msha mts; msha=""; mts=0
   if [ -f "$DEFER_FILE" ]; then read -r msha mts < "$DEFER_FILE" || true; fi
