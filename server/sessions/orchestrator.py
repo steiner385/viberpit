@@ -1213,6 +1213,11 @@ class SessionOrchestrator:
                 continue
             if now - driver.last_progress_at <= STALL_TIMEOUT:
                 continue
+            if getattr(driver, "awaiting_user_input", False):
+                # Blocked on a permission / plan / question — waiting on the human,
+                # not wedged. Interrupting here is the spurious "[Request interrupted
+                # by user]" users see when they take a while to answer.
+                continue
             if self._recovery.stall_cap_reached(sid, now=now):
                 continue  # repeatedly stalling — don't interrupt-loop
             self._recovery.record_stall(sid, now=now)
