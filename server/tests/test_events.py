@@ -29,7 +29,8 @@ def test_toolcall_carries_kind_and_turn():
 
 def test_session_meta_to_wire():
     e = SessionMeta(model="claude-sonnet-4-5", session_id="s1")
-    assert e.to_wire() == {"type": "sessionMeta", "model": "claude-sonnet-4-5", "sessionId": "s1"}
+    assert e.to_wire() == {"type": "sessionMeta", "model": "claude-sonnet-4-5", "sessionId": "s1",
+                           "account": None, "accountPinned": False}
 
 def test_turn_end_to_wire_includes_cost():
     e = TurnEnd(turn_id="t1", usage={"input_tokens": 5}, cost_usd=0.25, src_uuid="u1")
