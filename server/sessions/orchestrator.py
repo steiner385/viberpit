@@ -1250,16 +1250,16 @@ class SessionOrchestrator:
         """
         return self._pending_initial_attachment_ids.pop(session_id, None)
 
-    async def send_prompt(self, session_id, text, attachment_ids=None):
+    async def send_prompt(self, session_id, text, attachment_ids=None) -> str:
         if self._draining:
-            # No new turns during a deploy drain. The browser buffers and resends on
-            # reconnect; this guard only catches prompts already in flight when drain began.
+            # No new turns during a deploy drain. Tell the browser so it re-queues
+            # (promptRejected) and shows the hold banner — never silently swallow it.
             log.info("send_prompt rejected: drain in progress session=%s", session_id)
             self._publish_event({"type": "updatePending"})
-            return
+            return "draining"
         d = self._drivers.get(session_id)
         if not d:
-            return
+            return "no_driver"
         ids = list(attachment_ids or [])
         if len(ids) > _attachments.MAX_PER_MESSAGE:
             log.warning("send_prompt: capping attachments from %d to %d session=%s",
@@ -1274,6 +1274,7 @@ class SessionOrchestrator:
                     db, session_id, turn_id, ids)
         self._last_prompt[session_id] = text
         await d.send_prompt(text, resolved)
+        return "sent"
 
     async def interrupt(self, session_id):
         d = self._drivers.get(session_id)

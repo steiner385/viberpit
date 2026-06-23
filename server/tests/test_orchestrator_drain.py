@@ -84,3 +84,18 @@ async def test_send_prompt_rejected_while_draining():
     evs = _drain_events_from(q)
     assert any(e["type"] == "updatePending" for e in evs)
     o.cancel_drain()
+
+
+@pytest.mark.asyncio
+async def test_send_prompt_returns_draining_status():
+    o = _orch()
+    await o.begin_drain(selfclear_sec=999)
+    # The drain guard returns BEFORE touching _drivers, so an unknown id is fine.
+    assert await o.send_prompt("unknown-session", "hello") == "draining"
+    o.cancel_drain()
+
+
+@pytest.mark.asyncio
+async def test_send_prompt_returns_no_driver_when_idle_and_unknown():
+    o = _orch()
+    assert await o.send_prompt("unknown-session", "hello") == "no_driver"

@@ -102,8 +102,9 @@ class RemoteOrchestrator:
         r = await self._client.call("create_session", **kwargs)
         return SessionRecord.from_dict(r["session"])
 
-    async def send_prompt(self, session_id: str, text: str, images=None) -> None:
-        await self._client.call("send_prompt", session_id=session_id, text=text, images=images)
+    async def send_prompt(self, session_id: str, text: str, images=None) -> str | None:
+        r = await self._client.call("send_prompt", session_id=session_id, text=text, images=images)
+        return (r or {}).get("status")
 
     async def ensure_driver(self, session_id: str, identity: str = "system") -> "RemoteDriver | None":
         r = await self._client.call("ensure_driver", session_id=session_id, identity=identity)

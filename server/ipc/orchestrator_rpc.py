@@ -48,8 +48,8 @@ def register_orchestrator_rpc(app, orch) -> None:
         return {"session": rec.to_dict()}
 
     async def send_prompt(params: dict) -> dict:
-        await orch.send_prompt(params["session_id"], params["text"], params.get("images"))
-        return {"ok": True}
+        status = await orch.send_prompt(params["session_id"], params["text"], params.get("images"))
+        return {"status": status}
 
     async def pr_for(params: dict) -> dict:
         info = orch.pr_for(params.get("repo"), params.get("branch"))
