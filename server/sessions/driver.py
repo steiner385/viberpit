@@ -33,7 +33,8 @@ class SessionDriver:
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
-                 on_status=None, on_recoverable_failure=None, clock=None, suggester=None):
+                 on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
+                 on_recoverable_failure=None, clock=None, suggester=None):
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -50,6 +51,9 @@ class SessionDriver:
         # real state, using the RICH derived vocabulary (in_progress / waiting_input /
         # ready_review / done / idle), not just the live working/idle of the StatusBar.
         self._on_status = on_status
+        self._on_record_condense_ms = on_record_condense_ms
+        self._get_condense_estimate = get_condense_estimate
+        self._condense_started_at: float | None = None
         # async callback ``on_recoverable_failure(session_id, kind, retry_after)`` fired
         # when a turn fails with a recoverable kind (rate_limit / auth_401 / process_crash). The
         # orchestrator drives the actual recovery (same-account retry/recompose, then
@@ -118,12 +122,33 @@ class SessionDriver:
         return derive_status(self._dash_signals())
 
     async def _on_pre_compact(self, input=None, tool_use_id=None, ctx=None) -> dict:
-        """SDK PreCompact hook: context auto-compaction is starting. Flip the
-        transient flag and surface the ``condensing`` status. Never blocks
-        compaction; returns an empty HookJSONOutput."""
+        """SDK PreCompact hook: compaction is starting. Stamp the start, advertise the
+        learned expected duration to the UI, flip the status. Never blocks compaction."""
+        self._condense_started_at = self._clock()
         self._condensing = True
+        est: float | None = None
+        if self._get_condense_estimate is not None:
+            try:
+                est = await self._get_condense_estimate()
+            except Exception:
+                log.warning("driver.get_condense_estimate failed session=%s", self.session_id, exc_info=True)
+        await self._out.put(ev.Condensing(active=True, expected_ms=est))
         await self._emit_status()
         return {}
+
+    async def _consume_condensing(self, e) -> None:
+        """Toggle the flag, record a real boundary's duration, forward to the UI."""
+        self._condensing = e.active
+        if not e.active and self._condense_started_at is not None:
+            ms = (self._clock() - self._condense_started_at) * 1000
+            self._condense_started_at = None
+            if self._on_record_condense_ms is not None:
+                try:
+                    await self._on_record_condense_ms(ms)
+                except Exception:
+                    log.warning("driver.record_condense_ms failed session=%s", self.session_id, exc_info=True)
+        await self._emit_status()
+        await self._out.put(e)   # forward so the UI clears the bar
 
     async def _emit_status(self, count: int | None = None) -> None:
         """Single status emitter — rich vocabulary to BOTH consumers.
@@ -387,9 +412,7 @@ class SessionDriver:
                             self._last_rate_reset = e.resets_at
                         continue
                     if isinstance(e, ev.Condensing):
-                        # Internal: toggle the transient flag; UI learns via status.
-                        self._condensing = e.active
-                        await self._emit_status()
+                        await self._consume_condensing(e)
                         continue
                     if isinstance(e, ev.TextDelta):
                         self._last_assistant_parts.append(e.text)
@@ -423,6 +446,7 @@ class SessionDriver:
             await self._call_sync_back()
             # Compaction is turn-scoped; never let a condensing flag outlive the turn.
             self._condensing = False
+            self._condense_started_at = None
             # If queued prompts remain, pop the front and start the next turn.
             if self._queue:
                 next_text, next_images = self._queue.pop(0)
