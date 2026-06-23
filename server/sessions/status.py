@@ -19,6 +19,7 @@ class StatusSignals:
     pending_plan: bool
     turns_completed: int
     last_turn_outcome: str = "success"
+    retrying: bool = False
 
 
 def derive_status(sig: StatusSignals) -> str:
@@ -28,6 +29,8 @@ def derive_status(sig: StatusSignals) -> str:
         return "waiting_question"
     if sig.pending_permission:
         return "waiting_input"
+    if sig.turn_active and sig.retrying:
+        return "retrying"
     if sig.turn_active:
         return "in_progress"
     if sig.turns_completed >= 1:
