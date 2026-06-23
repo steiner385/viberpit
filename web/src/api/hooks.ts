@@ -6,7 +6,7 @@ import type {
 } from './types'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
-import { getPendingSessions, subscribePending } from '@/lib/pendingSessions'
+import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
 
 // Query keys
 export const QK = {
@@ -135,16 +135,31 @@ export interface CreateSessionInput {
 
 export function useCreateSession() {
   const qc = useQueryClient()
-  return useMutation<Session, ApiRequestError, CreateSessionInput>({
+  return useMutation<Session, ApiRequestError, CreateSessionInput, { tempId: string }>({
     mutationFn: (input) => api.post<Session>('/sessions', input),
+    onMutate: (input) => {
+      // Placeholder lives outside the query cache so the 5s poll can't wipe it
+      // while the backend spins up the claude PTY.
+      const tempId = addPendingSession({
+        name: input.name?.trim() || input.initialPrompt?.trim().slice(0, 60) || 'New session',
+        accountName: input.account ?? '',
+        status: 'in_progress',
+        createdAt: new Date().toISOString(),
+        repo: input.repo ?? null,
+      })
+      return { tempId }
+    },
     onSuccess: (session) => {
-      // Show the new card immediately instead of waiting up to 5s for the poll.
+      // Inject the real card before the placeholder is removed (onSettled) to avoid a flicker.
       qc.setQueryData<Session[]>(QK.sessions, (prev) => {
         const list = prev ?? []
         if (list.some((s) => s.id === session.id)) return list
         return [...list, session]
       })
       qc.invalidateQueries({ queryKey: QK.sessions })
+    },
+    onSettled: (_data, _err, _input, ctx) => {
+      if (ctx?.tempId) removePendingSession(ctx.tempId)
     },
   })
 }
