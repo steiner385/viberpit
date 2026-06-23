@@ -18,6 +18,7 @@ interface SessionListProps {
   onRename: (id: string) => void
   onClose: (id: string) => void
   onDelete: (id: string) => void
+  onQuickResume: (id: string, text?: string) => void
 }
 
 function SkeletonCard() {
@@ -53,6 +54,7 @@ export function SessionList({
   onRename,
   onClose,
   onDelete,
+  onQuickResume,
 }: SessionListProps) {
   if (isLoading) {
     return (
@@ -99,6 +101,7 @@ export function SessionList({
       onRename={onRename}
       onClose={onClose}
       onDelete={onDelete}
+      onQuickResume={onQuickResume}
     />
   )
 

@@ -41,7 +41,7 @@ from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory
 from server.sessions.suggestions import SuggestionService
 from server.sessions.recovery import (
-    RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401,
+    RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
 )
 from server.sessions.selection import AllAccountsBusy, select_account
 from server.sessions.title_generator import generate_title
@@ -152,6 +152,7 @@ class SessionOrchestrator:
                     allow_refresh=not self.has_live_session(name),
                 )
 
+        self._poll_interval = poll_interval
         self._poller: UsagePoller = UsagePoller(
             poll_interval=poll_interval,
             usage_fn=_poller_usage_fn,
@@ -164,6 +165,8 @@ class SessionOrchestrator:
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
+        self._stall_task: asyncio.Task | None = None
+        self._token_refresh_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
         # Serialises the check-build-register critical section in ensure_driver
@@ -202,10 +205,49 @@ class SessionOrchestrator:
         self._titling_task = asyncio.create_task(
             self._titling_monitor(), name="titling-monitor"
         )
+        self._stall_task = asyncio.create_task(self._stall_loop(), name="stall-watchdog")
+        self._token_refresh_task = asyncio.create_task(
+            self._token_refresh_monitor(), name="token-refresh-monitor"
+        )
+
+    async def _refresh_idle_tokens_once(self) -> None:
+        """Proactively refresh idle accounts' access tokens (best-effort).
+
+        Decoupled from the usage poller's backoff so a throttled *usage* endpoint
+        can't starve *token* refresh. Skips accounts that are already needs-reauth
+        (a dead single-use token can't be refreshed — don't hammer the endpoint)
+        and accounts with a live session (the SDK owns that token family and
+        ccswitch must not refresh it out from under the running process). Reuses
+        ensure_valid_token as the single source of truth; per-account errors are
+        swallowed — status transitions stay owned by the usage_for path.
+        """
+        try:
+            accounts = ccswitch_accounts.list_accounts()
+        except Exception:
+            log.warning("token-refresh: list_accounts failed", exc_info=True)
+            return
+        for acct in accounts:
+            name = acct["name"]
+            if acct.get("status") == "needs-reauth" or self.has_live_session(name):
+                continue
+            try:
+                await asyncio.to_thread(ccswitch_accounts.ensure_valid_token, name)
+            except Exception:
+                log.debug("token-refresh: ensure_valid_token failed for %s", name, exc_info=True)
+
+    async def _token_refresh_monitor(self) -> None:
+        """Run an idle-token refresh immediately (restart recovery), then every
+        poll_interval seconds."""
+        while True:
+            try:
+                await self._refresh_idle_tokens_once()
+            except Exception:  # pragma: no cover — defensive, _refresh_idle_tokens_once swallows
+                log.exception("token-refresh: monitor sweep failed")
+            await asyncio.sleep(self._poll_interval)
 
     async def stop(self) -> None:
         """Stop the titling sweep, rotation monitor and usage poller."""
-        for attr in ("_titling_task", "_rotation_task"):
+        for attr in ("_titling_task", "_rotation_task", "_stall_task", "_token_refresh_task"):
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
@@ -1041,6 +1083,21 @@ class SessionOrchestrator:
         if d:
             await d.interrupt()
 
+    def latest_suggestions(self, session_id: str) -> list[str]:
+        """Latest cached next-prompt suggestions for a live session.
+
+        Returns [] when the session has no live driver (detached) or none were
+        generated. Read straight off the driver — suggestions are ephemeral and
+        never persisted (see suggestions.py)."""
+        d = self._drivers.get(session_id)
+        return list(getattr(d, "_last_suggestions", []) or []) if d else []
+
+    async def request_suggestions(self, session_id: str) -> None:
+        """Ask a live session to (re)generate next-prompt suggestions now."""
+        d = self._drivers.get(session_id)
+        if d:
+            d.request_suggestions()
+
     async def set_permission_mode(self, session_id, mode):
         d = self._drivers.get(session_id)
         if d:
@@ -1062,7 +1119,8 @@ class SessionOrchestrator:
         """Dispatch a slash command. Raises KeyError if the command is unknown."""
         d = self._drivers.get(session_id)
         if d is None:
-            raise KeyError(name)
+            return {"name": str(name).lstrip("/"), "render": "notice",
+                    "data": {"text": "This session isn't live — open it and try again."}}
         if str(name).lstrip("/") == "model":
             arg = (args or "").strip()
             await self.set_model_for_session(session_id, arg or None)
@@ -1152,6 +1210,30 @@ class SessionOrchestrator:
         return None
 
     # ------------------------------------------------------------------
+    # Stall watchdog (background task)
+    # ------------------------------------------------------------------
+
+    async def _check_stalls(self, now: float) -> None:
+        for sid, driver in list(self._drivers.items()):
+            if not getattr(driver, "_turn_active", False):
+                continue
+            if now - driver.last_progress_at <= STALL_TIMEOUT:
+                continue
+            if self._recovery.stall_cap_reached(sid, now=now):
+                continue  # repeatedly stalling — don't interrupt-loop
+            self._recovery.record_stall(sid, now=now)
+            log.warning("stall watchdog: interrupting wedged turn session=%s", sid)
+            await driver.interrupt()
+
+    async def _stall_loop(self) -> None:
+        while True:
+            await asyncio.sleep(30)
+            try:
+                await self._check_stalls(self._clock())
+            except Exception:
+                log.exception("stall watchdog tick failed")
+
+    # ------------------------------------------------------------------
     # Rotation monitor (background task)
     # ------------------------------------------------------------------
 
@@ -1226,6 +1308,16 @@ class SessionOrchestrator:
         now = self._clock()
         if self._recovery.rotation_cap_reached(record.id, now=now):
             await self._pause_session(record, reason="rotation_cap")
+            return
+        if kind == "process_crash":
+            if self._recovery.crash_cap_reached(record.id, now=now):
+                await self._pause_session(record, reason="crash_cap")
+                return
+            self._recovery.record_crash(record.id, now=now)
+            # Rebuild the driver in place on the same account, resuming the
+            # conversation; _reassign re-sends the last prompt so the interrupted
+            # turn continues. Same machinery rate-limit recovery uses.
+            await self._reassign(record, record.account, reason="process_crash")
             return
         if kind == "rate_limit":
             if retry_after is not None and retry_after <= RETRY_AFTER_MAX:

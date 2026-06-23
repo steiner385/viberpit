@@ -200,3 +200,16 @@ def test_ws_attach_streams_event_from_daemon(remote_edge):
                         seen = e
                         break
             assert seen is not None, "did not receive streamed textDelta"
+
+
+def test_rest_daemonerror_maps_to_409(remote_edge):
+    orch, client = remote_edge
+    from server.ipc.client import DaemonError
+
+    async def boom(*a, **k):
+        raise DaemonError("KeyError", "account")
+
+    client.app.state.sessions.list_sessions = boom
+    resp = client.get("/api/sessions", headers=_IDENT)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "account"
