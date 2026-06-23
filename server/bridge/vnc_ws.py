@@ -101,8 +101,12 @@ class _WSAdapter:
             pass
 
 
-def build_vnc_ws_router(get_x11) -> APIRouter:
-    """Return an APIRouter containing the /ws/vnc endpoint."""
+def build_vnc_ws_router(get_x11, get_daemon_sock=lambda: None) -> APIRouter:
+    """Return an APIRouter with /ws/vnc.
+
+    Remote mode (get_daemon_sock() truthy): proxy the browser WS to the daemon's
+    /vnc over the IPC socket, propagating a 4xxx daemon close code. In-process mode
+    (default): relay straight to the local x11vnc."""
     router = APIRouter()
 
     @router.websocket("/ws/vnc")
@@ -110,8 +114,30 @@ def build_vnc_ws_router(get_x11) -> APIRouter:
         websocket: WebSocket,
         identity: str = Depends(require_ws_identity),
     ) -> None:
-        x11 = get_x11()
         session_id = websocket.query_params.get("session", "")
+        sock = get_daemon_sock()
+        if sock:
+            import websockets
+            from websockets.exceptions import ConnectionClosed
+            await websocket.accept()
+            close_code = 1000
+            try:
+                uri = f"ws://daemon/vnc?session={session_id}"
+                async with websockets.unix_connect(sock, uri) as dws:
+                    await _relay(websocket, _WSAdapter(dws))
+                    close_code = dws.close_code or 1000
+            except ConnectionClosed as exc:
+                close_code = exc.code or 1000
+            except Exception:
+                log.exception("vnc: remote proxy failed session=%s", session_id)
+            if 4000 <= close_code < 5000:
+                try:
+                    await websocket.close(close_code)
+                except Exception:
+                    pass
+            return
+
+        x11 = get_x11()
         if x11 is None:
             await websocket.accept()
             await websocket.close(CLOSE_NOT_ENABLED, "xvfb disabled")
