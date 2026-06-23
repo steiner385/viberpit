@@ -44,6 +44,9 @@ async def test_relay_pumps_both_directions():
         async def drain(self):
             ...
 
+        async def close(self):
+            ...
+
     ws = FakeWS([b"\x00\x01"])
     tcp = FakeTCP()
     await _relay(ws, tcp, idle=0.05)

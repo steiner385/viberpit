@@ -225,6 +225,12 @@ class RemoteOrchestrator:
     def subscribe(self, session_id: str):
         return self._client.subscribe(session_id)
 
+    async def x11_metrics(self) -> dict:
+        return await self._client.call("x11_metrics")
+
+    async def x11_open_browser(self, session_id: str, url: str | None = None) -> dict:
+        return await self._client.call("x11_open_browser", session_id=session_id, url=url)
+
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():
             self._global_pump.cancel()
