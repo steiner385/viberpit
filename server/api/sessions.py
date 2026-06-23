@@ -12,6 +12,7 @@ All routes require a verified identity via the ``current_identity`` dependency.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 from typing import Any, TYPE_CHECKING
@@ -153,6 +154,22 @@ async def _resolve_repo(record) -> str | None:
     return await asyncio.to_thread(gitrepos.repo_at_path, cwd)
 
 
+async def _resolve_pr(orch, record):
+    """Resolve a record's PR via ``orch.pr_for``, tolerating both orchestrators.
+
+    The in-process orchestrator's ``pr_for`` is synchronous; the remote (daemon)
+    one awaits an RPC. Returns ``PullRequestInfo | None``; an orchestrator with no
+    ``pr_for`` at all (older shim) yields ``None`` rather than raising.
+    """
+    fn = getattr(orch, "pr_for", None)
+    if fn is None:
+        return None
+    res = fn(record.repo, getattr(record, "branch", None))
+    if inspect.isawaitable(res):
+        res = await res
+    return res
+
+
 def _get_orchestrator(request: Request) -> "InProcessOrchestratorAdapter":
     return request.app.state.sessions
 
@@ -174,11 +191,7 @@ async def list_sessions(
     # status in parallel.
     repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
     suggs = await asyncio.gather(*(orch.latest_suggestions(r.id) for r in records))
-    pr_for = getattr(orch, "pr_for", None)
-    prs = [
-        (pr_for(r.repo, getattr(r, "branch", None)) if pr_for else None)
-        for r in records
-    ]
+    prs = await asyncio.gather(*(_resolve_pr(orch, r) for r in records))
     return [
         _record_to_dict(r, repo=repo, suggestions=s, pr=pr)
         for r, repo, s, pr in zip(records, repos, suggs, prs)

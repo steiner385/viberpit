@@ -36,6 +36,26 @@ def _build_app():
 
 
 @pytest.mark.asyncio
+async def test_pr_for_over_uds():
+    """The edge resolves a session's PR through the daemon's poller cache."""
+    from server.github.pr_status import PullRequestInfo
+    app, orch = _build_app()
+    cached = PullRequestInfo(9, "https://github.com/o/r/pull/9", "open", "passing", "t")
+    orch._pr_poller._cache[("o/r", "br")] = cached
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            got = await ro.pr_for("o/r", "br")
+            missing = await ro.pr_for("o/r", "no-such-branch")
+            no_args = await ro.pr_for(None, None)
+        finally:
+            await ro.aclose()
+    assert got == cached
+    assert missing is None
+    assert no_args is None
+
+
+@pytest.mark.asyncio
 async def test_list_get_create_send_over_uds():
     app, orch = _build_app()
     orch._records["s1"] = _rec("s1")

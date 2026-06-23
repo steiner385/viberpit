@@ -7,6 +7,7 @@ the vertical-slice methods only.
 import asyncio
 import logging
 from ccswitch.oauth import Usage
+from server.github.pr_status import PullRequestInfo
 from server.sessions.types import SessionRecord
 
 log = logging.getLogger(__name__)
@@ -84,6 +85,14 @@ class RemoteOrchestrator:
     async def list_sessions(self) -> list[SessionRecord]:
         r = await self._client.call("list_sessions")
         return [SessionRecord.from_dict(d) for d in r["sessions"]]
+
+    async def pr_for(self, repo, branch) -> "PullRequestInfo | None":
+        """Resolve a session's PR via the daemon's poller cache (None if absent)."""
+        if not repo or not branch:
+            return None
+        r = await self._client.call("pr_for", repo=repo, branch=branch)
+        info = r.get("pr")
+        return PullRequestInfo.from_dict(info) if info else None
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)

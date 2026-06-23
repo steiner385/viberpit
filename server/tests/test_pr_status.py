@@ -7,6 +7,13 @@ def _resp(alias_to_nodes: dict) -> dict:
     return {"data": {a: {"pullRequests": {"nodes": n}} for a, n in alias_to_nodes.items()}}
 
 
+def test_from_dict_roundtrips_to_dict():
+    # from_dict is the inverse of to_dict so the daemon→edge RPC can rebuild a
+    # PullRequestInfo from the wire payload.
+    pr = PullRequestInfo(9, "https://github.com/o/r/pull/9", "open", "passing", "t")
+    assert PullRequestInfo.from_dict(pr.to_dict()) == pr
+
+
 def _pr(number, state, *, draft=False, rollup="SUCCESS", updated="2026-06-22T10:00:00Z"):
     commit = {"commit": {"statusCheckRollup": {"state": rollup} if rollup else None}}
     return {
