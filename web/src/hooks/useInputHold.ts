@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getSessionSocket, type ConnectionState } from '@/ws/client'
+import { useUpdatePending } from '@/hooks/useUpdatePending'
 
 export interface InputHoldState {
   holding: boolean
@@ -17,24 +18,29 @@ function tryGetSocket() {
   }
 }
 
+/**
+ * True whenever the user's input cannot currently reach a session, so the UI should hold a
+ * banner: a deploy drain is in progress, OR prompts are already buffered, OR the socket dropped
+ * *after* being connected and is reconnecting.
+ *
+ * We deliberately key the disconnect case on the `reconnecting` state, NOT `!connected`: a fresh
+ * socket starts in `connecting`/`disconnected` during the initial handshake, and treating that as
+ * "input held" would flash the banner on every page load (and render a spurious second
+ * role="status" in Dashboard tests). `reconnecting` only occurs after a prior connection dropped.
+ */
 export function useInputHold(): InputHoldState {
+  const pending = useUpdatePending()
   const socket = tryGetSocket()
-  const [pending, setPending] = useState(socket ? socket.updatePendingState : { active: false, count: 0 })
   const [conn, setConn] = useState<ConnectionState>(socket ? socket.connectionState : 'connected')
   useEffect(() => {
     if (!socket) return
-    const ph = (s: { active: boolean; count: number }) => setPending(s)
     const ch = (s: ConnectionState) => setConn(s)
-    socket.on('updatePendingChange', ph)
     socket.on('connectionStateChange', ch)
-    return () => {
-      socket.off('updatePendingChange', ph)
-      socket.off('connectionStateChange', ch)
-    }
+    return () => socket.off('connectionStateChange', ch)
   }, [socket])
-  const connected = conn === 'connected'
+  const reconnecting = conn === 'reconnecting'
   return {
-    holding: pending.active || !connected,
+    holding: pending.active || pending.count > 0 || reconnecting,
     count: pending.count,
     // 'updating' is the richer deploy message; otherwise we're just reconnecting.
     mode: pending.active ? 'updating' : 'reconnecting',
