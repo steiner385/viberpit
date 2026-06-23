@@ -1,5 +1,5 @@
 from server.github.pr_status import (
-    PullRequestInfo, build_pr_query, parse_pr_response,
+    PRODUCTION_ENVIRONMENT, PullRequestInfo, build_pr_query, parse_pr_response,
 )
 
 
@@ -80,9 +80,6 @@ def test_parse_no_prs_omits_key():
 def test_parse_tolerates_missing_alias():
     out = parse_pr_response({"data": {}}, [("o/r", "br")])
     assert out == {}
-
-
-from server.github.pr_status import PRODUCTION_ENVIRONMENT
 
 
 def _resp_full(alias: str, pr_nodes: list, deploy_nodes: list) -> dict:
