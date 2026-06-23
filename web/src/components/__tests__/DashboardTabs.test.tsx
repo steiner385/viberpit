@@ -268,7 +268,7 @@ describe('Dashboard — Sessions/Accounts tabs', () => {
     render(<Dashboard />, { wrapper })
 
     await user.selectOptions(await screen.findByLabelText('Group by'), 'status')
-    // idle sessions belong to the 'your-turn' tier, labelled "Your turn"
-    expect(await screen.findByText('Your turn')).toBeInTheDocument()
+    // idle sessions belong to the 'your-turn' tier, whose header is "Done"
+    expect(await screen.findByText('Done')).toBeInTheDocument()
   })
 })

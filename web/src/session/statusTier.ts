@@ -50,11 +50,17 @@ export const TIER_RANK: Record<StatusTier, number> = {
   'needs-you': 0, error: 1, 'your-turn': 2, busy: 3,
 }
 
-/** Human-readable section header for each tier (group-by-status). */
+/**
+ * Human-readable section header for each tier (group-by-status). These name the
+ * tier as a category and intentionally avoid reusing any individual status pill
+ * label: the 'your-turn' tier bundles several pills (Ready / Your turn / Complete
+ * / Ended), so its header is "Done" rather than "Your turn" — otherwise a header
+ * named "Your turn" would sit above "Ready" cards and read as misfiled.
+ */
 export const TIER_LABEL: Record<StatusTier, string> = {
   'needs-you': 'Needs you',
   error: 'Needs attention',
-  'your-turn': 'Your turn',
+  'your-turn': 'Done',
   busy: 'Working',
 }
 
