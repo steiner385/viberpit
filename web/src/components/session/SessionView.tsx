@@ -144,6 +144,7 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
           autoFocusKey={sessionId}
           suggestions={rt.state.latestSuggestions}
           history={history}
+          onRequestSuggestions={rt.onRequestSuggestions}
         />
       </div>
     </div>

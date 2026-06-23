@@ -25,6 +25,7 @@ interface Props {
   autoFocusKey?: unknown
   suggestions?: string[]
   history?: string[]
+  onRequestSuggestions?: () => void
 }
 
 export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [] }: Props) {

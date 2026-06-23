@@ -59,6 +59,8 @@ export interface Session {
   accountPinned?: boolean
   /** Current model alias/id for the session; null = account default. */
   model?: string | null
+  /** Cached next-prompt suggestions for a live session (empty when none/detached). */
+  latestSuggestions?: string[]
 }
 
 export interface ArchivedSession {
