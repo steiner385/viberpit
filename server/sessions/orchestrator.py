@@ -44,6 +44,7 @@ from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
 )
 from server.sessions.selection import AllAccountsBusy, select_account
+from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import SessionRecord
@@ -55,7 +56,7 @@ log = logging.getLogger(__name__)
 # Statuses that mean a session is mid-turn or awaiting user input — restarting now
 # would lose in-flight work. All other statuses (idle / ready_review / done /
 # limited / ended / archived) are restart-safe: resume + transcript replay recover them.
-_ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input"})
+_ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "condensing"})
 
 
 class BranchSwitchError(Exception):
@@ -162,6 +163,9 @@ class SessionOrchestrator:
         self._pr_poller.set_pairs_provider(self._pr_pairs)
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
+        # Sessions whose background tasks have been re-armed this process (dedup the
+        # auto pass against retry-on-attach). Cleared by a fresh process start.
+        self._rearmed: set[str] = set()
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
@@ -174,21 +178,25 @@ class SessionOrchestrator:
         # each see no driver, each build+start one, and both register → two SDK
         # processes attached to the same Claude conversation (TOCTOU fix).
         self._ensure_lock: asyncio.Lock = asyncio.Lock()
+        # Graceful-drain state (deploy handshake). In-memory only; a restart clears it.
+        self._draining: bool = False
+        self._drain_started_at: float = 0.0
+        self._drain_timer: asyncio.Task | None = None
 
     def _session_factory(self, session_id: str):
-        """Return a 5-arg SDK factory closure injecting this session's DISPLAY.
+        """Return a factory closure injecting this session's DISPLAY and PreCompact hook.
 
-        When no X11 display is allocated for this session, the closure calls the
-        base factory with only the standard 5 positional arguments so that test
-        factories (which don't accept ``extra_env``) keep working unchanged.
+        Forwards ``on_pre_compact`` to the base factory so the real SDK factory can
+        register the hook; fake factories accept and ignore it.
         """
         base = self._sdk_factory
         x11 = self._x11
-        def _factory(cwd, config_dir, can_use_tool, mode, resume):
+        def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
             extra = x11.env_for(session_id) if x11 else {}
             if extra:
-                return base(cwd, config_dir, can_use_tool, mode, resume, extra_env=extra)
-            return base(cwd, config_dir, can_use_tool, mode, resume)
+                return base(cwd, config_dir, can_use_tool, mode, resume,
+                            extra_env=extra, on_pre_compact=on_pre_compact)
+            return base(cwd, config_dir, can_use_tool, mode, resume, on_pre_compact=on_pre_compact)
         return _factory
 
     # ------------------------------------------------------------------
@@ -357,6 +365,8 @@ class SessionOrchestrator:
             on_session_id=self._persist_claude_session_id,
             on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
             on_status=self._persist_status,
+            on_record_condense_ms=self._record_condense_ms,
+            get_condense_estimate=self._condense_estimate,
             on_recoverable_failure=self._handle_recoverable_failure,
             suggester=self._suggester,
         )
@@ -496,20 +506,39 @@ class SessionOrchestrator:
         row. Never downgrades a terminal ``ended`` status. When a turn finishes
         (``done``), opportunistically refresh the auto-name from Claude's title.
         """
+        from server.sessions.status import ACTIVITY_STATUSES
         rec = self._records.get(session_id)
         if rec is not None and rec.status == "ended":
             return
+        # Overlay: a turn that finished (`done`) but left the agent parked on an external
+        # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
+        # not "Your turn". Computed here (not in the pure `derive_status`) because it needs
+        # the transcript, like the `limited`/`ended` overlays. Scan only on `done` so the
+        # per-emit cost is paid once per turn-end. `waiting_external` is NOT in
+        # ACTIVITY_STATUSES, so parking does NOT bump the "active … ago" clock below — the
+        # card shows time since the last real turn, not a reset on every re-arm.
+        completed_turn = status == "done"
+        if completed_turn:
+            from .background_tasks import is_parked
+            if is_parked(self.transcript_path(session_id)):
+                status = "waiting_external"
+        # Advance the "active … ago" clock ONLY when the assistant hands output back —
+        # a finished or user-paused turn (ACTIVITY_STATUSES). Bumping it on every status
+        # (in_progress) or incidental row write is the bug that pinned every card to
+        # "0s ago". Naive UTC to match the DB DateTime columns.
+        from datetime import datetime
+        turn_at = datetime.utcnow() if status in ACTIVITY_STATUSES else None
         if rec is not None:
-            from datetime import datetime
             rec.status = status
-            # Mirror the DB row's onupdate=utcnow into the in-memory read-model so
-            # the dashboard's "active … ago" label reflects this activity without a
-            # round-trip. Naive UTC to match Session.created_at/updated_at columns.
-            rec.updated_at = datetime.utcnow()
+            if turn_at is not None:
+                rec.last_turn_at = turn_at
         async with db_session() as db:
             from sqlalchemy import update as sa_update
+            values: dict = {"status": status}
+            if turn_at is not None:
+                values["last_turn_at"] = turn_at
             await db.execute(
-                sa_update(DbSession).where(DbSession.id == session_id).values(status=status)
+                sa_update(DbSession).where(DbSession.id == session_id).values(**values)
             )
         # Refresh the per-sub-agent summary so the dashboard list can nest sub-agents
         # under this session. Best-effort: a failure must never break the session loop.
@@ -521,8 +550,16 @@ class SessionOrchestrator:
         # WS bridge forwards lifecycle frames top-level so the client's status handler
         # (_patchSessionStatus) patches the cached session record.
         self._publish_event({"type": "status", "sessionId": session_id, "status": status})
-        if status == "done":
+        if completed_turn:
             await self._maybe_apply_auto_name(session_id)
+
+    async def _condense_estimate(self) -> float:
+        from server.sessions import compaction_stats
+        return await compaction_stats.current_estimate()
+
+    async def _record_condense_ms(self, ms: float) -> None:
+        from server.sessions import compaction_stats
+        await compaction_stats.record_duration(ms)
 
     async def _persist_sub_agents(self, session_id: str) -> None:
         """Recompute the session's sub-agent summary from the transcript and persist
@@ -659,7 +696,7 @@ class SessionOrchestrator:
             if row.id in self._records:
                 continue
             # A pre-crash live status has no driver anymore → normalize to idle.
-            status = "idle" if row.status in ("working", "in_progress") else row.status
+            status = "idle" if row.status in ("working", "in_progress", "condensing") else row.status
             # Backfill the PR-join branch for legacy sessions created before the
             # branch was persisted (NULL column). Derive it once from the session's
             # worktree and write it back so the column becomes the source of truth.
@@ -684,6 +721,7 @@ class SessionOrchestrator:
                 permission_mode=row.permission_mode,
                 created_at=row.created_at,
                 updated_at=getattr(row, "updated_at", None),
+                last_turn_at=getattr(row, "last_turn_at", None),
                 adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
                 model=getattr(row, "model", None),
                 account_pinned=bool(getattr(row, "account_pinned", False)),
@@ -701,6 +739,65 @@ class SessionOrchestrator:
                     )
         log.info("rehydrate: %d session(s) restored (%d branch backfilled)", added, len(backfilled))
         return added
+
+    async def rearm_background_tasks(self) -> int:
+        """Relaunch background tasks snapshotted at the last drain. Called once after
+        rehydrate() on daemon start; safe to call again (cleared snapshots + _rearmed
+        make it idempotent). Returns the count of sessions re-armed."""
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            rows = (await db.execute(sa_select(DbSession).where(
+                DbSession.pending_rearm.isnot(None)))).scalars().all()
+        pending = [(r.id, r.pending_rearm) for r in rows
+                   if r.pending_rearm and r.id not in self._rearmed]
+        if not pending:
+            return 0
+        sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
+
+        async def _one(sid: str, snap: list) -> bool:
+            async with sem:
+                try:
+                    return await self._rearm_session(sid, snap)
+                except Exception:
+                    log.warning("rearm: session %s failed; snapshot retained", sid,
+                                exc_info=True)
+                    return False
+
+        results = await asyncio.gather(*(_one(sid, snap) for sid, snap in pending))
+        n = sum(1 for ok in results if ok)
+        log.info("rearm: re-armed %d/%d session(s)", n, len(pending))
+        return n
+
+    async def _rearm_session(self, sid: str, snap: list) -> bool:
+        from sqlalchemy import update as sa_update
+        tasks = [OpenBgTask.from_dict(d) for d in snap if isinstance(d, dict)]
+        if not tasks:
+            return False
+        driver = await self.ensure_driver(sid)
+        if driver is None:
+            return False
+        await driver.send_prompt(build_rearm_prompt(tasks))
+        self._rearmed.add(sid)
+        async with db_session() as db:
+            await db.execute(sa_update(DbSession).where(DbSession.id == sid)
+                             .values(pending_rearm=None))
+        return True
+
+    async def _maybe_rearm_on_attach(self, session_id: str) -> None:
+        """Retry a pending re-arm when a session is attached (covers sessions the auto
+        pass skipped or failed). Idempotent via _rearmed; never raises into attach."""
+        if session_id in self._rearmed:
+            return
+        from sqlalchemy import select as sa_select
+        try:
+            async with db_session() as db:
+                row = (await db.execute(sa_select(DbSession).where(
+                    DbSession.id == session_id))).scalar_one_or_none()
+            snap = row.pending_rearm if row else None
+            if snap:
+                await self._rearm_session(session_id, snap)
+        except Exception:
+            log.warning("rearm-on-attach failed session=%s", session_id, exc_info=True)
 
     def list_sessions(self) -> list[SessionRecord]:
         """Return all in-memory SessionRecords."""
@@ -760,6 +857,96 @@ class SessionOrchestrator:
         for q in list(self._event_subscribers):
             q.put_nowait(event)
 
+    async def _snapshot_open_tasks(self) -> None:
+        """At drain, persist each live session's open background tasks so the post-restart
+        daemon can relaunch them. Only sessions with a live driver can have live tasks."""
+        from sqlalchemy import update as sa_update
+        session_ids = list(self._drivers.keys())
+        if not session_ids:
+            return
+
+        async def _scan(sid: str):
+            path = self.transcript_path(sid)
+            if not path:
+                return sid, []
+            tasks = await asyncio.to_thread(scan_open_background_tasks, path)
+            return sid, [t.to_dict() for t in tasks]
+
+        results = await asyncio.gather(*(_scan(s) for s in session_ids),
+                                       return_exceptions=True)
+        n = 0
+        async with db_session() as db:
+            for r in results:
+                if isinstance(r, BaseException):
+                    log.warning("rearm snapshot: scan failed", exc_info=r)
+                    continue
+                sid, snap = r
+                if snap:
+                    await db.execute(sa_update(DbSession).where(DbSession.id == sid)
+                                     .values(pending_rearm=snap))
+                    n += len(snap)
+        if n:
+            log.info("rearm snapshot: %d open task(s) across %d session(s)",
+                     n, len(session_ids))
+
+    async def _clear_rearm_snapshots(self) -> None:
+        from sqlalchemy import update as sa_update
+        async with db_session() as db:
+            await db.execute(sa_update(DbSession).values(pending_rearm=None))
+
+    def drain_status(self) -> dict:
+        """Report drain state: 'idle' (not draining), 'draining' (turns still running),
+        or 'ready' (draining and nothing mid-turn — safe to restart)."""
+        active = self.active_session_count()
+        if not self._draining:
+            state = "idle"
+        elif active == 0:
+            state = "ready"
+        else:
+            state = "draining"
+        elapsed = (time.monotonic() - self._drain_started_at) if self._draining else 0.0
+        return {"state": state, "busySessions": active, "elapsed": round(elapsed, 1)}
+
+    async def begin_drain(self, selfclear_sec: float | None = None) -> dict:
+        """Enter DRAINING: refuse new turns, tell the UI, and arm a self-clear timer so a
+        deploy that never restarts can't wedge us. Idempotent while already draining."""
+        if not self._draining:
+            self._draining = True
+            self._drain_started_at = time.monotonic()
+            try:
+                await self._snapshot_open_tasks()
+            except Exception:
+                log.warning("rearm snapshot failed at drain", exc_info=True)
+            self._publish_event({"type": "updatePending"})
+            timeout = (
+                selfclear_sec if selfclear_sec is not None
+                else float(os.environ.get("CCSWITCH_DRAIN_SELFCLEAR_SEC", "600"))
+            )
+            self._drain_timer = asyncio.create_task(
+                self._drain_selfclear(timeout), name="drain-selfclear")
+        return self.drain_status()
+
+    def cancel_drain(self) -> dict:
+        """Leave DRAINING (deploy aborted / self-clear): resume normal prompt acceptance
+        and tell the UI to flush any prompts it was holding."""
+        if self._draining:
+            self._draining = False
+            self._publish_event({"type": "updateCancelled"})
+            asyncio.create_task(self._clear_rearm_snapshots())
+            if self._drain_timer is not None and not self._drain_timer.done():
+                self._drain_timer.cancel()
+            self._drain_timer = None
+        return self.drain_status()
+
+    async def _drain_selfclear(self, timeout: float) -> None:
+        try:
+            await asyncio.sleep(timeout)
+        except asyncio.CancelledError:
+            return
+        if self._draining:
+            log.warning("drain self-clear: no restart within %.0fs — cancelling drain", timeout)
+            self.cancel_drain()
+
     # ------------------------------------------------------------------
     # Accessors / delegating helpers for the WS bridge
     # ------------------------------------------------------------------
@@ -803,6 +990,25 @@ class SessionOrchestrator:
             weight = 1.0 if rec.status in _ACTIVE_STATUSES else cfg.idle_session_weight
             load[rec.account] = load.get(rec.account, 0.0) + weight
         return load
+
+    def live_session_counts(self) -> dict[str, dict[str, int]]:
+        """Raw active/idle live-session counts per account, for the Accounts UI.
+
+        Same liveness notion as ``live_session_load`` (``_drivers`` ∩ ``_records``,
+        ``_ACTIVE_STATUSES`` = active) but returns integer counts split into
+        ``{"active", "idle"}`` instead of weighted floats. Accounts with no live
+        session are omitted. Snapshots ``_drivers`` before iterating (event-loop
+        mutation guard; see ``has_live_session``).
+        """
+        counts: dict[str, dict[str, int]] = {}
+        for sid in list(self._drivers.keys()):
+            rec = self._records.get(sid)
+            if rec is None:
+                continue
+            bucket = counts.setdefault(rec.account, {"active": 0, "idle": 0})
+            key = "active" if rec.status in _ACTIVE_STATUSES else "idle"
+            bucket[key] += 1
+        return counts
 
     def driver(self, session_id: str) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, or None."""
@@ -880,6 +1086,8 @@ class SessionOrchestrator:
                     on_session_id=self._persist_claude_session_id,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
                     on_status=self._persist_status,
+                    on_record_condense_ms=self._record_condense_ms,
+                    get_condense_estimate=self._condense_estimate,
                     on_recoverable_failure=self._handle_recoverable_failure,
                     suggester=self._suggester,
                 )
@@ -908,6 +1116,7 @@ class SessionOrchestrator:
                 await driver.start()
             self._drivers[session_id] = driver
             rec.detached = False
+            await self._maybe_rearm_on_attach(session_id)
             log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
             return driver
 
@@ -973,6 +1182,8 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, cand.account),
                 on_status=self._persist_status,
+                on_record_condense_ms=self._record_condense_ms,
+                get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester,
             )
@@ -995,12 +1206,15 @@ class SessionOrchestrator:
             resumed = False
         self._drivers[session_id] = driver
 
+        # The transcript mtime is the adopted session's real last-response time — seed the
+        # "active … ago" clock from it (naive UTC to match the DB columns) instead of "now".
+        adopted_last_turn = cand.last_activity.replace(tzinfo=None) if cand.last_activity else None
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=cand.name, account_name=cand.account,
                 claude_session_id=claude_session_id, status="idle", pid=None,
                 cwd=cand.cwd, repo=None, permission_mode="interactive",
-                name_is_auto=True, adopted_in_place=True,
+                name_is_auto=True, adopted_in_place=True, last_turn_at=adopted_last_turn,
             ))
             await record_audit(
                 db, "session.adopt", identity,
@@ -1013,7 +1227,8 @@ class SessionOrchestrator:
             id=session_id, name=cand.name, account=cand.account,
             claude_session_id=claude_session_id, cols=80, rows=24,
             cwd=cand.cwd, repo=None, status="idle", adopted_in_place=True,
-            updated_at=datetime.utcnow(),  # adopted = active now
+            updated_at=datetime.utcnow(),  # row-write time
+            last_turn_at=adopted_last_turn,  # real last-response time from the transcript
         )
         self._records[session_id] = rec
         log.info("session.adopt id=%s sid=%s resumed=%s killed=%s",
@@ -1059,10 +1274,16 @@ class SessionOrchestrator:
         """
         return self._pending_initial_attachment_ids.pop(session_id, None)
 
-    async def send_prompt(self, session_id, text, attachment_ids=None):
+    async def send_prompt(self, session_id, text, attachment_ids=None) -> str:
+        if self._draining:
+            # No new turns during a deploy drain. Tell the browser so it re-queues
+            # (promptRejected) and shows the hold banner — never silently swallow it.
+            log.info("send_prompt rejected: drain in progress session=%s", session_id)
+            self._publish_event({"type": "updatePending"})
+            return "draining"
         d = self._drivers.get(session_id)
         if not d:
-            return
+            return "no_driver"
         ids = list(attachment_ids or [])
         if len(ids) > _attachments.MAX_PER_MESSAGE:
             log.warning("send_prompt: capping attachments from %d to %d session=%s",
@@ -1077,6 +1298,7 @@ class SessionOrchestrator:
                     db, session_id, turn_id, ids)
         self._last_prompt[session_id] = text
         await d.send_prompt(text, resolved)
+        return "sent"
 
     async def interrupt(self, session_id):
         d = self._drivers.get(session_id)
@@ -1091,12 +1313,6 @@ class SessionOrchestrator:
         never persisted (see suggestions.py)."""
         d = self._drivers.get(session_id)
         return list(getattr(d, "_last_suggestions", []) or []) if d else []
-
-    async def request_suggestions(self, session_id: str) -> None:
-        """Ask a live session to (re)generate next-prompt suggestions now."""
-        d = self._drivers.get(session_id)
-        if d:
-            d.request_suggestions()
 
     async def set_permission_mode(self, session_id, mode):
         d = self._drivers.get(session_id)
@@ -1218,6 +1434,11 @@ class SessionOrchestrator:
             if not getattr(driver, "_turn_active", False):
                 continue
             if now - driver.last_progress_at <= STALL_TIMEOUT:
+                continue
+            if getattr(driver, "awaiting_user_input", False):
+                # Blocked on a permission / plan / question — waiting on the human,
+                # not wedged. Interrupting here is the spurious "[Request interrupted
+                # by user]" users see when they take a while to answer.
                 continue
             if self._recovery.stall_cap_reached(sid, now=now):
                 continue  # repeatedly stalling — don't interrupt-loop
@@ -1481,6 +1702,8 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
                 on_status=self._persist_status,
+                on_record_condense_ms=self._record_condense_ms,
+                get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester,
             )
@@ -1666,6 +1889,7 @@ class SessionOrchestrator:
             permission_mode=row.permission_mode,
             created_at=row.created_at,
             updated_at=getattr(row, "updated_at", None),
+            last_turn_at=getattr(row, "last_turn_at", None),
             model=getattr(row, "model", None),
             account_pinned=bool(getattr(row, "account_pinned", False)),
             active_goal=getattr(row, "active_goal", None),
@@ -1719,20 +1943,19 @@ class SessionOrchestrator:
         log.info("session.permanent_delete id=%s db row removed", session_id)
         return True
 
-    async def transcript_events(self, session_id: str) -> list:
-        """Return replayed transcript events for a session (read-only review).
+    async def _resolve_transcript_path(self, session_id: str) -> str | None:
+        """Resolve the on-disk JSONL path for a session's transcript.
 
-        Works for both active and archived sessions: transcripts live in the
-        account's config dir (not the moved cwd), so always accessible.
-        Returns [] if no transcript is found or parsing fails.
+        Works for both active and archived sessions. Returns None when not found.
+        Active sessions are resolved via transcript_path(); archived sessions
+        (not in _records) fall back to a DB lookup + glob.
         """
-        from server.sessions.replay import replay_events
+        from sqlalchemy import select as sa_select
+        import glob as _glob
 
         path = self.transcript_path(session_id)
         if path is None:
             # For archived sessions the record is not in _records; load from DB.
-            from sqlalchemy import select as sa_select
-            import glob as _glob
             async with db_session() as db:
                 row = (await db.execute(
                     sa_select(DbSession).where(DbSession.id == session_id)
@@ -1743,6 +1966,18 @@ class SessionOrchestrator:
                     str(Path(cfg_dir) / "projects" / "*" / f"{row.claude_session_id}.jsonl")
                 )
                 path = matches[0] if matches else None
+        return path
+
+    async def transcript_events(self, session_id: str) -> list:
+        """Return replayed transcript events for a session (read-only review).
+
+        Works for both active and archived sessions: transcripts live in the
+        account's config dir (not the moved cwd), so always accessible.
+        Returns [] if no transcript is found or parsing fails.
+        """
+        from server.sessions.replay import replay_events
+
+        path = await self._resolve_transcript_path(session_id)
         if not path:
             return []
         try:
@@ -1750,3 +1985,21 @@ class SessionOrchestrator:
         except Exception:
             log.warning("session.transcript_events id=%s replay failed", session_id, exc_info=True)
             return []
+
+    async def transcript_window(self, session_id: str, *, before: int | None = None, limit: int = 20):
+        """Windowed transcript replay. Returns a ReplayWindow, or None if no transcript.
+
+        Use before/limit for lazy scrollback paging: returns up to `limit` turns
+        ending before turn-ordinal `before` (or the last `limit` turns if before
+        is None), plus earliest_turn/total_turns for pagination metadata.
+        """
+        from server.sessions.replay import replay_window
+
+        path = await self._resolve_transcript_path(session_id)
+        if not path:
+            return None
+        try:
+            return await replay_window(path, before=before, limit=limit)
+        except Exception:
+            log.warning("session.transcript_window id=%s replay failed", session_id, exc_info=True)
+            return None

@@ -1,5 +1,5 @@
 import type {
-  SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult,
+  SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult, QueuedItem,
 } from './events'
 
 /** Sentinel id for the optimistic user turn seeded before the SDK echoes the prompt. */
@@ -8,14 +8,14 @@ export const OPTIMISTIC_USER_ID = 'optimistic:user'
 // ── Block types ───────────────────────────────────────────────────────────────
 
 export type Block =
-  | { kind: 'text';       id: string; text: string }
-  | { kind: 'thinking';   id: string; text: string }
-  | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }> }
-  | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown> } }
-  | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean }
-  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean }
-  | { kind: 'notice';     id: string; text: string }
-  | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null }
+  | { kind: 'text';       id: string; text: string; ts?: number }
+  | { kind: 'thinking';   id: string; text: string; ts?: number }
+  | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }>; ts?: number }
+  | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown> }; ts?: number }
+  | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; ts?: number }
+  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; ts?: number }
+  | { kind: 'notice';     id: string; text: string; ts?: number }
+  | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; ts?: number }
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
@@ -59,11 +59,15 @@ export interface TranscriptState {
   model: string | null          // current model id (from sessionMeta / replay)
   usage: UsageSnapshot | null   // most recent result's token/cost snapshot
   replaying: boolean            // true until replayComplete
+  earliestTurn: number          // lowest turn ordinal currently loaded (0 = at session start)
+  totalTurns: number            // total turns in the on-disk transcript
+  loadingOlder: boolean         // a prepend fetch is in flight
   error: { code: string; message: string; resetsAt?: string | null } | null
-  queued: string[]              // texts of prompts waiting in the server-side queue
+  queued: QueuedItem[]           // prompts waiting in the server-side queue
   rotations: RotationMarker[]   // account rotations, anchored into the timeline
   subAgents: Record<string, SubThread>   // keyed by the spawning Task toolId
   latestSuggestions: string[]  // next-prompt chips for the current idle turn
+  condense: { active: boolean; expectedMs: number } | null
 }
 
 export const initialTranscript: TranscriptState = {
@@ -74,11 +78,15 @@ export const initialTranscript: TranscriptState = {
   model: null,
   usage: null,
   replaying: true,
+  earliestTurn: 0,
+  totalTurns: 0,
+  loadingOlder: false,
   error: null,
   queued: [],
   rotations: [],
   subAgents: {},
   latestSuggestions: [],
+  condense: null,
 }
 
 /** Coerce a possibly-missing numeric usage field to a finite number (0 when absent). */
@@ -96,6 +104,8 @@ export type LocalAction =
   | { type: '_rotation';          from: string; to: string; reason?: string }
   | { type: '_notice'; text: string }
   | { type: '_clear';  text: string }
+  | { type: '_prependHistory'; events: SessionEvent[]; earliestTurn: number }
+  | { type: '_setLoadingOlder'; value: boolean }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -131,9 +141,9 @@ function ensureAssistantTurn(turns: Turn[], turnId: string): [Turn[], number] {
  * optimistic-seed adoption, sub-thread) renders attachments identically. The image
  * `url` is used verbatim as an <img> src — a serve URL live, a `data:` URL on replay.
  */
-function userTurnBlocks(turnId: string, text: string, images?: EvUser['images']): Block[] {
-  const blocks: Block[] = [{ kind: 'text', id: `${turnId}:u`, text }]
-  if (images && images.length) blocks.push({ kind: 'image', id: `${turnId}:img`, images })
+function userTurnBlocks(turnId: string, text: string, images?: EvUser['images'], ts?: number): Block[] {
+  const blocks: Block[] = [{ kind: 'text', id: `${turnId}:u`, text, ts }]
+  if (images && images.length) blocks.push({ kind: 'image', id: `${turnId}:img`, images, ts })
   return blocks
 }
 
@@ -150,7 +160,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
   switch (ev.type) {
     case 'user': {
       const { turnId, text } = ev
-      const blocks = userTurnBlocks(turnId, text, ev.images)
+      const blocks = userTurnBlocks(turnId, text, ev.images, ev.ts)
       const idx = findTurnIdx(thread.turns, turnId)
       const turns =
         idx === -1
@@ -188,7 +198,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
       }
       const blockId = `${turnId}:t${turn.blocks.length}`
       const nextTurns = replaceTurn(turns, idx, (t) => ({
-        ...t, blocks: [...t.blocks, { kind: 'text', id: blockId, text }],
+        ...t, blocks: [...t.blocks, { kind: 'text', id: blockId, text, ts: ev.ts }],
       }))
       return { turns: nextTurns, openBlockId: blockId }
     }
@@ -210,7 +220,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
       }
       const blockId = `${turnId}:th${turn.blocks.length}`
       const nextTurns = replaceTurn(turns, idx, (t) => ({
-        ...t, blocks: [...t.blocks, { kind: 'thinking', id: blockId, text }],
+        ...t, blocks: [...t.blocks, { kind: 'thinking', id: blockId, text, ts: ev.ts }],
       }))
       return { turns: nextTurns, openBlockId: blockId }
     }
@@ -223,7 +233,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
         if (thread.openBlockId === null && turns === thread.turns) return thread
         return { turns, openBlockId: null }
       }
-      const newBlock: Block = { kind: 'tool', id: toolId, toolId, name, toolKind, input }
+      const newBlock: Block = { kind: 'tool', id: toolId, toolId, name, toolKind, input, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({ ...t, blocks: [...t.blocks, newBlock] }))
       return { turns: nextTurns, openBlockId: null }
     }
@@ -271,7 +281,7 @@ export function transcriptReducer(
     // ── user ─────────────────────────────────────────────────────────────────
     case 'user': {
       const { turnId, text } = ev
-      const blocks = userTurnBlocks(turnId, text, ev.images)
+      const blocks = userTurnBlocks(turnId, text, ev.images, ev.ts)
 
       // Adopt an optimistic seed turn if present: re-key it in place to the real
       // server turnId instead of appending a duplicate. Unconditional adoption is
@@ -341,7 +351,7 @@ export function transcriptReducer(
       } else {
         // Open a new text block
         const blockId = `${turnId}:t${turn.blocks.length}`
-        const newBlock: Block = { kind: 'text', id: blockId, text }
+        const newBlock: Block = { kind: 'text', id: blockId, text, ts: ev.ts }
         const nextTurns = replaceTurn(turns, idx, (t) => ({
           ...t,
           blocks: [...t.blocks, newBlock],
@@ -375,7 +385,7 @@ export function transcriptReducer(
       } else {
         // Open a new thinking block (closes any open text block)
         const blockId = `${turnId}:th${turn.blocks.length}`
-        const newBlock: Block = { kind: 'thinking', id: blockId, text }
+        const newBlock: Block = { kind: 'thinking', id: blockId, text, ts: ev.ts }
         const nextTurns = replaceTurn(turns, idx, (t) => ({
           ...t,
           blocks: [...t.blocks, newBlock],
@@ -396,7 +406,7 @@ export function transcriptReducer(
         return { ...state, turns, openBlockId: null }
       }
 
-      const newBlock: Block = { kind: 'tool', id: toolId, toolId, name, toolKind, input }
+      const newBlock: Block = { kind: 'tool', id: toolId, toolId, name, toolKind, input, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t,
         blocks: [...t.blocks, newBlock],
@@ -433,7 +443,7 @@ export function transcriptReducer(
         return { ...state, turns }
       }
 
-      const newBlock: Block = { kind: 'permission', id: permId, permId, tool, toolKind, input, plan }
+      const newBlock: Block = { kind: 'permission', id: permId, permId, tool, toolKind, input, plan, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t,
         blocks: [...t.blocks, newBlock],
@@ -466,7 +476,7 @@ export function transcriptReducer(
         return { ...state, turns }
       }
 
-      const newBlock: Block = { kind: 'question', id: questionId, questionId, header, question, options, multiSelect, live: !state.replaying }
+      const newBlock: Block = { kind: 'question', id: questionId, questionId, header, question, options, multiSelect, live: !state.replaying, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t,
         blocks: [...t.blocks, newBlock],
@@ -514,12 +524,30 @@ export function transcriptReducer(
       // transcript-rebuildable state so the following replay events rebuild it
       // cleanly. Live-only state that the replay does NOT re-emit (rotations,
       // queue, banner) is preserved.
-      return { ...state, turns: [], openBlockId: null, subAgents: {}, replaying: true }
+      return { ...state, turns: [], openBlockId: null, subAgents: {}, replaying: true,
+               earliestTurn: 0, totalTurns: 0, loadingOlder: false }
     }
 
     // ── replayComplete ────────────────────────────────────────────────────────
     case 'replayComplete': {
-      return { ...state, replaying: false }
+      return { ...state, replaying: false,
+               earliestTurn: ev.earliestTurn ?? state.earliestTurn,
+               totalTurns: ev.totalTurns ?? state.totalTurns }
+    }
+
+    // ── _setLoadingOlder ──────────────────────────────────────────────────────
+    case '_setLoadingOlder': {
+      return { ...state, loadingOlder: ev.value }
+    }
+
+    // ── _prependHistory ───────────────────────────────────────────────────────
+    case '_prependHistory': {
+      const olderTurns = buildTurnsFromEvents(ev.events)
+      // Drop any older turn whose id already exists (defensive; windows are disjoint server-side).
+      const existing = new Set(state.turns.map((t) => t.id))
+      const fresh = olderTurns.filter((t) => !existing.has(t.id))
+      return { ...state, turns: [...fresh, ...state.turns],
+               earliestTurn: ev.earliestTurn, loadingOlder: false }
     }
 
     // ── error ─────────────────────────────────────────────────────────────────
@@ -534,7 +562,7 @@ export function transcriptReducer(
       const turn = withTurn[idx]
       const errBlock: Block = {
         kind: 'error', id: `${ev.turnId}:err:${turn.blocks.length}`,
-        code: ev.code, message: ev.message, resetsAt: ev.resetsAt,
+        code: ev.code, message: ev.message, resetsAt: ev.resetsAt, ts: ev.ts,
       }
       const turns = replaceTurn(withTurn, idx, (t) => ({ ...t, blocks: [...t.blocks, errBlock] }))
       return { ...state, turns, error: banner }
@@ -543,6 +571,13 @@ export function transcriptReducer(
     // ── queueUpdate ───────────────────────────────────────────────────────────
     case 'queueUpdate': {
       return { ...state, queued: ev.items }
+    }
+
+    // ── condensing ────────────────────────────────────────────────────────────
+    case 'condensing': {
+      return ev.active
+        ? { ...state, condense: { active: true, expectedMs: ev.expectedMs ?? 12000 } }
+        : { ...state, condense: null }
     }
 
     // ── suggestions ───────────────────────────────────────────────────────────
@@ -623,4 +658,15 @@ export function transcriptReducer(
     default:
       return state
   }
+}
+
+/**
+ * Fold a window of replayed events into a fresh transcript and return just its
+ * turns. Reuses transcriptReducer so history paging never grows a second
+ * turn-builder (single source of truth for event→Turn translation).
+ */
+export function buildTurnsFromEvents(events: SessionEvent[]): Turn[] {
+  const seeded: TranscriptState = { ...initialTranscript, replaying: true }
+  const final = events.reduce(transcriptReducer, seeded)
+  return final.turns
 }

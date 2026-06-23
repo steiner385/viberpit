@@ -48,27 +48,34 @@ def register_orchestrator_rpc(app, orch) -> None:
         return {"session": rec.to_dict()}
 
     async def send_prompt(params: dict) -> dict:
-        await orch.send_prompt(params["session_id"], params["text"], params.get("images"))
-        return {"ok": True}
+        status = await orch.send_prompt(params["session_id"], params["text"], params.get("images"))
+        return {"status": status}
+
+    async def pr_for(params: dict) -> dict:
+        info = orch.pr_for(params.get("repo"), params.get("branch"))
+        return {"pr": info.to_dict() if info is not None else None}
 
     register_rpc(app, "ensure_driver", ensure_driver)
     register_rpc(app, "list_sessions", list_sessions)
     register_rpc(app, "get_session", get_session)
     register_rpc(app, "create_session", create_session)
     register_rpc(app, "send_prompt", send_prompt)
+    register_rpc(app, "pr_for", pr_for)
 
     import inspect
 
     async def _maybe_await(r):
         return await r if inspect.isawaitable(r) else r
 
-    # 17 methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
+    # 20 methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
     _SIMPLE = [
-        "archive_session", "rename_session", "interrupt", "request_suggestions",
+        "archive_session", "rename_session", "interrupt",
         "set_permission_mode", "cancel_queued", "resolve_permission", "answer_question",
         "transcript_path", "pending_questions", "pop_pending_initial_prompt",
         "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
         "latest_suggestions", "seed_idle_suggestions",
+        "begin_drain", "drain_status",
+        "live_session_load", "live_session_counts",
     ]
 
     def _make_simple(method_name):

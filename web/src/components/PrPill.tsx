@@ -1,4 +1,4 @@
-import { GitPullRequest, GitMerge, GitPullRequestClosed, Check, X, Dot } from 'lucide-react'
+import { GitPullRequest, GitMerge, GitPullRequestClosed, Check, X, Dot, Rocket } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { PullRequestInfo } from '@/api/types'
 
@@ -28,6 +28,7 @@ function ChecksIcon({ checks }: { checks: PullRequestInfo['checks'] }) {
 export function PrPill({ pr }: { pr: PullRequestInfo }) {
   const StateIcon = STATE_ICON[pr.state]
   const checksLabel = pr.checks === 'none' ? '' : `, checks ${pr.checks}`
+  const deployedLabel = pr.deployed ? ', deployed' : ''
   return (
     <a
       href={pr.url}
@@ -35,9 +36,10 @@ export function PrPill({ pr }: { pr: PullRequestInfo }) {
       rel="noopener noreferrer"
       data-state={pr.state}
       data-checks={pr.checks}
+      data-deployed={pr.deployed ? 'true' : undefined}
       onClick={(e) => e.stopPropagation()}
-      title={`${pr.title} — ${pr.state}${checksLabel}`}
-      aria-label={`Pull request #${pr.number}, ${pr.state}${checksLabel}`}
+      title={`${pr.title} — ${pr.state}${checksLabel}${deployedLabel}`}
+      aria-label={`Pull request #${pr.number}, ${pr.state}${checksLabel}${deployedLabel}`}
       className={cn(
         'inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
@@ -47,6 +49,7 @@ export function PrPill({ pr }: { pr: PullRequestInfo }) {
       <StateIcon size={11} aria-hidden />
       <span className="tabular-nums">#{pr.number}</span>
       <ChecksIcon checks={pr.checks} />
+      {pr.deployed && <Rocket size={11} aria-hidden className="text-emerald-600 dark:text-emerald-400" />}
     </a>
   )
 }

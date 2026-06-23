@@ -69,7 +69,7 @@ def _factory(msgs, client_cls=None):
     """Return an sdk_factory building a fake client over *msgs*."""
     cls = client_cls or FakeSDKClient
 
-    def make(cwd, config_dir, can_use_tool, mode, resume):
+    def make(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return cls(list(msgs), on_can_use_tool=can_use_tool)
 
     return make
@@ -295,6 +295,56 @@ def test_replay_batch_leads_with_reset_on_every_attach(ws_env):
         assert batch2 and batch2[0].get("type") == "replayReset", (
             f"re-attach replay must lead with replayReset, got {[e.get('type') for e in batch2][:3]}"
         )
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
+# replayComplete carries totalTurns / earliestTurn for history extent
+# ---------------------------------------------------------------------------
+
+def _write_ws_transcript(tmp_path, n_turns: int) -> str:
+    """Write a JSONL transcript with n_turns user+assistant turn pairs."""
+    import json as _json
+    p = tmp_path / "t.jsonl"
+    lines = []
+    for i in range(n_turns):
+        lines.append({"type": "user", "uuid": f"u{i}",
+                      "message": {"content": f"q{i}"}})
+        lines.append({"type": "assistant", "uuid": f"a{i}",
+                      "message": {"model": "claude-x",
+                                  "content": [{"type": "text", "text": f"r{i}"}],
+                                  "usage": {"input_tokens": 1}}})
+    p.write_text("\n".join(_json.dumps(o) for o in lines))
+    return str(p)
+
+
+def test_replay_complete_reports_turn_extent(ws_env, tmp_path):
+    """replayComplete must carry earliestTurn and totalTurns so the client knows
+    whether older history exists and can offer a 'load more' affordance.
+
+    A 25-turn transcript with the default limit=20 window delivers turns 5-24,
+    so earliestTurn=5 and totalTurns=25."""
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-turn-extent")
+    session_id = session.id
+
+    # 25-turn transcript → default window is last 20 turns (5..24).
+    transcript = _write_ws_transcript(tmp_path, 25)
+    orch.transcript_path = lambda sid: transcript
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="replayComplete")
+
+    done = [e for e in events if e.get("type") == "replayComplete"]
+    assert done, "replayComplete must be sent"
+    assert done[-1].get("totalTurns") == 25, (
+        f"expected totalTurns=25, got {done[-1]}"
+    )
+    assert done[-1].get("earliestTurn") == 5, (
+        f"expected earliestTurn=5, got {done[-1]}"
+    )
 
     client.portal.call(orch.close_session, session_id)
 
@@ -653,6 +703,45 @@ def test_attach_emits_live_status(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# Reattach re-emits the live queue (regression: queued chips vanished on nav)
+# ---------------------------------------------------------------------------
+
+def test_reattach_reemits_queue(ws_env):
+    """A client attaching to a live session with a queued prompt receives a
+    queueUpdate frame carrying the queued item (regression: previously only the
+    status count was re-emitted, so queued chips vanished on navigation)."""
+    class BusySDK(FakeSDKClient):
+        """Fake client whose turn never completes, so a second prompt queues."""
+        async def receive_response(self):
+            yield f.stream_start(uuid="t1")
+            await asyncio.sleep(30)   # keep the turn busy; test ends first
+
+    _app, orch, client = ws_env([], client_cls=BusySDK)
+    session = client.portal.call(orch.create_session, "q-reattach")
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws1:
+        ws1.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws1, until_type="replayComplete")
+        ws1.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "first"}))
+        # Wait until the turn is actually running, then queue a second prompt.
+        _drain_events(ws1, until_type="status", timeout=8.0)
+        ws1.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "second"}))
+        _drain_events(ws1, until_type="queueUpdate", timeout=8.0)
+
+        # Fresh attach: must be told about the queued "second" prompt.
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws2:
+            ws2.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+            events = _drain_events(ws2, until_type="queueUpdate", timeout=8.0)
+
+    qu = [e for e in events if e.get("type") == "queueUpdate"]
+    assert qu, f"no queueUpdate on reattach; saw {[e.get('type') for e in events]}"
+    assert qu[-1]["items"] == [{"text": "second", "images": []}]
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
 # Frame larger than 256KB is rejected, socket stays open
 # ---------------------------------------------------------------------------
 
@@ -817,37 +906,6 @@ def test_prompt_resume_timeout_emits_error_and_keeps_ws_alive(tmp_path):
                 )
 
 
-# ---------------------------------------------------------------------------
-# request_suggestions WS dispatch
-# ---------------------------------------------------------------------------
-
-def test_request_suggestions_dispatch(ws_env):
-    """Sending request_suggestions over WS calls orchestrator.request_suggestions."""
-    _app, orch, client = ws_env([])
-    session = client.portal.call(orch.create_session, "test-req-sugg")
-    session_id = session.id
-
-    called_with: list[str] = []
-
-    async def _fake_request_suggestions(sid):
-        called_with.append(sid)
-
-    orch.request_suggestions = _fake_request_suggestions
-
-    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
-        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
-        _drain_events(ws, until_type="replayComplete")
-
-        ws.send_text(json.dumps({"type": "request_suggestions", "sessionId": session_id}))
-        # Give the server coroutine time to execute the dispatch.
-        import time as _time
-        _time.sleep(0.2)
-
-    client.portal.call(orch.close_session, session_id)
-    assert called_with == [session_id], (
-        f"expected request_suggestions called with {session_id!r}, got {called_with}"
-    )
-
 
 # ---------------------------------------------------------------------------
 # Live-forwarder: a crash mid-stream still reaches the UI as an error frame
@@ -877,3 +935,33 @@ def test_forward_live_emits_error_frame_on_crash():
     assert errs, f"expected an error frame, got {[fr.get('type') for fr in frames]}"
     assert "RuntimeError" in errs[0]["message"]
     assert "pty closed unexpectedly" in errs[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# A prompt sent during a deploy drain gets a promptRejected ack
+# ---------------------------------------------------------------------------
+
+def test_prompt_during_drain_returns_promptRejected(ws_env):
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-drain")
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+
+        # Enter the deploy drain, then send a prompt — it must be refused AND acked.
+        client.portal.call(orch.begin_drain)
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "held please"}))
+
+        events = _drain_events(ws, until_type="promptRejected", timeout=8.0)
+        rejected = [e for e in events if e.get("type") == "promptRejected"]
+        assert rejected, f"no promptRejected in {[e.get('type') for e in events]}"
+        assert rejected[0]["sessionId"] == session_id
+        assert rejected[0]["text"] == "held please"
+        assert rejected[0]["reason"] == "draining"
+        assert rejected[0]["attachmentIds"] is None
+
+    # No cancel_drain needed: the fixture tears down the app/loop on exit, which
+    # cancels the in-memory drain + its self-clear timer task.
+    client.portal.call(orch.close_session, session_id)

@@ -4,29 +4,31 @@ export type ToolKind = 'edit' | 'write' | 'read' | 'bash' | 'todo' | 'search' | 
 // One attached image on a user turn. `url` is ready to use directly as an <img> src:
 // `/api/attachments/{id}` for a live turn, or a `data:` URL reconstructed on replay.
 export interface EvUserImage     { url: string; mime: string; name: string }
-export interface EvUser          { type: 'user';          turnId: string; text: string; images?: EvUserImage[]; srcUuid?: string | null }
+export interface EvUser          { type: 'user';          turnId: string; text: string; images?: EvUserImage[]; srcUuid?: string | null; ts?: number }
 export interface EvTurnStart     { type: 'turnStart';     turnId: string; srcUuid?: string | null; parentToolUseId?: string | null }
 export interface EvTurnEnd       { type: 'turnEnd';       turnId: string; usage?: Record<string, unknown> | null; costUsd?: number | null; srcUuid?: string | null; parentToolUseId?: string | null }
-export interface EvTextDelta     { type: 'textDelta';     turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null }
-export interface EvThinkingDelta { type: 'thinkingDelta'; turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null }
-export interface EvToolCall      { type: 'toolCall';      turnId: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; srcUuid?: string | null; parentToolUseId?: string | null }
-export interface EvToolResult    { type: 'toolResult';    toolId: string; ok: boolean; payload: Record<string, unknown>; srcUuid?: string | null; parentToolUseId?: string | null }
-export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean }
-export interface EvQuestion      { type: 'question';      questionId: string; turnId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean }
+export interface EvTextDelta     { type: 'textDelta';     turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
+export interface EvThinkingDelta { type: 'thinkingDelta'; turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
+export interface EvToolCall      { type: 'toolCall';      turnId: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
+export interface EvToolResult    { type: 'toolResult';    toolId: string; ok: boolean; payload: Record<string, unknown>; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
+export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; ts?: number }
+export interface EvQuestion      { type: 'question';      questionId: string; turnId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; ts?: number }
 export interface EvSessionMeta   { type: 'sessionMeta';   model: string; sessionId: string }
 export interface EvTitle         { type: 'title';         title: string; source: string }
 export interface EvStatus        { type: 'status';        state: string; count: number }
 export interface EvReplayReset   { type: 'replayReset' }
-export interface EvReplayComplete { type: 'replayComplete' }
-export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null; turnId?: string | null }
-export interface EvQueueUpdate   { type: 'queueUpdate';   items: string[] }
+export interface EvReplayComplete { type: 'replayComplete'; earliestTurn?: number; totalTurns?: number }
+export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null; turnId?: string | null; ts?: number }
+export interface QueuedItem      { text: string; images: { url: string; mime: string; name: string }[] }
+export interface EvQueueUpdate   { type: 'queueUpdate';   items: QueuedItem[] }
 export interface EvSuggestions   { type: 'suggestions';   sessionId: string; turnId: string; items: string[] }
+export interface EvCondensing    { type: 'condensing';    active: boolean; expectedMs?: number | null }
 
 export type SessionEvent =
   | EvUser | EvTurnStart | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvQuestion
   | EvSessionMeta | EvTitle | EvStatus | EvReplayReset | EvReplayComplete | EvError | EvQueueUpdate
-  | EvSuggestions
+  | EvSuggestions | EvCondensing
 
 export interface Command {
   name: string
@@ -39,5 +41,5 @@ export interface Command {
 export const SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   'user','turnStart','turnEnd','textDelta','thinkingDelta','toolCall','toolResult',
   'permissionRequest','question','sessionMeta','title','status','replayReset','replayComplete','error','queueUpdate',
-  'suggestions',
+  'suggestions','condensing',
 ])

@@ -53,6 +53,24 @@ teardown() { rm -rf "$TMP"; }
   [ "$(git -C "$DEPLOY" rev-parse HEAD)" = "$(git -C "$DEPLOY" rev-parse origin/master)" ]
 }
 
+# A new commit landing mid-streak must NOT reset the force-cap clock. The cap is
+# anchored to the start of a continuous busy streak, not the current commit —
+# otherwise a busy server during a rapid-merge burst defers forever (each new
+# commit restarts the 30-min clock = deploy starvation).
+@test "new commit during a busy streak does not reset the force-cap" {
+  # Marker recorded for a STALE sha, deferred since epoch=1 (ancient streak).
+  # origin/master has since advanced to c2 (a different sha).
+  printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 1\n' > "$MARKER"
+  run env CCSWITCH_DEPLOY_CI_OK=1 CCSWITCH_DEPLOY_BUSY=1 \
+      CCSWITCH_DEPLOY_DEFER_FILE="$MARKER" CCSWITCH_DEPLOY_MAX_DEFER_SEC=1 \
+      CCSWITCH_DEPLOY_TEST_STOP_AFTER_SYNC=1 \
+      CCSWITCH_HOST=127.0.0.1 CCSWITCH_PORT=0 \
+      bash "$DEPLOY/scripts/auto-deploy.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"forcing"* ]]
+  [ "$(git -C "$DEPLOY" rev-parse HEAD)" = "$(git -C "$DEPLOY" rev-parse origin/master)" ]
+}
+
 # idle => proceeds (reaches the stop-after-sync hook = fast-forwarded)
 @test "idle server proceeds to deploy" {
   run env CCSWITCH_DEPLOY_CI_OK=1 CCSWITCH_DEPLOY_BUSY=0 \

@@ -1,3 +1,4 @@
+import { ChevronRight, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SessionCard } from './SessionCard'
 import { EmptyState } from './EmptyState'
@@ -19,6 +20,13 @@ interface SessionListProps {
   onClose: (id: string) => void
   onDelete: (id: string) => void
   onQuickResume: (id: string, text?: string) => void
+  /** Keys of groups currently collapsed. Omit for all-expanded. */
+  collapsedKeys?: Set<string>
+  /** Toggle a group's collapsed state by its key. */
+  onToggleCollapse?: (key: string) => void
+  listMode?: boolean
+  onNavigate?: (dir: 'up' | 'down') => void
+  onExit?: () => void
 }
 
 function SkeletonCard() {
@@ -55,6 +63,11 @@ export function SessionList({
   onClose,
   onDelete,
   onQuickResume,
+  collapsedKeys,
+  onToggleCollapse,
+  listMode,
+  onNavigate,
+  onExit,
 }: SessionListProps) {
   if (isLoading) {
     return (
@@ -97,11 +110,14 @@ export function SessionList({
       session={session}
       account={accountMap.get(session.accountName)}
       selected={session.id === selectedId}
+      listMode={listMode}
       onOpen={onOpen}
       onRename={onRename}
       onClose={onClose}
       onDelete={onDelete}
       onQuickResume={onQuickResume}
+      onNavigate={onNavigate}
+      onExit={onExit}
     />
   )
 
@@ -119,25 +135,42 @@ export function SessionList({
       className="space-y-2"
     >
       {groups
-        ? groups.map((group) => (
-            <div key={group.key} className="space-y-2">
-              {group.label !== null && (
-                <div
-                  role="presentation"
-                  aria-hidden="true"
-                  className={cn(
-                    'sticky top-0 z-10 flex items-center gap-2 px-1 py-1',
-                    'bg-gray-50/95 dark:bg-gray-900/95 backdrop-blur',
-                    'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400',
-                  )}
-                >
-                  <span>{group.label}</span>
-                  <span className="tabular-nums text-gray-400 dark:text-gray-500">{group.count}</span>
-                </div>
-              )}
-              {group.sessions.map(renderCard)}
-            </div>
-          ))
+        ? groups.map((group) => {
+            const collapsed = collapsedKeys?.has(group.key) ?? false
+            const panelId = `group-panel-${group.key}`
+            return (
+              <div key={group.key} className="space-y-2">
+                {group.label !== null && (
+                  <button
+                    type="button"
+                    onClick={() => onToggleCollapse?.(group.key)}
+                    aria-expanded={!collapsed}
+                    aria-controls={collapsed ? undefined : panelId}
+                    className={cn(
+                      'sticky top-0 z-10 flex w-full items-center gap-2 px-1 py-1',
+                      'bg-gray-50/95 dark:bg-gray-900/95 backdrop-blur',
+                      'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400',
+                      'hover:text-gray-700 dark:hover:text-gray-200',
+                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
+                    )}
+                  >
+                    {collapsed ? (
+                      <ChevronRight size={14} aria-hidden />
+                    ) : (
+                      <ChevronDown size={14} aria-hidden />
+                    )}
+                    <span>{group.label}</span>
+                    <span className="tabular-nums text-gray-400 dark:text-gray-500">{group.count}</span>
+                  </button>
+                )}
+                {!collapsed && (
+                  <div id={panelId} className="space-y-2">
+                    {group.sessions.map(renderCard)}
+                  </div>
+                )}
+              </div>
+            )
+          })
         : sessions.map(renderCard)}
     </div>
   )
