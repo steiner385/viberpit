@@ -151,7 +151,8 @@ describe('DesktopShell', () => {
     render(<DesktopShell />, { wrapper })
     await user.selectOptions(screen.getByLabelText('Group by'), 'status')
     // Two sessions from DIFFERENT tiers → both group headers must render
-    expect(screen.getByText('Your turn')).toBeInTheDocument()
+    // (idle → 'your-turn' tier, header "Done"; in_progress → 'busy' tier, header "Working")
+    expect(screen.getByText('Done')).toBeInTheDocument()
     expect(screen.getByText('Working')).toBeInTheDocument()
     // keyboard nav still works: ArrowDown should highlight a row
     const prompt = screen.getByRole('textbox', { name: /new session prompt/i })
