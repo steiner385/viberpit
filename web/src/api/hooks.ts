@@ -319,9 +319,20 @@ function unarchiveRequest(id: string) {
 
 export function useUnarchiveSession() {
   const qc = useQueryClient()
-  return useMutation<ArchivedSession, ApiRequestError, string>({
-    mutationFn: (id) => api.post<ArchivedSession>(`/sessions/${id}/unarchive`),
-    onSuccess: () => {
+  return useMutation<ArchivedSession, ApiRequestError, string, { prev?: ArchivedSession[]; removed?: ArchivedSession }>({
+    mutationFn: (id) => unarchiveRequest(id),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: QK.archived })
+      const prev = qc.getQueryData<ArchivedSession[]>(QK.archived)
+      const removed = prev?.find((x) => x.id === id)
+      qc.setQueryData<ArchivedSession[]>(QK.archived, (cur) => (cur ?? []).filter((x) => x.id !== id))
+      return { prev, removed }
+    },
+    onError: (_e, _id, ctx) => {
+      if (ctx?.prev) qc.setQueryData(QK.archived, ctx.prev)
+      toast({ message: `Couldn't restore ${ctx?.removed?.name ?? 'session'}`, variant: 'error' })
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.sessions })
       qc.invalidateQueries({ queryKey: QK.archived })
     },
@@ -330,12 +341,28 @@ export function useUnarchiveSession() {
 
 export function usePermanentDeleteSession() {
   const qc = useQueryClient()
-  return useMutation<void, ApiRequestError, string>({
+  return useMutation<void, ApiRequestError, string, { prevArchived?: ArchivedSession[]; prevSessions?: Session[]; name?: string }>({
     mutationFn: (id) => api.del<void>(`/sessions/${id}/permanent`),
-    onSuccess: () => {
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: QK.archived })
+      await qc.cancelQueries({ queryKey: QK.sessions })
+      const prevArchived = qc.getQueryData<ArchivedSession[]>(QK.archived)
+      const prevSessions = qc.getQueryData<Session[]>(QK.sessions)
+      const name = prevArchived?.find((x) => x.id === id)?.name ?? prevSessions?.find((x) => x.id === id)?.name
+      qc.setQueryData<ArchivedSession[]>(QK.archived, (cur) => (cur ?? []).filter((x) => x.id !== id))
+      qc.setQueryData<Session[]>(QK.sessions, (cur) => (cur ?? []).filter((x) => x.id !== id))
+      return { prevArchived, prevSessions, name }
+    },
+    onError: (_e, _id, ctx) => {
+      if (ctx?.prevArchived) qc.setQueryData(QK.archived, ctx.prevArchived)
+      if (ctx?.prevSessions) qc.setQueryData(QK.sessions, ctx.prevSessions)
+      toast({ message: `Couldn't delete ${ctx?.name ?? 'session'}`, variant: 'error' })
+    },
+    onSuccess: (_d, _id, ctx) => {
+      toast({ message: `Deleted ${ctx?.name ?? 'session'}`, variant: 'success' })
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.archived })
-      // A live session can also be permanently deleted from its card, so the
-      // active sessions list must refresh too.
       qc.invalidateQueries({ queryKey: QK.sessions })
     },
   })
