@@ -6,14 +6,33 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionBody } from '../SessionBody'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
+
+function makeQueryClient() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false } } })
+}
+
+function renderWithQuery(ui: React.ReactElement) {
+  return render(
+    <QueryClientProvider client={makeQueryClient()}>{ui}</QueryClientProvider>
+  )
+}
 
 // Stub BrowserTab so noVNC and vncClient never load
 vi.mock('../../BrowserTab', () => ({
   BrowserTab: ({ sessionId }: { sessionId: string }) => (
     <div data-testid="browser-tab-stub">BrowserTab:{sessionId}</div>
   ),
+}))
+
+// Stub the hooks so SessionBody's query calls return safe empty data
+// without firing real fetch requests (which would conflict with the spied fetch).
+vi.mock('@/api/hooks', () => ({
+  useModels: () => ({ data: [] }),
+  useAccounts: () => ({ data: [] }),
+  useSessions: () => ({ data: [] }),
 }))
 
 function makeRuntime(): SessionRuntime {
@@ -51,7 +70,7 @@ describe('SessionBody — Browser tab gating', () => {
         headers: { 'Content-Type': 'application/json' },
       })
     )
-    render(<SessionBody rt={makeRuntime()} />)
+    renderWithQuery(<SessionBody rt={makeRuntime()} />)
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: /browser/i })).toBeInTheDocument()
     })
@@ -64,7 +83,7 @@ describe('SessionBody — Browser tab gating', () => {
         headers: { 'Content-Type': 'application/json' },
       })
     )
-    render(<SessionBody rt={makeRuntime()} />)
+    renderWithQuery(<SessionBody rt={makeRuntime()} />)
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: /browser/i })).toBeInTheDocument()
     })
@@ -79,7 +98,7 @@ describe('SessionBody — Browser tab gating', () => {
         headers: { 'Content-Type': 'application/json' },
       })
     )
-    render(<SessionBody rt={makeRuntime()} />)
+    renderWithQuery(<SessionBody rt={makeRuntime()} />)
     // Give it time to resolve
     await waitFor(() => {
       expect(screen.queryByRole('tab', { name: /browser/i })).toBeNull()
@@ -88,7 +107,7 @@ describe('SessionBody — Browser tab gating', () => {
 
   it('hides Browser tab when fetch rejects with a network error', async () => {
     vi.spyOn(global, 'fetch').mockRejectedValue(new Error('Network error'))
-    render(<SessionBody rt={makeRuntime()} />)
+    renderWithQuery(<SessionBody rt={makeRuntime()} />)
     await waitFor(() => {
       expect(screen.queryByRole('tab', { name: /browser/i })).toBeNull()
     })
@@ -96,7 +115,7 @@ describe('SessionBody — Browser tab gating', () => {
 
   it('conversation container has no role=tabpanel when browser feature is disabled (fetch rejects)', async () => {
     vi.spyOn(global, 'fetch').mockRejectedValue(new Error('Network error'))
-    render(<SessionBody rt={makeRuntime()} />)
+    renderWithQuery(<SessionBody rt={makeRuntime()} />)
     // Wait for the fetch to settle (browserEnabled stays false)
     await waitFor(() => {
       expect(screen.queryByRole('tab', { name: /browser/i })).toBeNull()
@@ -112,7 +131,7 @@ describe('SessionBody — Browser tab gating', () => {
         headers: { 'Content-Type': 'application/json' },
       })
     )
-    render(<SessionBody rt={makeRuntime()} />)
+    renderWithQuery(<SessionBody rt={makeRuntime()} />)
     await waitFor(() => {
       expect(screen.queryByRole('tab', { name: /browser/i })).toBeNull()
     })
