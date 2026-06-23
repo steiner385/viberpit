@@ -1,10 +1,10 @@
 import {
   Loader2, CircleAlert, HelpCircle, Eye, Check, CheckCircle2,
-  AlertTriangle, X, Clock, Minimize2,
+  AlertTriangle, X, Clock, Minimize2, Hourglass,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
 
-export type StatusTier = 'busy' | 'needs-you' | 'your-turn' | 'error'
+export type StatusTier = 'busy' | 'needs-you' | 'your-turn' | 'waiting' | 'error'
 
 export interface StatusPresentation {
   tier: StatusTier
@@ -30,6 +30,7 @@ const PRESENTATION: Record<string, StatusPresentation> = {
   done:             { tier: 'your-turn', label: 'Your turn',         Icon: Check,         textClass: CALM },
   complete:         { tier: 'your-turn', label: 'Complete',          Icon: CheckCircle2,  textClass: CALM },
   idle:             { tier: 'your-turn', label: 'Ready',             Icon: Clock,         textClass: CALM },
+  waiting_external: { tier: 'waiting',   label: 'Waiting…',          Icon: Hourglass,     textClass: CALM },
   needs_attention:  { tier: 'error',     label: 'Turn failed',       Icon: AlertTriangle, textClass: ERROR },
   limited:          { tier: 'error',     label: 'Usage limit',       Icon: AlertTriangle, textClass: ERROR },
   ended:            { tier: 'your-turn', label: 'Ended',             Icon: X,             textClass: CALM },
@@ -48,7 +49,7 @@ export function statusTier(state: string): StatusTier {
 }
 
 export const TIER_RANK: Record<StatusTier, number> = {
-  'needs-you': 0, error: 1, 'your-turn': 2, busy: 3,
+  'needs-you': 0, error: 1, 'your-turn': 2, waiting: 3, busy: 4,
 }
 
 /**
@@ -62,6 +63,7 @@ export const TIER_LABEL: Record<StatusTier, string> = {
   'needs-you': 'Needs you',
   error: 'Needs attention',
   'your-turn': 'Done',
+  waiting: 'Waiting',
   busy: 'Working',
 }
 

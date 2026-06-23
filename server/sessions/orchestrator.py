@@ -365,6 +365,8 @@ class SessionOrchestrator:
             on_session_id=self._persist_claude_session_id,
             on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
             on_status=self._persist_status,
+            on_record_condense_ms=self._record_condense_ms,
+            get_condense_estimate=self._condense_estimate,
             on_recoverable_failure=self._handle_recoverable_failure,
             suggester=self._suggester,
         )
@@ -504,20 +506,39 @@ class SessionOrchestrator:
         row. Never downgrades a terminal ``ended`` status. When a turn finishes
         (``done``), opportunistically refresh the auto-name from Claude's title.
         """
+        from server.sessions.status import ACTIVITY_STATUSES
         rec = self._records.get(session_id)
         if rec is not None and rec.status == "ended":
             return
+        # Overlay: a turn that finished (`done`) but left the agent parked on an external
+        # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
+        # not "Your turn". Computed here (not in the pure `derive_status`) because it needs
+        # the transcript, like the `limited`/`ended` overlays. Scan only on `done` so the
+        # per-emit cost is paid once per turn-end. `waiting_external` is NOT in
+        # ACTIVITY_STATUSES, so parking does NOT bump the "active … ago" clock below — the
+        # card shows time since the last real turn, not a reset on every re-arm.
+        completed_turn = status == "done"
+        if completed_turn:
+            from .background_tasks import is_parked
+            if is_parked(self.transcript_path(session_id)):
+                status = "waiting_external"
+        # Advance the "active … ago" clock ONLY when the assistant hands output back —
+        # a finished or user-paused turn (ACTIVITY_STATUSES). Bumping it on every status
+        # (in_progress) or incidental row write is the bug that pinned every card to
+        # "0s ago". Naive UTC to match the DB DateTime columns.
+        from datetime import datetime
+        turn_at = datetime.utcnow() if status in ACTIVITY_STATUSES else None
         if rec is not None:
-            from datetime import datetime
             rec.status = status
-            # Mirror the DB row's onupdate=utcnow into the in-memory read-model so
-            # the dashboard's "active … ago" label reflects this activity without a
-            # round-trip. Naive UTC to match Session.created_at/updated_at columns.
-            rec.updated_at = datetime.utcnow()
+            if turn_at is not None:
+                rec.last_turn_at = turn_at
         async with db_session() as db:
             from sqlalchemy import update as sa_update
+            values: dict = {"status": status}
+            if turn_at is not None:
+                values["last_turn_at"] = turn_at
             await db.execute(
-                sa_update(DbSession).where(DbSession.id == session_id).values(status=status)
+                sa_update(DbSession).where(DbSession.id == session_id).values(**values)
             )
         # Refresh the per-sub-agent summary so the dashboard list can nest sub-agents
         # under this session. Best-effort: a failure must never break the session loop.
@@ -529,8 +550,16 @@ class SessionOrchestrator:
         # WS bridge forwards lifecycle frames top-level so the client's status handler
         # (_patchSessionStatus) patches the cached session record.
         self._publish_event({"type": "status", "sessionId": session_id, "status": status})
-        if status == "done":
+        if completed_turn:
             await self._maybe_apply_auto_name(session_id)
+
+    async def _condense_estimate(self) -> float:
+        from server.sessions import compaction_stats
+        return await compaction_stats.current_estimate()
+
+    async def _record_condense_ms(self, ms: float) -> None:
+        from server.sessions import compaction_stats
+        await compaction_stats.record_duration(ms)
 
     async def _persist_sub_agents(self, session_id: str) -> None:
         """Recompute the session's sub-agent summary from the transcript and persist
@@ -692,6 +721,7 @@ class SessionOrchestrator:
                 permission_mode=row.permission_mode,
                 created_at=row.created_at,
                 updated_at=getattr(row, "updated_at", None),
+                last_turn_at=getattr(row, "last_turn_at", None),
                 adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
                 model=getattr(row, "model", None),
                 account_pinned=bool(getattr(row, "account_pinned", False)),
@@ -1056,6 +1086,8 @@ class SessionOrchestrator:
                     on_session_id=self._persist_claude_session_id,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
                     on_status=self._persist_status,
+                    on_record_condense_ms=self._record_condense_ms,
+                    get_condense_estimate=self._condense_estimate,
                     on_recoverable_failure=self._handle_recoverable_failure,
                     suggester=self._suggester,
                 )
@@ -1150,6 +1182,8 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, cand.account),
                 on_status=self._persist_status,
+                on_record_condense_ms=self._record_condense_ms,
+                get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester,
             )
@@ -1172,12 +1206,15 @@ class SessionOrchestrator:
             resumed = False
         self._drivers[session_id] = driver
 
+        # The transcript mtime is the adopted session's real last-response time — seed the
+        # "active … ago" clock from it (naive UTC to match the DB columns) instead of "now".
+        adopted_last_turn = cand.last_activity.replace(tzinfo=None) if cand.last_activity else None
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=cand.name, account_name=cand.account,
                 claude_session_id=claude_session_id, status="idle", pid=None,
                 cwd=cand.cwd, repo=None, permission_mode="interactive",
-                name_is_auto=True, adopted_in_place=True,
+                name_is_auto=True, adopted_in_place=True, last_turn_at=adopted_last_turn,
             ))
             await record_audit(
                 db, "session.adopt", identity,
@@ -1190,7 +1227,8 @@ class SessionOrchestrator:
             id=session_id, name=cand.name, account=cand.account,
             claude_session_id=claude_session_id, cols=80, rows=24,
             cwd=cand.cwd, repo=None, status="idle", adopted_in_place=True,
-            updated_at=datetime.utcnow(),  # adopted = active now
+            updated_at=datetime.utcnow(),  # row-write time
+            last_turn_at=adopted_last_turn,  # real last-response time from the transcript
         )
         self._records[session_id] = rec
         log.info("session.adopt id=%s sid=%s resumed=%s killed=%s",
@@ -1236,16 +1274,16 @@ class SessionOrchestrator:
         """
         return self._pending_initial_attachment_ids.pop(session_id, None)
 
-    async def send_prompt(self, session_id, text, attachment_ids=None):
+    async def send_prompt(self, session_id, text, attachment_ids=None) -> str:
         if self._draining:
-            # No new turns during a deploy drain. The browser buffers and resends on
-            # reconnect; this guard only catches prompts already in flight when drain began.
+            # No new turns during a deploy drain. Tell the browser so it re-queues
+            # (promptRejected) and shows the hold banner — never silently swallow it.
             log.info("send_prompt rejected: drain in progress session=%s", session_id)
             self._publish_event({"type": "updatePending"})
-            return
+            return "draining"
         d = self._drivers.get(session_id)
         if not d:
-            return
+            return "no_driver"
         ids = list(attachment_ids or [])
         if len(ids) > _attachments.MAX_PER_MESSAGE:
             log.warning("send_prompt: capping attachments from %d to %d session=%s",
@@ -1260,6 +1298,7 @@ class SessionOrchestrator:
                     db, session_id, turn_id, ids)
         self._last_prompt[session_id] = text
         await d.send_prompt(text, resolved)
+        return "sent"
 
     async def interrupt(self, session_id):
         d = self._drivers.get(session_id)
@@ -1663,6 +1702,8 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
                 on_status=self._persist_status,
+                on_record_condense_ms=self._record_condense_ms,
+                get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester,
             )
@@ -1848,6 +1889,7 @@ class SessionOrchestrator:
             permission_mode=row.permission_mode,
             created_at=row.created_at,
             updated_at=getattr(row, "updated_at", None),
+            last_turn_at=getattr(row, "last_turn_at", None),
             model=getattr(row, "model", None),
             account_pinned=bool(getattr(row, "account_pinned", False)),
             active_goal=getattr(row, "active_goal", None),

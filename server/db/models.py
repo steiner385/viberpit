@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy import Boolean, DateTime, Float, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -77,9 +77,17 @@ class Session(Base):
     # still rotates and clears the pin. Nullable for the same backfill reason.
     account_pinned: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    # Generic row-write time: bumped on EVERY update (status, sub-agents, branch, name,
+    # model, pin…). Used for the archived-sessions list's "archived at" only — NOT the
+    # "active … ago" label, which would otherwise reset on every incidental write.
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+    # Time the most recent turn handed output back to the user (see ACTIVITY_STATUSES).
+    # Drives the dashboard's "active … ago" label. Advanced ONLY on a response, never by
+    # incidental row writes — so it stays meaningful. Nullable so init_db backfills on the
+    # dev SQLite DB without a migration; NULL = no turn yet → label falls back to created_at.
+    last_turn_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
 
 class AppSession(Base):
@@ -144,3 +152,5 @@ class AppSettings(Base):
     thinking_collapsed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     repo_root: Mapped[str | None] = mapped_column(String, nullable=True)
     default_tool_detail: Mapped[str | None] = mapped_column(String, nullable=True)
+    compaction_ewma_ms: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    compaction_samples: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)

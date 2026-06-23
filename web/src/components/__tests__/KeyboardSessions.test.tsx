@@ -14,6 +14,9 @@ import type { Session } from '@/api/types'
 
 // ── Mock @/api/hooks (same scaffold as DashboardTabs.test.tsx) ────────────────
 
+// Controllable mock for useSendPrompt
+const sendPromptMutate = vi.fn()
+
 vi.mock('@/api/hooks', () => ({
   useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
@@ -38,7 +41,7 @@ vi.mock('@/api/hooks', () => ({
   usePermanentDeleteSession: vi.fn(),
   useBulkUnarchiveSessions: vi.fn(),
   useBulkPermanentDeleteSessions: vi.fn(),
-  useSendPrompt: () => ({ mutate: vi.fn() }),
+  useSendPrompt: vi.fn(),
   QK: {
     accounts: ['accounts'],
     sessions: ['sessions'],
@@ -79,6 +82,11 @@ function wrapper({ children }: { children: React.ReactNode }) {
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 }
 
+function renderDashboard(props: React.ComponentProps<typeof Dashboard> = {}) {
+  vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+  return render(<Dashboard {...props} />, { wrapper })
+}
+
 function setupDefaultMocks() {
   vi.mocked(hooks.useAccounts).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useAccounts>)
   vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
@@ -100,6 +108,7 @@ function setupDefaultMocks() {
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
   vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
   vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
+  vi.mocked(hooks.useSendPrompt).mockReturnValue({ mutate: sendPromptMutate, isPending: false } as unknown as ReturnType<typeof hooks.useSendPrompt>)
 }
 
 // ── Task 3: Selection state + nav ─────────────────────────────────────────────
@@ -216,55 +225,38 @@ describe('Task 4 — row actions on highlighted session', () => {
     window.localStorage.clear()
   })
 
-  it('Ctrl+R on empty prompt opens the rename dialog for the highlighted session', async () => {
+  it('Tab then r opens the rename dialog for the highlighted session', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('{ArrowDown}{Control>}r{/Control}')
+    renderDashboard()
+    await user.keyboard('{ArrowDown}')
+    await user.keyboard('{Tab}')
+    await user.keyboard('r')
     expect(screen.getByRole('dialog', { name: /rename session/i })).toBeInTheDocument()
   })
 
-  it('first Ctrl+X arms the guard (does NOT close) and shows the confirmation hint', async () => {
+  it('Tab then a archives the highlighted session (single press)', async () => {
+    const mutate = vi.fn()
+    vi.mocked(hooks.useCloseSession).mockReturnValue({ ...NOOP_MUTATION, mutate } as unknown as ReturnType<typeof hooks.useCloseSession>)
     const user = userEvent.setup()
-    const closeMutate = vi.fn()
-    vi.mocked(hooks.useCloseSession).mockReturnValue({ mutate: closeMutate, isPending: false } as unknown as ReturnType<typeof hooks.useCloseSession>)
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('{ArrowDown}{Control>}x{/Control}')
-    // close must NOT have been called on the first Ctrl+X
-    expect(closeMutate).not.toHaveBeenCalled()
-    // confirmation hint should be visible
-    expect(screen.getByRole('status')).toHaveTextContent(/press ctrl\+x again to close/i)
+    renderDashboard()
+    await user.keyboard('{ArrowDown}{Tab}a')
+    expect(mutate).toHaveBeenCalledWith('s1')
   })
 
-  it('second Ctrl+X within the window calls close', async () => {
+  it('Tab then c sends "continue"', async () => {
+    const mutate = vi.fn()
+    vi.mocked(hooks.useSendPrompt).mockReturnValue({ ...NOOP_MUTATION, mutate } as unknown as ReturnType<typeof hooks.useSendPrompt>)
     const user = userEvent.setup()
-    const closeMutate = vi.fn()
-    vi.mocked(hooks.useCloseSession).mockReturnValue({ mutate: closeMutate, isPending: false } as unknown as ReturnType<typeof hooks.useCloseSession>)
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('{ArrowDown}{Control>}x{/Control}{Control>}x{/Control}')
-    expect(closeMutate).toHaveBeenCalledWith('s1')
+    renderDashboard()
+    await user.keyboard('{ArrowDown}{Tab}c')
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ text: 'continue' }))
   })
 
-  it('Ctrl+X on a different row resets the guard without closing', async () => {
+  it('Tab then d opens the permanent-delete dialog', async () => {
     const user = userEvent.setup()
-    const closeMutate = vi.fn()
-    vi.mocked(hooks.useCloseSession).mockReturnValue({ mutate: closeMutate, isPending: false } as unknown as ReturnType<typeof hooks.useCloseSession>)
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    // Arm guard on row 0 (s1)
-    await user.keyboard('{ArrowDown}{Control>}x{/Control}')
-    expect(closeMutate).not.toHaveBeenCalled()
-    // Navigate to row 1 (s2) — clears guard
-    await user.keyboard('{ArrowDown}')
-    // Press Ctrl+X on s2 — should arm the guard for s2, not close
-    await user.keyboard('{Control>}x{/Control}')
-    expect(closeMutate).not.toHaveBeenCalled()
+    renderDashboard()
+    await user.keyboard('{ArrowDown}{Tab}d')
+    expect(screen.getByRole('dialog', { name: /delete/i })).toBeInTheDocument()
   })
 
   it('Alt+3 opens the third session directly', async () => {
@@ -341,7 +333,7 @@ describe('Pending placeholder — keyboard open is a no-op', () => {
   })
 })
 
-// ── Task 5: ShortcutsHelp overlay (wired into Dashboard) ─────────────────────
+// ── Help slide-out (wired into Dashboard) ───────────────────────────────────
 
 describe('Task 5 — ? shortcuts help overlay in Dashboard', () => {
   beforeEach(() => {
@@ -350,24 +342,24 @@ describe('Task 5 — ? shortcuts help overlay in Dashboard', () => {
     window.localStorage.clear()
   })
 
-  it('? opens the shortcuts help dialog', async () => {
+  it('? opens the help dialog', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
     render(<Dashboard />, { wrapper })
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{Shift>}/{/Shift}')
-    expect(screen.getByRole('dialog', { name: /keyboard shortcuts/i })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: /help/i })).toBeInTheDocument()
   })
 
-  it('Esc closes the shortcuts help dialog', async () => {
+  it('Esc closes the help dialog', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
     render(<Dashboard />, { wrapper })
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{Shift>}/{/Shift}')
-    expect(screen.getByRole('dialog', { name: /keyboard shortcuts/i })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: /help/i })).toBeInTheDocument()
     await user.keyboard('{Escape}')
-    expect(screen.queryByRole('dialog', { name: /keyboard shortcuts/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: /help/i })).not.toBeInTheDocument()
   })
 })
 

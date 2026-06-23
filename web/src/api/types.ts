@@ -38,6 +38,7 @@ export type SessionStatus =
   | 'ready_review'
   | 'done'
   | 'complete'
+  | 'waiting_external'
   | 'needs_attention'
   | 'limited'
   | 'ended'

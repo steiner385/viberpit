@@ -44,8 +44,10 @@ def test_create_session_serializes_result():
 
 def test_send_prompt_forwards_to_orch():
     app, orch = _app_with_orch()
-    with mock.patch.object(orch, "send_prompt", new=mock.AsyncMock()) as sp:
+    with mock.patch.object(orch, "send_prompt", new=mock.AsyncMock(return_value="sent")) as sp:
         with TestClient(app) as c:
             r = c.post("/rpc/send_prompt", json={"session_id": "s1", "text": "hi"}).json()
         sp.assert_awaited_once_with("s1", "hi", None)
-    assert r["result"] == {"ok": True}
+    # The RPC handler now relays send_prompt's delivery status to the edge so the WS
+    # bridge can ack a drain-refused prompt (promptRejected). See orchestrator_rpc.send_prompt.
+    assert r["result"] == {"status": "sent"}
