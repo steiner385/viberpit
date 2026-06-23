@@ -24,6 +24,7 @@ from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
 from server.sessions import adopt as _adopt
+from server.sessions.search import transcript_text, parse_terms, session_matches
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import get_db
@@ -368,6 +369,32 @@ async def list_archived_sessions(
     """Return all archived session metadata."""
     orch = _get_orchestrator(request)
     return await orch.list_archived()
+
+
+@router.get("/search")
+async def search_sessions(
+    request: Request,
+    q: str = "",
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Return active session IDs whose name or transcript matches every term in `q`.
+
+    Registered before GET /{session_id} so FastAPI does not match `search` as an id.
+    """
+    orch = _get_orchestrator(request)
+    terms = parse_terms(q)
+    records = await orch.list_sessions()
+
+    async def _matches(rec) -> bool:
+        text = ""
+        if terms:  # blank query short-circuits the file reads
+            path = await orch.transcript_path(rec.id)
+            if path:
+                text = await asyncio.to_thread(transcript_text, path)
+        return session_matches(terms, rec.name, text)
+
+    flags = await asyncio.gather(*(_matches(r) for r in records))
+    return {"ids": [r.id for r, ok in zip(records, flags) if ok]}
 
 
 @router.get("/{session_id}")
