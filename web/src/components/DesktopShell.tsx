@@ -176,23 +176,33 @@ export function DesktopShell() {
   }, [selection, orderedSessions])
 
   // In-session detach gestures (desktop): ← / Esc / Ctrl+Z return to the list.
-  // Active only while a session is focused. Guards: yield to the composer while it
-  // holds a draft (cursor move / undo). Faithful detach → main pane shows WelcomePane.
+  // Active only while a session is focused. Guards: Esc/Ctrl+Z yield to the composer
+  // while it holds a draft; ← only detaches from the prompt's left edge (empty, or
+  // caret at the very start with no selection) so it otherwise moves the caret.
+  // Faithful detach → main pane shows WelcomePane.
   useEffect(() => {
     const active = tab === 'sessions' && selection.type === 'session'
     if (!active) return
     function onKey(e: KeyboardEvent) {
       const ae = document.activeElement as HTMLTextAreaElement | null
-      const inComposerWithText =
-        ae?.getAttribute('aria-label') === 'Message' && (ae?.value ?? '') !== ''
+      const inComposer = ae?.getAttribute('aria-label') === 'Message'
+      const inComposerWithText = inComposer && (ae?.value ?? '') !== ''
+      const caretPastComposerStart =
+        inComposer && !(ae!.selectionStart === 0 && ae!.selectionEnd === 0)
       if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
         if (inComposerWithText) return
         e.preventDefault()
         detachToList()
         return
       }
-      if (e.key === 'ArrowLeft' || e.key === 'Escape') {
+      if (e.key === 'Escape') {
         if (inComposerWithText) return
+        e.preventDefault()
+        detachToList()
+        return
+      }
+      if (e.key === 'ArrowLeft') {
+        if (caretPastComposerStart) return
         e.preventDefault()
         detachToList()
       }
