@@ -1,5 +1,5 @@
 import type {
-  SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult,
+  SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult, QueuedItem,
 } from './events'
 
 /** Sentinel id for the optimistic user turn seeded before the SDK echoes the prompt. */
@@ -60,7 +60,7 @@ export interface TranscriptState {
   usage: UsageSnapshot | null   // most recent result's token/cost snapshot
   replaying: boolean            // true until replayComplete
   error: { code: string; message: string; resetsAt?: string | null } | null
-  queued: string[]              // texts of prompts waiting in the server-side queue
+  queued: QueuedItem[]           // prompts waiting in the server-side queue
   rotations: RotationMarker[]   // account rotations, anchored into the timeline
   subAgents: Record<string, SubThread>   // keyed by the spawning Task toolId
   latestSuggestions: string[]  // next-prompt chips for the current idle turn
