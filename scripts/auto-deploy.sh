@@ -64,6 +64,38 @@ case "$verdict" in
   *)          echo "[deploy] WARNING: cannot determine CI status for ${REMOTE:0:9} (gh/network?) — skipping this tick" >&2; exit 0 ;;
 esac
 
+# Classify the pending change: does it touch code the DAEMON runs (orchestrator/IPC/session
+# logic, OR any shared module the daemon imports)? If only edge code changed AND the edge is
+# running in remote mode, restarting the edge does NOT disrupt sessions (the daemon holds them),
+# so we can skip the idle gate entirely.
+# Fail SAFE: if the diff can't be computed, assume daemon_changed (gate + restart both).
+if daemon_files="$(git diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null)"; then
+  # Edge-only iff EVERY changed file is in the edge-only allowlist (web UI, REST API, the edge
+  # app/WS bridge/SPA, docs, deploy, CI). ANYTHING else — including shared modules the daemon
+  # imports (server/config, server/db, server/audit, server/usage, the orchestrator, IPC, the
+  # agent-SDK glue) — forces a daemon restart. Fail-safe: an unrecognised path is daemon_changed.
+  # Collect the files NOT on the allowlist; if any remain, a daemon restart is required. (We
+  # capture-and-test rather than `grep -vq`, whose -q early-exit misreports the inverted match.)
+  non_edge="$(printf '%s\n' "$daemon_files" \
+       | grep -vE '^(web/|server/api/|server/app\.py|server/bridge/|server/spa\.py|server/tests/|docs/|deploy/|\.github/|.*\.md$)' || true)"
+  if [ -n "$non_edge" ]; then
+    daemon_changed=1   # at least one non-edge-only file changed
+  else
+    daemon_changed=0   # every changed file is edge-only
+  fi
+else
+  daemon_changed=1   # fail-safe: cannot classify → treat as a daemon change
+fi
+
+# Is the running edge in remote mode? Its /healthz reports "daemon":"ok" only then.
+remote_active=0
+if [ -z "${CCSWITCH_DEPLOY_REMOTE_ACTIVE:-}" ]; then
+  _hz="$(curl -fsS -m 3 "http://${CCSWITCH_HOST:-127.0.0.1}:${CCSWITCH_PORT:-8787}/healthz" 2>/dev/null || true)"
+  grep -q '"daemon":"ok"' <<<"$_hz" && remote_active=1
+else
+  remote_active="$CCSWITCH_DEPLOY_REMOTE_ACTIVE"   # test seam
+fi
+
 # Idle gate. A restart kills every live session, so defer while the running server
 # is mid-turn (status in_progress/working/waiting_input) or a VNC client is attached.
 # Skip-and-retry until idle/detached, capped at CCSWITCH_DEPLOY_MAX_DEFER_SEC so a
@@ -105,27 +137,34 @@ vnc_verdict() {
   fi
 }
 
-# Compute defer_reason: "busy", "vnc-attached", or empty (proceed).
-defer_reason=""
-if [ "$(busy_verdict)" = "busy" ]; then
-  defer_reason="busy"
-elif [ "$(vnc_verdict)" = "attached" ]; then
-  defer_reason="vnc-attached"
-fi
-
-if [ -n "$defer_reason" ]; then
-  MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
-  now="$(date +%s)"
-  msha=""; mts=0
-  if [ -f "$DEFER_FILE" ]; then read -r msha mts < "$DEFER_FILE" || true; fi
-  if [ "$msha" != "$REMOTE" ]; then
-    printf '%s %s\n' "$REMOTE" "$now" > "$DEFER_FILE"
-    echo "[deploy] ${defer_reason} — deferring ${REMOTE:0:9} (will retry)"; exit 0
-  elif [ "$(( now - mts ))" -gt "$MAX_DEFER" ]; then
-    echo "[deploy] ${defer_reason} for $(( now - mts ))s (> ${MAX_DEFER}s) — forcing deploy of ${REMOTE:0:9}" >&2
-  else
-    echo "[deploy] ${defer_reason} — deferring ${REMOTE:0:9} ($(( now - mts ))s so far)"; exit 0
+# Only idle-gate when a session-disrupting restart will happen: a daemon change, or an
+# in-process edge (where any restart kills sessions). A remote edge + edge-only change is
+# non-disruptive → never defer.
+if [ "$daemon_changed" = "1" ] || [ "$remote_active" != "1" ]; then
+  # Compute defer_reason: "busy", "vnc-attached", or empty (proceed).
+  defer_reason=""
+  if [ "$(busy_verdict)" = "busy" ]; then
+    defer_reason="busy"
+  elif [ "$(vnc_verdict)" = "attached" ]; then
+    defer_reason="vnc-attached"
   fi
+
+  if [ -n "$defer_reason" ]; then
+    MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
+    now="$(date +%s)"
+    msha=""; mts=0
+    if [ -f "$DEFER_FILE" ]; then read -r msha mts < "$DEFER_FILE" || true; fi
+    if [ "$msha" != "$REMOTE" ]; then
+      printf '%s %s\n' "$REMOTE" "$now" > "$DEFER_FILE"
+      echo "[deploy] ${defer_reason} — deferring ${REMOTE:0:9} (will retry)"; exit 0
+    elif [ "$(( now - mts ))" -gt "$MAX_DEFER" ]; then
+      echo "[deploy] ${defer_reason} for $(( now - mts ))s (> ${MAX_DEFER}s) — forcing deploy of ${REMOTE:0:9}" >&2
+    else
+      echo "[deploy] ${defer_reason} — deferring ${REMOTE:0:9} ($(( now - mts ))s so far)"; exit 0
+    fi
+  fi
+else
+  echo "[deploy] edge-only change, remote mode — non-disruptive restart, skipping idle gate"
 fi
 
 # Restore the working tree to the last-good commit and rebuild it. Called when any
@@ -221,12 +260,11 @@ fi
 
 echo "[deploy] live + healthy at ${REMOTE:0:9}"
 
-# Restart the session daemon too, but only if its unit is installed+enabled on this
-# host. Guarded so a host (or CI) without the daemon unit is a no-op. The daemon holds
-# no sessions until the edge runs in remote mode (A2.3), so an A4 daemon restart is
-# harmless; A2.3 adds idle-gating + edge-vs-daemon classification.
-if systemctl is-enabled ccswitch-daemon.service >/dev/null 2>&1; then
-  echo "[deploy] restarting ccswitch-daemon.service"
+# Restart the session daemon only when daemon code changed AND the unit is enabled on
+# this host. Guarded so a host (or CI) without the daemon unit is a no-op. Edge-only
+# changes leave the daemon running — it holds all live sessions in remote mode.
+if [ "$daemon_changed" = "1" ] && systemctl is-enabled ccswitch-daemon.service >/dev/null 2>&1; then
+  echo "[deploy] daemon code changed — restarting ccswitch-daemon.service"
   sudo systemctl restart ccswitch-daemon.service || \
     echo "[deploy] WARNING: daemon restart failed (edge already live)" >&2
 fi
