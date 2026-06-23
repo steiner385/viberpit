@@ -482,10 +482,11 @@ async def send_session_prompt(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Send a prompt to a live session from the dashboard (quick-resume).
+    """Send a prompt to a session from the dashboard (quick-resume).
 
-    404 if unknown; 409 if the session is detached (no live driver) — the client
-    should open the session, which resumes it lazily, and send from there."""
+    Lazily RESUMES a detached (idle/"Ready") session first — the same ensure_driver
+    path the WebSocket prompt flow uses — so one tap from the list gets a stalled
+    session moving. 404 if unknown; 409 if the session exists but can't be resumed."""
     orch = _get_orchestrator(request)
     record = await orch.get_session(session_id)
     if record is None:
@@ -493,14 +494,19 @@ async def send_session_prompt(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
-    if getattr(record, "detached", False):
+    # Resume the session if it has no live driver (detached). ensure_driver is
+    # idempotent for already-live sessions and returns None only if the session
+    # can't be brought live.
+    driver = await orch.ensure_driver(session_id, identity)
+    if driver is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "not_live", "message": "Session is not live; open it to resume."},
+            detail={"code": "resume_failed", "message": "Session could not be resumed."},
         )
     await orch.send_prompt(session_id, body.text)
     await record_audit(db, "session.prompt", identity, {"sessionId": session_id})
-    return _record_to_dict(record, repo=await _resolve_repo(record))
+    updated = await orch.get_session(session_id) or record
+    return _record_to_dict(updated, repo=await _resolve_repo(updated))
 
 
 @router.delete("/{session_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)

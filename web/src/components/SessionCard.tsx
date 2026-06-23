@@ -3,6 +3,7 @@ import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Play, T
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
+import { statusTier } from '@/session/statusTier'
 import { StatusPill, UsageBadge } from './UsageBadge'
 import { PrPill } from './PrPill'
 import { SubAgentRows } from './SubAgentRows'
@@ -38,7 +39,11 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
   const [menuOpen, setMenuOpen] = useState(false)
 
   const suggestions = session.latestSuggestions ?? []
-  const canFireInPlace = suggestions.length > 0 && !session.detached
+  // One-tap resume sends the cached top suggestion if there is one, else "continue".
+  // The backend lazily resumes a detached session before delivering, so this works
+  // on idle/"Ready" sessions too. Hidden while the session is actively working.
+  const resumeText = suggestions[0] ?? 'continue'
+  const isBusy = statusTier(session.status) === 'busy'
 
   // Scroll selected row into view when selection changes (jsdom doesn't implement scrollIntoView)
   useEffect(() => {
@@ -182,17 +187,19 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
           selected && '[@media(hover:hover)]:opacity-100',
         )}
       >
-        <button
-          type="button"
-          className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
-            'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500')}
-          aria-label={`Resume session ${session.name}`}
-          title={canFireInPlace ? 'Resume — send the suggested next step' : 'Resume — open and continue'}
-          onClick={() => onQuickResume(session.id, canFireInPlace ? suggestions[0] : undefined)}
-        >
-          <Play size={16} aria-hidden="true" />
-        </button>
-        {suggestions.length >= 2 && !session.detached && (
+        {!isBusy && (
+          <button
+            type="button"
+            className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
+              'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500')}
+            aria-label={`Resume session ${session.name}`}
+            title={suggestions.length > 0 ? 'Resume — send the suggested next step' : 'Resume — send “continue”'}
+            onClick={() => onQuickResume(session.id, resumeText)}
+          >
+            <Play size={16} aria-hidden="true" />
+          </button>
+        )}
+        {!isBusy && suggestions.length >= 2 && (
           <div className="relative flex items-center">
             <button
               type="button"
