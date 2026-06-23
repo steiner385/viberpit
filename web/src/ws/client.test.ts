@@ -458,4 +458,20 @@ describe('SessionSocket update-pending queue', () => {
     expect(sock.updatePendingState.count).toBe(50)        // capped, not 51
     expect(errors.some((e) => e.code === 'PENDING_BUFFER_FULL')).toBe(true)
   })
+
+  it('re-queues a promptRejected frame and flushes it on reconnect', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    let ws = lastSock()
+    ws.simulateOpen()
+
+    ws.simulateMessage({ type: 'promptRejected', sessionId: 's1', text: 'refused', attachmentIds: [] })
+    expect(sock.updatePendingState).toEqual({ active: true, count: 1 })
+
+    ws.simulateClose()
+    sock.connect()
+    ws = lastSock()
+    ws.simulateOpen()
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"') && s.includes('refused'))).toBe(true)
+  })
 })

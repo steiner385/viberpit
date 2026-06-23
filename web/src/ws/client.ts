@@ -23,6 +23,7 @@ export interface WsCommandsMsg      { type: 'commands';      sessionId: string; 
 export interface WsCommandResultMsg { type: 'commandResult'; sessionId: string; ok: boolean; name?: string; render?: 'help' | 'context' | 'notice' | 'clear'; data?: unknown; error?: string }
 export interface WsUpdatePendingMsg   { type: 'updatePending' }
 export interface WsUpdateCancelledMsg { type: 'updateCancelled' }
+export interface WsPromptRejectedMsg   { type: 'promptRejected'; sessionId: string; text: string; attachmentIds?: string[]; reason?: string }
 
 export type WsInboundMsg =
   | WsStatusMsg
@@ -34,6 +35,7 @@ export type WsInboundMsg =
   | WsCommandResultMsg
   | WsUpdatePendingMsg
   | WsUpdateCancelledMsg
+  | WsPromptRejectedMsg
 
 // ── Callback registry type ───────────────────────────────────────────────────
 
@@ -306,6 +308,12 @@ export class SessionSocket {
         break
       case 'updateCancelled':
         this._flushPending()
+        break
+      case 'promptRejected':
+        // Server refused this prompt (deploy drain). Re-queue it so it flushes on
+        // the next reconnect/cancel instead of being lost, and enter holding.
+        this._updatePending = true
+        this._enqueuePrompt({ sessionId: msg.sessionId, text: msg.text, attachmentIds: msg.attachmentIds })
         break
       default:
         // Fan out individual session events sent directly (not wrapped in batch)
