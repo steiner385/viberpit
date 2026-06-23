@@ -38,8 +38,21 @@ const FALLBACK: StatusPresentation = {
   tier: 'your-turn', label: 'Ready', Icon: Clock, textClass: CALM,
 }
 
+// DIAGNOSTIC (temporary): any status string not in PRESENTATION renders as the
+// calm "Ready" fallback — visually indistinguishable from a genuine idle session.
+// Record each *novel* unknown string once so we can tell a transport/vocabulary
+// gap (unrecognized state arrived) from a real backend idle/done. Deduped because
+// statusPresentation() runs inside render/sort hot paths. Remove once the
+// false-"Ready" question is settled.
+const seenUnknownStatuses = new Set<string>()
+
 export function statusPresentation(state: string): StatusPresentation {
-  return PRESENTATION[state] ?? FALLBACK
+  const hit = PRESENTATION[state]
+  if (!hit && !seenUnknownStatuses.has(state)) {
+    seenUnknownStatuses.add(state)
+    console.warn(`[status] unrecognized status %o rendered as fallback "Ready"`, state)
+  }
+  return hit ?? FALLBACK
 }
 
 export function statusTier(state: string): StatusTier {
