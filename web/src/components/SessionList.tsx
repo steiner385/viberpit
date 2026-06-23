@@ -78,6 +78,7 @@ export function SessionList({
       onRename={onRename}
       onClose={onClose}
       onDelete={onDelete}
+      onQuickResume={onQuickResume}
     />
   )
 
@@ -94,21 +95,6 @@ export function SessionList({
       aria-activedescendant={selectedId ? `row-${selectedId}` : undefined}
       className="space-y-2"
     >
-<<<<<<< HEAD
-      {sessions.map((session) => (
-        <SessionCard
-          key={session.id}
-          session={session}
-          account={accountMap.get(session.accountName)}
-          selected={session.id === selectedId}
-          onOpen={onOpen}
-          onRename={onRename}
-          onClose={onClose}
-          onDelete={onDelete}
-          onQuickResume={onQuickResume}
-        />
-      ))}
-=======
       {groups
         ? groups.map((group) => (
             <div key={group.key} className="space-y-2">
@@ -130,7 +116,6 @@ export function SessionList({
             </div>
           ))
         : sessions.map(renderCard)}
->>>>>>> origin/master
     </div>
   )
 }
