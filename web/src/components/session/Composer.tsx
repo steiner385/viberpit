@@ -9,6 +9,7 @@ import { useDictationField } from '@/lib/useDictationField'
 import type { Command, QueuedItem } from '@/session/events'
 import { statusTier } from '@/session/statusTier'
 import { caretLineEdges } from '@/lib/caretLineEdges'
+import { useSessionDraft, type DraftAttachment } from './useSessionDraft'
 
 interface Props {
   status: { state: string; count: number }
@@ -24,10 +25,12 @@ interface Props {
   suggestions?: string[]
   history?: string[]
   onRequestSuggestions: () => void
+  sessionId?: string
 }
 
-export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [], onRequestSuggestions }: Props) {
-  const [text, setText] = useState('')
+export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [], onRequestSuggestions, sessionId }: Props) {
+  const draft = useSessionDraft(sessionId)
+  const [text, setText] = useState(draft.initial.text)
   const [pendingGenerate, setPendingGenerate] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   // prevSuggestions tracks which suggestions array we last acted on for the
@@ -37,8 +40,23 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
   const fileRef = useRef<HTMLInputElement>(null)
   const paletteRef = useRef<CommandPaletteHandle>(null)
   const isWorking = statusTier(status.state) === 'busy'
-  const att = useImageAttachments()
+  const att = useImageAttachments(
+    draft.initial.attachments.map((a, i) => ({
+      key: `draft-${i}`, id: a.id, mime: a.mime, name: a.name,
+      previewUrl: `/api/attachments/${a.id}`,
+    })),
+  )
   const voice = useDictationField({ value: text, setValue: setText, textareaRef })
+
+  // Persist the unsent draft so it survives navigation. att.attachments is the
+  // dependency; refs()/ids are derived for storage.
+  useEffect(() => {
+    const attachments: DraftAttachment[] = att.attachments
+      .filter((a) => !a.error && a.id)
+      .map((a) => ({ id: a.id as string, mime: a.mime, name: a.name }))
+    draft.save({ text, attachments })
+  }, [text, att.attachments, draft])
+
   const slash = text.startsWith('/') && !text.includes('\n')
   const afterSlash = slash ? text.slice(1) : ''
   // The palette is the keyboard owner only while the user is still typing the
@@ -111,17 +129,17 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
     const refs = att.refs()
     if (!trimmed && refs.length === 0) return
     if (refs.length === 0 && runCommandFromText(trimmed)) {
-      setText(''); if (textareaRef.current) textareaRef.current.style.height = 'auto'
+      setText(''); draft.clear(); if (textareaRef.current) textareaRef.current.style.height = 'auto'
       histPosRef.current = 0; draftRef.current = ''; return
     }
     onPrompt(trimmed, refs)
-    setText(''); att.clear()
+    setText(''); att.clear(); draft.clear()
     histPosRef.current = 0; draftRef.current = ''
     // Reset height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [text, onPrompt, att, runCommandFromText])
+  }, [text, onPrompt, att, runCommandFromText, draft])
 
   const prefill = useCallback((value: string) => {
     setText(value)

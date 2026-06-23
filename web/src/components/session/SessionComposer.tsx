@@ -27,6 +27,7 @@ export function SessionComposer({ rt }: { rt: SessionRuntime }) {
       suggestions={rt.state.latestSuggestions}
       history={history}
       onRequestSuggestions={rt.onRequestSuggestions}
+      sessionId={rt.sessionId}
     />
   )
 }
