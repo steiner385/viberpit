@@ -108,7 +108,8 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
         # flip an idle account to needs-reauth.
         log.warning("usage_for(%s): transient refresh error, leaving status unchanged: %s", name, e)
         return None
-    except oauth.AuthError:
+    except oauth.AuthError as e:
+        log.warning("usage_for(%s): refresh token dead (%s) — marking needs-reauth", name, e)
         with ledger.locked_ledger() as led:
             ledger.set_status(led, name, "needs-reauth")
         return None
@@ -135,7 +136,8 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
         except (oauth.UsageError, oauth.TransientError) as e:
             log.warning("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
             return None
-        except oauth.AuthError:
+        except oauth.AuthError as e:
+            log.warning("usage_for(%s): 401 survived a fresh refresh (%s) — marking needs-reauth", name, e)
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, name, "needs-reauth")
             return None
