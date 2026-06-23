@@ -27,6 +27,8 @@ vi.mock('@/api/hooks', () => ({
   useArchivedSessions: vi.fn(),
   useUnarchiveSession: vi.fn(),
   usePermanentDeleteSession: vi.fn(),
+  useBulkUnarchiveSessions: vi.fn(),
+  useBulkPermanentDeleteSessions: vi.fn(),
   useSendPrompt: () => ({ mutate: vi.fn() }),
   QK: {
     accounts: ['accounts'],
@@ -77,6 +79,8 @@ function setupMocks() {
   vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
   vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+  vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
+  vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
 }
 
 describe('New Session dialog — branch default selection', () => {
