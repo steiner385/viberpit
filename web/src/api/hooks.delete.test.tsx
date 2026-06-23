@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { usePermanentDeleteSession, useUnarchiveSession, QK } from './hooks'
 import { api } from './client'
-import type { ArchivedSession } from './types'
+import type { ArchivedSession, Session } from './types'
 import { getToasts, __resetToasts } from '@/lib/toast'
 
 vi.mock('./client', () => ({ api: { del: vi.fn(), post: vi.fn() }, ApiRequestError: class extends Error {} }))
@@ -48,5 +48,35 @@ describe('useUnarchiveSession — optimistic', () => {
     const { result } = renderHook(() => useUnarchiveSession(), { wrapper })
     result.current.mutate('a-1')
     await waitFor(() => expect(qc.getQueryData<ArchivedSession[]>(QK.archived)).toEqual([]))
+  })
+
+  it('rolls back the archived cache and fires an error toast on failure', async () => {
+    qc.setQueryData(QK.archived, [arch])
+    vi.mocked(api.post).mockRejectedValue(new Error('network error'))
+    const { result } = renderHook(() => useUnarchiveSession(), { wrapper })
+    result.current.mutate('a-1')
+    await waitFor(() => {
+      expect(qc.getQueryData<ArchivedSession[]>(QK.archived)).toEqual([arch])
+      expect(getToasts()[0]).toMatchObject({ message: "Couldn't restore Bar", variant: 'error' })
+    })
+  })
+})
+
+describe('usePermanentDeleteSession — dual-cache rollback', () => {
+  let qc: QueryClient
+  beforeEach(() => { vi.clearAllMocks(); __resetToasts(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+
+  it('rolls back both sessions and archived caches on failure', async () => {
+    const liveSess: Session = { id: 'a-1', name: 'Bar', accountName: 'a', status: 'idle', createdAt: 'x', updatedAt: 'x' }
+    qc.setQueryData(QK.archived, [arch])
+    qc.setQueryData(QK.sessions, [liveSess])
+    vi.mocked(api.del).mockRejectedValue(new Error('500'))
+    const { result } = renderHook(() => usePermanentDeleteSession(), { wrapper })
+    result.current.mutate('a-1')
+    await waitFor(() => {
+      expect(qc.getQueryData<ArchivedSession[]>(QK.archived)).toEqual([arch])
+      expect(qc.getQueryData<Session[]>(QK.sessions)).toEqual([liveSess])
+    })
   })
 })

@@ -309,6 +309,38 @@ describe('Task 4 — row actions on highlighted session', () => {
   })
 })
 
+// ── Pending placeholder guard ─────────────────────────────────────────────────
+
+describe('Pending placeholder — keyboard open is a no-op', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setupDefaultMocks()
+    window.localStorage.clear()
+  })
+
+  it('Enter on a highlighted pending session does not call onOpenSession', async () => {
+    const user = userEvent.setup()
+    const onOpen = vi.fn()
+    const pending = makeSession({ id: 'pending-1', name: 'Starting…', status: 'in_progress', pending: true })
+    vi.mocked(hooks.useSessions).mockReturnValue({ data: [pending], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    render(<Dashboard onOpenSession={onOpen} />, { wrapper })
+    await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(onOpen).not.toHaveBeenCalled()
+  })
+
+  it('Alt+1 jump to a pending session does not call onOpenSession', async () => {
+    const user = userEvent.setup()
+    const onOpen = vi.fn()
+    const pending = makeSession({ id: 'pending-1', name: 'Starting…', status: 'in_progress', pending: true })
+    vi.mocked(hooks.useSessions).mockReturnValue({ data: [pending], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    render(<Dashboard onOpenSession={onOpen} />, { wrapper })
+    await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
+    await user.keyboard('{Alt>}1{/Alt}')
+    expect(onOpen).not.toHaveBeenCalled()
+  })
+})
+
 // ── Task 5: ShortcutsHelp overlay (wired into Dashboard) ─────────────────────
 
 describe('Task 5 — ? shortcuts help overlay in Dashboard', () => {

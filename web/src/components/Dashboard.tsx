@@ -1421,6 +1421,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   }
 
   const handleOpen = useCallback((id: string) => {
+    if (id.startsWith('pending-')) return
     if (onOpenSession) onOpenSession(id)
   }, [onOpenSession])
 
@@ -1479,7 +1480,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   useGlobalListNav({ enabled: activeTab === 'sessions', onNavigate: handleNavigate })
 
   function handleOpenHighlighted() {
-    if (selectedSession) handleOpen(selectedSession.id)
+    if (selectedSession && !selectedSession.pending) handleOpen(selectedSession.id)
   }
 
   function handleRowAction(
@@ -1524,7 +1525,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       const s = orderedSessions[action.index]
       if (s) {
         setHighlightedIndex(action.index)
-        handleOpen(s.id)
+        if (!s.pending) handleOpen(s.id)
       }
     }
   }
