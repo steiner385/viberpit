@@ -72,7 +72,7 @@ export class SessionSocket {
   private readonly url: string
   private _updatePending = false
   private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[] }[] = []
-  private _droppedWhilePending = false
+  private static readonly MAX_PENDING = 50
 
   constructor(url: string = '/ws') {
     this.url = url
@@ -105,7 +105,7 @@ export class SessionSocket {
       if (this._activeSessionId) {
         this._send({ type: 'attach', sessionId: this._activeSessionId })
       }
-      if (this._droppedWhilePending) this._flushPending()
+      if (this._pendingPrompts.length) this._flushPending()
     }
 
     ws.onmessage = (event) => {
@@ -123,7 +123,6 @@ export class SessionSocket {
 
     ws.onclose = () => {
       if (this._destroyed) return
-      if (this._updatePending) this._droppedWhilePending = true
       this._setConnectionState('disconnected')
       this._scheduleReconnect()
     }
@@ -156,9 +155,11 @@ export class SessionSocket {
   }
 
   prompt(sessionId: string, text: string, attachmentIds?: string[]) {
-    if (this._updatePending) {
-      this._pendingPrompts.push({ sessionId, text, attachmentIds })
-      this._emitUpdatePending()
+    // Never silently drop input. Buffer whenever it can't be trusted to land — the
+    // server is draining (updatePending) OR the socket isn't open — and flush on the
+    // next reconnect (after re-attach). Otherwise send straight through.
+    if (this._updatePending || this.ws?.readyState !== WebSocket.OPEN) {
+      this._enqueuePrompt({ sessionId, text, attachmentIds })
       return
     }
     this._send({ type: 'prompt', sessionId, text, ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}) })
@@ -208,11 +209,25 @@ export class SessionSocket {
     this._emit('updatePendingChange', { active: this._updatePending, count: this._pendingPrompts.length })
   }
 
+  private _enqueuePrompt(p: { sessionId: string; text: string; attachmentIds?: string[] }) {
+    if (this._pendingPrompts.length >= SessionSocket.MAX_PENDING) {
+      const dropped = this._pendingPrompts.shift()
+      // No silent caps — tell the user a held message was lost rather than dropping it quietly.
+      this._emit('error', {
+        type: 'error',
+        code: 'PENDING_BUFFER_FULL',
+        message: `Too many unsent messages (${SessionSocket.MAX_PENDING}) — the oldest was dropped.`,
+      })
+      if (dropped) console.warn('[ws] pending-prompt buffer full — dropped oldest', dropped.sessionId)
+    }
+    this._pendingPrompts.push(p)
+    this._emitUpdatePending()
+  }
+
   private _flushPending() {
     const pending = this._pendingPrompts
     this._pendingPrompts = []
     this._updatePending = false
-    this._droppedWhilePending = false
     for (const p of pending) {
       this._send({ type: 'prompt', sessionId: p.sessionId, text: p.text,
         ...(p.attachmentIds && p.attachmentIds.length ? { attachmentIds: p.attachmentIds } : {}) })
