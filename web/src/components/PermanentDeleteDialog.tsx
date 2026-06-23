@@ -29,7 +29,7 @@ export function PermanentDeleteDialog({ sessionName, onClose, onConfirm, isPendi
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') { onClose(); return }
+      if (e.key === 'Escape') { e.stopPropagation(); onClose(); return }
       if (e.key === 'Tab') {
         const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
           'button, input, select, textarea, [tabindex]:not([tabindex="-1"])',

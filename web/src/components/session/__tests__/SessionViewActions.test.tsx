@@ -60,4 +60,39 @@ describe('SessionView header — archive/delete', () => {
     expect(detach).toHaveBeenCalledWith('s1')
     expect(onBack).toHaveBeenCalledTimes(1)
   })
+
+  it('Escape closes the overflow menu without exiting the session', async () => {
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />)
+
+    // Open the overflow menu.
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    expect(screen.getByRole('menuitem', { name: /delete permanently/i })).toBeInTheDocument()
+
+    // Press Escape — should close the menu, NOT exit the session.
+    await user.keyboard('{Escape}')
+
+    expect(screen.queryByRole('menuitem', { name: /delete permanently/i })).not.toBeInTheDocument()
+    expect(onBack).not.toHaveBeenCalled()
+    expect(detach).not.toHaveBeenCalled()
+  })
+
+  it('Escape closes the delete confirm dialog without exiting the session', async () => {
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />)
+
+    // Open the overflow menu, then click Delete permanently to open the confirm dialog.
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    await user.click(screen.getByRole('menuitem', { name: /delete permanently/i }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+    // Press Escape — should close the dialog, NOT exit the session.
+    await user.keyboard('{Escape}')
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(onBack).not.toHaveBeenCalled()
+    expect(detach).not.toHaveBeenCalled()
+  })
 })

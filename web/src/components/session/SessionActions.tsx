@@ -38,7 +38,7 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
     function onDocClick(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
     }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setMenuOpen(false) }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') { e.stopPropagation(); setMenuOpen(false) } }
     document.addEventListener('mousedown', onDocClick)
     document.addEventListener('keydown', onKey)
     return () => {
