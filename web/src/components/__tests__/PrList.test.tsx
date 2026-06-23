@@ -25,6 +25,7 @@ describe('PrList', () => {
     const chip = screen.getByRole('button', { name: /2 PRs/i })
     expect(chip.textContent).toMatch(/2 PRs/)
     expect(chip.textContent).toMatch(/1/)  // one deployed
+    expect(chip).toHaveAttribute('aria-label', expect.stringMatching(/2 PRs.*1 deployed/i))
   })
 
   it('reveals all PRs in the popover when the chip is clicked', () => {

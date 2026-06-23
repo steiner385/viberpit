@@ -757,6 +757,8 @@ class SessionOrchestrator:
             info = self._pr_poller.cached(rec.repo, br)
             if info is not None:
                 by_number.setdefault(info.number, info)
+        # PullRequestInfo carries no updatedAt (dropped when built from the poller),
+        # so -number is the newest-first tie-break within a state rank.
         return sorted(
             by_number.values(),
             key=lambda p: (_STATE_RANK.get(p.state, 99), -p.number),
