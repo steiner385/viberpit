@@ -370,9 +370,25 @@ export function usePermanentDeleteSession() {
 
 export function useBulkUnarchiveSessions() {
   const qc = useQueryClient()
-  return useMutation<BatchResult, ApiRequestError, string[]>({
+  return useMutation<BatchResult, ApiRequestError, string[], { prev?: ArchivedSession[] }>({
     mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/unarchive', { ids }),
-    onSuccess: () => {
+    onMutate: async (ids) => {
+      await qc.cancelQueries({ queryKey: QK.archived })
+      const prev = qc.getQueryData<ArchivedSession[]>(QK.archived)
+      const idSet = new Set(ids)
+      qc.setQueryData<ArchivedSession[]>(QK.archived, (cur) => (cur ?? []).filter((x) => !idSet.has(x.id)))
+      return { prev }
+    },
+    onError: (_e, _ids, ctx) => {
+      if (ctx?.prev) qc.setQueryData(QK.archived, ctx.prev)
+      toast({ message: `Couldn't restore sessions`, variant: 'error' })
+    },
+    onSuccess: (result) => {
+      const n = result.succeeded.length
+      const f = result.failed.length
+      toast({ message: f > 0 ? `Restored ${n} · ${f} failed` : `Restored ${n}`, variant: f > 0 ? 'error' : 'success' })
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.sessions })
       qc.invalidateQueries({ queryKey: QK.archived })
     },
@@ -381,11 +397,26 @@ export function useBulkUnarchiveSessions() {
 
 export function useBulkPermanentDeleteSessions() {
   const qc = useQueryClient()
-  return useMutation<BatchResult, ApiRequestError, string[]>({
+  return useMutation<BatchResult, ApiRequestError, string[], { prev?: ArchivedSession[] }>({
     mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/permanent-delete', { ids }),
-    onSuccess: () => {
+    onMutate: async (ids) => {
+      await qc.cancelQueries({ queryKey: QK.archived })
+      const prev = qc.getQueryData<ArchivedSession[]>(QK.archived)
+      const idSet = new Set(ids)
+      qc.setQueryData<ArchivedSession[]>(QK.archived, (cur) => (cur ?? []).filter((x) => !idSet.has(x.id)))
+      return { prev }
+    },
+    onError: (_e, _ids, ctx) => {
+      if (ctx?.prev) qc.setQueryData(QK.archived, ctx.prev)
+      toast({ message: `Couldn't delete sessions`, variant: 'error' })
+    },
+    onSuccess: (result) => {
+      const n = result.succeeded.length
+      const f = result.failed.length
+      toast({ message: f > 0 ? `Deleted ${n} · ${f} failed` : `Deleted ${n}`, variant: f > 0 ? 'error' : 'success' })
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.archived })
-      // A live session can also be permanently deleted, so refresh active too.
       qc.invalidateQueries({ queryKey: QK.sessions })
     },
   })
