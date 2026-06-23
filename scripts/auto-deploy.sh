@@ -260,6 +260,30 @@ fi
 
 echo "[deploy] live + healthy at ${REMOTE:0:9}"
 
+# Publish a GitHub Deployment so PR badges (and any other consumer) can see that
+# this commit is live in production. Best-effort: the deploy already succeeded, so
+# a publish failure only warns — it must never fail the deploy or trigger rollback.
+# required_contexts=[] is required, else GitHub refuses to create the deployment
+# while CI statuses are pending and returns a non-deployment payload instead.
+# JSON bodies are piped via --input - so required_contexts can be a true empty
+# array — there is no reliable `gh -f` flag form for an empty array, and omitting
+# the key makes GitHub apply the repo's default required contexts (causing a
+# non-deployment "conflict" payload while CI is pending).
+publish_deployment() {
+  local sha="$1" dep_id
+  dep_id="$(printf '{"ref":"%s","environment":"production","production_environment":true,"auto_merge":false,"required_contexts":[]}' "$sha" \
+    | gh api -X POST "repos/{owner}/{repo}/deployments" --input - --jq '.id' 2>/dev/null)" || return 1
+  [ -n "$dep_id" ] || return 1
+  printf '{"state":"success","auto_inactive":true}' \
+    | gh api -X POST "repos/{owner}/{repo}/deployments/${dep_id}/statuses" --input - --jq '.id' >/dev/null 2>&1 || return 1
+}
+
+if publish_deployment "$REMOTE"; then
+  echo "[deploy] published production deployment for ${REMOTE:0:9}"
+else
+  echo "[deploy] WARNING: could not publish GitHub deployment for ${REMOTE:0:9} (token/permission/network?)" >&2
+fi
+
 # Restart the session daemon only when daemon code changed AND the unit is enabled on
 # this host. Guarded so a host (or CI) without the daemon unit is a no-op. Edge-only
 # changes leave the daemon running — it holds all live sessions in remote mode.
