@@ -16,6 +16,12 @@ class Config:
     timezone: str = "America/New_York"
     claude_bin: str = "claude"
     prefer_soon_reset: bool = True
+    # Live-session load awareness: a heavily-used account's perishability score is
+    # divided by (1 + load_sensitivity * weighted_live_sessions), spreading new
+    # sessions across accounts to avoid 429s. idle_session_weight is the per-session
+    # weight of an idle live session; an actively-working session always weighs 1.0.
+    load_sensitivity: float = 0.5
+    idle_session_weight: float = 0.3
     # Auto-retry budget for Anthropic API requests (see oauth.http_request).
     retry_max_retries: int = 3
     retry_max_total_sec: float = 15.0

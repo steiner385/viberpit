@@ -9,7 +9,6 @@ from datetime import datetime
 import pytest
 
 from server.sessions.orchestrator import SessionOrchestrator
-from server.sessions.types import SessionRecord
 
 
 def _make_row(**kwargs):

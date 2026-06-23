@@ -5,7 +5,7 @@ from server.api.sessions import _record_to_dict
 from server.sessions.types import SessionRecord
 
 
-def _make_record(**kwargs) -> SessionRecord:
+def _make_record(**kwargs):
     defaults = dict(
         id="s1",
         name="test",

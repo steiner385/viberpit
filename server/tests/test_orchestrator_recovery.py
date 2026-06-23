@@ -106,7 +106,7 @@ def test_rotate_away_pauses_when_all_accounts_busy(monkeypatch):
     o._reassign = spy_reassign
     from datetime import datetime, timezone
     reset = datetime(2026, 6, 23, tzinfo=timezone.utc)
-    def boom(exclude=frozenset()):
+    def boom(exclude=frozenset(), load=None):
         raise AllAccountsBusy(reset)
     monkeypatch.setattr(orch_mod, "select_account", boom)
     asyncio.run(o._rotate_away(rec, reason="rate_limit"))
@@ -134,7 +134,7 @@ def test_rotate_away_excludes_quarantined_and_reassigns(monkeypatch):
     o._reassign = spy_reassign
     o._recovery.quarantine("secondary", until=2000.0)
     seen_exclude = {}
-    def pick(exclude=frozenset()):
+    def pick(exclude=frozenset(), load=None):
         seen_exclude["v"] = set(exclude)
         return "primary"
     monkeypatch.setattr(orch_mod, "select_account", pick)

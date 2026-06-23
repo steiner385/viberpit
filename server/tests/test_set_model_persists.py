@@ -1,4 +1,3 @@
-import asyncio
 import pytest
 from server.sessions.types import SessionRecord
 
