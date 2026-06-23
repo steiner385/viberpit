@@ -187,3 +187,30 @@ def test_install_redacting_filter_idempotent():
     root = logging.getLogger()
     count = sum(1 for f in root.filters if isinstance(f, RedactingFilter))
     assert count == 1
+
+
+def test_redact_large_base64_run_is_linear_not_redos():
+    """A long base64-class run (e.g. a base64 image data URI in a transcript event)
+    must redact in bounded time. The padded-base64 pattern was O(N^2) — a ~200KB run
+    pinned the single-threaded event loop for minutes when redacted during WS attach
+    replay, hanging the whole server. Anchoring the match to the start of a base64 run
+    makes it linear. Run in a worker thread so a regression fails fast (timeout) rather
+    than hanging the suite.
+    """
+    import time as _time
+    from server.audit import _redact
+
+    # 40KB base64-class run, NO '=' padding. With the fixed (anchored) pattern this is
+    # linear (~1ms). With the O(N^2) pattern it took multiple seconds at this size and
+    # scaled quadratically (a real ~200KB image data URI pinned the loop for minutes).
+    # `re.sub` holds the GIL, so the budget guards the synchronous loop-blocking time.
+    payload = "prefix " + ("A" * 40_000) + " suffix"
+    t0 = _time.monotonic()
+    _redact(payload)
+    elapsed = _time.monotonic() - t0
+    assert elapsed < 1.0, (
+        f"_redact() took {elapsed:.2f}s on a 40KB base64 run — catastrophic-backtracking "
+        f"regression (the anchored pattern keeps it linear, ~1ms)"
+    )
+    # Correctness preserved: a real padded base64 secret is still scrubbed.
+    assert _redact("k=" + "B" * 80 + "== end") == "k=[REDACTED] end"

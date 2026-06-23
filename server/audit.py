@@ -30,7 +30,15 @@ _REDACT_PATTERNS: list[re.Pattern[str]] = [
     # while still catching OAuth refresh tokens and other high-entropy base64 payloads.
     # NOTE: sk-ant-* and ccenc1:* are caught by the explicit patterns above, so there
     # is no regression risk in tightening this rule.
-    re.compile(r"[A-Za-z0-9+/]{60,}={1,2}"),
+    #
+    # The leading `(?<![A-Za-z0-9+/])` anchors the match to the START of a base64 run.
+    # Without it, an UNPADDED run of N base64 chars is O(N^2): the engine retries the
+    # `{60,}` greedy match at every one of the N start positions (each scanning the
+    # whole remaining run before failing on the missing `=`). A ~200KB base64 image
+    # data URI in a transcript event then pinned the single-threaded event loop for
+    # MINUTES when redacted during WS attach replay, hanging the whole server. The
+    # negative lookbehind leaves exactly one valid start per run → linear time.
+    re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{60,}={1,2}"),
     # itsdangerous-signed session cookie value:  <payload>.<timestamp>.<signature>
     # Shape: base64url payload (≥16 chars) · base64url ts (≥6 chars) · sig (≥20 chars)
     re.compile(r"\b[\w-]{16,}\.[\w-]{6,}\.[\w-]{20,}\b"),
