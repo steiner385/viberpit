@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionList } from '../SessionList'
@@ -362,7 +362,7 @@ describe('SessionList', () => {
     expect(screen.queryByText(SESSIONS[0].name)).not.toBeInTheDocument()
     const collapsedHeader = screen.getByRole('button', { name: /Working/i })
     expect(collapsedHeader).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.getAllByText('1').length).toBeGreaterThanOrEqual(1) // count still shown
+    expect(within(collapsedHeader).getByText('1')).toBeInTheDocument() // count still shown inside the header
   })
 })
 

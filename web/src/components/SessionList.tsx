@@ -136,7 +136,7 @@ export function SessionList({
                     type="button"
                     onClick={() => onToggleCollapse?.(group.key)}
                     aria-expanded={!collapsed}
-                    aria-controls={panelId}
+                    aria-controls={collapsed ? undefined : panelId}
                     className={cn(
                       'sticky top-0 z-10 flex w-full items-center gap-2 px-1 py-1',
                       'bg-gray-50/95 dark:bg-gray-900/95 backdrop-blur',
