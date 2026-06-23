@@ -216,11 +216,14 @@ def test_account_memory_edit_auto_allowed_in_auto_mode(tmp_path, monkeypatch):
     assert pid is None, "Edit to account memory dir must auto-allow in auto mode"
 
 
-def test_account_memory_write_still_prompts_in_interactive(tmp_path, monkeypatch):
+def test_account_memory_write_auto_allowed_in_interactive(tmp_path, monkeypatch):
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
     reg = PermissionRegistry()
+    # The agent's own auto-memory writes are sandboxed to cfg_root() and can never
+    # reach a real repo, so they are pure bookkeeping noise — auto-allowed even in
+    # interactive ("ask each time") mode.  Real, user-facing tools still prompt.
     pid = _request(reg, "Write", _mem_path(tmp_path), "interactive")
-    assert pid is not None, "interactive mode must still prompt even for memory writes"
+    assert pid is None, "memory writes must auto-allow even in interactive mode"
 
 
 def test_non_memory_write_under_cfg_still_prompts(tmp_path, monkeypatch):

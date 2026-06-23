@@ -23,6 +23,21 @@ class StatusSignals:
     condensing: bool = False
 
 
+# Statuses at which the assistant has handed output back to the user — either a
+# finished turn (done/complete/needs_attention) or a turn paused awaiting the user
+# (waiting_input/waiting_question/ready_review). These — and only these — advance a
+# session's "active … ago" clock (see SessionOrchestrator._persist_status). `in_progress`
+# (working, nothing handed back yet), `idle` (never ran), and the orchestrator overlays
+# `limited`/`ended`/`archived` are deliberately excluded. `waiting_external` is also
+# excluded: parking on a background task / wakeup is NOT a fresh return, so the clock keeps
+# the prior turn's time and the card shows how long it has been parked (since the last
+# turn) instead of resetting on every /loop re-arm.
+ACTIVITY_STATUSES: frozenset[str] = frozenset({
+    "done", "complete", "needs_attention",
+    "waiting_input", "waiting_question", "ready_review",
+})
+
+
 def derive_status(sig: StatusSignals) -> str:
     if sig.pending_plan:
         return "ready_review"
