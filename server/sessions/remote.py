@@ -5,8 +5,11 @@ is sync; reconciling that with the sync API callers is an A2.2 concern. A2.1 wir
 the vertical-slice methods only.
 """
 import asyncio
+import logging
 from ccswitch.oauth import Usage
 from server.sessions.types import SessionRecord
+
+log = logging.getLogger(__name__)
 
 
 class _WireEvent:
@@ -30,12 +33,42 @@ class RemoteDriver:
         self._status = status
         self._queued = queued or []
         self._head_seq = head_seq
+        self._bg_tasks: set[asyncio.Task] = set()
 
     def current_status(self) -> str:
         return self._status
 
     def queued(self) -> list:
         return self._queued
+
+    def seed_idle_suggestions(self, user_text: str, assistant_text: str) -> None:
+        """Seed idle-session suggestions on the daemon-side driver (best-effort).
+
+        Mirrors the local Driver.seed_idle_suggestions sync, fire-and-forget shape
+        so the WS attach path (suggestions.kick_idle_suggestions) drives a remote
+        session identically to a local one — without this, daemon mode raises
+        AttributeError and idle sessions never get seeded suggestions. Schedules
+        the RPC and returns immediately; any failure is logged, never raised.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no event loop to schedule on — skip (best-effort)
+        task = loop.create_task(self._client.call(
+            "seed_idle_suggestions",
+            session_id=self._session_id,
+            user_text=user_text,
+            assistant_text=assistant_text,
+        ))
+        self._bg_tasks.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            self._bg_tasks.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                log.warning("RemoteDriver.seed_idle_suggestions RPC failed for %s: %s",
+                            self._session_id, t.exception())
+
+        task.add_done_callback(_done)
 
     async def events(self):
         async for wire in self._client.subscribe(self._session_id, since=self._head_seq):
