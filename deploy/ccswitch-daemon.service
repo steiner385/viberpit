@@ -15,7 +15,11 @@ RestartSec=3
 TimeoutStopSec=60
 KillMode=control-group
 MemoryMax=12G
-TasksMax=512
+# No pids ceiling: this daemon owns every live claude session, and each spawns a
+# Claude CLI + its MCP-server fleet + Xvfb + thread pools. TasksMax counts threads
+# too, so a low cap is hit fast (512 throttled ~900x in prod → fork/thread EAGAIN,
+# SIGABRT'd subprocesses, dead turns). MemoryMax=12G is the real backstop.
+TasksMax=infinity
 LimitNOFILE=65536
 
 [Install]
