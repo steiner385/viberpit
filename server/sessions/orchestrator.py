@@ -1590,20 +1590,19 @@ class SessionOrchestrator:
         log.info("session.permanent_delete id=%s db row removed", session_id)
         return True
 
-    async def transcript_events(self, session_id: str) -> list:
-        """Return replayed transcript events for a session (read-only review).
+    async def _resolve_transcript_path(self, session_id: str) -> str | None:
+        """Resolve the on-disk JSONL path for a session's transcript.
 
-        Works for both active and archived sessions: transcripts live in the
-        account's config dir (not the moved cwd), so always accessible.
-        Returns [] if no transcript is found or parsing fails.
+        Works for both active and archived sessions. Returns None when not found.
+        Active sessions are resolved via transcript_path(); archived sessions
+        (not in _records) fall back to a DB lookup + glob.
         """
-        from server.sessions.replay import replay_events
+        from sqlalchemy import select as sa_select
+        import glob as _glob
 
         path = self.transcript_path(session_id)
         if path is None:
             # For archived sessions the record is not in _records; load from DB.
-            from sqlalchemy import select as sa_select
-            import glob as _glob
             async with db_session() as db:
                 row = (await db.execute(
                     sa_select(DbSession).where(DbSession.id == session_id)
@@ -1614,6 +1613,18 @@ class SessionOrchestrator:
                     str(Path(cfg_dir) / "projects" / "*" / f"{row.claude_session_id}.jsonl")
                 )
                 path = matches[0] if matches else None
+        return path
+
+    async def transcript_events(self, session_id: str) -> list:
+        """Return replayed transcript events for a session (read-only review).
+
+        Works for both active and archived sessions: transcripts live in the
+        account's config dir (not the moved cwd), so always accessible.
+        Returns [] if no transcript is found or parsing fails.
+        """
+        from server.sessions.replay import replay_events
+
+        path = await self._resolve_transcript_path(session_id)
         if not path:
             return []
         try:
@@ -1621,3 +1632,21 @@ class SessionOrchestrator:
         except Exception:
             log.warning("session.transcript_events id=%s replay failed", session_id, exc_info=True)
             return []
+
+    async def transcript_window(self, session_id: str, *, before: int | None = None, limit: int = 20):
+        """Windowed transcript replay. Returns a ReplayWindow, or None if no transcript.
+
+        Use before/limit for lazy scrollback paging: returns up to `limit` turns
+        ending before turn-ordinal `before` (or the last `limit` turns if before
+        is None), plus earliest_turn/total_turns for pagination metadata.
+        """
+        from server.sessions.replay import replay_window
+
+        path = await self._resolve_transcript_path(session_id)
+        if not path:
+            return None
+        try:
+            return await replay_window(path, before=before, limit=limit)
+        except Exception:
+            log.warning("session.transcript_window id=%s replay failed", session_id, exc_info=True)
+            return None

@@ -489,9 +489,12 @@ async def permanent_delete_session(
 async def get_session_transcript(
     session_id: str,
     request: Request,
+    before: int | None = None,
+    limit: int = 20,
     _identity: str = Depends(current_identity),
 ) -> dict:
-    """Return read-only transcript events for a session (active or archived)."""
+    """Read-only transcript events. With `before`, returns a turn-ordinal window
+    plus earliestTurn/totalTurns for lazy scrollback paging."""
     from server.db import db_session as _db_session
     from server.db.models import Session as _DbSession
     from server.audit import redact_event
@@ -512,6 +515,15 @@ async def get_session_transcript(
                 detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
             )
 
-    events = await orch.transcript_events(session_id)
-    wire_events = [redact_event(e.to_wire()) for e in events]
-    return {"events": wire_events}
+    if before is None:
+        events = await orch.transcript_events(session_id)
+        return {"events": [redact_event(e.to_wire()) for e in events]}
+
+    window = await orch.transcript_window(session_id, before=before, limit=limit)
+    if window is None:
+        return {"events": [], "earliestTurn": 0, "totalTurns": 0}
+    return {
+        "events": [redact_event(e.to_wire()) for e in window.events],
+        "earliestTurn": window.earliest_turn,
+        "totalTurns": window.total_turns,
+    }

@@ -128,6 +128,14 @@ class RemoteOrchestrator:
         r = await self._client.call("transcript_events", session_id=session_id)
         return r["events"]
 
+    async def transcript_window(self, session_id, *, before=None, limit=20):
+        """Resolve the transcript path via daemon, then replay locally."""
+        from server.sessions.replay import replay_window
+        path = await self.transcript_path(session_id)
+        if not path:
+            return None
+        return await replay_window(path, before=before, limit=limit)
+
     async def usage(self, name):
         r = await self._client.call("usage", name=name)
         return Usage.from_dict(r["usage"]) if r["usage"] is not None else None
