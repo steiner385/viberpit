@@ -52,7 +52,7 @@ vi.mock('@/session/useSessionSearch', () => ({
 const NOOP_MUTATION = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
 function makeAccount(overrides: Partial<Account> = {}): Account {
-  return { name: 'kindash', status: 'ok', usage: null, ...overrides }
+  return { name: 'kindash', status: 'ok', usage: null, liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null, ...overrides }
 }
 
 function makeReauthState(overrides: Partial<ReauthState> = {}): ReauthState {

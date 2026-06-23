@@ -22,7 +22,7 @@ class _OneTurnClient(FakeSDKClient):
 
 
 def _make_driver():
-    def factory(cwd, config_dir, can_use_tool, mode, resume):
+    def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return _OneTurnClient([], on_can_use_tool=can_use_tool)
     return SessionDriver(
         "sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
@@ -68,7 +68,7 @@ class _RaisingClient(FakeSDKClient):
 
 
 def _factory(msgs):
-    def make(cwd, config_dir, can_use_tool, mode, resume):
+    def make(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return FakeSDKClient(msgs, on_can_use_tool=can_use_tool)
     return make
 
@@ -141,7 +141,7 @@ def test_status_needs_attention_on_error_result():
 
 
 def test_status_needs_attention_when_stream_raises():
-    def factory(cwd, config_dir, can_use_tool, mode, resume):
+    def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return _RaisingClient([f.sys_init("s1")], on_can_use_tool=can_use_tool)
     captured: list[str] = []
 
@@ -162,12 +162,28 @@ def test_status_needs_attention_when_stream_raises():
     assert asyncio.run(run())[-1] == "needs_attention"
 
 
+@pytest.mark.asyncio
+async def test_pre_compact_sets_condensing_status():
+    d = _make_driver()
+    await d._on_pre_compact()
+    assert d.current_status() == "condensing"
+
+
+@pytest.mark.asyncio
+async def test_condensing_event_clears_flag():
+    d = _make_driver()
+    await d._on_pre_compact()
+    assert d.current_status() == "condensing"
+    d._condensing = False  # simulating drain consuming Condensing(active=False)
+    assert d.current_status() in ("idle", "in_progress", "done")
+
+
 def test_last_progress_advances_only_on_meaningful_events():
     import server.sessions.events as ev
     class _Clock:
         def __init__(self): self.t = 100.0
         def __call__(self): self.t += 1.0; return self.t
-    def factory(cwd, config_dir, can_use_tool, mode, resume):
+    def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return _OneTurnClient([], on_can_use_tool=can_use_tool)
     d = SessionDriver("sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
                       sdk_factory=factory, registry=PermissionRegistry(),

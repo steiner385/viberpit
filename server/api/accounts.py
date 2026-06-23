@@ -15,6 +15,7 @@ Response NEVER includes token/credential material (FR-023).
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -23,6 +24,8 @@ from pydantic import BaseModel
 from ccswitch.accounts import list_accounts, remove_account, set_nickname
 from ccswitch import paths
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
+from ccswitch.config import load_config
+from ccswitch.selector import rank_accounts
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
@@ -61,13 +64,24 @@ def _usage_to_dict(usage) -> dict[str, Any] | None:
     }
 
 
-def _account_response(name: str, status_str: str, usage, nickname: str | None = None) -> dict[str, Any]:
+def _account_response(
+    name: str,
+    status_str: str,
+    usage,
+    nickname: str | None = None,
+    live_sessions: dict[str, int] | None = None,
+    rank: int | None = None,
+    rank_reason: str | None = None,
+) -> dict[str, Any]:
     """Build the account wire format — never includes tokens."""
     return {
         "name": name,
         "status": status_str,
         "usage": _usage_to_dict(usage),
         "nickname": nickname,
+        "liveSessions": live_sessions or {"active": 0, "idle": 0},
+        "rank": rank,
+        "rankReason": rank_reason,
     }
 
 
@@ -104,27 +118,41 @@ async def get_accounts(
     request: Request,
     _identity: str = Depends(current_identity),
 ) -> list[dict]:
-    """Return all accounts with live usage — refreshed before returning.
+    """Return all accounts with live usage, live session counts, and next-pick rank.
 
     Never includes token or credential material.
     """
     orch = _get_orchestrator(request)
-
-    # Get base account info from the ledger (status, names)
     accounts_info = list_accounts()
 
-    # Refresh live usage for each account via the poller (deduplicates in-flight)
+    # Fetch live usage for every account (poller dedupes concurrent fetches).
+    usages = {acct["name"]: await orch.usage(acct["name"]) for acct in accounts_info}
+
+    # Live session counts (display) + weighted load (ranking input).
+    counts = await orch.live_session_counts()
+    load = await orch.live_session_load()
+
+    # Rank for display: ignore transient soft reservations so ranks stay stable
+    # (a just-picked account would otherwise vanish for reservation_ttl_sec).
+    ranked, _earliest = rank_accounts(
+        usages, reserved=frozenset(), cfg=load_config(),
+        now=datetime.now(timezone.utc), load=load,
+    )
+    rank_by_name = {r.name: (r.rank, r.reason) for r in ranked}
+
     result = []
     for acct in accounts_info:
         name = acct["name"]
-        acct_status = acct.get("status", "unknown")
-        nickname = acct.get("nickname")
-
-        # Fetch fresh usage via the poller (async, deduplicates concurrent fetches)
-        usage = await orch.usage(name)
-
-        result.append(_account_response(name, acct_status, usage, nickname))
-
+        rank, reason = rank_by_name.get(name, (None, None))
+        result.append(_account_response(
+            name,
+            acct.get("status", "unknown"),
+            usages[name],
+            acct.get("nickname"),
+            live_sessions=counts.get(name) or {"active": 0, "idle": 0},
+            rank=rank,
+            rank_reason=reason,
+        ))
     return result
 
 
@@ -155,7 +183,11 @@ async def refresh_account(
             nickname = acct.get("nickname")
             break
 
-    return _account_response(name, status_str, usage, nickname)
+    counts = await orch.live_session_counts()
+    return _account_response(
+        name, status_str, usage, nickname,
+        live_sessions=counts.get(name) or {"active": 0, "idle": 0},
+    )
 
 
 @router.delete("/{name}", status_code=status.HTTP_204_NO_CONTENT)

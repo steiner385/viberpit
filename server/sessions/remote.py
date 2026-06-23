@@ -200,6 +200,12 @@ class RemoteOrchestrator:
     async def active_session_count(self):
         return await self._client.call("active_session_count")
 
+    async def live_session_load(self):
+        return await self._client.call("live_session_load")
+
+    async def live_session_counts(self):
+        return await self._client.call("live_session_counts")
+
     async def subscribe_events(self) -> asyncio.Queue:
         """Return a queue that receives global lifecycle events.
 

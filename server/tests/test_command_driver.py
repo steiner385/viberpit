@@ -6,7 +6,7 @@ from server.tests.fakes import fake_sdk
 
 
 def _driver(client):
-    def factory(cwd, config_dir, can_use_tool, mode, resume):
+    def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         client.last_resume = resume
         return client
     return SessionDriver(
@@ -57,7 +57,7 @@ async def test_reconnect_calls_sync_back():
     client = fake_sdk.FakeSDKClient(messages=[])
     sync_back_called = []
 
-    def factory(cwd, config_dir, can_use_tool, mode, resume):
+    def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         client.last_resume = resume
         return client
 
