@@ -56,6 +56,32 @@ async def test_pr_for_over_uds():
 
 
 @pytest.mark.asyncio
+async def test_prs_for_over_uds():
+    """The edge resolves a session's full PR list through the daemon."""
+    from server.github.pr_status import PullRequestInfo
+    from server.sessions.types import SessionRecord
+    app, orch = _build_app()
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="S1", account="acct", claude_session_id="cs", cols=80, rows=24,
+        cwd="/tmp", repo="o/r", authored_branches=["feat/a", "feat/b"],
+    )
+    cache = {
+        ("o/r", "feat/a"): PullRequestInfo(1, "u1", "open", "passing", "A"),
+        ("o/r", "feat/b"): PullRequestInfo(2, "u2", "merged", "passing", "B"),
+    }
+    orch._pr_poller.cached = lambda repo, br: cache.get((repo, br))
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            got = await ro.prs_for("s1")
+            empty = await ro.prs_for("nope")
+        finally:
+            await ro.aclose()
+    assert [p.number for p in got] == [1, 2]
+    assert empty == []
+
+
+@pytest.mark.asyncio
 async def test_list_get_create_send_over_uds():
     app, orch = _build_app()
     orch._records["s1"] = _rec("s1")

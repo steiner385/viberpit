@@ -94,6 +94,11 @@ class RemoteOrchestrator:
         info = r.get("pr")
         return PullRequestInfo.from_dict(info) if info else None
 
+    async def prs_for(self, session_id) -> "list[PullRequestInfo]":
+        """Resolve a session's full PR list via the daemon (empty if none)."""
+        r = await self._client.call("prs_for", session_id=session_id)
+        return [PullRequestInfo.from_dict(d) for d in (r.get("prs") or [])]
+
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)
         return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None
