@@ -72,6 +72,10 @@ class AdoptRequest(BaseModel):
     claudeSessionId: str
 
 
+class SendPromptRequest(BaseModel):
+    text: str
+
+
 _UNSET = object()
 
 
@@ -447,6 +451,35 @@ async def unarchive_session(
         identity=identity,
         detail={"session_id": session_id},
     )
+    return _record_to_dict(record, repo=await _resolve_repo(record))
+
+
+@router.post("/{session_id}/prompt")
+async def send_session_prompt(
+    session_id: str,
+    body: SendPromptRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Send a prompt to a live session from the dashboard (quick-resume).
+
+    404 if unknown; 409 if the session is detached (no live driver) — the client
+    should open the session, which resumes it lazily, and send from there."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    if getattr(record, "detached", False):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "not_live", "message": "Session is not live; open it to resume."},
+        )
+    await orch.send_prompt(session_id, body.text)
+    await record_audit(db, "session.prompt", identity, {"sessionId": session_id})
     return _record_to_dict(record, repo=await _resolve_repo(record))
 
 
