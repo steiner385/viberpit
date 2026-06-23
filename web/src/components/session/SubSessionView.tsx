@@ -62,10 +62,8 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
         ) : (
           <TranscriptView
             turns={turns}
-            permissionMode={rt.mode}
             toolDetailMode={rt.toolDetailMode}
             thinkingCollapsed={rt.thinkingCollapsed}
-            onDecision={() => {/* read-only */}}
             onAnswer={() => {/* read-only */}}
           />
         )}
