@@ -34,6 +34,7 @@ vi.mock('@/api/hooks', () => ({
   useSessions: () => ({ data: [{ id: 's1', name: 'Fix OAuth login bug', accountName: 'work-max', status: 'idle', createdAt: '', updatedAt: '' }] }),
   useAccounts: () => ({ data: [{ name: 'work-max', status: 'ok', usage: { session: { pct: 42, resetsAt: null }, weekly: { pct: 18, resetsAt: null } } }] }),
   useSettings: () => ({ data: undefined }),
+  useModels: () => ({ data: [] }),
 }))
 
 function emitSessionEvent(event: SessionEvent) {
@@ -68,7 +69,7 @@ describe('SessionView status strip', () => {
 
   it('shows the account from useSessions and quota from useAccounts', () => {
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
-    expect(screen.getByLabelText(/current account/i)).toHaveTextContent('work-max')
+    expect(screen.getByLabelText(/switch account/i)).toHaveValue('work-max')
     const quota = screen.getByLabelText(/account quota/i)
     expect(quota).toHaveTextContent('42%')
     expect(quota).toHaveTextContent('18%')
@@ -78,7 +79,7 @@ describe('SessionView status strip', () => {
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
     emitSessionEvent({ type: 'sessionMeta', model: 'claude-sonnet-4-5', sessionId: 's1' })
     await waitFor(() => {
-      expect(screen.getByLabelText(/current model/i)).toHaveTextContent('claude-sonnet-4-5')
+      expect(screen.getByLabelText(/select model/i)).toHaveValue('claude-sonnet-4-5')
     })
   })
 
@@ -100,7 +101,7 @@ describe('SessionView status strip', () => {
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
     emitRotated({ type: 'rotated', sessionId: 's1', fromAccount: 'work-max', toAccount: 'backup-max' })
     await waitFor(() => {
-      expect(screen.getByLabelText(/current account/i)).toHaveTextContent('backup-max')
+      expect(screen.getByLabelText(/switch account/i)).toHaveValue('backup-max')
     })
   })
 })

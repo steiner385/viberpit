@@ -47,6 +47,12 @@ log = logging.getLogger(__name__)
 _BATCH_INTERVAL = 0.016
 # Maximum inbound frame size (bytes)
 _MAX_FRAME = 262144
+# Hard ceiling (seconds) on resuming a detached session's SDK subprocess. A
+# resume boots the whole MCP-server fleet, which can legitimately take tens of
+# seconds cold — but it must never block forever. On a saturated box a wedged
+# resume used to hang the attach with no timeout, leaving the client spinning on
+# "Loading session…" indefinitely. Bound it and surface SESSION_RESUME_TIMEOUT.
+_RESUME_TIMEOUT = 90.0
 
 
 async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -> None:
@@ -160,19 +166,62 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
         # Attach / detach
         # ------------------------------------------------------------------
 
-        async def _handle_attach(session_id: str) -> None:
-            if session_id in live_tasks:
-                return  # already attached
+        async def _replay_and_complete(session_id: str) -> list:
+            """Replay the transcript (if any) as one batch frame, then replayComplete.
 
+            A transcript that can't be located or parsed must NOT crash the WS (which
+            would close the socket → client reconnect-loop on a blank screen) — skip the
+            history and continue. replayComplete ALWAYS fires so the client's loading
+            spinner clears. Returns the replayed events (for idle-suggestion seeding).
+            """
+            events: list = []
             try:
-                # Thread the connection's verified identity onto the resumed driver so
-                # that AskUserQuestion / permission answers (registered under
-                # driver.identity, resolved with this WS identity) actually match.
-                driver = await orchestrator.ensure_driver(session_id, identity)
+                path = await orchestrator.transcript_path(session_id)
+                events = await replay_events(path) if path else []
+                if events:
+                    # Lead the replay with a reset. attach is re-sent on every WS
+                    # reconnect (client.ts onopen), so the same transcript is replayed
+                    # repeatedly into a reducer that is never recreated. Streamed
+                    # text/thinking deltas are append-only, so without a reset each
+                    # reconnect re-appends a full copy of every assistant block — the
+                    # "sessions duplicating content" bug. The reset is the first event
+                    # of this single batch frame, so the client clears and rebuilds
+                    # atomically (no flicker, no duplication).
+                    redacted_replay = [{"type": "replayReset"}]
+                    redacted_replay += [redact_event(e.to_wire()) for e in events]
+                    await _send({"type": "batch", "events": redacted_replay})
+            except Exception:
+                log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
+            await _send({"type": "replayComplete"})
+            return events
+
+        async def _resume_driver_or_error(session_id: str):
+            """Resume (or fetch) the live driver, bounded by _RESUME_TIMEOUT.
+
+            Threads the connection's verified identity onto the resumed driver so that
+            AskUserQuestion / permission answers (registered under driver.identity,
+            resolved with this WS identity) actually match. On any failure emits an
+            error frame plus a replayComplete (so the client's loading state always
+            clears) and returns None.
+            """
+            try:
+                driver = await asyncio.wait_for(
+                    orchestrator.ensure_driver(session_id, identity), _RESUME_TIMEOUT)
+            except asyncio.TimeoutError:
+                # A wedged resume (saturated box / stuck MCP fleet) must not hang the
+                # socket forever — surface it so the client can stop spinning and retry.
+                log.warning("ws.attach: ensure_driver timed out for %s after %.0fs",
+                            session_id, _RESUME_TIMEOUT)
+                await _send({"type": "error", "code": "SESSION_RESUME_TIMEOUT",
+                             "message": "This session is taking too long to resume — the "
+                                        "server may be busy. Try again in a moment.",
+                             "sessionId": session_id})
+                await _send({"type": "replayComplete"})
+                return None
             except DaemonUnavailable:
                 log.warning("ws.attach: session daemon unavailable for %s", session_id)
                 await websocket.close(code=1013)
-                return
+                return None
             except Exception:
                 # A resumed/rehydrated session can fail to start its SDK subprocess —
                 # most commonly because the account's token is dead (needs re-auth) or
@@ -189,41 +238,22 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                              "message": f"Couldn't resume this session.{hint}",
                              "sessionId": session_id})
                 await _send({"type": "replayComplete"})
-                return
+                return None
             if driver is None:
                 await _send({"type": "error", "code": "SESSION_NOT_FOUND",
                              "message": f"Session {session_id!r} not found",
                              "sessionId": session_id})
                 await _send({"type": "replayComplete"})
-                return
+                return None
+            return driver
 
-            # 1) Replay transcript (if any) as a single batch frame. A transcript that
-            #    can't be located or parsed must NOT crash the WS (which would close the
-            #    socket → client reconnect-loop on a blank screen) — skip the history and
-            #    continue; the live session still works.
-            events: list = []  # guard: keep in scope if the replay try block raises early
-            try:
-                path = await orchestrator.transcript_path(session_id)
-                events = await replay_events(path) if path else []
-                if events:
-                    # Lead the replay with a reset. attach is re-sent on every WS
-                    # reconnect (client.ts onopen), so the same transcript is
-                    # replayed repeatedly into a reducer that is never recreated.
-                    # Streamed text/thinking deltas are append-only, so without a
-                    # reset each reconnect re-appends a full copy of every assistant
-                    # block — the "sessions duplicating content" bug. The reset is the
-                    # first event of this single batch frame, so the client clears and
-                    # rebuilds atomically (no flicker, no duplication).
-                    redacted_replay = [{"type": "replayReset"}]
-                    redacted_replay += [redact_event(e.to_wire()) for e in events]
-                    await _send({"type": "batch", "events": redacted_replay})
-            except Exception:
-                log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
-            await _send({"type": "replayComplete"})
-
-            # A session resumed into an idle state has no in-memory turn context, so
-            # the turn-completion suggestion trigger never fires. Seed one suggestion
-            # from the replayed transcript tail (best-effort; driver gates + dedupes).
+        async def _emit_live_extras(session_id: str, driver, events: list) -> None:
+            """Post-attach live wiring: suggestion seeding, command catalog, pending
+            permission/question re-emit, live status, and the deferred initial prompt.
+            Only meaningful once a live driver exists. Each step is best-effort."""
+            # A session resumed into an idle state has no in-memory turn context, so the
+            # turn-completion suggestion trigger never fires. Seed one suggestion from
+            # the replayed transcript tail (best-effort; driver gates + dedupes).
             try:
                 from server.sessions.suggestions import kick_idle_suggestions
                 kick_idle_suggestions(driver, events)
@@ -237,7 +267,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             except Exception:
                 log.warning("ws.attach: command_catalog failed for %s", session_id, exc_info=True)
 
-            # 2) Re-emit any pending permission requests for this session.
+            # Re-emit any pending permission requests for this session.
             for p in await orchestrator.pending_permissions(session_id):
                 perm_frame = redact_event({
                     "type": "permissionRequest", "permId": p["permId"],
@@ -247,9 +277,9 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 })
                 await _send(perm_frame)
 
-            # 2b) Re-emit any pending AskUserQuestion events for this session.
-            #     Mirrors the permission re-emit above so a refresh/reattach while the
-            #     model is blocked in _handle_ask_user_question never silently hangs.
+            # Re-emit any pending AskUserQuestion events for this session. Mirrors the
+            # permission re-emit above so a refresh/reattach while the model is blocked
+            # in _handle_ask_user_question never silently hangs.
             from server.sessions import events as ev
             for q in await orchestrator.pending_questions(session_id):
                 q_wire = redact_event(ev.Question(
@@ -262,10 +292,10 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 ).to_wire())
                 await _send(q_wire)
 
-            # 2d) Emit the current live status so a client attaching or reconnecting
-            #     mid-turn renders the true state immediately. The live status is
-            #     otherwise only pushed on transitions, so without this a mid-turn
-            #     attach would show the reducer's initial 'idle' ("Ready"). Best-effort.
+            # Emit the current live status so a client attaching or reconnecting mid-turn
+            # renders the true state immediately. The live status is otherwise only
+            # pushed on transitions, so without this a mid-turn attach would show the
+            # reducer's initial 'idle' ("Ready"). Best-effort.
             try:
                 await _send(redact_event(ev.Status(
                     state=driver.current_status(),
@@ -274,21 +304,76 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             except Exception:
                 log.warning("ws.attach: live status emit failed for %s", session_id, exc_info=True)
 
-            # 2c) Send the deferred initial prompt (if any) now that the client is
-            #     watching.  The prompt was stored in create_session instead of being
-            #     sent immediately so that its events stream live to this first attach
-            #     rather than racing the transcript-file write or arriving before any
-            #     consumer exists in driver._out.  Only fires on the first attach
-            #     (pop clears the entry); reconnects fall through to live-stream only.
+            # Send the deferred initial prompt (if any) now that the client is watching.
+            # The prompt was stored in create_session instead of being sent immediately
+            # so that its events stream live to this first attach rather than racing the
+            # transcript-file write or arriving before any consumer exists in
+            # driver._out. Only fires on the first attach (pop clears the entry);
+            # reconnects fall through to live-stream only.
             pending_prompt = await orchestrator.pop_pending_initial_prompt(session_id)
             pending_attachment_ids = await orchestrator.pop_pending_initial_attachment_ids(session_id)
             if pending_prompt is not None or pending_attachment_ids:
                 await orchestrator.send_prompt(
                     session_id, pending_prompt or "", pending_attachment_ids)
 
-            # 3) Start the live stream: forward driver events into the batcher.
+        def _start_live_stream(session_id: str, driver) -> None:
+            """Forward the driver's live events into the batcher for this session."""
             live_tasks[session_id] = asyncio.create_task(
                 _forward_live(driver, out_q, session_id), name=f"ws-live-{session_id}")
+
+        async def _handle_attach(session_id: str) -> None:
+            if session_id in live_tasks:
+                return  # already attached
+
+            # READ-ONLY attach for a detached session: replay history only. A detached
+            # record has no live driver, and resuming one just to *view* it spawns an
+            # SDK subprocess + its whole MCP-server fleet — which, on a busy box, can
+            # wedge the attach and leave the client spinning on "Loading session…"
+            # forever. So defer the resume until the user actually sends a prompt (see
+            # _ensure_live). Viewing a finished/detached session is now instant.
+            try:
+                rec = await orchestrator.get_session(session_id)
+            except DaemonUnavailable:
+                # In remote mode get_session is an RPC to the daemon; if it's down,
+                # close 1013 (try again later) rather than crashing the handler.
+                log.warning("ws.attach: session daemon unavailable for %s", session_id)
+                await websocket.close(code=1013)
+                return
+            if rec is not None and getattr(rec, "detached", False):
+                await _replay_and_complete(session_id)
+                return
+
+            # LIVE session (or unknown — let ensure_driver decide): a live record's
+            # driver already exists and ensure_driver fast-returns it; an unknown
+            # session yields None and surfaces SESSION_NOT_FOUND below.
+            driver = await _resume_driver_or_error(session_id)
+            if driver is None:
+                return
+            events = await _replay_and_complete(session_id)
+            await _emit_live_extras(session_id, driver, events)
+            _start_live_stream(session_id, driver)
+
+        async def _ensure_live(session_id: str) -> bool:
+            """Make the session live + streaming so a prompt can flow, resuming a
+            detached session lazily. Returns False if the resume failed (an error frame
+            was already emitted). Idempotent: a no-op if already streaming."""
+            if session_id in live_tasks:
+                return True
+            driver = await _resume_driver_or_error(session_id)
+            if driver is None:
+                return False
+            _start_live_stream(session_id, driver)
+            # Flip the header from the read-only 'Ready' to the live state as the
+            # resumed turn begins. Best-effort.
+            try:
+                from server.sessions import events as ev
+                await _send(redact_event(ev.Status(
+                    state=driver.current_status(),
+                    count=len(driver.queued()),
+                ).to_wire()))
+            except Exception:
+                log.warning("ws._ensure_live: live status emit failed for %s", session_id, exc_info=True)
+            return True
 
         async def _handle_detach(session_id: str) -> None:
             task = live_tasks.pop(session_id, None)
@@ -340,8 +425,12 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 elif msg_type == "detach":
                     await _handle_detach(session_id)
                 elif msg_type == "prompt":
-                    await orchestrator.send_prompt(
-                        session_id, msg.get("text", ""), msg.get("attachmentIds"))
+                    # Resume a read-only (detached) session lazily on first input, then
+                    # send. send_prompt no-ops without a live driver, so the resume must
+                    # happen here — not on attach, where it would block mere viewing.
+                    if await _ensure_live(session_id):
+                        await orchestrator.send_prompt(
+                            session_id, msg.get("text", ""), msg.get("attachmentIds"))
                 elif msg_type == "interrupt":
                     await orchestrator.interrupt(session_id)
                     try:

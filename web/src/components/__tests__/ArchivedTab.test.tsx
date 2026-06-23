@@ -18,6 +18,7 @@ import * as hooks from '@/api/hooks'
 import type { ArchivedSession } from '@/api/types'
 
 vi.mock('@/api/hooks', () => ({
+  useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAccounts: vi.fn(),

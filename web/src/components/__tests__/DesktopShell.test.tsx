@@ -26,6 +26,7 @@ vi.mock('@/api/hooks', () => ({
   useGithubBranches: vi.fn(), useSettings: vi.fn(), useUpdateSettings: vi.fn(),
   useReauthAccount: vi.fn(), useReauthStatus: vi.fn(), useCancelReauth: vi.fn(),
   useArchivedSessions: vi.fn(), useUnarchiveSession: vi.fn(), usePermanentDeleteSession: vi.fn(),
+  useModels: vi.fn(),
   QK: { accounts: ['accounts'], sessions: ['sessions'], archived: ['archived-sessions'], config: ['config'], githubRepos: ['github-repos'], githubBranches: (r?: string) => ['github-branches', r], settings: ['settings'] },
 }))
 
@@ -40,6 +41,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 function setup() {
   vi.mocked(hooks.useAccounts).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useAccounts>)
   vi.mocked(hooks.useSessions).mockReturnValue({ data: [mk()], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+  vi.mocked(hooks.useModels).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useModels>)
   for (const h of ['useCreateSession','useRenameSession','useCloseSession','useRefreshAccount','useUpdateAccountNickname','useDeleteAccount','useUpdateSettings','useReauthAccount','useCancelReauth','useUnarchiveSession','usePermanentDeleteSession'] as const) {
     vi.mocked(hooks[h]).mockReturnValue(NOOP as never)
   }

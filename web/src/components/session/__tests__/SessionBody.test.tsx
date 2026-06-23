@@ -4,6 +4,14 @@ import { SessionBody } from '../SessionBody'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import type { Block } from '@/session/reducer'
 
+// SessionBody now calls useModels/useAccounts/useSessions (account+model switchers).
+// Stub them so this layout test needs no QueryClientProvider or network.
+vi.mock('@/api/hooks', () => ({
+  useModels: () => ({ data: [] }),
+  useAccounts: () => ({ data: [] }),
+  useSessions: () => ({ data: [] }),
+}))
+
 // Regression: the desktop master-detail shell renders SessionBody but previously
 // did NOT render PendingQuestionPanel, so a live AskUserQuestion (filtered out of
 // the inline transcript by Turn) appeared nowhere on desktop and was unanswerable.

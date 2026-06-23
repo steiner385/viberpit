@@ -109,6 +109,36 @@ class TestAccounts(unittest.TestCase):
                 rm.assert_called_once()
             self.assertEqual(accounts.list_accounts()[0]["status"], "needs-reauth")
 
+    def test_usage_for_ensure_valid_token_autherror_logs_account(self):
+        """The dead-refresh-token branch must log WHICH account died and why.
+
+        This set_status(needs-reauth) is otherwise silent, which makes a recurring
+        re-auth loss undebuggable from the service logs (the original kindash bug)."""
+        with temp_env():
+            from ccswitch import accounts, oauth
+            _seed_account("alpha", expires_in_ms=-1)  # force a refresh attempt
+            with mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("invalid_grant")):
+                with self.assertLogs("ccswitch.accounts", level="WARNING") as cm:
+                    self.assertIsNone(accounts.usage_for("alpha"))
+            joined = "\n".join(cm.output)
+            self.assertIn("alpha", joined)
+            self.assertIn("needs-reauth", joined)
+            self.assertIn("invalid_grant", joined)
+
+    def test_usage_for_post_401_refresh_autherror_logs_account(self):
+        """The post-401 second-refresh-failure branch must also log account + cause."""
+        with temp_env():
+            from ccswitch import accounts, oauth
+            _seed_account("alpha")  # token fresh → ensure_valid_token passes
+            with mock.patch.object(oauth, "fetch_usage", side_effect=oauth.AuthError("401")), \
+                 mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("invalid_grant")):
+                with self.assertLogs("ccswitch.accounts", level="WARNING") as cm:
+                    self.assertIsNone(accounts.usage_for("alpha"))
+            joined = "\n".join(cm.output)
+            self.assertIn("alpha", joined)
+            self.assertIn("needs-reauth", joined)
+            self.assertIn("invalid_grant", joined)
+
     def test_pick_account_reserves_winner(self):
         with temp_env():
             from ccswitch import accounts

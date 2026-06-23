@@ -34,7 +34,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         if session_id not in app.state.pumped:
             app.state.pumped.add(session_id)
             asyncio.create_task(_pump(session_id, driver), name=f"pump-{session_id}")
-        return {"found": True, "status": driver.current_status(), "queued": driver.queued()}
+        return {"found": True, "status": driver.current_status(), "queued": driver.queued(), "head_seq": app.state.head_seq(session_id)}
 
     async def list_sessions(params: dict) -> dict:
         return {"sessions": [r.to_dict() for r in orch.list_sessions()]}
@@ -64,7 +64,7 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     # 15 methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
     _SIMPLE = [
-        "archive_session", "permanent_delete", "rename_session", "interrupt",
+        "archive_session", "rename_session", "interrupt",
         "set_permission_mode", "cancel_queued", "resolve_permission", "answer_question",
         "transcript_path", "pending_questions", "pop_pending_initial_prompt",
         "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
@@ -77,6 +77,13 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     for _m in _SIMPLE:
         register_rpc(app, _m, _make_simple(_m))
+
+    async def permanent_delete(params: dict):
+        result = await orch.permanent_delete(params["session_id"])
+        app.state.evict(params["session_id"])
+        return result
+
+    register_rpc(app, "permanent_delete", permanent_delete)
 
     async def unarchive(params: dict) -> dict:
         rec = await orch.unarchive(**params)

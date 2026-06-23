@@ -56,6 +56,14 @@ class Session(Base):
     # refreshed from the transcript on status changes. Nullable so init_db backfills
     # it on the dev SQLite DB without a migration.
     sub_agents: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Persisted model for this session (alias like "opus"/"sonnet" or a pinned id
+    # like "claude-haiku-4-5"). NULL = account/binary default. Nullable so init_db
+    # backfills on the dev SQLite DB without a migration.
+    model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # True once the user manually pinned the account: usage-ceiling rotation skips
+    # the session (it goes 'limited' at the ceiling instead). Hard 401/429 recovery
+    # still rotates and clears the pin. Nullable for the same backfill reason.
+    account_pinned: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
