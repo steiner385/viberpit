@@ -44,6 +44,7 @@ from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
 )
 from server.sessions.selection import AllAccountsBusy, select_account
+from server.sessions.background_tasks import scan_open_background_tasks
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import SessionRecord
@@ -764,6 +765,43 @@ class SessionOrchestrator:
         for q in list(self._event_subscribers):
             q.put_nowait(event)
 
+    async def _snapshot_open_tasks(self) -> None:
+        """At drain, persist each live session's open background tasks so the post-restart
+        daemon can relaunch them. Only sessions with a live driver can have live tasks."""
+        from sqlalchemy import update as sa_update
+        session_ids = list(self._drivers.keys())
+        if not session_ids:
+            return
+
+        async def _scan(sid: str):
+            path = self.transcript_path(sid)
+            if not path:
+                return sid, []
+            tasks = await asyncio.to_thread(scan_open_background_tasks, path)
+            return sid, [t.to_dict() for t in tasks]
+
+        results = await asyncio.gather(*(_scan(s) for s in session_ids),
+                                       return_exceptions=True)
+        n = 0
+        async with db_session() as db:
+            for r in results:
+                if isinstance(r, BaseException):
+                    log.warning("rearm snapshot: scan failed", exc_info=r)
+                    continue
+                sid, snap = r
+                if snap:
+                    await db.execute(sa_update(DbSession).where(DbSession.id == sid)
+                                     .values(pending_rearm=snap))
+                    n += len(snap)
+        if n:
+            log.info("rearm snapshot: %d open task(s) across %d session(s)",
+                     n, len(session_ids))
+
+    async def _clear_rearm_snapshots(self) -> None:
+        from sqlalchemy import update as sa_update
+        async with db_session() as db:
+            await db.execute(sa_update(DbSession).values(pending_rearm=None))
+
     def drain_status(self) -> dict:
         """Report drain state: 'idle' (not draining), 'draining' (turns still running),
         or 'ready' (draining and nothing mid-turn — safe to restart)."""
@@ -783,6 +821,10 @@ class SessionOrchestrator:
         if not self._draining:
             self._draining = True
             self._drain_started_at = time.monotonic()
+            try:
+                await self._snapshot_open_tasks()
+            except Exception:
+                log.warning("rearm snapshot failed at drain", exc_info=True)
             self._publish_event({"type": "updatePending"})
             timeout = (
                 selfclear_sec if selfclear_sec is not None
@@ -798,6 +840,7 @@ class SessionOrchestrator:
         if self._draining:
             self._draining = False
             self._publish_event({"type": "updateCancelled"})
+            asyncio.create_task(self._clear_rearm_snapshots())
             if self._drain_timer is not None and not self._drain_timer.done():
                 self._drain_timer.cancel()
             self._drain_timer = None
