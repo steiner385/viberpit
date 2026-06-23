@@ -281,6 +281,50 @@ describe('SessionList', () => {
     await user.click(screen.getByRole('button', { name: /delete session work session/i }))
     expect(onDelete).toHaveBeenCalledWith('sess-1')
   })
+
+  it('renders group headers with counts when groups provided', () => {
+    const groups = [
+      { key: 'needs-you', label: 'Needs you', count: 1, sessions: [SESSIONS[0]] },
+      { key: 'your-turn', label: 'Your turn', count: 1, sessions: [SESSIONS[1]] },
+    ]
+    render(
+      <SessionList
+        sessions={SESSIONS}
+        groups={groups}
+        accounts={ACCOUNTS}
+        onNew={() => {}}
+        onOpen={() => {}}
+        onRename={() => {}}
+        onClose={() => {}}
+        onDelete={() => {}}
+      />,
+      { wrapper },
+    )
+    expect(screen.getByText('Needs you')).toBeInTheDocument()
+    expect(screen.getByText('Your turn')).toBeInTheDocument()
+    // both rows still render in flat order
+    expect(screen.getByText('Work session')).toBeInTheDocument()
+    expect(screen.getByText('Research')).toBeInTheDocument()
+  })
+
+  it('renders no header for a null-label group', () => {
+    const groups = [{ key: 'all', label: null, count: SESSIONS.length, sessions: SESSIONS }]
+    render(
+      <SessionList
+        sessions={SESSIONS}
+        groups={groups}
+        accounts={ACCOUNTS}
+        onNew={() => {}}
+        onOpen={() => {}}
+        onRename={() => {}}
+        onClose={() => {}}
+        onDelete={() => {}}
+      />,
+      { wrapper },
+    )
+    expect(screen.queryByRole('presentation')).not.toBeInTheDocument()
+    expect(screen.getByText('Work session')).toBeInTheDocument()
+  })
 })
 
 describe('SessionList — repo label', () => {
@@ -378,6 +422,43 @@ describe('SessionList — pure renderer (no internal sort)', () => {
       'Open session B done',
       'Open session C blocked',
     ])
+  })
+})
+
+describe('SessionList — no-matches state', () => {
+  it('shows a no-matches state (not EmptyState) when filtered to zero', async () => {
+    const onClearSearch = vi.fn()
+    render(
+      <SessionList
+        sessions={[]}
+        accounts={[]}
+        isFiltered
+        onClearSearch={onClearSearch}
+        onNew={() => {}}
+        onOpen={() => {}}
+        onRename={() => {}}
+        onClose={() => {}}
+        onDelete={() => {}}
+      />,
+    )
+    expect(screen.getByText(/no sessions match/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /clear search/i }))
+    expect(onClearSearch).toHaveBeenCalled()
+  })
+
+  it('shows EmptyState when there are zero sessions and no active filter', () => {
+    render(
+      <SessionList
+        sessions={[]}
+        accounts={[]}
+        onNew={() => {}}
+        onOpen={() => {}}
+        onRename={() => {}}
+        onClose={() => {}}
+        onDelete={() => {}}
+      />,
+    )
+    expect(screen.queryByText(/no sessions match/i)).toBeNull()
   })
 })
 

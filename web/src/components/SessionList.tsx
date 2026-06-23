@@ -2,17 +2,23 @@ import { cn } from '@/lib/utils'
 import { SessionCard } from './SessionCard'
 import { EmptyState } from './EmptyState'
 import type { Session, Account } from '@/api/types'
+import type { SessionGroup } from '@/session/ordering'
 
 interface SessionListProps {
   sessions: Session[]
+  /** When provided, render grouped with section headers; else render flat `sessions`. */
+  groups?: SessionGroup[]
   accounts: Account[]
   isLoading?: boolean
   selectedId?: string | null
+  isFiltered?: boolean
+  onClearSearch?: () => void
   onNew: () => void
   onOpen: (id: string) => void
   onRename: (id: string) => void
   onClose: (id: string) => void
   onDelete: (id: string) => void
+  onQuickResume: (id: string, text?: string) => void
 }
 
 function SkeletonCard() {
@@ -37,14 +43,18 @@ function SkeletonCard() {
 
 export function SessionList({
   sessions,
+  groups,
   accounts,
   isLoading,
   selectedId,
+  isFiltered,
+  onClearSearch,
   onNew,
   onOpen,
   onRename,
   onClose,
   onDelete,
+  onQuickResume,
 }: SessionListProps) {
   if (isLoading) {
     return (
@@ -57,10 +67,43 @@ export function SessionList({
   }
 
   if (sessions.length === 0) {
+    if (isFiltered) {
+      return (
+        <div
+          className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 p-6 text-center"
+          role="status"
+        >
+          <p className="text-sm text-gray-500 dark:text-gray-400">No sessions match your search.</p>
+          {onClearSearch && (
+            <button
+              type="button"
+              onClick={onClearSearch}
+              className="mt-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              Clear search
+            </button>
+          )}
+        </div>
+      )
+    }
     return <EmptyState onNew={onNew} />
   }
 
   const accountMap = new Map(accounts.map((a) => [a.name, a]))
+
+  const renderCard = (session: Session) => (
+    <SessionCard
+      key={session.id}
+      session={session}
+      account={accountMap.get(session.accountName)}
+      selected={session.id === selectedId}
+      onOpen={onOpen}
+      onRename={onRename}
+      onClose={onClose}
+      onDelete={onDelete}
+      onQuickResume={onQuickResume}
+    />
+  )
 
   return (
     // id="session-listbox" is referenced by DispatchBar's aria-controls.
@@ -75,18 +118,27 @@ export function SessionList({
       aria-activedescendant={selectedId ? `row-${selectedId}` : undefined}
       className="space-y-2"
     >
-      {sessions.map((session) => (
-        <SessionCard
-          key={session.id}
-          session={session}
-          account={accountMap.get(session.accountName)}
-          selected={session.id === selectedId}
-          onOpen={onOpen}
-          onRename={onRename}
-          onClose={onClose}
-          onDelete={onDelete}
-        />
-      ))}
+      {groups
+        ? groups.map((group) => (
+            <div key={group.key} className="space-y-2">
+              {group.label !== null && (
+                <div
+                  role="presentation"
+                  aria-hidden="true"
+                  className={cn(
+                    'sticky top-0 z-10 flex items-center gap-2 px-1 py-1',
+                    'bg-gray-50/95 dark:bg-gray-900/95 backdrop-blur',
+                    'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400',
+                  )}
+                >
+                  <span>{group.label}</span>
+                  <span className="tabular-nums text-gray-400 dark:text-gray-500">{group.count}</span>
+                </div>
+              )}
+              {group.sessions.map(renderCard)}
+            </div>
+          ))
+        : sessions.map(renderCard)}
     </div>
   )
 }

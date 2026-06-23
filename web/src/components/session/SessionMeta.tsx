@@ -41,7 +41,7 @@ interface Props {
    *  SessionMeta stays free of @/api imports — the caller provides the node. */
   exportSlot?: React.ReactNode
   models: { id: string; label: string }[]
-  accounts: { name: string }[]
+  accounts: { name: string; nickname?: string | null }[]
   accountPinned: boolean
   onSelectModel: (id: string) => void
   onSelectAccount: (name: string) => void
@@ -87,7 +87,7 @@ export function SessionMeta({ account, model, mode, contextPct, quota, subAgents
           >
             {accounts.every((a) => a.name !== account) && <option value={account}>{account}</option>}
             {accounts.map((a) => (
-              <option key={a.name} value={a.name}>{a.name}</option>
+              <option key={a.name} value={a.name}>{a.nickname || a.name}</option>
             ))}
           </select>
           {accountPinned && (

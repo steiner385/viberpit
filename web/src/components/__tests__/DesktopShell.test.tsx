@@ -26,8 +26,12 @@ vi.mock('@/api/hooks', () => ({
   useGithubBranches: vi.fn(), useSettings: vi.fn(), useUpdateSettings: vi.fn(),
   useReauthAccount: vi.fn(), useReauthStatus: vi.fn(), useCancelReauth: vi.fn(),
   useArchivedSessions: vi.fn(), useUnarchiveSession: vi.fn(), usePermanentDeleteSession: vi.fn(),
-  useModels: vi.fn(),
+  useModels: vi.fn(), useSendPrompt: vi.fn(),
   QK: { accounts: ['accounts'], sessions: ['sessions'], archived: ['archived-sessions'], config: ['config'], githubRepos: ['github-repos'], githubBranches: (r?: string) => ['github-branches', r], settings: ['settings'] },
+}))
+
+vi.mock('@/session/useSessionSearch', () => ({
+  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
 }))
 
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
@@ -42,7 +46,7 @@ function setup() {
   vi.mocked(hooks.useAccounts).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useAccounts>)
   vi.mocked(hooks.useSessions).mockReturnValue({ data: [mk()], isLoading: false } as ReturnType<typeof hooks.useSessions>)
   vi.mocked(hooks.useModels).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useModels>)
-  for (const h of ['useCreateSession','useRenameSession','useCloseSession','useRefreshAccount','useUpdateAccountNickname','useDeleteAccount','useUpdateSettings','useReauthAccount','useCancelReauth','useUnarchiveSession','usePermanentDeleteSession'] as const) {
+  for (const h of ['useCreateSession','useRenameSession','useCloseSession','useRefreshAccount','useUpdateAccountNickname','useDeleteAccount','useUpdateSettings','useReauthAccount','useCancelReauth','useUnarchiveSession','usePermanentDeleteSession','useSendPrompt'] as const) {
     vi.mocked(hooks[h]).mockReturnValue(NOOP as never)
   }
   vi.mocked(hooks.useGithubRepos).mockReturnValue({ data: [], isLoading: false, isError: false } as ReturnType<typeof hooks.useGithubRepos>)
@@ -137,5 +141,27 @@ describe('DesktopShell', () => {
     await user.keyboard('{ArrowLeft}')
     expect(screen.getByRole('textbox', { name: /^message$/i })).toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: /new session prompt/i })).not.toBeInTheDocument()
+  })
+
+  it('DesktopShell: groups by status and keeps keyboard nav', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useSessions).mockReturnValue({
+      data: [
+        mk({ id: 's1', name: 'One', status: 'idle' }),
+        mk({ id: 's2', name: 'Two', status: 'in_progress' }),
+      ],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useSessions>)
+    render(<DesktopShell />, { wrapper })
+    await user.selectOptions(screen.getByLabelText('Group by'), 'status')
+    // Two sessions from DIFFERENT tiers → both group headers must render
+    // (idle → 'your-turn' tier, header "Done"; in_progress → 'busy' tier, header "Working")
+    expect(screen.getByText('Done')).toBeInTheDocument()
+    expect(screen.getByText('Working')).toBeInTheDocument()
+    // keyboard nav still works: ArrowDown should highlight a row
+    const prompt = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(prompt)
+    await user.keyboard('{ArrowDown}')
+    expect(prompt.getAttribute('aria-activedescendant')).toMatch(/^row-s/)
   })
 })

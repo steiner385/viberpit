@@ -28,6 +28,9 @@ vi.mock('@/api/hooks', () => ({
   useArchivedSessions: vi.fn(),
   useUnarchiveSession: vi.fn(),
   usePermanentDeleteSession: vi.fn(),
+  useBulkUnarchiveSessions: vi.fn(),
+  useBulkPermanentDeleteSessions: vi.fn(),
+  useSendPrompt: () => ({ mutate: vi.fn() }),
   QK: {
     accounts: ['accounts'],
     sessions: ['sessions'],
@@ -37,6 +40,10 @@ vi.mock('@/api/hooks', () => ({
     githubBranches: (repo?: string) => ['github-branches', repo],
     settings: ['settings'],
   },
+}))
+
+vi.mock('@/session/useSessionSearch', () => ({
+  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
 }))
 
 const NOOP_MUTATION = { mutate: vi.fn(), isPending: false, isSuccess: false }
@@ -86,6 +93,8 @@ function setupDefaultMocks() {
   vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
   vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+  vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
+  vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
 }
 
 describe('Dashboard — Sessions/Accounts tabs', () => {
@@ -251,5 +260,23 @@ describe('Dashboard — Sessions/Accounts tabs', () => {
     // Should be on Sessions (default) tab — may appear in both header and empty-state
     const newSessionBtns = screen.getAllByRole('button', { name: /new session/i })
     expect(newSessionBtns.length).toBeGreaterThan(0)
+  })
+
+  it('groups the session list by status when selected', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useSessions).mockReturnValue({
+      data: [makeSession({ id: 'sess-1', status: 'idle' })],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useAccounts).mockReturnValue({
+      data: [makeAccount({ name: 'work' })],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useAccounts>)
+
+    render(<Dashboard />, { wrapper })
+
+    await user.selectOptions(await screen.findByLabelText('Group by'), 'status')
+    // idle sessions belong to the 'your-turn' tier, whose header is "Done"
+    expect(await screen.findByText('Done')).toBeInTheDocument()
   })
 })

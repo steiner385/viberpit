@@ -129,11 +129,9 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
                 <Turn
                   key={t.id}
                   turn={t}
-                  permissionMode="interactive"
                   isLastTurn={false}
                   toolDetailMode={toolDetailMode ?? 'auto'}
                   thinkingCollapsed={thinkingCollapsed}
-                  onDecision={() => {}}
                   onAnswer={() => {}}
                 />
               ))}
@@ -207,11 +205,9 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
               <Turn
                 key={t.id}
                 turn={t}
-                permissionMode="interactive"
                 isLastTurn={false}
                 toolDetailMode={toolDetailMode ?? 'auto'}
                 thinkingCollapsed={thinkingCollapsed}
-                onDecision={() => {}}
                 onAnswer={() => {}}
               />
             ))}

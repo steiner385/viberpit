@@ -1,8 +1,9 @@
 import { useRef, useEffect, useState } from 'react'
-import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown } from 'lucide-react'
+import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Play, Target } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
+import { statusTier } from '@/session/statusTier'
 import { StatusPill, UsageBadge } from './UsageBadge'
 import { PrPill } from './PrPill'
 import { SubAgentRows } from './SubAgentRows'
@@ -26,13 +27,23 @@ interface SessionCardProps {
   onClose: (id: string) => void
   /** Permanently delete the session (irreversible; confirmed by the caller). */
   onDelete: (id: string) => void
+  /** Quick-resume: text present → fire that suggestion in place; undefined → caller opens the session. */
+  onQuickResume: (id: string, text?: string) => void
 }
 
-export function SessionCard({ session, account, selected = false, onOpen, onRename, onClose, onDelete }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, onOpen, onRename, onClose, onDelete, onQuickResume }: SessionCardProps) {
   const articleRef = useRef<HTMLElement>(null)
   const subAgents = session.subAgents ?? []
   const hasSubAgents = subAgents.length > 0
   const [expanded, setExpanded] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  const suggestions = session.latestSuggestions ?? []
+  // One-tap resume sends the cached top suggestion if there is one, else "continue".
+  // The backend lazily resumes a detached session before delivering, so this works
+  // on idle/"Ready" sessions too. Hidden while the session is actively working.
+  const resumeText = suggestions[0] ?? 'continue'
+  const isBusy = statusTier(session.status) === 'busy'
 
   // Scroll selected row into view when selection changes (jsdom doesn't implement scrollIntoView)
   useEffect(() => {
@@ -104,7 +115,7 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
             {session.name}
           </span>
           <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
-            {session.accountName}
+            {account?.nickname || session.accountName}
           </span>
           {/* Sub-agent count, visible without expanding. Only shown while
               collapsed — once expanded, the chevron + SubAgentRows carry it. */}
@@ -128,6 +139,15 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
             <span className="truncate">{repoLabel.text}</span>
           </span>
           <StatusPill status={session.status} />
+          {session.activeGoal && (
+            <span
+              className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
+              title={`Goal: ${session.activeGoal}`}
+            >
+              <Target size={12} aria-hidden="true" className="flex-shrink-0" />
+              <span className="truncate">Goal</span>
+            </span>
+          )}
           {session.pr && <PrPill pr={session.pr} />}
           {/* Session usage only — weekly is an account-level figure shown in the
               Accounts tab and the in-session meta strip, so repeating it on every
@@ -167,6 +187,56 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
           selected && '[@media(hover:hover)]:opacity-100',
         )}
       >
+        {!isBusy && (
+          <button
+            type="button"
+            className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
+              'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500')}
+            aria-label={`Resume session ${session.name}`}
+            title={suggestions.length > 0 ? 'Resume — send the suggested next step' : 'Resume — send “continue”'}
+            onClick={() => onQuickResume(session.id, resumeText)}
+          >
+            <Play size={16} aria-hidden="true" />
+          </button>
+        )}
+        {!isBusy && suggestions.length >= 2 && (
+          <div className="relative flex items-center">
+            <button
+              type="button"
+              aria-label={`More suggestions for ${session.name}`}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
+                'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500')}
+              onClick={() => setMenuOpen((o) => !o)}
+            >
+              <ChevronDown size={16} aria-hidden="true" />
+            </button>
+            {menuOpen && (
+              <div
+                role="menu"
+                className={cn(
+                  'absolute top-full right-0 mt-1 min-w-[12rem] max-w-xs z-10',
+                  'rounded-md border border-gray-200 dark:border-gray-700',
+                  'bg-white dark:bg-gray-800 shadow-lg py-1',
+                )}
+              >
+                {suggestions.slice(1).map((s, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setMenuOpen(false); onQuickResume(session.id, s) }}
+                    className={cn('block w-full truncate px-3 py-2 text-left text-sm',
+                      'hover:bg-gray-100 dark:hover:bg-gray-700')}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <button
           type="button"
           className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',

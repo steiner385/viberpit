@@ -6,32 +6,33 @@ import { UserBubble } from './UserBubble'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallCard } from './ToolCallCard'
 import { ToolGroup } from './ToolGroup'
-import { PermissionCard } from './PermissionCard'
 import { QuestionCard } from './QuestionCard'
 import { ErrorCard } from './ErrorCard'
 
 interface Props {
   turn: TurnType
-  permissionMode: string
   isLastTurn: boolean
   toolDetailMode: ToolDetailMode
   thinkingCollapsed: boolean
   /** Id of the block currently being streamed live (renders as plain text);
    *  null/absent means every text block is finalized and rendered as markdown. */
   streamingBlockId?: string | null
-  onDecision: (permId: string, decision: 'allow' | 'deny' | 'always') => void
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
   subAgents?: Record<string, SubThread>
 }
 
 export const Turn = memo(function Turn({
-  turn, permissionMode, isLastTurn, toolDetailMode, thinkingCollapsed, streamingBlockId = null,
-  onDecision, onAnswer, subAgents,
+  turn, isLastTurn, toolDetailMode, thinkingCollapsed, streamingBlockId = null,
+  onAnswer, subAgents,
 }: Props) {
   const isUser = turn.role === 'user'
-  // Suppress live questions inline — they are rendered by the pinned
-  // PendingQuestionPanel above the composer. Historical questions stay.
-  const visibleBlocks = turn.blocks.filter((b) => !(b.kind === 'question' && b.live))
+  // Suppress live questions and open permissions inline — they are rendered by the
+  // pinned PendingQuestionPanel / PendingPermissionPanel above the composer, where the
+  // controls stay reachable regardless of scroll. Historical questions stay; resolved
+  // permissions are removed from state entirely, so every permission block here is open.
+  const visibleBlocks = turn.blocks.filter(
+    (b) => !(b.kind === 'question' && b.live) && b.kind !== 'permission',
+  )
   const items = groupBlocks(visibleBlocks)
   const lastIdx = items.length - 1
 
@@ -70,8 +71,6 @@ export const Turn = memo(function Turn({
           case 'tool':
             // Unreachable: tool blocks are coalesced into toolGroup items above.
             return <ToolCallCard key={block.id} block={block} density="line" thinkingCollapsed={thinkingCollapsed} subThread={subAgents?.[block.toolId]} />
-          case 'permission':
-            return <PermissionCard key={block.id} block={block} mode={permissionMode} onDecision={onDecision} />
           case 'question':
             // A LIVE open question is rendered by the pinned PendingQuestionPanel
             // above the composer — omit it inline to avoid a duplicate. Historical

@@ -18,12 +18,13 @@ from typing import Any, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
 from server.sessions import adopt as _adopt
+from server.sessions.search import transcript_text, parse_terms, session_matches
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import get_db
@@ -72,15 +73,25 @@ class AdoptRequest(BaseModel):
     claudeSessionId: str
 
 
+class SendPromptRequest(BaseModel):
+    text: str
+
+
 _UNSET = object()
 
 
-def _record_to_dict(record, repo: Any = _UNSET, pr: Any = None) -> dict[str, Any]:
+def _record_to_dict(
+    record, repo: Any = _UNSET, suggestions: list[str] | None = None, pr: Any = None
+) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict.
 
     ``repo`` lets callers inject a value read live from the session's working
     directory (see :func:`_resolve_repo`); when omitted, the stored
     ``record.repo`` is used as a fallback.
+
+    ``suggestions`` holds the latest cached next-prompt suggestions for the
+    session (from ``orch.latest_suggestions``). Defaults to [] when omitted
+    (detached sessions or none yet generated).
 
     ``pr`` is an optional PullRequestInfo (or None) representing the cached PR
     status for the session's branch.  Serialised to a dict or None on the wire.
@@ -106,6 +117,8 @@ def _record_to_dict(record, repo: Any = _UNSET, pr: Any = None) -> dict[str, Any
         ),
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
+        "latestSuggestions": list(suggestions or []),
+        "activeGoal": getattr(record, "active_goal", None),
         "pr": pr.to_dict() if pr is not None else None,
     }
 
@@ -157,16 +170,18 @@ async def list_sessions(
     """Return all in-memory session records."""
     orch = _get_orchestrator(request)
     records = await orch.list_sessions()
-    # Read each session's repo live from its working dir, all in parallel.
+    # Read each session's repo (live, from its cwd), cached suggestions, and PR
+    # status in parallel.
     repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
+    suggs = await asyncio.gather(*(orch.latest_suggestions(r.id) for r in records))
     pr_for = getattr(orch, "pr_for", None)
     prs = [
         (pr_for(r.repo, getattr(r, "branch", None)) if pr_for else None)
         for r in records
     ]
     return [
-        _record_to_dict(r, repo=repo, pr=pr)
-        for r, repo, pr in zip(records, repos, prs)
+        _record_to_dict(r, repo=repo, suggestions=s, pr=pr)
+        for r, repo, s, pr in zip(records, repos, suggs, prs)
     ]
 
 
@@ -369,6 +384,112 @@ async def list_archived_sessions(
     return await orch.list_archived()
 
 
+@router.get("/search")
+async def search_sessions(
+    request: Request,
+    q: str = "",
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Return active session IDs whose name or transcript matches every term in `q`.
+
+    Registered before GET /{session_id} so FastAPI does not match `search` as an id.
+    """
+    orch = _get_orchestrator(request)
+    terms = parse_terms(q)
+    records = await orch.list_sessions()
+
+    async def _matches(rec) -> bool:
+        text = ""
+        if terms:  # blank query short-circuits the file reads
+            path = await orch.transcript_path(rec.id)
+            if path:
+                # The transcript file is read here in the edge process (not on the
+                # daemon). This is safe because the daemon talks over a host-local
+                # Unix socket, so daemon and edge share the filesystem. If the daemon
+                # is ever split to a separate host, this read would fail and search
+                # would silently degrade to name-only — move the read behind a daemon
+                # RPC (like transcript_events) at that point.
+                text = await asyncio.to_thread(transcript_text, path)
+        return session_matches(terms, rec.name, text)
+
+    flags = await asyncio.gather(*(_matches(r) for r in records))
+    return {"ids": [r.id for r, ok in zip(records, flags) if ok]}
+
+
+# ---------------------------------------------------------------------------
+# Batch operations on archived sessions
+#
+# These static routes MUST be declared before the dynamic "/{session_id}"
+# routes below, or "batch" is matched as a session_id.
+# ---------------------------------------------------------------------------
+
+
+class BatchSessionIdsRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1, max_length=200)
+
+
+@router.post("/batch/unarchive")
+async def batch_unarchive_sessions(
+    body: BatchSessionIdsRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Unarchive multiple sessions. Best-effort: returns per-id succeeded/failed."""
+    orch = _get_orchestrator(request)
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
+        try:
+            record = await orch.unarchive(session_id)
+        except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
+            log.warning("batch unarchive failed for %s: %s", session_id, exc)
+            failed.append({"id": session_id, "error": str(exc)})
+            continue
+        if record is None:
+            failed.append({"id": session_id, "error": "not found"})
+            continue
+        succeeded.append(session_id)
+        await record_audit(
+            db=db,
+            type="session.unarchive",
+            identity=identity,
+            detail={"session_id": session_id},
+        )
+    return {"succeeded": succeeded, "failed": failed}
+
+
+@router.post("/batch/permanent-delete")
+async def batch_permanent_delete_sessions(
+    body: BatchSessionIdsRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Permanently delete multiple sessions. Best-effort: returns per-id succeeded/failed."""
+    orch = _get_orchestrator(request)
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
+        try:
+            deleted = await orch.permanent_delete(session_id)
+        except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
+            log.warning("batch permanent-delete failed for %s: %s", session_id, exc)
+            failed.append({"id": session_id, "error": str(exc)})
+            continue
+        if not deleted:
+            failed.append({"id": session_id, "error": "not found"})
+            continue
+        succeeded.append(session_id)
+        await record_audit(
+            db=db,
+            type="session.permanent_delete",
+            identity=identity,
+            detail={"session_id": session_id},
+        )
+    return {"succeeded": succeeded, "failed": failed}
+
+
 @router.get("/{session_id}")
 async def get_session(
     session_id: str,
@@ -458,6 +579,41 @@ async def unarchive_session(
         detail={"session_id": session_id},
     )
     return _record_to_dict(record, repo=await _resolve_repo(record))
+
+
+@router.post("/{session_id}/prompt")
+async def send_session_prompt(
+    session_id: str,
+    body: SendPromptRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Send a prompt to a session from the dashboard (quick-resume).
+
+    Lazily RESUMES a detached (idle/"Ready") session first — the same ensure_driver
+    path the WebSocket prompt flow uses — so one tap from the list gets a stalled
+    session moving. 404 if unknown; 409 if the session exists but can't be resumed."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    # Resume the session if it has no live driver (detached). ensure_driver is
+    # idempotent for already-live sessions and returns None only if the session
+    # can't be brought live.
+    driver = await orch.ensure_driver(session_id, identity)
+    if driver is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "resume_failed", "message": "Session could not be resumed."},
+        )
+    await orch.send_prompt(session_id, body.text)
+    await record_audit(db, "session.prompt", identity, {"sessionId": session_id})
+    updated = await orch.get_session(session_id) or record
+    return _record_to_dict(updated, repo=await _resolve_repo(updated))
 
 
 @router.delete("/{session_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)

@@ -17,10 +17,11 @@
  * via SessionRuntimeProvider keyed by the focused id.
  */
 
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { Plus, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SessionList } from './SessionList'
+import { SessionListControls } from './SessionListControls'
 import { DispatchBar } from './DispatchBar'
 import { AllLimitedBanner } from './AllLimitedBanner'
 import { ShortcutsHelp } from './ShortcutsHelp'
@@ -33,7 +34,7 @@ import { useSidebarWidth } from '@/lib/useSidebarWidth'
 import { RenameDialog, PermanentDeleteDialog } from './Dashboard'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from './session/SessionRuntimeProvider'
 import { SessionBody } from './session/SessionBody'
-import { Composer } from './session/Composer'
+import { SessionComposer } from './session/SessionComposer'
 import { CommandResultOverlay } from './session/CommandResultOverlay'
 import {
   useAccounts,
@@ -44,9 +45,11 @@ import {
   useCloseSession,
   usePermanentDeleteSession,
   useGithubRepos,
+  useSendPrompt,
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
-import { deriveHistory } from '@/session/history'
+import { useSessionOrdering } from '@/session/useSessionOrdering'
+import { useSessionSearch } from '@/session/useSessionSearch'
 
 type TabId = 'sessions' | 'accounts' | 'archived'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
@@ -75,21 +78,11 @@ function MainPaneSession() {
   )
 }
 
-function SessionComposer() {
+// Context bridge: the bottom prompt is rendered inside the SessionRuntimeProvider,
+// so it can read the runtime from context and hand it to the shared SessionComposer.
+function BottomComposer() {
   const rt = useSessionRuntimeContext()
-  const history = useMemo(() => deriveHistory(rt.state.turns), [rt.state.turns])
-  return (
-    <Composer
-      status={rt.state.status}
-      onPrompt={rt.onPrompt}
-      onInterrupt={rt.onInterrupt}
-      queued={rt.state.queued}
-      onCancelQueued={rt.onCancelQueued}
-      commands={rt.commands}
-      onCommand={rt.onCommand}
-      history={history}
-    />
-  )
+  return <SessionComposer rt={rt} />
 }
 
 // ── Welcome / empty main-pane state (when New Session is the target) ───────────
@@ -109,6 +102,9 @@ function WelcomePane() {
 export function DesktopShell() {
   const { data: accounts = [] } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
+  const sessionSearch = useSessionSearch()
+  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions } =
+    useSessionOrdering(sessions, sessionSearch.matchedIds)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const reposQuery = useGithubRepos()
 
@@ -129,7 +125,7 @@ export function DesktopShell() {
 
   // Keyboard highlight (for the new-session DispatchBar nav affordances)
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
-  const highlighted = highlightedIndex >= 0 ? sessions[highlightedIndex] : undefined
+  const highlighted = highlightedIndex >= 0 ? orderedSessions[highlightedIndex] : undefined
 
   // Bumped to return focus to the DispatchBar after detaching from a session.
   const [dispatchFocusNonce, setDispatchFocusNonce] = useState(0)
@@ -142,26 +138,26 @@ export function DesktopShell() {
   }, [])
 
   // Clamp highlight when the list shrinks.
-  const clampedIndex = sessions.length === 0 ? -1 : Math.min(highlightedIndex, sessions.length - 1)
+  const clampedIndex = orderedSessions.length === 0 ? -1 : Math.min(highlightedIndex, orderedSessions.length - 1)
   if (clampedIndex !== highlightedIndex) setHighlightedIndex(clampedIndex)
 
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
 
   const selectedSessionId = selection.type === 'session' ? selection.id : null
 
-  function clearPendingDelete() {
+  const clearPendingDelete = useCallback(() => {
     setPendingDelete(null)
     if (pendingDeleteTimeoutRef.current) {
       clearTimeout(pendingDeleteTimeoutRef.current)
       pendingDeleteTimeoutRef.current = null
     }
-  }
+  }, [])
 
-  function focusSession(id: string, initialPrompt?: string) {
+  const focusSession = useCallback((id: string, initialPrompt?: string) => {
     clearPendingDelete()
     setTab('sessions')
     setSelection({ type: 'session', id, initialPrompt })
-  }
+  }, [clearPendingDelete])
 
   function focusNew() {
     clearPendingDelete()
@@ -173,11 +169,11 @@ export function DesktopShell() {
     const id = selection.type === 'session' ? selection.id : null
     setSelection({ type: 'new' })
     if (id) {
-      const idx = sessions.findIndex((s) => s.id === id)
+      const idx = orderedSessions.findIndex((s) => s.id === id)
       if (idx >= 0) setHighlightedIndex(idx)
     }
     setDispatchFocusNonce((n) => n + 1) // return focus to DispatchBar for ↑/↓ nav
-  }, [selection, sessions])
+  }, [selection, orderedSessions])
 
   // In-session detach gestures (desktop): ← / Esc / Ctrl+Z return to the list.
   // Active only while a session is focused. Guards: yield to the composer while it
@@ -210,8 +206,14 @@ export function DesktopShell() {
     setSelection((cur) => (cur.type === 'session' && cur.id === id ? { type: 'new' } : cur))
   }, [closeSession])
 
+  const sendPrompt = useSendPrompt()
+  const handleQuickResume = useCallback((id: string, text?: string) => {
+    // Always fire in place — the backend lazily resumes a detached session first.
+    sendPrompt.mutate({ id, text: text || 'continue' })
+  }, [sendPrompt])
+
   function handleRename(id: string) {
-    const session = sessions.find((s) => s.id === id)
+    const session = orderedSessions.find((s) => s.id === id)
     if (session) setRenameTarget({ id, name: session.name })
   }
 
@@ -222,7 +224,7 @@ export function DesktopShell() {
   // Permanent delete is destructive, so it goes through the same confirm dialog
   // as Dashboard: open the dialog here, run the mutation only on confirm.
   function handleDelete(id: string) {
-    const session = sessions.find((s) => s.id === id)
+    const session = orderedSessions.find((s) => s.id === id)
     setSessionDeleteTarget({ id, name: session?.name ?? id.slice(0, 8) })
   }
 
@@ -242,11 +244,11 @@ export function DesktopShell() {
   // ── DispatchBar handlers (new-session mode) ─────────────────────────────────
 
   function handleNavigate(dir: 'up' | 'down') {
-    if (sessions.length === 0) return
+    if (orderedSessions.length === 0) return
     clearPendingDelete()
     setHighlightedIndex((i) => {
       if (dir === 'up') return i <= 0 ? 0 : i - 1
-      return Math.min(sessions.length - 1, i + 1)
+      return Math.min(orderedSessions.length - 1, i + 1)
     })
   }
 
@@ -277,7 +279,7 @@ export function DesktopShell() {
       }
     } else if (action.type === 'jump') {
       clearPendingDelete()
-      const s = sessions[action.index]
+      const s = orderedSessions[action.index]
       if (s) {
         setHighlightedIndex(action.index)
         focusSession(s.id)
@@ -376,8 +378,19 @@ export function DesktopShell() {
           New Session
         </button>
 
+        {sessions.length > 0 && (
+          <SessionListControls
+            groupBy={groupBy}
+            sortBy={sortBy}
+            onGroupByChange={setGroupBy}
+            onSortByChange={setSortBy}
+            searchQuery={sessionSearch.query}
+            onSearchChange={sessionSearch.setQuery}
+          />
+        )}
         <SessionList
-          sessions={sessions}
+          sessions={orderedSessions}
+          groups={groups}
           accounts={accounts}
           isLoading={sessionsLoading}
           // Visible cursor: mark the open session, else the keyboard-highlighted
@@ -390,6 +403,9 @@ export function DesktopShell() {
           onRename={handleRename}
           onClose={handleClose}
           onDelete={handleDelete}
+          isFiltered={sessionSearch.isFiltered}
+          onClearSearch={() => sessionSearch.setQuery('')}
+          onQuickResume={handleQuickResume}
         />
       </div>
     </aside>
@@ -409,7 +425,7 @@ export function DesktopShell() {
   const sessionActive = tab === 'sessions' && selection.type === 'session'
 
   const bottomPrompt = sessionActive ? (
-    <SessionComposer />
+    <BottomComposer />
   ) : (
     <DispatchBar
       repos={reposQuery.data ?? []}

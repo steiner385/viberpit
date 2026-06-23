@@ -142,3 +142,75 @@ def test_rotate_away_excludes_quarantined_and_reassigns(monkeypatch):
     assert reassigned == [("s1", "primary")]
     # excludes both the quarantined account and the current account
     assert {"kindash", "secondary"} <= seen_exclude["v"]
+
+
+def test_process_crash_reassigns_same_account():
+    o = _make_orch(); rec = _rec(o)
+    async def spy_reassign(record, new_account, *, reason):
+        o.calls.append(("reassign", record.id, new_account, reason))
+    o._reassign = spy_reassign
+    asyncio.run(o._recover_session(rec, "process_crash", None))
+    assert ("reassign", "s1", "kindash", "process_crash") in o.calls
+
+
+def test_process_crash_guard_pauses_after_cap():
+    o = _make_orch(); rec = _rec(o)
+    async def spy_reassign(record, new_account, *, reason):
+        o.calls.append(("reassign", record.id, new_account, reason))
+    o._reassign = spy_reassign
+    for _ in range(R.CRASH_CAP):
+        o._recovery.record_crash("s1", now=1000.0)
+    asyncio.run(o._recover_session(rec, "process_crash", None))
+    assert ("pause", "s1", "crash_cap") in o.calls
+    assert ("reassign", "s1", "kindash", "process_crash") not in o.calls
+
+
+def test_check_stalls_interrupts_wedged_turn():
+    o = _make_orch()
+    interrupted = []
+    class _StubDriver:
+        _turn_active = True
+        last_progress_at = 0.0
+        async def interrupt(self):
+            interrupted.append(True)
+    o._drivers["s1"] = _StubDriver()
+    asyncio.run(o._check_stalls(now=10_000.0))
+    assert interrupted == [True]
+
+
+def test_check_stalls_leaves_progressing_turn_alone():
+    o = _make_orch()
+    interrupted = []
+    class _StubDriver:
+        _turn_active = True
+        last_progress_at = 9_990.0
+        async def interrupt(self):
+            interrupted.append(True)
+    o._drivers["s1"] = _StubDriver()
+    asyncio.run(o._check_stalls(now=10_000.0))
+    assert interrupted == []
+
+
+def test_check_stalls_stops_after_stall_cap():
+    o = _make_orch()
+    interrupted = []
+    class _StubDriver:
+        _turn_active = True
+        last_progress_at = 0.0
+        async def interrupt(self): interrupted.append(True)
+    o._drivers["s1"] = _StubDriver()
+    for _ in range(3):
+        o._recovery.record_stall("s1", now=10_000.0)
+    asyncio.run(o._check_stalls(now=10_000.0))
+    assert interrupted == []   # stall cap reached → no further interrupt
+
+
+def test_stall_does_not_consume_crash_respawn_budget():
+    o = _make_orch(); rec = _rec(o)
+    async def spy_reassign(record, new_account, *, reason):
+        o.calls.append(("reassign", record.id, new_account, reason))
+    o._reassign = spy_reassign
+    for _ in range(3):
+        o._recovery.record_stall("s1", now=1000.0)
+    asyncio.run(o._recover_session(rec, "process_crash", None))
+    assert ("reassign", "s1", "kindash", "process_crash") in o.calls

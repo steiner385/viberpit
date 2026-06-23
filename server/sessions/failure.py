@@ -18,12 +18,12 @@ from dataclasses import dataclass
 # Mirror oauth._RETRY_AFTER_CAP: never trust an absurd server-supplied delay.
 _RETRY_AFTER_CAP = 120.0
 
-_RECOVERABLE = frozenset({"rate_limit", "auth_401"})
+_RECOVERABLE = frozenset({"rate_limit", "auth_401", "process_crash"})
 
 
 @dataclass(frozen=True)
 class TurnFailure:
-    kind: str  # "rate_limit" | "auth_401" | "other"
+    kind: str  # "rate_limit" | "auth_401" | "process_crash" | "other"
     retry_after: float | None = None
 
     @property
@@ -44,6 +44,18 @@ def _parse_retry_after(message: str) -> float | None:
     if m:
         return float(m.group(1))
     return None
+
+
+def _is_process_crash(text: str) -> bool:
+    low = text.lower()
+    if "resource temporarily unavailable" in low or "errno 11" in low:
+        return True
+    if "terminated process" in low or "failed to start claude" in low:
+        return True
+    # negative/signal exit codes (-2..-N) = killed by signal (SIGABRT/SIGTRAP/…)
+    if re.search(r"exit code:?\s*-\d+", low):
+        return True
+    return False
 
 
 def classify(code: str | None, message: str = "", *, retry_after: float | None = None) -> TurnFailure:
@@ -67,6 +79,10 @@ def classify(code: str | None, message: str = "", *, retry_after: float | None =
         return rate_limit()
     if code == "api_401":
         return TurnFailure(kind="auth_401")
+
+    # Check for process crash signatures before general content inference.
+    if _is_process_crash(text):
+        return TurnFailure(kind="process_crash")
 
     # Otherwise infer from content. Auth is checked first: an "invalid
     # authentication credentials" / 401 message is unambiguous, whereas a bare

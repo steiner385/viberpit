@@ -28,6 +28,9 @@ vi.mock('@/api/hooks', () => ({
   useArchivedSessions: vi.fn(),
   useUnarchiveSession: vi.fn(),
   usePermanentDeleteSession: vi.fn(),
+  useBulkUnarchiveSessions: vi.fn(),
+  useBulkPermanentDeleteSessions: vi.fn(),
+  useSendPrompt: () => ({ mutate: vi.fn() }),
   QK: {
     accounts: ['accounts'],
     sessions: ['sessions'],
@@ -37,6 +40,10 @@ vi.mock('@/api/hooks', () => ({
     githubBranches: (repo?: string) => ['github-branches', repo],
     settings: ['settings'],
   },
+}))
+
+vi.mock('@/session/useSessionSearch', () => ({
+  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
 }))
 
 const NOOP_MUTATION = { mutate: vi.fn(), isPending: false, isSuccess: false }
@@ -92,6 +99,8 @@ describe('AccountsStrip — nickname display & edit', () => {
     vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
     vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
     vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+    vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
+    vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
   })
 
   it('shows account name when no nickname is set', async () => {
@@ -107,7 +116,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     expect(screen.getByText('work')).toBeInTheDocument()
   })
 
-  it('shows nickname as primary label when set, with name as sub-label', async () => {
+  it('shows only the nickname when set — the internal slug is never displayed', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'work', nickname: 'My Work Account' })],
@@ -118,8 +127,8 @@ describe('AccountsStrip — nickname display & edit', () => {
     await switchToAccountsTab(user)
 
     expect(screen.getByText('My Work Account')).toBeInTheDocument()
-    // The real name should still appear as sub-label
-    expect(screen.getByText('work')).toBeInTheDocument()
+    // The internal slug must not leak into the UI once a nickname is chosen.
+    expect(screen.queryByText('work')).not.toBeInTheDocument()
   })
 
   it('shows pencil edit button with aria-label "Rename {name}"', async () => {
@@ -253,6 +262,11 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
     vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
     vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
     vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+    vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
+    vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
   })
 
   it('renders without throwing when account.usage is null (needs-reauth)', () => {
@@ -313,6 +327,11 @@ describe('NewSessionDialog — account select uses nickname', () => {
     vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
     vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
     vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+    vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
+    vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
   })
 
   it('shows nickname as option label in account select when set', async () => {
