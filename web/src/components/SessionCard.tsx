@@ -125,10 +125,14 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
             </span>
           )}
         </div>
-        <div className="flex items-center gap-3 flex-wrap">
+        {/* Meta row A — context. Repo anchors the left and absorbs slack
+            (flex-1 min-w-0 → truncates under pressure); the state chips form
+            a single non-shrinking group anchored to the right, so the status
+            pill always lands at the same edge regardless of repo length. */}
+        <div className="flex items-center gap-2">
           <span
             className={cn(
-              'inline-flex items-center gap-1 text-xs max-w-full',
+              'inline-flex min-w-0 flex-1 items-center gap-1 text-xs',
               repoLabel.isScratch
                 ? 'text-gray-400 dark:text-gray-500 italic'
                 : 'text-gray-600 dark:text-gray-300',
@@ -138,39 +142,50 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
             <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
             <span className="truncate">{repoLabel.text}</span>
           </span>
-          <StatusPill status={session.status} />
-          {session.activeGoal && (
-            <span
-              className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
-              title={`Goal: ${session.activeGoal}`}
-            >
-              <Target size={12} aria-hidden="true" className="flex-shrink-0" />
-              <span className="truncate">Goal</span>
-            </span>
-          )}
-          {session.pr && <PrPill pr={session.pr} />}
-          {/* Session usage only — weekly is an account-level figure shown in the
-              Accounts tab and the in-session meta strip, so repeating it on every
-              card just adds noise and forces the meta row to wrap. */}
-          {account?.usage && (
-            <UsageBadge
-              pct={account.usage.session.pct}
-              label="session"
-              resetsAt={account.usage.session.resetsAt}
-            />
-          )}
-          {/* Last activity — helps tell live sessions from stale ones at a glance.
-              Refreshes naturally as React Query refetches the session list.
-              Guarded against a missing/invalid timestamp so we never show "NaN". */}
-          {isValidTimestamp(session.updatedAt) && (
-            <span
-              className="text-xs text-gray-400 dark:text-gray-500 tabular-nums"
-              title={`Last active ${new Date(session.updatedAt).toLocaleString()}`}
-            >
-              active {relTime(session.updatedAt)}
-            </span>
-          )}
+          <div className="flex flex-shrink-0 items-center gap-2">
+            <StatusPill status={session.status} />
+            {session.activeGoal && (
+              <span
+                className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
+                title={`Goal: ${session.activeGoal}`}
+              >
+                <Target size={12} aria-hidden="true" className="flex-shrink-0" />
+                <span className="truncate">Goal</span>
+              </span>
+            )}
+            {session.pr && <PrPill pr={session.pr} />}
+          </div>
         </div>
+        {/* Meta row B — metrics. Usage meter anchors the left, last-activity
+            is pinned right with ml-auto so it stays right-aligned even when the
+            usage badge is absent. Rendered only when at least one is present so
+            cards without either don't carry an empty row.
+            Session usage only — weekly is an account-level figure shown in the
+            Accounts tab and the in-session meta strip, so repeating it on every
+            card just adds noise. */}
+        {(account?.usage || isValidTimestamp(session.updatedAt)) && (
+          <div className="flex items-center gap-2">
+            {account?.usage && (
+              <UsageBadge
+                pct={account.usage.session.pct}
+                label="session"
+                resetsAt={account.usage.session.resetsAt}
+              />
+            )}
+            {/* Last activity — helps tell live sessions from stale ones at a
+                glance. Refreshes as React Query refetches the session list.
+                Guarded against a missing/invalid timestamp so we never show
+                "NaN". */}
+            {isValidTimestamp(session.updatedAt) && (
+              <span
+                className="ml-auto text-xs text-gray-400 dark:text-gray-500 tabular-nums"
+                title={`Last active ${new Date(session.updatedAt).toLocaleString()}`}
+              >
+                active {relTime(session.updatedAt)}
+              </span>
+            )}
+          </div>
+        )}
       </button>
 
       {/* Per-session actions — explicit buttons (no overflow menu).
