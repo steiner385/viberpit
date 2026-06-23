@@ -56,6 +56,33 @@ class _StreamAdapter:
         await self._w.drain()
 
 
+class _WSAdapter:
+    """Adapts a `websockets` client connection to the .read/.write/.drain shape _relay
+    uses, so the SAME byte-pump drives both a local TCP RFB stream (in-process mode)
+    and a WS-over-IPC tunnel to the daemon (remote mode). EOF (peer close) → read() == b"".
+    """
+
+    def __init__(self, ws):
+        self._ws = ws
+        self._pending: bytes | None = None
+
+    async def read(self, n):
+        from websockets.exceptions import ConnectionClosed
+        try:
+            data = await self._ws.recv()
+        except ConnectionClosed:
+            return b""
+        return data.encode() if isinstance(data, str) else data
+
+    def write(self, b):
+        self._pending = b
+
+    async def drain(self):
+        if self._pending is not None:
+            await self._ws.send(self._pending)
+            self._pending = None
+
+
 def build_vnc_ws_router(get_x11) -> APIRouter:
     """Return an APIRouter containing the /ws/vnc endpoint."""
     router = APIRouter()
