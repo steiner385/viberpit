@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from server.sessions.search import transcript_text, parse_terms, session_matches
 
 
