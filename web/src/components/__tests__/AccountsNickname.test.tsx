@@ -107,7 +107,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     expect(screen.getByText('work')).toBeInTheDocument()
   })
 
-  it('shows nickname as primary label when set, with name as sub-label', async () => {
+  it('shows only the nickname when set — the internal slug is never displayed', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'work', nickname: 'My Work Account' })],
@@ -118,8 +118,8 @@ describe('AccountsStrip — nickname display & edit', () => {
     await switchToAccountsTab(user)
 
     expect(screen.getByText('My Work Account')).toBeInTheDocument()
-    // The real name should still appear as sub-label
-    expect(screen.getByText('work')).toBeInTheDocument()
+    // The internal slug must not leak into the UI once a nickname is chosen.
+    expect(screen.queryByText('work')).not.toBeInTheDocument()
   })
 
   it('shows pencil edit button with aria-label "Rename {name}"', async () => {
