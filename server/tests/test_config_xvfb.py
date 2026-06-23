@@ -16,7 +16,7 @@ def test_xvfb_defaults(monkeypatch):
     assert s.display_count == 12
     assert s.max_browsers == 6
     assert s.vnc_port_base == 6100
-    assert s.xvfb_resolution == "1280x1024x24"
+    assert s.xvfb_resolution == "1280x800x24"
     assert s.vnc_idle_timeout_s == 1800.0
 
 def test_xvfb_env_override(monkeypatch):
