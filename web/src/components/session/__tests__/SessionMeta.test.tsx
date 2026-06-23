@@ -14,13 +14,20 @@ const baseProps = {
     weeklyResetsAt: null,
   },
   subAgents: [] as SubAgent[],
+  models: [{ id: 'claude-sonnet-4-5', label: 'Sonnet' }],
+  accounts: [{ name: 'work-max' }],
+  accountPinned: false,
+  onSelectModel: () => {},
+  onSelectAccount: () => {},
 }
 
 describe('SessionMeta', () => {
   it('shows the current account and model', () => {
     render(<SessionMeta {...baseProps} />)
-    expect(screen.getByText('work-max')).toBeInTheDocument()
-    expect(screen.getByText('claude-sonnet-4-5')).toBeInTheDocument()
+    // Account is shown as the selected value of the account switcher dropdown.
+    expect(screen.getByLabelText('Switch account')).toHaveValue('work-max')
+    // Model is shown as the selected value of the model switcher dropdown.
+    expect(screen.getByLabelText('Select model')).toHaveValue('claude-sonnet-4-5')
   })
 
   it('shows remaining context percent', () => {
@@ -28,10 +35,12 @@ describe('SessionMeta', () => {
     expect(screen.getByLabelText(/remaining context/i)).toHaveTextContent('78%')
   })
 
-  it('renders an em-dash for unknown model and context', () => {
+  it('renders an em-dash for unknown context', () => {
     render(<SessionMeta {...baseProps} model={null} contextPct={null} />)
-    expect(screen.getByLabelText(/current model/i)).toHaveTextContent('—')
+    // Context still shows em-dash when unknown.
     expect(screen.getByLabelText(/remaining context/i)).toHaveTextContent('—')
+    // Model select is still rendered (not absent) when model is null.
+    expect(screen.getByLabelText('Select model')).toBeInTheDocument()
   })
 
   it('shows account quota when present', () => {
