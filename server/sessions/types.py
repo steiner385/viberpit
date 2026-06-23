@@ -31,6 +31,7 @@ class SessionRecord:
     sub_agents: list | None = None   # [{agentId,parentAgentId,agentType,description,status}], refreshed at status changes
     model: str | None = None         # persisted model alias/id; None = account default
     account_pinned: bool = False      # user pinned the account (skips usage-ceiling rotation)
+    active_goal: str | None = None    # active /goal condition; None = no goal
 
     def to_dict(self) -> dict:
         return {
@@ -43,6 +44,7 @@ class SessionRecord:
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
             "accountPinned": self.account_pinned,
+            "activeGoal": self.active_goal,
         }
 
     @classmethod
@@ -59,4 +61,5 @@ class SessionRecord:
             adopted_in_place=d.get("adoptedInPlace", False),
             model=d.get("model"),
             account_pinned=d.get("accountPinned", False),
+            active_goal=d.get("activeGoal"),
         )

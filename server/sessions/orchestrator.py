@@ -614,6 +614,7 @@ class SessionOrchestrator:
                 adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
                 model=getattr(row, "model", None),
                 account_pinned=bool(getattr(row, "account_pinned", False)),
+                active_goal=getattr(row, "active_goal", None),
             )
             added += 1
         log.info("rehydrate: %d session(s) restored", added)
@@ -1484,6 +1485,7 @@ class SessionOrchestrator:
             created_at=row.created_at,
             model=getattr(row, "model", None),
             account_pinned=bool(getattr(row, "account_pinned", False)),
+            active_goal=getattr(row, "active_goal", None),
         )
         self._records[session_id] = record
         log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)
