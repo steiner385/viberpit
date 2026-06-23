@@ -138,4 +138,25 @@ describe('DesktopShell', () => {
     expect(screen.getByRole('textbox', { name: /^message$/i })).toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: /new session prompt/i })).not.toBeInTheDocument()
   })
+
+  it('DesktopShell: groups by status and keeps keyboard nav', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useSessions).mockReturnValue({
+      data: [
+        mk({ id: 's1', name: 'One', status: 'idle' }),
+        mk({ id: 's2', name: 'Two', status: 'in_progress' }),
+      ],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useSessions>)
+    render(<DesktopShell />, { wrapper })
+    await user.selectOptions(screen.getByLabelText('Group by'), 'status')
+    // Two sessions from DIFFERENT tiers → both group headers must render
+    expect(screen.getByText('Your turn')).toBeInTheDocument()
+    expect(screen.getByText('Working')).toBeInTheDocument()
+    // keyboard nav still works: ArrowDown should highlight a row
+    const prompt = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(prompt)
+    await user.keyboard('{ArrowDown}')
+    expect(prompt.getAttribute('aria-activedescendant')).toMatch(/^row-s/)
+  })
 })

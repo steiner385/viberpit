@@ -252,4 +252,22 @@ describe('Dashboard — Sessions/Accounts tabs', () => {
     const newSessionBtns = screen.getAllByRole('button', { name: /new session/i })
     expect(newSessionBtns.length).toBeGreaterThan(0)
   })
+
+  it('groups the session list by status when selected', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useSessions).mockReturnValue({
+      data: [makeSession({ id: 'sess-1', status: 'idle' })],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useAccounts).mockReturnValue({
+      data: [makeAccount({ name: 'work' })],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useAccounts>)
+
+    render(<Dashboard />, { wrapper })
+
+    await user.selectOptions(await screen.findByLabelText('Group by'), 'status')
+    // idle sessions belong to the 'your-turn' tier, labelled "Your turn"
+    expect(await screen.findByText('Your turn')).toBeInTheDocument()
+  })
 })
