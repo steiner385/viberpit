@@ -220,4 +220,15 @@ if [ "$healthy" -ne 1 ]; then
 fi
 
 echo "[deploy] live + healthy at ${REMOTE:0:9}"
+
+# Restart the session daemon too, but only if its unit is installed+enabled on this
+# host. Guarded so a host (or CI) without the daemon unit is a no-op. The daemon holds
+# no sessions until the edge runs in remote mode (A2.3), so an A4 daemon restart is
+# harmless; A2.3 adds idle-gating + edge-vs-daemon classification.
+if systemctl is-enabled ccswitch-daemon.service >/dev/null 2>&1; then
+  echo "[deploy] restarting ccswitch-daemon.service"
+  sudo systemctl restart ccswitch-daemon.service || \
+    echo "[deploy] WARNING: daemon restart failed (edge already live)" >&2
+fi
+
 rm -f "$DEFER_FILE"

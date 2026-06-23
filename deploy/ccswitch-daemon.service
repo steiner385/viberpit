@@ -1,0 +1,22 @@
+[Unit]
+Description=ccswitch session daemon — owns live claude sessions
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tony
+RuntimeDirectory=ccswitch
+WorkingDirectory=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
+EnvironmentFile=/etc/ccswitch/ccswitch.env
+ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m server.ipc
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=60
+KillMode=control-group
+MemoryMax=12G
+TasksMax=512
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
