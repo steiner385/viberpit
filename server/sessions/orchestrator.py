@@ -753,6 +753,22 @@ class SessionOrchestrator:
                              .values(pending_rearm=None))
         return True
 
+    async def _maybe_rearm_on_attach(self, session_id: str) -> None:
+        """Retry a pending re-arm when a session is attached (covers sessions the auto
+        pass skipped or failed). Idempotent via _rearmed; never raises into attach."""
+        if session_id in self._rearmed:
+            return
+        from sqlalchemy import select as sa_select
+        try:
+            async with db_session() as db:
+                row = (await db.execute(sa_select(DbSession).where(
+                    DbSession.id == session_id))).scalar_one_or_none()
+            snap = row.pending_rearm if row else None
+            if snap:
+                await self._rearm_session(session_id, snap)
+        except Exception:
+            log.warning("rearm-on-attach failed session=%s", session_id, exc_info=True)
+
     def list_sessions(self) -> list[SessionRecord]:
         """Return all in-memory SessionRecords."""
         return list(self._records.values())
@@ -1068,6 +1084,7 @@ class SessionOrchestrator:
                 await driver.start()
             self._drivers[session_id] = driver
             rec.detached = False
+            await self._maybe_rearm_on_attach(session_id)
             log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
             return driver
 
