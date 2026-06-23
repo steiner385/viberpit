@@ -354,3 +354,60 @@ describe('SessionSocket', () => {
     expect(sent).toEqual({ type: 'cancelQueued', sessionId: 's', index: 2 })
   })
 })
+
+describe('SessionSocket update-pending queue', () => {
+  beforeEach(() => {
+    MockWebSocket.instances = []
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('buffers prompts while pending and resends them on reconnect', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    let ws = lastSock()
+    ws.simulateOpen()
+
+    ws.simulateMessage({ type: 'updatePending' })
+    sock.prompt('s1', 'hello', [])
+    // Not sent while pending (only the attach frame from open, no prompt frame):
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"'))).toBe(false)
+
+    // Daemon restarts: socket drops then reconnects.
+    ws.simulateClose()
+    sock.connect()
+    ws = lastSock()
+    ws.simulateOpen()
+
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"') && s.includes('hello'))).toBe(true)
+  })
+
+  it('flushes immediately on updateCancelled (no restart)', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+
+    ws.simulateMessage({ type: 'updatePending' })
+    sock.prompt('s1', 'queued one', [])
+    ws.simulateMessage({ type: 'updateCancelled' })
+
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"') && s.includes('queued one'))).toBe(true)
+  })
+
+  it('emits updatePendingChange with active flag and count', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+
+    const handler = vi.fn()
+    sock.on('updatePendingChange', handler)
+    lastSock().simulateMessage({ type: 'updatePending' })
+    sock.prompt('s1', 'a', [])
+
+    expect(handler).toHaveBeenLastCalledWith({ active: true, count: 1 })
+  })
+})
