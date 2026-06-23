@@ -6,6 +6,7 @@ import { Dashboard } from '../Dashboard'
 import * as hooks from '@/api/hooks'
 
 vi.mock('@/api/hooks', () => ({
+  useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAccounts: vi.fn(),

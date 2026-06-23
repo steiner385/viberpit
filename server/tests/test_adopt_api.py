@@ -5,11 +5,18 @@ import os
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from server.sessions.adopt import AdoptionCandidate
 
 H = {"Tailscale-User-Login": "testuser@example.com"}
+
+
+@pytest.fixture(autouse=True)
+def _enable_adoption():
+    with patch.dict(os.environ, {"CCSWITCH_ENABLE_ADOPTION": "1"}):
+        yield
 
 
 def _client():
