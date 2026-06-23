@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import { SessionPlaceholder } from '../SessionPlaceholder'
 
 /**
@@ -70,5 +70,41 @@ describe('SessionPlaceholder', () => {
     )
     act(() => { vi.advanceTimersByTime(20_000) })
     expect(screen.queryByTestId('session-placeholder-slow')).toBeNull()
+  })
+
+  it('after a hard timeout while loading, surfaces a stuck error with a Retry action', () => {
+    vi.useFakeTimers()
+    const onRetry = vi.fn()
+    render(
+      <SessionPlaceholder
+        connectionState="connected"
+        replaying
+        hasError={false}
+        onRetry={onRetry}
+      />,
+    )
+    // Not stuck yet at the "slow" threshold.
+    act(() => { vi.advanceTimersByTime(8_000) })
+    expect(screen.queryByTestId('session-placeholder-stuck')).toBeNull()
+    // After the hard timeout, the spinner is replaced by a stuck/error state.
+    act(() => { vi.advanceTimersByTime(45_000) })
+    expect(screen.getByTestId('session-placeholder-stuck')).toBeInTheDocument()
+    expect(screen.getByTestId('session-placeholder')).toHaveAttribute('data-phase', 'stuck')
+
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    expect(onRetry).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not enter the stuck state once loading completes', () => {
+    vi.useFakeTimers()
+    const { rerender } = render(
+      <SessionPlaceholder connectionState="connected" replaying hasError={false} onRetry={vi.fn()} />,
+    )
+    // Loading finishes well before the hard timeout.
+    rerender(
+      <SessionPlaceholder connectionState="connected" replaying={false} hasError={false} onRetry={vi.fn()} />,
+    )
+    act(() => { vi.advanceTimersByTime(60_000) })
+    expect(screen.queryByTestId('session-placeholder-stuck')).toBeNull()
   })
 })
