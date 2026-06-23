@@ -23,6 +23,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
   const panRef = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<VncState>(initialState ?? 'connecting')
   const [focused, setFocused] = useState(false)
+  const [emptyDismissed, setEmptyDismissed] = useState(false)
   const clientRef = useRef<VncClient | null>(null)
   const { zoom, zoomIn, zoomOut, setZoom, resetFit, zoomed, label } = useZoom()
 
@@ -68,6 +69,14 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
   }
 
   const agentDriving = statusState === 'working'
+  // Empty-state hint: visible when connected and not yet dismissed.
+  // Dismissible because there is no per-session browser-open signal on the client.
+  const showEmpty = state === 'connected' && !emptyDismissed
+
+  function dismissEmpty() {
+    setEmptyDismissed(true)
+    canvasRef.current?.focus()
+  }
 
   // Blocking overlay states: transitional or terminal — never 'connected'
   const blockingOverlay: { copy: string } | null =
@@ -208,8 +217,9 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
         )}
       </div>
 
-      {/* "Tap to control" caption — shown when connected and canvas not focused */}
-      {state === 'connected' && !focused && (
+      {/* "Tap to control" caption — shown when connected, canvas not focused, and
+          the empty-state hint is not visible (only one bottom caption at a time). */}
+      {state === 'connected' && !focused && !showEmpty && (
         <div className="pointer-events-none absolute inset-x-0 bottom-2 text-center text-xs text-muted-foreground">
           Tap to control · pinch to zoom
         </div>
@@ -224,21 +234,36 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
 
       {/* Non-blocking compact hint when connected but framebuffer is blank.
           Pinned to bottom-center, does NOT cover the canvas — pointer-events
-          only on the button so users can click through the hint area. */}
-      {state === 'connected' && (
+          only on the buttons so users can click through the hint area.
+          Dismissible (no per-session browser-open signal is available on the
+          client); once dismissed stays hidden until remount. When dismissed,
+          focus returns to the canvas so keyboard control is immediately available. */}
+      {showEmpty && (
         <div className="pointer-events-none absolute inset-x-0 bottom-8 flex flex-col items-center gap-2">
           <p className="text-xs text-muted-foreground drop-shadow">
             {COPY.empty}
           </p>
-          <button
-            className={cn(
-              'pointer-events-auto',
-              'rounded bg-primary px-3 py-2 text-sm text-primary-foreground shadow',
-            )}
-            onClick={openBrowser}
-          >
-            Open a browser
-          </button>
+          <div className="pointer-events-auto flex items-center gap-2">
+            <button
+              className={cn(
+                'min-h-[44px]',
+                'rounded bg-primary px-3 py-2 text-sm text-primary-foreground shadow',
+              )}
+              onClick={openBrowser}
+            >
+              Open a browser
+            </button>
+            <button
+              aria-label="Dismiss"
+              className={cn(
+                'min-h-[44px] min-w-[44px]',
+                'rounded border border-border bg-background/80 px-3 text-sm text-muted-foreground shadow',
+              )}
+              onClick={dismissEmpty}
+            >
+              ✕
+            </button>
+          </div>
         </div>
       )}
     </div>

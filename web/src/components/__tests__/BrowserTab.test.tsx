@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, act } from '@testing-library/react'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { BrowserTab } from '../BrowserTab'
 
 const refitSpy = vi.fn()
@@ -93,6 +93,7 @@ describe('BrowserTab', () => {
     vi.useFakeTimers()
     try {
       const cbs: Array<() => void> = []
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(globalThis as any).ResizeObserver = class {
         constructor(cb: () => void) { cbs.push(cb) }
         observe() {}
@@ -108,6 +109,32 @@ describe('BrowserTab', () => {
       expect(refitSpy).toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it('shows at most one bottom caption at a time', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    // "Tap to control" and the empty-state hint must not both be visible.
+    const tap = screen.queryByText(/tap to control/i)
+    const empty = screen.queryByText(/hasn.t opened a browser yet/i)
+    expect([tap, empty].filter(Boolean).length).toBeLessThanOrEqual(1)
+  })
+
+  it('labels the live canvas for screen readers', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    expect(screen.getByLabelText(/live browser view/i)).toBeInTheDocument()
+  })
+
+  it('hides the empty-state hint after dismiss', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByText(/hasn.t opened a browser yet/i)).toBeNull()
+  })
+
+  afterEach(() => {
+    // Reset focus to body between tests to avoid leaking focus state
+    if (document.activeElement && document.activeElement !== document.body) {
+      (document.activeElement as HTMLElement).blur()
     }
   })
 })

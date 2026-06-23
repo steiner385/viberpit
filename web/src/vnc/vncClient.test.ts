@@ -6,6 +6,7 @@ vi.mock('@novnc/novnc', () => ({
   default: class {
     scaleViewport = false
     addEventListener = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     constructor() { lastRfb = this }
   },
 }))
