@@ -137,32 +137,75 @@ vnc_verdict() {
   fi
 }
 
-# Only idle-gate when a session-disrupting restart will happen: a daemon change, or an
-# in-process edge (where any restart kills sessions). A remote edge + edge-only change is
-# non-disruptive → never defer.
-if [ "$daemon_changed" = "1" ] || [ "$remote_active" != "1" ]; then
-  # Compute defer_reason: "busy", "vnc-attached", or empty (proceed).
+# Drain handshake. Asks the daemon (over its Unix socket) to stop starting new turns and
+# waits until it reports `ready` (no session mid-turn) or the cap elapses. Echoes
+# ready | cap | unavailable. Test seam: CCSWITCH_DEPLOY_DRAIN_RESULT forces the verdict.
+DRAIN_SOCK="${CCSWITCH_SESSIOND_SOCKET:-/run/ccswitch/sessiond.sock}"
+drain_and_wait() {
+  if [ -n "${CCSWITCH_DEPLOY_DRAIN_RESULT:-}" ]; then echo "$CCSWITCH_DEPLOY_DRAIN_RESULT"; return 0; fi
+  curl --unix-socket "$DRAIN_SOCK" -fsS -m 5 -X POST "http://daemon/rpc/begin_drain" \
+       -H 'content-type: application/json' -d '{}' >/dev/null 2>&1 || { echo unavailable; return 0; }
+  local cap start body; cap="${CCSWITCH_DEPLOY_DRAIN_CAP_SEC:-180}"; start="$(date +%s)"
+  while :; do
+    body="$(curl --unix-socket "$DRAIN_SOCK" -fsS -m 5 -X POST "http://daemon/rpc/drain_status" \
+            -H 'content-type: application/json' -d '{}' 2>/dev/null || true)"
+    grep -q '"state":"ready"' <<<"$body" && { echo ready; return 0; }
+    [ "$(( $(date +%s) - start ))" -ge "$cap" ] && { echo cap; return 0; }
+    sleep 2
+  done
+}
+
+# Defer-across-ticks helper. Called when a deploy cannot proceed immediately; uses a
+# per-SHA state file to track how long we have been deferring this particular commit.
+# On the first deferral for a given SHA the file is seeded and we exit 0 (retry next
+# tick). On subsequent ticks we defer again until MAX_DEFER_SEC is exceeded, at which
+# point we log a "forcing" warning and fall through so the deploy continues.
+# $1 = human-readable reason (e.g. "busy" or "vnc-attached")
+defer_across_ticks() {
+  local reason="$1"
+  MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
+  local now; now="$(date +%s)"
+  local msha mts; msha=""; mts=0
+  if [ -f "$DEFER_FILE" ]; then read -r msha mts < "$DEFER_FILE" || true; fi
+  if [ "$msha" != "$REMOTE" ]; then
+    printf '%s %s\n' "$REMOTE" "$now" > "$DEFER_FILE"
+    echo "[deploy] ${reason} — deferring ${REMOTE:0:9} (will retry)"; exit 0
+  elif [ "$(( now - mts ))" -gt "$MAX_DEFER" ]; then
+    echo "[deploy] ${reason} for $(( now - mts ))s (> ${MAX_DEFER}s) — forcing deploy of ${REMOTE:0:9}" >&2
+  else
+    echo "[deploy] ${reason} — deferring ${REMOTE:0:9} ($(( now - mts ))s so far)"; exit 0
+  fi
+}
+
+# Decide whether a session-disrupting restart is imminent and how to make it safe:
+#  - In-process mode (no daemon): ANY restart kills sessions → legacy busy/VNC idle-gate.
+#  - Daemon mode + daemon-affecting change: graceful drain (VNC still defers across ticks).
+#  - Daemon mode + edge-only change: non-disruptive → skip entirely.
+if [ "$remote_active" != "1" ]; then
+  # Legacy idle-gate (defer across ticks, capped). Unchanged behavior for in-process hosts.
   defer_reason=""
   if [ "$(busy_verdict)" = "busy" ]; then
     defer_reason="busy"
   elif [ "$(vnc_verdict)" = "attached" ]; then
     defer_reason="vnc-attached"
   fi
-
   if [ -n "$defer_reason" ]; then
-    MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
-    now="$(date +%s)"
-    msha=""; mts=0
-    if [ -f "$DEFER_FILE" ]; then read -r msha mts < "$DEFER_FILE" || true; fi
-    if [ "$msha" != "$REMOTE" ]; then
-      printf '%s %s\n' "$REMOTE" "$now" > "$DEFER_FILE"
-      echo "[deploy] ${defer_reason} — deferring ${REMOTE:0:9} (will retry)"; exit 0
-    elif [ "$(( now - mts ))" -gt "$MAX_DEFER" ]; then
-      echo "[deploy] ${defer_reason} for $(( now - mts ))s (> ${MAX_DEFER}s) — forcing deploy of ${REMOTE:0:9}" >&2
-    else
-      echo "[deploy] ${defer_reason} — deferring ${REMOTE:0:9} ($(( now - mts ))s so far)"; exit 0
-    fi
+    defer_across_ticks "$defer_reason"
   fi
+elif [ "$daemon_changed" = "1" ]; then
+  # VNC watcher? Defer across ticks (don't restart under a live viewer), capped.
+  if [ "$(vnc_verdict)" = "attached" ]; then
+    defer_across_ticks "vnc-attached"
+  fi
+  # Graceful drain: let the in-flight turn finish, then restart.
+  case "$(drain_and_wait)" in
+    ready)
+      echo "[deploy] drained — proceeding with ${REMOTE:0:9}" ;;
+    cap)
+      echo "[deploy] drain cap (${CCSWITCH_DEPLOY_DRAIN_CAP_SEC:-180}s) exceeded — forcing restart of ${REMOTE:0:9}; in-flight turn will resume from transcript" >&2 ;;
+    *)
+      echo "[deploy] drain unavailable — proceeding with ${REMOTE:0:9} (post-restart health gate guards the rest)" >&2 ;;
+  esac
 else
   echo "[deploy] edge-only change, remote mode — non-disruptive restart, skipping idle gate"
 fi
