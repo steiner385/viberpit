@@ -34,4 +34,9 @@ describe('TranscriptView scrollback', () => {
     const { getByText } = render(<TranscriptView {...base} earliestTurn={0} />)
     expect(getByText(/beginning of session/i)).toBeTruthy()
   })
+
+  it('does not show the beginning-of-session marker in read-only views (no earliestTurn prop)', () => {
+    const { queryByText } = render(<TranscriptView {...base} />)
+    expect(queryByText(/beginning of session/i)).toBeNull()
+  })
 })

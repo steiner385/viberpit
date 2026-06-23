@@ -4,6 +4,8 @@ import type { ToolDetailMode } from '@/session/groupBlocks'
 import { Turn } from './Turn'
 import { RotationDivider } from './RotationDivider'
 
+const TOP_THRESHOLD = 64
+
 interface Props {
   turns: TurnType[]
   rotations?: RotationMarker[]
@@ -52,8 +54,6 @@ export function TranscriptView({ turns, rotations = [], permissionMode, toolDeta
   // restore the scroll anchor after older turns are prepended.
   const prevScrollHeightRef = useRef<number | null>(null)
 
-  const TOP_THRESHOLD = 64
-
   // Update isNearBottom on scroll; trigger paging when near the top.
   function handleScroll() {
     const el = containerRef.current
@@ -101,8 +101,8 @@ export function TranscriptView({ turns, rotations = [], permissionMode, toolDeta
       {loadingOlder && (
         <div className="py-2 text-center text-xs text-gray-400">Loading earlier history…</div>
       )}
-      {/* Beginning-of-session marker — shown once earliestTurn reaches 0 and there are turns */}
-      {turns.length > 0 && (earliestTurn ?? 0) === 0 && (
+      {/* Beginning-of-session marker — only shown when earliestTurn is explicitly 0 (live view at start) */}
+      {turns.length > 0 && earliestTurn === 0 && (
         <div className="py-2 text-center text-xs text-gray-400">— Beginning of session —</div>
       )}
 
