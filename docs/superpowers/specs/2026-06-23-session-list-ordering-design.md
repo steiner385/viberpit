@@ -2,7 +2,9 @@
 
 **Date:** 2026-06-23
 **Status:** Approved (design), pending implementation plan
-**Scope:** Frontend only (`web/`). No backend or API changes.
+**Scope:** Frontend only (`web/`). No backend or API changes. Applies to **both**
+list layouts — `DesktopShell` (≥1024px) and `Dashboard` (<1024px) — via a shared
+hook.
 
 ## Problem
 
@@ -75,6 +77,30 @@ export function orderSessions(
 `orderSessions(s, 'none', 'status').flatMap(g => g.sessions)` deep-equals
 `sortSessionsByTier(s)` for any input. This guarantees the default is a no-op.
 
+### Shared hook: `web/src/session/useSessionOrdering.ts`
+
+The app has **two parallel list layouts** (`App.tsx` hard-switches at
+`min-width: 1024px`): `DesktopShell` (≥1024px sidebar) and the routed
+`Dashboard` (<1024px). To keep one source of truth, the group/sort state +
+persistence + derivation live in a shared hook consumed by both:
+
+```ts
+interface SessionOrdering {
+  groupBy: GroupBy
+  sortBy: SortBy
+  setGroupBy: (g: GroupBy) => void
+  setSortBy: (s: SortBy) => void
+  groups: SessionGroup[]           // for SessionList rendering
+  orderedSessions: Session[]       // groups flattened — for keyboard nav + selection
+}
+export function useSessionOrdering(sessions: readonly Session[]): SessionOrdering
+```
+
+- Initializes `groupBy`/`sortBy` from `loadSessionOrder()`; writes via a
+  `useEffect` on change (`saveSessionOrder`).
+- `groups = useMemo(() => orderSessions(sessions, groupBy, sortBy), …)`;
+  `orderedSessions = useMemo(() => groups.flatMap(g => g.sessions), [groups])`.
+
 ### `Dashboard.tsx`
 
 Replace the single line
@@ -83,18 +109,27 @@ Replace the single line
 const orderedSessions = useMemo(() => sortSessionsByTier(sessions), [sessions])
 ```
 
-with group/sort state + derived groups:
+with the hook:
 
 ```ts
-const [groupBy, setGroupBy] = useState<GroupBy>(loadSessionOrder().groupBy)
-const [sortBy,  setSortBy]  = useState<SortBy>(loadSessionOrder().sortBy)
-const groups = useMemo(() => orderSessions(sessions, groupBy, sortBy), [sessions, groupBy, sortBy])
-const orderedSessions = useMemo(() => groups.flatMap(g => g.sessions), [groups])
+const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions } = useSessionOrdering(sessions)
 ```
 
 `orderedSessions` (the flattened sequence) continues to feed `useGlobalListNav`
 and selection, so keyboard navigation and `aria-activedescendant` are unaffected
-— group headers never enter the arrow-key order.
+— group headers never enter the arrow-key order. `Dashboard` renders
+`<SessionListControls>` above the list and passes `groups` to `SessionList`.
+
+### `DesktopShell.tsx`
+
+Same hook. `DesktopShell` currently renders sessions in **raw `useSessions()`
+order** (it never applied `sortSessionsByTier`). After this change it consumes
+`useSessionOrdering(sessions)` and uses `orderedSessions` for its keyboard nav
+(`highlighted`, `clampedIndex`, the index→session lookups at lines ~134/147/282)
+and `groups` for the list. **Intended behavior change:** the desktop sidebar's
+default order becomes status-tier (matching `Dashboard`) instead of raw — a
+consistency improvement, not a regression. Controls render above the sidebar
+list (next to the "New Session" button area).
 
 ### `lib/sessionOrder.ts`
 
@@ -118,11 +153,15 @@ Rendered above `SessionList` in the Sessions tab, only when sessions exist.
 
 ### `SessionList.tsx`
 
-Accept `groups: SessionGroup[]` instead of a flat `sessions` array. For each
-group, render a sticky, **non-interactive** header (`role="presentation"`,
-`aria-hidden`) showing `label` + `count` when `label !== null`; render nothing
-when `label === null` (ungrouped → pixel-identical to today). Rows render in
-the same flat order as `orderedSessions`.
+Add an **optional** `groups?: SessionGroup[]` prop (additive — the existing
+flat `sessions` prop and all ~20 current call sites stay valid, so no churn in
+`a11y.test.tsx`, the existing `SessionList.test.tsx` cases, etc.). When `groups`
+is provided, render from it; otherwise fall back to the flat `sessions` path
+(today's behavior). For each group, render a sticky, **non-interactive** header
+(`role="presentation"`, `aria-hidden`) showing `label` + `count` when
+`label !== null`; render nothing when `label === null` (ungrouped →
+pixel-identical to today). Rows render in the same flat order as
+`orderedSessions`.
 
 ## Edge cases
 
@@ -150,11 +189,14 @@ This is the expected, user-chosen behavior.
   - deterministic tie-break (equal rows keep input-id order)
   - **parity invariant** vs `sortSessionsByTier`
 - `components/__tests__/SessionList.test.tsx`
-  - headers + counts rendered when grouped; no header when ungrouped
-  - flat row order matches `orderedSessions`
-- `SessionListControls` test: changing a select calls the handler; selection
-  persists to and restores from localStorage
-- keyboard-nav test: arrow keys traverse across a group boundary
+  - headers + counts rendered when `groups` provided; no header when ungrouped
+  - existing flat-`sessions` cases still pass unchanged (additive prop)
+- `session/useSessionOrdering.test.ts(x)`: initializes from + persists to
+  localStorage; `setGroupBy`/`setSortBy` update `groups`/`orderedSessions`;
+  `orderedSessions` equals `groups` flattened
+- `SessionListControls` test: changing a select calls the handler
+- keyboard-nav test: arrow keys traverse across a group boundary (Dashboard
+  and/or DesktopShell)
 
 ## Reuse checklist (constitution VI)
 
