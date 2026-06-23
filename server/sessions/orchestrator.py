@@ -55,7 +55,7 @@ log = logging.getLogger(__name__)
 # Statuses that mean a session is mid-turn or awaiting user input — restarting now
 # would lose in-flight work. All other statuses (idle / ready_review / done /
 # limited / ended / archived) are restart-safe: resume + transcript replay recover them.
-_ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input"})
+_ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "condensing"})
 
 
 class BranchSwitchError(Exception):
@@ -180,19 +180,19 @@ class SessionOrchestrator:
         self._drain_timer: asyncio.Task | None = None
 
     def _session_factory(self, session_id: str):
-        """Return a 5-arg SDK factory closure injecting this session's DISPLAY.
+        """Return a factory closure injecting this session's DISPLAY and PreCompact hook.
 
-        When no X11 display is allocated for this session, the closure calls the
-        base factory with only the standard 5 positional arguments so that test
-        factories (which don't accept ``extra_env``) keep working unchanged.
+        Forwards ``on_pre_compact`` to the base factory so the real SDK factory can
+        register the hook; fake factories accept and ignore it.
         """
         base = self._sdk_factory
         x11 = self._x11
-        def _factory(cwd, config_dir, can_use_tool, mode, resume):
+        def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
             extra = x11.env_for(session_id) if x11 else {}
             if extra:
-                return base(cwd, config_dir, can_use_tool, mode, resume, extra_env=extra)
-            return base(cwd, config_dir, can_use_tool, mode, resume)
+                return base(cwd, config_dir, can_use_tool, mode, resume,
+                            extra_env=extra, on_pre_compact=on_pre_compact)
+            return base(cwd, config_dir, can_use_tool, mode, resume, on_pre_compact=on_pre_compact)
         return _factory
 
     # ------------------------------------------------------------------
@@ -663,7 +663,7 @@ class SessionOrchestrator:
             if row.id in self._records:
                 continue
             # A pre-crash live status has no driver anymore → normalize to idle.
-            status = "idle" if row.status in ("working", "in_progress") else row.status
+            status = "idle" if row.status in ("working", "in_progress", "condensing") else row.status
             # Backfill the PR-join branch for legacy sessions created before the
             # branch was persisted (NULL column). Derive it once from the session's
             # worktree and write it back so the column becomes the source of truth.

@@ -1,5 +1,6 @@
 from server.tests.fakes import fake_sdk as f
 from server.sessions.translator import Translator
+from server.sessions import events as ev
 from server.sessions.events import (TurnStart, ThinkingDelta, ToolCall, ToolResult,
                                      TurnEnd, ToolKind, SessionMeta, TextDelta, ErrorEvent)
 from claude_agent_sdk import TextBlock
@@ -246,3 +247,19 @@ def test_marker_only_in_interim_top_level_message_is_not_complete():
             f.assistant(TextBlock(text="actually not done yet"), uuid="t1"),
             f.result(session_id="s", uuid="t1")]
     assert _turn_end(_drive(msgs)).outcome == "success"
+
+
+def test_compact_boundary_emits_condensing_inactive():
+    tr = Translator()
+    out = tr.feed(f.sys_compact_boundary(trigger="auto", pre_tokens=1234))
+    assert len(out) == 1
+    assert isinstance(out[0], ev.Condensing)
+    assert out[0].active is False
+    assert out[0].trigger == "auto"
+    assert out[0].pre_tokens == 1234
+
+
+def test_non_init_non_boundary_system_message_is_ignored():
+    tr = Translator()
+    from claude_agent_sdk import SystemMessage
+    assert tr.feed(SystemMessage(subtype="something_else", data={})) == []

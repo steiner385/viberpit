@@ -121,6 +121,15 @@ class RateLimit:
     resets_at: int | None = None; status: str | None = None
 
 @dataclass
+class Condensing:
+    """Internal: context auto-compaction in progress. The driver toggles
+    ``self._condensing`` off this event; the UI learns via the derived
+    ``condensing`` status, so there is no wire form."""
+    active: bool
+    trigger: str | None = None
+    pre_tokens: int | None = None
+
+@dataclass
 class TurnFailure:
     """A turn failed with a recoverable kind (rate_limit / auth_401). Informational
     for the UI; the orchestrator drives the actual recovery off the same signal."""
