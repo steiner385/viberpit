@@ -88,6 +88,16 @@ def create_daemon_app() -> FastAPI:
             for stream in mine:
                 app.state.subscribers.get(stream, set()).discard(ws)
 
+    @app.get("/info")
+    async def info() -> dict:
+        from server.app import running_git_sha
+        return {"sha": running_git_sha(), "protocol": proto.PROTOCOL_VERSION}
+
+    @app.get("/healthz")
+    async def healthz() -> dict:
+        from server.app import running_git_sha
+        return {"status": "ok", "sha": running_git_sha()}
+
     register_rpc(app, "ping", _ping)
     register_rpc(app, "start_demo", _make_start_demo(app))
     register_rpc(app, "echo", _make_echo(app))
