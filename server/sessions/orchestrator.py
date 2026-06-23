@@ -44,7 +44,7 @@ from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
 )
 from server.sessions.selection import AllAccountsBusy, select_account
-from server.sessions.background_tasks import scan_open_background_tasks
+from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import SessionRecord
@@ -163,6 +163,9 @@ class SessionOrchestrator:
         self._pr_poller.set_pairs_provider(self._pr_pairs)
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
+        # Sessions whose background tasks have been re-armed this process (dedup the
+        # auto pass against retry-on-attach). Cleared by a fresh process start.
+        self._rearmed: set[str] = set()
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
@@ -706,6 +709,49 @@ class SessionOrchestrator:
                     )
         log.info("rehydrate: %d session(s) restored (%d branch backfilled)", added, len(backfilled))
         return added
+
+    async def rearm_background_tasks(self) -> int:
+        """Relaunch background tasks snapshotted at the last drain. Called once after
+        rehydrate() on daemon start; safe to call again (cleared snapshots + _rearmed
+        make it idempotent). Returns the count of sessions re-armed."""
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            rows = (await db.execute(sa_select(DbSession).where(
+                DbSession.pending_rearm.isnot(None)))).scalars().all()
+        pending = [(r.id, r.pending_rearm) for r in rows
+                   if r.pending_rearm and r.id not in self._rearmed]
+        if not pending:
+            return 0
+        sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
+
+        async def _one(sid: str, snap: list) -> bool:
+            async with sem:
+                try:
+                    return await self._rearm_session(sid, snap)
+                except Exception:
+                    log.warning("rearm: session %s failed; snapshot retained", sid,
+                                exc_info=True)
+                    return False
+
+        results = await asyncio.gather(*(_one(sid, snap) for sid, snap in pending))
+        n = sum(1 for ok in results if ok)
+        log.info("rearm: re-armed %d/%d session(s)", n, len(pending))
+        return n
+
+    async def _rearm_session(self, sid: str, snap: list) -> bool:
+        from sqlalchemy import update as sa_update
+        tasks = [OpenBgTask.from_dict(d) for d in snap if isinstance(d, dict)]
+        if not tasks:
+            return False
+        driver = await self.ensure_driver(sid)
+        if driver is None:
+            return False
+        await driver.send_prompt(build_rearm_prompt(tasks))
+        self._rearmed.add(sid)
+        async with db_session() as db:
+            await db.execute(sa_update(DbSession).where(DbSession.id == sid)
+                             .values(pending_rearm=None))
+        return True
 
     def list_sessions(self) -> list[SessionRecord]:
         """Return all in-memory SessionRecords."""
