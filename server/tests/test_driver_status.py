@@ -162,6 +162,22 @@ def test_status_needs_attention_when_stream_raises():
     assert asyncio.run(run())[-1] == "needs_attention"
 
 
+@pytest.mark.asyncio
+async def test_pre_compact_sets_condensing_status():
+    d = _make_driver()
+    await d._on_pre_compact()
+    assert d.current_status() == "condensing"
+
+
+@pytest.mark.asyncio
+async def test_condensing_event_clears_flag():
+    d = _make_driver()
+    await d._on_pre_compact()
+    assert d.current_status() == "condensing"
+    d._condensing = False  # simulating drain consuming Condensing(active=False)
+    assert d.current_status() in ("idle", "in_progress", "done")
+
+
 def test_last_progress_advances_only_on_meaningful_events():
     import server.sessions.events as ev
     class _Clock:

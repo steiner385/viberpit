@@ -69,6 +69,7 @@ class SessionDriver:
         self._titled: bool = False
         self._queue: list[tuple[str, list[dict]]] = []
         self._turn_active: bool = False
+        self._condensing: bool = False
         self._turns_completed: int = 0
         self._last_turn_outcome: str = "success"
         self._suggester = suggester
@@ -102,6 +103,14 @@ class SessionDriver:
     def current_status(self) -> str:
         """The rich derived status right now (no side effects). Used on WS attach."""
         return derive_status(self._dash_signals())
+
+    async def _on_pre_compact(self, input=None, tool_use_id=None, ctx=None) -> dict:
+        """SDK PreCompact hook: context auto-compaction is starting. Flip the
+        transient flag and surface the ``condensing`` status. Never blocks
+        compaction; returns an empty HookJSONOutput."""
+        self._condensing = True
+        await self._emit_status()
+        return {}
 
     async def _emit_status(self, count: int | None = None) -> None:
         """Single status emitter — rich vocabulary to BOTH consumers.
@@ -246,6 +255,7 @@ class SessionDriver:
             pending_plan=any(p.get("tool") == "ExitPlanMode" for p in perms),
             turns_completed=self._turns_completed,
             last_turn_outcome=self._last_turn_outcome,
+            condensing=self._condensing,
         )
 
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
@@ -362,6 +372,11 @@ class SessionDriver:
                         if e.resets_at is not None:
                             self._last_rate_reset = e.resets_at
                         continue
+                    if isinstance(e, ev.Condensing):
+                        # Internal: toggle the transient flag; UI learns via status.
+                        self._condensing = e.active
+                        await self._emit_status()
+                        continue
                     if isinstance(e, ev.TextDelta):
                         self._last_assistant_parts.append(e.text)
                     elif isinstance(e, ev.TurnEnd):
@@ -392,6 +407,8 @@ class SessionDriver:
         finally:
             # Capture any token rotation the SDK performed during this turn.
             await self._call_sync_back()
+            # Compaction is turn-scoped; never let a condensing flag outlive the turn.
+            self._condensing = False
             # If queued prompts remain, pop the front and start the next turn.
             if self._queue:
                 next_text, next_images = self._queue.pop(0)
