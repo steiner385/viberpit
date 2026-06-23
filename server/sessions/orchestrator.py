@@ -174,6 +174,10 @@ class SessionOrchestrator:
         # each see no driver, each build+start one, and both register → two SDK
         # processes attached to the same Claude conversation (TOCTOU fix).
         self._ensure_lock: asyncio.Lock = asyncio.Lock()
+        # Graceful-drain state (deploy handshake). In-memory only; a restart clears it.
+        self._draining: bool = False
+        self._drain_started_at: float = 0.0
+        self._drain_timer: asyncio.Task | None = None
 
     def _session_factory(self, session_id: str):
         """Return a 5-arg SDK factory closure injecting this session's DISPLAY.
@@ -760,6 +764,54 @@ class SessionOrchestrator:
         for q in list(self._event_subscribers):
             q.put_nowait(event)
 
+    def drain_status(self) -> dict:
+        """Report drain state: 'idle' (not draining), 'draining' (turns still running),
+        or 'ready' (draining and nothing mid-turn — safe to restart)."""
+        active = self.active_session_count()
+        if not self._draining:
+            state = "idle"
+        elif active == 0:
+            state = "ready"
+        else:
+            state = "draining"
+        elapsed = (time.monotonic() - self._drain_started_at) if self._draining else 0.0
+        return {"state": state, "busySessions": active, "elapsed": round(elapsed, 1)}
+
+    async def begin_drain(self, selfclear_sec: float | None = None) -> dict:
+        """Enter DRAINING: refuse new turns, tell the UI, and arm a self-clear timer so a
+        deploy that never restarts can't wedge us. Idempotent while already draining."""
+        if not self._draining:
+            self._draining = True
+            self._drain_started_at = time.monotonic()
+            self._publish_event({"type": "updatePending"})
+            timeout = (
+                selfclear_sec if selfclear_sec is not None
+                else float(os.environ.get("CCSWITCH_DRAIN_SELFCLEAR_SEC", "600"))
+            )
+            self._drain_timer = asyncio.create_task(
+                self._drain_selfclear(timeout), name="drain-selfclear")
+        return self.drain_status()
+
+    def cancel_drain(self) -> dict:
+        """Leave DRAINING (deploy aborted / self-clear): resume normal prompt acceptance
+        and tell the UI to flush any prompts it was holding."""
+        if self._draining:
+            self._draining = False
+            self._publish_event({"type": "updateCancelled"})
+            if self._drain_timer is not None and not self._drain_timer.done():
+                self._drain_timer.cancel()
+            self._drain_timer = None
+        return self.drain_status()
+
+    async def _drain_selfclear(self, timeout: float) -> None:
+        try:
+            await asyncio.sleep(timeout)
+        except asyncio.CancelledError:
+            return
+        if self._draining:
+            log.warning("drain self-clear: no restart within %.0fs — cancelling drain", timeout)
+            self.cancel_drain()
+
     # ------------------------------------------------------------------
     # Accessors / delegating helpers for the WS bridge
     # ------------------------------------------------------------------
@@ -1060,6 +1112,12 @@ class SessionOrchestrator:
         return self._pending_initial_attachment_ids.pop(session_id, None)
 
     async def send_prompt(self, session_id, text, attachment_ids=None):
+        if self._draining:
+            # No new turns during a deploy drain. The browser buffers and resends on
+            # reconnect; this guard only catches prompts already in flight when drain began.
+            log.info("send_prompt rejected: drain in progress session=%s", session_id)
+            self._publish_event({"type": "updatePending"})
+            return
         d = self._drivers.get(session_id)
         if not d:
             return
