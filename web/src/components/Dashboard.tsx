@@ -42,6 +42,7 @@ import { PERMISSION_MODES } from '@/session/permissionModes'
 import { setLastRepo } from '@/lib/lastRepo'
 import { SessionListControls } from './SessionListControls'
 import { useSessionOrdering } from '@/session/useSessionOrdering'
+import { useSessionSearch } from '@/session/useSessionSearch'
 import { useNeedsYouTitle } from '@/hooks/useNeedsYouTitle'
 
 // ── New Session Dialog ──────────────────────────────────────────────────────
@@ -1232,7 +1233,9 @@ interface DashboardProps {
 export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab, activeTab: activeTabProp, onTabChange, dialog, onDialogChange }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
-  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions } = useSessionOrdering(sessions)
+  const sessionSearch = useSessionSearch()
+  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions } =
+    useSessionOrdering(sessions, sessionSearch.matchedIds)
   useNeedsYouTitle(sessions)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const { data: settingsData } = useSettings()
@@ -1747,6 +1750,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
               sortBy={sortBy}
               onGroupByChange={setGroupBy}
               onSortByChange={setSortBy}
+              searchQuery={sessionSearch.query}
+              onSearchChange={sessionSearch.setQuery}
             />
           )}
           <SessionList
@@ -1760,6 +1765,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             onRename={handleRename}
             onClose={handleClose}
             onDelete={handleSessionDelete}
+            isFiltered={sessionSearch.isFiltered}
+            onClearSearch={() => sessionSearch.setQuery('')}
             onQuickResume={handleQuickResume}
           />
 

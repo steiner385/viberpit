@@ -30,6 +30,10 @@ vi.mock('@/api/hooks', () => ({
   QK: { accounts: ['accounts'], sessions: ['sessions'], archived: ['archived-sessions'], config: ['config'], githubRepos: ['github-repos'], githubBranches: (r?: string) => ['github-branches', r], settings: ['settings'] },
 }))
 
+vi.mock('@/session/useSessionSearch', () => ({
+  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
+}))
+
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 function mk(o: Partial<Session> = {}): Session {
   return { id: 's1', name: 'One', accountName: 'work', status: 'idle', createdAt: '', updatedAt: '', ...o }

@@ -49,6 +49,7 @@ import {
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
 import { useSessionOrdering } from '@/session/useSessionOrdering'
+import { useSessionSearch } from '@/session/useSessionSearch'
 
 type TabId = 'sessions' | 'accounts' | 'archived'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
@@ -101,7 +102,9 @@ function WelcomePane() {
 export function DesktopShell() {
   const { data: accounts = [] } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
-  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions } = useSessionOrdering(sessions)
+  const sessionSearch = useSessionSearch()
+  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions } =
+    useSessionOrdering(sessions, sessionSearch.matchedIds)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const reposQuery = useGithubRepos()
 
@@ -381,6 +384,8 @@ export function DesktopShell() {
             sortBy={sortBy}
             onGroupByChange={setGroupBy}
             onSortByChange={setSortBy}
+            searchQuery={sessionSearch.query}
+            onSearchChange={sessionSearch.setQuery}
           />
         )}
         <SessionList
@@ -398,6 +403,8 @@ export function DesktopShell() {
           onRename={handleRename}
           onClose={handleClose}
           onDelete={handleDelete}
+          isFiltered={sessionSearch.isFiltered}
+          onClearSearch={() => sessionSearch.setQuery('')}
           onQuickResume={handleQuickResume}
         />
       </div>
