@@ -275,6 +275,10 @@ class SessionOrchestrator:
             scratch_dir.mkdir(parents=True, exist_ok=True)
             cwd = str(scratch_dir)
 
+        # Branch this session's worktree is on (None for detached/scratch) — the
+        # join key to its GitHub PR. Surfaced as a PR pill on the dashboard.
+        branch_name = worktree_info.branch if worktree_info is not None else None
+
         if account is None:
             # Skip accounts currently quarantined for a 429/401 so a fresh session
             # doesn't land on an account we already know is struggling.
@@ -334,6 +338,7 @@ class SessionOrchestrator:
                 pid=None,
                 cwd=cwd,
                 repo=repo,
+                branch=branch_name,
                 permission_mode=permission_mode,
                 name_is_auto=name_is_auto,
             )
@@ -348,6 +353,7 @@ class SessionOrchestrator:
             rows=rows,
             cwd=cwd,
             repo=repo,
+            branch=branch_name,
             status="idle",
             name_is_auto=name_is_auto,
         )
