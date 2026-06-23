@@ -1,5 +1,5 @@
 from server.sessions.events import (ToolKind, tool_kind, TextDelta, ToolCall, Status, SessionMeta,
-                                     TurnEnd, TurnStart, ThinkingDelta, ToolResult)
+                                     TurnEnd, TurnStart, ThinkingDelta, ToolResult, QueueUpdate)
 
 def test_tool_kind_maps_known_names():
     assert tool_kind("Edit") is ToolKind.EDIT
@@ -51,8 +51,6 @@ def test_block_events_carry_parent_tool_use_id_on_wire():
 def test_block_events_default_parent_to_none_on_wire():
     for e in (TurnStart("t1"), TurnEnd("t1"), ThinkingDelta("t1", "z")):
         assert e.to_wire()["parentToolUseId"] is None
-
-from server.sessions.events import QueueUpdate
 
 def test_queue_update_wire_carries_text_and_images():
     qu = QueueUpdate([

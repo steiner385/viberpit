@@ -6,7 +6,7 @@ describe('Composer queued strip', () => {
   it('renders queued item text and image thumbnails', () => {
     render(<Composer
       status={{ state: 'working', count: 1 }}
-      onPrompt={() => {}} onInterrupt={() => {}}
+      onPrompt={() => {}} onInterrupt={() => {}} onRequestSuggestions={() => {}}
       queued={[{ text: 'analyze this', images: [{ url: '/api/attachments/a', mime: 'image/png', name: 's.png' }] }]}
     />)
     expect(screen.getByText('analyze this')).toBeTruthy()

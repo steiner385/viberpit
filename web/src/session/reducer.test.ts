@@ -408,12 +408,12 @@ describe('transcriptReducer', () => {
   // ── queueUpdate ────────────────────────────────────────────────────────────
 
   it('queueUpdate sets state.queued to the provided items', () => {
-    const s = transcriptReducer(initialTranscript, { type: 'queueUpdate', items: ['prompt one', 'prompt two'] })
-    expect(s.queued).toEqual(['prompt one', 'prompt two'])
+    const s = transcriptReducer(initialTranscript, { type: 'queueUpdate', items: [{ text: 'prompt one', images: [] }, { text: 'prompt two', images: [] }] })
+    expect(s.queued.map(i => i.text)).toEqual(['prompt one', 'prompt two'])
   })
 
   it('queueUpdate with empty array clears state.queued', () => {
-    const withQueued = transcriptReducer(initialTranscript, { type: 'queueUpdate', items: ['x', 'y'] })
+    const withQueued = transcriptReducer(initialTranscript, { type: 'queueUpdate', items: [{ text: 'x', images: [] }, { text: 'y', images: [] }] })
     const cleared = transcriptReducer(withQueued, { type: 'queueUpdate', items: [] })
     expect(cleared.queued).toEqual([])
   })

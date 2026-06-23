@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useMemo, useRef } from 'react'
 
 export interface DraftAttachment { id: string; mime: string; name: string }
 export interface SessionDraft { text: string; attachments: DraftAttachment[] }
@@ -7,17 +7,17 @@ const EMPTY: SessionDraft = { text: '', attachments: [] }
 const keyFor = (sessionId: string) => `ccswitch:draft:${sessionId}`
 
 function read(sessionId?: string): SessionDraft {
-  if (!sessionId) return EMPTY
+  if (!sessionId) return { ...EMPTY }
   try {
     const raw = localStorage.getItem(keyFor(sessionId))
-    if (!raw) return EMPTY
+    if (!raw) return { ...EMPTY }
     const parsed = JSON.parse(raw)
     return {
       text: typeof parsed.text === 'string' ? parsed.text : '',
       attachments: Array.isArray(parsed.attachments) ? parsed.attachments : [],
     }
   } catch {
-    return EMPTY
+    return { ...EMPTY }
   }
 }
 
@@ -43,5 +43,5 @@ export function useSessionDraft(sessionId?: string) {
     } catch { /* ignore quota/availability errors */ }
   }, [sessionId])
 
-  return { initial: initialRef.current, save, clear }
+  return useMemo(() => ({ initial: initialRef.current, save, clear }), [save, clear])
 }
