@@ -1,5 +1,4 @@
 """Daemon-side x11 surface: /vnc WS close semantics + RPC handlers."""
-import asyncio
 import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -56,19 +55,28 @@ def test_vnc_closes_4404_when_no_display():
 
 
 def test_vnc_relays_to_local_rfb_and_detaches():
-    # A real loopback "RFB" echo server stands in for x11vnc.
-    async def _run():
-        async def handle(reader, writer):
-            data = await reader.read(16)
-            writer.write(b"SRV:" + data)
-            await writer.drain()
-            writer.close()
-        server = await asyncio.start_server(handle, "127.0.0.1", 0)
-        port = server.sockets[0].getsockname()[1]
-        return server, port
+    """Display present → bytes round-trip browser→daemon→local RFB echo→browser."""
+    import socket
+    import threading
 
-    loop = asyncio.new_event_loop()
-    server, port = loop.run_until_complete(_run())
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+
+    def _serve():
+        try:
+            conn, _ = srv.accept()
+            data = conn.recv(16)
+            conn.sendall(b"SRV:" + data)
+            conn.close()
+        except OSError:
+            pass
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+
     x11 = _FakeX11(has_display=True, port=port)
     try:
         with TestClient(_app(x11)) as c:
@@ -77,9 +85,8 @@ def test_vnc_relays_to_local_rfb_and_detaches():
                 assert ws.receive_bytes() == b"SRV:HELLO"
         assert x11.attached == 1 and x11.detached == 1
     finally:
-        server.close()
-        loop.run_until_complete(server.wait_closed())
-        loop.close()
+        srv.close()
+        t.join(timeout=2)
 
 
 @pytest.mark.asyncio
