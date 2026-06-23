@@ -1,7 +1,10 @@
 """Integration glue: token validity, usage caching, selection, sync-back, registry."""
+import fcntl
 import logging
+import os
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from . import ledger, oauth, paths
@@ -25,6 +28,38 @@ def _account_lock(name: str) -> threading.Lock:
         return _refresh_locks.setdefault(name, threading.Lock())
 
 
+@contextmanager
+def _refresh_guard(name: str):
+    """Serialise an account's refresh+persist across threads AND processes.
+
+    ``_account_lock`` only spans one process, but token refresh happens in three
+    that can run concurrently against the same account — the web daemon (usage
+    poller), the edge (in-process mode), and the standalone ``ccswitch`` CLI.
+    Because refresh tokens are single-use, a cross-process race makes one process
+    consume the token while another, holding the now-stale copy, gets
+    ``invalid_grant`` and falsely flips the account to needs-reauth.
+
+    The per-process ``threading.Lock`` serialises threads (``flock`` ownership is
+    per-process, so it cannot); the ``flock`` on ``store/<name>.refresh.lock``
+    serialises across processes. Advisory and auto-released on fd close / process
+    death — no stale-lock cleanup needed. Callers re-read the slot inside the
+    guard so the race loser uses the freshly-persisted rotated token.
+    """
+    with _account_lock(name):
+        paths.ensure_root()
+        store = paths.store_dir()
+        store.mkdir(parents=True, exist_ok=True)
+        os.chmod(store, 0o700)
+        lock_path = store / f"{name}.refresh.lock"
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+
 def _account_names() -> list[str]:
     d = paths.store_dir()
     if not d.exists():
@@ -46,8 +81,9 @@ def ensure_valid_token(name: str) -> dict:
     blob = read_credentials(paths.slot_path(name))
     if _is_fresh(blob, cfg):
         return blob
-    with _account_lock(name):
-        # Re-read inside the lock: another caller may have just refreshed + persisted.
+    with _refresh_guard(name):
+        # Re-read inside the guard: another thread OR process may have just
+        # refreshed + persisted while we waited on the cross-process lock.
         blob = read_credentials(paths.slot_path(name))
         if _is_fresh(blob, cfg):
             return blob
@@ -127,11 +163,17 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
         return None
     except oauth.AuthError:
         try:
-            with _account_lock(name):
-                # Re-read under the lock: a concurrent caller may have refreshed.
+            with _refresh_guard(name):
+                # Re-read under the guard: a sibling thread OR process may have just
+                # rotated + persisted. If the slot's access token CHANGED from the
+                # one that just 401'd, reuse it rather than refreshing again —
+                # refreshing would consume a single-use token we don't need to and
+                # could itself draw a false invalid_grant. (A fresh-by-clock token
+                # can still 401, so compare the token, not its expiry.)
                 slot = read_credentials(paths.slot_path(name))
-                slot = oauth.refresh_access_token(slot["refreshToken"], slot, **retry_kw)
-                write_credentials(paths.slot_path(name), slot)
+                if slot.get("accessToken") == blob.get("accessToken"):
+                    slot = oauth.refresh_access_token(slot["refreshToken"], slot, **retry_kw)
+                    write_credentials(paths.slot_path(name), slot)
             u = oauth.fetch_usage(slot["accessToken"], **retry_kw)
         except (oauth.UsageError, oauth.TransientError) as e:
             log.warning("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
@@ -164,25 +206,26 @@ def pick_account(cfg: Config, exclude: set[str] = frozenset(),
 def sync_back(name: str) -> None:
     """Split the live config-dir creds back into the per-account slot + shared mcp store.
 
-    The slot read-modify-write is serialised with _account_lock to prevent a
+    The slot read-modify-write is serialised with _refresh_guard to prevent a
     race between the driver's sync_back (called via asyncio.to_thread after each
     turn) and the poller's sync_back (called via usage_for(allow_refresh=False)
-    in a threadpool).  Without the lock a poller sync_back that read a STALE
-    config dir could overwrite the slot with an older (consumed) token *after*
-    the driver had already written the fresh rotated one — recreating the
-    needs-reauth bug the caller was trying to fix.
+    in a threadpool) — and, because the guard is cross-process, between the web
+    daemon, the edge, and the ccswitch CLI.  Without it a sync_back that read a
+    STALE config dir could overwrite the slot with an older (consumed) token
+    *after* another writer had already persisted the fresh rotated one —
+    recreating the needs-reauth bug the caller was trying to fix.
 
-    The config-dir read (split_credentials / read_json) stays OUTSIDE the lock:
+    The config-dir read (split_credentials / read_json) stays OUTSIDE the guard:
     it touches the live cfgdir, not the shared slot, so it does not need
     serialisation and keeping it outside reduces contention.
     """
     live_path = paths.account_cfg_dir(name) / ".credentials.json"
     if not live_path.exists():
         return
-    # Read the config-dir OUTSIDE the lock (touches live cfgdir only).
+    # Read the config-dir OUTSIDE the guard (touches live cfgdir only).
     claude_oauth, mcp = split_credentials(read_json(live_path))
     # Serialise the slot read-modify-write so concurrent calls cannot interleave.
-    with _account_lock(name):
+    with _refresh_guard(name):
         existing = read_credentials(paths.slot_path(name)) if paths.slot_path(name).exists() else None
         write_credentials(paths.slot_path(name), merge_keep_later(existing, claude_oauth))
     # MCP write is separate from the slot and uses its own atomic write primitive.
