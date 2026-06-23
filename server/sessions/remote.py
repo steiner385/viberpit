@@ -134,7 +134,10 @@ class RemoteOrchestrator:
         path = await self.transcript_path(session_id)
         if not path:
             return None
-        return await replay_window(path, before=before, limit=limit)
+        try:
+            return await replay_window(path, before=before, limit=limit)
+        except Exception:
+            return None
 
     async def usage(self, name):
         r = await self._client.call("usage", name=name)
