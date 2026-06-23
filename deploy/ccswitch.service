@@ -17,7 +17,11 @@ RestartSec=3
 TimeoutStopSec=60
 KillMode=control-group
 MemoryMax=12G
-TasksMax=512
+# No pids ceiling: in the in-process fallback (daemon unreachable) the edge runs
+# sessions itself, each spawning a Claude CLI + MCP fleet + Xvfb + threads. TasksMax
+# counts threads, so a low cap throttles fork/thread spawns (EAGAIN). Kept in sync
+# with ccswitch-daemon.service; MemoryMax=12G is the real backstop.
+TasksMax=infinity
 LimitNOFILE=65536
 
 [Install]

@@ -96,7 +96,14 @@ def _record_to_dict(record, repo: Any = _UNSET, pr: Any = None) -> dict[str, Any
         "adoptedInPlace": getattr(record, "adopted_in_place", False),
         "subAgents": getattr(record, "sub_agents", None) or [],
         "createdAt": record.created_at.isoformat() if record.created_at else None,
-        "updatedAt": None,
+        # Last-activity timestamp for the "active … ago" label. Fall back to the
+        # creation time so a brand-new session reads "active just now" rather than
+        # null (which the client would otherwise parse as epoch 0 → "20627d ago").
+        "updatedAt": (
+            (record.updated_at or record.created_at).isoformat()
+            if (record.updated_at or record.created_at)
+            else None
+        ),
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
         "pr": pr.to_dict() if pr is not None else None,

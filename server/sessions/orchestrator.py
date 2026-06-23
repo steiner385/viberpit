@@ -349,6 +349,7 @@ class SessionOrchestrator:
             )
             db.add(row)
 
+        from datetime import datetime
         record = SessionRecord(
             id=session_id,
             name=name,
@@ -361,6 +362,9 @@ class SessionOrchestrator:
             branch=branch_name,
             status="idle",
             name_is_auto=name_is_auto,
+            # Stamp activity now so the new card reads "active just now" rather than
+            # waiting for the first status event (mirrors the DB row's utcnow default).
+            updated_at=datetime.utcnow(),
         )
         self._records[session_id] = record
         log.info("session.create id=%s account=%s", session_id, account)
@@ -454,7 +458,12 @@ class SessionOrchestrator:
         if rec is not None and rec.status == "ended":
             return
         if rec is not None:
+            from datetime import datetime
             rec.status = status
+            # Mirror the DB row's onupdate=utcnow into the in-memory read-model so
+            # the dashboard's "active … ago" label reflects this activity without a
+            # round-trip. Naive UTC to match Session.created_at/updated_at columns.
+            rec.updated_at = datetime.utcnow()
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             await db.execute(
@@ -622,6 +631,7 @@ class SessionOrchestrator:
                 name_is_auto=row.name_is_auto,
                 permission_mode=row.permission_mode,
                 created_at=row.created_at,
+                updated_at=getattr(row, "updated_at", None),
                 adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
                 model=getattr(row, "model", None),
                 account_pinned=bool(getattr(row, "account_pinned", False)),
@@ -926,10 +936,12 @@ class SessionOrchestrator:
                  "claudeSessionId": claude_session_id, "resumed": resumed},
             )
 
+        from datetime import datetime
         rec = SessionRecord(
             id=session_id, name=cand.name, account=cand.account,
             claude_session_id=claude_session_id, cols=80, rows=24,
             cwd=cand.cwd, repo=None, status="idle", adopted_in_place=True,
+            updated_at=datetime.utcnow(),  # adopted = active now
         )
         self._records[session_id] = rec
         log.info("session.adopt id=%s sid=%s resumed=%s killed=%s",
@@ -1507,6 +1519,7 @@ class SessionOrchestrator:
             status="idle",
             permission_mode=row.permission_mode,
             created_at=row.created_at,
+            updated_at=getattr(row, "updated_at", None),
             model=getattr(row, "model", None),
             account_pinned=bool(getattr(row, "account_pinned", False)),
         )

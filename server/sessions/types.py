@@ -28,6 +28,7 @@ class SessionRecord:
     name_is_auto: bool = True        # False once the user manually renames the session
     permission_mode: str = "interactive"
     created_at: datetime | None = None
+    updated_at: datetime | None = None   # last activity; mirrors DB Session.updated_at, drives the "active … ago" label
     adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
     sub_agents: list | None = None   # [{agentId,parentAgentId,agentType,description,status}], refreshed at status changes
     model: str | None = None         # persisted model alias/id; None = account default
@@ -41,6 +42,7 @@ class SessionRecord:
             "status": self.status, "nameIsAuto": self.name_is_auto,
             "permissionMode": self.permission_mode,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
             "accountPinned": self.account_pinned,
@@ -50,6 +52,7 @@ class SessionRecord:
     def from_dict(cls, d: dict) -> "SessionRecord":
         from datetime import datetime
         created = d.get("createdAt")
+        updated = d.get("updatedAt")
         return cls(
             id=d["id"], name=d["name"], account=d["account"],
             claude_session_id=d["claudeSessionId"], cols=d["cols"], rows=d["rows"],
@@ -57,6 +60,7 @@ class SessionRecord:
             status=d.get("status", "idle"), name_is_auto=d.get("nameIsAuto", True),
             permission_mode=d.get("permissionMode", "interactive"),
             created_at=datetime.fromisoformat(created) if created else None,
+            updated_at=datetime.fromisoformat(updated) if updated else None,
             adopted_in_place=d.get("adoptedInPlace", False),
             model=d.get("model"),
             account_pinned=d.get("accountPinned", False),

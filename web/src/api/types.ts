@@ -50,7 +50,9 @@ export interface Session {
   repo?: string | null
   status: SessionStatus
   createdAt: string
-  updatedAt: string
+  /** Last-activity time. May be null/absent for a session with no recorded
+   *  activity — guard with isValidTimestamp() before formatting. */
+  updatedAt?: string | null
   detached?: boolean
   nameIsAuto?: boolean
   /** Sub-agents spawned in this session, for hierarchical drill-down (empty when none). */
