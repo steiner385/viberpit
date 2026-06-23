@@ -61,6 +61,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
         <SessionMeta
           account={rt.account}
           model={rt.state.model}
+          mode={rt.mode}
           contextPct={rt.contextPct}
           quota={rt.quota}
           subAgents={rt.subAgents}
@@ -70,6 +71,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           accountPinned={pinned}
           onSelectModel={(id) => rt.onCommand('model', id)}
           onSelectAccount={(name) => rt.onCommand('account', name)}
+          onSetMode={rt.onSetMode}
         />
       </div>
 

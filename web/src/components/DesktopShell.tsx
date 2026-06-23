@@ -81,10 +81,8 @@ function SessionComposer() {
   return (
     <Composer
       status={rt.state.status}
-      mode={rt.mode}
       onPrompt={rt.onPrompt}
       onInterrupt={rt.onInterrupt}
-      onSetMode={rt.onSetMode}
       queued={rt.state.queued}
       onCancelQueued={rt.onCancelQueued}
       commands={rt.commands}
