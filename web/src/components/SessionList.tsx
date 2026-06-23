@@ -11,6 +11,8 @@ interface SessionListProps {
   accounts: Account[]
   isLoading?: boolean
   selectedId?: string | null
+  isFiltered?: boolean
+  onClearSearch?: () => void
   onNew: () => void
   onOpen: (id: string) => void
   onRename: (id: string) => void
@@ -44,6 +46,8 @@ export function SessionList({
   accounts,
   isLoading,
   selectedId,
+  isFiltered,
+  onClearSearch,
   onNew,
   onOpen,
   onRename,
@@ -61,6 +65,25 @@ export function SessionList({
   }
 
   if (sessions.length === 0) {
+    if (isFiltered) {
+      return (
+        <div
+          className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 p-6 text-center"
+          role="status"
+        >
+          <p className="text-sm text-gray-500 dark:text-gray-400">No sessions match your search.</p>
+          {onClearSearch && (
+            <button
+              type="button"
+              onClick={onClearSearch}
+              className="mt-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              Clear search
+            </button>
+          )}
+        </div>
+      )
+    }
     return <EmptyState onNew={onNew} />
   }
 
