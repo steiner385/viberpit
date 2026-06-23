@@ -2,8 +2,9 @@ import { useRef, useEffect, useState } from 'react'
 import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
-import { relTime } from '@/lib/relativeTime'
+import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { StatusPill, UsageBadge } from './UsageBadge'
+import { PrPill } from './PrPill'
 import { SubAgentRows } from './SubAgentRows'
 import type { Session, Account } from '@/api/types'
 
@@ -127,6 +128,7 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
             <span className="truncate">{repoLabel.text}</span>
           </span>
           <StatusPill status={session.status} />
+          {session.pr && <PrPill pr={session.pr} />}
           {/* Session usage only — weekly is an account-level figure shown in the
               Accounts tab and the in-session meta strip, so repeating it on every
               card just adds noise and forces the meta row to wrap. */}
@@ -140,7 +142,7 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
           {/* Last activity — helps tell live sessions from stale ones at a glance.
               Refreshes naturally as React Query refetches the session list.
               Guarded against a missing/invalid timestamp so we never show "NaN". */}
-          {Number.isFinite(new Date(session.updatedAt).getTime()) && (
+          {isValidTimestamp(session.updatedAt) && (
             <span
               className="text-xs text-gray-400 dark:text-gray-500 tabular-nums"
               title={`Last active ${new Date(session.updatedAt).toLocaleString()}`}
