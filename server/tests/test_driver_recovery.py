@@ -103,3 +103,26 @@ def test_drain_exception_with_401_is_classified_auth():
         await d.aclose()
     asyncio.run(go())
     assert calls and calls[0][1] == "auth_401"
+
+
+def test_subprocess_crash_signals_process_crash():
+    calls = []
+    async def on_fail(session_id, kind, retry_after):
+        calls.append((session_id, kind, retry_after))
+
+    class _CrashingClient(FakeSDKClient):
+        async def receive_response(self):
+            raise RuntimeError("Command failed with exit code -6")
+            yield  # unreachable — makes this an async generator
+
+    async def go():
+        d = SessionDriver("s1", "kindash", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=lambda *a, **k: _CrashingClient([]),
+                          registry=PermissionRegistry(), identity="me",
+                          on_recoverable_failure=on_fail)
+        await d.start()
+        await d.send_prompt("go")
+        await d._pump          # wait for the drain task to fail
+        await d.aclose()
+    asyncio.run(go())
+    assert ("s1", "process_crash", None) in calls
