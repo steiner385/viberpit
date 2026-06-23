@@ -89,6 +89,16 @@ def test_vnc_relays_to_local_rfb_and_detaches():
         t.join(timeout=2)
 
 
+def test_vnc_closes_4404_when_attach_returns_none():
+    """display_for passes but attach() returns None (spec torn down mid-handler) → 4404, not a generic close."""
+    x11 = _FakeX11(has_display=True, port=None)
+    with TestClient(_app(x11)) as c:
+        with c.websocket_connect("/vnc?session=S") as ws:
+            with pytest.raises(WebSocketDisconnect) as ei:
+                ws.receive_bytes()
+            assert ei.value.code == 4404
+
+
 @pytest.mark.asyncio
 async def test_x11_metrics_rpc_returns_manager_metrics():
     x11 = _FakeX11(has_display=True)

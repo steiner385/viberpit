@@ -125,6 +125,8 @@ def build_vnc_ws_router(get_x11, get_daemon_sock=lambda: None) -> APIRouter:
                 uri = f"ws://daemon/vnc?session={session_id}"
                 async with websockets.unix_connect(sock, uri) as dws:
                     await _relay(websocket, _WSAdapter(dws))
+                    # 4404 (no display) and other daemon close codes reach us here via the
+                    # closed daemon connection; _WSAdapter.read swallowed the ConnectionClosed.
                     close_code = dws.close_code or 1000
             except ConnectionClosed as exc:
                 close_code = exc.code or 1000

@@ -42,6 +42,9 @@ def register_x11(app, x11) -> None:
             return
         await ws.accept()
         port = await x11.attach(session_id)
+        if port is None:
+            await ws.close(CLOSE_NO_DISPLAY, "no display")
+            return
         try:
             reader, writer = await _connect_rfb(port)
             await _relay(ws, _StreamAdapter(reader, writer))
