@@ -59,6 +59,8 @@ export interface Session {
   accountPinned?: boolean
   /** Current model alias/id for the session; null = account default. */
   model?: string | null
+  /** Active /goal condition for this session; null/absent = no goal. */
+  activeGoal?: string | null
 }
 
 export interface ArchivedSession {
