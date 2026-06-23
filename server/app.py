@@ -30,6 +30,7 @@ from server.api.auth import router as auth_router
 from server.api.config import router as config_router
 from server.api.repos import router as github_router
 from server.api.settings import router as settings_router
+from server.api import models as api_models
 
 
 @functools.lru_cache(maxsize=1)
@@ -262,6 +263,7 @@ def create_app(
     app.include_router(config_router)
     app.include_router(github_router)
     app.include_router(settings_router)
+    app.include_router(api_models.router)
 
     # WebSocket bridge
     ws_router = build_ws_router(app.state.sessions)

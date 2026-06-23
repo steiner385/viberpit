@@ -24,11 +24,12 @@ class RemoteDriver:
     ws.py needs ``.events()`` (an async generator of objects with ``.to_wire()``),
     ``.current_status()`` (sync, returns str), and ``.queued()`` (sync, returns list).
     """
-    def __init__(self, client, session_id: str, status="idle", queued=None):
+    def __init__(self, client, session_id: str, status="idle", queued=None, head_seq=None):
         self._client = client
         self._session_id = session_id
         self._status = status
         self._queued = queued or []
+        self._head_seq = head_seq
 
     def current_status(self) -> str:
         return self._status
@@ -37,7 +38,7 @@ class RemoteDriver:
         return self._queued
 
     async def events(self):
-        async for wire in self._client.subscribe(self._session_id):
+        async for wire in self._client.subscribe(self._session_id, since=self._head_seq):
             yield _WireEvent(wire)
 
 
@@ -66,7 +67,7 @@ class RemoteOrchestrator:
         r = await self._client.call("ensure_driver", session_id=session_id, identity=identity)
         if not r["found"]:
             return None
-        return RemoteDriver(self._client, session_id, status=r["status"], queued=r["queued"])
+        return RemoteDriver(self._client, session_id, status=r["status"], queued=r["queued"], head_seq=r.get("head_seq"))
 
     async def archive_session(self, session_id):
         return await self._client.call("archive_session", session_id=session_id)

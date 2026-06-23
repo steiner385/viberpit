@@ -94,6 +94,8 @@ def _record_to_dict(record, repo: Any = _UNSET) -> dict[str, Any]:
         "subAgents": getattr(record, "sub_agents", None) or [],
         "createdAt": record.created_at.isoformat() if record.created_at else None,
         "updatedAt": None,
+        "accountPinned": getattr(record, "account_pinned", False),
+        "model": getattr(record, "model", None),
     }
 
 

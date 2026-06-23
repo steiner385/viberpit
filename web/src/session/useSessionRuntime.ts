@@ -30,6 +30,8 @@ export interface SessionRuntime {
   toolDetailMode: ToolDetailMode
   thinkingCollapsed: boolean
   connectionState: ConnectionState
+  /** Re-send the attach frame for this session (used to recover a stuck load). */
+  reattach: () => void
   title: string
   account: string
   quota: {
@@ -293,6 +295,9 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   const contextPct = remainingContextPct(state.usage, state.model)
   const subAgents = selectSubAgents(state.turns)
 
+  // Re-send attach to recover from a stuck load (the SessionPlaceholder Retry).
+  const reattach = useCallback(() => attach(sessionId), [attach, sessionId])
+
   return {
     sessionId,
     state,
@@ -300,6 +305,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     toolDetailMode,
     thinkingCollapsed,
     connectionState,
+    reattach,
     title,
     account,
     quota,

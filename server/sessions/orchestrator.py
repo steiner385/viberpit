@@ -24,6 +24,7 @@ from typing import Callable
 
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, worktrees
+from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
 from ccswitch.paths import shared_base
@@ -611,6 +612,8 @@ class SessionOrchestrator:
                 permission_mode=row.permission_mode,
                 created_at=row.created_at,
                 adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
+                model=getattr(row, "model", None),
+                account_pinned=bool(getattr(row, "account_pinned", False)),
             )
             added += 1
         log.info("rehydrate: %d session(s) restored", added)
@@ -993,6 +996,23 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         if d is None:
             raise KeyError(name)
+        if str(name).lstrip("/") == "model":
+            arg = (args or "").strip()
+            await self.set_model_for_session(session_id, arg or None)
+            return {"name": "model", "render": "notice",
+                    "data": {"text": f"Model → {arg or 'default'}"}}
+        if str(name).lstrip("/") == "account":
+            acct = (args or "").strip()
+            if not acct:
+                return {"name": "account", "render": "notice",
+                        "data": {"text": "Usage: /account <account>"}}
+            try:
+                await self.switch_account_manual(session_id, acct)
+            except (InvalidAccountName, KeyError):
+                return {"name": "account", "render": "notice",
+                        "data": {"text": f"Unknown account: {acct}"}}
+            return {"name": "account", "render": "notice",
+                    "data": {"text": f"Account → {acct}"}}
         info = await d.server_info()
         by_name = {c.name: c for c in cmd_catalog.build_catalog(info)}
         cmd = by_name.get(str(name).lstrip("/"))
@@ -1078,6 +1098,17 @@ class SessionOrchestrator:
                     if record.account != account:
                         continue
                     if record.id not in self._drivers:
+                        continue
+                    if record.account_pinned:
+                        log.info("rotation.skip_pinned session=%s account=%s", record.id, account)
+                        record.status = "limited"
+                        asyncio.create_task(
+                            self._persist_status(record.id, "limited"),
+                            name=f"limited-{record.id}",
+                        )
+                        self._publish_event({
+                            "type": "status", "sessionId": record.id, "state": "limited",
+                        })
                         continue
                     log.info(
                         "rotation.trigger session=%s account=%s pct=%.1f",
@@ -1170,6 +1201,9 @@ class SessionOrchestrator:
             await self._pause_session(record, reason="all_accounts_busy",
                                       earliest_reset=e.earliest_reset)
             return
+        if record.account_pinned:
+            record.account_pinned = False
+            await self._persist_pin(record.id, False)
         self._recovery.record_rotation(record.id, now=now)
         await self._reassign(record, new_account, reason=reason)
 
@@ -1199,6 +1233,49 @@ class SessionOrchestrator:
         except Exception:
             log.warning("recover.mark_needs_reauth failed account=%s", account, exc_info=True)
 
+    async def switch_account_manual(self, session_id: str, new_account: str) -> None:
+        """User-initiated account switch. Pins the session against usage-ceiling
+        rotation, then resumes the conversation on new_account via the shared
+        _reassign primitive (same path as auto-rotation / recovery)."""
+        record = self._records.get(session_id)
+        if record is None or session_id not in self._drivers:
+            raise KeyError(session_id)
+        # Validate: reject path-traversal / bad chars.
+        assert_valid_account_name(new_account)
+        # Validate: reject unknown accounts (must be in the configured ledger).
+        known = {a["name"] for a in ccswitch_accounts.list_accounts()}
+        if new_account not in known:
+            raise KeyError(f"Unknown account: {new_account}")
+        record.account_pinned = True
+        await self._persist_pin(session_id, True)
+        await self._reassign(record, new_account, reason="manual")
+
+    async def _persist_pin(self, session_id: str, pinned: bool) -> None:
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id)
+                .values(account_pinned=pinned)
+            )
+
+    async def set_model_for_session(self, session_id: str, model: str | None) -> None:
+        """Set the live model AND persist it, so it survives rehydrate and every
+        driver rebuild (rotation/recovery re-applies record.model in _reassign)."""
+        driver = self._drivers.get(session_id)
+        if driver is not None:
+            await driver.set_model(model)
+        record = self._records.get(session_id)
+        if record is not None:
+            record.model = model
+        await self._persist_model(session_id, model)
+
+    async def _persist_model(self, session_id: str, model: str | None) -> None:
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(model=model)
+            )
+
     async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str) -> None:
         """Resume the session's claude conversation on *new_account* (may equal the
         current account, for a 401 recompose). Relaunches the driver, replays the last
@@ -1226,6 +1303,8 @@ class SessionOrchestrator:
             )
             await new_driver.start()
             self._drivers[record.id] = new_driver
+            if record.model is not None:
+                await new_driver.set_model(record.model)
             record.account = new_account
             last = self._last_prompt.get(record.id)
             if last:
@@ -1403,6 +1482,8 @@ class SessionOrchestrator:
             status="idle",
             permission_mode=row.permission_mode,
             created_at=row.created_at,
+            model=getattr(row, "model", None),
+            account_pinned=bool(getattr(row, "account_pinned", False)),
         )
         self._records[session_id] = record
         log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)
