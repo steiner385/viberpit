@@ -130,9 +130,10 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
           {session.activeGoal && (
             <span
               className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
+              title={`Goal: ${session.activeGoal}`}
             >
               <Target size={12} aria-hidden="true" className="flex-shrink-0" />
-              <span className="truncate" title={`Goal: ${session.activeGoal}`}>Goal</span>
+              <span className="truncate">Goal</span>
             </span>
           )}
           {/* Session usage only — weekly is an account-level figure shown in the

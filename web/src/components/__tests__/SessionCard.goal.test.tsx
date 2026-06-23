@@ -27,9 +27,9 @@ function renderCard(session: Session) {
 describe('SessionCard goal badge', () => {
   it('shows a Goal pill with the goal text as tooltip when activeGoal is set', () => {
     renderCard({ ...base, activeGoal: 'ship the PR' })
-    const pill = screen.getByText('Goal')
+    const pill = screen.getByTitle('Goal: ship the PR')
     expect(pill).toBeInTheDocument()
-    expect(pill).toHaveAttribute('title', 'Goal: ship the PR')
+    expect(pill).toHaveTextContent('Goal')
   })
 
   it('hides the Goal pill when activeGoal is null', () => {
