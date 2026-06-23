@@ -38,6 +38,10 @@ vi.mock('@/api/hooks', () => ({
   },
 }))
 
+vi.mock('@/session/useSessionSearch', () => ({
+  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
+}))
+
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
 function wrapper({ children }: { children: React.ReactNode }) {

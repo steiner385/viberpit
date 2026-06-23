@@ -38,6 +38,10 @@ vi.mock('@/api/hooks', () => ({
   },
 }))
 
+vi.mock('@/session/useSessionSearch', () => ({
+  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
+}))
+
 const NOOP_MUTATION = {
   mutate: vi.fn(),
   isPending: false,
