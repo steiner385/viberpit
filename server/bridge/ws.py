@@ -305,6 +305,15 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             except Exception:
                 log.warning("ws.attach: live status emit failed for %s", session_id, exc_info=True)
 
+            # Re-emit the live queue so a reattach repopulates the queued-prompt
+            # chips (with their images). The driver holds the queue across attaches;
+            # without this, a navigate-away/back showed an empty strip. Best-effort.
+            try:
+                if driver.queued():
+                    await _send(redact_event(ev.QueueUpdate(driver.queue_wire()).to_wire()))
+            except Exception:
+                log.warning("ws.attach: queue re-emit failed for %s", session_id, exc_info=True)
+
             # Send the deferred initial prompt (if any) now that the client is watching.
             # The prompt was stored in create_session instead of being sent immediately
             # so that its events stream live to this first attach rather than racing the
