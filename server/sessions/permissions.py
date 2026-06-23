@@ -77,9 +77,12 @@ class PermissionRegistry:
         if mode != "interactive" and allowlist and self.is_granted(session_id, tool, input, now):
             return None, _resolved(True)
         # Auto-allow the agent's own auto-memory writes (managed-account memory dir).
-        # Honoured in every mode except "interactive" (ask each time), mirroring the
-        # grant-cache bypass above.
-        if mode != "interactive" and tool in _FILE_WRITE_TOOLS and _is_account_memory_path(
+        # Honoured in EVERY mode, including "interactive": these writes are sandboxed
+        # to cfg_root() (see _is_account_memory_path) and can never reach a real repo,
+        # so they are pure bookkeeping noise the user should never have to approve.
+        # Unlike the grant-cache bypass above, "ask each time" does not apply here —
+        # there is no user-facing action to ask about.
+        if tool in _FILE_WRITE_TOOLS and _is_account_memory_path(
                 input.get("file_path") or input.get("notebook_path")):
             return None, _resolved(True)
         if mode == "auto" and tool not in denylist:
