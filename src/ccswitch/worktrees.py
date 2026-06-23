@@ -94,6 +94,20 @@ def is_git_repo(path: str) -> bool:
     return r.returncode == 0 and r.stdout.strip() == "true"
 
 
+def current_branch(path: str) -> str | None:
+    """Return the branch currently checked out at `path`, or None.
+
+    None when `path` is not a git work tree or is in detached-HEAD state
+    (``git branch --show-current`` prints nothing when detached). Used to
+    backfill a session's PR-join branch for sessions created before the branch
+    was persisted on the session record.
+    """
+    r = _run(["git", "-C", path, "branch", "--show-current"])
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
 def worktrees_base(repo_root: str) -> Path:
     """ccswitch-owned root for all session worktrees, under the user's repo root."""
     return Path(repo_root).expanduser() / ".ccswitch" / "worktrees"
