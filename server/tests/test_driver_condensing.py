@@ -1,5 +1,4 @@
 from __future__ import annotations
-import asyncio
 import pytest
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry

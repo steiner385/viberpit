@@ -1,4 +1,4 @@
-from server.sessions.compaction_stats import fold, DEFAULT_ESTIMATE_MS, MIN_MS, MAX_MS
+from server.sessions.compaction_stats import fold, MIN_MS, MAX_MS
 
 
 def test_fold_seeds_with_first_clamped_sample():
