@@ -1,5 +1,6 @@
 // web/src/components/session/useImageAttachments.ts
 import { useCallback, useState } from 'react'
+import { maybeConvertHeic } from './heicConvert'
 
 export const ALLOWED = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 export const MAX_BYTES = 10 * 1024 * 1024
@@ -22,8 +23,18 @@ export function useImageAttachments(initial?: Attachment[]) {
   const addFiles = useCallback(async (files: FileList | File[]) => {
     const list = Array.from(files)
     let accepted = attachments.length
-    for (const file of list) {
+    for (const original of list) {
       if (accepted >= MAX_IMAGES) break
+      let file: File
+      try {
+        file = await maybeConvertHeic(original)
+      } catch {
+        setAttachments((a) => [...a, {
+          key: _nextKey(), mime: original.type, name: original.name,
+          previewUrl: URL.createObjectURL(original), error: 'Couldn’t read photo' }])
+        accepted++
+        continue
+      }
       const previewUrl = URL.createObjectURL(file)
       if (!ALLOWED.includes(file.type)) {
         setAttachments((a) => [...a, {
