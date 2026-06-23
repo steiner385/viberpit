@@ -42,6 +42,7 @@ def test_record_to_dict_includes_pr_when_given():
     assert d["pr"] == {
         "number": 9, "url": "https://github.com/o/r/pull/9",
         "state": "open", "checks": "passing", "title": "t",
+        "deployed": False,
     }
 
 

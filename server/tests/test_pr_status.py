@@ -80,3 +80,83 @@ def test_parse_no_prs_omits_key():
 def test_parse_tolerates_missing_alias():
     out = parse_pr_response({"data": {}}, [("o/r", "br")])
     assert out == {}
+
+
+from server.github.pr_status import PRODUCTION_ENVIRONMENT
+
+
+def _resp_full(alias: str, pr_nodes: list, deploy_nodes: list) -> dict:
+    return {"data": {alias: {
+        "pullRequests": {"nodes": pr_nodes},
+        "deployments": {"nodes": deploy_nodes},
+    }}}
+
+
+def _merged_pr(number, *, merged_at):
+    pr = _pr(number, "MERGED")
+    pr["mergedAt"] = merged_at
+    return pr
+
+
+def _deploy(commit_date, *, status="SUCCESS"):
+    return {
+        "commitOid": "deadbeef",
+        "latestStatus": {"state": status} if status else None,
+        "commit": {"committedDate": commit_date},
+    }
+
+
+def test_build_query_includes_deployments_and_merged_at():
+    q = build_pr_query([("o/r", "br")])
+    assert "deployments(environments:" in q
+    assert PRODUCTION_ENVIRONMENT in q
+    assert "mergedAt" in q
+
+
+def test_deployed_true_when_merged_before_active_deploy():
+    pairs = [("o/r", "br")]
+    resp = _resp_full(
+        "r0",
+        [_merged_pr(5, merged_at="2026-06-22T10:00:00Z")],
+        [_deploy("2026-06-22T12:00:00Z")],
+    )
+    assert parse_pr_response(resp, pairs)[("o/r", "br")].deployed is True
+
+
+def test_not_deployed_when_merged_after_active_deploy():
+    pairs = [("o/r", "br")]
+    resp = _resp_full(
+        "r0",
+        [_merged_pr(5, merged_at="2026-06-22T13:00:00Z")],
+        [_deploy("2026-06-22T12:00:00Z")],
+    )
+    assert parse_pr_response(resp, pairs)[("o/r", "br")].deployed is False
+
+
+def test_not_deployed_when_no_deployments():
+    pairs = [("o/r", "br")]
+    resp = _resp_full("r0", [_merged_pr(5, merged_at="2026-06-22T10:00:00Z")], [])
+    assert parse_pr_response(resp, pairs)[("o/r", "br")].deployed is False
+
+
+def test_not_deployed_when_pr_open():
+    pairs = [("o/r", "br")]
+    resp = _resp_full("r0", [_pr(5, "OPEN")], [_deploy("2026-06-22T12:00:00Z")])
+    assert parse_pr_response(resp, pairs)[("o/r", "br")].deployed is False
+
+
+def test_active_deploy_ignores_non_success_status():
+    # Newest deploy is still in-progress; the older SUCCESS one is the active commit.
+    pairs = [("o/r", "br")]
+    resp = _resp_full(
+        "r0",
+        [_merged_pr(5, merged_at="2026-06-22T10:00:00Z")],
+        [_deploy("2026-06-22T14:00:00Z", status="IN_PROGRESS"),
+         _deploy("2026-06-22T11:00:00Z", status="SUCCESS")],
+    )
+    assert parse_pr_response(resp, pairs)[("o/r", "br")].deployed is True
+
+
+def test_deployed_defaults_false_in_dict():
+    info = PullRequestInfo(1, "u", "open", "none", "t")
+    assert info.to_dict()["deployed"] is False
