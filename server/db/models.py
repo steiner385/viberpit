@@ -42,6 +42,10 @@ class Session(Base):
     # GitHub repo (nameWithOwner, e.g. "owner/name") this session works on, or NULL
     # for a scratch / arbitrary-cwd session. Surfaced in the dashboard sessions list.
     repo: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The session's per-session worktree branch (e.g. ccswitch/main-abcd), used
+    # to join the session to its GitHub PR by headRefName. NULL for detached/
+    # scratch sessions. Nullable so init_db backfills it without a migration.
+    branch: Mapped[str | None] = mapped_column(String, nullable=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     permission_mode: Mapped[str] = mapped_column(String, nullable=False, default="interactive")
     # True while the name is auto-derived (Claude title / first prompt); a manual

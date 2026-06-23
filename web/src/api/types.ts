@@ -50,7 +50,9 @@ export interface Session {
   repo?: string | null
   status: SessionStatus
   createdAt: string
-  updatedAt: string
+  /** Last-activity time. May be null/absent for a session with no recorded
+   *  activity — guard with isValidTimestamp() before formatting. */
+  updatedAt?: string | null
   detached?: boolean
   nameIsAuto?: boolean
   /** Sub-agents spawned in this session, for hierarchical drill-down (empty when none). */
@@ -59,6 +61,8 @@ export interface Session {
   accountPinned?: boolean
   /** Current model alias/id for the session; null = account default. */
   model?: string | null
+  /** The PR opened from this session's branch, or null when there is none. */
+  pr?: PullRequestInfo | null
 }
 
 export interface ArchivedSession {
@@ -95,6 +99,14 @@ export interface AdoptOutcome {
   resumed: boolean
   /** The PID that was terminated, or null if the process had already exited. */
   terminatedPid: number | null
+}
+
+export interface PullRequestInfo {
+  number: number
+  url: string
+  state: 'open' | 'draft' | 'merged' | 'closed'
+  checks: 'passing' | 'failing' | 'pending' | 'none'
+  title: string
 }
 
 export interface ModelOption { id: string; label: string }

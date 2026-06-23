@@ -75,12 +75,15 @@ class AdoptRequest(BaseModel):
 _UNSET = object()
 
 
-def _record_to_dict(record, repo: Any = _UNSET) -> dict[str, Any]:
+def _record_to_dict(record, repo: Any = _UNSET, pr: Any = None) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict.
 
     ``repo`` lets callers inject a value read live from the session's working
     directory (see :func:`_resolve_repo`); when omitted, the stored
     ``record.repo`` is used as a fallback.
+
+    ``pr`` is an optional PullRequestInfo (or None) representing the cached PR
+    status for the session's branch.  Serialised to a dict or None on the wire.
     """
     return {
         "id": record.id,
@@ -93,9 +96,17 @@ def _record_to_dict(record, repo: Any = _UNSET) -> dict[str, Any]:
         "adoptedInPlace": getattr(record, "adopted_in_place", False),
         "subAgents": getattr(record, "sub_agents", None) or [],
         "createdAt": record.created_at.isoformat() if record.created_at else None,
-        "updatedAt": None,
+        # Last-activity timestamp for the "active … ago" label. Fall back to the
+        # creation time so a brand-new session reads "active just now" rather than
+        # null (which the client would otherwise parse as epoch 0 → "20627d ago").
+        "updatedAt": (
+            (record.updated_at or record.created_at).isoformat()
+            if (record.updated_at or record.created_at)
+            else None
+        ),
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
+        "pr": pr.to_dict() if pr is not None else None,
     }
 
 
@@ -148,7 +159,15 @@ async def list_sessions(
     records = await orch.list_sessions()
     # Read each session's repo live from its working dir, all in parallel.
     repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
-    return [_record_to_dict(r, repo=repo) for r, repo in zip(records, repos)]
+    pr_for = getattr(orch, "pr_for", None)
+    prs = [
+        (pr_for(r.repo, getattr(r, "branch", None)) if pr_for else None)
+        for r in records
+    ]
+    return [
+        _record_to_dict(r, repo=repo, pr=pr)
+        for r, repo, pr in zip(records, repos, prs)
+    ]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
