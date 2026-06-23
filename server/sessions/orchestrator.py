@@ -625,6 +625,7 @@ class SessionOrchestrator:
                 adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
                 model=getattr(row, "model", None),
                 account_pinned=bool(getattr(row, "account_pinned", False)),
+                branch=getattr(row, "branch", None),
             )
             added += 1
         log.info("rehydrate: %d session(s) restored", added)
