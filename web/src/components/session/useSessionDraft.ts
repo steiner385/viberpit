@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 
 export interface DraftAttachment { id: string; mime: string; name: string }
 export interface SessionDraft { text: string; attachments: DraftAttachment[] }
@@ -27,7 +27,9 @@ function read(sessionId?: string): SessionDraft {
  * `clear` on submit. A no-op when `sessionId` is undefined.
  */
 export function useSessionDraft(sessionId?: string) {
-  const initialRef = useRef<SessionDraft>(read(sessionId))
+  // Lazy state initializer reads the persisted draft exactly once on mount —
+  // a stable value, and (unlike a ref) safe to read during render.
+  const [initial] = useState<SessionDraft>(() => read(sessionId))
 
   const clear = useCallback(() => {
     if (!sessionId) return
@@ -43,5 +45,5 @@ export function useSessionDraft(sessionId?: string) {
     } catch { /* ignore quota/availability errors */ }
   }, [sessionId])
 
-  return useMemo(() => ({ initial: initialRef.current, save, clear }), [save, clear])
+  return useMemo(() => ({ initial, save, clear }), [initial, save, clear])
 }
