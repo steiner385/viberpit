@@ -14,6 +14,7 @@ import { SettingsPanel } from './settings/SettingsPanel'
 import { DispatchBar } from './DispatchBar'
 import { useGlobalListNav } from './useGlobalListNav'
 import { ShortcutsHelp } from './ShortcutsHelp'
+import { AddAccountDialog } from './AddAccountDialog'
 import {
   useAccounts,
   useSessions,
@@ -1277,6 +1278,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null)
   const [branchError, setBranchError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
+  const [showAddAccount, setShowAddAccount] = useState(false)
   const [permDeleteTarget, setPermDeleteTarget] = useState<ArchivedSession | null>(null)
   // Permanent-delete confirmation for a live (non-archived) session card.
   const [sessionDeleteTarget, setSessionDeleteTarget] = useState<{ id: string; name: string } | null>(null)
@@ -1811,9 +1813,21 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           aria-labelledby="tab-accounts"
           className="space-y-2"
         >
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            Accounts
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Accounts
+            </h2>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setShowAddAccount(true)}
+              className="gap-1.5"
+            >
+              <Plus size={14} aria-hidden="true" />
+              Add account
+            </Button>
+          </div>
           {!accountsLoading && (
             <AccountsStrip
               accounts={accounts}
@@ -1825,6 +1839,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           )}
         </div>
       )}
+
+      {showAddAccount && <AddAccountDialog onClose={() => setShowAddAccount(false)} />}
 
       {/* Archived panel */}
       {activeTab === 'archived' && (

@@ -210,6 +210,116 @@ async def set_account_nickname(
 
 
 # ---------------------------------------------------------------------------
+# Add-account routes
+#
+# Adding an account is the same interactive browser-OAuth login as reauth, just
+# with the opposite precondition: the slot must NOT already exist. It reuses the
+# global ReauthManager so an add and a reauth can never run at once (there is a
+# single reauth Chrome/DISPLAY on the host). The slot does not exist until the
+# login succeeds, so add status/cancel must NOT require the slot to exist.
+# ---------------------------------------------------------------------------
+
+
+class AddAccountBody(BaseModel):
+    name: str
+
+
+@router.post("/add", status_code=status.HTTP_202_ACCEPTED)
+async def add_account_start(
+    body: AddAccountBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Start an interactive login that creates a new account slot.
+
+    Returns 202 + state dict on success.
+    Returns 400 if the requested name is malformed (bad chars, path traversal).
+    Returns 409 if an account with that name already exists, or if another
+        interactive login (add or reauth) is already running.
+    Returns 503 if no encryption key is configured.
+    """
+    name = body.name
+    try:
+        assert_valid_account_name(name)
+    except InvalidAccountName:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_name", "name": name},
+        )
+
+    if paths.slot_path(name).exists():
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "account_exists", "name": name,
+                    "message": f"Account '{name}' already exists"},
+        )
+
+    reauth = _get_reauth(request)
+    try:
+        state = await reauth.start(name, identity)
+    except ReauthBusy as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "reauth_busy",
+                "holdingIdentity": exc.holding_identity,
+                "startedAt": exc.started_at,
+            },
+        )
+    except ReauthNoKey:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "no_encryption_key"},
+        )
+
+    await record_audit(
+        db=db,
+        type="account.add.start",
+        identity=identity,
+        detail={"account": name},
+    )
+
+    return state.to_dict()
+
+
+@router.get("/add")
+async def add_account_status(
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Return the current interactive-login state for an in-flight add.
+
+    The global ReauthManager state is shared with reauth; the name is irrelevant
+    (one login at a time). Does not require a slot to exist.
+    """
+    reauth = _get_reauth(request)
+    return reauth.status("").to_dict()
+
+
+@router.post("/add/cancel")
+async def add_account_cancel(
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Cancel a running add. Returns the resulting state dict."""
+    reauth = _get_reauth(request)
+    pre_cancel_state = reauth.status("")
+    state = await reauth.cancel("")
+
+    if pre_cancel_state.state != "idle":
+        await record_audit(
+            db=db,
+            type="account.add.cancel",
+            identity=identity,
+            detail={},
+        )
+
+    return state.to_dict()
+
+
+# ---------------------------------------------------------------------------
 # Reauth routes
 # ---------------------------------------------------------------------------
 

@@ -8,7 +8,7 @@
 import * as React from 'react'
 import { useState, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Pencil, Check, X, Trash2 } from 'lucide-react'
+import { RefreshCw, Pencil, Check, X, Trash2, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { UsageBadge, StatusPill } from './UsageBadge'
@@ -23,6 +23,7 @@ import {
   useCancelReauth,
   QK,
 } from '@/api/hooks'
+import { AddAccountDialog } from './AddAccountDialog'
 import type { Account, Session } from '@/api/types'
 
 // ── Delete Account Dialog ────────────────────────────────────────────────────
@@ -440,6 +441,7 @@ export function AccountsManager() {
 
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
+  const [showAdd, setShowAdd] = useState(false)
 
   function handleRefreshAccount(name: string) {
     setRefreshingAccount(name)
@@ -470,9 +472,21 @@ export function AccountsManager() {
 
   return (
     <div className="space-y-2">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-        Accounts
-      </h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          Accounts
+        </h2>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => setShowAdd(true)}
+          className="gap-1.5"
+        >
+          <Plus size={14} aria-hidden="true" />
+          Add account
+        </Button>
+      </div>
       {!accountsLoading && (
         <AccountsStrip
           accounts={accounts}
@@ -482,6 +496,8 @@ export function AccountsManager() {
           onDelete={handleDeleteAccount}
         />
       )}
+
+      {showAdd && <AddAccountDialog onClose={() => setShowAdd(false)} />}
 
       {deleteTarget && (
         <DeleteAccountDialog
