@@ -56,7 +56,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         return {"pr": info.to_dict() if info is not None else None}
 
     async def prs_for(params: dict) -> dict:
-        infos = orch.prs_for(params["session_id"])
+        infos = orch.prs_for(params.get("session_id"))
         return {"prs": [i.to_dict() for i in infos]}
 
     register_rpc(app, "ensure_driver", ensure_driver)
