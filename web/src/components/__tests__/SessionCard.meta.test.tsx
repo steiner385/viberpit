@@ -49,6 +49,13 @@ describe('SessionCard last-active', () => {
     renderCard({ ...base, updatedAt: '' })
     expect(screen.queryByText(/active/)).not.toBeInTheDocument()
   })
+
+  it('omits the label when updatedAt is null (never shows the 1970 epoch)', () => {
+    // The backend can send null; `new Date(null)` is epoch 0 (a *finite* time),
+    // so a naive isFinite guard would render "active 20627d ago". Reject it.
+    renderCard({ ...base, updatedAt: null as unknown as string })
+    expect(screen.queryByText(/active/)).not.toBeInTheDocument()
+  })
 })
 
 describe('SessionCard collapsed sub-agent count', () => {
