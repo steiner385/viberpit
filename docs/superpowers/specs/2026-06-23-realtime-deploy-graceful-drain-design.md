@@ -69,9 +69,17 @@ Rejected alternatives:
 
 ## Drain boundary (settled)
 
-The daemon waits for **only the currently in-flight turn(s)**. A prompt submitted *during* the drain
-is queued (not started), so it does **not** extend the wait. Worst-case drain ≈ one turn's duration,
-hard-capped by `CCSWITCH_DEPLOY_DRAIN_CAP_SEC`.
+The daemon waits for the **currently in-flight turn(s)** plus any prompts a session had **already
+queued in its driver before the drain began**. New prompts submitted *during* the drain are rejected
+by the orchestrator's `send_prompt` guard (the browser buffers and resends them post-restart), so
+they do **not** extend the wait — but a driver's pre-existing FIFO queue drains on the old code first,
+because those prompts auto-run turn-by-turn inside the driver without re-entering `send_prompt`.
+
+This is a deliberate, reviewed choice (final whole-branch review, finding I1): it finishes work the
+user already committed rather than killing it, and it is bounded by `CCSWITCH_DEPLOY_DRAIN_CAP_SEC` so
+it cannot re-create starvation — a session with a long pre-drain queue simply hits the cap and gets a
+forced restart, with the interrupted turn resuming from transcript. Worst-case drain is therefore
+"the in-flight turn + any already-queued prompts," not strictly one turn, capped regardless.
 
 ## Components & changes
 
