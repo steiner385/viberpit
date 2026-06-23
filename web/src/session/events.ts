@@ -17,16 +17,18 @@ export interface EvSessionMeta   { type: 'sessionMeta';   model: string; session
 export interface EvTitle         { type: 'title';         title: string; source: string }
 export interface EvStatus        { type: 'status';        state: string; count: number }
 export interface EvReplayReset   { type: 'replayReset' }
-export interface EvReplayComplete { type: 'replayComplete' }
+export interface EvReplayComplete { type: 'replayComplete'; earliestTurn?: number; totalTurns?: number }
 export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null; turnId?: string | null; ts?: number }
-export interface EvQueueUpdate   { type: 'queueUpdate';   items: string[] }
+export interface QueuedItem      { text: string; images: { url: string; mime: string; name: string }[] }
+export interface EvQueueUpdate   { type: 'queueUpdate';   items: QueuedItem[] }
 export interface EvSuggestions   { type: 'suggestions';   sessionId: string; turnId: string; items: string[] }
+export interface EvCondensing    { type: 'condensing';    active: boolean; expectedMs?: number | null }
 
 export type SessionEvent =
   | EvUser | EvTurnStart | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvQuestion
   | EvSessionMeta | EvTitle | EvStatus | EvReplayReset | EvReplayComplete | EvError | EvQueueUpdate
-  | EvSuggestions
+  | EvSuggestions | EvCondensing
 
 export interface Command {
   name: string
@@ -39,5 +41,5 @@ export interface Command {
 export const SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   'user','turnStart','turnEnd','textDelta','thinkingDelta','toolCall','toolResult',
   'permissionRequest','question','sessionMeta','title','status','replayReset','replayComplete','error','queueUpdate',
-  'suggestions',
+  'suggestions','condensing',
 ])

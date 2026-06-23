@@ -271,3 +271,18 @@ def test_translator_emits_apiretry_for_midturn_api_error():
 
 def test_apiretry_has_no_wire_form():
     assert not hasattr(ev.ApiRetry(turn_id="t", status=529, attempt=1, max_retries=20), "to_wire")
+
+
+def test_compact_boundary_emits_condensing_inactive():
+    tr = Translator()
+    out = tr.feed(f.sys_compact_boundary(trigger="auto", pre_tokens=1234))
+    assert len(out) == 1
+    assert isinstance(out[0], ev.Condensing)
+    assert out[0].active is False
+    assert out[0].trigger == "auto"
+    assert out[0].pre_tokens == 1234
+
+
+def test_non_init_non_boundary_system_message_is_ignored():
+    tr = Translator()
+    assert tr.feed(SystemMessage(subtype="something_else", data={})) == []

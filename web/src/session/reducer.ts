@@ -1,5 +1,5 @@
 import type {
-  SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult,
+  SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult, QueuedItem,
 } from './events'
 
 /** Sentinel id for the optimistic user turn seeded before the SDK echoes the prompt. */
@@ -59,11 +59,15 @@ export interface TranscriptState {
   model: string | null          // current model id (from sessionMeta / replay)
   usage: UsageSnapshot | null   // most recent result's token/cost snapshot
   replaying: boolean            // true until replayComplete
+  earliestTurn: number          // lowest turn ordinal currently loaded (0 = at session start)
+  totalTurns: number            // total turns in the on-disk transcript
+  loadingOlder: boolean         // a prepend fetch is in flight
   error: { code: string; message: string; resetsAt?: string | null } | null
-  queued: string[]              // texts of prompts waiting in the server-side queue
+  queued: QueuedItem[]           // prompts waiting in the server-side queue
   rotations: RotationMarker[]   // account rotations, anchored into the timeline
   subAgents: Record<string, SubThread>   // keyed by the spawning Task toolId
   latestSuggestions: string[]  // next-prompt chips for the current idle turn
+  condense: { active: boolean; expectedMs: number } | null
 }
 
 export const initialTranscript: TranscriptState = {
@@ -74,11 +78,15 @@ export const initialTranscript: TranscriptState = {
   model: null,
   usage: null,
   replaying: true,
+  earliestTurn: 0,
+  totalTurns: 0,
+  loadingOlder: false,
   error: null,
   queued: [],
   rotations: [],
   subAgents: {},
   latestSuggestions: [],
+  condense: null,
 }
 
 /** Coerce a possibly-missing numeric usage field to a finite number (0 when absent). */
@@ -96,6 +104,8 @@ export type LocalAction =
   | { type: '_rotation';          from: string; to: string; reason?: string }
   | { type: '_notice'; text: string }
   | { type: '_clear';  text: string }
+  | { type: '_prependHistory'; events: SessionEvent[]; earliestTurn: number }
+  | { type: '_setLoadingOlder'; value: boolean }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -514,12 +524,30 @@ export function transcriptReducer(
       // transcript-rebuildable state so the following replay events rebuild it
       // cleanly. Live-only state that the replay does NOT re-emit (rotations,
       // queue, banner) is preserved.
-      return { ...state, turns: [], openBlockId: null, subAgents: {}, replaying: true }
+      return { ...state, turns: [], openBlockId: null, subAgents: {}, replaying: true,
+               earliestTurn: 0, totalTurns: 0, loadingOlder: false }
     }
 
     // ── replayComplete ────────────────────────────────────────────────────────
     case 'replayComplete': {
-      return { ...state, replaying: false }
+      return { ...state, replaying: false,
+               earliestTurn: ev.earliestTurn ?? state.earliestTurn,
+               totalTurns: ev.totalTurns ?? state.totalTurns }
+    }
+
+    // ── _setLoadingOlder ──────────────────────────────────────────────────────
+    case '_setLoadingOlder': {
+      return { ...state, loadingOlder: ev.value }
+    }
+
+    // ── _prependHistory ───────────────────────────────────────────────────────
+    case '_prependHistory': {
+      const olderTurns = buildTurnsFromEvents(ev.events)
+      // Drop any older turn whose id already exists (defensive; windows are disjoint server-side).
+      const existing = new Set(state.turns.map((t) => t.id))
+      const fresh = olderTurns.filter((t) => !existing.has(t.id))
+      return { ...state, turns: [...fresh, ...state.turns],
+               earliestTurn: ev.earliestTurn, loadingOlder: false }
     }
 
     // ── error ─────────────────────────────────────────────────────────────────
@@ -543,6 +571,13 @@ export function transcriptReducer(
     // ── queueUpdate ───────────────────────────────────────────────────────────
     case 'queueUpdate': {
       return { ...state, queued: ev.items }
+    }
+
+    // ── condensing ────────────────────────────────────────────────────────────
+    case 'condensing': {
+      return ev.active
+        ? { ...state, condense: { active: true, expectedMs: ev.expectedMs ?? 12000 } }
+        : { ...state, condense: null }
     }
 
     // ── suggestions ───────────────────────────────────────────────────────────
@@ -623,4 +658,15 @@ export function transcriptReducer(
     default:
       return state
   }
+}
+
+/**
+ * Fold a window of replayed events into a fresh transcript and return just its
+ * turns. Reuses transcriptReducer so history paging never grows a second
+ * turn-builder (single source of truth for event→Turn translation).
+ */
+export function buildTurnsFromEvents(events: SessionEvent[]): Turn[] {
+  const seeded: TranscriptState = { ...initialTranscript, replaying: true }
+  const final = events.reduce(transcriptReducer, seeded)
+  return final.turns
 }

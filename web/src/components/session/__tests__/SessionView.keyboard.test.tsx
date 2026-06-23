@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionView } from '../SessionView'
@@ -166,14 +166,38 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
     expect(onBack).toHaveBeenCalledOnce()
   })
 
-  it('ArrowLeft does NOT call onBack when the composer has text', async () => {
+  it('ArrowLeft does NOT call onBack when the composer has text and the caret is mid-prompt', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
     render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
     const box = screen.getByRole('textbox', { name: /message/i })
     await user.click(box)
-    await user.type(box, 'wip')
+    await user.type(box, 'wip') // caret left at the end (position 3)
     await user.keyboard('{ArrowLeft}')
+    expect(onBack).not.toHaveBeenCalled()
+  })
+
+  it('ArrowLeft calls onBack when the composer has text but the caret is at the start', async () => {
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    const box = screen.getByRole('textbox', { name: /message/i }) as HTMLTextAreaElement
+    await user.click(box)
+    await user.type(box, 'wip')
+    box.setSelectionRange(0, 0) // caret at the very start of the prompt
+    fireEvent.keyDown(box, { key: 'ArrowLeft' })
+    expect(onBack).toHaveBeenCalledOnce()
+  })
+
+  it('ArrowLeft does NOT call onBack when text is selected from the start (collapsing the selection)', async () => {
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    const box = screen.getByRole('textbox', { name: /message/i }) as HTMLTextAreaElement
+    await user.click(box)
+    await user.type(box, 'wip')
+    box.setSelectionRange(0, 3) // whole prompt selected; ← should collapse, not navigate
+    fireEvent.keyDown(box, { key: 'ArrowLeft' })
     expect(onBack).not.toHaveBeenCalled()
   })
 

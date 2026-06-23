@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { DesktopShell } from '../DesktopShell'
@@ -54,6 +54,10 @@ function setup() {
   vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
   vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
   vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+}
+
+function renderDesktopShell() {
+  return render(<DesktopShell />, { wrapper })
 }
 
 describe('DesktopShell', () => {
@@ -131,16 +135,37 @@ describe('DesktopShell', () => {
     expect(screen.getByRole('textbox', { name: /new session prompt/i })).toBeInTheDocument()
   })
 
-  it('ArrowLeft with composer text does NOT detach', async () => {
+  it('ArrowLeft with composer text and a mid-prompt caret does NOT detach', async () => {
     const user = userEvent.setup()
     render(<DesktopShell />, { wrapper })
     await user.click(screen.getByLabelText(/open session one/i))
     const box = screen.getByRole('textbox', { name: /^message$/i })
     await user.click(box)
-    await user.type(box, 'wip')
+    await user.type(box, 'wip') // caret left at the end (position 3)
     await user.keyboard('{ArrowLeft}')
     expect(screen.getByRole('textbox', { name: /^message$/i })).toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: /new session prompt/i })).not.toBeInTheDocument()
+  })
+
+  it('ArrowLeft detaches when the composer has text but the caret is at the start', async () => {
+    const user = userEvent.setup()
+    render(<DesktopShell />, { wrapper })
+    await user.click(screen.getByLabelText(/open session one/i))
+    const box = screen.getByRole('textbox', { name: /^message$/i }) as HTMLTextAreaElement
+    await user.click(box)
+    await user.type(box, 'wip')
+    box.setSelectionRange(0, 0) // caret at the very start of the prompt
+    fireEvent.keyDown(box, { key: 'ArrowLeft' })
+    expect(screen.getByRole('textbox', { name: /new session prompt/i })).toBeInTheDocument()
+  })
+
+  it('Tab then a archives the highlighted session', async () => {
+    const mutate = vi.fn()
+    vi.mocked(hooks.useCloseSession).mockReturnValue({ ...NOOP, mutate } as never)
+    const user = userEvent.setup()
+    renderDesktopShell()
+    await user.keyboard('{ArrowDown}{Tab}a')
+    expect(mutate).toHaveBeenCalled()
   })
 
   it('DesktopShell: groups by status and keeps keyboard nav', async () => {

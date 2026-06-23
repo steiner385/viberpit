@@ -56,7 +56,7 @@ def orch_env(tmp_path):
         _seed_account("alpha")
 
         def _factory(msgs):
-            def make(cwd, config_dir, can_use_tool, mode, resume):
+            def make(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
                 return FakeSDKClient(list(msgs), on_can_use_tool=can_use_tool)
             return make
 

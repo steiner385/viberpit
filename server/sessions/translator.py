@@ -66,6 +66,10 @@ class Translator:
                     attempt=data.get("retryAttempt"),
                     max_retries=data.get("maxRetries"),
                 )]
+            if msg.subtype == "compact_boundary":
+                meta = (msg.data or {}).get("compact_metadata") or {}
+                return [ev.Condensing(active=False, trigger=meta.get("trigger"),
+                                      pre_tokens=meta.get("pre_tokens"))]
             return []
 
         if isinstance(msg, StreamEvent):

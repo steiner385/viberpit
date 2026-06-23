@@ -7,6 +7,7 @@ the vertical-slice methods only.
 import asyncio
 import logging
 from ccswitch.oauth import Usage
+from server.github.pr_status import PullRequestInfo
 from server.sessions.types import SessionRecord
 
 log = logging.getLogger(__name__)
@@ -85,6 +86,14 @@ class RemoteOrchestrator:
         r = await self._client.call("list_sessions")
         return [SessionRecord.from_dict(d) for d in r["sessions"]]
 
+    async def pr_for(self, repo, branch) -> "PullRequestInfo | None":
+        """Resolve a session's PR via the daemon's poller cache (None if absent)."""
+        if not repo or not branch:
+            return None
+        r = await self._client.call("pr_for", repo=repo, branch=branch)
+        info = r.get("pr")
+        return PullRequestInfo.from_dict(info) if info else None
+
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)
         return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None
@@ -93,8 +102,9 @@ class RemoteOrchestrator:
         r = await self._client.call("create_session", **kwargs)
         return SessionRecord.from_dict(r["session"])
 
-    async def send_prompt(self, session_id: str, text: str, images=None) -> None:
-        await self._client.call("send_prompt", session_id=session_id, text=text, images=images)
+    async def send_prompt(self, session_id: str, text: str, images=None) -> str | None:
+        r = await self._client.call("send_prompt", session_id=session_id, text=text, images=images)
+        return (r or {}).get("status")
 
     async def ensure_driver(self, session_id: str, identity: str = "system") -> "RemoteDriver | None":
         r = await self._client.call("ensure_driver", session_id=session_id, identity=identity)
@@ -113,9 +123,6 @@ class RemoteOrchestrator:
 
     async def interrupt(self, session_id):
         return await self._client.call("interrupt", session_id=session_id)
-
-    async def request_suggestions(self, session_id):
-        return await self._client.call("request_suggestions", session_id=session_id)
 
     async def set_permission_mode(self, session_id, mode):
         return await self._client.call("set_permission_mode", session_id=session_id, mode=mode)
@@ -168,6 +175,17 @@ class RemoteOrchestrator:
         r = await self._client.call("transcript_events", session_id=session_id)
         return r["events"]
 
+    async def transcript_window(self, session_id, *, before=None, limit=20):
+        """Resolve the transcript path via daemon, then replay locally."""
+        from server.sessions.replay import replay_window
+        path = await self.transcript_path(session_id)
+        if not path:
+            return None
+        try:
+            return await replay_window(path, before=before, limit=limit)
+        except Exception:
+            return None
+
     async def usage(self, name):
         r = await self._client.call("usage", name=name)
         return Usage.from_dict(r["usage"]) if r["usage"] is not None else None
@@ -177,6 +195,12 @@ class RemoteOrchestrator:
 
     async def active_session_count(self):
         return await self._client.call("active_session_count")
+
+    async def live_session_load(self):
+        return await self._client.call("live_session_load")
+
+    async def live_session_counts(self):
+        return await self._client.call("live_session_counts")
 
     async def subscribe_events(self) -> asyncio.Queue:
         """Return a queue that receives global lifecycle events.
@@ -201,6 +225,12 @@ class RemoteOrchestrator:
 
     def subscribe(self, session_id: str):
         return self._client.subscribe(session_id)
+
+    async def x11_metrics(self) -> dict:
+        return await self._client.call("x11_metrics")
+
+    async def x11_open_browser(self, session_id: str, url: str | None = None) -> dict:
+        return await self._client.call("x11_open_browser", session_id=session_id, url=url)
 
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():

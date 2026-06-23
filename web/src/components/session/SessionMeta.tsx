@@ -9,6 +9,7 @@
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
+import { contextSeverity } from '@/lib/contextWindow'
 import type { SubAgent, SubAgentStatus } from '@/session/selectors'
 import { SubAgentList } from './SubAgentList'
 
@@ -37,6 +38,9 @@ interface Props {
    *  has a single status line instead of two stacked bars. Optional so the
    *  component stays usable standalone. */
   statusSlot?: React.ReactNode
+  /** Optional export control (e.g. ExportMenu) rendered in the right cluster.
+   *  SessionMeta stays free of @/api imports — the caller provides the node. */
+  exportSlot?: React.ReactNode
   models: { id: string; label: string }[]
   accounts: { name: string; nickname?: string | null }[]
   accountPinned: boolean
@@ -60,7 +64,7 @@ const DOT_CLASS: Record<SubAgentStatus, string> = {
   failed: 'bg-red-500',
 }
 
-export function SessionMeta({ account, model, mode, contextPct, quota, subAgents, statusSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode }: Props) {
+export function SessionMeta({ account, model, mode, contextPct, quota, subAgents, statusSlot, exportSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode }: Props) {
   const [open, setOpen] = useState(false)
   const agentCount = subAgents.length
 
@@ -109,12 +113,23 @@ export function SessionMeta({ account, model, mode, contextPct, quota, subAgents
         </span>
 
         {/* Remaining context */}
-        <span className="inline-flex items-center gap-1" aria-label="Remaining context">
-          <span className="text-gray-400 dark:text-gray-500">ctx</span>
-          <span className="font-medium tabular-nums text-gray-900 dark:text-gray-100">
-            {contextPct != null ? `${contextPct}%` : DASH}
-          </span>
-        </span>
+        {(() => {
+          const sev = contextSeverity(contextPct)
+          const color = sev === 'danger'
+            ? 'text-red-700 dark:text-red-400'
+            : sev === 'warning'
+              ? 'text-amber-700 dark:text-amber-400'
+              : 'text-gray-900 dark:text-gray-100'
+          return (
+            <span className={cn('inline-flex items-center gap-1', color)} aria-label="Remaining context">
+              <span className="text-gray-400 dark:text-gray-500">ctx</span>
+              <span className="font-medium tabular-nums">
+                {contextPct != null ? `${contextPct}%` : DASH}
+              </span>
+              {sev === 'danger' && <span className="opacity-70">· compacts soon</span>}
+            </span>
+          )
+        })()}
 
         {/* Account quota */}
         {quota && (
@@ -156,10 +171,11 @@ export function SessionMeta({ account, model, mode, contextPct, quota, subAgents
           plan
         </button>
 
-        {/* Right cluster: live status (folded-in StatusBar) + sub-agents toggle */}
-        {(statusSlot || agentCount > 0) && (
+        {/* Right cluster: live status (folded-in StatusBar) + export + sub-agents toggle */}
+        {(statusSlot || exportSlot || agentCount > 0) && (
           <div className="ml-auto flex items-center gap-2">
             {statusSlot}
+            {exportSlot}
             {agentCount > 0 && (
               <button
                 type="button"

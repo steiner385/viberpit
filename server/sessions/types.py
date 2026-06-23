@@ -24,11 +24,12 @@ class SessionRecord:
     repo: str | None = None          # GitHub nameWithOwner this session works on (None = scratch)
     branch: str | None = None        # per-session worktree branch (joins to PR headRefName)
     detached: bool = False           # True for rehydrated sessions with no live driver
-    status: str = "idle"             # idle / in_progress / waiting_input / ready_review / done / limited / ended
+    status: str = "idle"             # idle / in_progress / condensing / waiting_input / ready_review / done / waiting_external / limited / ended
     name_is_auto: bool = True        # False once the user manually renames the session
     permission_mode: str = "interactive"
     created_at: datetime | None = None
-    updated_at: datetime | None = None   # last activity; mirrors DB Session.updated_at, drives the "active … ago" label
+    updated_at: datetime | None = None   # generic row-write time; mirrors DB Session.updated_at (archivedAt)
+    last_turn_at: datetime | None = None  # last turn's response; drives the "active … ago" label (see ACTIVITY_STATUSES)
     adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
     sub_agents: list | None = None   # [{agentId,parentAgentId,agentType,description,status}], refreshed at status changes
     model: str | None = None         # persisted model alias/id; None = account default
@@ -44,6 +45,7 @@ class SessionRecord:
             "permissionMode": self.permission_mode,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+            "lastTurnAt": self.last_turn_at.isoformat() if self.last_turn_at else None,
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
             "accountPinned": self.account_pinned,
@@ -55,6 +57,7 @@ class SessionRecord:
         from datetime import datetime
         created = d.get("createdAt")
         updated = d.get("updatedAt")
+        last_turn = d.get("lastTurnAt")
         return cls(
             id=d["id"], name=d["name"], account=d["account"],
             claude_session_id=d["claudeSessionId"], cols=d["cols"], rows=d["rows"],
@@ -63,6 +66,7 @@ class SessionRecord:
             permission_mode=d.get("permissionMode", "interactive"),
             created_at=datetime.fromisoformat(created) if created else None,
             updated_at=datetime.fromisoformat(updated) if updated else None,
+            last_turn_at=datetime.fromisoformat(last_turn) if last_turn else None,
             adopted_in_place=d.get("adoptedInPlace", False),
             model=d.get("model"),
             account_pinned=d.get("accountPinned", False),

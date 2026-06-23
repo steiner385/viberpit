@@ -23,7 +23,7 @@ from server.tests.fakes import fake_sdk as f
 
 def _make_driver(messages=None):
     """Construct a minimal SessionDriver with no real SDK interaction needed."""
-    def factory(cwd, config_dir, can_use_tool, mode, resume):
+    def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return FakeSDKClient(messages or [], on_can_use_tool=can_use_tool)
 
     return SessionDriver(
