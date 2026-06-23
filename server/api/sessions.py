@@ -96,6 +96,7 @@ def _record_to_dict(record, repo: Any = _UNSET) -> dict[str, Any]:
         "updatedAt": None,
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
+        "activeGoal": getattr(record, "active_goal", None),
     }
 
 
