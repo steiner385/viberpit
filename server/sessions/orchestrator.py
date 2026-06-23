@@ -48,6 +48,7 @@ from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
+from server.github.pr_status import PullRequestInfo
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +168,7 @@ class SessionOrchestrator:
         self._titling_task: asyncio.Task | None = None
         self._stall_task: asyncio.Task | None = None
         self._token_refresh_task: asyncio.Task | None = None
+        self._pr_branch_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
         # Serialises the check-build-register critical section in ensure_driver
@@ -203,6 +205,9 @@ class SessionOrchestrator:
         """Start the usage poller, the rotation monitor and the titling sweep."""
         await self._poller.start()
         await self._pr_poller.start()
+        self._pr_branch_task = asyncio.create_task(
+            self._pr_branch_monitor(), name="pr-branch-monitor"
+        )
         self._rotation_task = asyncio.create_task(
             self._rotation_monitor(), name="rotation-monitor"
         )
@@ -251,6 +256,8 @@ class SessionOrchestrator:
 
     async def stop(self) -> None:
         """Stop the titling sweep, rotation monitor and usage poller."""
+        if self._pr_branch_task is not None:
+            self._pr_branch_task.cancel()
         for attr in ("_titling_task", "_rotation_task", "_stall_task", "_token_refresh_task"):
             task = getattr(self, attr)
             if task is not None:
@@ -693,6 +700,7 @@ class SessionOrchestrator:
                 account_pinned=bool(getattr(row, "account_pinned", False)),
                 active_goal=getattr(row, "active_goal", None),
                 branch=branch,
+                authored_branches=list(getattr(row, "authored_branches", None) or []),
             )
             added += 1
         # Persist any derived branches so the next rehydrate reads them directly.
@@ -715,17 +723,76 @@ class SessionOrchestrator:
         return self._records.get(session_id)
 
     def _pr_pairs(self) -> list[tuple[str, str]]:
-        """Distinct (repo, branch) pairs for live sessions that have both."""
+        """Distinct (repo, branch) pairs across every session's authored branches."""
         seen: set[tuple[str, str]] = set()
         for r in self._records.values():
-            branch = getattr(r, "branch", None)
-            if r.repo and branch:
-                seen.add((r.repo, branch))
+            if not r.repo:
+                continue
+            for br in getattr(r, "authored_branches", None) or []:
+                seen.add((r.repo, br))
         return list(seen)
 
     def pr_for(self, repo, branch):
-        """Cached PullRequestInfo for a session's (repo, branch), or None."""
+        """Cached PullRequestInfo for a (repo, branch), or None."""
         return self._pr_poller.cached(repo, branch)
+
+    def prs_for(self, session_id: str) -> list[PullRequestInfo]:
+        """Deduped, ordered PR list for a session's authored branches.
+
+        Open/draft first, then merged/closed, newest updatedAt first — matches the
+        single-PR ranking. Deduped by PR number (the same PR can surface via more
+        than one branch ref).
+        """
+        from server.github.pr_status import _STATE_RANK
+        rec = self._records.get(session_id)
+        if rec is None or not rec.repo:
+            return []
+        by_number: dict[int, PullRequestInfo] = {}
+        for br in getattr(rec, "authored_branches", None) or []:
+            info = self._pr_poller.cached(rec.repo, br)
+            if info is not None:
+                by_number.setdefault(info.number, info)
+        return sorted(
+            by_number.values(),
+            key=lambda p: (_STATE_RANK.get(p.state, 99), -p.number),
+        )
+
+    async def refresh_authored_branches(self) -> None:
+        """Union each live session's reflog+live branches into its record, persist changes.
+
+        Runs git off the event loop. Best-effort: a session whose cwd is gone or not a
+        git repo simply keeps its existing set. Persists only changed rows so the set
+        survives reflog GC and restarts.
+        """
+        changed: dict[str, list[str]] = {}
+        for rec in list(self._records.values()):
+            if not rec.cwd:
+                continue
+            fresh = await asyncio.to_thread(
+                worktrees.authored_branches, rec.cwd, getattr(rec, "branch", None)
+            )
+            if not fresh:
+                continue
+            merged = sorted(set(getattr(rec, "authored_branches", None) or []) | set(fresh))
+            if merged != (rec.authored_branches or []):
+                rec.authored_branches = merged
+                changed[rec.id] = merged
+        if changed:
+            from sqlalchemy import update as sa_update
+            async with db_session() as db:
+                for sid, brs in changed.items():
+                    await db.execute(
+                        sa_update(DbSession).where(DbSession.id == sid).values(authored_branches=brs)
+                    )
+
+    async def _pr_branch_monitor(self) -> None:
+        """Periodically refresh authored branches so new feature branches get badges."""
+        while True:
+            try:
+                await self.refresh_authored_branches()
+            except Exception:
+                log.warning("pr_branch_monitor.refresh_failed", exc_info=True)
+            await asyncio.sleep(60)
 
     def record(self, session_id: str) -> SessionRecord:
         """Return the in-memory SessionRecord for session_id (KeyError if missing)."""
