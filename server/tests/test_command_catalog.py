@@ -33,5 +33,9 @@ def test_build_catalog_normalizes_and_filters():
 
 
 def test_build_catalog_handles_none():
-    assert build_catalog(None) == []
-    assert build_catalog({}) == []
+    # build_catalog always includes SYNTHETIC commands, so even empty/None input
+    # returns the synthetic set (currently just "account").
+    synthetic_names = {c.name for c in build_catalog(None)}
+    assert "account" in synthetic_names
+    synthetic_names_empty = {c.name for c in build_catalog({})}
+    assert "account" in synthetic_names_empty

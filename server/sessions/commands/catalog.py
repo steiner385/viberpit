@@ -36,6 +36,13 @@ class Command:
         }
 
 
+# ccswitch-invented control commands not present in the SDK's get_server_info().
+SYNTHETIC = [
+    Command(name="account", description="Switch this session to another account",
+            argument_hint="<account>", kind="control"),
+]
+
+
 def classify(name: str) -> str:
     if name in CLIENT:
         return "client"
@@ -69,4 +76,8 @@ def build_catalog(server_info: dict | None) -> list[Command]:
             continue
         seen.add(cmd.name)
         out.append(cmd)
+    for syn in SYNTHETIC:
+        if syn.name not in seen:
+            seen.add(syn.name)
+            out.append(syn)
     return out

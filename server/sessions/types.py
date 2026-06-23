@@ -29,6 +29,8 @@ class SessionRecord:
     created_at: datetime | None = None
     adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
     sub_agents: list | None = None   # [{agentId,parentAgentId,agentType,description,status}], refreshed at status changes
+    model: str | None = None         # persisted model alias/id; None = account default
+    account_pinned: bool = False      # user pinned the account (skips usage-ceiling rotation)
 
     def to_dict(self) -> dict:
         return {
@@ -39,6 +41,8 @@ class SessionRecord:
             "permissionMode": self.permission_mode,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "adoptedInPlace": self.adopted_in_place,
+            "model": self.model,
+            "accountPinned": self.account_pinned,
         }
 
     @classmethod
@@ -53,4 +57,6 @@ class SessionRecord:
             permission_mode=d.get("permissionMode", "interactive"),
             created_at=datetime.fromisoformat(created) if created else None,
             adopted_in_place=d.get("adoptedInPlace", False),
+            model=d.get("model"),
+            account_pinned=d.get("accountPinned", False),
         )
