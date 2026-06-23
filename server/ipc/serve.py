@@ -10,6 +10,7 @@ from server.config import get_settings
 from server.db import init_db
 from server.ipc.daemon import create_daemon_app
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
+from server.ipc.x11_rpc import register_x11
 from server.ipc.paths import sessiond_socket
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.x11manager import build_x11_manager
@@ -25,6 +26,8 @@ def build_daemon(orchestrator=None):
         orchestrator = SessionOrchestrator()
     orchestrator._x11 = build_x11_manager(get_settings())
     register_orchestrator_rpc(app, orchestrator)
+    app.state.x11 = orchestrator._x11
+    register_x11(app, app.state.x11)
     return app, orchestrator
 
 
@@ -39,6 +42,10 @@ async def daemon_lifespan(app, orchestrator):
         await orchestrator.rehydrate()
     except Exception:
         log.error("daemon rehydrate() failed — starting with no sessions restored", exc_info=True)
+    try:
+        await orchestrator.rearm_background_tasks()
+    except Exception:
+        log.error("daemon rearm_background_tasks() failed", exc_info=True)
     await orchestrator.start()
     try:
         yield

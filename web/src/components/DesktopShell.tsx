@@ -18,13 +18,14 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { Plus, Settings } from 'lucide-react'
+import { Plus, Settings, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SessionList } from './SessionList'
 import { SessionListControls } from './SessionListControls'
 import { DispatchBar } from './DispatchBar'
 import { AllLimitedBanner } from './AllLimitedBanner'
-import { ShortcutsHelp } from './ShortcutsHelp'
+import { HelpDrawer } from './HelpDrawer'
+import { useGlobalHelpKey } from './useGlobalHelpKey'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
@@ -130,12 +131,11 @@ export function DesktopShell() {
   // Bumped to return focus to the DispatchBar after detaching from a session.
   const [dispatchFocusNonce, setDispatchFocusNonce] = useState(0)
 
-  // Press-twice delete guard
-  const [pendingDelete, setPendingDelete] = useState<{ id: string; ts: number } | null>(null)
-  const pendingDeleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => () => {
-    if (pendingDeleteTimeoutRef.current) clearTimeout(pendingDeleteTimeoutRef.current)
-  }, [])
+  // List-focus mode
+  const [listMode, setListMode] = useState(false)
+
+  // `?` opens the help slide-out from anywhere on the sessions tab.
+  useGlobalHelpKey({ enabled: tab === 'sessions', onShowHelp: () => setShowHelp(true) })
 
   // Clamp highlight when the list shrinks.
   const clampedIndex = orderedSessions.length === 0 ? -1 : Math.min(highlightedIndex, orderedSessions.length - 1)
@@ -145,22 +145,12 @@ export function DesktopShell() {
 
   const selectedSessionId = selection.type === 'session' ? selection.id : null
 
-  const clearPendingDelete = useCallback(() => {
-    setPendingDelete(null)
-    if (pendingDeleteTimeoutRef.current) {
-      clearTimeout(pendingDeleteTimeoutRef.current)
-      pendingDeleteTimeoutRef.current = null
-    }
-  }, [])
-
   const focusSession = useCallback((id: string, initialPrompt?: string) => {
-    clearPendingDelete()
     setTab('sessions')
     setSelection({ type: 'session', id, initialPrompt })
-  }, [clearPendingDelete])
+  }, [])
 
   function focusNew() {
-    clearPendingDelete()
     setTab('sessions')
     setSelection({ type: 'new' })
   }
@@ -176,23 +166,33 @@ export function DesktopShell() {
   }, [selection, orderedSessions])
 
   // In-session detach gestures (desktop): ← / Esc / Ctrl+Z return to the list.
-  // Active only while a session is focused. Guards: yield to the composer while it
-  // holds a draft (cursor move / undo). Faithful detach → main pane shows WelcomePane.
+  // Active only while a session is focused. Guards: Esc/Ctrl+Z yield to the composer
+  // while it holds a draft; ← only detaches from the prompt's left edge (empty, or
+  // caret at the very start with no selection) so it otherwise moves the caret.
+  // Faithful detach → main pane shows WelcomePane.
   useEffect(() => {
     const active = tab === 'sessions' && selection.type === 'session'
     if (!active) return
     function onKey(e: KeyboardEvent) {
       const ae = document.activeElement as HTMLTextAreaElement | null
-      const inComposerWithText =
-        ae?.getAttribute('aria-label') === 'Message' && (ae?.value ?? '') !== ''
+      const inComposer = ae?.getAttribute('aria-label') === 'Message'
+      const inComposerWithText = inComposer && (ae?.value ?? '') !== ''
+      const caretPastComposerStart =
+        inComposer && !(ae!.selectionStart === 0 && ae!.selectionEnd === 0)
       if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
         if (inComposerWithText) return
         e.preventDefault()
         detachToList()
         return
       }
-      if (e.key === 'ArrowLeft' || e.key === 'Escape') {
+      if (e.key === 'Escape') {
         if (inComposerWithText) return
+        e.preventDefault()
+        detachToList()
+        return
+      }
+      if (e.key === 'ArrowLeft') {
+        if (caretPastComposerStart) return
         e.preventDefault()
         detachToList()
       }
@@ -245,7 +245,6 @@ export function DesktopShell() {
 
   function handleNavigate(dir: 'up' | 'down') {
     if (orderedSessions.length === 0) return
-    clearPendingDelete()
     setHighlightedIndex((i) => {
       if (dir === 'up') return i <= 0 ? 0 : i - 1
       return Math.min(orderedSessions.length - 1, i + 1)
@@ -256,39 +255,20 @@ export function DesktopShell() {
     if (highlighted) focusSession(highlighted.id)
   }
 
-  function handleRowAction(
-    action: { type: 'rename' } | { type: 'delete' } | { type: 'jump'; index: number },
-  ) {
-    if (action.type === 'rename') {
-      clearPendingDelete()
-      if (highlighted) handleRename(highlighted.id)
-    } else if (action.type === 'delete') {
-      if (!highlighted) return
-      const id = highlighted.id
-      const now = Date.now()
-      if (pendingDelete && pendingDelete.id === id && now - pendingDelete.ts < 2000) {
-        clearPendingDelete()
-        handleClose(id)
-      } else {
-        if (pendingDeleteTimeoutRef.current) clearTimeout(pendingDeleteTimeoutRef.current)
-        setPendingDelete({ id, ts: now })
-        pendingDeleteTimeoutRef.current = setTimeout(() => {
-          setPendingDelete(null)
-          pendingDeleteTimeoutRef.current = null
-        }, 2000)
-      }
-    } else if (action.type === 'jump') {
-      clearPendingDelete()
-      const s = orderedSessions[action.index]
-      if (s) {
-        setHighlightedIndex(action.index)
-        focusSession(s.id)
-      }
-    }
+  function handleEnterList() {
+    setListMode(true)
+    if (highlightedIndex < 0) setHighlightedIndex(0)
+  }
+  function handleExitList() {
+    setListMode(false)
+    setDispatchFocusNonce((n) => n + 1)
+  }
+  function handleJump(index: number) {
+    const s = orderedSessions[index]
+    if (s) { setHighlightedIndex(index); focusSession(s.id) }
   }
 
   function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
-    clearPendingDelete()
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     createSession.mutate(
       {
@@ -406,6 +386,9 @@ export function DesktopShell() {
           isFiltered={sessionSearch.isFiltered}
           onClearSearch={() => sessionSearch.setQuery('')}
           onQuickResume={handleQuickResume}
+          listMode={listMode}
+          onNavigate={handleNavigate}
+          onExit={handleExitList}
           collapsedKeys={collapsedKeys}
           onToggleCollapse={toggleCollapse}
         />
@@ -436,36 +419,45 @@ export function DesktopShell() {
       onDispatch={handleDispatch}
       onNavigate={handleNavigate}
       onOpenHighlighted={handleOpenHighlighted}
-      onRowAction={handleRowAction}
+      onEnterList={handleEnterList}
+      onJump={handleJump}
       onShowHelp={() => setShowHelp(true)}
-      onEscape={() => { setHighlightedIndex(-1); clearPendingDelete() }}
-      confirmDeleteName={
-        pendingDelete && highlighted?.id === pendingDelete.id ? highlighted.name : null
-      }
+      onEscape={() => setHighlightedIndex(-1)}
       activeDescendantId={highlighted ? `row-${highlighted.id}` : undefined}
       autoFocusKey={dispatchFocusNonce}
       isPending={createSession.isPending}
     />
   )
 
+  const iconBtn = cn(
+    'flex items-center justify-center h-9 w-9 rounded-md',
+    'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
+    'hover:bg-gray-100 dark:hover:bg-gray-800',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+  )
   const shell = (
     <div className="flex flex-col h-screen bg-background text-foreground">
       <header className="flex items-center justify-between px-4 py-2 border-b border-border flex-shrink-0">
         <h1 className="text-lg font-bold tracking-tight">ccswitch</h1>
-        <button
-          ref={settingsButtonRef}
-          type="button"
-          onClick={() => setShowSettings(true)}
-          aria-label="Settings"
-          className={cn(
-            'flex items-center justify-center h-9 w-9 rounded-md',
-            'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
-            'hover:bg-gray-100 dark:hover:bg-gray-800',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-          )}
-        >
-          <Settings size={18} aria-hidden="true" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setShowHelp(true)}
+            aria-label="Open help"
+            className={iconBtn}
+          >
+            <HelpCircle size={18} aria-hidden="true" />
+          </button>
+          <button
+            ref={settingsButtonRef}
+            type="button"
+            onClick={() => setShowSettings(true)}
+            aria-label="Settings"
+            className={iconBtn}
+          >
+            <Settings size={18} aria-hidden="true" />
+          </button>
+        </div>
       </header>
 
       {allLimitedReset !== undefined && (
@@ -500,7 +492,7 @@ export function DesktopShell() {
           isPending={permanentDeleteSession.isPending}
         />
       )}
-      {showHelp && <ShortcutsHelp onClose={() => setShowHelp(false)} />}
+      {showHelp && <HelpDrawer onClose={() => setShowHelp(false)} />}
       {showSettings && (
         <SettingsPanel onClose={() => { setShowSettings(false); settingsButtonRef.current?.focus() }} />
       )}

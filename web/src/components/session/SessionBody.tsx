@@ -14,6 +14,7 @@ import { StatusBar } from './StatusBar'
 import { TranscriptView } from './TranscriptView'
 import { SessionPlaceholder } from './SessionPlaceholder'
 import { WorkingIndicator } from './WorkingIndicator'
+import { CondensingProgress } from './CondensingProgress'
 import { PendingQuestionPanel } from './PendingQuestionPanel'
 import { PendingPermissionPanel } from './PendingPermissionPanel'
 import { SessionAriaLive } from './SessionAriaLive'
@@ -176,15 +177,19 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
 
             {/* Prominent "waiting for Claude" indicator shown below the last turn */}
             {statusTier(rt.state.status.state) === 'busy' && (
-              <div
-                aria-hidden="true"
-                className={cn(
-                  'flex-shrink-0 flex items-center px-4 py-2',
-                  'text-xs text-gray-400 dark:text-gray-500',
-                )}
-              >
-                <WorkingIndicator count={rt.state.status.count} subAgentCount={runningSubAgents} />
-              </div>
+              rt.state.status.state === 'condensing' ? (
+                <CondensingProgress expectedMs={rt.state.condense?.expectedMs ?? 12000} />
+              ) : (
+                <div
+                  aria-hidden="true"
+                  className={cn(
+                    'flex-shrink-0 flex items-center px-4 py-2',
+                    'text-xs text-gray-400 dark:text-gray-500',
+                  )}
+                >
+                  <WorkingIndicator count={rt.state.status.count} subAgentCount={runningSubAgents} />
+                </div>
+              )
             )}
 
             {/* Pinned permission panel for the live open permission (respond in place).

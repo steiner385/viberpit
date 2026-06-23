@@ -26,7 +26,7 @@ from server.tests.fakes import fake_sdk as f
 # ---------------------------------------------------------------------------
 
 def _factory(msgs):
-    def make(cwd, config_dir, can_use_tool, mode, resume):
+    def make(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         from server.tests.fakes.fake_sdk import FakeSDKClient
         return FakeSDKClient(msgs, on_can_use_tool=can_use_tool)
     return make
@@ -171,7 +171,7 @@ def test_on_sync_back_sdk_rotation_captured_in_slot(tmp_path):
         async def interrupt(self): pass
         async def set_permission_mode(self, mode): pass
 
-    def sdk_factory(cwd, cfg, can_use_tool, mode, resume):
+    def sdk_factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
         return RotatingSDK()
 
     # Minimal sync_back: reads config_dir/.credentials.json, writes claudeAiOauth to slot

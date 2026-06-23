@@ -34,6 +34,14 @@ def S(**kw):
     (S(turns_completed=1, last_turn_outcome="complete", pending_question=True), "waiting_question"),
     # outcome is ignored before the first completed turn
     (S(turns_completed=0, last_turn_outcome="complete"),             "idle"),
+    # condensing outranks an active turn
+    (S(turn_active=True, condensing=True),                           "condensing"),
+    # condensing=False with active turn → normal in_progress
+    (S(turn_active=True, condensing=False),                          "in_progress"),
+    # needs-you states outrank condensing
+    (S(condensing=True, pending_permission=True),                    "waiting_input"),
+    (S(condensing=True, pending_question=True),                      "waiting_question"),
+    (S(condensing=True, pending_plan=True),                          "ready_review"),
 ])
 def test_derive_status(sig, expected):
     assert derive_status(sig) == expected

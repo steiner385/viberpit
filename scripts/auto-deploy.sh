@@ -137,35 +137,107 @@ vnc_verdict() {
   fi
 }
 
-# Only idle-gate when a session-disrupting restart will happen: a daemon change, or an
-# in-process edge (where any restart kills sessions). A remote edge + edge-only change is
-# non-disruptive → never defer.
-if [ "$daemon_changed" = "1" ] || [ "$remote_active" != "1" ]; then
-  # Compute defer_reason: "busy", "vnc-attached", or empty (proceed).
+# Drain handshake. Asks the daemon (over its Unix socket) to stop starting new turns and
+# waits until it reports `ready` (no session mid-turn) or the cap elapses. Echoes
+# ready | cap | unavailable. Test seam: CCSWITCH_DEPLOY_DRAIN_RESULT forces the verdict.
+DRAIN_SOCK="${CCSWITCH_SESSIOND_SOCKET:-/run/ccswitch/sessiond.sock}"
+drain_and_wait() {
+  if [ -n "${CCSWITCH_DEPLOY_DRAIN_RESULT:-}" ]; then echo "$CCSWITCH_DEPLOY_DRAIN_RESULT"; return 0; fi
+  curl --unix-socket "$DRAIN_SOCK" -fsS -m 5 -X POST "http://daemon/rpc/begin_drain" \
+       -H 'content-type: application/json' -d '{}' >/dev/null 2>&1 || { echo unavailable; return 0; }
+  local cap start body; cap="${CCSWITCH_DEPLOY_DRAIN_CAP_SEC:-180}"; start="$(date +%s)"
+  while :; do
+    body="$(curl --unix-socket "$DRAIN_SOCK" -fsS -m 5 -X POST "http://daemon/rpc/drain_status" \
+            -H 'content-type: application/json' -d '{}' 2>/dev/null || true)"
+    grep -q '"state":"ready"' <<<"$body" && { echo ready; return 0; }
+    [ "$(( $(date +%s) - start ))" -ge "$cap" ] && { echo cap; return 0; }
+    sleep 2
+  done
+}
+
+# Defer-across-ticks helper. Called when a deploy cannot proceed immediately; tracks
+# how long we have been deferring with a state file holding "<tip-sha> <streak-start-epoch>".
+# The force-cap is anchored to the START of a continuous defer streak, NOT to the current
+# commit: on the first deferral the streak is seeded and we exit 0 (retry next tick); on
+# subsequent ticks we keep the original anchor (refreshing only the sha for logging) and
+# exit 0, until MAX_DEFER_SEC is exceeded, at which point we log "forcing" and fall through.
+#
+# The anchor is deliberately NOT reset when origin/master advances mid-streak. Resetting
+# per-sha (the pre-fix behavior) meant a busy server during a rapid-merge burst never hit
+# the cap — each new commit restarted the timer and changes never shipped (deploy
+# starvation; surfaced by the 2026-06-23 stall-watchdog incident). The streak is cleared
+# only when a deploy completes (rm at EOF) or the server goes idle (this helper isn't called).
+# $1 = human-readable reason (e.g. "busy" or "vnc-attached")
+defer_across_ticks() {
+  local reason="$1"
+  local MAX_DEFER; MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
+  local now; now="$(date +%s)"
+  local mts; mts=0
+  # First field (a prior tip sha) intentionally discarded — the cap anchors on mts.
+  if [ -f "$DEFER_FILE" ]; then read -r _ mts < "$DEFER_FILE" || true; fi
+  if [ "${mts:-0}" -le 0 ] 2>/dev/null; then
+    printf '%s %s\n' "$REMOTE" "$now" > "$DEFER_FILE"   # new streak begins
+    echo "[deploy] ${reason} — deferring ${REMOTE:0:9} (will retry)"; exit 0
+  elif [ "$(( now - mts ))" -gt "$MAX_DEFER" ]; then
+    echo "[deploy] ${reason} for $(( now - mts ))s (> ${MAX_DEFER}s) — forcing deploy of ${REMOTE:0:9}" >&2
+  else
+    # Keep the original anchor; refresh only the sha so the log names the current tip.
+    printf '%s %s\n' "$REMOTE" "$mts" > "$DEFER_FILE"
+    echo "[deploy] ${reason} — deferring ${REMOTE:0:9} ($(( now - mts ))s so far)"; exit 0
+  fi
+}
+
+# Decide whether a session-disrupting restart is imminent and how to make it safe:
+#  - In-process mode (no daemon): ANY restart kills sessions → legacy busy/VNC idle-gate.
+#  - Daemon mode + daemon-affecting change: graceful drain (VNC still defers across ticks).
+#  - Daemon mode + edge-only change: non-disruptive → skip entirely.
+if [ "$remote_active" != "1" ]; then
+  # Legacy idle-gate (defer across ticks, capped). Unchanged behavior for in-process hosts.
   defer_reason=""
   if [ "$(busy_verdict)" = "busy" ]; then
     defer_reason="busy"
   elif [ "$(vnc_verdict)" = "attached" ]; then
     defer_reason="vnc-attached"
   fi
-
   if [ -n "$defer_reason" ]; then
-    MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
-    now="$(date +%s)"
-    msha=""; mts=0
-    if [ -f "$DEFER_FILE" ]; then read -r msha mts < "$DEFER_FILE" || true; fi
-    if [ "$msha" != "$REMOTE" ]; then
-      printf '%s %s\n' "$REMOTE" "$now" > "$DEFER_FILE"
-      echo "[deploy] ${defer_reason} — deferring ${REMOTE:0:9} (will retry)"; exit 0
-    elif [ "$(( now - mts ))" -gt "$MAX_DEFER" ]; then
-      echo "[deploy] ${defer_reason} for $(( now - mts ))s (> ${MAX_DEFER}s) — forcing deploy of ${REMOTE:0:9}" >&2
-    else
-      echo "[deploy] ${defer_reason} — deferring ${REMOTE:0:9} ($(( now - mts ))s so far)"; exit 0
-    fi
+    defer_across_ticks "$defer_reason"
   fi
+elif [ "$daemon_changed" = "1" ]; then
+  # VNC watcher? Defer across ticks (don't restart under a live viewer), capped.
+  if [ "$(vnc_verdict)" = "attached" ]; then
+    defer_across_ticks "vnc-attached"
+  fi
+  # Graceful drain: let the in-flight turn finish, then restart.
+  case "$(drain_and_wait)" in
+    ready)
+      echo "[deploy] drained — proceeding with ${REMOTE:0:9}" ;;
+    cap)
+      echo "[deploy] drain cap (${CCSWITCH_DEPLOY_DRAIN_CAP_SEC:-180}s) exceeded — forcing restart of ${REMOTE:0:9}; in-flight turn will resume from transcript" >&2 ;;
+    *)
+      echo "[deploy] drain unavailable — proceeding with ${REMOTE:0:9} (post-restart health gate guards the rest)" >&2 ;;
+  esac
 else
   echo "[deploy] edge-only change, remote mode — non-disruptive restart, skipping idle gate"
 fi
+
+# Restart the session daemon when daemon code changed and the unit is enabled here.
+# Reads $daemon_changed (a global set earlier in the main body) — only ever CALLED
+# after that variable is set, so the late binding is fine.
+#
+# ORDER IS LOAD-BEARING: this must be called BEFORE restarting the edge
+# (ccswitch.service). The browser buffers prompts during drain and auto-resends them
+# on its first WebSocket reconnect — which fires on the edge restart (~1s). If the
+# daemon were still DRAINING at that moment, the resent prompts would hit the drain
+# guard, get rejected, and be silently dropped, defeating the feature's core
+# guarantee. Restarting the daemon first ensures it is already fresh (drain cleared,
+# new code) before the browser reconnects to the edge.
+restart_daemon_if_changed() {
+  if [ "$daemon_changed" = "1" ] && systemctl is-enabled ccswitch-daemon.service >/dev/null 2>&1; then
+    echo "[deploy] restarting ccswitch-daemon.service (daemon code changed)"
+    sudo systemctl restart ccswitch-daemon.service || \
+      echo "[deploy] WARNING: daemon restart failed" >&2
+  fi
+}
 
 # Restore the working tree to the last-good commit and rebuild it. Called when any
 # gate fails AFTER the fast-forward. Resetting HEAD back to $LOCAL is what makes the
@@ -228,6 +300,10 @@ if ! ( cd web && npm run build ); then
 fi
 
 # All gates green — swap in the new code.
+# DAEMON FIRST, then edge — order is load-bearing; see restart_daemon_if_changed()
+# for the full explanation. The browser's reconnect-flush fires on the edge restart
+# (~1s); by then the daemon must already be fresh so resent prompts are accepted.
+restart_daemon_if_changed
 sudo systemctl restart ccswitch.service
 
 # Post-restart health gate. The new process must answer /healthz with status ok
@@ -251,6 +327,9 @@ done
 if [ "$healthy" -ne 1 ]; then
   echo "[deploy] /healthz did not report status:ok + sha=${EXPECTED_SHA} after restart" >&2
   rollback_to_local
+  # Roll back both units together so they run the same (old) code — split-version
+  # (daemon=new / edge=old) would be a worse failure than both on old code.
+  restart_daemon_if_changed
   # The new (broken) backend was already swapped in above — restart the rolled-back
   # code so the last-good version is the one actually serving.
   sudo systemctl restart ccswitch.service
@@ -284,13 +363,7 @@ else
   echo "[deploy] WARNING: could not publish GitHub deployment for ${REMOTE:0:9} (token/permission/network?)" >&2
 fi
 
-# Restart the session daemon only when daemon code changed AND the unit is enabled on
-# this host. Guarded so a host (or CI) without the daemon unit is a no-op. Edge-only
-# changes leave the daemon running — it holds all live sessions in remote mode.
-if [ "$daemon_changed" = "1" ] && systemctl is-enabled ccswitch-daemon.service >/dev/null 2>&1; then
-  echo "[deploy] daemon code changed — restarting ccswitch-daemon.service"
-  sudo systemctl restart ccswitch-daemon.service || \
-    echo "[deploy] WARNING: daemon restart failed (edge already live)" >&2
-fi
-
+# NOTE: the daemon was already restarted BEFORE the edge (see restart_daemon_if_changed,
+# called in the "swap in the new code" section above) — the order is load-bearing for the
+# graceful-drain handshake, so there is deliberately no daemon restart here at end-of-script.
 rm -f "$DEFER_FILE"

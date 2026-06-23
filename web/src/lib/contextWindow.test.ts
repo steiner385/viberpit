@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { modelContextWindow, remainingContextPct } from './contextWindow'
+import { modelContextWindow, remainingContextPct, contextSeverity } from './contextWindow'
 
 describe('modelContextWindow', () => {
   it('defaults to 200k for a normal model id', () => {
@@ -35,5 +35,21 @@ describe('remainingContextPct', () => {
   it('clamps to 0 when usage exceeds the window (never negative)', () => {
     const usage = { input: 300_000, output: 0, cacheRead: 0, costUsd: 0 }
     expect(remainingContextPct(usage, 'claude-sonnet-4-5')).toBe(0)
+  })
+})
+
+describe('contextSeverity', () => {
+  it('is neutral when plenty remains or unknown', () => {
+    expect(contextSeverity(null)).toBe('neutral')
+    expect(contextSeverity(80)).toBe('neutral')
+    expect(contextSeverity(26)).toBe('neutral')
+  })
+  it('warns in the mid band', () => {
+    expect(contextSeverity(25)).toBe('warning')
+    expect(contextSeverity(11)).toBe('warning')
+  })
+  it('is danger when nearly full', () => {
+    expect(contextSeverity(10)).toBe('danger')
+    expect(contextSeverity(2)).toBe('danger')
   })
 })
