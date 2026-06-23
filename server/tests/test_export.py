@@ -70,7 +70,7 @@ def _write_transcript(tmp_path: Path, n_turns: int) -> str:
     return str(p)
 
 
-def _make_app(tmp_path: Path, n_turns: int, db_url: str, *, has_transcript: bool = True):
+def _make_app(tmp_path, n_turns, db_url, *, has_transcript=True):
     """Build a test app with a patched orchestrator for export tests."""
     from server.app import create_app
     from server.sessions.orchestrator import SessionOrchestrator

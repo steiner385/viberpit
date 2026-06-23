@@ -36,7 +36,7 @@ def _write_transcript(tmp_path: Path, n_turns: int) -> str:
     return str(p)
 
 
-def _make_app_with_patched_transcript(tmp_path: Path, n_turns: int, db_url: str):
+def _make_app_with_patched_transcript(tmp_path, n_turns, db_url):
     """Build a test app whose orchestrator's transcript resolution is patched."""
     transcript_path = _write_transcript(tmp_path, n_turns)
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
