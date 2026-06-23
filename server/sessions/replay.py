@@ -1,9 +1,18 @@
 from __future__ import annotations
 import json, asyncio
+from dataclasses import dataclass, field
 from . import events as ev
 
 
-def _parse(path: str, max_turns: int) -> list:
+@dataclass
+class ReplayWindow:
+    events: list = field(default_factory=list)
+    earliest_turn: int = 0
+    total_turns: int = 0
+
+
+def _build_events(path: str) -> tuple[list, object | None]:
+    """Parse the full JSONL into (events, meta_event). No trimming."""
     lines = []
     with open(path, errors="ignore") as f:
         for raw in f:
@@ -54,7 +63,7 @@ def _parse(path: str, max_turns: int) -> list:
             # Reconstruct the model once (status strip needs it after re-attach).
             model = msg.get("model")
             if model and meta_event is None:
-                # Held aside (not appended) so the trim below can't slice it away on
+                # Held aside (not appended) so trimming can't slice it away on
                 # long sessions — the status strip needs the model after re-attach.
                 meta_event = ev.SessionMeta(model=model, session_id=o.get("sessionId") or "")
             out.append(ev.TurnStart(turn_id=uuid, src_uuid=uuid))
@@ -74,8 +83,8 @@ def _parse(path: str, max_turns: int) -> list:
                         for qi, q in enumerate((b.get("input") or {}).get("questions") or []):
                             if not isinstance(q, dict):
                                 continue
-                            opts = [o if isinstance(o, dict) else {"label": str(o)}
-                                    for o in (q.get("options") or [])]
+                            opts = [o2 if isinstance(o2, dict) else {"label": str(o2)}
+                                    for o2 in (q.get("options") or [])]
                             out.append(ev.Question(
                                 question_id=f"{b.get('id') or uuid}-{qi}",
                                 turn_id=uuid,
@@ -89,15 +98,38 @@ def _parse(path: str, max_turns: int) -> list:
                                                ev.tool_kind(b.get("name", "")), b.get("input", {}), uuid))
             usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
             out.append(ev.TurnEnd(uuid, usage, None, uuid))
-    # keep only the last max_turns assistant turns' worth — for the small fixture this is a no-op;
-    # a turn boundary is a TurnStart. Trim from the front to the start of the (max_turns)-th-from-last turn.
+    return out, meta_event
+
+
+def _window(path: str, before: int | None, limit: int) -> ReplayWindow:
+    out, meta_event = _build_events(path)
     starts = [i for i, e in enumerate(out) if isinstance(e, ev.TurnStart)]
-    if len(starts) > max_turns:
-        out = out[starts[-max_turns]:]
-    # Prepend the model meta (if any) so it always precedes the kept turns.
+    ends   = [i for i, e in enumerate(out) if isinstance(e, ev.TurnEnd)]
+    total = len(starts)
+    if total == 0:
+        # No assistant turns — return any user/tool events as-is (e.g. an
+        # image-only user turn with no reply yet, or an empty transcript).
+        return ReplayWindow(events=list(out), earliest_turn=0, total_turns=0)
+    end = total if before is None else max(0, min(before, total))
+    start = max(0, end - limit)
+    # Include user messages / tool-results that precede the first TurnStart in
+    # the window: they sit between the previous TurnEnd (or file start) and the
+    # TurnStart. Without this, slicing from starts[start] drops those events.
+    slice_lo = 0 if start == 0 else ends[start - 1] + 1
+    slice_hi = starts[end] if end < total else len(out)
+    window = out[slice_lo:slice_hi]
     if meta_event is not None:
-        out.insert(0, meta_event)
-    return out
+        window = [meta_event] + window
+    return ReplayWindow(events=window, earliest_turn=start, total_turns=total)
+
+
+def _parse(path: str, max_turns: int) -> list:
+    """Back-compat: last `max_turns` turns as a flat event list."""
+    return _window(path, before=None, limit=max_turns).events
+
+
+async def replay_window(jsonl_path: str, *, before: int | None = None, limit: int = 20) -> ReplayWindow:
+    return await asyncio.to_thread(_window, jsonl_path, before, limit)
 
 
 async def replay_events(jsonl_path: str, *, max_turns: int = 20) -> list:
