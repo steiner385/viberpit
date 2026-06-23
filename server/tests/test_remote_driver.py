@@ -100,3 +100,13 @@ async def test_remote_driver_subscribes_with_head_seq_anchor():
     except StopAsyncIteration:
         pass
     assert captured["since"] == 7
+
+
+@pytest.mark.asyncio
+async def test_remote_driver_seed_idle_suggestions_calls_rpc():
+    c = _FakeClient([])
+    d = RemoteDriver(c, "s1")
+    d.seed_idle_suggestions("hi", "there")
+    await asyncio.sleep(0.05)   # let the fire-and-forget task run
+    assert ("seed_idle_suggestions",
+            {"session_id": "s1", "user_text": "hi", "assistant_text": "there"}) in c.calls

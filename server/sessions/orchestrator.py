@@ -988,6 +988,11 @@ class SessionOrchestrator:
         if d:
             await d.interrupt()
 
+    def seed_idle_suggestions(self, session_id, user_text, assistant_text) -> None:
+        d = self._drivers.get(session_id)
+        if d is not None:
+            d.seed_idle_suggestions(user_text, assistant_text)
+
     async def set_permission_mode(self, session_id, mode):
         d = self._drivers.get(session_id)
         if d:

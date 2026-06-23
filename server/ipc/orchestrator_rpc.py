@@ -111,6 +111,11 @@ def register_orchestrator_rpc(app, orch) -> None:
     async def active_session_count(params: dict):
         return orch.active_session_count()
 
+    async def seed_idle_suggestions(params: dict) -> dict:
+        orch.seed_idle_suggestions(params["session_id"], params["user_text"], params["assistant_text"])
+        return {"ok": True}
+
     register_rpc(app, "usage", usage)
     register_rpc(app, "pending_permissions", pending_permissions)
     register_rpc(app, "active_session_count", active_session_count)
+    register_rpc(app, "seed_idle_suggestions", seed_idle_suggestions)
