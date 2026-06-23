@@ -45,4 +45,37 @@ describe('SessionCard — list-mode keys', () => {
     render(<SessionCard {...props({ listMode: true, selected: true })} />)
     expect(screen.getByRole('button', { name: /open session alpha/i })).toHaveFocus()
   })
+
+  it('outside list mode, single-key shortcuts are blocked; only Enter/Space open', async () => {
+    // When NOT in list mode but the row is still selected (tabIndex=0), prevent
+    // stray keypresses (d/a/Backspace/Delete) from firing destructive actions.
+    // Only preserve Enter/Space to open the session (compose-mode affordance).
+    const onDelete = vi.fn(), onClose = vi.fn(), onOpen = vi.fn()
+    render(<SessionCard {...props({ listMode: false, selected: true, onDelete, onClose, onOpen })} />)
+    const btn = screen.getByRole('button', { name: /open session alpha/i })
+    btn.focus()
+
+    const user = userEvent.setup()
+    await user.keyboard('d')
+    expect(onDelete).not.toHaveBeenCalled()
+
+    await user.keyboard('a')
+    expect(onClose).not.toHaveBeenCalled()
+
+    await user.keyboard('{Backspace}')
+    expect(onClose).not.toHaveBeenCalled()
+
+    await user.keyboard('{Delete}')
+    expect(onDelete).not.toHaveBeenCalled()
+
+    // But Enter should still open
+    await user.keyboard('{Enter}')
+    expect(onOpen).toHaveBeenCalledWith('s1')
+
+    onOpen.mockClear()
+
+    // And Space should also open
+    await user.keyboard(' ')
+    expect(onOpen).toHaveBeenCalledWith('s1')
+  })
 })

@@ -69,6 +69,16 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const repoLabel = formatRepoLabel(session.repo)
 
   function handleKeyDown(e: React.KeyboardEvent) {
+    // Single-key shortcuts are only live in list-focus mode. Outside it the row can
+    // still hold native focus (tabIndex 0 when selected), so guard against stray
+    // destructive keypresses — keep only the Enter/Space "open" affordance.
+    if (!listMode) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        onOpen(session.id)
+      }
+      return
+    }
     const action = matchListShortcut(e)
     if (!action) return
     e.preventDefault()
