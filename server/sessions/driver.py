@@ -277,7 +277,8 @@ class SessionDriver:
         return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied by user")
 
     async def start(self):
-        self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, self.resume)
+        self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
+                                     self.resume, on_pre_compact=self._on_pre_compact)
         await self._client.__aenter__()
 
     async def send_prompt(self, text: str, images: list[dict] | None = None):
@@ -552,7 +553,8 @@ class SessionDriver:
         self._queue.clear()
         self._turn_active = False
         self._tr = Translator()
-        client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None)
+        client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None,
+                               on_pre_compact=self._on_pre_compact)
         self._client = client
         await client.__aenter__()
 

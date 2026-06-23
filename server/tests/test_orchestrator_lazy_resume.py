@@ -391,7 +391,7 @@ def test_ensure_driver_recreates_missing_cwd(tmp_path):
     missing_cwd = str(tmp_path / "gone" / "session-cwd")  # does NOT exist
     session_id = "s-missing-cwd"
 
-    def factory(cwd, cfg, can_use_tool, mode, resume):
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
         return FakeSDKClient([], on_can_use_tool=can_use_tool)
 
     async def _run():
