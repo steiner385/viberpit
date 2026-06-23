@@ -1374,12 +1374,10 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   const sendPrompt = useSendPrompt()
   const handleQuickResume = useCallback((id: string, text?: string) => {
-    if (text) {
-      sendPrompt.mutate({ id, text })   // fire in place, stay on the list
-    } else {
-      handleOpen(id)                    // open the session; use its play button to generate + confirm
-    }
-  }, [sendPrompt, handleOpen])
+    // Always fire in place — the backend lazily resumes a detached session first,
+    // so this unsticks idle/"Ready" sessions without leaving the list.
+    sendPrompt.mutate({ id, text: text || 'continue' })
+  }, [sendPrompt])
 
   function handleRename(id: string) {
     const session = sessions.find((s) => s.id === id)
