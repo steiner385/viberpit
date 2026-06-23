@@ -205,12 +205,9 @@ export function DesktopShell() {
 
   const sendPrompt = useSendPrompt()
   const handleQuickResume = useCallback((id: string, text?: string) => {
-    if (text) {
-      sendPrompt.mutate({ id, text })
-    } else {
-      focusSession(id)
-    }
-  }, [sendPrompt, focusSession])
+    // Always fire in place — the backend lazily resumes a detached session first.
+    sendPrompt.mutate({ id, text: text || 'continue' })
+  }, [sendPrompt])
 
   function handleRename(id: string) {
     const session = orderedSessions.find((s) => s.id === id)
