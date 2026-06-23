@@ -62,7 +62,7 @@ def _reason(composite: float, acct_load: float) -> str:
     return "perishable quota, lowest load" if acct_load == 0.0 else "perishable quota, sharing live load"
 
 
-def rank_accounts(usages: dict[str, "Usage | None"], reserved: AbstractSet[str],
+def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
                   cfg: Config, now: datetime, exclude: AbstractSet[str] = frozenset(),
                   load: dict[str, float] | None = None,
                   ) -> tuple[list[RankedAccount], datetime | None]:

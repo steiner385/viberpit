@@ -205,6 +205,9 @@ def test_get_accounts_includes_live_sessions_and_rank():
     assert ranks == [1, 2]
     ranked_one = next(a for a in resp.json() if a["rank"] == 1)
     assert isinstance(ranked_one["rankReason"], str)
+    # Lower-usage account gets next-pick priority (rank 1); higher-usage is rank 2.
+    assert body["low"]["rank"] == 1
+    assert body["high"]["rank"] == 2
 
 
 def test_get_accounts_at_ceiling_has_null_rank():
