@@ -34,9 +34,15 @@ async def _relay(ws, tcp, idle: float = 30.0) -> None:
 
     t1 = asyncio.create_task(ws_to_tcp())
     t2 = asyncio.create_task(tcp_to_ws())
-    done, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
-    for t in pending:
-        t.cancel()
+    try:
+        _done, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+    finally:
+        try:
+            await tcp.close()
+        except Exception:  # noqa: BLE001 — cleanup is best-effort
+            pass
 
 
 class _StreamAdapter:
@@ -54,6 +60,12 @@ class _StreamAdapter:
 
     async def drain(self):
         await self._w.drain()
+
+    async def close(self):
+        try:
+            self._w.close()
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            pass
 
 
 class _WSAdapter:
@@ -81,6 +93,12 @@ class _WSAdapter:
         if self._pending is not None:
             await self._ws.send(self._pending)
             self._pending = None
+
+    async def close(self):
+        try:
+            await self._ws.close()
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            pass
 
 
 def build_vnc_ws_router(get_x11) -> APIRouter:
