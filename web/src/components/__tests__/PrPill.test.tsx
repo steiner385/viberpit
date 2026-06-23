@@ -6,7 +6,7 @@ import type { PullRequestInfo } from '@/api/types'
 
 const base: PullRequestInfo = {
   number: 42, url: 'https://github.com/o/r/pull/42',
-  state: 'open', checks: 'passing', title: 'Add thing',
+  state: 'open', checks: 'passing', title: 'Add thing', deployed: false,
 }
 
 describe('PrPill', () => {
@@ -38,5 +38,17 @@ describe('PrPill', () => {
     expect(screen.getByRole('link')).toHaveAttribute('data-checks', 'failing')
     rerender(<PrPill pr={{ ...base, checks: 'pending' }} />)
     expect(screen.getByRole('link')).toHaveAttribute('data-checks', 'pending')
+  })
+
+  it('shows a deployed affordance for a deployed merged PR', () => {
+    render(<PrPill pr={{ ...base, state: 'merged', deployed: true }} />)
+    const link = screen.getByRole('link')
+    expect(link).toHaveAttribute('data-deployed', 'true')
+    expect(link.getAttribute('aria-label')).toMatch(/deployed/i)
+  })
+
+  it('shows no deployed affordance when not deployed', () => {
+    render(<PrPill pr={{ ...base, state: 'merged', deployed: false }} />)
+    expect(screen.getByRole('link')).not.toHaveAttribute('data-deployed', 'true')
   })
 })

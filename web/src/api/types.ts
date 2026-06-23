@@ -117,6 +117,7 @@ export interface PullRequestInfo {
   state: 'open' | 'draft' | 'merged' | 'closed'
   checks: 'passing' | 'failing' | 'pending' | 'none'
   title: string
+  deployed: boolean
 }
 
 export interface ModelOption { id: string; label: string }

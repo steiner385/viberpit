@@ -530,8 +530,8 @@ def test_queue_update_emitted_when_enqueuing():
     queue_updates = [e for e in events if isinstance(e, QueueUpdate)]
     # Two enqueue operations → two QueueUpdate events
     assert len(queue_updates) == 2
-    assert queue_updates[0].items == ["second"]
-    assert queue_updates[1].items == ["second", "third"]
+    assert queue_updates[0].items == [{"text": "second", "images": []}]
+    assert queue_updates[1].items == [{"text": "second", "images": []}, {"text": "third", "images": []}]
 
 
 def test_cancel_queued_removes_item_and_emits_queue_update():
@@ -575,7 +575,7 @@ def test_cancel_queued_removes_item_and_emits_queue_update():
         queue_updates = [e for e in events if isinstance(e, QueueUpdate)]
         statuses = [e for e in events if isinstance(e, Status)]
         assert len(queue_updates) == 1
-        assert queue_updates[0].items == ["third"]
+        assert queue_updates[0].items == [{"text": "third", "images": []}]
         assert any(s.count == 1 for s in statuses)
 
         await d.aclose()
@@ -695,3 +695,38 @@ def test_askuserquestion_chat_framing():
         assert "why are you asking this?" in result.message
 
     asyncio.run(run())
+
+
+def test_queue_wire_includes_images_for_queued_prompt():
+    """A prompt queued while busy is exposed via queue_wire() with its image refs."""
+    import asyncio
+
+    class SlowFakeSDK:
+        def __init__(self): self.queries = []
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt): self.queries.append(prompt)
+        async def receive_response(self):
+            await asyncio.sleep(0.05)
+            yield f.result(uuid="t1")
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    sdk = SlowFakeSDK()
+    def factory(cwd, cfg, can_use_tool, mode, resume): return sdk
+    images = [{"sha": "a", "mime": "image/png", "name": "s.png",
+               "path": "/tmp/x", "url": "/api/attachments/a"}]
+
+    async def run():
+        d = SessionDriver("sq", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        await d.send_prompt("first")            # starts the (slow) turn
+        await d.send_prompt("second", images)   # queues behind it
+        wire = d.queue_wire()
+        await d.aclose()
+        return wire
+
+    wire = asyncio.run(run())
+    assert wire == [{"text": "second",
+                     "images": [{"url": "/api/attachments/a", "mime": "image/png", "name": "s.png"}]}]
