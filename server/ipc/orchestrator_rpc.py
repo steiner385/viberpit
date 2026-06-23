@@ -68,7 +68,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "set_permission_mode", "cancel_queued", "resolve_permission", "answer_question",
         "transcript_path", "pending_questions", "pop_pending_initial_prompt",
         "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
-        "latest_suggestions",
+        "latest_suggestions", "seed_idle_suggestions",
     ]
 
     def _make_simple(method_name):

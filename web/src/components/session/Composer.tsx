@@ -296,12 +296,19 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
             style={{ maxHeight: '192px' }}
           />
           {ghost && (
-            <div
+            // Tap-to-accept: soft keyboards have no Tab/→, so the overlay itself is the
+            // touch affordance. Keyboard users still accept via Tab/→ in handleKeyDown
+            // (which fires while the textarea keeps focus); tabIndex -1 keeps this button
+            // out of the tab order so it doesn't add a second stop or steal that flow.
+            <button
+              type="button"
               data-testid="ghost-suggestion"
-              aria-hidden="true"
+              tabIndex={-1}
+              aria-label={`Use suggestion: ${ghost}`}
+              onClick={() => prefill(ghost)}
               className={cn(
-                'pointer-events-none absolute inset-0 flex items-center justify-between gap-2',
-                'px-3 py-2 text-sm',
+                'absolute inset-0 flex items-center justify-between gap-2 text-left',
+                'px-3 py-2 text-sm focus-visible:outline-none',
               )}
             >
               <span className="truncate text-gray-400 dark:text-gray-500">{ghost}</span>
@@ -311,7 +318,7 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
               )}>
                 ⇥ Tab
               </span>
-            </div>
+            </button>
           )}
         </div>
 

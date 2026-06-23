@@ -110,7 +110,7 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
             {session.name}
           </span>
           <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
-            {session.accountName}
+            {account?.nickname || session.accountName}
           </span>
           {/* Sub-agent count, visible without expanding. Only shown while
               collapsed — once expanded, the chevron + SubAgentRows carry it. */}

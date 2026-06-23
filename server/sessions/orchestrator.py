@@ -766,6 +766,17 @@ class SessionOrchestrator:
         """Return the live SessionDriver for session_id, or None."""
         return self._drivers.get(session_id)
 
+    def seed_idle_suggestions(self, session_id: str, user_text: str, assistant_text: str) -> None:
+        """Seed idle-session suggestions on the live driver (best-effort).
+
+        Forwarded here over RPC by the edge's RemoteDriver so daemon mode matches
+        the in-process path, where ws.py calls the driver directly. No live driver
+        for the session → no-op (the seeding is best-effort and gated driver-side).
+        """
+        d = self._drivers.get(session_id)
+        if d is not None:
+            d.seed_idle_suggestions(user_text, assistant_text)
+
     async def ensure_driver(self, session_id: str, identity: str = "system") -> SessionDriver | None:
         """Return the live SessionDriver for session_id, resuming from DB if detached.
 
