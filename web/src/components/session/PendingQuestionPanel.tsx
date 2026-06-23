@@ -36,6 +36,7 @@ export function PendingQuestionPanel({ turns, onAnswer, onChat, armedQuestionId 
       data-testid="pending-question-panel"
     >
       <QuestionCard
+        key={q.questionId}
         block={q}
         onAnswer={onAnswer}
         onChat={onChat}

@@ -63,4 +63,18 @@ describe('PendingQuestionPanel', () => {
     await user.click(screen.getByRole('button', { name: /send response/i }))
     expect(onAnswer).toHaveBeenCalledWith('q2', ['my freeform answer'], 'freeform')
   })
+
+  it('does not carry a freeform draft from one question to the next', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(
+      <PendingQuestionPanel turns={[turn(q('a', true))]} onAnswer={vi.fn()} onChat={vi.fn()} armedQuestionId={null} />)
+    await user.click(screen.getByRole('button', { name: /write a response/i }))
+    await user.type(screen.getByRole('textbox', { name: /write a response/i }), 'leaky draft')
+    // Question 'a' is answered/removed; 'b' takes its place at the same tree slot.
+    rerender(
+      <PendingQuestionPanel turns={[turn(q('b', true))]} onAnswer={vi.fn()} onChat={vi.fn()} armedQuestionId={null} />)
+    // The new question shows its options fresh — no textarea, no leaked text.
+    expect(screen.queryByRole('textbox', { name: /write a response/i })).toBeNull()
+    expect(screen.queryByText('leaky draft')).toBeNull()
+  })
 })
