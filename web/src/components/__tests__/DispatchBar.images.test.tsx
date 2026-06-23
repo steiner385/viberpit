@@ -51,3 +51,11 @@ it('dispatch with image-only (empty prompt) calls onDispatch not onOpenHighlight
     attachmentIds: ['att-1'] })))
   expect(onOpenHighlighted).not.toHaveBeenCalled()
 })
+
+it('file input uses image/* and is not camera-only', () => {
+  const { container } = render(<DispatchBar repos={[]} reposLoading={false} reposError={false} onDispatch={vi.fn()} />)
+  const input = container.querySelector('input[type=file]') as HTMLInputElement
+  expect(input.getAttribute('accept')).toBe('image/*')
+  expect(input.hasAttribute('capture')).toBe(false)
+  expect(input.multiple).toBe(true)
+})
