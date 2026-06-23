@@ -51,3 +51,18 @@ def test_block_events_carry_parent_tool_use_id_on_wire():
 def test_block_events_default_parent_to_none_on_wire():
     for e in (TurnStart("t1"), TurnEnd("t1"), ThinkingDelta("t1", "z")):
         assert e.to_wire()["parentToolUseId"] is None
+
+from server.sessions.events import QueueUpdate
+
+def test_queue_update_wire_carries_text_and_images():
+    qu = QueueUpdate([
+        {"text": "hello", "images": []},
+        {"text": "look", "images": [{"url": "/api/attachments/a", "mime": "image/png", "name": "s.png"}]},
+    ])
+    assert qu.to_wire() == {
+        "type": "queueUpdate",
+        "items": [
+            {"text": "hello", "images": []},
+            {"text": "look", "images": [{"url": "/api/attachments/a", "mime": "image/png", "name": "s.png"}]},
+        ],
+    }

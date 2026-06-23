@@ -280,7 +280,7 @@ class SessionDriver:
             log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
                       self.session_id, len(self._queue))
             await self._emit_status()
-            await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
+            await self._out.put(ev.QueueUpdate(self.queue_wire()))
             return
         # C3 — auto-title from the first prompt (first line, max 50 chars).
         if not self._titled:
@@ -397,7 +397,7 @@ class SessionDriver:
                 next_text, next_images = self._queue.pop(0)
                 log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
                           self.session_id, len(self._queue))
-                await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
+                await self._out.put(ev.QueueUpdate(self.queue_wire()))
                 await self._start_turn(next_text, next_images)
             else:
                 self._turn_active = False
@@ -409,12 +409,21 @@ class SessionDriver:
         """Return a snapshot of the queued prompt texts."""
         return [t for t, _ in self._queue]
 
+    def queue_wire(self) -> list[dict]:
+        """Structured queue snapshot: text + image refs per queued prompt."""
+        return [
+            {"text": t,
+             "images": [{"url": im["url"], "mime": im["mime"], "name": im.get("name", "")}
+                        for im in imgs]}
+            for t, imgs in self._queue
+        ]
+
     async def cancel_queued(self, index: int) -> bool:
         """Cancel a queued prompt by index. Returns True if removed, False if index invalid."""
         if index < 0 or index >= len(self._queue):
             return False
         self._queue.pop(index)
-        await self._out.put(ev.QueueUpdate([t for t, _ in self._queue]))
+        await self._out.put(ev.QueueUpdate(self.queue_wire()))
         await self._emit_status()
         return True
 
