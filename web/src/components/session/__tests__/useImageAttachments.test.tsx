@@ -76,4 +76,15 @@ describe('useImageAttachments', () => {
     await waitFor(() => expect(result.current.attachments).toHaveLength(5))
     expect(result.current.refs()).toHaveLength(5)
   })
+
+  it('seeds from initial attachments (rehydrated draft)', () => {
+    const initial = [{
+      key: 'seed-0', id: 'att-9', mime: 'image/png',
+      name: 's.png', previewUrl: '/api/attachments/att-9',
+    }]
+    const { result } = renderHook(() => useImageAttachments(initial))
+    expect(result.current.attachments).toHaveLength(1)
+    expect(result.current.attachments[0].previewUrl).toBe('/api/attachments/att-9')
+    expect(result.current.refs()).toEqual(['att-9'])
+  })
 })

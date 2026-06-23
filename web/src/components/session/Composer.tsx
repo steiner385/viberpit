@@ -2,11 +2,12 @@ import { useRef, useState, useCallback, useEffect } from 'react'
 import { Paperclip, X, Play, ChevronUp } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useImageAttachments } from './useImageAttachments'
+import { useSessionDraft, type DraftAttachment } from './useSessionDraft'
 import { AttachmentChips } from './AttachmentChips'
 import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
 import { MicButton } from './MicButton'
 import { useDictationField } from '@/lib/useDictationField'
-import type { Command } from '@/session/events'
+import type { Command, QueuedItem } from '@/session/events'
 import { statusTier } from '@/session/statusTier'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 
@@ -14,7 +15,7 @@ interface Props {
   status: { state: string; count: number }
   onPrompt: (text: string, attachmentIds: string[]) => void
   onInterrupt: () => void
-  queued?: string[]
+  queued?: QueuedItem[]
   onCancelQueued?: (index: number) => void
   chatArmed?: boolean
   commands?: Command[]
@@ -23,16 +24,32 @@ interface Props {
   autoFocusKey?: unknown
   suggestions?: string[]
   history?: string[]
+  sessionId?: string
 }
 
-export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [] }: Props) {
-  const [text, setText] = useState('')
+export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [], sessionId }: Props) {
+  const draft = useSessionDraft(sessionId)
+  const [text, setText] = useState(draft.initial.text)
   const [menuOpen, setMenuOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const paletteRef = useRef<CommandPaletteHandle>(null)
   const isWorking = statusTier(status.state) === 'busy'
-  const att = useImageAttachments()
+  const att = useImageAttachments(
+    draft.initial.attachments.map((a, i) => ({
+      key: `draft-${i}`, id: a.id, mime: a.mime, name: a.name,
+      previewUrl: `/api/attachments/${a.id}`,
+    })),
+  )
+
+  // Persist the unsent draft so it survives navigation (the Composer remounts
+  // per session via the session-keyed runtime provider).
+  useEffect(() => {
+    const attachments: DraftAttachment[] = att.attachments
+      .filter((a) => !a.error && a.id)
+      .map((a) => ({ id: a.id as string, mime: a.mime, name: a.name }))
+    draft.save({ text, attachments })
+  }, [text, att.attachments, draft])
   const voice = useDictationField({ value: text, setValue: setText, textareaRef })
   const slash = text.startsWith('/') && !text.includes('\n')
   const afterSlash = slash ? text.slice(1) : ''
@@ -105,17 +122,17 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
     const refs = att.refs()
     if (!trimmed && refs.length === 0) return
     if (refs.length === 0 && runCommandFromText(trimmed)) {
-      setText(''); if (textareaRef.current) textareaRef.current.style.height = 'auto'
+      setText(''); draft.clear(); if (textareaRef.current) textareaRef.current.style.height = 'auto'
       histPosRef.current = 0; draftRef.current = ''; return
     }
     onPrompt(trimmed, refs)
-    setText(''); att.clear()
+    setText(''); att.clear(); draft.clear()
     histPosRef.current = 0; draftRef.current = ''
     // Reset height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [text, onPrompt, att, runCommandFromText])
+  }, [text, onPrompt, att, runCommandFromText, draft])
 
   const prefill = useCallback((value: string) => {
     setText(value)
@@ -200,13 +217,25 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
         <div className="flex flex-col gap-1">
           {queued.map((item, index) => (
             <div
-              key={`${index}-${item.slice(0, 20)}`}
+              key={`${index}-${item.text.slice(0, 20)}`}
               className={cn(
                 'flex items-center justify-between gap-2 px-2 py-1 rounded',
                 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-xs',
               )}
             >
-              <span className="truncate flex-1">{item.length > 80 ? item.slice(0, 80) + '…' : item}</span>
+              <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                {item.images.map((img, i) => (
+                  <img
+                    key={i}
+                    src={img.url}
+                    alt={img.name || 'attachment'}
+                    className="h-8 w-8 rounded object-cover flex-shrink-0"
+                  />
+                ))}
+                <span className="truncate flex-1">
+                  {item.text.length > 80 ? item.text.slice(0, 80) + '…' : item.text}
+                </span>
+              </div>
               <button
                 type="button"
                 aria-label="Cancel queued prompt"

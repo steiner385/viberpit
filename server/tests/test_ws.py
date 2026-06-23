@@ -703,6 +703,45 @@ def test_attach_emits_live_status(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# Reattach re-emits the live queue (regression: queued chips vanished on nav)
+# ---------------------------------------------------------------------------
+
+def test_reattach_reemits_queue(ws_env):
+    """A client attaching to a live session with a queued prompt receives a
+    queueUpdate frame carrying the queued item (regression: previously only the
+    status count was re-emitted, so queued chips vanished on navigation)."""
+    class BusySDK(FakeSDKClient):
+        """Fake client whose turn never completes, so a second prompt queues."""
+        async def receive_response(self):
+            yield f.stream_start(uuid="t1")
+            await asyncio.sleep(30)   # keep the turn busy; test ends first
+
+    _app, orch, client = ws_env([], client_cls=BusySDK)
+    session = client.portal.call(orch.create_session, "q-reattach")
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws1:
+        ws1.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws1, until_type="replayComplete")
+        ws1.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "first"}))
+        # Wait until the turn is actually running, then queue a second prompt.
+        _drain_events(ws1, until_type="status", timeout=8.0)
+        ws1.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "second"}))
+        _drain_events(ws1, until_type="queueUpdate", timeout=8.0)
+
+        # Fresh attach: must be told about the queued "second" prompt.
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws2:
+            ws2.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+            events = _drain_events(ws2, until_type="queueUpdate", timeout=8.0)
+
+    qu = [e for e in events if e.get("type") == "queueUpdate"]
+    assert qu, f"no queueUpdate on reattach; saw {[e.get('type') for e in events]}"
+    assert qu[-1]["items"] == [{"text": "second", "images": []}]
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
 # Frame larger than 256KB is rejected, socket stays open
 # ---------------------------------------------------------------------------
 

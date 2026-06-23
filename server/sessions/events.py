@@ -148,7 +148,7 @@ class UserMessage:
 
 @dataclass
 class QueueUpdate:
-    items: list[str]
+    items: list[dict]  # each: {"text": str, "images": [{"url","mime","name"}]}
     def to_wire(self): return {"type": "queueUpdate", "items": self.items}
 
 @dataclass

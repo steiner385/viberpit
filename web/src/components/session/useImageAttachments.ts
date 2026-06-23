@@ -16,8 +16,8 @@ export type Attachment = {
 let _tmpId = 0
 const _nextKey = () => `att-${_tmpId++}`
 
-export function useImageAttachments() {
-  const [attachments, setAttachments] = useState<Attachment[]>([])
+export function useImageAttachments(initial?: Attachment[]) {
+  const [attachments, setAttachments] = useState<Attachment[]>(initial ?? [])
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
     const list = Array.from(files)
