@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Session } from '@/api/types'
 import { orderSessions, type GroupBy, type SortBy, type SessionGroup } from './ordering'
 import { loadSessionOrder, saveSessionOrder } from '@/lib/sessionOrder'
+import { loadGroupCollapse, saveGroupCollapse } from '@/lib/groupCollapse'
 
 export interface SessionOrdering {
   groupBy: GroupBy
@@ -10,6 +11,8 @@ export interface SessionOrdering {
   setSortBy: (s: SortBy) => void
   groups: SessionGroup[]
   orderedSessions: Session[]
+  collapsedKeys: Set<string>
+  toggleCollapse: (key: string) => void
 }
 
 /**
@@ -32,13 +35,31 @@ export function useSessionOrdering(
     saveSessionOrder({ groupBy, sortBy })
   }, [groupBy, sortBy])
 
+  const [collapsedKeys, setCollapsedKeys] = useState<Set<string>>(loadGroupCollapse)
+
+  useEffect(() => {
+    saveGroupCollapse(collapsedKeys)
+  }, [collapsedKeys])
+
+  const toggleCollapse = useCallback((key: string) => {
+    setCollapsedKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
+
   const filtered = useMemo(
     () => (matchedIds ? sessions.filter((s) => matchedIds.has(s.id)) : sessions),
     [sessions, matchedIds],
   )
 
   const groups = useMemo(() => orderSessions(filtered, groupBy, sortBy), [filtered, groupBy, sortBy])
-  const orderedSessions = useMemo(() => groups.flatMap((g) => g.sessions), [groups])
+  const orderedSessions = useMemo(
+    () => groups.filter((g) => !collapsedKeys.has(g.key)).flatMap((g) => g.sessions),
+    [groups, collapsedKeys],
+  )
 
-  return { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions }
+  return { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, collapsedKeys, toggleCollapse }
 }

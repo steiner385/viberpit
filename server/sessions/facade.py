@@ -32,6 +32,7 @@ class InProcessOrchestratorAdapter:
     async def rename_session(self, *a, **k): return await _maybe_await(self._orch.rename_session(*a, **k))
     async def list_archived(self, *a, **k): return await _maybe_await(self._orch.list_archived(*a, **k))
     async def transcript_events(self, *a, **k): return await _maybe_await(self._orch.transcript_events(*a, **k))
+    async def transcript_window(self, *a, **k): return await _maybe_await(self._orch.transcript_window(*a, **k))
     async def interrupt(self, *a, **k): return await _maybe_await(self._orch.interrupt(*a, **k))
     async def set_permission_mode(self, *a, **k): return await _maybe_await(self._orch.set_permission_mode(*a, **k))
     async def cancel_queued(self, *a, **k): return await _maybe_await(self._orch.cancel_queued(*a, **k))

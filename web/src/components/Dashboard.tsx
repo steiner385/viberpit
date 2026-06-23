@@ -1234,7 +1234,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const sessionSearch = useSessionSearch()
-  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions } =
+  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, collapsedKeys, toggleCollapse } =
     useSessionOrdering(sessions, sessionSearch.matchedIds)
   useNeedsYouTitle(sessions)
   const { data: archivedSessions = [] } = useArchivedSessions()
@@ -1768,6 +1768,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             isFiltered={sessionSearch.isFiltered}
             onClearSearch={() => sessionSearch.setQuery('')}
             onQuickResume={handleQuickResume}
+            collapsedKeys={collapsedKeys}
+            onToggleCollapse={toggleCollapse}
           />
 
           {config?.adoptionEnabled && <AdoptPanel />}

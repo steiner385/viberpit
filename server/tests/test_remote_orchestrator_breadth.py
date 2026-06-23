@@ -5,6 +5,7 @@ from server.ipc.daemon import create_daemon_app
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.remote import RemoteOrchestrator
+from server.sessions.replay import ReplayWindow
 from server.sessions.types import SessionRecord
 from server.tests.ipc_harness import serve_daemon_uds
 
@@ -53,3 +54,53 @@ async def test_simple_and_quirk_methods_round_trip():
         finally:
             await ro.aclose()
     orch.resolve_permission.assert_called_once_with(session_id="s1", perm_id="p", decision="deny", identity="me")
+
+
+@pytest.mark.asyncio
+async def test_transcript_window_returns_replay_window():
+    """transcript_window resolves path via daemon RPC then replays locally."""
+    app, orch = _build()
+    orch.transcript_path = mock.MagicMock(return_value="/fake/t.jsonl")
+    fake_window = ReplayWindow(events=[{"type": "textDelta", "text": "hi"}], earliest_turn=0, total_turns=1)
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            with mock.patch("server.sessions.replay.replay_window", new=mock.AsyncMock(return_value=fake_window)) as patched:
+                result = await ro.transcript_window("s1", limit=5)
+            patched.assert_called_once_with("/fake/t.jsonl", before=None, limit=5)
+            assert isinstance(result, ReplayWindow)
+            assert result.total_turns == 1
+        finally:
+            await ro.aclose()
+
+
+@pytest.mark.asyncio
+async def test_transcript_window_no_path_returns_none():
+    """transcript_window returns None when the daemon reports no transcript path."""
+    app, orch = _build()
+    orch.transcript_path = mock.MagicMock(return_value=None)
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            result = await ro.transcript_window("s1")
+            assert result is None
+        finally:
+            await ro.aclose()
+
+
+@pytest.mark.asyncio
+async def test_transcript_window_replay_error_returns_none():
+    """transcript_window returns None (no exception) when replay_window raises."""
+    app, orch = _build()
+    orch.transcript_path = mock.MagicMock(return_value="/fake/corrupt.jsonl")
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            with mock.patch("server.sessions.replay.replay_window", new=mock.AsyncMock(side_effect=ValueError("corrupt"))):
+                result = await ro.transcript_window("s1")
+            assert result is None
+        finally:
+            await ro.aclose()
