@@ -107,28 +107,39 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
         onKeyDown={handleKeyDown}
         aria-label={`Open session ${session.name}`}
       >
-        <div className="flex items-center gap-2 flex-wrap">
+        {/* The card lives in a drag-resizable sidebar, so the layout must read
+            identically at every width: three fixed rows, each truncating rather
+            than wrapping. Flex-wrap was content-dependent — the account chip and
+            usage bar landed in a different place on every card. Truncation +
+            `min-w-0` collapses uniformly at any sidebar/viewport width with no
+            breakpoints, so every card shares one skeleton. */}
+
+        {/* Row 1 — identity: title truncates, account chip pinned right. */}
+        <div data-testid="card-identity" className="flex items-center gap-2 min-w-0">
           <span
-            className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate"
+            className="flex-1 min-w-0 truncate text-sm font-semibold text-gray-900 dark:text-gray-100"
             title={session.nameIsAuto ? 'Auto-named by Claude' : undefined}
           >
             {session.name}
           </span>
-          <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
-            {account?.nickname || session.accountName}
-          </span>
           {/* Sub-agent count, visible without expanding. Only shown while
               collapsed — once expanded, the chevron + SubAgentRows carry it. */}
           {hasSubAgents && !expanded && (
-            <span className="text-xs tabular-nums px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
+            <span className="flex-shrink-0 text-xs tabular-nums px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
               {subAgents.length} {subAgents.length === 1 ? 'agent' : 'agents'}
             </span>
           )}
+          <span className="flex-shrink-0 text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
+            {account?.nickname || session.accountName}
+          </span>
         </div>
-        <div className="flex items-center gap-3 flex-wrap">
+
+        {/* Row 2 — context: repo gives way (truncates) so the status pill and
+            goal/PR markers stay visible. */}
+        <div data-testid="card-context" className="flex items-center gap-2 min-w-0">
           <span
             className={cn(
-              'inline-flex items-center gap-1 text-xs max-w-full',
+              'flex-1 min-w-0 inline-flex items-center gap-1 text-xs',
               repoLabel.isScratch
                 ? 'text-gray-400 dark:text-gray-500 italic'
                 : 'text-gray-600 dark:text-gray-300',
@@ -138,39 +149,49 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
             <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
             <span className="truncate">{repoLabel.text}</span>
           </span>
-          <StatusPill status={session.status} />
+          <StatusPill status={session.status} className="flex-shrink-0" />
           {session.activeGoal && (
             <span
-              className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
+              className="flex-shrink-0 inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300"
               title={`Goal: ${session.activeGoal}`}
             >
               <Target size={12} aria-hidden="true" className="flex-shrink-0" />
-              <span className="truncate">Goal</span>
+              <span>Goal</span>
             </span>
           )}
           {session.pr && <PrPill pr={session.pr} />}
-          {/* Session usage only — weekly is an account-level figure shown in the
-              Accounts tab and the in-session meta strip, so repeating it on every
-              card just adds noise and forces the meta row to wrap. */}
-          {account?.usage && (
-            <UsageBadge
-              pct={account.usage.session.pct}
-              label="session"
-              resetsAt={account.usage.session.resetsAt}
-            />
-          )}
-          {/* Last activity — helps tell live sessions from stale ones at a glance.
-              Refreshes naturally as React Query refetches the session list.
-              Guarded against a missing/invalid timestamp so we never show "NaN". */}
-          {isValidTimestamp(session.updatedAt) && (
-            <span
-              className="text-xs text-gray-400 dark:text-gray-500 tabular-nums"
-              title={`Last active ${new Date(session.updatedAt).toLocaleString()}`}
-            >
-              active {relTime(session.updatedAt)}
-            </span>
-          )}
         </div>
+
+        {/* Row 3 — telemetry: session usage left, last-active pinned right via
+            `ml-auto` so the timestamp sits in the same spot whether or not a
+            usage bar is present. Weekly usage is omitted on purpose — it's an
+            account-level figure shown in the Accounts tab and in-session meta
+            strip, so repeating it per card is just noise. The row renders only
+            when there's something to show, but at least one is near-always
+            present (every live session has an updatedAt). */}
+        {(account?.usage || isValidTimestamp(session.updatedAt)) && (
+          <div data-testid="card-telemetry" className="flex items-center gap-2 min-w-0">
+            {account?.usage && (
+              <UsageBadge
+                pct={account.usage.session.pct}
+                label="session"
+                resetsAt={account.usage.session.resetsAt}
+              />
+            )}
+            {/* Last activity — helps tell live sessions from stale ones at a
+                glance. Refreshes as React Query refetches the session list.
+                Guarded against a missing/invalid timestamp so we never show
+                "NaN" or the 1970 epoch. */}
+            {isValidTimestamp(session.updatedAt) && (
+              <span
+                className="ml-auto flex-shrink-0 text-xs text-gray-400 dark:text-gray-500 tabular-nums"
+                title={`Last active ${new Date(session.updatedAt).toLocaleString()}`}
+              >
+                active {relTime(session.updatedAt)}
+              </span>
+            )}
+          </div>
+        )}
       </button>
 
       {/* Per-session actions — explicit buttons (no overflow menu).
