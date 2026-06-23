@@ -17,14 +17,6 @@ def _orch() -> SessionOrchestrator:
     return SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
 
 
-def _drain_events(o: SessionOrchestrator) -> list[dict]:
-    q = o.subscribe_events()
-    events: list[dict] = []
-    while not q.empty():
-        events.append(q.get_nowait())
-    return events
-
-
 def _drain_events_from(q) -> list[dict]:
     out: list[dict] = []
     while not q.empty():
