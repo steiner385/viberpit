@@ -1,5 +1,8 @@
 """Wire envelopes for the edge↔daemon Unix-socket transport. Pure dict builders, no I/O."""
 
+# Bumped only when the edge↔daemon RPC or event-wire contract changes incompatibly.
+PROTOCOL_VERSION = 1
+
 EVENT = "event"
 SUBSCRIBE = "subscribe"
 UNSUBSCRIBE = "unsubscribe"

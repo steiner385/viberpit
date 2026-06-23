@@ -2,6 +2,7 @@
 import asyncio
 import json
 from unittest import mock
+import logging as _logging
 import pytest
 import websockets
 from server.ipc import protocol as proto
@@ -208,3 +209,25 @@ async def test_end_to_end_gap_closed_and_anchored():
                 )
             finally:
                 await ro.aclose()
+
+
+@pytest.mark.asyncio
+async def test_publish_warns_on_buffer_overflow(monkeypatch, caplog):
+    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "2")
+    app = create_daemon_app()
+    async with serve_daemon_uds(app):
+        with caplog.at_level(_logging.WARNING):
+            for i in range(4):
+                await app.state.publish("s1", {"type": str(i)})
+    assert any("buffer" in r.message.lower() and "s1" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_evict_clears_stream_buffer():
+    app = create_daemon_app()
+    async with serve_daemon_uds(app):
+        await app.state.publish("s1", {"type": "a"})
+        assert "s1" in app.state.buffers
+        app.state.evict("s1")
+        assert "s1" not in app.state.buffers
+        assert "s1" not in app.state.seqs

@@ -50,3 +50,26 @@ sudo systemctl start ccswitch-deploy.service      # force a deploy check now
   script intentionally doesn't, to stay robust on a bandwidth-limited host. A missing dep
   surfaces as a red test gate (deploy aborts, old version stays live) rather than a crash.
 - The deploy runs as `tony` and uses passwordless `sudo` only for `systemctl restart`.
+
+## Session daemon (`ccswitch-daemon.service`)
+
+`ccswitch-daemon.service` runs `python -m server.ipc` — the session daemon that will own
+live `claude` PTY sessions once the edge switches to remote mode (A2.3). The daemon is
+**not enabled until A2.3**; the unit file is shipped now so `auto-deploy.sh` can restart
+it on hosts where it is enabled, without affecting CI or other hosts where it isn't.
+
+The `RuntimeDirectory=ccswitch` directive creates `/run/ccswitch/` on each start; the
+daemon's Unix socket lives at `/run/ccswitch/sessiond.sock`.
+
+### Install
+
+```bash
+sudo install -m644 deploy/ccswitch-daemon.service /etc/systemd/system/
+sudo systemctl daemon-reload
+# Enable only when A2.3 is deployed (remote-mode edge):
+# sudo systemctl enable --now ccswitch-daemon.service
+```
+
+The `auto-deploy.sh` script restarts `ccswitch-daemon.service` after a successful edge
+restart, but only when `systemctl is-enabled ccswitch-daemon.service` succeeds — making
+the block a complete no-op on CI and any host where the unit is not yet enabled.

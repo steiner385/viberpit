@@ -30,6 +30,7 @@ import {
   useArchivedSessions,
   useUnarchiveSession,
   usePermanentDeleteSession,
+  useConfig,
   QK,
   type CreateSessionInput,
 } from '@/api/hooks'
@@ -1041,6 +1042,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   useNeedsYouTitle(sessions)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const { data: settingsData } = useSettings()
+  const { data: config } = useConfig()
   const reposQuery = useGithubRepos()
 
   const createSession = useCreateSession()
@@ -1490,7 +1492,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             onDelete={handleSessionDelete}
           />
 
-          <AdoptPanel />
+          {config?.adoptionEnabled && <AdoptPanel />}
 
           <DispatchBar
             repos={reposQuery.data ?? []}
