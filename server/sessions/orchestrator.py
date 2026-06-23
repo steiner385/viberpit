@@ -1092,12 +1092,6 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         return list(getattr(d, "_last_suggestions", []) or []) if d else []
 
-    async def request_suggestions(self, session_id: str) -> None:
-        """Ask a live session to (re)generate next-prompt suggestions now."""
-        d = self._drivers.get(session_id)
-        if d:
-            d.request_suggestions()
-
     async def set_permission_mode(self, session_id, mode):
         d = self._drivers.get(session_id)
         if d:

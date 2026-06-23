@@ -114,9 +114,6 @@ class RemoteOrchestrator:
     async def interrupt(self, session_id):
         return await self._client.call("interrupt", session_id=session_id)
 
-    async def request_suggestions(self, session_id):
-        return await self._client.call("request_suggestions", session_id=session_id)
-
     async def set_permission_mode(self, session_id, mode):
         return await self._client.call("set_permission_mode", session_id=session_id, mode=mode)
 

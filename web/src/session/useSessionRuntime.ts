@@ -55,7 +55,6 @@ export interface SessionRuntime {
   /** Set/clear the chat-armed question (toggles off if the same id is passed again). */
   onChat: (questionId: string) => void
   onPrompt: (text: string, attachmentIds: AttachmentIds) => void
-  onRequestSuggestions: () => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   onCancelQueued: (index: number) => void
@@ -81,7 +80,6 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     setPermissionMode,
     cancelQueued,
     command,
-    requestSuggestions,
   } = useSessionSocket()
 
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
@@ -228,10 +226,6 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     },
     [sessionId, prompt, answerQuestion, armedQuestionId],
   )
-  const onRequestSuggestions = useCallback(
-    () => requestSuggestions(sessionId),
-    [requestSuggestions, sessionId],
-  )
   const onInterrupt = useCallback(
     () => {
       setArmedQuestionId(null)
@@ -345,7 +339,6 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     onAnswer,
     onChat,
     onPrompt,
-    onRequestSuggestions,
     onInterrupt,
     onSetMode,
     onCancelQueued,

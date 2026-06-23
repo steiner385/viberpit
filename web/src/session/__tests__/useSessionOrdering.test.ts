@@ -56,4 +56,32 @@ describe('useSessionOrdering', () => {
     expect(result.current.orderedSessions).toEqual([])
     expect(result.current.groups).toEqual([])
   })
+
+  it('toggleCollapse adds then removes a key, returning new sets', () => {
+    const { result } = renderHook(() => useSessionOrdering([mk('s1')]))
+    expect(result.current.collapsedKeys.has('busy')).toBe(false)
+    act(() => result.current.toggleCollapse('busy'))
+    expect(result.current.collapsedKeys.has('busy')).toBe(true)
+    act(() => result.current.toggleCollapse('busy'))
+    expect(result.current.collapsedKeys.has('busy')).toBe(false)
+  })
+
+  it('orderedSessions excludes sessions in a collapsed group (status mode)', () => {
+    // s1 idle -> tier "your-turn"; s2 in_progress -> tier "busy"
+    const { result } = renderHook(() =>
+      useSessionOrdering([mk('s1', { status: 'idle' }), mk('s2', { status: 'in_progress' })]),
+    )
+    act(() => result.current.setGroupBy('status'))
+    expect(result.current.orderedSessions.map((s) => s.id).sort()).toEqual(['s1', 's2'])
+    act(() => result.current.toggleCollapse('busy'))
+    expect(result.current.orderedSessions.map((s) => s.id)).toEqual(['s1'])
+  })
+
+  it('persists collapsed keys across a remount', () => {
+    const first = renderHook(() => useSessionOrdering([mk('s1')]))
+    act(() => first.result.current.toggleCollapse('busy'))
+    first.unmount()
+    const second = renderHook(() => useSessionOrdering([mk('s1')]))
+    expect(second.result.current.collapsedKeys.has('busy')).toBe(true)
+  })
 })

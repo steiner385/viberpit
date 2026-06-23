@@ -449,8 +449,6 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     except Exception:
                         log.warning("ws.audit_failed event=%s session=%s",
                                     "session.interrupt", session_id, exc_info=True)
-                elif msg_type == "request_suggestions":
-                    await orchestrator.request_suggestions(session_id)
                 elif msg_type == "permissionResponse":
                     decision = msg.get("decision", "")
                     perm_id = msg.get("permId", "")
