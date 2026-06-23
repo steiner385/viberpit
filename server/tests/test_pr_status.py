@@ -9,9 +9,13 @@ def _resp(alias_to_nodes: dict) -> dict:
 
 def test_from_dict_roundtrips_to_dict():
     # from_dict is the inverse of to_dict so the daemon→edge RPC can rebuild a
-    # PullRequestInfo from the wire payload.
+    # PullRequestInfo from the wire payload — including the `deployed` flag, which
+    # would otherwise silently drop across the remote boundary.
     pr = PullRequestInfo(9, "https://github.com/o/r/pull/9", "open", "passing", "t")
     assert PullRequestInfo.from_dict(pr.to_dict()) == pr
+    deployed = PullRequestInfo(9, "u", "merged", "passing", "t", deployed=True)
+    assert PullRequestInfo.from_dict(deployed.to_dict()) == deployed
+    assert PullRequestInfo.from_dict(deployed.to_dict()).deployed is True
 
 
 def _pr(number, state, *, draft=False, rollup="SUCCESS", updated="2026-06-22T10:00:00Z"):

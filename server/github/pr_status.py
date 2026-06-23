@@ -40,6 +40,7 @@ class PullRequestInfo:
             state=d["state"],
             checks=d["checks"],
             title=d.get("title", ""),
+            deployed=d.get("deployed", False),
         )
 
 
