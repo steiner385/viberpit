@@ -1,7 +1,18 @@
 from __future__ import annotations
 import json, asyncio
 from dataclasses import dataclass, field
+from datetime import datetime
 from . import events as ev
+
+
+def _ts_ms(o: dict) -> float | None:
+    raw = o.get("timestamp")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp() * 1000
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -42,6 +53,7 @@ def _build_events(path: str) -> tuple[list, object | None]:
         else:
             content = []
         uuid = o.get("uuid")
+        ts = _ts_ms(o)
         if typ == "user":
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
             results = [b for b in content if b.get("type") == "tool_result"]
@@ -55,10 +67,10 @@ def _build_events(path: str) -> tuple[list, object | None]:
                                      "mime": mt, "name": ""})
             if text or imgs:
                 out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
-                                          images=imgs or None))
+                                          images=imgs or None, ts=ts))
             for r in results:
                 out.append(ev.ToolResult(r["tool_use_id"], not r.get("is_error", False),
-                                         {"content": r.get("content")}, uuid))
+                                         {"content": r.get("content")}, uuid, ts=ts))
         elif typ == "assistant":
             # Reconstruct the model once (status strip needs it after re-attach).
             model = msg.get("model")
@@ -70,9 +82,9 @@ def _build_events(path: str) -> tuple[list, object | None]:
             for b in content:
                 t = b.get("type")
                 if t == "text":
-                    out.append(ev.TextDelta(uuid, b.get("text", ""), uuid))
+                    out.append(ev.TextDelta(uuid, b.get("text", ""), uuid, ts=ts))
                 elif t == "thinking":
-                    out.append(ev.ThinkingDelta(uuid, b.get("thinking", ""), uuid))
+                    out.append(ev.ThinkingDelta(uuid, b.get("thinking", ""), uuid, ts=ts))
                 elif t == "tool_use":
                     if b.get("name") == "AskUserQuestion":
                         # Mirror the live translator: AskUserQuestion is presented as
@@ -92,10 +104,11 @@ def _build_events(path: str) -> tuple[list, object | None]:
                                 question=q.get("question", ""),
                                 options=opts,
                                 multi_select=bool(q.get("multiSelect", False)),
+                                ts=ts,
                             ))
                     else:
                         out.append(ev.ToolCall(uuid, b.get("id", ""), b.get("name", ""),
-                                               ev.tool_kind(b.get("name", "")), b.get("input", {}), uuid))
+                                               ev.tool_kind(b.get("name", "")), b.get("input", {}), uuid, ts=ts))
             usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
             out.append(ev.TurnEnd(uuid, usage, None, uuid))
     return out, meta_event
