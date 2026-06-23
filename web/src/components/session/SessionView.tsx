@@ -132,10 +132,8 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
       <div className="flex-shrink-0">
         <Composer
           status={rt.state.status}
-          mode={rt.mode}
           onPrompt={rt.onPrompt}
           onInterrupt={rt.onInterrupt}
-          onSetMode={rt.onSetMode}
           queued={rt.state.queued}
           onCancelQueued={rt.onCancelQueued}
           chatArmed={rt.chatArmed}
