@@ -53,6 +53,9 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
     name: 'work',
     status: 'ok',
     usage: { session: { pct: 30, resetsAt: null }, weekly: { pct: 50, resetsAt: null } },
+    liveSessions: { active: 0, idle: 0 },
+    rank: null,
+    rankReason: null,
     ...overrides,
   }
 }

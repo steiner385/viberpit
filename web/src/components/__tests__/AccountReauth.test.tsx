@@ -54,6 +54,9 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
     name: 'kindash',
     status: 'needs-relogin',
     usage: null,
+    liveSessions: { active: 0, idle: 0 },
+    rank: null,
+    rankReason: null,
     ...overrides,
   }
 }

@@ -856,6 +856,25 @@ class SessionOrchestrator:
             load[rec.account] = load.get(rec.account, 0.0) + weight
         return load
 
+    def live_session_counts(self) -> dict[str, dict[str, int]]:
+        """Raw active/idle live-session counts per account, for the Accounts UI.
+
+        Same liveness notion as ``live_session_load`` (``_drivers`` ∩ ``_records``,
+        ``_ACTIVE_STATUSES`` = active) but returns integer counts split into
+        ``{"active", "idle"}`` instead of weighted floats. Accounts with no live
+        session are omitted. Snapshots ``_drivers`` before iterating (event-loop
+        mutation guard; see ``has_live_session``).
+        """
+        counts: dict[str, dict[str, int]] = {}
+        for sid in list(self._drivers.keys()):
+            rec = self._records.get(sid)
+            if rec is None:
+                continue
+            bucket = counts.setdefault(rec.account, {"active": 0, "idle": 0})
+            key = "active" if rec.status in _ACTIVE_STATUSES else "idle"
+            bucket[key] += 1
+        return counts
+
     def driver(self, session_id: str) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, or None."""
         return self._drivers.get(session_id)
