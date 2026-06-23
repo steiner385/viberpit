@@ -1014,7 +1014,8 @@ class SessionOrchestrator:
         """Dispatch a slash command. Raises KeyError if the command is unknown."""
         d = self._drivers.get(session_id)
         if d is None:
-            raise KeyError(name)
+            return {"name": str(name).lstrip("/"), "render": "notice",
+                    "data": {"text": "This session isn't live — open it and try again."}}
         if str(name).lstrip("/") == "model":
             arg = (args or "").strip()
             await self.set_model_for_session(session_id, arg or None)
