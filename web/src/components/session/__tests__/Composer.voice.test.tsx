@@ -10,10 +10,8 @@ const mockField = useDictationField as unknown as Mock
 
 const baseProps = {
   status: { state: 'idle', count: 0 },
-  mode: 'default',
   onPrompt: vi.fn(),
   onInterrupt: vi.fn(),
-  onSetMode: vi.fn(),
 }
 
 beforeEach(() => { mockField.mockReset() })

@@ -612,11 +612,21 @@ class SessionOrchestrator:
             )
             )).scalars().all()
         added = 0
+        backfilled: dict[str, str] = {}
         for row in rows:
             if row.id in self._records:
                 continue
             # A pre-crash live status has no driver anymore → normalize to idle.
             status = "idle" if row.status in ("working", "in_progress") else row.status
+            # Backfill the PR-join branch for legacy sessions created before the
+            # branch was persisted (NULL column). Derive it once from the session's
+            # worktree and write it back so the column becomes the source of truth.
+            branch = getattr(row, "branch", None)
+            if branch is None and row.cwd and worktrees.is_git_repo(row.cwd):
+                derived = await asyncio.to_thread(worktrees.current_branch, row.cwd)
+                if derived:
+                    branch = derived
+                    backfilled[row.id] = derived
             self._records[row.id] = SessionRecord(
                 id=row.id,
                 name=row.name,
@@ -635,10 +645,18 @@ class SessionOrchestrator:
                 adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
                 model=getattr(row, "model", None),
                 account_pinned=bool(getattr(row, "account_pinned", False)),
-                branch=getattr(row, "branch", None),
+                branch=branch,
             )
             added += 1
-        log.info("rehydrate: %d session(s) restored", added)
+        # Persist any derived branches so the next rehydrate reads them directly.
+        if backfilled:
+            from sqlalchemy import update as sa_update
+            async with db_session() as db:
+                for sid, br in backfilled.items():
+                    await db.execute(
+                        sa_update(DbSession).where(DbSession.id == sid).values(branch=br)
+                    )
+        log.info("rehydrate: %d session(s) restored (%d branch backfilled)", added, len(backfilled))
         return added
 
     def list_sessions(self) -> list[SessionRecord]:
