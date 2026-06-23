@@ -69,4 +69,12 @@ describe('orderSessions', () => {
     expect(g).toHaveLength(1)
     expect(g[0].label).toBeNull()
   })
+
+  it('same-tier: input order preserved (stable sort, no id tie-break)', () => {
+    const s = [
+      mk({ id: 'z', status: 'idle' }),
+      mk({ id: 'a', status: 'idle' }),
+    ]
+    expect(flat(s, 'none', 'status')).toEqual(['z', 'a'])
+  })
 })
