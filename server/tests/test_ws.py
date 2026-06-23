@@ -13,6 +13,8 @@ Assertions:
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import time
@@ -607,31 +609,31 @@ def test_frame_too_large_rejected(ws_env):
 
 
 # ---------------------------------------------------------------------------
-# Attaching to a rehydrated (detached) session lazily resumes the driver
+# Detached-session attach is read-only (no resume); resume is deferred to send
 # ---------------------------------------------------------------------------
 
-def test_attach_rehydrated_session_gets_replay_complete(tmp_path):
-    """Attaching to a rehydrated/detached session calls ensure_driver and sends replayComplete.
+@contextlib.contextmanager
+def _rehydrated_detached_client(tmp_path, msgs, *, claude_session_id="resume-me"):
+    """Build an app rehydrated from a seeded DETACHED session row.
 
-    Uses a file-backed DB so the app can rehydrate the row on startup.
-    The session has no transcript file, so replay will be empty — but replayComplete still fires.
+    Yields ``(orch, client, session_id)`` with the patches and lifespan active.
+    A rehydrated row starts ``detached=True`` with no live driver — exactly the
+    state that used to trigger a blocking resume-on-attach.
     """
     import asyncio as _asyncio
     from server.db import init_db as _init_db, db_session as _db_session
     from server.db.models import Session as _DbSession
 
-    db_path = tmp_path / "ccswitch.db"
-    db_url = f"sqlite+aiosqlite:///{db_path}"
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     session_id = "rehydrated-ws-s1"
     cwd = str(tmp_path)
 
-    # Seed the DB row before the app starts
     async def _seed():
         await _init_db(db_url=db_url)
         async with _db_session() as db:
             db.add(_DbSession(
                 id=session_id, name="rehydrated-ws-session",
-                account_name="alpha", claude_session_id=None,
+                account_name="alpha", claude_session_id=claude_session_id,
                 status="idle", cwd=cwd,
             ))
     _asyncio.run(_seed())
@@ -655,20 +657,89 @@ def test_attach_rehydrated_session_gets_replay_complete(tmp_path):
          patch("server.sessions.orchestrator.configdir"), \
          patch("server.sessions.orchestrator.select_account", return_value="alpha"), \
          patch("ccswitch.accounts.usage_for", side_effect=_fake_usage):
-
         # Seed INSIDE the CCSWITCH_HOME patch so paths.slot_path() resolves to the
         # temp store — otherwise it leaks an "alpha" account into the real store
         # (the conftest guard now fails the test if this regresses).
         _seed_account("alpha")
-
-        orch = _make_orch([])
+        orch = _make_orch(msgs)
         app = create_app(orchestrator=orch)
         with TestClient(app, raise_server_exceptions=False) as client:
+            yield orch, client, session_id
+
+
+def test_attach_detached_session_replays_without_resuming(tmp_path):
+    """Attaching to a detached session must replay history + send replayComplete
+    WITHOUT resuming a live driver. Resuming on mere view is what spawned an SDK
+    subprocess + MCP fleet and hung the load forever behind the ensure-lock."""
+    with _rehydrated_detached_client(tmp_path, []) as (orch, client, session_id):
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+            events = _drain_events(ws, until_type="replayComplete", timeout=8.0)
+            assert any(e.get("type") == "replayComplete" for e in events), (
+                f"replayComplete not in {[e.get('type') for e in events]}"
+            )
+        # No driver was spun up, and the record stays detached — read-only view.
+        assert orch.driver(session_id) is None, (
+            "attach must NOT resume a driver for a detached session"
+        )
+        rec = orch.get_session(session_id)
+        assert rec is not None and rec.detached is True, (
+            "a read-only attach must leave the session detached"
+        )
+
+
+def test_prompt_resumes_detached_session_and_streams(tmp_path):
+    """Sending a prompt to a read-only (detached) session resumes the driver lazily
+    and streams the turn — the deferred resume happens on user action, not on view."""
+    msgs = [
+        f.sys_init("sess-1"),
+        f.stream_start(uuid="t1"),
+        f.stream_text("Hi", uuid="t1"),
+        f.assistant(TextBlock(text="Hi"), uuid="t1"),
+        f.result(session_id="sess-1", uuid="t1"),
+    ]
+    with _rehydrated_detached_client(tmp_path, msgs) as (orch, client, session_id):
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+            _drain_events(ws, until_type="replayComplete", timeout=8.0)
+            assert orch.driver(session_id) is None, "still not resumed after read-only attach"
+
+            ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "go"}))
+            events = _drain_events(ws, until_type="turnEnd", timeout=8.0)
+            types = [e.get("type") for e in events]
+            assert "turnStart" in types, f"no turnStart in {types}"
+            assert "textDelta" in types, f"no textDelta in {types}"
+            assert "turnEnd" in types, f"no turnEnd in {types}"
+        assert orch.driver(session_id) is not None, "prompt must lazily resume the driver"
+
+
+def test_prompt_resume_timeout_emits_error_and_keeps_ws_alive(tmp_path):
+    """A resume that hangs (saturated box / stuck MCP fleet) must surface a
+    SESSION_RESUME_TIMEOUT error frame within the timeout instead of hanging the
+    socket forever, and the WS must stay alive."""
+    import server.bridge.ws as wsmod
+
+    with _rehydrated_detached_client(tmp_path, []) as (orch, client, session_id):
+        async def _hang(*_a, **_k):
+            await asyncio.sleep(30)
+
+        orch.ensure_driver = _hang
+
+        with patch.object(wsmod, "_RESUME_TIMEOUT", 0.3):
             with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
                 ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
-                events = _drain_events(ws, until_type="replayComplete", timeout=8.0)
-                assert any(e.get("type") == "replayComplete" for e in events), (
-                    f"replayComplete not in {[e.get('type') for e in events]}"
+                _drain_events(ws, until_type="replayComplete", timeout=8.0)
+
+                ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "go"}))
+                events = _drain_events(ws, until_type="error", timeout=4.0)
+                assert any(e.get("code") == "SESSION_RESUME_TIMEOUT" for e in events), (
+                    f"no SESSION_RESUME_TIMEOUT in {[e.get('type') for e in events]}"
+                )
+                # Socket still alive — an unknown frame still elicits a response.
+                ws.send_text(json.dumps({"type": "bogus", "sessionId": session_id}))
+                evs = _drain_events(ws, until_type="error", timeout=4.0)
+                assert any(e.get("code") == "UNKNOWN_TYPE" for e in evs), (
+                    "socket appears closed after a resume timeout"
                 )
 
 
