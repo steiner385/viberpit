@@ -76,6 +76,12 @@ export interface ArchivedSession {
   archivedAt: string
 }
 
+/** Result of a best-effort batch operation over session ids. */
+export interface BatchResult {
+  succeeded: string[]
+  failed: { id: string; error: string }[]
+}
+
 /** A live `claude` session running outside ccswitch, discovered for adoption. */
 export interface AdoptionCandidate {
   pid: number | null
