@@ -6,9 +6,12 @@ const INACTIVE: { active: boolean; count: number } = { active: false, count: 0 }
 function tryGetSocket() {
   try {
     return getSessionSocket()
-  } catch {
-    // In test environments WebSocket may not accept relative URLs; return null.
-    return null
+  } catch (e) {
+    // jsdom rejects relative WebSocket URLs ('/ws') with a SYNTAX_ERR DOMException, so the
+    // hook degrades to INACTIVE under test. Re-throw anything else so a genuine runtime
+    // error can't silently leave the banner dark in production.
+    if (e instanceof DOMException && e.code === DOMException.SYNTAX_ERR) return null
+    throw e
   }
 }
 
