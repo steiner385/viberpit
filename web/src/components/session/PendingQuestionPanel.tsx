@@ -1,6 +1,7 @@
 import type { Turn, Block } from '@/session/reducer'
 import { cn } from '@/lib/utils'
 import { QuestionCard } from './QuestionCard'
+import { QuestionGroup } from './QuestionGroup'
 
 type QuestionBlock = Extract<Block, { kind: 'question' }>
 
@@ -11,19 +12,24 @@ interface Props {
   armedQuestionId: string | null
 }
 
-/** First live, open question across all turns (one-at-a-time pinning). */
-function findFirstLiveQuestion(turns: Turn[]): QuestionBlock | null {
+/**
+ * All live, open questions belonging to the latest turn that has any. Questions
+ * from one AskUserQuestion call share a turn, so this returns them as a group.
+ */
+function liveGroup(turns: Turn[]): QuestionBlock[] {
+  let group: QuestionBlock[] = []
   for (const t of turns) {
-    for (const b of t.blocks) {
-      if (b.kind === 'question' && b.live) return b
-    }
+    const live = t.blocks.filter(
+      (b): b is QuestionBlock => b.kind === 'question' && !!b.live,
+    )
+    if (live.length > 0) group = live
   }
-  return null
+  return group
 }
 
 export function PendingQuestionPanel({ turns, onAnswer, onChat, armedQuestionId }: Props) {
-  const q = findFirstLiveQuestion(turns)
-  if (!q) return null
+  const group = liveGroup(turns)
+  if (group.length === 0) return null
   return (
     <div
       role="region"
@@ -35,13 +41,17 @@ export function PendingQuestionPanel({ turns, onAnswer, onChat, armedQuestionId 
       )}
       data-testid="pending-question-panel"
     >
-      <QuestionCard
-        key={q.questionId}
-        block={q}
-        onAnswer={onAnswer}
-        onChat={onChat}
-        armedForChat={q.questionId === armedQuestionId}
-      />
+      {group.length === 1 ? (
+        <QuestionCard
+          key={group[0].questionId}
+          block={group[0]}
+          onAnswer={onAnswer}
+          onChat={onChat}
+          armedForChat={group[0].questionId === armedQuestionId}
+        />
+      ) : (
+        <QuestionGroup questions={group} onAnswer={onAnswer} />
+      )}
     </div>
   )
 }

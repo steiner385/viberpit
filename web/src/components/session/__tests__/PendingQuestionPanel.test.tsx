@@ -25,14 +25,22 @@ describe('PendingQuestionPanel', () => {
     expect(onAnswer).toHaveBeenCalledWith('a', ['Yes'])   // immediate, synchronous send
   })
 
-  it('one at a time: shows only the first live question; the second after the first is gone', () => {
-    const { rerender } = render(
-      <PendingQuestionPanel turns={[turn(q('a', true), q('b', true))]} onAnswer={vi.fn()} onChat={vi.fn()} armedQuestionId={null} />)
+  it('shows all live questions of a turn together and batches submit', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    render(
+      <PendingQuestionPanel turns={[turn(q('a', true), q('b', true))]} onAnswer={onAnswer} onChat={vi.fn()} armedQuestionId={null} />)
+    // Both questions are visible at once.
     expect(screen.getByText('a?')).toBeInTheDocument()
-    expect(screen.queryByText('b?')).toBeNull()
-    // After 'a' is answered/removed, 'b' pins.
-    rerender(<PendingQuestionPanel turns={[turn(q('b', true))]} onAnswer={vi.fn()} onChat={vi.fn()} armedQuestionId={null} />)
     expect(screen.getByText('b?')).toBeInTheDocument()
+    // Nothing is sent until the group submit fires.
+    const submit = screen.getByRole('button', { name: /submit all answers/i })
+    expect(submit).toBeDisabled()
+    await user.click(screen.getAllByRole('radio', { name: 'Yes' })[0]) // a
+    await user.click(screen.getAllByRole('radio', { name: 'Yes' })[1]) // b
+    expect(onAnswer).not.toHaveBeenCalled()
+    await user.click(submit)
+    expect(onAnswer).toHaveBeenCalledTimes(2)
   })
 
   it('chat-arm: clicking "Chat about this" calls onChat with the question id', async () => {
