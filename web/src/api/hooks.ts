@@ -1,10 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMemo, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
 } from './types'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
+import { getPendingSessions, subscribePending } from '@/lib/pendingSessions'
 
 // Query keys
 export const QK = {
@@ -38,12 +40,18 @@ export function useAccounts() {
 }
 
 export function useSessions() {
-  return useQuery<Session[]>({
+  const pending = useSyncExternalStore(subscribePending, getPendingSessions, getPendingSessions)
+  const query = useQuery<Session[]>({
     queryKey: QK.sessions,
     queryFn: () => api.get<Session[]>('/sessions'),
     staleTime: 3_000,
     refetchInterval: 5_000,
   })
+  const data = useMemo<Session[] | undefined>(() => {
+    if (pending.length === 0) return query.data
+    return [...(query.data ?? []), ...pending]
+  }, [query.data, pending])
+  return { ...query, data }
 }
 
 export interface GithubRepo {
