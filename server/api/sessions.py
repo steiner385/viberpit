@@ -75,12 +75,16 @@ class AdoptRequest(BaseModel):
 _UNSET = object()
 
 
-def _record_to_dict(record, repo: Any = _UNSET) -> dict[str, Any]:
+def _record_to_dict(record, repo: Any = _UNSET, suggestions: list[str] | None = None) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict.
 
     ``repo`` lets callers inject a value read live from the session's working
     directory (see :func:`_resolve_repo`); when omitted, the stored
     ``record.repo`` is used as a fallback.
+
+    ``suggestions`` holds the latest cached next-prompt suggestions for the
+    session (from ``orch.latest_suggestions``). Defaults to [] when omitted
+    (detached sessions or none yet generated).
     """
     return {
         "id": record.id,
@@ -96,6 +100,7 @@ def _record_to_dict(record, repo: Any = _UNSET) -> dict[str, Any]:
         "updatedAt": None,
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
+        "latestSuggestions": list(suggestions or []),
     }
 
 
@@ -146,9 +151,13 @@ async def list_sessions(
     """Return all in-memory session records."""
     orch = _get_orchestrator(request)
     records = await orch.list_sessions()
-    # Read each session's repo live from its working dir, all in parallel.
+    # Read each session's repo (live, from its cwd) and cached suggestions in parallel.
     repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
-    return [_record_to_dict(r, repo=repo) for r, repo in zip(records, repos)]
+    suggs = await asyncio.gather(*(orch.latest_suggestions(r.id) for r in records))
+    return [
+        _record_to_dict(r, repo=repo, suggestions=s)
+        for r, repo, s in zip(records, repos, suggs)
+    ]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

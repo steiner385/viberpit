@@ -248,6 +248,10 @@ def test_session_lifecycle():
                 assert isinstance(sessions, list)
                 ids = [s["id"] for s in sessions]
                 assert session_id in ids
+                # Each item must carry latestSuggestions (Task 3).
+                for s in sessions:
+                    assert "latestSuggestions" in s, f"missing latestSuggestions in {s}"
+                    assert isinstance(s["latestSuggestions"], list)
 
                 # GET /api/sessions/{id} — get single
                 get_resp = client.get(
