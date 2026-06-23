@@ -57,6 +57,7 @@ class SessionDriver:
         # tests; production uses wall-clock time.
         self._on_recoverable_failure = on_recoverable_failure
         self._clock = clock or time.time
+        self._last_progress_at: float = self._clock()
         self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
         self._factory = sdk_factory
         self._reg = registry
@@ -79,6 +80,24 @@ class SessionDriver:
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
+
+    @property
+    def last_progress_at(self) -> float:
+        """Timestamp of the last meaningful driver event (set at driver construction)."""
+        return self._last_progress_at
+
+    def _note_progress(self, e) -> None:
+        """Advance _last_progress_at only when e carries real content.
+
+        Meaningful: TextDelta/ThinkingDelta with non-empty text, or any
+        ToolCall/ToolResult/TurnEnd/Question/PermissionRequest.
+        Empty-text deltas are NOT meaningful and must not advance the clock.
+        """
+        if isinstance(e, (ev.TextDelta, ev.ThinkingDelta)):
+            if e.text:
+                self._last_progress_at = self._clock()
+        elif isinstance(e, (ev.ToolCall, ev.ToolResult, ev.TurnEnd, ev.Question, ev.PermissionRequest)):
+            self._last_progress_at = self._clock()
 
     def current_status(self) -> str:
         """The rich derived status right now (no side effects). Used on WS attach."""
@@ -350,6 +369,7 @@ class SessionDriver:
                         self._last_turn_id = e.turn_id
                     elif isinstance(e, ev.ErrorEvent):
                         await self._maybe_signal_recovery(e.code, e.message)
+                    self._note_progress(e)
                     await self._out.put(e)
                 if self.claude_session_id is None and self._tr.session_id:
                     self.claude_session_id = self._tr.session_id

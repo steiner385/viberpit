@@ -160,3 +160,20 @@ def test_status_needs_attention_when_stream_raises():
         return captured
 
     assert asyncio.run(run())[-1] == "needs_attention"
+
+
+def test_last_progress_advances_only_on_meaningful_events():
+    import server.sessions.events as ev
+    class _Clock:
+        def __init__(self): self.t = 100.0
+        def __call__(self): self.t += 1.0; return self.t
+    def factory(cwd, config_dir, can_use_tool, mode, resume):
+        return _OneTurnClient([], on_can_use_tool=can_use_tool)
+    d = SessionDriver("sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
+                      sdk_factory=factory, registry=PermissionRegistry(),
+                      identity="t", clock=_Clock())
+    base = d.last_progress_at
+    d._note_progress(ev.ThinkingDelta(turn_id="t", text=""))    # empty → no advance
+    assert d.last_progress_at == base
+    d._note_progress(ev.TextDelta(turn_id="t", text="hello"))   # real → advance
+    assert d.last_progress_at > base
