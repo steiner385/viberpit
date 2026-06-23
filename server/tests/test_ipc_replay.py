@@ -4,6 +4,7 @@ import json
 import pytest
 import websockets
 from server.ipc import protocol as proto
+from server.ipc.client import DaemonClient
 from server.ipc.daemon import create_daemon_app
 from server.tests.ipc_harness import serve_daemon_uds
 
@@ -59,3 +60,38 @@ async def test_buffer_is_bounded(monkeypatch):
             frames = await _collect(ws, 4)
     # Only the last 4 survive (seq 2..5).
     assert [f["seq"] for f in frames] == [2, 3, 4, 5]
+
+
+@pytest.mark.asyncio
+async def test_client_strips_seq_and_replays_gap():
+    app = create_daemon_app()
+    async with serve_daemon_uds(app) as sock:
+        # Two events published BEFORE the client subscribes.
+        await app.state.publish("s1", {"type": "a"})
+        await app.state.publish("s1", {"type": "b"})
+        client = DaemonClient(sock)
+        try:
+            stream = client.subscribe("s1", since=-1)  # anchor before the first event
+            got = []
+            for _ in range(2):
+                got.append(await asyncio.wait_for(stream.__anext__(), 2))
+        finally:
+            await client.aclose()
+    # Bare event dicts (no seq leaked), in order — the pre-subscribe gap is replayed.
+    assert got == [{"type": "a"}, {"type": "b"}]
+
+
+@pytest.mark.asyncio
+async def test_client_resubscribe_uses_last_seq():
+    app = create_daemon_app()
+    async with serve_daemon_uds(app) as sock:
+        client = DaemonClient(sock)
+        try:
+            stream = client.subscribe("s1", since=-1)
+            await client.events_ready("s1")
+            await app.state.publish("s1", {"type": "a"})
+            assert await asyncio.wait_for(stream.__anext__(), 2) == {"type": "a"}
+            # last_seq now tracks seq 0.
+            assert client._last_seq.get("s1") == 0
+        finally:
+            await client.aclose()
