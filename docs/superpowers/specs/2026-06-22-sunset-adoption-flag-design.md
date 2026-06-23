@@ -72,7 +72,11 @@ fallback: `in ("1","true","yes","on")`). Read via `get_settings()` — single so
   - `GET /api/sessions/adoptable` → 404 when flag unset.
   - `POST /api/sessions/adopt` → 404 when flag unset.
   - `GET /api/config` → `adoptionEnabled: false` when flag unset.
-  - Frontend: `AdoptPanel` is absent from the dashboard when `adoptionEnabled` is false.
+- **Frontend:** `AdoptPanel.test.tsx` renders the panel directly with mocked hooks, so
+  it is unaffected by the Dashboard gate and stays as kept coverage. The Dashboard mount
+  gate (`config?.adoptionEnabled && <AdoptPanel/>`) is a one-line short-circuit verified
+  by `tsc --noEmit` (the new `ConfigInfo.adoptionEnabled` field) + `eslint`; Dashboard is
+  not otherwise unit-tested and a bespoke render harness is out of scope for a sunset.
 
 ## Out of scope / explicitly kept
 
