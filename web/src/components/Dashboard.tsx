@@ -8,10 +8,13 @@ import { UsageBadge, StatusPill } from './UsageBadge'
 import { SessionList } from './SessionList'
 import { AdoptPanel } from './AdoptPanel'
 import { AllLimitedBanner } from './AllLimitedBanner'
+import { UpdatePendingBanner } from './UpdatePendingBanner'
+import { useUpdatePending } from '@/hooks/useUpdatePending'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { DispatchBar } from './DispatchBar'
 import { useGlobalListNav } from './useGlobalListNav'
 import { ShortcutsHelp } from './ShortcutsHelp'
+import { AddAccountDialog } from './AddAccountDialog'
 import {
   useAccounts,
   useSessions,
@@ -37,7 +40,7 @@ import {
   QK,
   type CreateSessionInput,
 } from '@/api/hooks'
-import type { Account, Session, ArchivedSession, BatchResult } from '@/api/types'
+import type { Account, LiveSessionCounts, Session, ArchivedSession, BatchResult } from '@/api/types'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { setLastRepo } from '@/lib/lastRepo'
 import { SessionListControls } from './SessionListControls'
@@ -514,6 +517,48 @@ function DeleteAccountDialog({ account, activeSessions, onClose, onConfirm, isPe
   )
 }
 
+// ── Sessions + Rank Badges ───────────────────────────────────────────────────
+
+function SessionsBadge({ counts }: { counts?: LiveSessionCounts | null }) {
+  const { active, idle } = counts ?? { active: 0, idle: 0 }
+  let text: string
+  if (active === 0 && idle === 0) text = '—'
+  else if (active > 0 && idle > 0) text = `${active} active · ${idle} idle`
+  else if (active > 0) text = `${active} active`
+  else text = `${idle} idle`
+  return (
+    <span
+      className={cn(
+        'text-xs whitespace-nowrap',
+        active === 0 && idle === 0 ? 'text-gray-400 dark:text-gray-600' : 'text-gray-600 dark:text-gray-300',
+      )}
+      aria-label="Live sessions using this account"
+    >
+      {text}
+    </span>
+  )
+}
+
+function RankBadge({ rank, reason }: { rank?: number | null; reason?: string | null }) {
+  if (rank == null) {
+    return <span className="text-xs text-gray-400 dark:text-gray-600">unavailable</span>
+  }
+  const label = rank === 1 ? '#1 next' : `#${rank}`
+  return (
+    <span
+      title={reason ?? undefined}
+      className={cn(
+        'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
+        rank === 1
+          ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+          : 'text-gray-500 dark:text-gray-400',
+      )}
+    >
+      {label}
+    </span>
+  )
+}
+
 // ── Accounts Strip ───────────────────────────────────────────────────────────
 
 interface AccountRowProps {
@@ -674,6 +719,8 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
         {!editing && (
           <div className="flex items-center gap-3 flex-shrink-0">
             <StatusPill status={account.status} />
+            <SessionsBadge counts={account.liveSessions} />
+            <RankBadge rank={account.rank} reason={account.rankReason} />
             {account.usage && (
               <>
                 <UsageBadge
@@ -1271,9 +1318,11 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const [showHelp, setShowHelp] = useState(false)
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
   const [allLimitedReset, setAllLimitedReset] = useState<string | null | undefined>(undefined)
+  const updatePending = useUpdatePending()
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null)
   const [branchError, setBranchError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
+  const [showAddAccount, setShowAddAccount] = useState(false)
   const [permDeleteTarget, setPermDeleteTarget] = useState<ArchivedSession | null>(null)
   // Permanent-delete confirmation for a live (non-archived) session card.
   const [sessionDeleteTarget, setSessionDeleteTarget] = useState<{ id: string; name: string } | null>(null)
@@ -1624,6 +1673,10 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         />
       )}
 
+      {updatePending.active && (
+        <UpdatePendingBanner queuedCount={updatePending.count} />
+      )}
+
       {/* Tab bar */}
       <div
         role="tablist"
@@ -1804,9 +1857,21 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           aria-labelledby="tab-accounts"
           className="space-y-2"
         >
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            Accounts
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Accounts
+            </h2>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setShowAddAccount(true)}
+              className="gap-1.5"
+            >
+              <Plus size={14} aria-hidden="true" />
+              Add account
+            </Button>
+          </div>
           {!accountsLoading && (
             <AccountsStrip
               accounts={accounts}
@@ -1818,6 +1883,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           )}
         </div>
       )}
+
+      {showAddAccount && <AddAccountDialog onClose={() => setShowAddAccount(false)} />}
 
       {/* Archived panel */}
       {activeTab === 'archived' && (

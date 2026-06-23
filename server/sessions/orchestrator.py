@@ -174,6 +174,10 @@ class SessionOrchestrator:
         # each see no driver, each build+start one, and both register → two SDK
         # processes attached to the same Claude conversation (TOCTOU fix).
         self._ensure_lock: asyncio.Lock = asyncio.Lock()
+        # Graceful-drain state (deploy handshake). In-memory only; a restart clears it.
+        self._draining: bool = False
+        self._drain_started_at: float = 0.0
+        self._drain_timer: asyncio.Task | None = None
 
     def _session_factory(self, session_id: str):
         """Return a factory closure injecting this session's DISPLAY and PreCompact hook.
@@ -760,6 +764,54 @@ class SessionOrchestrator:
         for q in list(self._event_subscribers):
             q.put_nowait(event)
 
+    def drain_status(self) -> dict:
+        """Report drain state: 'idle' (not draining), 'draining' (turns still running),
+        or 'ready' (draining and nothing mid-turn — safe to restart)."""
+        active = self.active_session_count()
+        if not self._draining:
+            state = "idle"
+        elif active == 0:
+            state = "ready"
+        else:
+            state = "draining"
+        elapsed = (time.monotonic() - self._drain_started_at) if self._draining else 0.0
+        return {"state": state, "busySessions": active, "elapsed": round(elapsed, 1)}
+
+    async def begin_drain(self, selfclear_sec: float | None = None) -> dict:
+        """Enter DRAINING: refuse new turns, tell the UI, and arm a self-clear timer so a
+        deploy that never restarts can't wedge us. Idempotent while already draining."""
+        if not self._draining:
+            self._draining = True
+            self._drain_started_at = time.monotonic()
+            self._publish_event({"type": "updatePending"})
+            timeout = (
+                selfclear_sec if selfclear_sec is not None
+                else float(os.environ.get("CCSWITCH_DRAIN_SELFCLEAR_SEC", "600"))
+            )
+            self._drain_timer = asyncio.create_task(
+                self._drain_selfclear(timeout), name="drain-selfclear")
+        return self.drain_status()
+
+    def cancel_drain(self) -> dict:
+        """Leave DRAINING (deploy aborted / self-clear): resume normal prompt acceptance
+        and tell the UI to flush any prompts it was holding."""
+        if self._draining:
+            self._draining = False
+            self._publish_event({"type": "updateCancelled"})
+            if self._drain_timer is not None and not self._drain_timer.done():
+                self._drain_timer.cancel()
+            self._drain_timer = None
+        return self.drain_status()
+
+    async def _drain_selfclear(self, timeout: float) -> None:
+        try:
+            await asyncio.sleep(timeout)
+        except asyncio.CancelledError:
+            return
+        if self._draining:
+            log.warning("drain self-clear: no restart within %.0fs — cancelling drain", timeout)
+            self.cancel_drain()
+
     # ------------------------------------------------------------------
     # Accessors / delegating helpers for the WS bridge
     # ------------------------------------------------------------------
@@ -803,6 +855,25 @@ class SessionOrchestrator:
             weight = 1.0 if rec.status in _ACTIVE_STATUSES else cfg.idle_session_weight
             load[rec.account] = load.get(rec.account, 0.0) + weight
         return load
+
+    def live_session_counts(self) -> dict[str, dict[str, int]]:
+        """Raw active/idle live-session counts per account, for the Accounts UI.
+
+        Same liveness notion as ``live_session_load`` (``_drivers`` ∩ ``_records``,
+        ``_ACTIVE_STATUSES`` = active) but returns integer counts split into
+        ``{"active", "idle"}`` instead of weighted floats. Accounts with no live
+        session are omitted. Snapshots ``_drivers`` before iterating (event-loop
+        mutation guard; see ``has_live_session``).
+        """
+        counts: dict[str, dict[str, int]] = {}
+        for sid in list(self._drivers.keys()):
+            rec = self._records.get(sid)
+            if rec is None:
+                continue
+            bucket = counts.setdefault(rec.account, {"active": 0, "idle": 0})
+            key = "active" if rec.status in _ACTIVE_STATUSES else "idle"
+            bucket[key] += 1
+        return counts
 
     def driver(self, session_id: str) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, or None."""
@@ -1060,6 +1131,12 @@ class SessionOrchestrator:
         return self._pending_initial_attachment_ids.pop(session_id, None)
 
     async def send_prompt(self, session_id, text, attachment_ids=None):
+        if self._draining:
+            # No new turns during a deploy drain. The browser buffers and resends on
+            # reconnect; this guard only catches prompts already in flight when drain began.
+            log.info("send_prompt rejected: drain in progress session=%s", session_id)
+            self._publish_event({"type": "updatePending"})
+            return
         d = self._drivers.get(session_id)
         if not d:
             return
@@ -1212,6 +1289,11 @@ class SessionOrchestrator:
             if not getattr(driver, "_turn_active", False):
                 continue
             if now - driver.last_progress_at <= STALL_TIMEOUT:
+                continue
+            if getattr(driver, "awaiting_user_input", False):
+                # Blocked on a permission / plan / question — waiting on the human,
+                # not wedged. Interrupting here is the spurious "[Request interrupted
+                # by user]" users see when they take a while to answer.
                 continue
             if self._recovery.stall_cap_reached(sid, now=now):
                 continue  # repeatedly stalling — don't interrupt-loop

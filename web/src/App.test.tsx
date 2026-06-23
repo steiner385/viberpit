@@ -49,6 +49,9 @@ const MOCK_ACCOUNTS: Account[] = [
     name: 'alice',
     status: 'ok',
     usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 30, resetsAt: null } },
+    liveSessions: { active: 0, idle: 0 },
+    rank: null,
+    rankReason: null,
   },
 ]
 

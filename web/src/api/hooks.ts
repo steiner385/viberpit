@@ -222,6 +222,36 @@ export function useDeleteAccount() {
   })
 }
 
+// Add-account reuses the interactive browser-OAuth login (same global state
+// machine as reauth) to create a brand-new account slot. The name is sent in
+// the body since the slot does not exist yet.
+export function useAddAccount() {
+  return useMutation<ReauthState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<ReauthState>('/accounts/add', { name }),
+  })
+}
+
+export function useAddAccountStatus(enabled: boolean) {
+  return useQuery<ReauthState>({
+    queryKey: ['add-account-status'],
+    queryFn: () => api.get<ReauthState>('/accounts/add'),
+    enabled,
+    // Poll while the login is in flight; stop once a terminal state is reached.
+    refetchInterval: (query) => {
+      const s = query.state.data?.state
+      return s === 'success' || s === 'error' || s === 'timeout' ? false : 1500
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 0,
+  })
+}
+
+export function useCancelAddAccount() {
+  return useMutation<ReauthState, ApiRequestError, void>({
+    mutationFn: () => api.post<ReauthState>('/accounts/add/cancel'),
+  })
+}
+
 export function useArchivedSessions() {
   return useQuery<ArchivedSession[]>({
     queryKey: QK.archived,
