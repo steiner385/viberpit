@@ -514,8 +514,9 @@ class SessionOrchestrator:
         # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
         # not "Your turn". Computed here (not in the pure `derive_status`) because it needs
         # the transcript, like the `limited`/`ended` overlays. Scan only on `done` so the
-        # per-emit cost is paid once per turn-end. `waiting_external` is itself an
-        # ACTIVITY_STATUS, so the "active … ago" clock below still advances on this turn.
+        # per-emit cost is paid once per turn-end. `waiting_external` is NOT in
+        # ACTIVITY_STATUSES, so parking does NOT bump the "active … ago" clock below — the
+        # card shows time since the last real turn, not a reset on every re-arm.
         completed_turn = status == "done"
         if completed_turn:
             from .background_tasks import is_parked
