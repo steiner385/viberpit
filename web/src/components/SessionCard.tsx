@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from 'react'
-import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown } from 'lucide-react'
+import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Target } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
@@ -128,6 +128,15 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
             <span className="truncate">{repoLabel.text}</span>
           </span>
           <StatusPill status={session.status} />
+          {session.activeGoal && (
+            <span
+              className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
+              title={`Goal: ${session.activeGoal}`}
+            >
+              <Target size={12} aria-hidden="true" className="flex-shrink-0" />
+              <span className="truncate">Goal</span>
+            </span>
+          )}
           {session.pr && <PrPill pr={session.pr} />}
           {/* Session usage only — weekly is an account-level figure shown in the
               Accounts tab and the in-session meta strip, so repeating it on every
