@@ -9,6 +9,7 @@
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
+import { contextSeverity } from '@/lib/contextWindow'
 import type { SubAgent, SubAgentStatus } from '@/session/selectors'
 import { SubAgentList } from './SubAgentList'
 
@@ -112,12 +113,23 @@ export function SessionMeta({ account, model, mode, contextPct, quota, subAgents
         </span>
 
         {/* Remaining context */}
-        <span className="inline-flex items-center gap-1" aria-label="Remaining context">
-          <span className="text-gray-400 dark:text-gray-500">ctx</span>
-          <span className="font-medium tabular-nums text-gray-900 dark:text-gray-100">
-            {contextPct != null ? `${contextPct}%` : DASH}
-          </span>
-        </span>
+        {(() => {
+          const sev = contextSeverity(contextPct)
+          const color = sev === 'danger'
+            ? 'text-red-700 dark:text-red-400'
+            : sev === 'warning'
+              ? 'text-amber-700 dark:text-amber-400'
+              : 'text-gray-900 dark:text-gray-100'
+          return (
+            <span className={cn('inline-flex items-center gap-1', color)} aria-label="Remaining context">
+              <span className="text-gray-400 dark:text-gray-500">ctx</span>
+              <span className="font-medium tabular-nums">
+                {contextPct != null ? `${contextPct}%` : DASH}
+              </span>
+              {sev === 'danger' && <span className="opacity-70">· compacts soon</span>}
+            </span>
+          )
+        })()}
 
         {/* Account quota */}
         {quota && (

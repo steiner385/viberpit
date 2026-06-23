@@ -23,7 +23,7 @@ def test_no_sessions_is_safe():
 
 def test_idle_and_terminal_statuses_are_safe():
     o = _orch()
-    for i, s in enumerate(["idle", "ready_review", "done", "limited", "ended", "archived"]):
+    for i, s in enumerate(["idle", "ready_review", "done", "waiting_external", "limited", "ended", "archived"]):
         o._records[f"s{i}"] = _rec(f"s{i}", s)
     assert o.active_session_count() == 0
     assert o.restart_safe() is True
