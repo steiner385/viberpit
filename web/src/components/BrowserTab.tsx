@@ -20,6 +20,7 @@ interface Props {
 
 export function BrowserTab({ sessionId, statusState, initialState }: Props) {
   const canvasRef = useRef<HTMLDivElement>(null)
+  const panRef = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<VncState>(initialState ?? 'connecting')
   const [focused, setFocused] = useState(false)
   const clientRef = useRef<VncClient | null>(null)
@@ -49,6 +50,19 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
     return () => c.disconnect()
   }, [sessionId, initialState])
 
+  // Re-fit the VNC view when the pan container resizes (debounced ~150ms).
+  useEffect(() => {
+    const el = panRef.current
+    if (!el) return
+    let t: ReturnType<typeof setTimeout> | undefined
+    const ro = new ResizeObserver(() => {
+      clearTimeout(t)
+      t = setTimeout(() => clientRef.current?.refit(), 150)
+    })
+    ro.observe(el)
+    return () => { clearTimeout(t); ro.disconnect() }
+  }, [])
+
   async function openBrowser() {
     await fetch(`/api/sessions/${sessionId}/browser/open`, { method: 'POST' })
   }
@@ -73,6 +87,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
     <div className="relative h-full w-full overflow-hidden">
       {/* Pan container — produces real scrollbars to pan the zoomed canvas. */}
       <div
+        ref={panRef}
         className="h-full w-full overflow-auto"
         onPointerDown={(e) => {
           pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })

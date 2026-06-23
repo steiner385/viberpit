@@ -1,13 +1,15 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import { BrowserTab } from '../BrowserTab'
+
+const refitSpy = vi.fn()
 
 vi.mock('../../vnc/vncClient', () => ({
   VncClient: class {
     on() {}
     connect() {}
     disconnect() {}
-    refit() {}
+    refit() { refitSpy() }
     focus() {}
     blur() {}
   },
@@ -85,5 +87,27 @@ describe('BrowserTab', () => {
   it('never renders a "1:1" label', () => {
     render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
     expect(screen.queryByText('1:1')).toBeNull()
+  })
+
+  it('re-fits the VNC view when the panel resizes', () => {
+    vi.useFakeTimers()
+    try {
+      const cbs: Array<() => void> = []
+      ;(globalThis as any).ResizeObserver = class {
+        constructor(cb: () => void) { cbs.push(cb) }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+      refitSpy.mockClear()
+      // Omit initialState so the VncClient is instantiated (mock handles the connect)
+      render(<BrowserTab sessionId="S" statusState="idle" />)
+      expect(cbs.length).toBeGreaterThan(0)
+      act(() => { cbs[0]() })
+      vi.runAllTimers()
+      expect(refitSpy).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
