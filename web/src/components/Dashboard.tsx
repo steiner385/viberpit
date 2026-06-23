@@ -9,7 +9,7 @@ import { SessionList } from './SessionList'
 import { AdoptPanel } from './AdoptPanel'
 import { AllLimitedBanner } from './AllLimitedBanner'
 import { UpdatePendingBanner } from './UpdatePendingBanner'
-import { useUpdatePending } from '@/hooks/useUpdatePending'
+import { useInputHold } from '@/hooks/useInputHold'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { DispatchBar } from './DispatchBar'
 import { useGlobalListNav } from './useGlobalListNav'
@@ -1318,7 +1318,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const [showHelp, setShowHelp] = useState(false)
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
   const [allLimitedReset, setAllLimitedReset] = useState<string | null | undefined>(undefined)
-  const updatePending = useUpdatePending()
+  const inputHold = useInputHold()
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null)
   const [branchError, setBranchError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
@@ -1673,8 +1673,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         />
       )}
 
-      {updatePending.active && (
-        <UpdatePendingBanner queuedCount={updatePending.count} />
+      {inputHold.holding && (
+        <UpdatePendingBanner queuedCount={inputHold.count} mode={inputHold.mode} />
       )}
 
       {/* Tab bar */}

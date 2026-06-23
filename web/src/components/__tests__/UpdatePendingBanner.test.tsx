@@ -17,4 +17,10 @@ describe('UpdatePendingBanner', () => {
     render(<UpdatePendingBanner queuedCount={0} />)
     expect(screen.queryByText(/will send after/i)).toBeNull()
   })
+
+  it('shows a reconnecting message and held count when mode is reconnecting', () => {
+    render(<UpdatePendingBanner queuedCount={1} mode="reconnecting" />)
+    expect(screen.getByText(/reconnecting/i)).toBeInTheDocument()
+    expect(screen.getByText(/1 message/i)).toBeInTheDocument()
+  })
 })
