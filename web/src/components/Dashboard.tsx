@@ -31,6 +31,7 @@ import {
   useUnarchiveSession,
   usePermanentDeleteSession,
   useConfig,
+  useSendPrompt,
   QK,
   type CreateSessionInput,
 } from '@/api/hooks'
@@ -1168,9 +1169,18 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     })
   }
 
-  function handleOpen(id: string) {
+  const handleOpen = useCallback((id: string) => {
     if (onOpenSession) onOpenSession(id)
-  }
+  }, [onOpenSession])
+
+  const sendPrompt = useSendPrompt()
+  const handleQuickResume = useCallback((id: string, text?: string) => {
+    if (text) {
+      sendPrompt.mutate({ id, text })   // fire in place, stay on the list
+    } else {
+      handleOpen(id)                    // open the session; use its play button to generate + confirm
+    }
+  }, [sendPrompt, handleOpen])
 
   function handleRename(id: string) {
     const session = sessions.find((s) => s.id === id)
@@ -1490,6 +1500,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             onRename={handleRename}
             onClose={handleClose}
             onDelete={handleSessionDelete}
+            onQuickResume={handleQuickResume}
           />
 
           {config?.adoptionEnabled && <AdoptPanel />}

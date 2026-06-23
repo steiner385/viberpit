@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from 'react'
-import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown } from 'lucide-react'
+import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Play } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { relTime } from '@/lib/relativeTime'
@@ -25,13 +25,19 @@ interface SessionCardProps {
   onClose: (id: string) => void
   /** Permanently delete the session (irreversible; confirmed by the caller). */
   onDelete: (id: string) => void
+  /** Quick-resume: text present → fire that suggestion in place; undefined → caller opens the session. */
+  onQuickResume: (id: string, text?: string) => void
 }
 
-export function SessionCard({ session, account, selected = false, onOpen, onRename, onClose, onDelete }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, onOpen, onRename, onClose, onDelete, onQuickResume }: SessionCardProps) {
   const articleRef = useRef<HTMLElement>(null)
   const subAgents = session.subAgents ?? []
   const hasSubAgents = subAgents.length > 0
   const [expanded, setExpanded] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  const suggestions = session.latestSuggestions ?? []
+  const canFireInPlace = suggestions.length > 0 && !session.detached
 
   // Scroll selected row into view when selection changes (jsdom doesn't implement scrollIntoView)
   useEffect(() => {
@@ -165,6 +171,54 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
           selected && '[@media(hover:hover)]:opacity-100',
         )}
       >
+        <button
+          type="button"
+          className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
+            'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500')}
+          aria-label={`Resume session ${session.name}`}
+          title={canFireInPlace ? 'Resume — send the suggested next step' : 'Resume — open and continue'}
+          onClick={() => onQuickResume(session.id, canFireInPlace ? suggestions[0] : undefined)}
+        >
+          <Play size={16} aria-hidden="true" />
+        </button>
+        {suggestions.length >= 2 && !session.detached && (
+          <div className="relative flex items-center">
+            <button
+              type="button"
+              aria-label={`More suggestions for ${session.name}`}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
+                'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500')}
+              onClick={() => setMenuOpen((o) => !o)}
+            >
+              <ChevronDown size={16} aria-hidden="true" />
+            </button>
+            {menuOpen && (
+              <div
+                role="menu"
+                className={cn(
+                  'absolute top-full right-0 mt-1 min-w-[12rem] max-w-xs z-10',
+                  'rounded-md border border-gray-200 dark:border-gray-700',
+                  'bg-white dark:bg-gray-800 shadow-lg py-1',
+                )}
+              >
+                {suggestions.slice(1).map((s, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setMenuOpen(false); onQuickResume(session.id, s) }}
+                    className={cn('block w-full truncate px-3 py-2 text-left text-sm',
+                      'hover:bg-gray-100 dark:hover:bg-gray-700')}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <button
           type="button"
           className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
