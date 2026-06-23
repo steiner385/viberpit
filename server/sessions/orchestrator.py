@@ -152,6 +152,7 @@ class SessionOrchestrator:
                     allow_refresh=not self.has_live_session(name),
                 )
 
+        self._poll_interval = poll_interval
         self._poller: UsagePoller = UsagePoller(
             poll_interval=poll_interval,
             usage_fn=_poller_usage_fn,
@@ -165,6 +166,7 @@ class SessionOrchestrator:
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
         self._stall_task: asyncio.Task | None = None
+        self._token_refresh_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
         # Serialises the check-build-register critical section in ensure_driver
@@ -204,10 +206,48 @@ class SessionOrchestrator:
             self._titling_monitor(), name="titling-monitor"
         )
         self._stall_task = asyncio.create_task(self._stall_loop(), name="stall-watchdog")
+        self._token_refresh_task = asyncio.create_task(
+            self._token_refresh_monitor(), name="token-refresh-monitor"
+        )
+
+    async def _refresh_idle_tokens_once(self) -> None:
+        """Proactively refresh idle accounts' access tokens (best-effort).
+
+        Decoupled from the usage poller's backoff so a throttled *usage* endpoint
+        can't starve *token* refresh. Skips accounts that are already needs-reauth
+        (a dead single-use token can't be refreshed — don't hammer the endpoint)
+        and accounts with a live session (the SDK owns that token family and
+        ccswitch must not refresh it out from under the running process). Reuses
+        ensure_valid_token as the single source of truth; per-account errors are
+        swallowed — status transitions stay owned by the usage_for path.
+        """
+        try:
+            accounts = ccswitch_accounts.list_accounts()
+        except Exception:
+            log.warning("token-refresh: list_accounts failed", exc_info=True)
+            return
+        for acct in accounts:
+            name = acct["name"]
+            if acct.get("status") == "needs-reauth" or self.has_live_session(name):
+                continue
+            try:
+                await asyncio.to_thread(ccswitch_accounts.ensure_valid_token, name)
+            except Exception:
+                log.debug("token-refresh: ensure_valid_token failed for %s", name, exc_info=True)
+
+    async def _token_refresh_monitor(self) -> None:
+        """Run an idle-token refresh immediately (restart recovery), then every
+        poll_interval seconds."""
+        while True:
+            try:
+                await self._refresh_idle_tokens_once()
+            except Exception:  # pragma: no cover — defensive, _refresh_idle_tokens_once swallows
+                log.exception("token-refresh: monitor sweep failed")
+            await asyncio.sleep(self._poll_interval)
 
     async def stop(self) -> None:
         """Stop the titling sweep, rotation monitor and usage poller."""
-        for attr in ("_titling_task", "_rotation_task", "_stall_task"):
+        for attr in ("_titling_task", "_rotation_task", "_stall_task", "_token_refresh_task"):
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
