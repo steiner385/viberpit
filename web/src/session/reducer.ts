@@ -67,6 +67,7 @@ export interface TranscriptState {
   rotations: RotationMarker[]   // account rotations, anchored into the timeline
   subAgents: Record<string, SubThread>   // keyed by the spawning Task toolId
   latestSuggestions: string[]  // next-prompt chips for the current idle turn
+  condense: { active: boolean; expectedMs: number } | null
 }
 
 export const initialTranscript: TranscriptState = {
@@ -85,6 +86,7 @@ export const initialTranscript: TranscriptState = {
   rotations: [],
   subAgents: {},
   latestSuggestions: [],
+  condense: null,
 }
 
 /** Coerce a possibly-missing numeric usage field to a finite number (0 when absent). */
@@ -569,6 +571,13 @@ export function transcriptReducer(
     // ── queueUpdate ───────────────────────────────────────────────────────────
     case 'queueUpdate': {
       return { ...state, queued: ev.items }
+    }
+
+    // ── condensing ────────────────────────────────────────────────────────────
+    case 'condensing': {
+      return ev.active
+        ? { ...state, condense: { active: true, expectedMs: ev.expectedMs ?? 12000 } }
+        : { ...state, condense: null }
     }
 
     // ── suggestions ───────────────────────────────────────────────────────────

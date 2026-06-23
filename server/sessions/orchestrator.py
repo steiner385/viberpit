@@ -365,6 +365,8 @@ class SessionOrchestrator:
             on_session_id=self._persist_claude_session_id,
             on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
             on_status=self._persist_status,
+            on_record_condense_ms=self._record_condense_ms,
+            get_condense_estimate=self._condense_estimate,
             on_recoverable_failure=self._handle_recoverable_failure,
             suggester=self._suggester,
         )
@@ -531,6 +533,14 @@ class SessionOrchestrator:
         self._publish_event({"type": "status", "sessionId": session_id, "status": status})
         if status == "done":
             await self._maybe_apply_auto_name(session_id)
+
+    async def _condense_estimate(self) -> float:
+        from server.sessions import compaction_stats
+        return await compaction_stats.current_estimate()
+
+    async def _record_condense_ms(self, ms: float) -> None:
+        from server.sessions import compaction_stats
+        await compaction_stats.record_duration(ms)
 
     async def _persist_sub_agents(self, session_id: str) -> None:
         """Recompute the session's sub-agent summary from the transcript and persist
@@ -1056,6 +1066,8 @@ class SessionOrchestrator:
                     on_session_id=self._persist_claude_session_id,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
                     on_status=self._persist_status,
+                    on_record_condense_ms=self._record_condense_ms,
+                    get_condense_estimate=self._condense_estimate,
                     on_recoverable_failure=self._handle_recoverable_failure,
                     suggester=self._suggester,
                 )
@@ -1150,6 +1162,8 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, cand.account),
                 on_status=self._persist_status,
+                on_record_condense_ms=self._record_condense_ms,
+                get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester,
             )
@@ -1663,6 +1677,8 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
                 on_status=self._persist_status,
+                on_record_condense_ms=self._record_condense_ms,
+                get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester,
             )
