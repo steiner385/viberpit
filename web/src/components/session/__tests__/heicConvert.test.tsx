@@ -47,6 +47,7 @@ describe('maybeConvertHeic', () => {
     heic2any.mockResolvedValueOnce([new Blob([new Uint8Array(4)], { type: 'image/jpeg' })] as unknown as Blob)
     const out = await maybeConvertHeic(file('live.heic', 'image/heic'))
     expect(out.type).toBe('image/jpeg')
+    expect(out.name).toBe('live.jpg')
   })
   it('rejects when conversion throws', async () => {
     heic2any.mockRejectedValueOnce(new Error('decode failed'))

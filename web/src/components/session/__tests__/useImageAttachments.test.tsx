@@ -7,6 +7,7 @@ const heic2any = vi.fn(async () => new Blob([new Uint8Array(10)], { type: 'image
 vi.mock('heic2any', () => ({ default: heic2any }))
 
 beforeEach(() => {
+  heic2any.mockClear()
   // jsdom lacks createObjectURL
   // @ts-expect-error test shim
   URL.createObjectURL = vi.fn(() => 'blob:preview')
@@ -42,6 +43,8 @@ describe('useImageAttachments', () => {
     const pdf = new File([new Uint8Array(10)], 'x.pdf', { type: 'application/pdf' })
     await act(async () => { await result.current.addFiles([pdf]) })
     expect(result.current.attachments[0].error).toMatch(/unsupported/i)
+    // error chips render no thumbnail, so they hold no object URL
+    expect(result.current.attachments[0].previewUrl).toBe('')
   })
 
   it('remove drops the attachment by key', async () => {
