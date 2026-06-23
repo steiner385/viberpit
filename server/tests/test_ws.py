@@ -547,6 +547,80 @@ def test_reattach_reemits_pending_question(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# Reattach re-emits a pending PLAN permission with plan=True (regression: the
+# re-emit path hardcoded plan=False, so a reattach mid-plan showed the generic
+# Yes/No card instead of Approve & run / Keep planning).
+# ---------------------------------------------------------------------------
+
+class _PlanPermissionBlockingFakeClient(FakeSDKClient):
+    """Fake client that requests an ExitPlanMode permission and stays blocked until
+    resolved, so the test can detach mid-permission and reattach to verify the
+    re-emitted permissionRequest carries plan=True."""
+
+    async def receive_response(self):
+        yield f.stream_start(uuid="t3")
+        if self.on_can_use_tool is not None:
+            await self.on_can_use_tool("ExitPlanMode", {"plan": "ship it"}, None)
+        if self.interrupted:
+            return
+        yield f.stream_text("done after plan approval", uuid="t3")
+        yield f.result(session_id="sess-3", uuid="t3")
+
+
+def test_reattach_reemits_pending_plan_permission_with_plan_flag(ws_env):
+    """A pending ExitPlanMode permission must be re-emitted on reattach with plan=True
+    so the UI keeps the plan-approval card (Approve & run / Keep planning)."""
+    _app, orch, client = ws_env([], client_cls=_PlanPermissionBlockingFakeClient)
+    session = client.portal.call(
+        lambda: orch.create_session("test-reattach-plan", identity="wstest@example.com")
+    )
+    session_id = session.id
+
+    # --- First connection: see the live plan permission, then detach. ---
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "go"}))
+        events = _drain_events(ws, until_type="permissionRequest", timeout=8.0)
+        req = next((e for e in events if e.get("type") == "permissionRequest"), None)
+        assert req is not None, f"no permissionRequest in {[e.get('type') for e in events]}"
+        assert req.get("tool") == "ExitPlanMode"
+        assert req.get("plan") is True, "live ExitPlanMode permission must set plan=True"
+        saved_perm_id = req["permId"]
+        ws.send_text(json.dumps({"type": "detach", "sessionId": session_id}))
+
+    # --- Second connection: reattach — the pending permission must be re-emitted
+    #     and must still carry plan=True. ---
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        all_events: list[dict] = []
+        all_events.extend(_drain_events(ws, until_type="replayComplete"))
+        all_events.extend(_drain_events(ws, until_type="permissionRequest", timeout=4.0))
+
+        reemit = next((e for e in all_events if e.get("type") == "permissionRequest"), None)
+        assert reemit is not None, (
+            f"reattach: pending permission was NOT re-emitted — "
+            f"{[e.get('type') for e in all_events]}"
+        )
+        assert reemit.get("permId") == saved_perm_id
+        assert reemit.get("tool") == "ExitPlanMode"
+        assert reemit.get("plan") is True, (
+            "re-emitted ExitPlanMode permission must carry plan=True (was hardcoded False)"
+        )
+
+        # Resolve so the driver unblocks and the turn completes cleanly.
+        ws.send_text(json.dumps({
+            "type": "permissionResponse", "sessionId": session_id,
+            "permId": saved_perm_id, "decision": "allow",
+        }))
+        events = _drain_events(ws, until_type="turnEnd", timeout=8.0)
+        assert "turnEnd" in [e.get("type") for e in events]
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
 # Reattach emits the current live status (regression: stale 'Ready' mid-turn)
 # ---------------------------------------------------------------------------
 

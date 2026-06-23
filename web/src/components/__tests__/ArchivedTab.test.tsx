@@ -39,6 +39,8 @@ vi.mock('@/api/hooks', () => ({
   useArchivedSessions: vi.fn(),
   useUnarchiveSession: vi.fn(),
   usePermanentDeleteSession: vi.fn(),
+  useBulkUnarchiveSessions: vi.fn(),
+  useBulkPermanentDeleteSessions: vi.fn(),
   useSendPrompt: () => ({ mutate: vi.fn() }),
   QK: {
     accounts: ['accounts'],
@@ -49,6 +51,10 @@ vi.mock('@/api/hooks', () => ({
     githubBranches: (repo?: string) => ['github-branches', repo],
     settings: ['settings'],
   },
+}))
+
+vi.mock('@/session/useSessionSearch', () => ({
+  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
 }))
 
 const NOOP_MUTATION = { mutate: vi.fn(), isPending: false, isSuccess: false }
@@ -91,6 +97,8 @@ function setupDefaultMocks() {
   vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
   vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+  vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
+  vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
 }
 
 // ── Tab presence and switching ────────────────────────────────────────────────
@@ -340,5 +348,89 @@ describe('Dashboard — Archived tab', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
     expect(permDeleteMutate).not.toHaveBeenCalled()
+  })
+
+  // ── Bulk operations ───────────────────────────────────────────────────────────
+
+  function twoArchived() {
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
+      data: [
+        makeArchived({ id: 'arc-1', name: 'Alpha' }),
+        makeArchived({ id: 'arc-2', name: 'Beta' }),
+      ],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useArchivedSessions>)
+  }
+
+  it('selecting a row reveals the bulk action bar with a count', async () => {
+    const user = userEvent.setup()
+    twoArchived()
+    render(<Dashboard />, { wrapper })
+    await user.click(screen.getByRole('tab', { name: /archived/i }))
+
+    expect(screen.queryByRole('region', { name: /bulk actions/i })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('checkbox', { name: /select alpha/i }))
+
+    const bar = screen.getByRole('region', { name: /bulk actions/i })
+    expect(bar).toHaveTextContent(/1 selected/i)
+  })
+
+  it('Select all selects every row', async () => {
+    const user = userEvent.setup()
+    twoArchived()
+    render(<Dashboard />, { wrapper })
+    await user.click(screen.getByRole('tab', { name: /archived/i }))
+
+    await user.click(screen.getByRole('checkbox', { name: /select all/i }))
+    expect(screen.getByRole('region', { name: /bulk actions/i })).toHaveTextContent(/2 selected/i)
+  })
+
+  it('bulk Unarchive calls useBulkUnarchiveSessions.mutate with selected ids', async () => {
+    const user = userEvent.setup()
+    const bulkMutate = vi.fn()
+    vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue({
+      mutate: bulkMutate, isPending: false,
+    } as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
+    twoArchived()
+    render(<Dashboard />, { wrapper })
+    await user.click(screen.getByRole('tab', { name: /archived/i }))
+
+    await user.click(screen.getByRole('checkbox', { name: /select alpha/i }))
+    await user.click(screen.getByRole('checkbox', { name: /select beta/i }))
+    await user.click(screen.getByRole('button', { name: /unarchive \(2\)/i }))
+
+    expect(bulkMutate).toHaveBeenCalledWith(
+      expect.arrayContaining(['arc-1', 'arc-2']),
+      expect.anything(),
+    )
+  })
+
+  it('bulk Delete opens the confirm dialog and calls bulk delete on confirm', async () => {
+    const user = userEvent.setup()
+    const bulkDeleteMutate = vi.fn()
+    vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue({
+      mutate: bulkDeleteMutate, isPending: false,
+    } as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
+    twoArchived()
+    render(<Dashboard />, { wrapper })
+    await user.click(screen.getByRole('tab', { name: /archived/i }))
+
+    await user.click(screen.getByRole('checkbox', { name: /select alpha/i }))
+    await user.click(screen.getByRole('button', { name: /^delete \(1\)/i }))
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /delete permanently/i }))
+    expect(bulkDeleteMutate).toHaveBeenCalledWith(['arc-1'], expect.anything())
+  })
+
+  it('Clear deselects all and hides the action bar', async () => {
+    const user = userEvent.setup()
+    twoArchived()
+    render(<Dashboard />, { wrapper })
+    await user.click(screen.getByRole('tab', { name: /archived/i }))
+
+    await user.click(screen.getByRole('checkbox', { name: /select alpha/i }))
+    await user.click(screen.getByRole('button', { name: /clear/i }))
+    expect(screen.queryByRole('region', { name: /bulk actions/i })).not.toBeInTheDocument()
   })
 })

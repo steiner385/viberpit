@@ -425,6 +425,43 @@ describe('SessionList — pure renderer (no internal sort)', () => {
   })
 })
 
+describe('SessionList — no-matches state', () => {
+  it('shows a no-matches state (not EmptyState) when filtered to zero', async () => {
+    const onClearSearch = vi.fn()
+    render(
+      <SessionList
+        sessions={[]}
+        accounts={[]}
+        isFiltered
+        onClearSearch={onClearSearch}
+        onNew={() => {}}
+        onOpen={() => {}}
+        onRename={() => {}}
+        onClose={() => {}}
+        onDelete={() => {}}
+      />,
+    )
+    expect(screen.getByText(/no sessions match/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /clear search/i }))
+    expect(onClearSearch).toHaveBeenCalled()
+  })
+
+  it('shows EmptyState when there are zero sessions and no active filter', () => {
+    render(
+      <SessionList
+        sessions={[]}
+        accounts={[]}
+        onNew={() => {}}
+        onOpen={() => {}}
+        onRename={() => {}}
+        onClose={() => {}}
+        onDelete={() => {}}
+      />,
+    )
+    expect(screen.queryByText(/no sessions match/i)).toBeNull()
+  })
+})
+
 describe('SessionCard — null usage guard (needs-reauth account)', () => {
   // Regression: before the fix, a session whose account has usage:null
   // crashed SessionCard with "Cannot read properties of null (reading 'session')".

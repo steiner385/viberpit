@@ -21,11 +21,9 @@ describe('Turn tool grouping', () => {
     render(
       <Turn
         turn={makeTurn([tool('a'), tool('b'), tool('c'), tool('d')])}
-        permissionMode="interactive"
         isLastTurn={false}
         toolDetailMode="auto"
         thinkingCollapsed={true}
-        onDecision={noop}
         onAnswer={noop}
       />,
     )
@@ -40,11 +38,9 @@ describe('Turn tool grouping', () => {
     render(
       <Turn
         turn={makeTurn([tool('a'), tool('b'), tool('c'), tool('d')])}
-        permissionMode="interactive"
         isLastTurn
         toolDetailMode="auto"
         thinkingCollapsed={true}
-        onDecision={noop}
         onAnswer={noop}
       />,
     )
@@ -57,11 +53,9 @@ describe('Turn tool grouping', () => {
     render(
       <Turn
         turn={makeTurn(blocks)}
-        permissionMode="interactive"
         isLastTurn={false}
         toolDetailMode="auto"
         thinkingCollapsed={true}
-        onDecision={noop}
         onAnswer={noop}
       />,
     )
@@ -74,11 +68,9 @@ describe('Turn rendering edge cases', () => {
     const { container } = render(
       <Turn
         turn={makeTurn([])}
-        permissionMode="interactive"
         isLastTurn
         toolDetailMode="auto"
         thinkingCollapsed={true}
-        onDecision={noop}
         onAnswer={noop}
       />,
     )
@@ -90,12 +82,10 @@ describe('Turn rendering edge cases', () => {
     render(
       <Turn
         turn={makeTurn(blocks)}
-        permissionMode="interactive"
         isLastTurn
         toolDetailMode="auto"
         thinkingCollapsed={true}
         streamingBlockId="t1"
-        onDecision={noop}
         onAnswer={noop}
       />,
     )
@@ -108,12 +98,10 @@ describe('Turn rendering edge cases', () => {
     render(
       <Turn
         turn={makeTurn(blocks)}
-        permissionMode="interactive"
         isLastTurn
         toolDetailMode="auto"
         thinkingCollapsed={true}
         streamingBlockId={null}
-        onDecision={noop}
         onAnswer={noop}
       />,
     )
@@ -136,11 +124,9 @@ describe('Turn question rendering', () => {
     const { container } = render(
       <Turn
         turn={makeTurn([{ ...baseQ, live: true }])}
-        permissionMode="interactive"
         isLastTurn
         toolDetailMode="auto"
         thinkingCollapsed={true}
-        onDecision={noop}
         onAnswer={noop}
       />,
     )
@@ -153,11 +139,9 @@ describe('Turn question rendering', () => {
     render(
       <Turn
         turn={makeTurn([{ ...baseQ, live: false }])}
-        permissionMode="interactive"
         isLastTurn
         toolDetailMode="auto"
         thinkingCollapsed={true}
-        onDecision={noop}
         onAnswer={vi.fn()}
       />,
     )

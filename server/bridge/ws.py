@@ -35,7 +35,7 @@ from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
 from server.db import db_session
 from server.ipc.client import DaemonUnavailable
-from server.sessions.events import ErrorEvent, tool_kind
+from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.replay import replay_events
 
 if TYPE_CHECKING:
@@ -267,14 +267,15 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             except Exception:
                 log.warning("ws.attach: command_catalog failed for %s", session_id, exc_info=True)
 
-            # Re-emit any pending permission requests for this session.
+            # Re-emit any pending permission requests for this session. Build the frame
+            # through PermissionRequest.to_wire() — the same wire format the live path
+            # uses — so the re-emit can't drift from it (it previously hardcoded
+            # plan=False, dropping the plan flag for a pending ExitPlanMode approval).
             for p in await orchestrator.pending_permissions(session_id):
-                perm_frame = redact_event({
-                    "type": "permissionRequest", "permId": p["permId"],
-                    "turnId": p["turn_id"], "tool": p["tool"],
-                    "toolKind": tool_kind(p["tool"]).value,
-                    "input": p["input"], "plan": False,
-                })
+                perm_frame = redact_event(PermissionRequest(
+                    p["permId"], p["turn_id"], p["tool"], tool_kind(p["tool"]),
+                    p["input"], plan=(p["tool"] == "ExitPlanMode"),
+                ).to_wire())
                 await _send(perm_frame)
 
             # Re-emit any pending AskUserQuestion events for this session. Mirrors the

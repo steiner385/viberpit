@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiRequestError } from './client'
 import type {
-  Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption,
+  Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
 } from './types'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
@@ -17,6 +17,7 @@ export const QK = {
   githubRepos: ['github-repos'] as const,
   githubBranches: (repo?: string) => ['github-branches', repo] as const,
   settings: ['settings'] as const,
+  sessionSearch: (q: string) => ['session-search', q] as const,
 }
 
 export function useModels() {
@@ -249,6 +250,29 @@ export function usePermanentDeleteSession() {
       qc.invalidateQueries({ queryKey: QK.archived })
       // A live session can also be permanently deleted from its card, so the
       // active sessions list must refresh too.
+      qc.invalidateQueries({ queryKey: QK.sessions })
+    },
+  })
+}
+
+export function useBulkUnarchiveSessions() {
+  const qc = useQueryClient()
+  return useMutation<BatchResult, ApiRequestError, string[]>({
+    mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/unarchive', { ids }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.sessions })
+      qc.invalidateQueries({ queryKey: QK.archived })
+    },
+  })
+}
+
+export function useBulkPermanentDeleteSessions() {
+  const qc = useQueryClient()
+  return useMutation<BatchResult, ApiRequestError, string[]>({
+    mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/permanent-delete', { ids }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.archived })
+      // A live session can also be permanently deleted, so refresh active too.
       qc.invalidateQueries({ queryKey: QK.sessions })
     },
   })

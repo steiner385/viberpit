@@ -1,3 +1,4 @@
+import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { GroupBy, SortBy } from '@/session/ordering'
 
@@ -6,6 +7,8 @@ interface SessionListControlsProps {
   sortBy: SortBy
   onGroupByChange: (g: GroupBy) => void
   onSortByChange: (s: SortBy) => void
+  searchQuery: string
+  onSearchChange: (q: string) => void
 }
 
 const selectClass = cn(
@@ -19,9 +22,31 @@ export function SessionListControls({
   sortBy,
   onGroupByChange,
   onSortByChange,
+  searchQuery,
+  onSearchChange,
 }: SessionListControlsProps) {
   return (
     <div className="flex items-center gap-3 flex-wrap">
+      <div className="relative">
+        <input
+          type="search"
+          aria-label="Search sessions"
+          placeholder="Search sessions…"
+          value={searchQuery}
+          onChange={(e) => onSearchChange(e.target.value)}
+          className={cn(selectClass, 'pr-7 w-44 [&::-webkit-search-cancel-button]:hidden')}
+        />
+        {searchQuery !== '' && (
+          <button
+            type="button"
+            aria-label="Clear search"
+            onClick={() => onSearchChange('')}
+            className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        )}
+      </div>
       <label className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
         <span>Group by</span>
         <select

@@ -176,7 +176,7 @@ describe('SessionView', () => {
     })
   })
 
-  it('shows "action needed" banner when an open permission exists (no question)', async () => {
+  it('pins an actionable permission panel above the composer when an open permission exists', async () => {
     render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
 
     emitSessionEvent({ type: 'replayComplete' })
@@ -192,8 +192,13 @@ describe('SessionView', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByText(/action needed/i)).toBeInTheDocument()
+      // The pinned panel (always visible above the composer) carries the actionable
+      // allow/deny controls — not a "scroll up to respond" banner.
+      const panel = screen.getByTestId('pending-permission-panel')
+      expect(panel).toBeInTheDocument()
+      expect(within(panel).getByRole('button', { name: /^allow/i })).toBeInTheDocument()
     })
+    expect(screen.queryByText(/scroll up to respond/i)).not.toBeInTheDocument()
   })
 
   it('calls permissionResponse and dispatches _resolvePermission when Yes clicked', async () => {
