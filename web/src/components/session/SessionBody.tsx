@@ -19,9 +19,14 @@ import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { BrowserTab } from '../BrowserTab'
+import { useModels, useAccounts, useSessions } from '@/api/hooks'
 
 export function SessionBody({ rt }: { rt: SessionRuntime }) {
   const runningSubAgents = selectRunningSubAgentCount(rt.state.turns)
+  const { data: models = [] } = useModels()
+  const { data: accounts = [] } = useAccounts()
+  const { data: sessions = [] } = useSessions()
+  const pinned = sessions.find((s) => s.id === rt.sessionId)?.accountPinned ?? false
 
   // Whether the x11/browser feature is available on this server.
   // Starts as false (unknown); set to true only when /api/x11/metrics returns
@@ -60,6 +65,11 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           quota={rt.quota}
           subAgents={rt.subAgents}
           statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} subAgentCount={runningSubAgents} />}
+          models={models}
+          accounts={accounts.map((a) => ({ name: a.name }))}
+          accountPinned={pinned}
+          onSelectModel={(id) => rt.onCommand('model', id)}
+          onSelectAccount={(name) => rt.onCommand('account', name)}
         />
       </div>
 
@@ -140,6 +150,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                 connectionState={rt.connectionState}
                 replaying={rt.state.replaying}
                 hasError={rt.state.error !== null}
+                onRetry={rt.reattach}
               />
             ) : (
               <TranscriptView

@@ -30,7 +30,8 @@ class TurnStart:
 @dataclass
 class SessionMeta:
     model: str; session_id: str
-    def to_wire(self): return {"type": "sessionMeta", "model": self.model, "sessionId": self.session_id}
+    def to_wire(self): return {"type": "sessionMeta", "model": self.model,
+                               "sessionId": self.session_id}
 
 @dataclass
 class TurnEnd:

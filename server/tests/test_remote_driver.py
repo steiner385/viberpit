@@ -22,7 +22,7 @@ class _FakeClient:
         for f in self._frames:
             yield f
 
-    def subscribe(self, session_id):
+    def subscribe(self, session_id, since=None):
         return self._gen()
 
 
@@ -61,7 +61,7 @@ async def test_remote_driver_snapshot_and_wire_events():
             return {"found": True, "status": "in_progress", "queued": ["q1", "q2"]}
         async def _gen(self):
             yield {"type": "textDelta", "text": "hi"}
-        def subscribe(self, session_id):
+        def subscribe(self, session_id, since=None):
             return self._gen()
 
     ro = RemoteOrchestrator(_Client())
@@ -71,3 +71,32 @@ async def test_remote_driver_snapshot_and_wire_events():
     assert d.queued() == ["q1", "q2"]
     ev = await d.events().__anext__()
     assert ev.to_wire() == {"type": "textDelta", "text": "hi"}
+
+
+@pytest.mark.asyncio
+async def test_remote_driver_subscribes_with_head_seq_anchor():
+    captured = {}
+
+    class _Client:
+        async def call(self, method, **params):
+            return {"found": True, "status": "idle", "queued": [], "head_seq": 7}
+
+        async def _gen(self):
+            # Empty generator: immediately raises StopAsyncIteration
+            return
+            yield
+
+        def subscribe(self, session_id, since=None):
+            captured["since"] = since
+            return self._gen()
+
+    ro = RemoteOrchestrator(_Client())
+    d = await ro.ensure_driver("s1")
+    assert isinstance(d, RemoteDriver)
+    # Kick the generator so events() calls subscribe().
+    agen = d.events()
+    try:
+        await agen.__anext__()
+    except StopAsyncIteration:
+        pass
+    assert captured["since"] == 7

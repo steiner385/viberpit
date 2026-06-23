@@ -8,6 +8,7 @@ import type { Account } from '@/api/types'
 import type { ReauthState } from '@/api/types'
 
 vi.mock('@/api/hooks', () => ({
+  useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAccounts: vi.fn(),

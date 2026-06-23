@@ -30,6 +30,21 @@ from server.api.auth import router as auth_router
 from server.api.config import router as config_router
 from server.api.repos import router as github_router
 from server.api.settings import router as settings_router
+from server.api import models as api_models
+
+
+def _daemon_compatible(socket_path: str) -> bool:
+    """True iff a protocol-compatible session daemon answers /info at socket_path.
+    Synchronous + short-timeout (create_app is sync); any failure → False (in-process fallback)."""
+    import httpx
+    from server.ipc.protocol import PROTOCOL_VERSION
+    try:
+        with httpx.Client(transport=httpx.HTTPTransport(uds=socket_path),
+                          base_url="http://daemon", timeout=1.0) as c:
+            info = c.get("/info").json()
+        return info.get("protocol") == PROTOCOL_VERSION
+    except Exception:  # noqa: BLE001 — unreachable / bad response → fall back to in-process
+        return False
 
 
 @functools.lru_cache(maxsize=1)
@@ -181,6 +196,18 @@ def create_app(
     from server.sessions.facade import InProcessOrchestratorAdapter
 
     socket_path = os.environ.get("CCSWITCH_SESSIOND_SOCKET")
+    app.state.daemon_protocol = None
+    if orchestrator is None and not socket_path:
+        # Remote by default: auto-detect a compatible daemon at the well-known path.
+        # No daemon (or a version-incompatible one) → in-process fallback (today's behavior).
+        from server.ipc.paths import DEFAULT_SOCKET_PATH
+        if _daemon_compatible(DEFAULT_SOCKET_PATH):
+            socket_path = DEFAULT_SOCKET_PATH
+            from server.ipc.protocol import PROTOCOL_VERSION
+            app.state.daemon_protocol = PROTOCOL_VERSION
+            logging.getLogger("server").info(
+                "session daemon detected at %s — running in remote mode", DEFAULT_SOCKET_PATH)
+
     if orchestrator is None and socket_path:
         from server.ipc.client import DaemonClient
         from server.sessions.remote import RemoteOrchestrator
@@ -262,6 +289,7 @@ def create_app(
     app.include_router(config_router)
     app.include_router(github_router)
     app.include_router(settings_router)
+    app.include_router(api_models.router)
 
     # WebSocket bridge
     ws_router = build_ws_router(app.state.sessions)

@@ -15,6 +15,7 @@ import type { Session } from '@/api/types'
 // ── Mock @/api/hooks (same scaffold as DashboardTabs.test.tsx) ────────────────
 
 vi.mock('@/api/hooks', () => ({
+  useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAccounts: vi.fn(),
