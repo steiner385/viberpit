@@ -27,6 +27,17 @@ class PullRequestInfo:
             "title": self.title,
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "PullRequestInfo":
+        """Inverse of ``to_dict`` — rebuild from a daemon→edge RPC payload."""
+        return cls(
+            number=d["number"],
+            url=d["url"],
+            state=d["state"],
+            checks=d["checks"],
+            title=d.get("title", ""),
+        )
+
 
 def _alias(i: int) -> str:
     return f"r{i}"
