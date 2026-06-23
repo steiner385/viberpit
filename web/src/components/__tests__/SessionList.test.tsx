@@ -42,6 +42,17 @@ function wrapper({ children }: { children: React.ReactNode }) {
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 }
 
+const baseProps = {
+  sessions: SESSIONS,
+  accounts: ACCOUNTS,
+  onNew: vi.fn(),
+  onOpen: vi.fn(),
+  onRename: vi.fn(),
+  onClose: vi.fn(),
+  onDelete: vi.fn(),
+  onQuickResume: vi.fn(),
+}
+
 describe('SessionList', () => {
   const onNew = vi.fn()
   const onOpen = vi.fn()
@@ -324,6 +335,34 @@ describe('SessionList', () => {
     )
     expect(screen.queryByRole('presentation')).not.toBeInTheDocument()
     expect(screen.getByText('Work session')).toBeInTheDocument()
+  })
+
+  it('collapsing a group hides its cards but keeps header and count', async () => {
+    const onToggleCollapse = vi.fn()
+    const groups = [
+      { key: 'busy', label: 'Working', count: 1, sessions: [SESSIONS[0]] },
+      { key: 'your-turn', label: 'Done', count: 1, sessions: [SESSIONS[1]] },
+    ]
+    const { rerender } = render(
+      <SessionList {...baseProps} groups={groups} collapsedKeys={new Set()} onToggleCollapse={onToggleCollapse} />,
+      { wrapper },
+    )
+    // expanded: the "Working" group's card is visible
+    expect(screen.getByText(SESSIONS[0].name)).toBeInTheDocument()
+
+    const header = screen.getByRole('button', { name: /Working/i })
+    expect(header).toHaveAttribute('aria-expanded', 'true')
+    await userEvent.click(header)
+    expect(onToggleCollapse).toHaveBeenCalledWith('busy')
+
+    // re-render as collapsed and assert the card is gone but header + count remain
+    rerender(
+      <SessionList {...baseProps} groups={groups} collapsedKeys={new Set(['busy'])} onToggleCollapse={onToggleCollapse} />,
+    )
+    expect(screen.queryByText(SESSIONS[0].name)).not.toBeInTheDocument()
+    const collapsedHeader = screen.getByRole('button', { name: /Working/i })
+    expect(collapsedHeader).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getAllByText('1').length).toBeGreaterThanOrEqual(1) // count still shown
   })
 })
 

@@ -103,7 +103,7 @@ export function DesktopShell() {
   const { data: accounts = [] } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const sessionSearch = useSessionSearch()
-  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions } =
+  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, collapsedKeys, toggleCollapse } =
     useSessionOrdering(sessions, sessionSearch.matchedIds)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const reposQuery = useGithubRepos()
@@ -406,6 +406,8 @@ export function DesktopShell() {
           isFiltered={sessionSearch.isFiltered}
           onClearSearch={() => sessionSearch.setQuery('')}
           onQuickResume={handleQuickResume}
+          collapsedKeys={collapsedKeys}
+          onToggleCollapse={toggleCollapse}
         />
       </div>
     </aside>
