@@ -7,7 +7,6 @@ function defaultProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}): 
     status: { state: 'idle', count: 0 },
     onPrompt: vi.fn(),
     onInterrupt: vi.fn(),
-    onRequestSuggestions: vi.fn(),
     suggestions: [],
     ...overrides,
   }
@@ -24,7 +23,6 @@ function setupStatus(suggestions: string[] | undefined, state = 'idle') {
       status={{ state, count: 0 }}
       onPrompt={onPrompt}
       onInterrupt={() => {}}
-      onRequestSuggestions={vi.fn()}
       suggestions={suggestions}
     />,
   )
@@ -105,32 +103,14 @@ describe('Composer play button', () => {
     expect(onPrompt).toHaveBeenCalledWith('Run the tests', [])
   })
 
-  it('no suggestion: play requests generation and does not send', () => {
+  it('no suggestion: play prefills "continue" (focused), does not send', () => {
     const onPrompt = vi.fn()
-    const onRequestSuggestions = vi.fn()
-    renderComposer({ status: { state: 'done', count: 0 }, suggestions: [], onPrompt, onRequestSuggestions })
+    renderComposer({ status: { state: 'done', count: 0 }, suggestions: [], onPrompt })
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
-    expect(onRequestSuggestions).toHaveBeenCalledTimes(1)
-    expect(onPrompt).not.toHaveBeenCalled()
-  })
-
-  it('generated suggestion prefills the box (confirm, not auto-send)', () => {
-    const onPrompt = vi.fn()
-    const { rerender } = renderComposer({ status: { state: 'done', count: 0 }, suggestions: [], onRequestSuggestions: vi.fn(), onPrompt })
-    fireEvent.click(screen.getByRole('button', { name: /resume/i }))
-    rerender(<Composer {...defaultProps({ status: { state: 'done', count: 0 }, suggestions: ['Finish the task'], onPrompt })} />)
-    expect(screen.getByLabelText('Message')).toHaveValue('Finish the task')
-    expect(onPrompt).not.toHaveBeenCalled()
-  })
-
-  it('generated suggestion focuses the textarea after prefill', () => {
-    const onPrompt = vi.fn()
-    const { rerender } = renderComposer({ status: { state: 'done', count: 0 }, suggestions: [], onRequestSuggestions: vi.fn(), onPrompt })
-    fireEvent.click(screen.getByRole('button', { name: /resume/i }))
-    rerender(<Composer {...defaultProps({ status: { state: 'done', count: 0 }, suggestions: ['Finish the task'], onPrompt })} />)
     const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
-    expect(textarea.value).toBe('Finish the task')
-    // jsdom focus is synchronous after useEffect; document.activeElement reflects it
+    expect(textarea.value).toBe('continue')
+    expect(onPrompt).not.toHaveBeenCalled()
+    // prefill focuses the box so the user can immediately edit / press Enter
     expect(document.activeElement).toBe(textarea)
   })
 
