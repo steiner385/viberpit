@@ -121,14 +121,18 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
           if (pointersRef.current.size < 2) pinchRef.current = null
         }}
       >
-        {/* Zoom layer — transform-scale + matching size so overflow-auto can pan. */}
+        {/* Zoom layer — sized zoom×100% so noVNC's scaleViewport autoscale fills
+            it (sharper than CSS upscaling) and overflow-auto yields pan scrollbars.
+            Magnification is driven by SIZE ALONE: a transform: scale() here would
+            be measured a second time by noVNC's getBoundingClientRect, netting
+            ~zoom² on-screen. See web/node_modules/@novnc/novnc/core/display.js
+            autoscale (no upscale clamp) + rfb.js _screenSize (getBoundingClientRect). */}
         <div
-          className="transition-transform motion-reduce:transition-none"
+          data-testid="zoom-layer"
+          className="transition-[width,height] motion-reduce:transition-none"
           style={{
             width: `${zoom * 100}%`,
             height: `${zoom * 100}%`,
-            transform: `scale(${zoom})`,
-            transformOrigin: '0 0',
           }}
         >
           {/* noVNC canvas container — always rendered so the RFB client has a stable mount */}

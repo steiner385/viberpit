@@ -84,6 +84,27 @@ describe('BrowserTab', () => {
     expect(screen.getByText('Fit')).toBeInTheDocument()
   })
 
+  it('drives zoom by size alone — no second transform-scale magnification', () => {
+    // Regression: the zoom layer must NOT both size itself zoom×100% AND
+    // transform: scale(zoom) — noVNC's autoscale (getBoundingClientRect, which
+    // includes ancestor transforms) would then magnify a second time, netting
+    // ~zoom² on-screen. Net magnification must equal zoom exactly. Asserting the
+    // MECHANISM (jsdom has no layout): size reflects zoom, transform carries no
+    // scale().
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    const layer = screen.getByTestId('zoom-layer') as HTMLElement
+
+    // Base fit: 100% size, no scale.
+    expect(parseFloat(layer.style.width)).toBeCloseTo(100, 5)
+    expect(layer.style.transform === '' || layer.style.transform === 'none').toBe(true)
+
+    // Zoom in: size grows to reflect zoom; transform must remain scale-free.
+    fireEvent.click(screen.getByRole('button', { name: /zoom in/i }))
+    expect(parseFloat(layer.style.width)).toBeCloseTo(110, 5)
+    expect(parseFloat(layer.style.height)).toBeCloseTo(110, 5)
+    expect(layer.style.transform).not.toContain('scale(')
+  })
+
   it('never renders a "1:1" label', () => {
     render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
     expect(screen.queryByText('1:1')).toBeNull()
