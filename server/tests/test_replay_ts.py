@@ -4,7 +4,7 @@ from server.sessions import replay
 
 def _write(tmp_path, lines):
     p = tmp_path / "t.jsonl"
-    p.write_text("\n".join(json.dumps(l) for l in lines))
+    p.write_text("\n".join(json.dumps(ln) for ln in lines))
     return str(p)
 
 
