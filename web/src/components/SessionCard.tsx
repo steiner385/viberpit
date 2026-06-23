@@ -5,7 +5,7 @@ import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { statusTier } from '@/session/statusTier'
 import { StatusPill, UsageBadge } from './UsageBadge'
-import { PrPill } from './PrPill'
+import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
 import type { Session, Account } from '@/api/types'
 
@@ -159,7 +159,7 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
               <span>Goal</span>
             </span>
           )}
-          {session.pr && <PrPill pr={session.pr} />}
+          <PrList prs={session.prs} />
         </div>
 
         {/* Row 3 — telemetry: session usage left, last-active pinned right via

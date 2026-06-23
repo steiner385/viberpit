@@ -65,8 +65,8 @@ export interface Session {
   latestSuggestions?: string[]
   /** Active /goal condition for this session; null/absent = no goal. */
   activeGoal?: string | null
-  /** The PR opened from this session's branch, or null when there is none. */
-  pr?: PullRequestInfo | null
+  /** The PRs authored from this session's branches. */
+  prs: PullRequestInfo[]
 }
 
 export interface ArchivedSession {
