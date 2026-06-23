@@ -163,3 +163,29 @@ def test_process_crash_guard_pauses_after_cap():
     asyncio.run(o._recover_session(rec, "process_crash", None))
     assert ("pause", "s1", "crash_cap") in o.calls
     assert ("reassign", "s1", "kindash", "process_crash") not in o.calls
+
+
+def test_check_stalls_interrupts_wedged_turn():
+    o = _make_orch()
+    interrupted = []
+    class _StubDriver:
+        _turn_active = True
+        last_progress_at = 0.0
+        async def interrupt(self):
+            interrupted.append(True)
+    o._drivers["s1"] = _StubDriver()
+    asyncio.run(o._check_stalls(now=10_000.0))
+    assert interrupted == [True]
+
+
+def test_check_stalls_leaves_progressing_turn_alone():
+    o = _make_orch()
+    interrupted = []
+    class _StubDriver:
+        _turn_active = True
+        last_progress_at = 9_990.0
+        async def interrupt(self):
+            interrupted.append(True)
+    o._drivers["s1"] = _StubDriver()
+    asyncio.run(o._check_stalls(now=10_000.0))
+    assert interrupted == []

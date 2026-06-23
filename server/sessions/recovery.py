@@ -12,6 +12,7 @@ The clock is injected (``now``) so behavior is deterministic in tests.
 """
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 
 # Recovery tunables (seconds), defined in one place.
@@ -22,6 +23,7 @@ MAX_ROTATIONS: int = 3            # rotations per session allowed within ROTATIO
 ROTATION_WINDOW: float = 300.0
 CRASH_CAP: int = 3                # crashes per session allowed within CRASH_WINDOW
 CRASH_WINDOW: float = 120.0       # window (seconds) for tracking session crashes
+STALL_TIMEOUT: float = float(os.environ.get("CCSWITCH_STALL_TIMEOUT_SEC", "300"))
 
 
 class RecoveryState:
