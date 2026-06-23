@@ -212,6 +212,46 @@ describe('QuestionCard', () => {
   })
 })
 
+describe('QuestionCard grouped (staged) single-select', () => {
+  it('staging an option calls onStage instead of onAnswer', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    const onStage = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={onAnswer} onStage={onStage} staged={null} />)
+    await user.click(screen.getByRole('radio', { name: 'Option A' }))
+    expect(onStage).toHaveBeenCalledWith('q-1', { selected: ['Option A'], mode: 'option' })
+    expect(onAnswer).not.toHaveBeenCalled()
+  })
+
+  it('reflects the staged option as checked', () => {
+    render(
+      <QuestionCard
+        block={singleQ}
+        onAnswer={vi.fn()}
+        onStage={vi.fn()}
+        staged={{ selected: ['Option B'], mode: 'option' }}
+      />)
+    expect(screen.getByRole('radio', { name: 'Option B' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Option A' })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('hides the chat hatch in grouped mode but keeps write-a-response', () => {
+    render(<QuestionCard block={singleQ} onAnswer={vi.fn()} onStage={vi.fn()} onChat={vi.fn()} staged={null} />)
+    expect(screen.queryByRole('button', { name: /chat about this/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /write a response/i })).toBeInTheDocument()
+  })
+
+  it('grouped freeform stages text instead of sending', async () => {
+    const user = userEvent.setup()
+    const onStage = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={vi.fn()} onStage={onStage} staged={null} />)
+    await user.click(screen.getByRole('button', { name: /write a response/i }))
+    await user.type(screen.getByRole('textbox', { name: /write a response/i }), 'custom text')
+    await user.click(screen.getByRole('button', { name: /set response/i }))
+    expect(onStage).toHaveBeenCalledWith('q-1', { selected: ['custom text'], mode: 'freeform' })
+  })
+})
+
 describe('QuestionCard readOnly', () => {
   it('renders options inertly and never calls onAnswer when readOnly', async () => {
     const user = userEvent.setup()
