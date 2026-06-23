@@ -155,24 +155,34 @@ drain_and_wait() {
   done
 }
 
-# Defer-across-ticks helper. Called when a deploy cannot proceed immediately; uses a
-# per-SHA state file to track how long we have been deferring this particular commit.
-# On the first deferral for a given SHA the file is seeded and we exit 0 (retry next
-# tick). On subsequent ticks we defer again until MAX_DEFER_SEC is exceeded, at which
-# point we log a "forcing" warning and fall through so the deploy continues.
+# Defer-across-ticks helper. Called when a deploy cannot proceed immediately; tracks
+# how long we have been deferring with a state file holding "<tip-sha> <streak-start-epoch>".
+# The force-cap is anchored to the START of a continuous defer streak, NOT to the current
+# commit: on the first deferral the streak is seeded and we exit 0 (retry next tick); on
+# subsequent ticks we keep the original anchor (refreshing only the sha for logging) and
+# exit 0, until MAX_DEFER_SEC is exceeded, at which point we log "forcing" and fall through.
+#
+# The anchor is deliberately NOT reset when origin/master advances mid-streak. Resetting
+# per-sha (the pre-fix behavior) meant a busy server during a rapid-merge burst never hit
+# the cap — each new commit restarted the timer and changes never shipped (deploy
+# starvation; surfaced by the 2026-06-23 stall-watchdog incident). The streak is cleared
+# only when a deploy completes (rm at EOF) or the server goes idle (this helper isn't called).
 # $1 = human-readable reason (e.g. "busy" or "vnc-attached")
 defer_across_ticks() {
   local reason="$1"
   local MAX_DEFER; MAX_DEFER="${CCSWITCH_DEPLOY_MAX_DEFER_SEC:-1800}"
   local now; now="$(date +%s)"
-  local msha mts; msha=""; mts=0
-  if [ -f "$DEFER_FILE" ]; then read -r msha mts < "$DEFER_FILE" || true; fi
-  if [ "$msha" != "$REMOTE" ]; then
-    printf '%s %s\n' "$REMOTE" "$now" > "$DEFER_FILE"
+  local mts; mts=0
+  # First field (a prior tip sha) intentionally discarded — the cap anchors on mts.
+  if [ -f "$DEFER_FILE" ]; then read -r _ mts < "$DEFER_FILE" || true; fi
+  if [ "${mts:-0}" -le 0 ] 2>/dev/null; then
+    printf '%s %s\n' "$REMOTE" "$now" > "$DEFER_FILE"   # new streak begins
     echo "[deploy] ${reason} — deferring ${REMOTE:0:9} (will retry)"; exit 0
   elif [ "$(( now - mts ))" -gt "$MAX_DEFER" ]; then
     echo "[deploy] ${reason} for $(( now - mts ))s (> ${MAX_DEFER}s) — forcing deploy of ${REMOTE:0:9}" >&2
   else
+    # Keep the original anchor; refresh only the sha so the log names the current tip.
+    printf '%s %s\n' "$REMOTE" "$mts" > "$DEFER_FILE"
     echo "[deploy] ${reason} — deferring ${REMOTE:0:9} ($(( now - mts ))s so far)"; exit 0
   fi
 }
