@@ -56,6 +56,10 @@ class Translator:
                 model = data.get("model")
                 if model:
                     return [ev.SessionMeta(model=model, session_id=self.session_id or "")]
+            if msg.subtype == "compact_boundary":
+                meta = (msg.data or {}).get("compact_metadata") or {}
+                return [ev.Condensing(active=False, trigger=meta.get("trigger"),
+                                      pre_tokens=meta.get("pre_tokens"))]
             return []
 
         if isinstance(msg, StreamEvent):

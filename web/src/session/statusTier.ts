@@ -1,6 +1,6 @@
 import {
   Loader2, CircleAlert, HelpCircle, Eye, Check, CheckCircle2,
-  AlertTriangle, X, Clock,
+  AlertTriangle, X, Clock, Minimize2,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
 
@@ -23,6 +23,7 @@ const CALM = 'text-gray-600 dark:text-gray-400'
 const PRESENTATION: Record<string, StatusPresentation> = {
   in_progress:      { tier: 'busy',      label: 'Working…',          Icon: Loader2,       textClass: BUSY },
   working:          { tier: 'busy',      label: 'Working…',          Icon: Loader2,       textClass: BUSY },
+  condensing:       { tier: 'busy',      label: 'Condensing…',       Icon: Minimize2,     textClass: BUSY },
   ready_review:     { tier: 'needs-you', label: 'Approve plan',      Icon: Eye,           textClass: NEEDS_YOU },
   waiting_input:    { tier: 'needs-you', label: 'Permission needed', Icon: CircleAlert,   textClass: NEEDS_YOU },
   waiting_question: { tier: 'needs-you', label: 'Answer needed',     Icon: HelpCircle,    textClass: NEEDS_YOU },
