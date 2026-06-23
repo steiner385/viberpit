@@ -11,10 +11,28 @@ def test_classification_helpers_present():
     # Classifies the deploy range and probes remote-mode.
     assert "daemon_changed" in s
     assert "remote_active" in s
-    # Daemon-relevant paths the classifier keys on.
-    assert "server/ipc/" in s and "server/sessions/" in s
+    # The classifier is an edge-only ALLOWLIST (fail-safe): only these paths are edge-only;
+    # anything else (incl. shared modules the daemon imports) forces a daemon restart.
+    assert "server/api/" in s
+    assert "server/app" in s
+    assert "server/bridge/" in s
     # The idle gate is now conditional on a session-disrupting restart.
     assert "is-enabled ccswitch-daemon.service" in s
+
+
+def test_edge_only_allowlist_excludes_shared_daemon_modules():
+    # Inverted classifier: edge-only is an explicit allowlist. Shared modules the daemon
+    # imports must NOT be in it, so a change there falls through to daemon_changed.
+    s = SCRIPT.read_text()
+    # The allowlist line(s): grep -vE '^(...)' — extract the alternation patterns.
+    allowlist = "".join(
+        line for line in s.splitlines() if "grep -vE" in line or line.strip().startswith("|")
+    )
+    # Edge-only paths the daemon does NOT run.
+    assert "web/" in allowlist and "server/api/" in allowlist
+    # Shared modules the daemon DOES run must be absent from the allowlist (→ daemon_changed).
+    for shared in ("server/config", "server/db", "server/audit", "server/usage"):
+        assert shared not in allowlist, f"{shared} must not be edge-only allowlisted"
 
 
 def test_fail_safe_defaults_to_daemon_changed():

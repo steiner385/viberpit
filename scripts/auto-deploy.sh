@@ -65,14 +65,23 @@ case "$verdict" in
 esac
 
 # Classify the pending change: does it touch code the DAEMON runs (orchestrator/IPC/session
-# logic)? If only edge code changed AND the edge is running in remote mode, restarting the edge
-# does NOT disrupt sessions (the daemon holds them), so we can skip the idle gate entirely.
+# logic, OR any shared module the daemon imports)? If only edge code changed AND the edge is
+# running in remote mode, restarting the edge does NOT disrupt sessions (the daemon holds them),
+# so we can skip the idle gate entirely.
 # Fail SAFE: if the diff can't be computed, assume daemon_changed (gate + restart both).
 if daemon_files="$(git diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null)"; then
-  if printf '%s\n' "$daemon_files" | grep -qE '^(server/ipc/|server/sessions/|src/ccswitch/)'; then
-    daemon_changed=1
+  # Edge-only iff EVERY changed file is in the edge-only allowlist (web UI, REST API, the edge
+  # app/WS bridge/SPA, docs, deploy, CI). ANYTHING else — including shared modules the daemon
+  # imports (server/config, server/db, server/audit, server/usage, the orchestrator, IPC, the
+  # agent-SDK glue) — forces a daemon restart. Fail-safe: an unrecognised path is daemon_changed.
+  # Collect the files NOT on the allowlist; if any remain, a daemon restart is required. (We
+  # capture-and-test rather than `grep -vq`, whose -q early-exit misreports the inverted match.)
+  non_edge="$(printf '%s\n' "$daemon_files" \
+       | grep -vE '^(web/|server/api/|server/app\.py|server/bridge/|server/spa\.py|server/tests/|docs/|deploy/|\.github/|.*\.md$)' || true)"
+  if [ -n "$non_edge" ]; then
+    daemon_changed=1   # at least one non-edge-only file changed
   else
-    daemon_changed=0
+    daemon_changed=0   # every changed file is edge-only
   fi
 else
   daemon_changed=1   # fail-safe: cannot classify → treat as a daemon change
