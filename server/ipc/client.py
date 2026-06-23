@@ -12,6 +12,12 @@ from server.ipc import protocol as proto
 log = logging.getLogger("server.ipc.client")
 
 
+def protocol_compatible(daemon_protocol: int) -> bool:
+    """True when the daemon's wire protocol matches this build's."""
+    from server.ipc import protocol as _proto
+    return daemon_protocol == _proto.PROTOCOL_VERSION
+
+
 class DaemonUnavailable(Exception):
     """The daemon socket could not be reached."""
 
@@ -52,6 +58,13 @@ class DaemonClient:
             err = body["error"]
             raise DaemonError(err.get("type", "Error"), err.get("message", ""))
         return body["result"]
+
+    async def info(self) -> dict:
+        try:
+            resp = await self._http.get("/info")
+        except httpx.ConnectError as exc:
+            raise DaemonUnavailable(str(exc)) from exc
+        return resp.json()
 
     def subscribe(self, stream: str, since: int | None = None, maxsize: int = 1000):
         self._queues[stream] = asyncio.Queue(maxsize=maxsize)

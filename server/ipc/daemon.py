@@ -4,11 +4,14 @@ Served by uvicorn bound to a Unix socket. No TCP. No app-level auth — the sock
 filesystem permissions are the trust boundary.
 """
 import json
+import logging
 import os
 from collections import deque
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from server.ipc import protocol as proto
+
+log = logging.getLogger("server.ipc.daemon")
 
 
 def create_daemon_app() -> FastAPI:
@@ -29,12 +32,20 @@ def create_daemon_app() -> FastAPI:
 
     app.state.head_seq = head_seq
 
+    def evict(stream: str) -> None:
+        app.state.buffers.pop(stream, None)
+        app.state.seqs.pop(stream, None)
+
+    app.state.evict = evict
+
     async def publish(stream: str, event: dict) -> None:
         seq = app.state.seqs.get(stream, -1) + 1
         app.state.seqs[stream] = seq
         buf = app.state.buffers.get(stream)
         if buf is None:
             buf = app.state.buffers[stream] = deque(maxlen=_maxlen)
+        if len(buf) == buf.maxlen:
+            log.warning("ipc: replay buffer for %s full — dropping oldest event", stream)
         buf.append((seq, event))
         frame = proto.event_frame(stream, event, seq)
         for ws in list(app.state.subscribers.get(stream, ())):
@@ -87,6 +98,16 @@ def create_daemon_app() -> FastAPI:
         finally:
             for stream in mine:
                 app.state.subscribers.get(stream, set()).discard(ws)
+
+    @app.get("/info")
+    async def info() -> dict:
+        from server.app import running_git_sha
+        return {"sha": running_git_sha(), "protocol": proto.PROTOCOL_VERSION}
+
+    @app.get("/healthz")
+    async def healthz() -> dict:
+        from server.app import running_git_sha
+        return {"status": "ok", "sha": running_git_sha()}
 
     register_rpc(app, "ping", _ping)
     register_rpc(app, "start_demo", _make_start_demo(app))
