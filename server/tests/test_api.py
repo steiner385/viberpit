@@ -170,6 +170,73 @@ def test_get_accounts_returns_usage_shape():
     assert "alice-ref" not in raw
 
 
+def test_get_accounts_includes_live_sessions_and_rank():
+    """GET /api/accounts returns liveSessions, rank, rankReason for each account."""
+    from ccswitch.oauth import Usage
+    reset = datetime.now(timezone.utc) + timedelta(hours=3)
+    low = Usage(session_pct=10.0, session_resets_at=reset, weekly_pct=5.0,
+                weekly_resets_at=reset, extra_usage_enabled=False)
+    high = Usage(session_pct=60.0, session_resets_at=reset, weekly_pct=30.0,
+                 weekly_resets_at=reset, extra_usage_enabled=False)
+
+    with temp_env():
+        _seed_slot("low")
+        _seed_slot("high")
+        usage_fn = _make_usage_fn({"low": low, "high": high})
+
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(
+                sdk_factory=fake_sdk_factory(),
+                usage_fn=usage_fn,
+                poll_interval=9999.0,
+            )
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=False)
+            with client:
+                resp = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    body = {a["name"]: a for a in resp.json()}
+    # No live sessions in this harness -> all zero.
+    assert body["low"]["liveSessions"] == {"active": 0, "idle": 0}
+    ranks = sorted(a["rank"] for a in resp.json() if a["rank"] is not None)
+    assert ranks == [1, 2]
+    ranked_one = next(a for a in resp.json() if a["rank"] == 1)
+    assert isinstance(ranked_one["rankReason"], str)
+
+
+def test_get_accounts_at_ceiling_has_null_rank():
+    """GET /api/accounts returns rank=None and rankReason=None for accounts at ceiling."""
+    from ccswitch.oauth import Usage
+    reset = datetime.now(timezone.utc) + timedelta(hours=3)
+    busy = Usage(session_pct=100.0, session_resets_at=reset, weekly_pct=50.0,
+                 weekly_resets_at=reset, extra_usage_enabled=False)
+
+    with temp_env():
+        _seed_slot("busy")
+        usage_fn = _make_usage_fn({"busy": busy})
+
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(
+                sdk_factory=fake_sdk_factory(),
+                usage_fn=usage_fn,
+                poll_interval=9999.0,
+            )
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=False)
+            with client:
+                resp = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+
+    acct = next(a for a in resp.json() if a["name"] == "busy")
+    assert acct["rank"] is None
+    assert acct["rankReason"] is None
+    assert "liveSessions" in acct
+
+
 def test_get_accounts_no_token_fields():
     """GET /api/accounts response never contains token fields."""
     with temp_env():
