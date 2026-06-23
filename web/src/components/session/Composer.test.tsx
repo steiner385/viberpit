@@ -2,6 +2,21 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { Composer } from './Composer'
 
+function defaultProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}): Parameters<typeof Composer>[0] {
+  return {
+    status: { state: 'idle', count: 0 },
+    onPrompt: vi.fn(),
+    onInterrupt: vi.fn(),
+    onRequestSuggestions: vi.fn(),
+    suggestions: [],
+    ...overrides,
+  }
+}
+
+function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
+  return render(<Composer {...defaultProps(overrides)} />)
+}
+
 function setupStatus(suggestions: string[] | undefined, state = 'idle') {
   const onPrompt = vi.fn()
   render(
@@ -9,6 +24,7 @@ function setupStatus(suggestions: string[] | undefined, state = 'idle') {
       status={{ state, count: 0 }}
       onPrompt={onPrompt}
       onInterrupt={() => {}}
+      onRequestSuggestions={vi.fn()}
       suggestions={suggestions}
     />,
   )
@@ -71,5 +87,58 @@ describe('Composer ghost-text suggestion', () => {
     const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
     fireEvent.change(textarea, { target: { value: 'h' } })
     expect(screen.queryByTestId('ghost-suggestion')).toBeNull()
+  })
+})
+
+describe('Composer play button', () => {
+  it('shows the play button only when idle and the box is empty', () => {
+    const { rerender } = renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['Run the tests'] })
+    expect(screen.getByRole('button', { name: /resume/i })).toBeInTheDocument()
+    rerender(<Composer {...defaultProps({ status: { state: 'in_progress', count: 0 }, suggestions: ['x'] })} />)
+    expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument()
+  })
+
+  it('existing suggestion: play sends it immediately', () => {
+    const onPrompt = vi.fn()
+    renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['Run the tests', 'Commit it'], onPrompt })
+    fireEvent.click(screen.getByRole('button', { name: /resume/i }))
+    expect(onPrompt).toHaveBeenCalledWith('Run the tests', [])
+  })
+
+  it('no suggestion: play requests generation and does not send', () => {
+    const onPrompt = vi.fn()
+    const onRequestSuggestions = vi.fn()
+    renderComposer({ status: { state: 'done', count: 0 }, suggestions: [], onPrompt, onRequestSuggestions })
+    fireEvent.click(screen.getByRole('button', { name: /resume/i }))
+    expect(onRequestSuggestions).toHaveBeenCalledTimes(1)
+    expect(onPrompt).not.toHaveBeenCalled()
+  })
+
+  it('generated suggestion prefills the box (confirm, not auto-send)', () => {
+    const onPrompt = vi.fn()
+    const { rerender } = renderComposer({ status: { state: 'done', count: 0 }, suggestions: [], onRequestSuggestions: vi.fn(), onPrompt })
+    fireEvent.click(screen.getByRole('button', { name: /resume/i }))
+    rerender(<Composer {...defaultProps({ status: { state: 'done', count: 0 }, suggestions: ['Finish the task'], onPrompt })} />)
+    expect(screen.getByLabelText('Message')).toHaveValue('Finish the task')
+    expect(onPrompt).not.toHaveBeenCalled()
+  })
+
+  it('generated suggestion focuses the textarea after prefill', () => {
+    const onPrompt = vi.fn()
+    const { rerender } = renderComposer({ status: { state: 'done', count: 0 }, suggestions: [], onRequestSuggestions: vi.fn(), onPrompt })
+    fireEvent.click(screen.getByRole('button', { name: /resume/i }))
+    rerender(<Composer {...defaultProps({ status: { state: 'done', count: 0 }, suggestions: ['Finish the task'], onPrompt })} />)
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
+    expect(textarea.value).toBe('Finish the task')
+    // jsdom focus is synchronous after useEffect; document.activeElement reflects it
+    expect(document.activeElement).toBe(textarea)
+  })
+
+  it('caret menu appears with >=2 suggestions and picking sends that item', () => {
+    const onPrompt = vi.fn()
+    renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['First', 'Second'], onPrompt })
+    fireEvent.click(screen.getByRole('button', { name: /more suggestions/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Second' }))
+    expect(onPrompt).toHaveBeenCalledWith('Second', [])
   })
 })

@@ -45,6 +45,7 @@ import {
   useCloseSession,
   usePermanentDeleteSession,
   useGithubRepos,
+  useSendPrompt,
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
 import { useSessionOrdering } from '@/session/useSessionOrdering'
@@ -141,19 +142,19 @@ export function DesktopShell() {
 
   const selectedSessionId = selection.type === 'session' ? selection.id : null
 
-  function clearPendingDelete() {
+  const clearPendingDelete = useCallback(() => {
     setPendingDelete(null)
     if (pendingDeleteTimeoutRef.current) {
       clearTimeout(pendingDeleteTimeoutRef.current)
       pendingDeleteTimeoutRef.current = null
     }
-  }
+  }, [])
 
-  function focusSession(id: string, initialPrompt?: string) {
+  const focusSession = useCallback((id: string, initialPrompt?: string) => {
     clearPendingDelete()
     setTab('sessions')
     setSelection({ type: 'session', id, initialPrompt })
-  }
+  }, [clearPendingDelete])
 
   function focusNew() {
     clearPendingDelete()
@@ -201,6 +202,15 @@ export function DesktopShell() {
     closeSession.mutate(id)
     setSelection((cur) => (cur.type === 'session' && cur.id === id ? { type: 'new' } : cur))
   }, [closeSession])
+
+  const sendPrompt = useSendPrompt()
+  const handleQuickResume = useCallback((id: string, text?: string) => {
+    if (text) {
+      sendPrompt.mutate({ id, text })
+    } else {
+      focusSession(id)
+    }
+  }, [sendPrompt, focusSession])
 
   function handleRename(id: string) {
     const session = orderedSessions.find((s) => s.id === id)
@@ -391,6 +401,7 @@ export function DesktopShell() {
           onRename={handleRename}
           onClose={handleClose}
           onDelete={handleDelete}
+          onQuickResume={handleQuickResume}
         />
       </div>
     </aside>

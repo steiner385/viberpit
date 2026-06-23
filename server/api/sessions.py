@@ -72,15 +72,25 @@ class AdoptRequest(BaseModel):
     claudeSessionId: str
 
 
+class SendPromptRequest(BaseModel):
+    text: str
+
+
 _UNSET = object()
 
 
-def _record_to_dict(record, repo: Any = _UNSET, pr: Any = None) -> dict[str, Any]:
+def _record_to_dict(
+    record, repo: Any = _UNSET, suggestions: list[str] | None = None, pr: Any = None
+) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict.
 
     ``repo`` lets callers inject a value read live from the session's working
     directory (see :func:`_resolve_repo`); when omitted, the stored
     ``record.repo`` is used as a fallback.
+
+    ``suggestions`` holds the latest cached next-prompt suggestions for the
+    session (from ``orch.latest_suggestions``). Defaults to [] when omitted
+    (detached sessions or none yet generated).
 
     ``pr`` is an optional PullRequestInfo (or None) representing the cached PR
     status for the session's branch.  Serialised to a dict or None on the wire.
@@ -106,6 +116,7 @@ def _record_to_dict(record, repo: Any = _UNSET, pr: Any = None) -> dict[str, Any
         ),
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
+        "latestSuggestions": list(suggestions or []),
         "activeGoal": getattr(record, "active_goal", None),
         "pr": pr.to_dict() if pr is not None else None,
     }
@@ -158,16 +169,18 @@ async def list_sessions(
     """Return all in-memory session records."""
     orch = _get_orchestrator(request)
     records = await orch.list_sessions()
-    # Read each session's repo live from its working dir, all in parallel.
+    # Read each session's repo (live, from its cwd), cached suggestions, and PR
+    # status in parallel.
     repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
+    suggs = await asyncio.gather(*(orch.latest_suggestions(r.id) for r in records))
     pr_for = getattr(orch, "pr_for", None)
     prs = [
         (pr_for(r.repo, getattr(r, "branch", None)) if pr_for else None)
         for r in records
     ]
     return [
-        _record_to_dict(r, repo=repo, pr=pr)
-        for r, repo, pr in zip(records, repos, prs)
+        _record_to_dict(r, repo=repo, suggestions=s, pr=pr)
+        for r, repo, s, pr in zip(records, repos, suggs, prs)
     ]
 
 
@@ -458,6 +471,35 @@ async def unarchive_session(
         identity=identity,
         detail={"session_id": session_id},
     )
+    return _record_to_dict(record, repo=await _resolve_repo(record))
+
+
+@router.post("/{session_id}/prompt")
+async def send_session_prompt(
+    session_id: str,
+    body: SendPromptRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Send a prompt to a live session from the dashboard (quick-resume).
+
+    404 if unknown; 409 if the session is detached (no live driver) — the client
+    should open the session, which resumes it lazily, and send from there."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    if getattr(record, "detached", False):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "not_live", "message": "Session is not live; open it to resume."},
+        )
+    await orch.send_prompt(session_id, body.text)
+    await record_audit(db, "session.prompt", identity, {"sessionId": session_id})
     return _record_to_dict(record, repo=await _resolve_repo(record))
 
 

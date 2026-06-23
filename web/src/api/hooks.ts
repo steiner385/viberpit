@@ -148,6 +148,14 @@ export function useRenameSession() {
   })
 }
 
+export function useSendPrompt() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string; text: string }>({
+    mutationFn: ({ id, text }) => api.post<Session>(`/sessions/${id}/prompt`, { text }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
 export function useCloseSession() {
   const qc = useQueryClient()
   return useMutation<void, ApiRequestError, string>({

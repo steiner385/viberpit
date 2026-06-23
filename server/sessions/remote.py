@@ -114,6 +114,9 @@ class RemoteOrchestrator:
     async def interrupt(self, session_id):
         return await self._client.call("interrupt", session_id=session_id)
 
+    async def request_suggestions(self, session_id):
+        return await self._client.call("request_suggestions", session_id=session_id)
+
     async def set_permission_mode(self, session_id, mode):
         return await self._client.call("set_permission_mode", session_id=session_id, mode=mode)
 
@@ -145,6 +148,10 @@ class RemoteOrchestrator:
 
     async def run_command(self, session_id, name, args):
         return await self._client.call("run_command", session_id=session_id, name=name, args=args)
+
+    async def latest_suggestions(self, session_id: str) -> list[str]:
+        r = await self._client.call("latest_suggestions", session_id=session_id)
+        return r if isinstance(r, list) else []
 
     async def list_archived(self):
         return await self._client.call("list_archived")
