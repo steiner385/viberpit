@@ -16,8 +16,11 @@ def test_flag_set_selects_remote_facade():
 
 
 def test_flag_unset_is_in_process():
+    # No flag AND no daemon socket on the host → in-process. Mock socket-absent so the
+    # test is deterministic regardless of whether a real daemon happens to run here.
     env = {k: v for k, v in os.environ.items() if k != "CCSWITCH_SESSIOND_SOCKET"}
-    with mock.patch.dict(os.environ, env, clear=True):
+    with mock.patch.dict(os.environ, env, clear=True), \
+         mock.patch("server.app._daemon_socket_present", return_value=False):
         app = create_app()
     assert app.state.remote_mode is False
     assert app.state.orchestrator is not None
