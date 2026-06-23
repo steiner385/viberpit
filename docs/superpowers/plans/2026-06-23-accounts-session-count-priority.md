@@ -382,7 +382,7 @@ git commit -m "feat(ipc): expose live_session_load/counts via adapter + daemon R
 
 **Files:**
 - Modify: `server/api/accounts.py` (`_account_response` line 64; `get_accounts` lines 102-128)
-- Test: `server/tests/` — find the accounts-API test with `git ls-files | grep -i 'test.*account'` (e.g. `test_accounts_api.py`); add there.
+- Test: `server/tests/test_api.py` — the existing `GET /api/accounts` test lives here (`test_get_accounts_returns_usage_shape`). Reuse its `_make_app_and_client(usage_fn=...)` harness, `IDENTITY_HEADERS`, and `make_usage` (imported as `from tests.helpers import ... usage as make_usage`). The harness wires the **real** orchestrator with a fake `usage_fn`, so `live_session_load()`/`live_session_counts()` already work (return `{}` with no live sessions).
 
 **Interfaces:**
 - Consumes: `rank_accounts` (Task 1); `orch.live_session_load()` / `orch.live_session_counts()` (Task 3).
@@ -393,33 +393,37 @@ git commit -m "feat(ipc): expose live_session_load/counts via adapter + daemon R
 In the accounts-API test module (reuse its existing client/allowlist fixtures), add:
 
 ```python
-def test_get_accounts_includes_live_sessions_and_rank(client, ...):
-    # Arrange: two accounts with usage such that one outranks the other, and
-    # one live active session on account "a" (use the same orchestrator stub the
-    # other accounts tests use; set live_session_counts/load on it).
-    resp = client.get("/api/accounts")
-    assert resp.status_code == 200
-    body = {a["name"]: a for a in resp.json()}
-    assert body["a"]["liveSessions"] == {"active": 1, "idle": 0}
-    assert body["b"]["liveSessions"] == {"active": 0, "idle": 0}
-    # ranks are 1-based and contiguous over eligible accounts
-    ranks = sorted(a["rank"] for a in resp.json() if a["rank"] is not None)
-    assert ranks == [1, 2]
-    ranked_one = next(a for a in resp.json() if a["rank"] == 1)
-    assert isinstance(ranked_one["rankReason"], str)
+def test_get_accounts_includes_live_sessions_and_rank():
+    # Two accounts; "low" has lower usage so it should outrank "high".
+    usages = {
+        "low": make_usage(session_pct=10.0, weekly_pct=5.0),
+        "high": make_usage(session_pct=60.0, weekly_pct=30.0),
+    }
+    with temp_env(...):  # mirror test_get_accounts_returns_usage_shape's setup
+        app, client = _make_app_and_client(usage_fn=_make_usage_fn(usages))
+        # No live sessions exist in this harness, so liveSessions are all zero.
+        resp = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200
+        body = {a["name"]: a for a in resp.json()}
+        assert body["low"]["liveSessions"] == {"active": 0, "idle": 0}
+        ranks = sorted(a["rank"] for a in resp.json() if a["rank"] is not None)
+        assert ranks == [1, 2]
+        ranked_one = next(a for a in resp.json() if a["rank"] == 1)
+        assert isinstance(ranked_one["rankReason"], str)
 
 
-def test_get_accounts_at_ceiling_has_null_rank(client, ...):
-    # account pinned at 100% session usage -> rank None, rankReason None,
-    # liveSessions still present.
-    resp = client.get("/api/accounts")
-    busy = next(a for a in resp.json() if a["name"] == "busy")
-    assert busy["rank"] is None
-    assert busy["rankReason"] is None
-    assert "liveSessions" in busy
+def test_get_accounts_at_ceiling_has_null_rank():
+    usages = {"busy": _busy_usage()}  # helper already in test_api.py: 100% both dims
+    with temp_env(...):
+        app, client = _make_app_and_client(usage_fn=_make_usage_fn(usages))
+        resp = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+        busy = next(a for a in resp.json() if a["name"] == "busy")
+        assert busy["rank"] is None
+        assert busy["rankReason"] is None
+        assert "liveSessions" in busy
 ```
 
-> NOTE: the existing accounts tests already stub `app.state.sessions` (the adapter) and its `usage()`. Extend that stub with `live_session_load()`/`live_session_counts()` returning the dicts your scenario needs. Match the file's fixture names.
+> NOTE: match the exact `temp_env`/setup wrapper used by `test_get_accounts_returns_usage_shape` (lines ~117-161) — copy its account-registration boilerplate. `make_usage` may take positional args; check `tests/helpers.py` for its signature and adapt the calls above. Live-session counts can't be exercised through this real-orchestrator harness without a live driver, so the count assertions stay at zero here; the active/idle split is covered by Task 2's orchestrator unit tests.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -540,7 +544,13 @@ git commit -m "feat(api): accounts list returns liveSessions + next-pick rank"
 **Files:**
 - Modify: `web/src/api/types.ts` (`Account` interface, lines 1-22)
 - Modify: `web/src/components/AccountsManager.tsx` (`AccountRow`, ~lines 284-300; add badge components near `UsageBadge`)
-- Test: `web/src/components/__tests__/AccountsManager.test.tsx` (find with `git ls-files web | grep -i account.*test`) and update any shared account factory found via `git ls-files web | grep -i factor`.
+- Modify (REQUIRED — stricter `Account` type breaks these or `tsc -b` fails): the **four** local `makeAccount` factories, each at line ~51 of:
+  `web/src/components/__tests__/DashboardTabs.test.tsx`,
+  `web/src/components/__tests__/AccountReauth.test.tsx`,
+  `web/src/components/__tests__/AccountDelete.test.tsx`,
+  `web/src/components/__tests__/AccountsNickname.test.tsx`.
+  Add `liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null` to each factory's default object. (These are duplicated factories — a known parallel-implementation smell; updating all four is mandatory, do not skip any.)
+- Create: `web/src/components/__tests__/AccountsRank.test.tsx` — new test file modeled on `AccountsNickname.test.tsx` (same imports, its own `makeAccount` with the new fields, render via Dashboard then click the Accounts tab as that file does).
 
 **Interfaces:**
 - Consumes: API fields `liveSessions`, `rank`, `rankReason` (Task 4).
@@ -567,42 +577,69 @@ export interface Account {
 }
 ```
 
-- [ ] **Step 2: Write failing tests** (`web/src/components/__tests__/AccountsManager.test.tsx`)
+- [ ] **Step 2: Write failing tests** (`web/src/components/__tests__/AccountsRank.test.tsx`)
 
-Use the existing render helper for a single `AccountRow`/`AccountsStrip`. Add an account factory default (or update the shared factory) with `liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null`.
+Create this file by copying the **entire** scaffold from `AccountsNickname.test.tsx` (the `vi.mock('@/api/hooks', …)` block, `makeAccount`, `wrapper`, `switchToAccountsTab`, and the whole `beforeEach` hook-mock setup — all of it is required or the Dashboard render throws). Add the new fields to this file's `makeAccount` defaults, then replace the `describe`/`it` bodies with:
 
 ```tsx
-it('shows split active/idle session counts', () => {
-  renderRow(makeAccount({ liveSessions: { active: 2, idle: 1 } }))
-  expect(screen.getByText('2 active · 1 idle')).toBeInTheDocument()
-})
+function makeAccount(overrides: Partial<Account> = {}): Account {
+  return {
+    name: 'work',
+    status: 'ok',
+    usage: { session: { pct: 30, resetsAt: null }, weekly: { pct: 50, resetsAt: null } },
+    liveSessions: { active: 0, idle: 0 },
+    rank: null,
+    rankReason: null,
+    ...overrides,
+  }
+}
 
-it('shows a dash when no live sessions', () => {
-  renderRow(makeAccount({ liveSessions: { active: 0, idle: 0 } }))
-  expect(screen.getByText('—')).toBeInTheDocument()
-})
+describe('AccountsStrip — session counts & next-pick rank', () => {
+  // ...copy the beforeEach from AccountsNickname.test.tsx verbatim...
 
-it('marks the next pick with #1 next and a reason tooltip', () => {
-  renderRow(makeAccount({ rank: 1, rankReason: 'perishable quota, lowest load' }))
-  const badge = screen.getByText('#1 next')
-  expect(badge).toHaveAttribute('title', 'perishable quota, lowest load')
-})
+  async function renderWith(account: Partial<Account>) {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useAccounts).mockReturnValue({
+      data: [makeAccount(account)],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useAccounts>)
+    render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
+  }
 
-it('renders a plain rank number for non-first picks', () => {
-  renderRow(makeAccount({ rank: 2, rankReason: 'fresh quota — saved for last' }))
-  expect(screen.getByText('#2')).toBeInTheDocument()
-})
+  it('shows split active/idle session counts', async () => {
+    await renderWith({ liveSessions: { active: 2, idle: 1 } })
+    expect(screen.getByText('2 active · 1 idle')).toBeInTheDocument()
+  })
 
-it('shows unavailable when an account has no rank', () => {
-  renderRow(makeAccount({ rank: null }))
-  expect(screen.getByText('unavailable')).toBeInTheDocument()
+  it('shows a dash when no live sessions', async () => {
+    await renderWith({ liveSessions: { active: 0, idle: 0 } })
+    expect(screen.getByText('—')).toBeInTheDocument()
+  })
+
+  it('marks the next pick with #1 next and a reason tooltip', async () => {
+    await renderWith({ rank: 1, rankReason: 'perishable quota, lowest load' })
+    expect(screen.getByText('#1 next')).toHaveAttribute('title', 'perishable quota, lowest load')
+  })
+
+  it('renders a plain rank number for non-first picks', async () => {
+    await renderWith({ rank: 2, rankReason: 'fresh quota — saved for last' })
+    expect(screen.getByText('#2')).toBeInTheDocument()
+  })
+
+  it('shows unavailable when an account has no rank', async () => {
+    await renderWith({ rank: null })
+    expect(screen.getByText('unavailable')).toBeInTheDocument()
+  })
 })
 ```
 
+Also add `liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null` to the `makeAccount` defaults in the other four test files listed under **Files** so `tsc -b` passes.
+
 - [ ] **Step 3: Run to verify failure**
 
-Run (in `web/`): `npx vitest run src/components/__tests__/AccountsManager.test.tsx`
-Expected: FAIL — text not found.
+Run (in `web/`): `npx vitest run src/components/__tests__/AccountsRank.test.tsx`
+Expected: FAIL — text not found (`#1 next`, `2 active · 1 idle`).
 
 - [ ] **Step 4: Implement the badge components + render them**
 
@@ -677,7 +714,12 @@ Expected: PASS.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add web/src/api/types.ts web/src/components/AccountsManager.tsx web/src/components/__tests__/AccountsManager.test.tsx
+git add web/src/api/types.ts web/src/components/AccountsManager.tsx \
+  web/src/components/__tests__/AccountsRank.test.tsx \
+  web/src/components/__tests__/AccountsNickname.test.tsx \
+  web/src/components/__tests__/AccountDelete.test.tsx \
+  web/src/components/__tests__/AccountReauth.test.tsx \
+  web/src/components/__tests__/DashboardTabs.test.tsx
 git commit -m "feat(web): show live session counts + next-pick rank on Accounts"
 ```
 
