@@ -111,6 +111,23 @@ class TestOAuth(unittest.TestCase):
             with self.assertRaises(oauth.AuthError):
                 oauth.refresh_access_token("oldR", {})
 
+    def test_refresh_401_raises_autherror(self):
+        """A 401 from the token endpoint is a rejected grant — terminal (AuthError)."""
+        from ccswitch import oauth
+        with mock.patch.object(oauth, "http_request", return_value=(401, b'{"error":"unauthorized"}')):
+            with self.assertRaises(oauth.AuthError):
+                oauth.refresh_access_token("oldR", {})
+
+    def test_refresh_403_raises_transient_not_autherror(self):
+        """A 403 (e.g. a Cloudflare edge block — `error code: 1010`) is NOT proof the
+        refresh token is dead: it's environmental and hits every account identically.
+        It must surface as TransientError so a shared edge block cannot mass-flip all
+        accounts to needs-reauth. Only 400/401 mean a genuinely rejected grant."""
+        from ccswitch import oauth
+        with mock.patch.object(oauth, "http_request", return_value=(403, b"error code: 1010\n")):
+            with self.assertRaises(oauth.TransientError):
+                oauth.refresh_access_token("oldR", {})
+
     def test_parse_usage_limits_missing_resets_at_falls_back(self):
         """limits session entry without resets_at must be skipped; fallback fills in."""
         from ccswitch.oauth import parse_usage
@@ -155,6 +172,41 @@ class TestOAuth(unittest.TestCase):
         with mock.patch.object(oauth, "http_request", return_value=(200, json.dumps(resp).encode())):
             blob = oauth.refresh_access_token("tok", {})
         self.assertEqual(blob["scopes"], [])
+
+
+class TestUserAgent(unittest.TestCase):
+    def test_http_request_sends_ccswitch_user_agent(self):
+        """Every outbound request must carry a real User-Agent. The token endpoint
+        (platform.claude.com) sits behind a Cloudflare bot rule that 403s clients
+        with the default `Python-urllib` UA (`error code: 1010`); a header-less
+        refresh is therefore blocked before Anthropic ever sees it."""
+        from ccswitch import oauth
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["ua"] = req.get_header("User-agent")
+            return _FakeResp(200, b"{}")
+
+        with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=fake_urlopen):
+            oauth.http_request("GET", "https://x")
+        self.assertIsNotNone(captured["ua"], "no User-Agent header sent")
+        self.assertTrue(
+            captured["ua"].startswith("ccswitch/"),
+            f"expected a ccswitch/<version> UA, got {captured['ua']!r}",
+        )
+
+    def test_explicit_user_agent_is_not_overridden(self):
+        """A caller that sets its own User-Agent keeps it (default only fills the gap)."""
+        from ccswitch import oauth
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["ua"] = req.get_header("User-agent")
+            return _FakeResp(200, b"{}")
+
+        with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=fake_urlopen):
+            oauth.http_request("GET", "https://x", headers={"User-Agent": "custom/9"})
+        self.assertEqual(captured["ua"], "custom/9")
 
 
 class TestHttpRequestRetry(unittest.TestCase):
