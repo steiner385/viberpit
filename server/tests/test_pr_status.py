@@ -15,6 +15,7 @@ def test_from_dict_roundtrips_to_dict():
 
 
 def _pr(number, state, *, draft=False, rollup="SUCCESS", updated="2026-06-22T10:00:00Z"):
+    # Non-merged PRs only — `mergedAt` is absent here; use `_merged_pr` for MERGED-state cases.
     commit = {"commit": {"statusCheckRollup": {"state": rollup} if rollup else None}}
     return {
         "number": number, "url": f"https://github.com/o/r/pull/{number}",
@@ -139,6 +140,12 @@ def test_not_deployed_when_no_deployments():
 def test_not_deployed_when_pr_open():
     pairs = [("o/r", "br")]
     resp = _resp_full("r0", [_pr(5, "OPEN")], [_deploy("2026-06-22T12:00:00Z")])
+    assert parse_pr_response(resp, pairs)[("o/r", "br")].deployed is False
+
+
+def test_not_deployed_when_pr_closed():
+    pairs = [("o/r", "br")]
+    resp = _resp_full("r0", [_pr(5, "CLOSED")], [_deploy("2026-06-22T12:00:00Z")])
     assert parse_pr_response(resp, pairs)[("o/r", "br")].deployed is False
 
 

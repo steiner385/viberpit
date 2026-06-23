@@ -51,6 +51,8 @@ deployed = (state == "merged")
   any number of repos for free.
 - Accepted approximation cost: a reverted/rolled-back PR would still read "deployed,"
   and two merges in the same second could tie. Both acceptable for a status badge.
+  Additionally, a rebased HEAD commit whose `committedDate` predates its own PR's `mergedAt`
+  could leave that one PR's badge briefly dark until the next deploy — self-healing and cosmetic.
 - Rejected alternative — REST `compare/{mergeSha}...{activeSha}` per merged PR: exact,
   but one REST call per merged PR per poll against the shared 5k/hr limit, contrary to
   the project's "batched GraphQL for reads" norm.
