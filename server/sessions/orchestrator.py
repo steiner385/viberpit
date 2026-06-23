@@ -1014,6 +1014,11 @@ class SessionOrchestrator:
                         "data": {"text": f"Unknown account: {acct}"}}
             return {"name": "account", "render": "notice",
                     "data": {"text": f"Account → {acct}"}}
+        if str(name).lstrip("/") == "goal":
+            cond = (args or "").strip()
+            cleared = (not cond) or cond.lower() == "clear"
+            await self.set_goal_for_session(session_id, None if cleared else cond)
+            # fall through: forward /goal to the CLI so the built-in feature engages
         info = await d.server_info()
         by_name = {c.name: c for c in cmd_catalog.build_catalog(info)}
         cmd = by_name.get(str(name).lstrip("/"))
@@ -1275,6 +1280,22 @@ class SessionOrchestrator:
             from sqlalchemy import update as sa_update
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(model=model)
+            )
+
+    async def set_goal_for_session(self, session_id: str, goal: str | None) -> None:
+        """Record the session's active /goal condition AND persist it, so the badge
+        survives rehydrate. The /goal text is still forwarded to the CLI by run_command;
+        this only mirrors the state for the UI (no SDK method exists for goals)."""
+        record = self._records.get(session_id)
+        if record is not None:
+            record.active_goal = goal
+        await self._persist_goal(session_id, goal)
+
+    async def _persist_goal(self, session_id: str, goal: str | None) -> None:
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(active_goal=goal)
             )
 
     async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str) -> None:
