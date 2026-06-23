@@ -109,6 +109,21 @@ def test_persist_status_done_stays_done_when_not_parked(tmp_path):
     assert asyncio.run(run()) == "done"
 
 
+def test_persist_status_waiting_external_does_not_advance_active_clock(tmp_path):
+    """Parking is not a fresh "return": the 'active … ago' clock keeps the prior turn's
+    time, so a parked card shows how long it has been waiting (since the last turn)
+    rather than resetting to 'now' on every re-arm."""
+    async def run():
+        orch = await _build_orch(tmp_path, name_is_auto=False)
+        orch.transcript_path = lambda sid: str(_parked_transcript(tmp_path))
+        orch.record("s1").last_turn_at = None
+        await orch._persist_status("s1", "done")  # parked → waiting_external
+        return orch.record("s1").status, orch.record("s1").last_turn_at
+    status, last_turn_at = asyncio.run(run())
+    assert status == "waiting_external"
+    assert last_turn_at is None  # the parked turn must NOT bump the clock
+
+
 def test_persist_status_waiting_external_broadcasts_overlaid_status(tmp_path):
     """The live-push event carries the overlaid status, not the raw `done`."""
     async def run():
