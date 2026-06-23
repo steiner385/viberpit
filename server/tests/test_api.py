@@ -672,3 +672,92 @@ def test_get_archived_route_not_shadowed_by_session_id():
         f"/sessions/archived returned {resp.status_code} (shadowed by /{{session_id}}?): {resp.text}"
     )
     assert isinstance(resp.json(), list)
+
+
+# ---------------------------------------------------------------------------
+# Batch archived-session operations
+# ---------------------------------------------------------------------------
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def _client_with_account(d):
+    """Yield a TestClient (inside lifespan) with one seeded account 'account1'.
+
+    Must be called with temp_env() active (d is the temp home dir).
+    """
+    _seed_slot("account1")
+    usage_fn = _make_usage_fn({"account1": make_usage(session=10.0, weekly=20.0)})
+    with patch("ccswitch.accounts.usage_for", side_effect=usage_fn), \
+         patch("server.sessions.orchestrator.select_account", return_value="account1"), \
+         patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "account1"), \
+         patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        (d / "cfg" / "account1").mkdir(parents=True, exist_ok=True)
+        from server.sessions.orchestrator import SessionOrchestrator
+        from server.app import create_app
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), usage_fn=usage_fn, poll_interval=9999.0)
+        app = create_app(orchestrator=orch)
+        client = TestClient(app, raise_server_exceptions=False)
+        with client:
+            yield client
+
+
+def _create_and_archive(client, name):
+    """Create a session then archive it (DELETE); return its id."""
+    r = client.post("/api/sessions", json={"name": name, "account": "account1"}, headers=IDENTITY_HEADERS)
+    assert r.status_code == 201, r.text
+    sid = r.json()["id"]
+    d = client.delete(f"/api/sessions/{sid}", headers=IDENTITY_HEADERS)
+    assert d.status_code == 204, d.text
+    return sid
+
+
+def test_batch_unarchive_all_success():
+    """POST /batch/unarchive restores every id; both reappear as active, archived list empties."""
+    with temp_env() as d:
+        with _client_with_account(d) as client:
+            a = _create_and_archive(client, "A")
+            b = _create_and_archive(client, "B")
+            resp = client.post("/api/sessions/batch/unarchive", json={"ids": [a, b]}, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert set(body["succeeded"]) == {a, b}
+            assert body["failed"] == []
+            active_ids = [s["id"] for s in client.get("/api/sessions", headers=IDENTITY_HEADERS).json()]
+            assert a in active_ids and b in active_ids
+            assert client.get("/api/sessions/archived", headers=IDENTITY_HEADERS).json() == []
+
+
+def test_batch_unarchive_partial_failure():
+    """A non-existent id lands in failed; valid ids still succeed."""
+    with temp_env() as d:
+        with _client_with_account(d) as client:
+            a = _create_and_archive(client, "A")
+            resp = client.post("/api/sessions/batch/unarchive", json={"ids": [a, "ghost"]}, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["succeeded"] == [a]
+            assert body["failed"] == [{"id": "ghost", "error": "not found"}]
+
+
+def test_batch_unarchive_empty_ids_returns_422():
+    with temp_env() as d:
+        with _client_with_account(d) as client:
+            resp = client.post("/api/sessions/batch/unarchive", json={"ids": []}, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 422
+
+
+def test_batch_unarchive_oversized_ids_returns_422():
+    with temp_env() as d:
+        with _client_with_account(d) as client:
+            ids = [f"x{i}" for i in range(201)]
+            resp = client.post("/api/sessions/batch/unarchive", json={"ids": ids}, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 422
+
+
+def test_batch_unarchive_requires_identity():
+    with temp_env() as d:
+        with _client_with_account(d) as client:
+            resp = client.post("/api/sessions/batch/unarchive", json={"ids": ["x"]})
+            assert resp.status_code == 401
