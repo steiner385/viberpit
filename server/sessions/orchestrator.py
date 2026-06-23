@@ -1125,6 +1125,9 @@ class SessionOrchestrator:
             asyncio.create_task(
                 self._generate_detached_suggestions(session_id, rec, path, signature)
             )
+        # Cache miss or stale (transcript changed): serve nothing rather than stale
+        # suggestions from an outdated transcript. The scheduled task lands within a
+        # poll cycle (the dashboard refetches /sessions), then the cache-hit above wins.
         return []
 
     async def _generate_detached_suggestions(self, session_id, rec, path, signature) -> None:
