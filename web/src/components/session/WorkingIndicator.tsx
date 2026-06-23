@@ -13,6 +13,9 @@ interface Props {
   /** Number of running sub-agents. When > 0, overrides the whimsical phrase
    *  with "Running a sub-agent…" / "Running N sub-agents…". */
   subAgentCount?: number
+  /** Optional phrase override. Replaces the whimsical word but yields to
+   *  `subAgentCount` (sub-agent phrase still wins when both are present). */
+  phrase?: string
   className?: string
 }
 
@@ -37,7 +40,7 @@ interface Props {
  *     announce every tick.
  *   - prefers-reduced-motion: static spinner glyph, no shimmer, no spinner frames.
  */
-export function WorkingIndicator({ count = 0, subAgentCount = 0, className }: Props) {
+export function WorkingIndicator({ count = 0, subAgentCount = 0, phrase, className }: Props) {
   const reducedMotion = prefersReducedMotion()
 
   // Pick the phrase once on mount; remember it so the next wait won't repeat it.
@@ -67,10 +70,12 @@ export function WorkingIndicator({ count = 0, subAgentCount = 0, className }: Pr
   const subAgentPhrase = subAgentCount > 0
     ? (subAgentCount === 1 ? 'Running a sub-agent' : `Running ${subAgentCount} sub-agents`)
     : null
-  const phrase = subAgentPhrase ?? word
+  const phraseText = subAgentPhrase ?? phrase ?? word
   const srLabel = subAgentPhrase
     ? `${subAgentPhrase}…`
-    : (count > 0 ? `Working, ${count} queued` : 'Working…')
+    : phrase
+      ? `${phrase}…`
+      : (count > 0 ? `Working, ${count} queued` : 'Working…')
 
   return (
     <span className={cn('inline-flex items-center gap-1.5', className)}>
@@ -85,7 +90,7 @@ export function WorkingIndicator({ count = 0, subAgentCount = 0, className }: Pr
         </span>
 
         {/* Phrase + ellipsis (shimmers unless reduced-motion) */}
-        <span className={cn(!reducedMotion && 'working-shimmer')}>{phrase}…</span>
+        <span className={cn(!reducedMotion && 'working-shimmer')}>{phraseText}…</span>
 
         {/* Live elapsed-time readout */}
         <span data-testid="working-elapsed" className="opacity-60 tabular-nums">

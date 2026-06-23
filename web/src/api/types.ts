@@ -11,6 +11,11 @@ export interface UsageWindow {
   resetsAt: string | null  // ISO timestamp or null
 }
 
+export interface LiveSessionCounts {
+  active: number
+  idle: number
+}
+
 export interface Account {
   name: string
   status: AccountStatus
@@ -19,11 +24,15 @@ export interface Account {
     weekly: UsageWindow
   } | null
   nickname?: string | null
+  liveSessions: LiveSessionCounts
+  rank: number | null
+  rankReason: string | null
 }
 
 export type SessionStatus =
   | 'idle'
   | 'in_progress'
+  | 'condensing'
   | 'waiting_input'
   | 'waiting_question'
   | 'ready_review'

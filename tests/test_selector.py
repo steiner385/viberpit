@@ -201,3 +201,82 @@ class TestSelector(unittest.TestCase):
         self.assertEqual(
             select_best(usages, set(), self.cfg, self.now,
                         load={"swamped": 1e9}), "calm")
+
+
+# --- rank_accounts() tests ---
+
+from ccswitch.config import Config
+from ccswitch.oauth import Usage
+
+NOW = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
+SOON = NOW + timedelta(minutes=30)
+
+
+def _cfg(**kw):
+    return Config(**kw)
+
+
+def test_rank_accounts_orders_like_select_best():
+    from ccswitch.selector import rank_accounts, select_best, RankedAccount
+    usages = {
+        "a": Usage(40.0, SOON, 20.0, SOON, False),
+        "b": Usage(10.0, SOON, 5.0, SOON, False),
+    }
+    ranked, earliest = rank_accounts(usages, set(), _cfg(), NOW)
+    names = [r.name for r in ranked]
+    assert names[0] == select_best(usages, set(), _cfg(), NOW)
+    assert [r.rank for r in ranked] == [1, 2]
+    assert earliest is None
+
+
+def test_rank_accounts_excludes_at_ceiling_and_reports_reset():
+    from ccswitch.selector import rank_accounts
+    reset = NOW + timedelta(hours=2)
+    usages = {
+        "busy": Usage(100.0, reset, 50.0, reset, False),
+        "ok": Usage(10.0, SOON, 5.0, SOON, False),
+    }
+    ranked, earliest = rank_accounts(usages, set(), _cfg(), NOW)
+    assert [r.name for r in ranked] == ["ok"]
+    assert earliest == reset
+
+
+def test_rank_accounts_all_busy_returns_empty_with_earliest():
+    from ccswitch.selector import rank_accounts
+    reset = NOW + timedelta(hours=1)
+    usages = {"x": Usage(100.0, reset, 0.0, None, False)}
+    ranked, earliest = rank_accounts(usages, set(), _cfg(), NOW)
+    assert ranked == []
+    assert earliest == reset
+
+
+def test_rank_reason_perishable_lowest_load():
+    from ccswitch.selector import rank_accounts
+    usages = {"a": Usage(40.0, SOON, 20.0, SOON, False)}
+    ranked, _ = rank_accounts(usages, set(), _cfg(), NOW, load={})
+    assert ranked[0].reason == "perishable quota, lowest load"
+
+
+def test_rank_reason_perishable_sharing_load():
+    from ccswitch.selector import rank_accounts
+    usages = {"a": Usage(40.0, SOON, 20.0, SOON, False)}
+    ranked, _ = rank_accounts(usages, set(), _cfg(), NOW, load={"a": 2.0})
+    assert ranked[0].reason == "perishable quota, sharing live load"
+
+
+def test_rank_reason_fresh_saved_for_last():
+    from ccswitch.selector import rank_accounts
+    # No reset window on the binding dimension -> composite 0 -> "fresh".
+    usages = {"a": Usage(0.0, None, 0.0, None, False)}
+    ranked, _ = rank_accounts(usages, set(), _cfg(), NOW)
+    assert ranked[0].reason == "fresh quota — saved for last"
+
+
+def test_select_best_still_raises_all_busy():
+    import pytest
+    from ccswitch.selector import select_best, AllAccountsBusy
+    reset = NOW + timedelta(hours=1)
+    usages = {"x": Usage(100.0, reset, 0.0, None, False)}
+    with pytest.raises(AllAccountsBusy) as ei:
+        select_best(usages, set(), _cfg(), NOW)
+    assert ei.value.earliest_reset == reset
