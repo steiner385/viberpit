@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy import Boolean, DateTime, Float, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -139,3 +139,5 @@ class AppSettings(Base):
     thinking_collapsed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     repo_root: Mapped[str | None] = mapped_column(String, nullable=True)
     default_tool_detail: Mapped[str | None] = mapped_column(String, nullable=True)
+    compaction_ewma_ms: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    compaction_samples: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
