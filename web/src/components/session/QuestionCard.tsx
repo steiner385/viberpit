@@ -264,6 +264,9 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
     return (
       <div role="group" aria-labelledby={headerId} className={containerClass}>
         {heading}
+        {/* Grouped: selectedLabel highlights the staged option ('' = nothing
+            staged yet, so no radio is checked). Uncontrolled (undefined): fall
+            back to the roving keyboard highlight (activeIndex) as before. */}
         <SingleSelectOptions
           block={block}
           onPick={(label) =>
