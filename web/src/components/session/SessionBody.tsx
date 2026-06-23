@@ -68,7 +68,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           subAgents={rt.subAgents}
           statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} subAgentCount={runningSubAgents} />}
           models={models}
-          accounts={accounts.map((a) => ({ name: a.name }))}
+          accounts={accounts.map((a) => ({ name: a.name, nickname: a.nickname }))}
           accountPinned={pinned}
           onSelectModel={(id) => rt.onCommand('model', id)}
           onSelectAccount={(name) => rt.onCommand('account', name)}

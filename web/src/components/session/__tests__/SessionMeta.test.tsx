@@ -32,6 +32,32 @@ describe('SessionMeta', () => {
     expect(screen.getByLabelText('Select model')).toHaveValue('claude-sonnet-4-5')
   })
 
+  it('labels the account option with the nickname but keeps the slug as its value', () => {
+    render(
+      <SessionMeta
+        {...baseProps}
+        account="work-max"
+        accounts={[{ name: 'work-max', nickname: 'tony@kindash.com' }]}
+      />,
+    )
+    const select = screen.getByLabelText('Switch account') as HTMLSelectElement
+    // Value (the wire identity) stays the slug…
+    expect(select).toHaveValue('work-max')
+    // …but the visible option text is the chosen nickname, never the slug.
+    const opt = Array.from(select.options).find((o) => o.value === 'work-max')
+    expect(opt?.text).toBe('tony@kindash.com')
+    expect(screen.queryByText('work-max')).not.toBeInTheDocument()
+  })
+
+  it('falls back to the slug as the option label when no nickname is set', () => {
+    render(
+      <SessionMeta {...baseProps} account="work-max" accounts={[{ name: 'work-max' }]} />,
+    )
+    const select = screen.getByLabelText('Switch account') as HTMLSelectElement
+    const opt = Array.from(select.options).find((o) => o.value === 'work-max')
+    expect(opt?.text).toBe('work-max')
+  })
+
   it('shows remaining context percent', () => {
     render(<SessionMeta {...baseProps} />)
     expect(screen.getByLabelText(/remaining context/i)).toHaveTextContent('78%')
