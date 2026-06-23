@@ -43,6 +43,12 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
+def _require_adoption_enabled() -> None:
+    """Sunset gate: adoption is off unless CCSWITCH_ENABLE_ADOPTION is set."""
+    if not get_settings().enable_adoption:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+
+
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
@@ -297,6 +303,7 @@ async def list_adoptable(
     flagged with a skipReason where applicable — the dashboard renders adoptable
     ones with a force-takeover action and groups the rest as "not adoptable".
     """
+    _require_adoption_enabled()
     orch = _get_orchestrator(request)
     known = [a["name"] for a in _accounts.list_accounts()]
     tracked = {r.claude_session_id for r in await orch.list_sessions() if r.claude_session_id}
@@ -316,6 +323,7 @@ async def adopt_session_route(
     already tracked) — an expected outcome given processes churn fast, so the
     dashboard should re-scan rather than treat it as a hard error.
     """
+    _require_adoption_enabled()
     orch = _get_orchestrator(request)
     try:
         rec, outcome = await orch.adopt_session(body.claudeSessionId, identity=identity)
