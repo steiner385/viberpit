@@ -97,3 +97,23 @@ def test_transcript_events_to_wire():
         # Daemon wraps handler return as {"result": {"events": [...]}}
         r = c.post("/rpc/transcript_events", json={"session_id": "s1"}).json()
     assert r["result"]["events"] == [{"type": "textDelta", "text": "x"}, {"type": "textDelta", "text": "x"}]
+
+
+def test_live_session_load_registered_as_rpc():
+    app, orch = _app()
+    orch.live_session_load = mock.MagicMock(return_value={"acct-a": 0.5, "acct-b": 1.0})
+    with TestClient(app) as c:
+        r = c.post("/rpc/live_session_load", json={}).json()
+    assert isinstance(r["result"], dict)
+    orch.live_session_load.assert_called_once_with()
+
+
+def test_live_session_counts_registered_as_rpc():
+    app, orch = _app()
+    orch.live_session_counts = mock.MagicMock(
+        return_value={"acct-a": {"active": 2, "idle": 1}, "acct-b": {"active": 0, "idle": 0}}
+    )
+    with TestClient(app) as c:
+        r = c.post("/rpc/live_session_counts", json={}).json()
+    assert isinstance(r["result"], dict)
+    orch.live_session_counts.assert_called_once_with()
