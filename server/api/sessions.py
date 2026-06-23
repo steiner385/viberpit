@@ -390,6 +390,12 @@ async def search_sessions(
         if terms:  # blank query short-circuits the file reads
             path = await orch.transcript_path(rec.id)
             if path:
+                # The transcript file is read here in the edge process (not on the
+                # daemon). This is safe because the daemon talks over a host-local
+                # Unix socket, so daemon and edge share the filesystem. If the daemon
+                # is ever split to a separate host, this read would fail and search
+                # would silently degrade to name-only — move the read behind a daemon
+                # RPC (like transcript_events) at that point.
                 text = await asyncio.to_thread(transcript_text, path)
         return session_matches(terms, rec.name, text)
 

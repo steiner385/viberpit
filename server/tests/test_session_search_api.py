@@ -83,3 +83,11 @@ def test_search_blank_query_returns_all_active(tmp_path, monkeypatch):
     _setup(orch, tmp_path, monkeypatch, records, {"s1": "x", "s2": "y"})
     r = client.get("/api/sessions/search?q=", headers=H)
     assert sorted(r.json()["ids"]) == ["s1", "s2"]
+
+
+def test_search_whitespace_query_returns_all_active(tmp_path, monkeypatch):
+    client, orch = _client()
+    records = [_rec("s1", "A"), _rec("s2", "B")]
+    _setup(orch, tmp_path, monkeypatch, records, {"s1": "x", "s2": "y"})
+    r = client.get("/api/sessions/search?q=%20%20", headers=H)
+    assert sorted(r.json()["ids"]) == ["s1", "s2"]

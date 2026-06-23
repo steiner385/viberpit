@@ -37,4 +37,16 @@ describe('useSessionSearch', () => {
     expect([...(result.current.matchedIds ?? [])].sort()).toEqual(['s1', 's2'])
     expect(result.current.isFiltered).toBe(true)
   })
+
+  it('falls back to null matchedIds and isFiltered=false when the request rejects', async () => {
+    vi.spyOn(api, 'get').mockRejectedValue(new Error('boom'))
+    const { result } = renderHook(() => useSessionSearch(), { wrapper })
+
+    act(() => result.current.setQuery('auth'))
+    await act(async () => { vi.advanceTimersByTime(300) })
+    await waitFor(() => expect(result.current.matchedIds).toBeNull())
+
+    expect(result.current.matchedIds).toBeNull()
+    expect(result.current.isFiltered).toBe(false)
+  })
 })
