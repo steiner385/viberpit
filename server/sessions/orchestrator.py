@@ -39,7 +39,8 @@ from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory
-from server.sessions.suggestions import SuggestionService
+from server.sessions.replay import replay_events
+from server.sessions.suggestions import SuggestionService, last_turn_context
 from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
 )
@@ -123,6 +124,12 @@ class SessionOrchestrator:
         self._title_fn: Callable = title_fn or self._default_title_fn
         self._registry = PermissionRegistry()
         self._drivers: dict[str, SessionDriver] = {}
+        # Detached-session next-prompt suggestions: session_id -> (transcript mtime, items).
+        # Generated from the on-disk transcript without resuming the driver (see
+        # latest_suggestions / _generate_detached_suggestions). Cached even when empty so
+        # the same transcript state is not re-generated on every /sessions poll.
+        self._detached_suggestions: dict[str, tuple[float, list[str]]] = {}
+        self._suggest_inflight: set[str] = set()
         self._last_prompt: dict[str, str] = {}
         # Failure-driven recovery: quarantine + per-session rotation cap. Clock is
         # injectable for deterministic tests; production uses wall-clock time. The
@@ -1088,13 +1095,58 @@ class SessionOrchestrator:
 
         Live (attached) sessions read straight off the driver. Detached
         ``done``/``idle`` sessions generate from their on-disk transcript and
-        cache the result (see _generate_detached_suggestions). Best-effort:
-        never raises.
+        cache the result keyed by transcript mtime (see
+        _generate_detached_suggestions). Best-effort: never raises.
         """
         d = self._drivers.get(session_id)
         if d is not None:
             return list(getattr(d, "_last_suggestions", []) or [])
+
+        rec = self._records.get(session_id)
+        if rec is None or self._suggester is None:
+            return []
+        if rec.status not in ("done", "idle"):
+            return []
+
+        path = await self._resolve_transcript_path(session_id)
+        if not path:
+            return []
+        try:
+            signature = os.path.getmtime(path)
+        except OSError:
+            return []
+
+        cached = self._detached_suggestions.get(session_id)
+        if cached is not None and cached[0] == signature:
+            return list(cached[1])
+
+        if session_id not in self._suggest_inflight:
+            self._suggest_inflight.add(session_id)
+            asyncio.create_task(
+                self._generate_detached_suggestions(session_id, rec, path, signature)
+            )
         return []
+
+    async def _generate_detached_suggestions(self, session_id, rec, path, signature) -> None:
+        """Generate suggestions for a detached session from its transcript (best-effort).
+
+        Caches (signature, items) even when items is empty, so the same transcript
+        state is not re-generated on the next poll. Always clears the in-flight flag.
+        """
+        try:
+            if self._suggester is None:
+                self._detached_suggestions[session_id] = (signature, [])
+                return
+            events = await replay_events(path)
+            user_text, assistant_text = last_turn_context(events)
+            context = f"User: {user_text}\n\nAssistant: {assistant_text}"
+            items = await self._suggester.generate(rec.cwd, str(compose(rec.account)), context)
+            self._detached_suggestions[session_id] = (signature, list(items or []))
+        except Exception:
+            log.warning("detached suggestion generation failed id=%s", session_id, exc_info=True)
+            self._detached_suggestions[session_id] = (signature, [])
+        finally:
+            self._suggest_inflight.discard(session_id)
 
     async def set_permission_mode(self, session_id, mode):
         d = self._drivers.get(session_id)
