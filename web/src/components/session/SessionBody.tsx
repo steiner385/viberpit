@@ -167,6 +167,9 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                 onDecision={rt.onDecision}
                 onAnswer={rt.onAnswer}
                 subAgents={rt.state.subAgents}
+                earliestTurn={rt.state.earliestTurn}
+                loadingOlder={rt.state.loadingOlder}
+                onLoadOlder={rt.onLoadOlder}
               />
             )}
 
