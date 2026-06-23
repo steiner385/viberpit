@@ -86,6 +86,19 @@ class SessionDriver:
         """Timestamp of the last meaningful driver event (set at driver construction)."""
         return self._last_progress_at
 
+    @property
+    def awaiting_user_input(self) -> bool:
+        """True when the turn is blocked inside ``_can_use_tool`` waiting on the human
+        (a pending permission, ExitPlanMode plan approval, or AskUserQuestion).
+
+        Such a turn is ``_turn_active`` with a frozen ``last_progress_at`` only because
+        the user hasn't answered yet — it is NOT wedged, so the stall watchdog must skip
+        it. Without this, a slow human reply trips a spurious ``[Request interrupted by
+        user]``.
+        """
+        return bool(self._reg.pending(self.session_id)) or bool(
+            self._qreg.pending(self.session_id))
+
     def _note_progress(self, e) -> None:
         """Advance _last_progress_at only when e carries real content.
 
