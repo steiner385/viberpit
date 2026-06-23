@@ -1,6 +1,7 @@
 import json
 from server.sessions.background_tasks import (
-    scan_open_background_tasks, build_rearm_prompt, OpenBgTask,
+    scan_open_background_tasks, scan_pending_wakeup, is_parked, build_rearm_prompt,
+    OpenBgTask,
 )
 
 
@@ -15,6 +16,12 @@ def _assistant_tool(tid, name, inp):
     return {"type": "assistant", "uuid": "u",
             "message": {"model": "claude-opus-4-8",
                         "content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}}
+
+
+def _user(text, *, is_meta=False):
+    """A real user turn boundary (is_meta=True models a fired /loop wakeup re-injection)."""
+    return {"type": "user", "isMeta": is_meta,
+            "message": {"role": "user", "content": text}}
 
 
 def _write(tmp_path, lines):
@@ -66,6 +73,79 @@ def test_dedups_by_tool_use_id_and_tolerates_garbage(tmp_path):
                                            {"description": "m", "command": "z"})) + "\n")
     tasks = scan_open_background_tasks(path)
     assert [t.tool_use_id for t in tasks] == ["toolu_mon"]
+
+
+def test_pending_wakeup_armed_when_last_turn_scheduled(tmp_path):
+    # Agent's most recent turn called ScheduleWakeup and stopped → still waiting for it.
+    path = _write(tmp_path, [
+        _user("poll the PRs until they merge"),
+        _assistant_tool("toolu_w1", "ScheduleWakeup",
+                        {"delaySeconds": 1200, "reason": "watching CI"}),
+    ])
+    assert scan_pending_wakeup(path) is True
+
+
+def test_pending_wakeup_false_when_no_wakeup(tmp_path):
+    path = _write(tmp_path, [
+        _user("do a thing"),
+        _assistant_tool("toolu_b", "Bash", {"command": "ls"}),
+    ])
+    assert scan_pending_wakeup(path) is False
+
+
+def test_pending_wakeup_false_when_loop_ended_in_later_turn(tmp_path):
+    # Wakeup armed, fired (meta re-injection), then the agent ended the loop by NOT
+    # re-arming in its final turn → no longer pending.
+    path = _write(tmp_path, [
+        _user("watch the deploy"),
+        _assistant_tool("toolu_w1", "ScheduleWakeup", {"delaySeconds": 1200, "reason": "x"}),
+        _user("<<autonomous-loop-dynamic>>", is_meta=True),          # wakeup fired
+        _assistant_tool("toolu_done", "Bash", {"command": "echo done"}),  # no re-arm
+    ])
+    assert scan_pending_wakeup(path) is False
+
+
+def test_pending_wakeup_true_when_rearmed_after_firing(tmp_path):
+    # Loop continues: the post-fire turn re-arms the wakeup → still pending.
+    path = _write(tmp_path, [
+        _user("watch the deploy"),
+        _assistant_tool("toolu_w1", "ScheduleWakeup", {"delaySeconds": 1200, "reason": "x"}),
+        _user("<<autonomous-loop-dynamic>>", is_meta=True),          # wakeup fired
+        _assistant_tool("toolu_w2", "ScheduleWakeup", {"delaySeconds": 1200, "reason": "x"}),
+    ])
+    assert scan_pending_wakeup(path) is True
+
+
+def test_pending_wakeup_false_on_missing_file(tmp_path):
+    assert scan_pending_wakeup(str(tmp_path / "nope.jsonl")) is False
+
+
+def test_is_parked_true_for_open_background_task(tmp_path):
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_bg", "Bash", {"command": "gh pr view 263", "run_in_background": True}),
+    ])
+    assert is_parked(path) is True
+
+
+def test_is_parked_true_for_armed_wakeup(tmp_path):
+    path = _write(tmp_path, [
+        _user("poll the PRs"),
+        _assistant_tool("toolu_w", "ScheduleWakeup", {"delaySeconds": 1200, "reason": "x"}),
+    ])
+    assert is_parked(path) is True
+
+
+def test_is_parked_false_when_neither(tmp_path):
+    path = _write(tmp_path, [
+        _user("do a thing"),
+        _assistant_tool("toolu_fg", "Bash", {"command": "ls"}),
+    ])
+    assert is_parked(path) is False
+
+
+def test_is_parked_false_on_missing_path(tmp_path):
+    assert is_parked(str(tmp_path / "nope.jsonl")) is False
+    assert is_parked(None) is False
 
 
 def test_build_rearm_prompt_guards_only_non_monitor():

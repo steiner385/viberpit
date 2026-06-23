@@ -24,7 +24,7 @@ class SessionRecord:
     repo: str | None = None          # GitHub nameWithOwner this session works on (None = scratch)
     branch: str | None = None        # per-session worktree branch (joins to PR headRefName)
     detached: bool = False           # True for rehydrated sessions with no live driver
-    status: str = "idle"             # idle / in_progress / condensing / waiting_input / ready_review / done / limited / ended
+    status: str = "idle"             # idle / in_progress / condensing / waiting_input / ready_review / done / waiting_external / limited / ended
     name_is_auto: bool = True        # False once the user manually renames the session
     permission_mode: str = "interactive"
     created_at: datetime | None = None

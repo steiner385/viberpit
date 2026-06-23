@@ -90,6 +90,75 @@ def scan_open_background_tasks(jsonl_path: str) -> list[OpenBgTask]:
     return open_tasks
 
 
+def _iter_jsonl(jsonl_path: str):
+    """Yield each well-formed, non-sidechain JSON object from a transcript .jsonl."""
+    try:
+        f = open(jsonl_path, errors="ignore")
+    except OSError:
+        return
+    with f:
+        for raw in f:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                o = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(o, dict) and not o.get("isSidechain"):
+                yield o
+
+
+def _assistant_tool_names(o: dict) -> list[str]:
+    """Tool names invoked in an assistant message (empty for any other entry)."""
+    if o.get("type") != "assistant":
+        return []
+    content = (o.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return []
+    return [b.get("name") or "" for b in content
+            if isinstance(b, dict) and b.get("type") == "tool_use"]
+
+
+def scan_pending_wakeup(jsonl_path: str) -> bool:
+    """True iff the agent is parked on a self-scheduled wakeup it hasn't acted on yet.
+
+    A ``ScheduleWakeup`` tool call arms exactly one future re-invocation; when it fires,
+    a new ``user`` turn begins (in ``/loop`` dynamic mode an ``isMeta`` re-injection).
+    So the wakeup is still *armed* iff the **last assistant turn** — the assistant
+    messages since the most recent ``user`` entry — issued a ``ScheduleWakeup``. If a
+    later turn ran without re-arming, the loop ended and nothing is pending.
+
+    Pure + side-effect-free, mirroring ``scan_open_background_tasks``. Use the helpers:
+      - ``_iter_jsonl(jsonl_path)`` yields each transcript entry (dict), in file order.
+      - ``o.get("type") == "user"`` marks a turn boundary.
+      - ``_assistant_tool_names(o)`` returns the tool names in an assistant entry;
+        a wakeup is present when ``"ScheduleWakeup"`` is among them.
+
+    TODO(learning): implement the boundary logic below.
+      Walk the entries in order. Track whether a ``ScheduleWakeup`` has been seen in the
+      *current* turn. Reset that tracking to False every time a new ``user`` boundary is
+      crossed (a fresh prompt or a fired wakeup starts a new turn). Return whatever the
+      tracker holds after the final entry — i.e. did the last turn arm a wakeup?
+    """
+    armed = False
+    for o in _iter_jsonl(jsonl_path):
+        if o.get("type") == "user":
+            armed = False          # a fresh prompt / fired wakeup starts a new turn
+        elif "ScheduleWakeup" in _assistant_tool_names(o):
+            armed = True           # the current turn armed a wakeup
+    return armed
+
+
+def is_parked(jsonl_path: str | None) -> bool:
+    """True iff the session is waiting on an external event rather than the user: it has
+    an open background task (Monitor / ``run_in_background``) or an armed self-scheduled
+    wakeup. Drives the dashboard's ``waiting_external`` ("Waiting…") status overlay."""
+    if not jsonl_path:
+        return False
+    return bool(scan_open_background_tasks(jsonl_path)) or scan_pending_wakeup(jsonl_path)
+
+
 def build_rearm_prompt(tasks: list[OpenBgTask]) -> str:
     lines = ["The daemon was restarted (deploy) and these background tasks were "
              "stopped. Relaunch each one with exactly the parameters shown."]
