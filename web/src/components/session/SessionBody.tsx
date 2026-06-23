@@ -15,6 +15,7 @@ import { TranscriptView } from './TranscriptView'
 import { SessionPlaceholder } from './SessionPlaceholder'
 import { WorkingIndicator } from './WorkingIndicator'
 import { PendingQuestionPanel } from './PendingQuestionPanel'
+import { PendingPermissionPanel } from './PendingPermissionPanel'
 import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
 import { selectRunningSubAgentCount } from '@/session/selectors'
@@ -67,7 +68,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           subAgents={rt.subAgents}
           statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} subAgentCount={runningSubAgents} />}
           models={models}
-          accounts={accounts.map((a) => ({ name: a.name }))}
+          accounts={accounts.map((a) => ({ name: a.name, nickname: a.nickname }))}
           accountPinned={pinned}
           onSelectModel={(id) => rt.onCommand('model', id)}
           onSelectAccount={(name) => rt.onCommand('account', name)}
@@ -158,13 +159,11 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
               <TranscriptView
                 turns={rt.state.turns}
                 rotations={rt.state.rotations}
-                permissionMode={rt.mode}
                 toolDetailMode={rt.toolDetailMode}
                 thinkingCollapsed={rt.thinkingCollapsed}
                 // Only the live-open block streams as plain text; during replay the open
                 // id is meaningless, so suppress it and render everything as markdown.
                 streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
-                onDecision={rt.onDecision}
                 onAnswer={rt.onAnswer}
                 subAgents={rt.state.subAgents}
               />
@@ -183,21 +182,17 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
               </div>
             )}
 
-            {/* "Action needed" sticky banner when an open permission is pending.
-                Live questions are pinned in PendingQuestionPanel (Task 4) — they no
-                longer need the banner for discoverability. */}
-            {rt.hasOpenPermission && (
-              <div
-                aria-live="polite"
-                className={cn(
-                  'flex-shrink-0 px-4 py-2 text-xs font-medium',
-                  'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300',
-                  'border-t border-amber-200 dark:border-amber-800',
-                )}
-              >
-                Action needed — scroll up to respond
-              </div>
-            )}
+            {/* Pinned permission panel for the live open permission (respond in place).
+                Mirrors PendingQuestionPanel: the actionable allow/deny PermissionCard
+                otherwise renders only inline in the scrollable transcript, so a pending
+                permission below the fold left the user with a "Permission needed" status
+                and no reachable buttons (just a "scroll up" banner). Pinning it above the
+                composer keeps the controls always visible. */}
+            <PendingPermissionPanel
+              turns={rt.state.turns}
+              permissionMode={rt.mode}
+              onDecision={rt.onDecision}
+            />
 
             {/* Pinned answer panel for the live open question (answer in place). Lives
                 here in SessionBody so BOTH the mobile SessionView and the desktop

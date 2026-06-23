@@ -18,12 +18,13 @@ from typing import Any, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
 from server.sessions import adopt as _adopt
+from server.sessions.search import transcript_text, parse_terms, session_matches
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import get_db
@@ -381,6 +382,112 @@ async def list_archived_sessions(
     """Return all archived session metadata."""
     orch = _get_orchestrator(request)
     return await orch.list_archived()
+
+
+@router.get("/search")
+async def search_sessions(
+    request: Request,
+    q: str = "",
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Return active session IDs whose name or transcript matches every term in `q`.
+
+    Registered before GET /{session_id} so FastAPI does not match `search` as an id.
+    """
+    orch = _get_orchestrator(request)
+    terms = parse_terms(q)
+    records = await orch.list_sessions()
+
+    async def _matches(rec) -> bool:
+        text = ""
+        if terms:  # blank query short-circuits the file reads
+            path = await orch.transcript_path(rec.id)
+            if path:
+                # The transcript file is read here in the edge process (not on the
+                # daemon). This is safe because the daemon talks over a host-local
+                # Unix socket, so daemon and edge share the filesystem. If the daemon
+                # is ever split to a separate host, this read would fail and search
+                # would silently degrade to name-only — move the read behind a daemon
+                # RPC (like transcript_events) at that point.
+                text = await asyncio.to_thread(transcript_text, path)
+        return session_matches(terms, rec.name, text)
+
+    flags = await asyncio.gather(*(_matches(r) for r in records))
+    return {"ids": [r.id for r, ok in zip(records, flags) if ok]}
+
+
+# ---------------------------------------------------------------------------
+# Batch operations on archived sessions
+#
+# These static routes MUST be declared before the dynamic "/{session_id}"
+# routes below, or "batch" is matched as a session_id.
+# ---------------------------------------------------------------------------
+
+
+class BatchSessionIdsRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1, max_length=200)
+
+
+@router.post("/batch/unarchive")
+async def batch_unarchive_sessions(
+    body: BatchSessionIdsRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Unarchive multiple sessions. Best-effort: returns per-id succeeded/failed."""
+    orch = _get_orchestrator(request)
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
+        try:
+            record = await orch.unarchive(session_id)
+        except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
+            log.warning("batch unarchive failed for %s: %s", session_id, exc)
+            failed.append({"id": session_id, "error": str(exc)})
+            continue
+        if record is None:
+            failed.append({"id": session_id, "error": "not found"})
+            continue
+        succeeded.append(session_id)
+        await record_audit(
+            db=db,
+            type="session.unarchive",
+            identity=identity,
+            detail={"session_id": session_id},
+        )
+    return {"succeeded": succeeded, "failed": failed}
+
+
+@router.post("/batch/permanent-delete")
+async def batch_permanent_delete_sessions(
+    body: BatchSessionIdsRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Permanently delete multiple sessions. Best-effort: returns per-id succeeded/failed."""
+    orch = _get_orchestrator(request)
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
+        try:
+            deleted = await orch.permanent_delete(session_id)
+        except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
+            log.warning("batch permanent-delete failed for %s: %s", session_id, exc)
+            failed.append({"id": session_id, "error": str(exc)})
+            continue
+        if not deleted:
+            failed.append({"id": session_id, "error": "not found"})
+            continue
+        succeeded.append(session_id)
+        await record_audit(
+            db=db,
+            type="session.permanent_delete",
+            identity=identity,
+            detail={"session_id": session_id},
+        )
+    return {"succeeded": succeeded, "failed": failed}
 
 
 @router.get("/{session_id}")

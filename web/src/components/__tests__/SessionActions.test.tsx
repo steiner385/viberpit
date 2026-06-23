@@ -27,6 +27,8 @@ vi.mock('@/api/hooks', () => ({
   useArchivedSessions: vi.fn(),
   useUnarchiveSession: vi.fn(),
   usePermanentDeleteSession: vi.fn(),
+  useBulkUnarchiveSessions: vi.fn(),
+  useBulkPermanentDeleteSessions: vi.fn(),
   useSendPrompt: () => ({ mutate: vi.fn() }),
   QK: {
     accounts: ['accounts'],
@@ -37,6 +39,10 @@ vi.mock('@/api/hooks', () => ({
     githubBranches: (repo?: string) => ['github-branches', repo],
     settings: ['settings'],
   },
+}))
+
+vi.mock('@/session/useSessionSearch', () => ({
+  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
 }))
 
 const NOOP_MUTATION = {
@@ -128,6 +134,8 @@ describe('SessionActions (via Dashboard)', () => {
     vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
     vi.mocked(hooks.useUnarchiveSession).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
     vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+    vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
+    vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
   })
 
   it('renders the "+ New" button', () => {
