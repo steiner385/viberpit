@@ -33,10 +33,14 @@ and a `?`-triggered **modal** (`ShortcutsHelp`) that lists shortcuts. Two gaps:
 
 ## Decisions
 
-- **Modifier family:** `Ctrl + key`, scheme-wide (same on all platforms; matches the two
-  existing bindings). No platform-adaptive Cmd/Ctrl.
-- **Rationalize, don't just add:** define one coherent action set; fold the existing
-  `Ctrl+R`/`Ctrl+X` into it.
+- **Modifier family:** `Alt + key`, scheme-wide. Rationale: `Ctrl+letter` collides with
+  native textarea editing (`Ctrl+A/C/X/Z` select-all/copy/cut/undo, `Ctrl+Backspace`/
+  `Ctrl+Delete` word-delete), forcing an ugly "only when empty" gate. `Alt+letter` is not
+  a text-editing command, so the bindings fire safely **whether or not a prompt is
+  drafted** — and they join the existing `Alt+1-9` "jump to session" family for one
+  consistent scheme.
+- **Rationalize, don't just add:** define one coherent action set; the existing
+  `Ctrl+R` (rename) and `Ctrl+X` (archive) are **removed** and re-homed on `Alt`.
 - **Replace** the shortcuts modal with a slide-out; delete the modal in the same PR.
 
 ## Design
@@ -46,22 +50,24 @@ and a `?`-triggered **modal** (`ShortcutsHelp`) that lists shortcuts. Two gaps:
 | Action | Binding | Behavior |
 |---|---|---|
 | Open / enter session | `Enter` / `→` (empty prompt) | unchanged |
-| Quick-continue | `Ctrl+Enter` | sends `continue` to the highlighted session |
-| Rename | `Ctrl+R` | unchanged |
-| Archive (soft) | `Ctrl+Backspace` | replaces `Ctrl+X`; keeps the existing press-twice 2s guard (`pendingDelete`) |
-| Delete (permanent) | `Ctrl+Delete` | opens the existing `PermanentDeleteDialog` — never instant |
+| Jump to session N | `Alt+1`–`Alt+9` | unchanged |
+| Quick-continue | `Alt+C` | sends `continue` to the highlighted session |
+| Rename | `Alt+R` | replaces `Ctrl+R` |
+| Archive (soft) | `Alt+A` | replaces `Ctrl+X`; keeps the existing press-twice 2s guard (`pendingDelete`) |
+| Delete (permanent) | `Alt+D` | opens the existing `PermanentDeleteDialog` — never instant |
 
 - All actions target the **highlighted** session and fire only in the live sessions-list
   context (Dashboard sessions tab / DesktopShell list).
-- Because every binding is `Ctrl`-modified, they fire whether or not a prompt is drafted
-  — no typing collision.
-- `Ctrl+X` is **removed** (folded into `Ctrl+Backspace`) so archive has a single home.
-- `Alt+1-9` jump and `↑/↓` navigation are unchanged.
+- Because every binding is `Alt`-modified and `Alt+letter` performs no textarea editing,
+  they fire whether or not a prompt is drafted — no typing collision, no clobbered caret.
+- `Ctrl+R` and `Ctrl+X` are **removed** so each action has a single home.
+- `↑/↓` navigation and `Esc`/`?` behavior are unchanged.
 
-**Known caveat (accepted, not mitigated in v1):** on Mac laptops the `Delete` key is
-Backspace; forward-delete is `Fn+Delete`. So `Ctrl+Delete` works on full keyboards but is
-awkward on Mac laptops. No alias added — the help slide-out is the discovery path. Revisit
-if it proves painful.
+**Implementation caveat:** `Alt+D` focuses the browser address bar on Chrome/Firefox
+(Win/Linux), and `Option+letter` types special chars on macOS. Both are suppressed by
+`preventDefault()` in the keydown handler — the same mechanism the existing `Alt+1-9`
+already relies on. The handler must call `preventDefault()` whenever it matches an `Alt`
+binding.
 
 ### 2. Single source of truth — shortcuts registry
 
@@ -80,16 +86,30 @@ interface Shortcut {
 
 Two consumers, one definition:
 
-- **Handler** — a shared hook `useSessionListShortcuts` (sibling to the existing
-  `useGlobalListNav`) iterates the `sessions-list` entries, runs `match`, and invokes the
-  corresponding action. Guarded to no-op when a dialog is open or focus is in an unrelated
-  input. Consumed by **both** `Dashboard.tsx` and `DesktopShell.tsx` so the two renderings
-  stay in lockstep. The existing `DispatchBar` `Ctrl+R`/`Ctrl+X` handling is migrated onto
-  the registry (no second matching path left behind).
+- **Handler** — matching lives in `DispatchBar.handleKeyDown`, which is already the single
+  shared component rendered by **both** `Dashboard.tsx` and `DesktopShell.tsx` (so the two
+  renderings stay in lockstep automatically — no second handler to keep in sync). The
+  handler iterates the registry's wired (`match`-bearing) `sessions-list` entries, and on a
+  match calls `preventDefault()` and dispatches the entry's `action` through the existing
+  `onRowAction` prop. The old hardcoded `Ctrl+R`/`Ctrl+X` branches are deleted; only the
+  registry path remains. (We deliberately do *not* add a second global keydown listener
+  beside `useGlobalListNav` — focus lives in the textarea, so a global listener would risk
+  double-handling.)
 - **Help slide-out** — renders directly from the registry, grouped by `group`.
 
-Adding a binding once makes it both functional and documented; the help panel can no
-longer drift from real behavior.
+Only the four `Alt` actions carry a `match`/`action` (they are statically matchable);
+`↑/↓`, `Enter`/`→`, `Esc`, `?`, and `Alt+1-9` keep their existing bespoke handling in
+`DispatchBar` (they depend on caret position / index) and appear in the registry as
+**display-only** entries so the help panel documents them. Adding a wired binding once
+makes it both functional and documented; the help panel can no longer drift from the
+wired handler.
+
+**`onRowAction` union change:** the existing union
+`{type:'rename'} | {type:'delete'} | {type:'jump';index}` becomes
+`{type:'rename'} | {type:'archive'} | {type:'permanent-delete'} | {type:'continue'} | {type:'jump';index}`
+(the old `'delete'` — which performs *archive* via `useCloseSession` — is renamed to
+`'archive'` for clarity). This is changed in the `DispatchBar` prop type and both
+`handleRowAction` implementations (Dashboard + DesktopShell).
 
 ### 3. Help slide-out
 
@@ -113,13 +133,15 @@ longer drift from real behavior.
 
 ## Testing (vitest)
 
-- Handler matches each `sessions-list` binding to the right action; modified combos fire
-  while a prompt is drafted, and unmodified equivalents do **not** fire (they type).
-- `Ctrl+Delete` opens `PermanentDeleteDialog` rather than deleting immediately.
-- `Ctrl+Backspace` archives with the press-twice guard intact; `Ctrl+X` no longer archives.
+- Handler matches each wired `Alt` binding to the right `onRowAction` type and calls
+  `preventDefault()`; the same letters **without** `Alt` type normally into the textarea.
+- `Alt+D` opens `PermanentDeleteDialog` rather than deleting immediately.
+- `Alt+A` archives with the press-twice guard intact; `Ctrl+R`/`Ctrl+X` no longer fire.
+- `Alt+C` sends `continue` to the highlighted session (`useSendPrompt`).
 - Help slide-out opens via both `?` and the button, traps focus, closes on Esc.
 - Help renders an entry for **every** registry shortcut (drift guard).
-- Both `Dashboard` and `DesktopShell` wire up `useSessionListShortcuts` (no dual handler).
+- Both `Dashboard` and `DesktopShell` route through the shared `DispatchBar` handler
+  (no dual matching path).
 
 ## Non-goals (YAGNI)
 
@@ -127,4 +149,7 @@ longer drift from real behavior.
   navigate there).
 - No user-remappable keybindings.
 - No context-aware "active right now" highlighting in the help panel (possible later).
-- No platform-adaptive Cmd/Ctrl or Mac forward-delete alias in v1.
+- No user-configurable / platform-adaptive (Cmd) bindings in v1.
+- The non-`Alt` bespoke shortcuts (`↑/↓`, `Enter`/`→`, `Esc`, `Alt+1-9`) are not refactored
+  to carry registry `match` functions — they stay in `DispatchBar` and appear in the help
+  panel as display-only entries.
