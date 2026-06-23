@@ -143,3 +143,13 @@ def test_live_driver_path_unchanged():
         assert await orch.latest_suggestions("s1") == ["X"]
         assert orch._suggester.generate.call_count == 0
     asyncio.run(run())
+
+
+def test_resolve_transcript_path_error_returns_empty_not_raise():
+    async def run():
+        orch, _ = _orch_with_record("done")
+        orch._resolve_transcript_path = AsyncMock(side_effect=FileNotFoundError("no creds"))
+        res = await orch.latest_suggestions("s1")     # must NOT raise
+        assert res == []
+        assert orch._suggester.generate.call_count == 0
+    asyncio.run(run())

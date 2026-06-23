@@ -1108,12 +1108,12 @@ class SessionOrchestrator:
         if rec.status not in ("done", "idle"):
             return []
 
-        path = await self._resolve_transcript_path(session_id)
-        if not path:
-            return []
         try:
+            path = await self._resolve_transcript_path(session_id)
+            if not path:
+                return []
             signature = os.path.getmtime(path)
-        except OSError:
+        except Exception:
             return []
 
         cached = self._detached_suggestions.get(session_id)
