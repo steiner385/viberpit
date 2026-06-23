@@ -1,0 +1,75 @@
+from server.github.pr_status import (
+    PullRequestInfo, build_pr_query, parse_pr_response,
+)
+
+
+def _resp(alias_to_nodes: dict) -> dict:
+    return {"data": {a: {"pullRequests": {"nodes": n}} for a, n in alias_to_nodes.items()}}
+
+
+def _pr(number, state, *, draft=False, rollup="SUCCESS", updated="2026-06-22T10:00:00Z"):
+    commit = {"commit": {"statusCheckRollup": {"state": rollup} if rollup else None}}
+    return {
+        "number": number, "url": f"https://github.com/o/r/pull/{number}",
+        "title": f"PR {number}", "state": state, "isDraft": draft,
+        "updatedAt": updated, "commits": {"nodes": [commit]},
+    }
+
+
+def test_build_query_empty_is_blank():
+    assert build_pr_query([]) == ""
+
+
+def test_build_query_aliases_each_pair():
+    q = build_pr_query([("steiner385/cc-account-switcher", "ccswitch/foo-abc")])
+    assert "r0: repository(" in q
+    assert '"steiner385"' in q and '"cc-account-switcher"' in q
+    assert '"ccswitch/foo-abc"' in q
+    assert "statusCheckRollup" in q
+
+
+def test_parse_open_passing():
+    pairs = [("o/r", "br")]
+    out = parse_pr_response(_resp({"r0": [_pr(7, "OPEN", rollup="SUCCESS")]}), pairs)
+    info = out[("o/r", "br")]
+    assert info == PullRequestInfo(7, "https://github.com/o/r/pull/7", "open", "passing", "PR 7")
+
+
+def test_parse_state_classification():
+    pairs = [("o/r", "br")]
+    draft = parse_pr_response(_resp({"r0": [_pr(1, "OPEN", draft=True)]}), pairs)[("o/r", "br")]
+    merged = parse_pr_response(_resp({"r0": [_pr(2, "MERGED")]}), pairs)[("o/r", "br")]
+    closed = parse_pr_response(_resp({"r0": [_pr(3, "CLOSED")]}), pairs)[("o/r", "br")]
+    assert (draft.state, merged.state, closed.state) == ("draft", "merged", "closed")
+
+
+def test_parse_checks_classification():
+    pairs = [("o/r", "br")]
+    def checks(rollup):
+        return parse_pr_response(_resp({"r0": [_pr(1, "OPEN", rollup=rollup)]}), pairs)[("o/r", "br")].checks
+    assert checks("SUCCESS") == "passing"
+    assert checks("FAILURE") == "failing"
+    assert checks("ERROR") == "failing"
+    assert checks("PENDING") == "pending"
+    assert checks(None) == "none"
+
+
+def test_parse_picks_most_relevant_pr():
+    # An open PR outranks a merged one even if the merged is newer.
+    pairs = [("o/r", "br")]
+    nodes = [
+        _pr(2, "MERGED", updated="2026-06-22T12:00:00Z"),
+        _pr(1, "OPEN", updated="2026-06-22T09:00:00Z"),
+    ]
+    out = parse_pr_response(_resp({"r0": nodes}), pairs)
+    assert out[("o/r", "br")].number == 1
+
+
+def test_parse_no_prs_omits_key():
+    out = parse_pr_response(_resp({"r0": []}), [("o/r", "br")])
+    assert ("o/r", "br") not in out
+
+
+def test_parse_tolerates_missing_alias():
+    out = parse_pr_response({"data": {}}, [("o/r", "br")])
+    assert out == {}
