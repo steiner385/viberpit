@@ -140,6 +140,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                 connectionState={rt.connectionState}
                 replaying={rt.state.replaying}
                 hasError={rt.state.error !== null}
+                onRetry={rt.reattach}
               />
             ) : (
               <TranscriptView
