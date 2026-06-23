@@ -50,6 +50,14 @@ export const TIER_RANK: Record<StatusTier, number> = {
   'needs-you': 0, error: 1, 'your-turn': 2, busy: 3,
 }
 
+/** Human-readable section header for each tier (group-by-status). */
+export const TIER_LABEL: Record<StatusTier, string> = {
+  'needs-you': 'Needs you',
+  error: 'Needs attention',
+  'your-turn': 'Your turn',
+  busy: 'Working',
+}
+
 /** Stable sort by status tier: action-required first, busy last. Returns a new array. */
 export function sortSessionsByTier<T extends { status: string }>(items: readonly T[]): T[] {
   return [...items].sort((a, b) => TIER_RANK[statusTier(a.status)] - TIER_RANK[statusTier(b.status)])

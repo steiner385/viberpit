@@ -21,6 +21,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { Plus, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SessionList } from './SessionList'
+import { SessionListControls } from './SessionListControls'
 import { DispatchBar } from './DispatchBar'
 import { AllLimitedBanner } from './AllLimitedBanner'
 import { ShortcutsHelp } from './ShortcutsHelp'
@@ -47,6 +48,7 @@ import {
   useSendPrompt,
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
+import { useSessionOrdering } from '@/session/useSessionOrdering'
 
 type TabId = 'sessions' | 'accounts' | 'archived'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
@@ -99,6 +101,7 @@ function WelcomePane() {
 export function DesktopShell() {
   const { data: accounts = [] } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
+  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions } = useSessionOrdering(sessions)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const reposQuery = useGithubRepos()
 
@@ -119,7 +122,7 @@ export function DesktopShell() {
 
   // Keyboard highlight (for the new-session DispatchBar nav affordances)
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
-  const highlighted = highlightedIndex >= 0 ? sessions[highlightedIndex] : undefined
+  const highlighted = highlightedIndex >= 0 ? orderedSessions[highlightedIndex] : undefined
 
   // Bumped to return focus to the DispatchBar after detaching from a session.
   const [dispatchFocusNonce, setDispatchFocusNonce] = useState(0)
@@ -132,7 +135,7 @@ export function DesktopShell() {
   }, [])
 
   // Clamp highlight when the list shrinks.
-  const clampedIndex = sessions.length === 0 ? -1 : Math.min(highlightedIndex, sessions.length - 1)
+  const clampedIndex = orderedSessions.length === 0 ? -1 : Math.min(highlightedIndex, orderedSessions.length - 1)
   if (clampedIndex !== highlightedIndex) setHighlightedIndex(clampedIndex)
 
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
@@ -163,11 +166,11 @@ export function DesktopShell() {
     const id = selection.type === 'session' ? selection.id : null
     setSelection({ type: 'new' })
     if (id) {
-      const idx = sessions.findIndex((s) => s.id === id)
+      const idx = orderedSessions.findIndex((s) => s.id === id)
       if (idx >= 0) setHighlightedIndex(idx)
     }
     setDispatchFocusNonce((n) => n + 1) // return focus to DispatchBar for ↑/↓ nav
-  }, [selection, sessions])
+  }, [selection, orderedSessions])
 
   // In-session detach gestures (desktop): ← / Esc / Ctrl+Z return to the list.
   // Active only while a session is focused. Guards: yield to the composer while it
@@ -210,7 +213,7 @@ export function DesktopShell() {
   }, [sendPrompt, focusSession])
 
   function handleRename(id: string) {
-    const session = sessions.find((s) => s.id === id)
+    const session = orderedSessions.find((s) => s.id === id)
     if (session) setRenameTarget({ id, name: session.name })
   }
 
@@ -221,7 +224,7 @@ export function DesktopShell() {
   // Permanent delete is destructive, so it goes through the same confirm dialog
   // as Dashboard: open the dialog here, run the mutation only on confirm.
   function handleDelete(id: string) {
-    const session = sessions.find((s) => s.id === id)
+    const session = orderedSessions.find((s) => s.id === id)
     setSessionDeleteTarget({ id, name: session?.name ?? id.slice(0, 8) })
   }
 
@@ -241,11 +244,11 @@ export function DesktopShell() {
   // ── DispatchBar handlers (new-session mode) ─────────────────────────────────
 
   function handleNavigate(dir: 'up' | 'down') {
-    if (sessions.length === 0) return
+    if (orderedSessions.length === 0) return
     clearPendingDelete()
     setHighlightedIndex((i) => {
       if (dir === 'up') return i <= 0 ? 0 : i - 1
-      return Math.min(sessions.length - 1, i + 1)
+      return Math.min(orderedSessions.length - 1, i + 1)
     })
   }
 
@@ -276,7 +279,7 @@ export function DesktopShell() {
       }
     } else if (action.type === 'jump') {
       clearPendingDelete()
-      const s = sessions[action.index]
+      const s = orderedSessions[action.index]
       if (s) {
         setHighlightedIndex(action.index)
         focusSession(s.id)
@@ -375,8 +378,17 @@ export function DesktopShell() {
           New Session
         </button>
 
+        {sessions.length > 0 && (
+          <SessionListControls
+            groupBy={groupBy}
+            sortBy={sortBy}
+            onGroupByChange={setGroupBy}
+            onSortByChange={setSortBy}
+          />
+        )}
         <SessionList
-          sessions={sessions}
+          sessions={orderedSessions}
+          groups={groups}
           accounts={accounts}
           isLoading={sessionsLoading}
           // Visible cursor: mark the open session, else the keyboard-highlighted

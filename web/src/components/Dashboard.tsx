@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Plus, RefreshCw, Settings, Pencil, Check, X, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -37,8 +37,9 @@ import {
 } from '@/api/hooks'
 import type { Account, Session, ArchivedSession } from '@/api/types'
 import { PERMISSION_MODES } from '@/session/permissionModes'
-import { sortSessionsByTier } from '@/session/statusTier'
 import { setLastRepo } from '@/lib/lastRepo'
+import { SessionListControls } from './SessionListControls'
+import { useSessionOrdering } from '@/session/useSessionOrdering'
 import { useNeedsYouTitle } from '@/hooks/useNeedsYouTitle'
 
 // ── New Session Dialog ──────────────────────────────────────────────────────
@@ -1034,7 +1035,7 @@ interface DashboardProps {
 export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab, activeTab: activeTabProp, onTabChange, dialog, onDialogChange }: DashboardProps) {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
-  const orderedSessions = useMemo(() => sortSessionsByTier(sessions), [sessions])
+  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions } = useSessionOrdering(sessions)
   useNeedsYouTitle(sessions)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const { data: settingsData } = useSettings()
@@ -1485,8 +1486,17 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             </div>
           </div>
 
+          {sessions.length > 0 && (
+            <SessionListControls
+              groupBy={groupBy}
+              sortBy={sortBy}
+              onGroupByChange={setGroupBy}
+              onSortByChange={setSortBy}
+            />
+          )}
           <SessionList
             sessions={orderedSessions}
+            groups={groups}
             accounts={accounts}
             isLoading={isLoading}
             selectedId={selectedId}

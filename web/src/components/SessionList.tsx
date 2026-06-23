@@ -2,9 +2,12 @@ import { cn } from '@/lib/utils'
 import { SessionCard } from './SessionCard'
 import { EmptyState } from './EmptyState'
 import type { Session, Account } from '@/api/types'
+import type { SessionGroup } from '@/session/ordering'
 
 interface SessionListProps {
   sessions: Session[]
+  /** When provided, render grouped with section headers; else render flat `sessions`. */
+  groups?: SessionGroup[]
   accounts: Account[]
   isLoading?: boolean
   selectedId?: string | null
@@ -38,6 +41,7 @@ function SkeletonCard() {
 
 export function SessionList({
   sessions,
+  groups,
   accounts,
   isLoading,
   selectedId,
@@ -64,6 +68,19 @@ export function SessionList({
 
   const accountMap = new Map(accounts.map((a) => [a.name, a]))
 
+  const renderCard = (session: Session) => (
+    <SessionCard
+      key={session.id}
+      session={session}
+      account={accountMap.get(session.accountName)}
+      selected={session.id === selectedId}
+      onOpen={onOpen}
+      onRename={onRename}
+      onClose={onClose}
+      onDelete={onDelete}
+    />
+  )
+
   return (
     // id="session-listbox" is referenced by DispatchBar's aria-controls.
     // aria-activedescendant on the container tells assistive tech which row is
@@ -77,6 +94,7 @@ export function SessionList({
       aria-activedescendant={selectedId ? `row-${selectedId}` : undefined}
       className="space-y-2"
     >
+<<<<<<< HEAD
       {sessions.map((session) => (
         <SessionCard
           key={session.id}
@@ -90,6 +108,29 @@ export function SessionList({
           onQuickResume={onQuickResume}
         />
       ))}
+=======
+      {groups
+        ? groups.map((group) => (
+            <div key={group.key} className="space-y-2">
+              {group.label !== null && (
+                <div
+                  role="presentation"
+                  aria-hidden="true"
+                  className={cn(
+                    'sticky top-0 z-10 flex items-center gap-2 px-1 py-1',
+                    'bg-gray-50/95 dark:bg-gray-900/95 backdrop-blur',
+                    'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400',
+                  )}
+                >
+                  <span>{group.label}</span>
+                  <span className="tabular-nums text-gray-400 dark:text-gray-500">{group.count}</span>
+                </div>
+              )}
+              {group.sessions.map(renderCard)}
+            </div>
+          ))
+        : sessions.map(renderCard)}
+>>>>>>> origin/master
     </div>
   )
 }
