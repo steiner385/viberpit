@@ -18,13 +18,14 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { Plus, Settings } from 'lucide-react'
+import { Plus, Settings, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SessionList } from './SessionList'
 import { SessionListControls } from './SessionListControls'
 import { DispatchBar } from './DispatchBar'
 import { AllLimitedBanner } from './AllLimitedBanner'
-import { ShortcutsHelp } from './ShortcutsHelp'
+import { HelpDrawer } from './HelpDrawer'
+import { useGlobalHelpKey } from './useGlobalHelpKey'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
@@ -132,6 +133,9 @@ export function DesktopShell() {
 
   // List-focus mode
   const [listMode, setListMode] = useState(false)
+
+  // `?` opens the help slide-out from anywhere on the sessions tab.
+  useGlobalHelpKey({ enabled: tab === 'sessions', onShowHelp: () => setShowHelp(true) })
 
   // Clamp highlight when the list shrinks.
   const clampedIndex = orderedSessions.length === 0 ? -1 : Math.min(highlightedIndex, orderedSessions.length - 1)
@@ -425,24 +429,35 @@ export function DesktopShell() {
     />
   )
 
+  const iconBtn = cn(
+    'flex items-center justify-center h-9 w-9 rounded-md',
+    'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
+    'hover:bg-gray-100 dark:hover:bg-gray-800',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+  )
   const shell = (
     <div className="flex flex-col h-screen bg-background text-foreground">
       <header className="flex items-center justify-between px-4 py-2 border-b border-border flex-shrink-0">
         <h1 className="text-lg font-bold tracking-tight">ccswitch</h1>
-        <button
-          ref={settingsButtonRef}
-          type="button"
-          onClick={() => setShowSettings(true)}
-          aria-label="Settings"
-          className={cn(
-            'flex items-center justify-center h-9 w-9 rounded-md',
-            'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
-            'hover:bg-gray-100 dark:hover:bg-gray-800',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-          )}
-        >
-          <Settings size={18} aria-hidden="true" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setShowHelp(true)}
+            aria-label="Open help"
+            className={iconBtn}
+          >
+            <HelpCircle size={18} aria-hidden="true" />
+          </button>
+          <button
+            ref={settingsButtonRef}
+            type="button"
+            onClick={() => setShowSettings(true)}
+            aria-label="Settings"
+            className={iconBtn}
+          >
+            <Settings size={18} aria-hidden="true" />
+          </button>
+        </div>
       </header>
 
       {allLimitedReset !== undefined && (
@@ -477,7 +492,7 @@ export function DesktopShell() {
           isPending={permanentDeleteSession.isPending}
         />
       )}
-      {showHelp && <ShortcutsHelp onClose={() => setShowHelp(false)} />}
+      {showHelp && <HelpDrawer onClose={() => setShowHelp(false)} />}
       {showSettings && (
         <SettingsPanel onClose={() => { setShowSettings(false); settingsButtonRef.current?.focus() }} />
       )}

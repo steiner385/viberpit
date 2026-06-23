@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Plus, RefreshCw, Settings, Pencil, Check, X, Trash2 } from 'lucide-react'
+import { Plus, RefreshCw, Settings, Pencil, Check, X, Trash2, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { UsageBadge, StatusPill } from './UsageBadge'
@@ -13,7 +13,8 @@ import { useInputHold } from '@/hooks/useInputHold'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { DispatchBar } from './DispatchBar'
 import { useGlobalListNav } from './useGlobalListNav'
-import { ShortcutsHelp } from './ShortcutsHelp'
+import { useGlobalHelpKey } from './useGlobalHelpKey'
+import { HelpDrawer } from './HelpDrawer'
 import { AddAccountDialog } from './AddAccountDialog'
 import {
   useAccounts,
@@ -1477,6 +1478,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   }, [sessions.length])
 
   useGlobalListNav({ enabled: activeTab === 'sessions', onNavigate: handleNavigate })
+  useGlobalHelpKey({ enabled: activeTab === 'sessions', onShowHelp: () => setShowHelp(true) })
 
   function handleOpenHighlighted() {
     if (selectedSession) handleOpen(selectedSession.id)
@@ -1718,6 +1720,15 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             </h2>
             <div className="flex items-center gap-2">
               <Button
+                size="sm"
+                variant="outline"
+                className="min-h-[44px]"
+                onClick={() => setShowHelp(true)}
+                aria-label="Open help"
+              >
+                <HelpCircle size={14} aria-hidden="true" />
+              </Button>
+              <Button
                 ref={settingsButtonRef}
                 size="sm"
                 variant="outline"
@@ -1924,9 +1935,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         />
       )}
 
-      {showHelp && (
-        <ShortcutsHelp onClose={() => setShowHelp(false)} />
-      )}
+      {showHelp && <HelpDrawer onClose={() => setShowHelp(false)} />}
 
       {settingsOpen && (
         <SettingsPanel

@@ -301,7 +301,7 @@ describe('Task 4 — row actions on highlighted session', () => {
   })
 })
 
-// ── Task 5: ShortcutsHelp overlay (wired into Dashboard) ─────────────────────
+// ── Help slide-out (wired into Dashboard) ───────────────────────────────────
 
 describe('Task 5 — ? shortcuts help overlay in Dashboard', () => {
   beforeEach(() => {
@@ -310,24 +310,24 @@ describe('Task 5 — ? shortcuts help overlay in Dashboard', () => {
     window.localStorage.clear()
   })
 
-  it('? opens the shortcuts help dialog', async () => {
+  it('? opens the help dialog', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
     render(<Dashboard />, { wrapper })
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{Shift>}/{/Shift}')
-    expect(screen.getByRole('dialog', { name: /keyboard shortcuts/i })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: /help/i })).toBeInTheDocument()
   })
 
-  it('Esc closes the shortcuts help dialog', async () => {
+  it('Esc closes the help dialog', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
     render(<Dashboard />, { wrapper })
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{Shift>}/{/Shift}')
-    expect(screen.getByRole('dialog', { name: /keyboard shortcuts/i })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: /help/i })).toBeInTheDocument()
     await user.keyboard('{Escape}')
-    expect(screen.queryByRole('dialog', { name: /keyboard shortcuts/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: /help/i })).not.toBeInTheDocument()
   })
 })
 
