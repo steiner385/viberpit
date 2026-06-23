@@ -36,7 +36,7 @@ from server.auth.middleware import require_ws_identity
 from server.db import db_session
 from server.ipc.client import DaemonUnavailable
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
-from server.sessions.replay import replay_events
+from server.sessions.replay import replay_window
 
 if TYPE_CHECKING:
     from server.sessions.facade import InProcessOrchestratorAdapter
@@ -172,12 +172,20 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             A transcript that can't be located or parsed must NOT crash the WS (which
             would close the socket → client reconnect-loop on a blank screen) — skip the
             history and continue. replayComplete ALWAYS fires so the client's loading
-            spinner clears. Returns the replayed events (for idle-suggestion seeding).
+            spinner clears, and now carries earliestTurn/totalTurns so the client knows
+            whether older history exists. Returns the replayed events (for idle-suggestion
+            seeding).
             """
             events: list = []
+            earliest_turn = 0
+            total_turns = 0
             try:
                 path = await orchestrator.transcript_path(session_id)
-                events = await replay_events(path) if path else []
+                if path:
+                    window = await replay_window(path)
+                    events = window.events
+                    earliest_turn = window.earliest_turn
+                    total_turns = window.total_turns
                 if events:
                     # Lead the replay with a reset. attach is re-sent on every WS
                     # reconnect (client.ts onopen), so the same transcript is replayed
@@ -192,7 +200,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     await _send({"type": "batch", "events": redacted_replay})
             except Exception:
                 log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
-            await _send({"type": "replayComplete"})
+            await _send({"type": "replayComplete", "earliestTurn": earliest_turn, "totalTurns": total_turns})
             return events
 
         async def _resume_driver_or_error(session_id: str):

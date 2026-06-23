@@ -300,6 +300,56 @@ def test_replay_batch_leads_with_reset_on_every_attach(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# replayComplete carries totalTurns / earliestTurn for history extent
+# ---------------------------------------------------------------------------
+
+def _write_ws_transcript(tmp_path, n_turns: int) -> str:
+    """Write a JSONL transcript with n_turns user+assistant turn pairs."""
+    import json as _json
+    p = tmp_path / "t.jsonl"
+    lines = []
+    for i in range(n_turns):
+        lines.append({"type": "user", "uuid": f"u{i}",
+                      "message": {"content": f"q{i}"}})
+        lines.append({"type": "assistant", "uuid": f"a{i}",
+                      "message": {"model": "claude-x",
+                                  "content": [{"type": "text", "text": f"r{i}"}],
+                                  "usage": {"input_tokens": 1}}})
+    p.write_text("\n".join(_json.dumps(o) for o in lines))
+    return str(p)
+
+
+def test_replay_complete_reports_turn_extent(ws_env, tmp_path):
+    """replayComplete must carry earliestTurn and totalTurns so the client knows
+    whether older history exists and can offer a 'load more' affordance.
+
+    A 25-turn transcript with the default limit=20 window delivers turns 5-24,
+    so earliestTurn=5 and totalTurns=25."""
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-turn-extent")
+    session_id = session.id
+
+    # 25-turn transcript → default window is last 20 turns (5..24).
+    transcript = _write_ws_transcript(tmp_path, 25)
+    orch.transcript_path = lambda sid: transcript
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="replayComplete")
+
+    done = [e for e in events if e.get("type") == "replayComplete"]
+    assert done, "replayComplete must be sent"
+    assert done[-1].get("totalTurns") == 25, (
+        f"expected totalTurns=25, got {done[-1]}"
+    )
+    assert done[-1].get("earliestTurn") == 5, (
+        f"expected earliestTurn=5, got {done[-1]}"
+    )
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
 # Permission round-trip: tool needs permission, allow lets it proceed
 # ---------------------------------------------------------------------------
 

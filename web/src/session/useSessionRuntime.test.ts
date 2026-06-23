@@ -4,12 +4,19 @@
  * Verifies that `onAnswer`:
  *   1. sends via `answerQuestion` (the WS boundary) immediately and synchronously
  *   2. dispatches `_resolveQuestion` so the question block is removed from state
+ *
+ * Also verifies `onLoadOlder`:
+ *   - is a no-op when `earliestTurn === 0` (fresh runtime / already at session start)
  */
 
 import { renderHook, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
+
+vi.mock('@/api/transcript', () => ({
+  fetchOlderTurns: vi.fn(),
+}))
 
 // Capture answerQuestion and the sessionEvent handler at module scope
 // so the hoisted vi.mock factory can close over them.
@@ -131,7 +138,7 @@ describe('useSessionRuntime.onAnswer', () => {
     expect(result.current.state.error?.code).toBe('answer_not_sent')
   })
 
-  it('auto-resends a buffered answer and clears the notice when the socket reconnects', () => {
+  it('auto-resends a buffered answer and clears the notice when the socket reconnects', async () => {
     const qExists = (id: string) =>
       result.current.state.turns.flatMap((t) => t.blocks).some((b) => b.kind === 'question' && b.questionId === id)
 
@@ -165,5 +172,45 @@ describe('useSessionRuntime.onAnswer', () => {
     expect(mockAnswerQuestion).toHaveBeenLastCalledWith('sess4', 'q4', ['Yes'], 'option')
     expect(qExists('q4')).toBe(false)                      // resolved after resend
     expect(result.current.state.error).toBeNull()          // notice cleared
+  })
+})
+
+describe('useSessionRuntime.onLoadOlder', () => {
+  beforeEach(() => {
+    mockAnswerQuestion.mockReset()
+    mockConnectionState = 'connected'
+    capturedSessionEventHandler = undefined
+  })
+
+  it('is a no-op when earliestTurn === 0 (fresh runtime — already at session start)', async () => {
+    const { fetchOlderTurns } = await import('@/api/transcript')
+    vi.mocked(fetchOlderTurns).mockResolvedValue({ events: [], earliestTurn: 0, totalTurns: 0 })
+
+    const { result } = renderHook(() => useSessionRuntime('sid-older'), { wrapper })
+
+    // On a fresh runtime, state.earliestTurn === 0 — onLoadOlder must be a no-op.
+    await act(async () => { result.current.onLoadOlder() })
+
+    expect(fetchOlderTurns).not.toHaveBeenCalled()
+  })
+
+  it('calls fetchOlderTurns with the session id and earliestTurn when extent is known', async () => {
+    const { fetchOlderTurns } = await import('@/api/transcript')
+    vi.mocked(fetchOlderTurns).mockResolvedValue({
+      events: [],
+      earliestTurn: 0,
+      totalTurns: 21,
+    })
+
+    const { result } = renderHook(() => useSessionRuntime('sid-older2'), { wrapper })
+
+    // Drive earliestTurn into state via a replayComplete event with extent metadata.
+    act(() => {
+      capturedSessionEventHandler?.({ type: 'replayComplete', earliestTurn: 10, totalTurns: 21 })
+    })
+
+    await act(async () => { result.current.onLoadOlder() })
+
+    expect(fetchOlderTurns).toHaveBeenCalledWith('sid-older2', 10)
   })
 })

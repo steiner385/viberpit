@@ -17,7 +17,7 @@ import re
 from typing import Any, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ccswitch import accounts as _accounts
@@ -645,9 +645,12 @@ async def permanent_delete_session(
 async def get_session_transcript(
     session_id: str,
     request: Request,
+    before: int | None = None,
+    limit: int = 20,
     _identity: str = Depends(current_identity),
 ) -> dict:
-    """Return read-only transcript events for a session (active or archived)."""
+    """Read-only transcript events. With `before`, returns a turn-ordinal window
+    plus earliestTurn/totalTurns for lazy scrollback paging."""
     from server.db import db_session as _db_session
     from server.db.models import Session as _DbSession
     from server.audit import redact_event
@@ -668,8 +671,82 @@ async def get_session_transcript(
                 detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
             )
 
+    # In-process orchestrator yields event objects (.to_wire()); the remote/daemon
+    # orchestrator returns already-serialised wire dicts. Handle both (#172).
+    def _wire(e):
+        return redact_event(e.to_wire() if hasattr(e, "to_wire") else e)
+
+    if before is None:
+        events = await orch.transcript_events(session_id)
+        return {"events": [_wire(e) for e in events]}
+
+    window = await orch.transcript_window(session_id, before=before, limit=limit)
+    if window is None:
+        return {"events": [], "earliestTurn": 0, "totalTurns": 0}
+    return {
+        "events": [_wire(e) for e in window.events],
+        "earliestTurn": window.earliest_turn,
+        "totalTurns": window.total_turns,
+    }
+
+
+@router.get("/{session_id}/export.md")
+async def export_session_markdown(
+    session_id: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+):
+    """Download session transcript as a human-readable Markdown file."""
+    from server.audit import redact_event
+    from server.sessions.export import transcript_markdown, safe_filename
+    orch = _get_orchestrator(request)
+    path = await orch.transcript_path(session_id)
+    if not path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"code": "not_found", "message": "No transcript"})
+    record = await orch.get_session(session_id)
+    title = (getattr(record, "name", None) or getattr(record, "title", None) or session_id) if record else session_id
     events = await orch.transcript_events(session_id)
     # In-process orchestrator yields event objects (.to_wire()); the remote/daemon
-    # orchestrator returns already-serialised wire dicts. Handle both.
-    wire_events = [redact_event(e.to_wire() if hasattr(e, "to_wire") else e) for e in events]
-    return {"events": wire_events}
+    # orchestrator returns already-serialised wire dicts. Handle both (#172).
+    md = transcript_markdown(
+        [redact_event(e.to_wire() if hasattr(e, "to_wire") else e) for e in events],
+        title=str(title),
+    )
+    fname = safe_filename(f"{title}-{session_id}") + ".md"
+    return Response(content=md, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@router.get("/{session_id}/export.jsonl")
+async def export_session_jsonl(
+    session_id: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+):
+    """Download session transcript as a raw unredacted JSONL file.
+
+    This endpoint streams the SDK's on-disk transcript verbatim — the user's own
+    data over an already-authenticated connection (deliberate exception to the
+    redaction rule).
+
+    Note: archived sessions whose path only resolves via the DB-glob fallback may
+    return 404 here, because transcript_path() relies on in-memory driver state for
+    those sessions.  The Markdown export (/export.md) still works for them via
+    transcript_events().  This is an accepted limitation.
+    """
+    from server.sessions.export import safe_filename
+    orch = _get_orchestrator(request)
+    path = await orch.transcript_path(session_id)
+    if not path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"code": "not_found", "message": "No transcript"})
+
+    def _iter():
+        with open(path, "rb") as f:
+            while chunk := f.read(65536):
+                yield chunk
+
+    fname = safe_filename(f"{session_id}") + ".jsonl"
+    return StreamingResponse(_iter(), media_type="application/x-ndjson",
+                             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
