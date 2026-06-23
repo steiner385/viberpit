@@ -9,147 +9,175 @@ The web UI already has a keyboard layer for the sessions list (`↑/↓` virtual
 navigation, `Enter`/`→` to open, `Ctrl+R` rename, `Ctrl+X` archive, `Alt+1-9` jump),
 and a `?`-triggered **modal** (`ShortcutsHelp`) that lists shortcuts. Two gaps:
 
-1. Common session actions still require the mouse — there's no fast path to
-   quick-continue or permanently delete the highlighted session, and the existing
-   action bindings are an ad-hoc pair (`Ctrl+R`, `Ctrl+X`) rather than a coherent set.
-2. The help surface is a shortcuts-only modal. New and returning users have no single
-   place to learn navigation across the whole app or core concepts.
+1. Common session actions (continue, delete) have no fast keyboard path, and the existing
+   action bindings (`Ctrl+R`, `Ctrl+X`) collide with native browser/editing keys.
+2. The help surface is a shortcuts-only modal. Users have no single place to learn
+   navigation across the whole app or core concepts.
 
 ## Constraints (from existing code)
 
-- **Selection is "virtual."** Real DOM focus stays in the `DispatchBar` textarea while
-  the user navigates; the highlighted session is tracked by `highlightedIndex` in
-  `Dashboard.tsx` and surfaced via `aria-activedescendant`. Plain single-letter keys
-  therefore collide with typing — **all new action bindings must be modifier-guarded.**
-- **Dual rendering.** The sessions list renders in two places (mobile inline in
-  `Dashboard.tsx`, desktop master-detail in `DesktopShell.tsx`). Shortcut logic must be
-  shared, not duplicated.
-- **Drift risk already present.** `ShortcutsHelp.tsx` (lines 14-33) hardcodes the
-  shortcut list independently of the real handler in `DispatchBar.tsx`. This is the
-  "N parallel implementations of one concept" anti-pattern; the rationalization fixes it.
-- **Custom overlays only.** No shadcn Sheet/Drawer exists; all dialogs are hand-built
-  fixed overlays (`role="dialog"`, `aria-modal`, Esc-to-close, focus trap). The
-  slide-out follows that pattern — no new dependency.
+- **Selection is "virtual" today.** Real DOM focus stays in the `DispatchBar` textarea
+  while the user navigates; the highlighted session is tracked by `highlightedIndex`
+  (Dashboard.tsx ~1336, DesktopShell.tsx) and surfaced via `aria-activedescendant`.
+- **Roving-focus scaffolding already exists.** `SessionCard` has `tabIndex={selected ? 0 : -1}`
+  and an Enter/Space keydown handler (lines 57-62, 99-100); `SessionList` tracks
+  `aria-activedescendant`. The markup is ready for the highlighted row to take *real* focus.
+- **`SessionCard` is the shared atom** rendered by both `Dashboard` and `DesktopShell`, so a
+  keydown handler placed there serves both layouts (same DRY property `DispatchBar` has).
+- **Drift risk already present.** `ShortcutsHelp.tsx` (lines 14-33) hardcodes the shortcut
+  list independently of the real handler — the "N parallel implementations" anti-pattern.
+- **Custom overlays only.** No shadcn Sheet/Drawer; dialogs are hand-built fixed overlays
+  (`role="dialog"`, `aria-modal`, Esc-to-close, focus trap). The slide-out follows suit.
+
+## Why a list-focus mode (the key decision)
+
+Every single-modifier binding collides with something: `Ctrl+letter` is editing/browser
+(copy, cut, reload, bookmark), and `Alt+letter` isn't safe either (`Alt+D` = address bar,
+`Alt+←/→` = back/forward, Windows menu key). The only way to get clean, mnemonic
+**single-key** shortcuts is to make them active in a context where keystrokes are *not*
+text input. So we introduce an explicit **list-focus mode**: the highlighted row takes real
+DOM focus (a `<div>`, not the textarea), where single letters can't type and are therefore
+free to be commands.
 
 ## Decisions
 
-- **Modifier family:** `Alt + key`, scheme-wide. Rationale: `Ctrl+letter` collides with
-  native textarea editing (`Ctrl+A/C/X/Z` select-all/copy/cut/undo, `Ctrl+Backspace`/
-  `Ctrl+Delete` word-delete), forcing an ugly "only when empty" gate. `Alt+letter` is not
-  a text-editing command, so the bindings fire safely **whether or not a prompt is
-  drafted** — and they join the existing `Alt+1-9` "jump to session" family for one
-  consistent scheme.
-- **Rationalize, don't just add:** define one coherent action set; the existing
-  `Ctrl+R` (rename) and `Ctrl+X` (archive) are **removed** and re-homed on `Alt`.
+- **Two modes:**
+  - **Compose** (default) — focus in the `DispatchBar` textarea. Unchanged: type a prompt,
+    `↑/↓` move the highlight (virtual), `Enter` creates/opens, `Esc` clears, `?` opens help,
+    `Alt+1-9` jumps.
+  - **List-focus** — the highlighted `SessionCard` has real DOM focus; single-key shortcuts
+    act on it.
+- **Enter list mode:** `Tab` in the textarea **when the prompt is empty** (preventDefault →
+  focus the highlighted row, or the first row if none). With a draft typed, `Tab` keeps its
+  native job (reach the Create button). Clicking a row also enters list mode.
+- **Exit to compose:** `Esc`, `←`, or `Shift+Tab` → refocus the textarea (via the existing
+  `autoFocusKey` mechanism).
+- **`Ctrl+R` and `Ctrl+X` are removed** — their actions move to single keys in list mode.
 - **Replace** the shortcuts modal with a slide-out; delete the modal in the same PR.
 
 ## Design
 
-### 1. Shortcut scheme
+### 1. Keys
 
-| Action | Binding | Behavior |
-|---|---|---|
-| Open / enter session | `Enter` / `→` (empty prompt) | unchanged |
-| Jump to session N | `Alt+1`–`Alt+9` | unchanged |
-| Quick-continue | `Alt+C` | sends `continue` to the highlighted session |
-| Rename | `Alt+R` | replaces `Ctrl+R` |
-| Archive (soft) | `Alt+A` | replaces `Ctrl+X`; keeps the existing press-twice 2s guard (`pendingDelete`) |
-| Delete (permanent) | `Alt+D` | opens the existing `PermanentDeleteDialog` — never instant |
+**Compose mode (focus in textarea) — unchanged:**
 
-- All actions target the **highlighted** session and fire only in the live sessions-list
-  context (Dashboard sessions tab / DesktopShell list).
-- Because every binding is `Alt`-modified and `Alt+letter` performs no textarea editing,
-  they fire whether or not a prompt is drafted — no typing collision, no clobbered caret.
-- `Ctrl+R` and `Ctrl+X` are **removed** so each action has a single home.
-- `↑/↓` navigation and `Esc`/`?` behavior are unchanged.
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Move highlight (at line boundary / empty) |
+| `Enter` (with text) | Create session from prompt |
+| `Enter` / `→` (empty) | Open highlighted session |
+| `Shift+Enter` | Newline |
+| `Esc` | Clear prompt + deselect |
+| `Alt+1`–`9` | Jump to session N |
+| `?` (empty) | Open help slide-out |
+| **`Tab` (empty)** | **Enter list-focus mode on the highlighted row** |
 
-**Implementation caveat:** `Alt+D` focuses the browser address bar on Chrome/Firefox
-(Win/Linux), and `Option+letter` types special chars on macOS. Both are suppressed by
-`preventDefault()` in the keydown handler — the same mechanism the existing `Alt+1-9`
-already relies on. The handler must call `preventDefault()` whenever it matches an `Alt`
-binding.
+**List-focus mode (highlighted row has real focus) — new:**
 
-### 2. Single source of truth — shortcuts registry
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Move focus to prev / next row |
+| `Enter` / `→` / `Space` | Open the focused session |
+| `c` | Continue (resume — sends `continue`) |
+| `r` | Rename |
+| `a` or `Backspace` | Archive |
+| `d` or `Delete` | Delete permanently (opens confirm dialog) |
+| `Esc` / `←` / `Shift+Tab` | Return to compose (focus the prompt) |
 
-Introduce one registry module, e.g. `web/src/lib/shortcuts.ts`. Each entry:
+- Single keys are safe because focus is on a non-input element — no typing collision, no
+  browser conflict.
+- **Archive is single-press** in list mode (it's reversible via unarchive, and entering list
+  mode + pressing the key is already deliberate). The press-twice guard used for the old
+  `Ctrl+X` is dropped. **Delete always routes through `PermanentDeleteDialog`** — never
+  instant.
+- `highlightedIndex` remains the single "which row" state, shared by both modes; in list
+  mode the focused row follows it.
+
+### 2. Architecture — registry + where handling lives
+
+Introduce one registry module, `web/src/lib/shortcuts.ts`, as the single source of truth for
+both matching and help display:
 
 ```ts
-type ShortcutGroup = 'sessions-list' | 'in-session' | 'dialogs' | 'palette' | 'navigation'
-interface Shortcut {
-  id: string            // stable id, e.g. 'session.quick-continue'
-  keys: string          // canonical combo, e.g. 'Ctrl+Enter' (also used to render <kbd>)
-  label: string         // human description for the help panel
+export type ListRowAction =
+  | { type: 'open' }
+  | { type: 'continue' }
+  | { type: 'rename' }
+  | { type: 'archive' }
+  | { type: 'permanent-delete' }
+  | { type: 'navigate'; dir: 'up' | 'down' }
+  | { type: 'exit' }            // back to compose
+
+export type KeyboardLike = Pick<KeyboardEvent, 'key' | 'code' | 'altKey' | 'ctrlKey' | 'metaKey' | 'shiftKey'>
+
+export type ShortcutGroup = 'list-mode' | 'compose' | 'in-session'
+
+export interface Shortcut {
+  id: string
+  keys: string                 // display string for the help panel
+  description: string
   group: ShortcutGroup
-  match: (e: KeyboardEvent) => boolean  // single matcher used by the handler
+  action?: ListRowAction        // present ⇒ wired into the SessionCard handler
+  match?: (e: KeyboardLike) => boolean
 }
 ```
 
-Two consumers, one definition:
+- **List-mode matching lives in `SessionCard.onKeyDown`** — the shared atom. It runs the
+  registry's `list-mode` matchers and invokes a single `onRowAction(action: ListRowAction)`
+  callback prop. Because both shells render `SessionCard`, both get the behavior with no
+  duplicated handler. (Plain keys like `c`/`r`/`a`/`d` match on `e.key`; `Backspace`/
+  `Delete`/`Enter`/arrows match on `e.key` too — all unmodified, so no Mac remap issue.)
+- **`SessionList`** threads `onRowAction` through to each `SessionCard`, and manages **focus**:
+  when the app is in list mode and a card is the highlighted one, that card focuses itself
+  (a `listMode` + `selected` prop drives a `useEffect` focus call; the existing
+  scroll-into-view effect already fires on `selected`).
+- **`DispatchBar`** gains a `Tab`-on-empty branch that calls a new `onEnterList()` prop; its
+  old `Ctrl+R`/`Ctrl+X` branches are deleted. `↑/↓`, `Enter`, `Esc`, `?`, `Alt+digit` stay.
+- **`Dashboard` / `DesktopShell`** own a `listMode` boolean. `onEnterList` sets it true (and
+  ensures a row is highlighted); the `SessionCard` `exit` action sets it false and bumps
+  `autoFocusKey`/`focusDispatchSignal` to pull focus back to the textarea. The `open`/
+  `continue`/`rename`/`archive`/`permanent-delete`/`navigate` actions route to the existing
+  handlers (`handleOpen`, `handleQuickResume`, `handleRename`, `handleClose`,
+  `handleSessionDelete`/`setSessionDeleteTarget`, `handleNavigate`).
+- **Help slide-out** renders directly from the registry, grouped by `group`.
 
-- **Handler** — matching lives in `DispatchBar.handleKeyDown`, which is already the single
-  shared component rendered by **both** `Dashboard.tsx` and `DesktopShell.tsx` (so the two
-  renderings stay in lockstep automatically — no second handler to keep in sync). The
-  handler iterates the registry's wired (`match`-bearing) `sessions-list` entries, and on a
-  match calls `preventDefault()` and dispatches the entry's `action` through the existing
-  `onRowAction` prop. The old hardcoded `Ctrl+R`/`Ctrl+X` branches are deleted; only the
-  registry path remains. (We deliberately do *not* add a second global keydown listener
-  beside `useGlobalListNav` — focus lives in the textarea, so a global listener would risk
-  double-handling.)
-- **Help slide-out** — renders directly from the registry, grouped by `group`.
-
-Only the four `Alt` actions carry a `match`/`action` (they are statically matchable);
-`↑/↓`, `Enter`/`→`, `Esc`, `?`, and `Alt+1-9` keep their existing bespoke handling in
-`DispatchBar` (they depend on caret position / index) and appear in the registry as
-**display-only** entries so the help panel documents them. Adding a wired binding once
-makes it both functional and documented; the help panel can no longer drift from the
-wired handler.
-
-**`onRowAction` union change:** the existing union
-`{type:'rename'} | {type:'delete'} | {type:'jump';index}` becomes
-`{type:'rename'} | {type:'archive'} | {type:'permanent-delete'} | {type:'continue'} | {type:'jump';index}`
-(the old `'delete'` — which performs *archive* via `useCloseSession` — is renamed to
-`'archive'` for clarity). This is changed in the `DispatchBar` prop type and both
-`handleRowAction` implementations (Dashboard + DesktopShell).
+Adding a wired binding once makes it both functional and documented; the help panel can no
+longer drift from the handler.
 
 ### 3. Help slide-out
 
-- New reusable overlay primitive (e.g. `web/src/components/ui/Sheet.tsx` or a focused
-  `HelpDrawer`) sliding from the right, built on the codebase's existing custom-overlay
-  pattern: `role="dialog"`, `aria-modal`, Esc-to-close, focus trap (reuse the trap already
-  in `ShortcutsHelp.tsx`). No new dependency.
-- **`ShortcutsHelp` modal is deleted** in the same PR; its content moves into the slide-out.
+- New right-edge **slide-out** (`web/src/components/HelpDrawer.tsx`) built on the existing
+  custom-overlay pattern (`role="dialog"`, `aria-modal`, Esc-to-close, focus trap reused
+  from `ShortcutsHelp.tsx`). No new dependency.
+- **`ShortcutsHelp` modal is deleted** in the same PR.
 - **Contents**, three sections:
-  1. **All keyboard shortcuts**, grouped by context (sessions-list, in-session, dialogs,
-     palette) — rendered from the registry.
-  2. **Navigation map** — main views (Sessions / Accounts / Archived / Session / Review)
-     and how to move between them.
-  3. **Quick tips / concepts** — account = config dir, archive vs delete, quick-continue,
-     permission modes.
-- **Triggers (both):**
-  - Global `?` key — works anywhere (not just an empty dispatch bar), guarded to skip when
-    typing in an input/textarea or when another dialog is open.
-  - A visible `?` icon button in the app chrome/header for mouse and touch users (the app
-    is mobile-accessible).
+  1. **All keyboard shortcuts** — compose + list-mode + in-session, from the registry.
+  2. **Navigation map** — main views (Sessions / Accounts / Archived / Session / Review) and
+     how to move between them.
+  3. **Quick tips / concepts** — account = config dir, list-focus mode (Tab in / Esc out),
+     archive vs delete, quick-continue, permission modes.
+- **Triggers (both):** global `?` (works anywhere except while typing in a field or with a
+  dialog open) via a small `useGlobalHelpKey` hook, plus a visible `?` icon button in the
+  app chrome.
 
 ## Testing (vitest)
 
-- Handler matches each wired `Alt` binding to the right `onRowAction` type and calls
-  `preventDefault()`; the same letters **without** `Alt` type normally into the textarea.
-- `Alt+D` opens `PermanentDeleteDialog` rather than deleting immediately.
-- `Alt+A` archives with the press-twice guard intact; `Ctrl+R`/`Ctrl+X` no longer fire.
-- `Alt+C` sends `continue` to the highlighted session (`useSendPrompt`).
-- Help slide-out opens via both `?` and the button, traps focus, closes on Esc.
-- Help renders an entry for **every** registry shortcut (drift guard).
-- Both `Dashboard` and `DesktopShell` route through the shared `DispatchBar` handler
-  (no dual matching path).
+- Registry: each `list-mode` matcher maps to the right `ListRowAction`; unmodified keys
+  match (no Ctrl/Alt/Meta).
+- `SessionCard`: in list mode, `c`/`r`/`a`/`Backspace`/`d`/`Delete`/`Enter`/`→`/`Space`/
+  `↑`/`↓`/`Esc`/`←` each fire the right `onRowAction`; when a card is highlighted + listMode,
+  it receives focus.
+- `DispatchBar`: `Tab` on an empty prompt calls `onEnterList` (preventDefault); `Tab` with a
+  draft does NOT (native focus move preserved); `Ctrl+R`/`Ctrl+X` no longer fire.
+- Dashboard/DesktopShell integration: `Tab` enters list mode and focuses a row; `d`/`Delete`
+  opens `PermanentDeleteDialog`; `c` sends `continue` (`useSendPrompt`); `a` archives
+  (`useCloseSession`); `Esc` returns focus to the prompt.
+- Help slide-out: opens via `?` and the button, traps focus, closes on Esc, renders an entry
+  for **every** registry shortcut (drift guard).
 
 ## Non-goals (YAGNI)
 
-- No action shortcuts in the Archived/Accounts lists yet (help still documents how to
-  navigate there).
-- No user-remappable keybindings.
-- No context-aware "active right now" highlighting in the help panel (possible later).
-- No user-configurable / platform-adaptive (Cmd) bindings in v1.
-- The non-`Alt` bespoke shortcuts (`↑/↓`, `Enter`/`→`, `Esc`, `Alt+1-9`) are not refactored
-  to carry registry `match` functions — they stay in `DispatchBar` and appear in the help
-  panel as display-only entries.
+- No action shortcuts in the Archived/Accounts lists yet (help documents navigation there).
+- No user-remappable / platform-adaptive bindings.
+- No context-aware "active right now" highlighting in the help panel.
+- The press-twice archive guard is removed (replaced by deliberate list-mode), not reworked.
