@@ -7,6 +7,7 @@ import type {
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
+import { toast } from '@/lib/toast'
 
 // Query keys
 export const QK = {
@@ -182,9 +183,35 @@ export function useSendPrompt() {
 
 export function useCloseSession() {
   const qc = useQueryClient()
-  return useMutation<void, ApiRequestError, string>({
+  return useMutation<void, ApiRequestError, string, { prev?: Session[]; removed?: Session }>({
     mutationFn: (id) => api.del<void>(`/sessions/${id}`),
-    onSuccess: () => {
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: QK.sessions })
+      const prev = qc.getQueryData<Session[]>(QK.sessions)
+      const removed = prev?.find((x) => x.id === id)
+      qc.setQueryData<Session[]>(QK.sessions, (cur) => (cur ?? []).filter((x) => x.id !== id))
+      return { prev, removed }
+    },
+    onError: (_e, _id, ctx) => {
+      if (ctx?.prev) qc.setQueryData(QK.sessions, ctx.prev)
+      toast({ message: `Couldn't archive ${ctx?.removed?.name ?? 'session'}`, variant: 'error' })
+    },
+    onSuccess: (_data, id, ctx) => {
+      toast({
+        message: `Archived ${ctx?.removed?.name ?? 'session'}`,
+        variant: 'success',
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            void unarchiveRequest(id).then(() => {
+              qc.invalidateQueries({ queryKey: QK.sessions })
+              qc.invalidateQueries({ queryKey: QK.archived })
+            })
+          },
+        },
+      })
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.sessions })
       qc.invalidateQueries({ queryKey: QK.archived })
     },
@@ -282,6 +309,12 @@ export function useArchivedSessions() {
     staleTime: 10_000,
     refetchInterval: 30_000,
   })
+}
+
+// Single source of truth for the unarchive endpoint — reused by useUnarchiveSession
+// and the archive Undo action.
+function unarchiveRequest(id: string) {
+  return api.post<ArchivedSession>(`/sessions/${id}/unarchive`)
 }
 
 export function useUnarchiveSession() {
