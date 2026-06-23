@@ -25,6 +25,16 @@ const multiQ: QuestionBlock = {
   multiSelect: true,
 }
 
+const describedQ: QuestionBlock = {
+  ...singleQ,
+  id: 'q-desc',
+  questionId: 'q-desc',
+  options: [
+    { label: 'Option A', description: 'The first choice' },
+    { label: 'Option B' },
+  ],
+}
+
 describe('QuestionCard', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
@@ -183,6 +193,22 @@ describe('QuestionCard', () => {
     await user.type(textarea, '2')
     expect(textarea).toHaveValue('2')
     expect(screen.getByRole('checkbox', { name: /option b/i })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('renders an option description when present', () => {
+    render(<QuestionCard block={describedQ} onAnswer={vi.fn()} />)
+    expect(screen.getByText('The first choice')).toBeInTheDocument()
+  })
+
+  it('renders no description element for options without one', () => {
+    render(<QuestionCard block={describedQ} onAnswer={vi.fn()} />)
+    // Option B has no description; only one description string exists.
+    expect(screen.queryAllByText(/choice/i)).toHaveLength(1)
+  })
+
+  it('renders descriptions in read-only mode', () => {
+    render(<QuestionCard block={describedQ} onAnswer={vi.fn()} readOnly />)
+    expect(screen.getByText('The first choice')).toBeInTheDocument()
   })
 })
 

@@ -19,6 +19,11 @@ function optionLabel(opt: Record<string, unknown>): string {
   return String(opt.label ?? opt)
 }
 
+function optionDescription(opt: Record<string, unknown>): string | null {
+  const d = opt.description
+  return typeof d === 'string' && d.trim() ? d : null
+}
+
 const hatchBtn = cn(
   'rounded px-3 py-2 text-xs font-medium min-h-[44px]',
   'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700',
@@ -58,7 +63,7 @@ function MultiSelectOptions({
               {...kb.itemProps(i)}
               onClick={() => toggle(label)}
               className={cn(
-                'flex items-center gap-2 w-full text-left rounded px-3 py-2 text-sm',
+                'flex items-start gap-2 w-full text-left rounded px-3 py-2 text-sm',
                 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700',
                 'text-gray-800 dark:text-gray-200',
                 'hover:bg-blue-50 dark:hover:bg-blue-900/30',
@@ -67,7 +72,14 @@ function MultiSelectOptions({
               )}
             >
               <span aria-hidden="true" className="inline-block w-4">{isChecked ? '☑' : '☐'}</span>
-              <span>{label}</span>
+              <span className="block">
+                <span className="block">{label}</span>
+                {optionDescription(opt) && (
+                  <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    {optionDescription(opt)}
+                  </span>
+                )}
+              </span>
             </button>
           )
         })}
@@ -117,7 +129,12 @@ function SingleSelectOptions({
               'min-h-[44px]',
             )}
           >
-            {label}
+            <span className="block">{label}</span>
+            {optionDescription(opt) && (
+              <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                {optionDescription(opt)}
+              </span>
+            )}
           </button>
         )
       })}
@@ -156,7 +173,12 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
                 'text-gray-500 dark:text-gray-400',
               )}
             >
-              {optionLabel(opt)}
+              <span className="block">{optionLabel(opt)}</span>
+              {optionDescription(opt) && (
+                <span className="block text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+                  {optionDescription(opt)}
+                </span>
+              )}
             </li>
           ))}
         </ul>
