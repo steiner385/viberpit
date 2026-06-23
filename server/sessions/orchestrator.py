@@ -1017,8 +1017,11 @@ class SessionOrchestrator:
         if str(name).lstrip("/") == "goal":
             cond = (args or "").strip()
             cleared = (not cond) or cond.lower() == "clear"
-            await self.set_goal_for_session(session_id, None if cleared else cond)
-            # fall through: forward /goal to the CLI so the built-in feature engages
+            try:
+                await self.set_goal_for_session(session_id, None if cleared else cond)
+            except Exception:
+                log.warning("goal capture/persist failed session=%s", session_id, exc_info=True)
+            # fall through: forward /goal to the CLI regardless
         info = await d.server_info()
         by_name = {c.name: c for c in cmd_catalog.build_catalog(info)}
         cmd = by_name.get(str(name).lstrip("/"))

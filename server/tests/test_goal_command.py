@@ -51,3 +51,20 @@ async def test_goal_empty_args_clears():
     await asyncio.sleep(0)  # let drain task finish before second send_prompt
     await orch.run_command("s1", "goal", "")
     assert orch._records["s1"].active_goal is None
+
+
+@pytest.mark.anyio
+async def test_goal_persist_failure_still_forwards():
+    """Persistence failure must not block forwarding /goal to the CLI (best-effort capture)."""
+    orch, client = await _orch_with_goal_session()
+
+    async def _failing_persist(sid, goal):
+        raise RuntimeError("DB exploded")
+
+    orch._persist_goal = _failing_persist  # type: ignore[attr-defined]
+
+    # Must not raise, even though _persist_goal raises
+    res = await orch.run_command("s1", "goal", "x")
+    assert res is None
+    # /goal must still be forwarded to the CLI
+    assert "/goal x" in client.sent

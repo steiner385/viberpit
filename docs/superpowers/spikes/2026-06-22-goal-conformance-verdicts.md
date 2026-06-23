@@ -15,7 +15,7 @@ plain model turn).
 
 Decision gate: if FALSE, the badge would be cosmetic — STOP and revisit before shipping the
 frontend (Task 5). Backend capture (Tasks 2–4) is still valid as a record of UI-requested
-goals regardless.
+goals regardless. Also confirm during this same live run that `/goal` appears in `get_server_info()["commands"]` (cross-ref Gate C.1 in 2026-06-22-slash-commands-verdicts.md) — the UI path only fires if /goal is enumerated in the command catalog.
 
 ## Gate G.2 — workspace trust permits /goal: ASSUMED TRUE
 
