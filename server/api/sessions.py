@@ -106,6 +106,7 @@ def _record_to_dict(record, repo: Any = _UNSET, pr: Any = None) -> dict[str, Any
         ),
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
+        "activeGoal": getattr(record, "active_goal", None),
         "pr": pr.to_dict() if pr is not None else None,
     }
 
