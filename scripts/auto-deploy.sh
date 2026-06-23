@@ -210,6 +210,25 @@ else
   echo "[deploy] edge-only change, remote mode — non-disruptive restart, skipping idle gate"
 fi
 
+# Restart the session daemon when daemon code changed and the unit is enabled here.
+# Reads $daemon_changed (a global set earlier in the main body) — only ever CALLED
+# after that variable is set, so the late binding is fine.
+#
+# ORDER IS LOAD-BEARING: this must be called BEFORE restarting the edge
+# (ccswitch.service). The browser buffers prompts during drain and auto-resends them
+# on its first WebSocket reconnect — which fires on the edge restart (~1s). If the
+# daemon were still DRAINING at that moment, the resent prompts would hit the drain
+# guard, get rejected, and be silently dropped, defeating the feature's core
+# guarantee. Restarting the daemon first ensures it is already fresh (drain cleared,
+# new code) before the browser reconnects to the edge.
+restart_daemon_if_changed() {
+  if [ "$daemon_changed" = "1" ] && systemctl is-enabled ccswitch-daemon.service >/dev/null 2>&1; then
+    echo "[deploy] restarting ccswitch-daemon.service (daemon code changed)"
+    sudo systemctl restart ccswitch-daemon.service || \
+      echo "[deploy] WARNING: daemon restart failed" >&2
+  fi
+}
+
 # Restore the working tree to the last-good commit and rebuild it. Called when any
 # gate fails AFTER the fast-forward. Resetting HEAD back to $LOCAL is what makes the
 # next tick see HEAD != origin/master and re-attempt, instead of treating the broken
@@ -271,6 +290,10 @@ if ! ( cd web && npm run build ); then
 fi
 
 # All gates green — swap in the new code.
+# DAEMON FIRST, then edge — order is load-bearing; see restart_daemon_if_changed()
+# for the full explanation. The browser's reconnect-flush fires on the edge restart
+# (~1s); by then the daemon must already be fresh so resent prompts are accepted.
+restart_daemon_if_changed
 sudo systemctl restart ccswitch.service
 
 # Post-restart health gate. The new process must answer /healthz with status ok
@@ -294,6 +317,9 @@ done
 if [ "$healthy" -ne 1 ]; then
   echo "[deploy] /healthz did not report status:ok + sha=${EXPECTED_SHA} after restart" >&2
   rollback_to_local
+  # Roll back both units together so they run the same (old) code — split-version
+  # (daemon=new / edge=old) would be a worse failure than both on old code.
+  restart_daemon_if_changed
   # The new (broken) backend was already swapped in above — restart the rolled-back
   # code so the last-good version is the one actually serving.
   sudo systemctl restart ccswitch.service
@@ -302,14 +328,5 @@ if [ "$healthy" -ne 1 ]; then
 fi
 
 echo "[deploy] live + healthy at ${REMOTE:0:9}"
-
-# Restart the session daemon only when daemon code changed AND the unit is enabled on
-# this host. Guarded so a host (or CI) without the daemon unit is a no-op. Edge-only
-# changes leave the daemon running — it holds all live sessions in remote mode.
-if [ "$daemon_changed" = "1" ] && systemctl is-enabled ccswitch-daemon.service >/dev/null 2>&1; then
-  echo "[deploy] daemon code changed — restarting ccswitch-daemon.service"
-  sudo systemctl restart ccswitch-daemon.service || \
-    echo "[deploy] WARNING: daemon restart failed (edge already live)" >&2
-fi
 
 rm -f "$DEFER_FILE"

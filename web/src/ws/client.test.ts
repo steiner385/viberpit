@@ -410,4 +410,20 @@ describe('SessionSocket update-pending queue', () => {
 
     expect(handler).toHaveBeenLastCalledWith({ active: true, count: 1 })
   })
+
+  it('emits updatePendingChange {active:false,count:0} after flush on reconnect', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    let ws = lastSock()
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'updatePending' })
+    sock.prompt('s1', 'hello', [])
+    const handler = vi.fn()
+    sock.on('updatePendingChange', handler)
+    ws.simulateClose()
+    sock.connect()
+    ws = lastSock()
+    ws.simulateOpen()
+    expect(handler).toHaveBeenLastCalledWith({ active: false, count: 0 })
+  })
 })

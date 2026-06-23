@@ -68,3 +68,19 @@ async def test_self_clear_cancels_drain_after_timeout():
     await o.begin_drain(selfclear_sec=0.05)
     await asyncio.sleep(0.15)
     assert o.drain_status()["state"] == "idle"  # self-cleared
+
+
+@pytest.mark.asyncio
+async def test_send_prompt_rejected_while_draining():
+    o = _orch()
+    q = o.subscribe_events()
+    await o.begin_drain(selfclear_sec=999)
+    # Drain a fresh queue to ignore the begin_drain updatePending:
+    while not q.empty():
+        q.get_nowait()
+    # No driver registered for this id; the guard must return BEFORE touching _drivers,
+    # so this must not raise even though the session is unknown.
+    await o.send_prompt("unknown-session", "hello")
+    evs = _drain_events_from(q)
+    assert any(e["type"] == "updatePending" for e in evs)
+    o.cancel_drain()
