@@ -9,4 +9,4 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 @router.get("")
 async def get_config(_identity: str = Depends(current_identity)) -> dict:
     settings = get_settings()
-    return {"repoRoot": settings.repo_root}
+    return {"repoRoot": settings.repo_root, "adoptionEnabled": settings.enable_adoption}

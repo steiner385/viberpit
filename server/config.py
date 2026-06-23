@@ -37,6 +37,7 @@ try:
         # callback listener mid-login (zombie consent page).
         reauth_timeout_s: float = Field(default=900.0, alias="CCSWITCH_REAUTH_TIMEOUT_S")
         enable_xvfb: bool = Field(default=False, alias="CCSWITCH_ENABLE_XVFB")
+        enable_adoption: bool = Field(default=False, alias="CCSWITCH_ENABLE_ADOPTION")
         display_start: int = Field(default=100, alias="CCSWITCH_DISPLAY_START")
         display_count: int = Field(default=12, alias="CCSWITCH_DISPLAY_COUNT")
         max_browsers: int = Field(default=6, alias="CCSWITCH_MAX_BROWSERS")
@@ -97,6 +98,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         enable_xvfb: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_XVFB", "false").lower() in ("1","true","yes","on")
+        )
+        enable_adoption: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_ADOPTION", "false").lower() in ("1","true","yes","on")
         )
         display_start: int = dataclasses.field(
             default_factory=lambda: int(os.environ.get("CCSWITCH_DISPLAY_START", "100"))

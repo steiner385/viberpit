@@ -63,6 +63,7 @@ export interface GithubBranchInfo {
 
 export interface ConfigInfo {
   repoRoot: string
+  adoptionEnabled: boolean
 }
 
 export function useConfig() {
