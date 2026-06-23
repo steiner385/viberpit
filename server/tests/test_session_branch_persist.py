@@ -114,7 +114,40 @@ async def test_rehydrate_branch_defaults_none_when_column_absent(monkeypatch):
 
     import server.sessions.orchestrator as orch_mod
     monkeypatch.setattr(orch_mod, "db_session", lambda: _FakeDB([row]))
+    # No worktree to derive from → branch stays None (kept hermetic: don't touch git).
+    monkeypatch.setattr(orch_mod.worktrees, "is_git_repo", lambda p: False)
 
     await orch.rehydrate()
     rec = orch._records["s1"]
     assert rec.branch is None
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_backfills_null_branch_from_worktree(monkeypatch):
+    """A legacy session (null branch) derives its branch from its worktree at rehydrate."""
+    row = _make_row(branch=None, cwd="/tmp/wt")
+    orch = _make_orch()
+
+    import server.sessions.orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "db_session", lambda: _FakeDB([row]))
+    monkeypatch.setattr(orch_mod.worktrees, "is_git_repo", lambda p: True)
+    monkeypatch.setattr(orch_mod.worktrees, "current_branch", lambda p: "feat/legacy")
+
+    added = await orch.rehydrate()
+    assert added == 1
+    assert orch._records["s1"].branch == "feat/legacy"
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_leaves_branch_none_when_not_derivable(monkeypatch):
+    """Detached/unknown worktree → branch stays None (no pill, no error)."""
+    row = _make_row(branch=None, cwd="/tmp/wt")
+    orch = _make_orch()
+
+    import server.sessions.orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "db_session", lambda: _FakeDB([row]))
+    monkeypatch.setattr(orch_mod.worktrees, "is_git_repo", lambda p: True)
+    monkeypatch.setattr(orch_mod.worktrees, "current_branch", lambda p: None)
+
+    await orch.rehydrate()
+    assert orch._records["s1"].branch is None

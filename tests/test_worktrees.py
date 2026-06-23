@@ -205,5 +205,32 @@ class WorktreeFreshFromOriginTests(unittest.TestCase):
         self.assertEqual(_rev(Path(info.path), "HEAD"), self.local_sha)
 
 
+class CurrentBranchTests(unittest.TestCase):
+    """worktrees.current_branch — read the branch checked out at a path (PR-join backfill)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_returns_checked_out_branch(self) -> None:
+        repo = self.root / "repo"
+        _make_repo(repo, branch="feat/x")
+        self.assertEqual(worktrees.current_branch(str(repo)), "feat/x")
+
+    def test_returns_none_for_detached_head(self) -> None:
+        repo = self.root / "repo"
+        _make_repo(repo, branch="main")
+        _git("checkout", _rev(repo, "HEAD"), cwd=str(repo))   # detach
+        self.assertIsNone(worktrees.current_branch(str(repo)))
+
+    def test_returns_none_for_non_repo(self) -> None:
+        plain = self.root / "plain"
+        plain.mkdir()
+        self.assertIsNone(worktrees.current_branch(str(plain)))
+
+
 if __name__ == "__main__":
     unittest.main()
