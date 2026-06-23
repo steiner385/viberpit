@@ -56,6 +56,10 @@ function setup() {
   vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
 }
 
+function renderDesktopShell() {
+  return render(<DesktopShell />, { wrapper })
+}
+
 describe('DesktopShell', () => {
   beforeEach(() => { vi.clearAllMocks(); setup(); window.localStorage.clear() })
 
@@ -153,6 +157,15 @@ describe('DesktopShell', () => {
     box.setSelectionRange(0, 0) // caret at the very start of the prompt
     fireEvent.keyDown(box, { key: 'ArrowLeft' })
     expect(screen.getByRole('textbox', { name: /new session prompt/i })).toBeInTheDocument()
+  })
+
+  it('Tab then a archives the highlighted session', async () => {
+    const mutate = vi.fn()
+    vi.mocked(hooks.useCloseSession).mockReturnValue({ ...NOOP, mutate } as never)
+    const user = userEvent.setup()
+    renderDesktopShell()
+    await user.keyboard('{ArrowDown}{Tab}a')
+    expect(mutate).toHaveBeenCalled()
   })
 
   it('DesktopShell: groups by status and keeps keyboard nav', async () => {

@@ -130,12 +130,8 @@ export function DesktopShell() {
   // Bumped to return focus to the DispatchBar after detaching from a session.
   const [dispatchFocusNonce, setDispatchFocusNonce] = useState(0)
 
-  // Press-twice delete guard
-  const [pendingDelete, setPendingDelete] = useState<{ id: string; ts: number } | null>(null)
-  const pendingDeleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => () => {
-    if (pendingDeleteTimeoutRef.current) clearTimeout(pendingDeleteTimeoutRef.current)
-  }, [])
+  // List-focus mode
+  const [listMode, setListMode] = useState(false)
 
   // Clamp highlight when the list shrinks.
   const clampedIndex = orderedSessions.length === 0 ? -1 : Math.min(highlightedIndex, orderedSessions.length - 1)
@@ -145,22 +141,12 @@ export function DesktopShell() {
 
   const selectedSessionId = selection.type === 'session' ? selection.id : null
 
-  const clearPendingDelete = useCallback(() => {
-    setPendingDelete(null)
-    if (pendingDeleteTimeoutRef.current) {
-      clearTimeout(pendingDeleteTimeoutRef.current)
-      pendingDeleteTimeoutRef.current = null
-    }
-  }, [])
-
   const focusSession = useCallback((id: string, initialPrompt?: string) => {
-    clearPendingDelete()
     setTab('sessions')
     setSelection({ type: 'session', id, initialPrompt })
-  }, [clearPendingDelete])
+  }, [])
 
   function focusNew() {
-    clearPendingDelete()
     setTab('sessions')
     setSelection({ type: 'new' })
   }
@@ -255,7 +241,6 @@ export function DesktopShell() {
 
   function handleNavigate(dir: 'up' | 'down') {
     if (orderedSessions.length === 0) return
-    clearPendingDelete()
     setHighlightedIndex((i) => {
       if (dir === 'up') return i <= 0 ? 0 : i - 1
       return Math.min(orderedSessions.length - 1, i + 1)
@@ -266,39 +251,20 @@ export function DesktopShell() {
     if (highlighted) focusSession(highlighted.id)
   }
 
-  function handleRowAction(
-    action: { type: 'rename' } | { type: 'delete' } | { type: 'jump'; index: number },
-  ) {
-    if (action.type === 'rename') {
-      clearPendingDelete()
-      if (highlighted) handleRename(highlighted.id)
-    } else if (action.type === 'delete') {
-      if (!highlighted) return
-      const id = highlighted.id
-      const now = Date.now()
-      if (pendingDelete && pendingDelete.id === id && now - pendingDelete.ts < 2000) {
-        clearPendingDelete()
-        handleClose(id)
-      } else {
-        if (pendingDeleteTimeoutRef.current) clearTimeout(pendingDeleteTimeoutRef.current)
-        setPendingDelete({ id, ts: now })
-        pendingDeleteTimeoutRef.current = setTimeout(() => {
-          setPendingDelete(null)
-          pendingDeleteTimeoutRef.current = null
-        }, 2000)
-      }
-    } else if (action.type === 'jump') {
-      clearPendingDelete()
-      const s = orderedSessions[action.index]
-      if (s) {
-        setHighlightedIndex(action.index)
-        focusSession(s.id)
-      }
-    }
+  function handleEnterList() {
+    setListMode(true)
+    if (highlightedIndex < 0) setHighlightedIndex(0)
+  }
+  function handleExitList() {
+    setListMode(false)
+    setDispatchFocusNonce((n) => n + 1)
+  }
+  function handleJump(index: number) {
+    const s = orderedSessions[index]
+    if (s) { setHighlightedIndex(index); focusSession(s.id) }
   }
 
   function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
-    clearPendingDelete()
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     createSession.mutate(
       {
@@ -416,6 +382,9 @@ export function DesktopShell() {
           isFiltered={sessionSearch.isFiltered}
           onClearSearch={() => sessionSearch.setQuery('')}
           onQuickResume={handleQuickResume}
+          listMode={listMode}
+          onNavigate={handleNavigate}
+          onExit={handleExitList}
           collapsedKeys={collapsedKeys}
           onToggleCollapse={toggleCollapse}
         />
@@ -446,12 +415,10 @@ export function DesktopShell() {
       onDispatch={handleDispatch}
       onNavigate={handleNavigate}
       onOpenHighlighted={handleOpenHighlighted}
-      onRowAction={handleRowAction}
+      onEnterList={handleEnterList}
+      onJump={handleJump}
       onShowHelp={() => setShowHelp(true)}
-      onEscape={() => { setHighlightedIndex(-1); clearPendingDelete() }}
-      confirmDeleteName={
-        pendingDelete && highlighted?.id === pendingDelete.id ? highlighted.name : null
-      }
+      onEscape={() => setHighlightedIndex(-1)}
       activeDescendantId={highlighted ? `row-${highlighted.id}` : undefined}
       autoFocusKey={dispatchFocusNonce}
       isPending={createSession.isPending}
