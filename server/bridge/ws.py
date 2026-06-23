@@ -447,8 +447,15 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     # send. send_prompt no-ops without a live driver, so the resume must
                     # happen here — not on attach, where it would block mere viewing.
                     if await _ensure_live(session_id):
-                        await orchestrator.send_prompt(
-                            session_id, msg.get("text", ""), msg.get("attachmentIds"))
+                        text = msg.get("text", "")
+                        attachment_ids = msg.get("attachmentIds")
+                        status = await orchestrator.send_prompt(session_id, text, attachment_ids)
+                        if status == "draining":
+                            # Deploy drain refused the turn — ack it so the browser
+                            # re-queues instead of losing the prompt.
+                            await _send({"type": "promptRejected", "sessionId": session_id,
+                                         "text": text, "attachmentIds": attachment_ids,
+                                         "reason": "draining"})
                 elif msg_type == "interrupt":
                     await orchestrator.interrupt(session_id)
                     try:

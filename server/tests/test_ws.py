@@ -69,7 +69,7 @@ def _factory(msgs, client_cls=None):
     """Return an sdk_factory building a fake client over *msgs*."""
     cls = client_cls or FakeSDKClient
 
-    def make(cwd, config_dir, can_use_tool, mode, resume):
+    def make(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return cls(list(msgs), on_can_use_tool=can_use_tool)
 
     return make
@@ -935,3 +935,33 @@ def test_forward_live_emits_error_frame_on_crash():
     assert errs, f"expected an error frame, got {[fr.get('type') for fr in frames]}"
     assert "RuntimeError" in errs[0]["message"]
     assert "pty closed unexpectedly" in errs[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# A prompt sent during a deploy drain gets a promptRejected ack
+# ---------------------------------------------------------------------------
+
+def test_prompt_during_drain_returns_promptRejected(ws_env):
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-drain")
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+
+        # Enter the deploy drain, then send a prompt — it must be refused AND acked.
+        client.portal.call(orch.begin_drain)
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "held please"}))
+
+        events = _drain_events(ws, until_type="promptRejected", timeout=8.0)
+        rejected = [e for e in events if e.get("type") == "promptRejected"]
+        assert rejected, f"no promptRejected in {[e.get('type') for e in events]}"
+        assert rejected[0]["sessionId"] == session_id
+        assert rejected[0]["text"] == "held please"
+        assert rejected[0]["reason"] == "draining"
+        assert rejected[0]["attachmentIds"] is None
+
+    # No cancel_drain needed: the fixture tears down the app/loop on exit, which
+    # cancels the in-memory drain + its self-clear timer task.
+    client.portal.call(orch.close_session, session_id)

@@ -54,6 +54,17 @@ describe('orderSessions', () => {
     expect(g.map((x) => x.count)).toEqual([1, 1])
   })
 
+  it('group by status: parked (waiting_external) forms its own Waiting group, between Done and Working', () => {
+    const s = [
+      mk({ id: 'busy', status: 'in_progress' }),
+      mk({ id: 'wait', status: 'waiting_external' }),
+      mk({ id: 'done', status: 'done' }),
+    ]
+    const g = orderSessions(s, 'status', 'status')
+    expect(g.map((x) => x.label)).toEqual(['Done', 'Waiting', 'Working'])
+    expect(g.find((x) => x.label === 'Waiting')?.sessions.map((x) => x.id)).toEqual(['wait'])
+  })
+
   it('group by repo: alphabetical, Scratch last', () => {
     const s = [
       mk({ id: 'z', repo: 'zeta/z' }),

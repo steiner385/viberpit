@@ -11,6 +11,10 @@ def sys_init(session_id: str = "sess-1", model: str | None = None) -> SystemMess
         data["model"] = model
     return SystemMessage(subtype="init", data=data)
 
+def sys_compact_boundary(trigger: str = "auto", pre_tokens: int | None = None) -> SystemMessage:
+    return SystemMessage(subtype="compact_boundary",
+                         data={"compact_metadata": {"trigger": trigger, "pre_tokens": pre_tokens}})
+
 def stream_start(uuid: str = "u1", sid: str = "sess-1", pid: str | None = None) -> StreamEvent:
     return StreamEvent(uuid=uuid, session_id=sid, event={"type": "message_start"},
                        parent_tool_use_id=pid)
