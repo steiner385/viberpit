@@ -51,7 +51,7 @@ def test_ensure_driver_resumes_detached_session(tmp_path):
     # Track what resume value the factory was called with
     resume_calls = []
 
-    def tracking_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume):
+    def tracking_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         resume_calls.append(resume)
         from server.tests.fakes.fake_sdk import FakeSDKClient
         return FakeSDKClient([], on_can_use_tool=can_use_tool)
@@ -99,7 +99,7 @@ def test_ensure_driver_falls_back_to_fresh_when_resume_fails(tmp_path):
     session_id = "s-fallback"
     resume_calls = []
 
-    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume):
+    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         resume_calls.append(resume)
         c = FakeSDKClient([], on_can_use_tool=can_use_tool)
         if resume is not None:
@@ -146,7 +146,7 @@ def test_ensure_driver_empty_claude_session_id(tmp_path):
 
     resume_calls = []
 
-    def tracking_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume):
+    def tracking_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         resume_calls.append(resume)
         from server.tests.fakes.fake_sdk import FakeSDKClient
         return FakeSDKClient([], on_can_use_tool=can_use_tool)
@@ -189,7 +189,7 @@ def test_ensure_driver_returns_existing_driver(tmp_path):
 
     factory_calls = []
 
-    def counting_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume):
+    def counting_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         factory_calls.append(1)
         from server.tests.fakes.fake_sdk import FakeSDKClient
         return FakeSDKClient([], on_can_use_tool=can_use_tool)
@@ -337,7 +337,7 @@ def test_ensure_driver_concurrent_calls_start_driver_once(tmp_path):
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-    def yielding_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume):
+    def yielding_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         nonlocal factory_call_count
         factory_call_count += 1
         from server.tests.fakes.fake_sdk import FakeSDKClient

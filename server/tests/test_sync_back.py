@@ -171,7 +171,7 @@ def test_on_sync_back_sdk_rotation_captured_in_slot(tmp_path):
         async def interrupt(self): pass
         async def set_permission_mode(self, mode): pass
 
-    def sdk_factory(cwd, cfg, can_use_tool, mode, resume):
+    def sdk_factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
         return RotatingSDK()
 
     # Minimal sync_back: reads config_dir/.credentials.json, writes claudeAiOauth to slot
