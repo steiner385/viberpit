@@ -69,6 +69,7 @@ class SessionDriver:
         self._titled: bool = False
         self._queue: list[tuple[str, list[dict]]] = []
         self._turn_active: bool = False
+        self._retrying: bool = False
         self._turns_completed: int = 0
         self._last_turn_outcome: str = "success"
         self._suggester = suggester
@@ -96,7 +97,7 @@ class SessionDriver:
         if isinstance(e, (ev.TextDelta, ev.ThinkingDelta)):
             if e.text:
                 self._last_progress_at = self._clock()
-        elif isinstance(e, (ev.ToolCall, ev.ToolResult, ev.TurnEnd, ev.Question, ev.PermissionRequest)):
+        elif isinstance(e, (ev.ToolCall, ev.ToolResult, ev.TurnEnd, ev.Question, ev.PermissionRequest, ev.ApiRetry)):
             self._last_progress_at = self._clock()
 
     def current_status(self) -> str:
@@ -246,6 +247,7 @@ class SessionDriver:
             pending_plan=any(p.get("tool") == "ExitPlanMode" for p in perms),
             turns_completed=self._turns_completed,
             last_turn_outcome=self._last_turn_outcome,
+            retrying=self._retrying,
         )
 
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
@@ -362,6 +364,18 @@ class SessionDriver:
                         if e.resets_at is not None:
                             self._last_rate_reset = e.resets_at
                         continue
+                    if isinstance(e, ev.ApiRetry):
+                        # Internal: count as progress so the stall watchdog leaves a
+                        # 529-backoff turn alone; flip the retrying flag on transition.
+                        self._note_progress(e)
+                        if not self._retrying:
+                            self._retrying = True
+                            await self._emit_status()
+                        continue   # internal — do not forward to the client
+                    # Any real (non-retry) event resumes the turn; clear the flag.
+                    if self._retrying:
+                        self._retrying = False
+                        await self._emit_status()
                     if isinstance(e, ev.TextDelta):
                         self._last_assistant_parts.append(e.text)
                     elif isinstance(e, ev.TurnEnd):
@@ -390,6 +404,8 @@ class SessionDriver:
             self._last_turn_outcome = "failed"
             await self._maybe_signal_recovery("driver_error", full)
         finally:
+            # Reset retrying flag so a turn that ends mid-retry doesn't leak into the next.
+            self._retrying = False
             # Capture any token rotation the SDK performed during this turn.
             await self._call_sync_back()
             # If queued prompts remain, pop the front and start the next turn.
