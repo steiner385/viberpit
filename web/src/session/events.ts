@@ -13,7 +13,7 @@ export interface EvToolCall      { type: 'toolCall';      turnId: string; toolId
 export interface EvToolResult    { type: 'toolResult';    toolId: string; ok: boolean; payload: Record<string, unknown>; srcUuid?: string | null; parentToolUseId?: string | null }
 export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean }
 export interface EvQuestion      { type: 'question';      questionId: string; turnId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean }
-export interface EvSessionMeta   { type: 'sessionMeta';   model: string; sessionId: string; account?: string | null; accountPinned?: boolean }
+export interface EvSessionMeta   { type: 'sessionMeta';   model: string; sessionId: string }
 export interface EvTitle         { type: 'title';         title: string; source: string }
 export interface EvStatus        { type: 'status';        state: string; count: number }
 export interface EvReplayReset   { type: 'replayReset' }

@@ -30,11 +30,8 @@ class TurnStart:
 @dataclass
 class SessionMeta:
     model: str; session_id: str
-    account: str | None = None
-    account_pinned: bool = False
     def to_wire(self): return {"type": "sessionMeta", "model": self.model,
-                               "sessionId": self.session_id, "account": self.account,
-                               "accountPinned": self.account_pinned}
+                               "sessionId": self.session_id}
 
 @dataclass
 class TurnEnd:

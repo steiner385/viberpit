@@ -1,7 +1,9 @@
 # server/tests/test_manual_switch_and_pin.py
 import pytest
+from ccswitch.account_names import InvalidAccountName
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import SessionRecord
+import server.sessions.orchestrator as orch_mod
 
 
 def _orch_with(rec):
@@ -11,11 +13,18 @@ def _orch_with(rec):
     return orch
 
 
+def _mock_known_accounts(monkeypatch, names):
+    """Make ccswitch_accounts.list_accounts() return the given account names."""
+    monkeypatch.setattr(orch_mod.ccswitch_accounts, "list_accounts",
+                        lambda: [{"name": n} for n in names])
+
+
 @pytest.mark.asyncio
 async def test_switch_account_manual_pins_and_reassigns(monkeypatch):
     rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
                         cols=80, rows=24, cwd="/tmp")
     orch = _orch_with(rec)
+    _mock_known_accounts(monkeypatch, ["a", "b"])
     seen = {}
     async def _reassign(self, r, new, *, reason):
         seen["new"] = new; seen["reason"] = reason; r.account = new
@@ -26,6 +35,42 @@ async def test_switch_account_manual_pins_and_reassigns(monkeypatch):
     await orch.switch_account_manual("s1", "b")
     assert rec.account_pinned is True
     assert seen == {"new": "b", "reason": "manual", "pinned": True}
+
+
+@pytest.mark.asyncio
+async def test_switch_account_manual_rejects_path_traversal(monkeypatch):
+    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+                        cols=80, rows=24, cwd="/tmp")
+    orch = _orch_with(rec)
+    _mock_known_accounts(monkeypatch, ["a", "b"])
+    called = {"reassign": False}
+    async def _reassign(self, r, new, *, reason): called["reassign"] = True
+    async def _persist_pin(self, sid, pinned): pass
+    monkeypatch.setattr(SessionOrchestrator, "_reassign", _reassign)
+    monkeypatch.setattr(SessionOrchestrator, "_persist_pin", _persist_pin)
+
+    with pytest.raises(InvalidAccountName):
+        await orch.switch_account_manual("s1", "../evil")
+    assert called["reassign"] is False
+    assert rec.account_pinned is False  # never pinned on a rejected switch
+
+
+@pytest.mark.asyncio
+async def test_switch_account_manual_rejects_unknown_account(monkeypatch):
+    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+                        cols=80, rows=24, cwd="/tmp")
+    orch = _orch_with(rec)
+    _mock_known_accounts(monkeypatch, ["a", "b"])  # "ghost" is valid-format but unknown
+    called = {"reassign": False}
+    async def _reassign(self, r, new, *, reason): called["reassign"] = True
+    async def _persist_pin(self, sid, pinned): pass
+    monkeypatch.setattr(SessionOrchestrator, "_reassign", _reassign)
+    monkeypatch.setattr(SessionOrchestrator, "_persist_pin", _persist_pin)
+
+    with pytest.raises(KeyError):
+        await orch.switch_account_manual("s1", "ghost")
+    assert called["reassign"] is False
+    assert rec.account_pinned is False
 
 
 @pytest.mark.asyncio

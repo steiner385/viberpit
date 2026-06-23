@@ -24,6 +24,7 @@ from typing import Callable
 
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, worktrees
+from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.configdir import compose
 from ccswitch.paths import shared_base
 from server.audit import record_audit
@@ -601,6 +602,8 @@ class SessionOrchestrator:
                 permission_mode=row.permission_mode,
                 created_at=row.created_at,
                 adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
+                model=getattr(row, "model", None),
+                account_pinned=bool(getattr(row, "account_pinned", False)),
             )
             added += 1
         log.info("rehydrate: %d session(s) restored", added)
@@ -972,7 +975,11 @@ class SessionOrchestrator:
             if not acct:
                 return {"name": "account", "render": "notice",
                         "data": {"text": "Usage: /account <account>"}}
-            await self.switch_account_manual(session_id, acct)
+            try:
+                await self.switch_account_manual(session_id, acct)
+            except (InvalidAccountName, KeyError):
+                return {"name": "account", "render": "notice",
+                        "data": {"text": f"Unknown account: {acct}"}}
             return {"name": "account", "render": "notice",
                     "data": {"text": f"Account → {acct}"}}
         info = await d.server_info()
@@ -1202,6 +1209,12 @@ class SessionOrchestrator:
         record = self._records.get(session_id)
         if record is None or session_id not in self._drivers:
             raise KeyError(session_id)
+        # Validate: reject path-traversal / bad chars.
+        assert_valid_account_name(new_account)
+        # Validate: reject unknown accounts (must be in the configured ledger).
+        known = {a["name"] for a in ccswitch_accounts.list_accounts()}
+        if new_account not in known:
+            raise KeyError(f"Unknown account: {new_account}")
         record.account_pinned = True
         await self._persist_pin(session_id, True)
         await self._reassign(record, new_account, reason="manual")
@@ -1438,6 +1451,8 @@ class SessionOrchestrator:
             status="idle",
             permission_mode=row.permission_mode,
             created_at=row.created_at,
+            model=getattr(row, "model", None),
+            account_pinned=bool(getattr(row, "account_pinned", False)),
         )
         self._records[session_id] = record
         log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)
