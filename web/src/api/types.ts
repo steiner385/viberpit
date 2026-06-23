@@ -59,6 +59,8 @@ export interface Session {
   accountPinned?: boolean
   /** Current model alias/id for the session; null = account default. */
   model?: string | null
+  /** The PR opened from this session's branch, or null when there is none. */
+  pr?: PullRequestInfo | null
 }
 
 export interface ArchivedSession {
@@ -95,6 +97,14 @@ export interface AdoptOutcome {
   resumed: boolean
   /** The PID that was terminated, or null if the process had already exited. */
   terminatedPid: number | null
+}
+
+export interface PullRequestInfo {
+  number: number
+  url: string
+  state: 'open' | 'draft' | 'merged' | 'closed'
+  checks: 'passing' | 'failing' | 'pending' | 'none'
+  title: string
 }
 
 export interface ModelOption { id: string; label: string }
