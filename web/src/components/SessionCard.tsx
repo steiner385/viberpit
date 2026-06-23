@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { StatusPill, UsageBadge } from './UsageBadge'
+import { PrPill } from './PrPill'
 import { SubAgentRows } from './SubAgentRows'
 import type { Session, Account } from '@/api/types'
 
@@ -127,6 +128,7 @@ export function SessionCard({ session, account, selected = false, onOpen, onRena
             <span className="truncate">{repoLabel.text}</span>
           </span>
           <StatusPill status={session.status} />
+          {session.pr && <PrPill pr={session.pr} />}
           {/* Session usage only — weekly is an account-level figure shown in the
               Accounts tab and the in-session meta strip, so repeating it on every
               card just adds noise and forces the meta row to wrap. */}

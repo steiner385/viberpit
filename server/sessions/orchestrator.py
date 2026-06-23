@@ -156,6 +156,9 @@ class SessionOrchestrator:
             poll_interval=poll_interval,
             usage_fn=_poller_usage_fn,
         )
+        from server.github.pr_poller import PrStatusPoller
+        self._pr_poller: PrStatusPoller = PrStatusPoller()
+        self._pr_poller.set_pairs_provider(self._pr_pairs)
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
         # Background tasks
@@ -192,6 +195,7 @@ class SessionOrchestrator:
     async def start(self) -> None:
         """Start the usage poller, the rotation monitor and the titling sweep."""
         await self._poller.start()
+        await self._pr_poller.start()
         self._rotation_task = asyncio.create_task(
             self._rotation_monitor(), name="rotation-monitor"
         )
@@ -211,6 +215,7 @@ class SessionOrchestrator:
                     pass
                 setattr(self, attr, None)
         await self._poller.stop()
+        await self._pr_poller.stop()
 
     # ------------------------------------------------------------------
     # Session CRUD
@@ -275,6 +280,10 @@ class SessionOrchestrator:
             scratch_dir.mkdir(parents=True, exist_ok=True)
             cwd = str(scratch_dir)
 
+        # Branch this session's worktree is on (None for detached/scratch) — the
+        # join key to its GitHub PR. Surfaced as a PR pill on the dashboard.
+        branch_name = worktree_info.branch if worktree_info is not None else None
+
         if account is None:
             # Skip accounts currently quarantined for a 429/401 so a fresh session
             # doesn't land on an account we already know is struggling.
@@ -334,6 +343,7 @@ class SessionOrchestrator:
                 pid=None,
                 cwd=cwd,
                 repo=repo,
+                branch=branch_name,
                 permission_mode=permission_mode,
                 name_is_auto=name_is_auto,
             )
@@ -349,6 +359,7 @@ class SessionOrchestrator:
             rows=rows,
             cwd=cwd,
             repo=repo,
+            branch=branch_name,
             status="idle",
             name_is_auto=name_is_auto,
             # Stamp activity now so the new card reads "active just now" rather than
@@ -624,6 +635,7 @@ class SessionOrchestrator:
                 adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
                 model=getattr(row, "model", None),
                 account_pinned=bool(getattr(row, "account_pinned", False)),
+                branch=getattr(row, "branch", None),
             )
             added += 1
         log.info("rehydrate: %d session(s) restored", added)
@@ -636,6 +648,19 @@ class SessionOrchestrator:
     def get_session(self, session_id: str) -> SessionRecord | None:
         """Return the in-memory SessionRecord for session_id, or None."""
         return self._records.get(session_id)
+
+    def _pr_pairs(self) -> list[tuple[str, str]]:
+        """Distinct (repo, branch) pairs for live sessions that have both."""
+        seen: set[tuple[str, str]] = set()
+        for r in self._records.values():
+            branch = getattr(r, "branch", None)
+            if r.repo and branch:
+                seen.add((r.repo, branch))
+        return list(seen)
+
+    def pr_for(self, repo, branch):
+        """Cached PullRequestInfo for a session's (repo, branch), or None."""
+        return self._pr_poller.cached(repo, branch)
 
     def record(self, session_id: str) -> SessionRecord:
         """Return the in-memory SessionRecord for session_id (KeyError if missing)."""
