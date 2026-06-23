@@ -1,13 +1,15 @@
-import { render, screen } from '@testing-library/react'
-import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent, act } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { BrowserTab } from '../BrowserTab'
+
+const refitSpy = vi.fn()
 
 vi.mock('../../vnc/vncClient', () => ({
   VncClient: class {
     on() {}
     connect() {}
     disconnect() {}
-    setScale() {}
+    refit() { refitSpy() }
     focus() {}
     blur() {}
   },
@@ -64,6 +66,96 @@ describe('BrowserTab', () => {
       expect(parentListener).not.toHaveBeenCalled()
     } finally {
       document.removeEventListener('keydown', parentListener)
+    }
+  })
+
+  it('defaults to Fit and hides the Fit-reset control until zoomed', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    expect(screen.getByText('Fit')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /reset to fit/i })).toBeNull()
+  })
+
+  it('zoom-in updates the pill to a percentage and reveals Fit-reset', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    fireEvent.click(screen.getByRole('button', { name: /zoom in/i }))
+    expect(screen.getByText('110%')).toBeInTheDocument()
+    const reset = screen.getByRole('button', { name: /reset to fit/i })
+    fireEvent.click(reset)
+    expect(screen.getByText('Fit')).toBeInTheDocument()
+  })
+
+  it('drives zoom by size alone — no second transform-scale magnification', () => {
+    // Regression: the zoom layer must NOT both size itself zoom×100% AND
+    // transform: scale(zoom) — noVNC's autoscale (getBoundingClientRect, which
+    // includes ancestor transforms) would then magnify a second time, netting
+    // ~zoom² on-screen. Net magnification must equal zoom exactly. Asserting the
+    // MECHANISM (jsdom has no layout): size reflects zoom, transform carries no
+    // scale().
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    const layer = screen.getByTestId('zoom-layer') as HTMLElement
+
+    // Base fit: 100% size, no scale.
+    expect(parseFloat(layer.style.width)).toBeCloseTo(100, 5)
+    expect(layer.style.transform === '' || layer.style.transform === 'none').toBe(true)
+
+    // Zoom in: size grows to reflect zoom; transform must remain scale-free.
+    fireEvent.click(screen.getByRole('button', { name: /zoom in/i }))
+    expect(parseFloat(layer.style.width)).toBeCloseTo(110, 5)
+    expect(parseFloat(layer.style.height)).toBeCloseTo(110, 5)
+    expect(layer.style.transform).not.toContain('scale(')
+  })
+
+  it('never renders a "1:1" label', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    expect(screen.queryByText('1:1')).toBeNull()
+  })
+
+  it('re-fits the VNC view when the panel resizes', () => {
+    vi.useFakeTimers()
+    try {
+      const cbs: Array<() => void> = []
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(globalThis as any).ResizeObserver = class {
+        constructor(cb: () => void) { cbs.push(cb) }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+      refitSpy.mockClear()
+      // Omit initialState so the VncClient is instantiated (mock handles the connect)
+      render(<BrowserTab sessionId="S" statusState="idle" />)
+      expect(cbs.length).toBeGreaterThan(0)
+      act(() => { cbs[0]() })
+      vi.runAllTimers()
+      expect(refitSpy).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows at most one bottom caption at a time', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    // "Tap to control" and the empty-state hint must not both be visible.
+    const tap = screen.queryByText(/tap to control/i)
+    const empty = screen.queryByText(/hasn.t opened a browser yet/i)
+    expect([tap, empty].filter(Boolean).length).toBeLessThanOrEqual(1)
+  })
+
+  it('labels the live canvas for screen readers', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    expect(screen.getByLabelText(/live browser view/i)).toBeInTheDocument()
+  })
+
+  it('hides the empty-state hint after dismiss', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByText(/hasn.t opened a browser yet/i)).toBeNull()
+  })
+
+  afterEach(() => {
+    // Reset focus to body between tests to avoid leaking focus state
+    if (document.activeElement && document.activeElement !== document.body) {
+      (document.activeElement as HTMLElement).blur()
     }
   })
 })

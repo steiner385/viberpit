@@ -156,6 +156,9 @@ class SessionOrchestrator:
             poll_interval=poll_interval,
             usage_fn=_poller_usage_fn,
         )
+        from server.github.pr_poller import PrStatusPoller
+        self._pr_poller: PrStatusPoller = PrStatusPoller()
+        self._pr_poller.set_pairs_provider(self._pr_pairs)
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
         # Background tasks
@@ -192,6 +195,7 @@ class SessionOrchestrator:
     async def start(self) -> None:
         """Start the usage poller, the rotation monitor and the titling sweep."""
         await self._poller.start()
+        await self._pr_poller.start()
         self._rotation_task = asyncio.create_task(
             self._rotation_monitor(), name="rotation-monitor"
         )
@@ -211,6 +215,7 @@ class SessionOrchestrator:
                     pass
                 setattr(self, attr, None)
         await self._poller.stop()
+        await self._pr_poller.stop()
 
     # ------------------------------------------------------------------
     # Session CRUD
@@ -275,6 +280,10 @@ class SessionOrchestrator:
             scratch_dir.mkdir(parents=True, exist_ok=True)
             cwd = str(scratch_dir)
 
+        # Branch this session's worktree is on (None for detached/scratch) — the
+        # join key to its GitHub PR. Surfaced as a PR pill on the dashboard.
+        branch_name = worktree_info.branch if worktree_info is not None else None
+
         if account is None:
             # Skip accounts currently quarantined for a 429/401 so a fresh session
             # doesn't land on an account we already know is struggling.
@@ -334,11 +343,13 @@ class SessionOrchestrator:
                 pid=None,
                 cwd=cwd,
                 repo=repo,
+                branch=branch_name,
                 permission_mode=permission_mode,
                 name_is_auto=name_is_auto,
             )
             db.add(row)
 
+        from datetime import datetime
         record = SessionRecord(
             id=session_id,
             name=name,
@@ -348,8 +359,12 @@ class SessionOrchestrator:
             rows=rows,
             cwd=cwd,
             repo=repo,
+            branch=branch_name,
             status="idle",
             name_is_auto=name_is_auto,
+            # Stamp activity now so the new card reads "active just now" rather than
+            # waiting for the first status event (mirrors the DB row's utcnow default).
+            updated_at=datetime.utcnow(),
         )
         self._records[session_id] = record
         log.info("session.create id=%s account=%s", session_id, account)
@@ -443,7 +458,12 @@ class SessionOrchestrator:
         if rec is not None and rec.status == "ended":
             return
         if rec is not None:
+            from datetime import datetime
             rec.status = status
+            # Mirror the DB row's onupdate=utcnow into the in-memory read-model so
+            # the dashboard's "active … ago" label reflects this activity without a
+            # round-trip. Naive UTC to match Session.created_at/updated_at columns.
+            rec.updated_at = datetime.utcnow()
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             await db.execute(
@@ -592,11 +612,21 @@ class SessionOrchestrator:
             )
             )).scalars().all()
         added = 0
+        backfilled: dict[str, str] = {}
         for row in rows:
             if row.id in self._records:
                 continue
             # A pre-crash live status has no driver anymore → normalize to idle.
             status = "idle" if row.status in ("working", "in_progress") else row.status
+            # Backfill the PR-join branch for legacy sessions created before the
+            # branch was persisted (NULL column). Derive it once from the session's
+            # worktree and write it back so the column becomes the source of truth.
+            branch = getattr(row, "branch", None)
+            if branch is None and row.cwd and worktrees.is_git_repo(row.cwd):
+                derived = await asyncio.to_thread(worktrees.current_branch, row.cwd)
+                if derived:
+                    branch = derived
+                    backfilled[row.id] = derived
             self._records[row.id] = SessionRecord(
                 id=row.id,
                 name=row.name,
@@ -611,12 +641,23 @@ class SessionOrchestrator:
                 name_is_auto=row.name_is_auto,
                 permission_mode=row.permission_mode,
                 created_at=row.created_at,
+                updated_at=getattr(row, "updated_at", None),
                 adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
                 model=getattr(row, "model", None),
                 account_pinned=bool(getattr(row, "account_pinned", False)),
+                active_goal=getattr(row, "active_goal", None),
+                branch=branch,
             )
             added += 1
-        log.info("rehydrate: %d session(s) restored", added)
+        # Persist any derived branches so the next rehydrate reads them directly.
+        if backfilled:
+            from sqlalchemy import update as sa_update
+            async with db_session() as db:
+                for sid, br in backfilled.items():
+                    await db.execute(
+                        sa_update(DbSession).where(DbSession.id == sid).values(branch=br)
+                    )
+        log.info("rehydrate: %d session(s) restored (%d branch backfilled)", added, len(backfilled))
         return added
 
     def list_sessions(self) -> list[SessionRecord]:
@@ -626,6 +667,19 @@ class SessionOrchestrator:
     def get_session(self, session_id: str) -> SessionRecord | None:
         """Return the in-memory SessionRecord for session_id, or None."""
         return self._records.get(session_id)
+
+    def _pr_pairs(self) -> list[tuple[str, str]]:
+        """Distinct (repo, branch) pairs for live sessions that have both."""
+        seen: set[tuple[str, str]] = set()
+        for r in self._records.values():
+            branch = getattr(r, "branch", None)
+            if r.repo and branch:
+                seen.add((r.repo, branch))
+        return list(seen)
+
+    def pr_for(self, repo, branch):
+        """Cached PullRequestInfo for a session's (repo, branch), or None."""
+        return self._pr_poller.cached(repo, branch)
 
     def record(self, session_id: str) -> SessionRecord:
         """Return the in-memory SessionRecord for session_id (KeyError if missing)."""
@@ -901,10 +955,12 @@ class SessionOrchestrator:
                  "claudeSessionId": claude_session_id, "resumed": resumed},
             )
 
+        from datetime import datetime
         rec = SessionRecord(
             id=session_id, name=cand.name, account=cand.account,
             claude_session_id=claude_session_id, cols=80, rows=24,
             cwd=cand.cwd, repo=None, status="idle", adopted_in_place=True,
+            updated_at=datetime.utcnow(),  # adopted = active now
         )
         self._records[session_id] = rec
         log.info("session.adopt id=%s sid=%s resumed=%s killed=%s",
@@ -1028,6 +1084,14 @@ class SessionOrchestrator:
                         "data": {"text": f"Unknown account: {acct}"}}
             return {"name": "account", "render": "notice",
                     "data": {"text": f"Account → {acct}"}}
+        if str(name).lstrip("/") == "goal":
+            cond = (args or "").strip()
+            cleared = (not cond) or cond.lower() == "clear"
+            try:
+                await self.set_goal_for_session(session_id, None if cleared else cond)
+            except Exception:
+                log.warning("goal capture/persist failed session=%s", session_id, exc_info=True)
+            # fall through: forward /goal to the CLI regardless
         info = await d.server_info()
         by_name = {c.name: c for c in cmd_catalog.build_catalog(info)}
         cmd = by_name.get(str(name).lstrip("/"))
@@ -1291,6 +1355,22 @@ class SessionOrchestrator:
                 sa_update(DbSession).where(DbSession.id == session_id).values(model=model)
             )
 
+    async def set_goal_for_session(self, session_id: str, goal: str | None) -> None:
+        """Record the session's active /goal condition AND persist it, so the badge
+        survives rehydrate. The /goal text is still forwarded to the CLI by run_command;
+        this only mirrors the state for the UI (no SDK method exists for goals)."""
+        record = self._records.get(session_id)
+        if record is not None:
+            record.active_goal = goal
+        await self._persist_goal(session_id, goal)
+
+    async def _persist_goal(self, session_id: str, goal: str | None) -> None:
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(active_goal=goal)
+            )
+
     async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str) -> None:
         """Resume the session's claude conversation on *new_account* (may equal the
         current account, for a 401 recompose). Relaunches the driver, replays the last
@@ -1497,8 +1577,10 @@ class SessionOrchestrator:
             status="idle",
             permission_mode=row.permission_mode,
             created_at=row.created_at,
+            updated_at=getattr(row, "updated_at", None),
             model=getattr(row, "model", None),
             account_pinned=bool(getattr(row, "account_pinned", False)),
+            active_goal=getattr(row, "active_goal", None),
         )
         self._records[session_id] = record
         log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)

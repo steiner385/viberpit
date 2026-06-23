@@ -12,10 +12,8 @@ import { caretLineEdges } from '@/lib/caretLineEdges'
 
 interface Props {
   status: { state: string; count: number }
-  mode: string
   onPrompt: (text: string, attachmentIds: string[]) => void
   onInterrupt: () => void
-  onSetMode: (mode: string) => void
   queued?: string[]
   onCancelQueued?: (index: number) => void
   chatArmed?: boolean
@@ -28,7 +26,7 @@ interface Props {
   onRequestSuggestions: () => void
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [], onRequestSuggestions }: Props) {
+export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [], onRequestSuggestions }: Props) {
   const [text, setText] = useState('')
   const [pendingGenerate, setPendingGenerate] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -204,10 +202,6 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
       submit()
     }
     // Shift+Enter: let the browser insert a newline naturally (no action needed)
-  }
-
-  function handlePlanToggle() {
-    onSetMode(mode === 'plan' ? 'default' : 'plan')
   }
 
   return (
@@ -449,27 +443,6 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
             Send
           </button>
         )}
-      </div>
-
-      {/* Plan mode toggle */}
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          role="switch"
-          aria-checked={mode === 'plan'}
-          aria-label="Plan mode"
-          onClick={handlePlanToggle}
-          className={cn(
-            'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
-            'border',
-            mode === 'plan'
-              ? 'bg-blue-100 dark:bg-blue-900/40 border-blue-400 text-blue-700 dark:text-blue-300'
-              : 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-          )}
-        >
-          Plan mode
-        </button>
       </div>
     </div>
   )

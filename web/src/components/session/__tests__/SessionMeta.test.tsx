@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { SessionMeta } from '../SessionMeta'
 import type { SubAgent } from '@/session/selectors'
@@ -6,6 +6,7 @@ import type { SubAgent } from '@/session/selectors'
 const baseProps = {
   account: 'work-max',
   model: 'claude-sonnet-4-5',
+  mode: 'default',
   contextPct: 78,
   quota: {
     sessionPct: 42,
@@ -19,6 +20,7 @@ const baseProps = {
   accountPinned: false,
   onSelectModel: () => {},
   onSelectAccount: () => {},
+  onSetMode: () => {},
 }
 
 describe('SessionMeta', () => {
@@ -66,6 +68,30 @@ describe('SessionMeta', () => {
   it('omits the quota segment when quota is null', () => {
     render(<SessionMeta {...baseProps} quota={null} />)
     expect(screen.queryByLabelText(/account quota/i)).toBeNull()
+  })
+
+  it('plan mode toggle shows aria-checked=false when not in plan mode', () => {
+    render(<SessionMeta {...baseProps} mode="default" />)
+    expect(screen.getByRole('switch', { name: /plan mode/i })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('plan mode toggle shows aria-checked=true when in plan mode', () => {
+    render(<SessionMeta {...baseProps} mode="plan" />)
+    expect(screen.getByRole('switch', { name: /plan mode/i })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('clicking plan toggle calls onSetMode with "plan" when not in plan mode', () => {
+    const onSetMode = vi.fn()
+    render(<SessionMeta {...baseProps} mode="default" onSetMode={onSetMode} />)
+    fireEvent.click(screen.getByRole('switch', { name: /plan mode/i }))
+    expect(onSetMode).toHaveBeenCalledWith('plan')
+  })
+
+  it('clicking plan toggle calls onSetMode with "default" when in plan mode', () => {
+    const onSetMode = vi.fn()
+    render(<SessionMeta {...baseProps} mode="plan" onSetMode={onSetMode} />)
+    fireEvent.click(screen.getByRole('switch', { name: /plan mode/i }))
+    expect(onSetMode).toHaveBeenCalledWith('default')
   })
 
   it('omits the sub-agents control when there are none', () => {

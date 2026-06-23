@@ -28,6 +28,8 @@ function quotaTitle(window: string, resetsAt: string | null): string {
 interface Props {
   account: string
   model: string | null
+  /** Permission mode for the session ('plan' shows the plan-mode toggle as on). */
+  mode: string
   contextPct: number | null
   quota: Quota | null
   subAgents: SubAgent[]
@@ -40,6 +42,7 @@ interface Props {
   accountPinned: boolean
   onSelectModel: (id: string) => void
   onSelectAccount: (name: string) => void
+  onSetMode: (mode: string) => void
 }
 
 const DASH = '—'
@@ -57,7 +60,7 @@ const DOT_CLASS: Record<SubAgentStatus, string> = {
   failed: 'bg-red-500',
 }
 
-export function SessionMeta({ account, model, contextPct, quota, subAgents, statusSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount }: Props) {
+export function SessionMeta({ account, model, mode, contextPct, quota, subAgents, statusSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode }: Props) {
   const [open, setOpen] = useState(false)
   const agentCount = subAgents.length
 
@@ -134,6 +137,24 @@ export function SessionMeta({ account, model, contextPct, quota, subAgents, stat
             </span>
           </span>
         )}
+
+        {/* Plan mode toggle — sits with the other session settings */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={mode === 'plan'}
+          aria-label="Plan mode"
+          onClick={() => onSetMode(mode === 'plan' ? 'default' : 'plan')}
+          className={cn(
+            'inline-flex items-center rounded px-2 py-0.5 text-xs font-medium min-h-[28px] border',
+            mode === 'plan'
+              ? 'bg-blue-100 dark:bg-blue-900/40 border-blue-400 text-blue-700 dark:text-blue-300'
+              : 'bg-transparent border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+          )}
+        >
+          plan
+        </button>
 
         {/* Right cluster: live status (folded-in StatusBar) + sub-agents toggle */}
         {(statusSlot || agentCount > 0) && (

@@ -27,7 +27,14 @@ export class VncClient {
       else this.emit('reconnecting', 'reconnecting')   // caller drives backoff reconnect
     })
   }
-  setScale(fit: boolean) { if (this.rfb) this.rfb.scaleViewport = fit }
+  /** Re-apply base fit so noVNC recomputes its scale against the current mount size.
+   *  Toggling false→true forces the scaleViewport setter to recompute (it no-ops on
+   *  an unchanged value). */
+  refit() {
+    if (!this.rfb) return
+    this.rfb.scaleViewport = false
+    this.rfb.scaleViewport = true
+  }
   focus() { this.rfb?.focus() }
   blur() { this.rfb?.blur() }
   disconnect() { this.rfb?.disconnect(); this.rfb = null }

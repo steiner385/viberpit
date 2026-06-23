@@ -42,6 +42,10 @@ class Session(Base):
     # GitHub repo (nameWithOwner, e.g. "owner/name") this session works on, or NULL
     # for a scratch / arbitrary-cwd session. Surfaced in the dashboard sessions list.
     repo: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The session's per-session worktree branch (e.g. ccswitch/main-abcd), used
+    # to join the session to its GitHub PR by headRefName. NULL for detached/
+    # scratch sessions. Nullable so init_db backfills it without a migration.
+    branch: Mapped[str | None] = mapped_column(String, nullable=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     permission_mode: Mapped[str] = mapped_column(String, nullable=False, default="interactive")
     # True while the name is auto-derived (Claude title / first prompt); a manual
@@ -60,6 +64,9 @@ class Session(Base):
     # like "claude-haiku-4-5"). NULL = account/binary default. Nullable so init_db
     # backfills on the dev SQLite DB without a migration.
     model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Active /goal condition for this session (the built-in Claude Code goal feature).
+    # NULL = no active goal. Nullable so init_db backfills on dev SQLite without a migration.
+    active_goal: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # True once the user manually pinned the account: usage-ceiling rotation skips
     # the session (it goes 'limited' at the ceiling instead). Hard 401/429 recovery
     # still rotates and clears the pin. Nullable for the same backfill reason.

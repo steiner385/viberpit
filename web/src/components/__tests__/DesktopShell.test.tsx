@@ -106,6 +106,19 @@ describe('DesktopShell', () => {
       .toHaveAttribute('aria-activedescendant', 'row-s1')
   })
 
+  it('ArrowDown on the new-session prompt makes the keyboard-highlighted row visibly selected', async () => {
+    const user = userEvent.setup()
+    render(<DesktopShell />, { wrapper })
+    const prompt = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(prompt)
+    await user.keyboard('{ArrowDown}')
+    // Screen-reader path: the textbox points at the highlighted row.
+    expect(prompt).toHaveAttribute('aria-activedescendant', 'row-s1')
+    // Sighted path: that row must actually render as selected, not just be the
+    // ARIA active descendant. This is the regression that made ↑/↓ look dead.
+    expect(screen.getByLabelText(/open session one/i)).toHaveAttribute('data-selected', 'true')
+  })
+
   it('Ctrl+Z detaches to the welcome pane', async () => {
     const user = userEvent.setup()
     render(<DesktopShell />, { wrapper })

@@ -5,10 +5,8 @@ import { Composer } from './Composer'
 function defaultProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}): Parameters<typeof Composer>[0] {
   return {
     status: { state: 'idle', count: 0 },
-    mode: 'default',
     onPrompt: vi.fn(),
     onInterrupt: vi.fn(),
-    onSetMode: vi.fn(),
     onRequestSuggestions: vi.fn(),
     suggestions: [],
     ...overrides,
@@ -24,10 +22,8 @@ function setupStatus(suggestions: string[] | undefined, state = 'idle') {
   render(
     <Composer
       status={{ state, count: 0 }}
-      mode="default"
       onPrompt={onPrompt}
       onInterrupt={() => {}}
-      onSetMode={() => {}}
       onRequestSuggestions={vi.fn()}
       suggestions={suggestions}
     />,

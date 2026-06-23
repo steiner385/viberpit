@@ -79,7 +79,9 @@ class SendPromptRequest(BaseModel):
 _UNSET = object()
 
 
-def _record_to_dict(record, repo: Any = _UNSET, suggestions: list[str] | None = None) -> dict[str, Any]:
+def _record_to_dict(
+    record, repo: Any = _UNSET, suggestions: list[str] | None = None, pr: Any = None
+) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict.
 
     ``repo`` lets callers inject a value read live from the session's working
@@ -89,6 +91,9 @@ def _record_to_dict(record, repo: Any = _UNSET, suggestions: list[str] | None = 
     ``suggestions`` holds the latest cached next-prompt suggestions for the
     session (from ``orch.latest_suggestions``). Defaults to [] when omitted
     (detached sessions or none yet generated).
+
+    ``pr`` is an optional PullRequestInfo (or None) representing the cached PR
+    status for the session's branch.  Serialised to a dict or None on the wire.
     """
     return {
         "id": record.id,
@@ -101,10 +106,19 @@ def _record_to_dict(record, repo: Any = _UNSET, suggestions: list[str] | None = 
         "adoptedInPlace": getattr(record, "adopted_in_place", False),
         "subAgents": getattr(record, "sub_agents", None) or [],
         "createdAt": record.created_at.isoformat() if record.created_at else None,
-        "updatedAt": None,
+        # Last-activity timestamp for the "active … ago" label. Fall back to the
+        # creation time so a brand-new session reads "active just now" rather than
+        # null (which the client would otherwise parse as epoch 0 → "20627d ago").
+        "updatedAt": (
+            (record.updated_at or record.created_at).isoformat()
+            if (record.updated_at or record.created_at)
+            else None
+        ),
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
         "latestSuggestions": list(suggestions or []),
+        "activeGoal": getattr(record, "active_goal", None),
+        "pr": pr.to_dict() if pr is not None else None,
     }
 
 
@@ -155,12 +169,18 @@ async def list_sessions(
     """Return all in-memory session records."""
     orch = _get_orchestrator(request)
     records = await orch.list_sessions()
-    # Read each session's repo (live, from its cwd) and cached suggestions in parallel.
+    # Read each session's repo (live, from its cwd), cached suggestions, and PR
+    # status in parallel.
     repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
     suggs = await asyncio.gather(*(orch.latest_suggestions(r.id) for r in records))
+    pr_for = getattr(orch, "pr_for", None)
+    prs = [
+        (pr_for(r.repo, getattr(r, "branch", None)) if pr_for else None)
+        for r in records
+    ]
     return [
-        _record_to_dict(r, repo=repo, suggestions=s)
-        for r, repo, s in zip(records, repos, suggs)
+        _record_to_dict(r, repo=repo, suggestions=s, pr=pr)
+        for r, repo, s, pr in zip(records, repos, suggs, prs)
     ]
 
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { VncClient, type VncState } from '../vnc/vncClient'
+import { useZoom } from '../vnc/useZoom'
 
 const COPY = {
   disabled: "Browser sharing isn't enabled on this server.",
@@ -19,10 +20,23 @@ interface Props {
 
 export function BrowserTab({ sessionId, statusState, initialState }: Props) {
   const canvasRef = useRef<HTMLDivElement>(null)
+  const panRef = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<VncState>(initialState ?? 'connecting')
-  const [fit, setFit] = useState(true)
   const [focused, setFocused] = useState(false)
+  const [emptyDismissed, setEmptyDismissed] = useState(false)
   const clientRef = useRef<VncClient | null>(null)
+  const { zoom, zoomIn, zoomOut, setZoom, resetFit, zoomed, label } = useZoom()
+
+  // Active pointers for two-finger pinch-to-zoom on the pan container.
+  const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map())
+  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null)
+
+  function pointerDistance() {
+    const pts = Array.from(pointersRef.current.values())
+    if (pts.length < 2) return 0
+    const [a, b] = pts
+    return Math.hypot(a.x - b.x, a.y - b.y)
+  }
 
   useEffect(() => {
     if (initialState) return // test/storybook injection — skip real connect
@@ -37,11 +51,32 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
     return () => c.disconnect()
   }, [sessionId, initialState])
 
+  // Re-fit the VNC view when the pan container resizes (debounced ~150ms).
+  useEffect(() => {
+    const el = panRef.current
+    if (!el) return
+    let t: ReturnType<typeof setTimeout> | undefined
+    const ro = new ResizeObserver(() => {
+      clearTimeout(t)
+      t = setTimeout(() => clientRef.current?.refit(), 150)
+    })
+    ro.observe(el)
+    return () => { clearTimeout(t); ro.disconnect() }
+  }, [])
+
   async function openBrowser() {
     await fetch(`/api/sessions/${sessionId}/browser/open`, { method: 'POST' })
   }
 
   const agentDriving = statusState === 'working'
+  // Empty-state hint: visible when connected and not yet dismissed.
+  // Dismissible because there is no per-session browser-open signal on the client.
+  const showEmpty = state === 'connected' && !emptyDismissed
+
+  function dismissEmpty() {
+    setEmptyDismissed(true)
+    canvasRef.current?.focus()
+  }
 
   // Blocking overlay states: transitional or terminal — never 'connected'
   const blockingOverlay: { copy: string } | null =
@@ -59,26 +94,78 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
 
   return (
     <div className="relative h-full w-full overflow-hidden">
-      {/* noVNC canvas container — always rendered so the RFB client has a stable mount */}
+      {/* Pan container — produces real scrollbars to pan the zoomed canvas. */}
       <div
-        ref={canvasRef}
-        className="h-full w-full"
-        tabIndex={0}
-        onFocus={() => {
-          setFocused(true)
-          clientRef.current?.focus()
-        }}
-        onBlur={() => {
-          setFocused(false)
-          clientRef.current?.blur()
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') {
-            e.stopPropagation()
-            ;(e.currentTarget as HTMLElement).blur()
+        ref={panRef}
+        className="h-full w-full overflow-auto"
+        onPointerDown={(e) => {
+          pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+          if (pointersRef.current.size === 2) {
+            pinchRef.current = { dist: pointerDistance(), zoom }
           }
         }}
-      />
+        onPointerMove={(e) => {
+          if (!pointersRef.current.has(e.pointerId)) return
+          pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+          if (pointersRef.current.size === 2 && pinchRef.current && pinchRef.current.dist > 0) {
+            const ratio = pointerDistance() / pinchRef.current.dist
+            setZoom(pinchRef.current.zoom * ratio)
+          }
+        }}
+        onPointerUp={(e) => {
+          pointersRef.current.delete(e.pointerId)
+          if (pointersRef.current.size < 2) pinchRef.current = null
+        }}
+        onPointerCancel={(e) => {
+          pointersRef.current.delete(e.pointerId)
+          if (pointersRef.current.size < 2) pinchRef.current = null
+        }}
+      >
+        {/* Zoom layer — sized zoom×100% so noVNC's scaleViewport autoscale fills
+            it (sharper than CSS upscaling) and overflow-auto yields pan scrollbars.
+            Magnification is driven by SIZE ALONE: a transform: scale() here would
+            be measured a second time by noVNC's getBoundingClientRect, netting
+            ~zoom² on-screen. See web/node_modules/@novnc/novnc/core/display.js
+            autoscale (no upscale clamp) + rfb.js _screenSize (getBoundingClientRect). */}
+        <div
+          data-testid="zoom-layer"
+          className="transition-[width,height] motion-reduce:transition-none"
+          style={{
+            width: `${zoom * 100}%`,
+            height: `${zoom * 100}%`,
+          }}
+        >
+          {/* noVNC canvas container — always rendered so the RFB client has a stable mount */}
+          <div
+            ref={canvasRef}
+            className="h-full w-full"
+            tabIndex={0}
+            aria-label="Live browser view"
+            onWheel={(e) => {
+              if (e.ctrlKey || e.metaKey) {
+                e.preventDefault()
+                setZoom(zoom * (1 - e.deltaY * 0.001))
+              }
+            }}
+            onFocus={() => {
+              setFocused(true)
+              clientRef.current?.focus()
+            }}
+            onBlur={() => {
+              setFocused(false)
+              clientRef.current?.blur()
+            }}
+            onKeyDown={(e) => {
+              if (e.key === '+' || e.key === '=') zoomIn()
+              else if (e.key === '-') zoomOut()
+              else if (e.key === 'Escape') {
+                e.stopPropagation()
+                ;(e.currentTarget as HTMLElement).blur()
+              }
+            }}
+          />
+        </div>
+      </div>
 
       {/* Agent-driving badge */}
       {agentDriving && (
@@ -92,23 +179,51 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
         </div>
       )}
 
-      {/* Fit / 1:1 toggle — always visible, ≥44px touch target */}
-      <button
-        className={cn(
-          'absolute right-2 top-2 min-h-[44px] min-w-[44px]',
-          'rounded border border-border bg-background/80 px-2 text-xs',
+      {/* Top-right zoom cluster — one group, ≥44px targets */}
+      <div className="absolute right-2 top-2 flex items-center gap-1">
+        <button
+          aria-label="Zoom out"
+          className={cn(
+            'min-h-[44px] min-w-[44px]',
+            'rounded border border-border bg-background/80 px-2 text-base leading-none',
+          )}
+          onClick={zoomOut}
+        >
+          −
+        </button>
+        <span
+          aria-live="polite"
+          className="rounded bg-background/80 px-2 text-xs tabular-nums"
+        >
+          {label}
+        </span>
+        <button
+          aria-label="Zoom in"
+          className={cn(
+            'min-h-[44px] min-w-[44px]',
+            'rounded border border-border bg-background/80 px-2 text-base leading-none',
+          )}
+          onClick={zoomIn}
+        >
+          +
+        </button>
+        {zoomed && (
+          <button
+            aria-label="Reset to fit"
+            className={cn(
+              'min-h-[44px] min-w-[44px]',
+              'rounded border border-border bg-background/80 px-2 text-xs',
+            )}
+            onClick={resetFit}
+          >
+            Fit
+          </button>
         )}
-        onClick={() => {
-          const f = !fit
-          setFit(f)
-          clientRef.current?.setScale(f)
-        }}
-      >
-        {fit ? '1:1' : 'Fit'}
-      </button>
+      </div>
 
-      {/* "Tap to control" caption — shown when connected and canvas not focused */}
-      {state === 'connected' && !focused && (
+      {/* "Tap to control" caption — shown when connected, canvas not focused, and
+          the empty-state hint is not visible (only one bottom caption at a time). */}
+      {state === 'connected' && !focused && !showEmpty && (
         <div className="pointer-events-none absolute inset-x-0 bottom-2 text-center text-xs text-muted-foreground">
           Tap to control · pinch to zoom
         </div>
@@ -123,21 +238,36 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
 
       {/* Non-blocking compact hint when connected but framebuffer is blank.
           Pinned to bottom-center, does NOT cover the canvas — pointer-events
-          only on the button so users can click through the hint area. */}
-      {state === 'connected' && (
+          only on the buttons so users can click through the hint area.
+          Dismissible (no per-session browser-open signal is available on the
+          client); once dismissed stays hidden until remount. When dismissed,
+          focus returns to the canvas so keyboard control is immediately available. */}
+      {showEmpty && (
         <div className="pointer-events-none absolute inset-x-0 bottom-8 flex flex-col items-center gap-2">
           <p className="text-xs text-muted-foreground drop-shadow">
             {COPY.empty}
           </p>
-          <button
-            className={cn(
-              'pointer-events-auto',
-              'rounded bg-primary px-3 py-2 text-sm text-primary-foreground shadow',
-            )}
-            onClick={openBrowser}
-          >
-            Open a browser
-          </button>
+          <div className="pointer-events-auto flex items-center gap-2">
+            <button
+              className={cn(
+                'min-h-[44px]',
+                'rounded bg-primary px-3 py-2 text-sm text-primary-foreground shadow',
+              )}
+              onClick={openBrowser}
+            >
+              Open a browser
+            </button>
+            <button
+              aria-label="Dismiss"
+              className={cn(
+                'min-h-[44px] min-w-[44px]',
+                'rounded border border-border bg-background/80 px-3 text-sm text-muted-foreground shadow',
+              )}
+              onClick={dismissEmpty}
+            >
+              ✕
+            </button>
+          </div>
         </div>
       )}
     </div>
