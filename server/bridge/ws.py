@@ -331,7 +331,14 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             # wedge the attach and leave the client spinning on "Loading session…"
             # forever. So defer the resume until the user actually sends a prompt (see
             # _ensure_live). Viewing a finished/detached session is now instant.
-            rec = await orchestrator.get_session(session_id)
+            try:
+                rec = await orchestrator.get_session(session_id)
+            except DaemonUnavailable:
+                # In remote mode get_session is an RPC to the daemon; if it's down,
+                # close 1013 (try again later) rather than crashing the handler.
+                log.warning("ws.attach: session daemon unavailable for %s", session_id)
+                await websocket.close(code=1013)
+                return
             if rec is not None and getattr(rec, "detached", False):
                 await _replay_and_complete(session_id)
                 return
