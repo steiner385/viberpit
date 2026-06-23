@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Plus, RefreshCw, Settings, Pencil, Check, X, Trash2 } from 'lucide-react'
+import { Plus, RefreshCw, Settings, Pencil, Check, X, Trash2, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { UsageBadge, StatusPill } from './UsageBadge'
@@ -13,7 +13,8 @@ import { useInputHold } from '@/hooks/useInputHold'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { DispatchBar } from './DispatchBar'
 import { useGlobalListNav } from './useGlobalListNav'
-import { ShortcutsHelp } from './ShortcutsHelp'
+import { useGlobalHelpKey } from './useGlobalHelpKey'
+import { HelpDrawer } from './HelpDrawer'
 import { AddAccountDialog } from './AddAccountDialog'
 import {
   useAccounts,
@@ -1337,16 +1338,22 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const selectedSession = highlightedIndex >= 0 ? orderedSessions[highlightedIndex] : undefined
   const selectedId = selectedSession?.id ?? null
 
-  // ── Press-twice delete guard ──────────────────────────────────────────────────
-  const [pendingDelete, setPendingDelete] = useState<{ id: string; ts: number } | null>(null)
-  const pendingDeleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // ── List-focus mode ───────────────────────────────────────────────────────────
+  const [listMode, setListMode] = useState(false)
+  const [focusNonce, setFocusNonce] = useState(0)
 
-  // Clear any pending-delete timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (pendingDeleteTimeoutRef.current) clearTimeout(pendingDeleteTimeoutRef.current)
-    }
-  }, [])
+  function handleEnterList() {
+    setListMode(true)
+    if (highlightedIndex < 0) setHighlightedIndex(0)
+  }
+  function handleExitList() {
+    setListMode(false)
+    setFocusNonce((n) => n + 1) // pull focus back to the prompt
+  }
+  function handleJump(index: number) {
+    const s = orderedSessions[index]
+    if (s) { setHighlightedIndex(index); handleOpen(s.id) }
+  }
 
   // Clamp highlighted index during render when the sessions list shrinks.
   // Doing this at render time (not in an effect) avoids the set-state-in-effect
@@ -1464,12 +1471,6 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   const handleNavigate = useCallback((dir: 'up' | 'down') => {
     if (sessions.length === 0) return
-    // Moving to a different row clears the pending-delete guard
-    setPendingDelete(null)
-    if (pendingDeleteTimeoutRef.current) {
-      clearTimeout(pendingDeleteTimeoutRef.current)
-      pendingDeleteTimeoutRef.current = null
-    }
     setHighlightedIndex((i) => {
       if (dir === 'up') return i <= 0 ? 0 : i - 1
       return Math.min(sessions.length - 1, i + 1)
@@ -1477,68 +1478,13 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   }, [sessions.length])
 
   useGlobalListNav({ enabled: activeTab === 'sessions', onNavigate: handleNavigate })
+  useGlobalHelpKey({ enabled: activeTab === 'sessions', onShowHelp: () => setShowHelp(true) })
 
   function handleOpenHighlighted() {
     if (selectedSession) handleOpen(selectedSession.id)
   }
 
-  function handleRowAction(
-    action: { type: 'rename' } | { type: 'delete' } | { type: 'jump'; index: number },
-  ) {
-    if (action.type === 'rename') {
-      // Rename clears any pending delete
-      setPendingDelete(null)
-      if (pendingDeleteTimeoutRef.current) {
-        clearTimeout(pendingDeleteTimeoutRef.current)
-        pendingDeleteTimeoutRef.current = null
-      }
-      if (selectedSession) handleRename(selectedSession.id)
-    } else if (action.type === 'delete') {
-      if (!selectedSession) return
-      const id = selectedSession.id
-      const now = Date.now()
-      if (pendingDelete && pendingDelete.id === id && now - pendingDelete.ts < 2000) {
-        // Second Delete on the same session within 2 s → actually close it
-        if (pendingDeleteTimeoutRef.current) {
-          clearTimeout(pendingDeleteTimeoutRef.current)
-          pendingDeleteTimeoutRef.current = null
-        }
-        setPendingDelete(null)
-        handleClose(id)
-      } else {
-        // First Delete → arm the guard and show the hint
-        if (pendingDeleteTimeoutRef.current) clearTimeout(pendingDeleteTimeoutRef.current)
-        setPendingDelete({ id, ts: now })
-        pendingDeleteTimeoutRef.current = setTimeout(() => {
-          setPendingDelete(null)
-          pendingDeleteTimeoutRef.current = null
-        }, 2000)
-      }
-    } else if (action.type === 'jump') {
-      // Jump clears any pending delete
-      setPendingDelete(null)
-      if (pendingDeleteTimeoutRef.current) {
-        clearTimeout(pendingDeleteTimeoutRef.current)
-        pendingDeleteTimeoutRef.current = null
-      }
-      const s = orderedSessions[action.index]
-      if (s) {
-        setHighlightedIndex(action.index)
-        handleOpen(s.id)
-      }
-    }
-  }
-
-  function clearPendingDelete() {
-    setPendingDelete(null)
-    if (pendingDeleteTimeoutRef.current) {
-      clearTimeout(pendingDeleteTimeoutRef.current)
-      pendingDeleteTimeoutRef.current = null
-    }
-  }
-
   function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
-    clearPendingDelete()
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     createSession.mutate(
       {
@@ -1774,6 +1720,15 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             </h2>
             <div className="flex items-center gap-2">
               <Button
+                size="sm"
+                variant="outline"
+                className="min-h-[44px]"
+                onClick={() => setShowHelp(true)}
+                aria-label="Open help"
+              >
+                <HelpCircle size={14} aria-hidden="true" />
+              </Button>
+              <Button
                 ref={settingsButtonRef}
                 size="sm"
                 variant="outline"
@@ -1821,6 +1776,9 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             isFiltered={sessionSearch.isFiltered}
             onClearSearch={() => sessionSearch.setQuery('')}
             onQuickResume={handleQuickResume}
+            listMode={listMode}
+            onNavigate={handleNavigate}
+            onExit={handleExitList}
             collapsedKeys={collapsedKeys}
             onToggleCollapse={toggleCollapse}
           />
@@ -1834,16 +1792,12 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             onDispatch={handleDispatch}
             onNavigate={handleNavigate}
             onOpenHighlighted={handleOpenHighlighted}
-            onRowAction={handleRowAction}
+            onEnterList={handleEnterList}
+            onJump={handleJump}
             onShowHelp={() => setShowHelp(true)}
-            onEscape={() => { setHighlightedIndex(-1); clearPendingDelete() }}
-            confirmDeleteName={
-              pendingDelete && selectedSession?.id === pendingDelete.id
-                ? selectedSession.name
-                : null
-            }
+            onEscape={() => setHighlightedIndex(-1)}
             activeDescendantId={selectedId ? `row-${selectedId}` : undefined}
-            autoFocusKey={focusDispatchSignal}
+            autoFocusKey={`${String(focusDispatchSignal)}:${focusNonce}`}
             isPending={createSession.isPending}
           />
         </div>
@@ -1981,9 +1935,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         />
       )}
 
-      {showHelp && (
-        <ShortcutsHelp onClose={() => setShowHelp(false)} />
-      )}
+      {showHelp && <HelpDrawer onClose={() => setShowHelp(false)} />}
 
       {settingsOpen && (
         <SettingsPanel
