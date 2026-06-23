@@ -24,13 +24,15 @@ class StatusSignals:
 
 
 # Statuses at which the assistant has handed output back to the user — either a
-# finished turn (done/complete/needs_attention) or a turn paused awaiting the user
-# (waiting_input/waiting_question/ready_review). These — and only these — advance a
-# session's "active … ago" clock (see SessionOrchestrator._persist_status). `in_progress`
+# finished turn (done/complete/needs_attention/waiting_external) or a turn paused awaiting
+# the user (waiting_input/waiting_question/ready_review). These — and only these — advance
+# a session's "active … ago" clock (see SessionOrchestrator._persist_status). `in_progress`
 # (working, nothing handed back yet), `idle` (never ran), and the orchestrator overlays
-# `limited`/`ended`/`archived` are deliberately excluded.
+# `limited`/`ended`/`archived` are deliberately excluded. `waiting_external` is the one
+# overlay that DOES count: it only replaces a just-finished `done` turn, so the clock
+# should track that turn (and stay fresh while a /loop keeps re-arming).
 ACTIVITY_STATUSES: frozenset[str] = frozenset({
-    "done", "complete", "needs_attention",
+    "done", "complete", "needs_attention", "waiting_external",
     "waiting_input", "waiting_question", "ready_review",
 })
 
