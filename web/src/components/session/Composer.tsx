@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
-import { Paperclip, X } from 'lucide-react'
+import { Paperclip, X, Play, Loader2, ChevronUp } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useImageAttachments } from './useImageAttachments'
 import { AttachmentChips } from './AttachmentChips'
@@ -25,11 +25,16 @@ interface Props {
   autoFocusKey?: unknown
   suggestions?: string[]
   history?: string[]
-  onRequestSuggestions?: () => void
+  onRequestSuggestions: () => void
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [] }: Props) {
+export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [], onRequestSuggestions }: Props) {
   const [text, setText] = useState('')
+  const [pendingGenerate, setPendingGenerate] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  // prevSuggestions tracks which suggestions array we last acted on for the
+  // pendingGenerate→prefill flow, so we only prefill once per new suggestions array.
+  const [prevSuggestions, setPrevSuggestions] = useState<string[] | undefined>(undefined)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const paletteRef = useRef<CommandPaletteHandle>(null)
@@ -128,6 +133,34 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
       el.style.height = `${Math.min(el.scrollHeight, 192)}px`
     }
   }, [])
+
+  const showPlay = !isWorking && text === ''
+
+  // When suggestions arrive while pendingGenerate is true, prefill the box for
+  // confirmation (never auto-send). This uses the React "derived state during render"
+  // pattern (setState during render = immediate re-render, no cascading side effect).
+  // prevSuggestions guards against re-running on every re-render when nothing changed.
+  if (pendingGenerate && suggestions !== prevSuggestions && suggestions && suggestions.length > 0) {
+    setPrevSuggestions(suggestions)
+    setText(suggestions[0])
+    setPendingGenerate(false)
+  }
+
+  const play = useCallback(() => {
+    if (suggestions && suggestions.length > 0) {
+      onPrompt(suggestions[0], [])
+      return
+    }
+    setPendingGenerate(true)
+    onRequestSuggestions()
+  }, [suggestions, onPrompt, onRequestSuggestions])
+
+  // Quiet-fail: if generation produces nothing within 8s, drop the spinner.
+  useEffect(() => {
+    if (!pendingGenerate) return
+    const t = setTimeout(() => setPendingGenerate(false), 8000)
+    return () => clearTimeout(t)
+  }, [pendingGenerate])
 
   function handlePaste(e: React.ClipboardEvent) {
     const files = Array.from(e.clipboardData?.files || [])
@@ -298,6 +331,67 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
         >
           <Paperclip size={16} aria-hidden="true" />
         </button>
+
+        {showPlay && (
+          <div className="relative flex items-center">
+            <button
+              type="button"
+              aria-label="Resume (send suggested next step)"
+              title="Resume — send the suggested next step"
+              onClick={play}
+              disabled={pendingGenerate}
+              className={cn(
+                'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-[44px]',
+                'bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400',
+              )}
+            >
+              {pendingGenerate ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+                               : <Play size={16} aria-hidden="true" />}
+            </button>
+            {suggestions && suggestions.length >= 2 && (
+              <button
+                type="button"
+                aria-label="More suggestions"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                onClick={() => setMenuOpen((o) => !o)}
+                className={cn(
+                  'flex-shrink-0 rounded-md px-1 py-2 min-h-[44px] text-emerald-700 dark:text-emerald-400',
+                  'hover:bg-emerald-50 dark:hover:bg-emerald-900/20',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400',
+                )}
+              >
+                <ChevronUp size={16} aria-hidden="true" />
+              </button>
+            )}
+            {menuOpen && suggestions && suggestions.length >= 2 && (
+              <div
+                role="menu"
+                className={cn(
+                  'absolute bottom-full right-0 mb-1 min-w-[12rem] max-w-xs z-10',
+                  'rounded-md border border-gray-200 dark:border-gray-700',
+                  'bg-white dark:bg-gray-800 shadow-lg py-1',
+                )}
+              >
+                {suggestions.slice(1).map((s, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setMenuOpen(false); onPrompt(s, []) }}
+                    className={cn(
+                      'block w-full truncate px-3 py-2 text-left text-sm',
+                      'hover:bg-gray-100 dark:hover:bg-gray-700',
+                    )}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {chatArmed ? (
           <button
