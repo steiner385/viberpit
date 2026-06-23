@@ -7,10 +7,8 @@ function setupStatus(suggestions: string[] | undefined, state = 'idle') {
   render(
     <Composer
       status={{ state, count: 0 }}
-      mode="default"
       onPrompt={onPrompt}
       onInterrupt={() => {}}
-      onSetMode={() => {}}
       suggestions={suggestions}
     />,
   )
