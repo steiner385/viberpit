@@ -562,5 +562,7 @@ async def get_session_transcript(
             )
 
     events = await orch.transcript_events(session_id)
-    wire_events = [redact_event(e.to_wire()) for e in events]
+    # In-process orchestrator yields event objects (.to_wire()); the remote/daemon
+    # orchestrator returns already-serialised wire dicts. Handle both.
+    wire_events = [redact_event(e.to_wire() if hasattr(e, "to_wire") else e) for e in events]
     return {"events": wire_events}

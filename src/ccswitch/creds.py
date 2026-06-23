@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from . import paths
@@ -23,16 +24,28 @@ def write_json_secure(path: Path, data: dict) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
-    # Write to a temp file in the same directory so os.replace is same-filesystem.
-    tmp_path = path.parent / (path.name + ".tmp")
-    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # Write to a UNIQUE temp file in the same directory (same-filesystem so
+    # os.replace is atomic). A fixed temp name races when two threads write the
+    # SAME path concurrently — one writer's os.replace renames the temp away
+    # before the other's chmod/replace runs (FileNotFoundError / corruption).
+    # mkstemp gives each writer its own 0600 temp file.
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
         os.write(fd, json.dumps(data, indent=2).encode("utf-8"))
-    finally:
+        os.fchmod(fd, 0o600)
         os.close(fd)
-    os.chmod(str(tmp_path), 0o600)
-    # Atomic swap: os.replace is guaranteed atomic on POSIX (rename(2)).
-    os.replace(str(tmp_path), str(path))
+        # Atomic swap: os.replace is guaranteed atomic on POSIX (rename(2)).
+        os.replace(tmp_path, str(path))
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def split_credentials(full: dict) -> tuple[dict, dict]:
