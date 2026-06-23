@@ -11,10 +11,10 @@ def test_rpc_response_err_shape():
 
 
 def test_event_frame_shape():
-    assert p.event_frame("s1", {"type": "tick", "i": 0}) == {
-        "type": "event", "stream": "s1", "event": {"type": "tick", "i": 0}}
+    assert p.event_frame("s1", {"type": "tick", "i": 0}, 0) == {
+        "type": "event", "stream": "s1", "event": {"type": "tick", "i": 0}, "seq": 0}
 
 
 def test_subscribe_unsubscribe_frames():
-    assert p.subscribe_frame("s1") == {"type": "subscribe", "stream": "s1"}
+    assert p.subscribe_frame("s1") == {"type": "subscribe", "stream": "s1", "since": None}
     assert p.unsubscribe_frame("s1") == {"type": "unsubscribe", "stream": "s1"}
