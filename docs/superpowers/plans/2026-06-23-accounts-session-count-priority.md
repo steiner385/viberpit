@@ -12,10 +12,12 @@
 
 - **Single source of truth (Constitution VI):** the ranking formula lives ONLY in `selector.py`. The API/TS layers must not re-derive it.
 - **No new frontend dependency:** the reason tooltip uses the native `title` attribute (no Radix/shadcn tooltip — only `button.tsx` exists under `web/src/components/ui/`).
-- **Backend tests** run against the prebuilt env with the worktree on the path:
-  `PYTHONPATH=<worktree>/src <main-checkout>/.venv/bin/python -m pytest …`
-  Auth-touching tests need an allowlist; run API tests with
-  `env -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 … pytest`.
+- **Backend tests** run against the prebuilt env with the worktree on the path.
+  Concrete: `PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest …`
+  (the venv's editable `ccswitch` otherwise resolves to a stale deploy checkout).
+  Auth-touching API tests need an allowlist; run them with
+  `env -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest …`.
+  Two pre-existing failures (`test_remote_mode_wiring` x11, env-only) are environmental — not regressions.
 - **Web tests/gates** run in `web/`: `vitest run`, real type gate `npx tsc -b --force` (NOT `tsc --noEmit`), `eslint` with max-warnings 0. Symlink `web/node_modules` from the deploy worktree.
 - **Backend lint gates (CI fails fast):** `ruff` + `mypy` must pass; add type annotations on new functions.
 - **New model columns** (none in this plan) would need to be nullable; this plan adds no DB columns.
@@ -394,36 +396,50 @@ In the accounts-API test module (reuse its existing client/allowlist fixtures), 
 
 ```python
 def test_get_accounts_includes_live_sessions_and_rank():
-    # Two accounts; "low" has lower usage so it should outrank "high".
-    usages = {
-        "low": make_usage(session_pct=10.0, weekly_pct=5.0),
-        "high": make_usage(session_pct=60.0, weekly_pct=30.0),
-    }
-    with temp_env(...):  # mirror test_get_accounts_returns_usage_shape's setup
-        app, client = _make_app_and_client(usage_fn=_make_usage_fn(usages))
-        # No live sessions exist in this harness, so liveSessions are all zero.
-        resp = client.get("/api/accounts", headers=IDENTITY_HEADERS)
-        assert resp.status_code == 200
-        body = {a["name"]: a for a in resp.json()}
-        assert body["low"]["liveSessions"] == {"active": 0, "idle": 0}
-        ranks = sorted(a["rank"] for a in resp.json() if a["rank"] is not None)
-        assert ranks == [1, 2]
-        ranked_one = next(a for a in resp.json() if a["rank"] == 1)
-        assert isinstance(ranked_one["rankReason"], str)
+    # Copy the create-app boilerplate from test_get_accounts_returns_usage_shape
+    # (lines ~130-146): temp_env() + _seed_slot per account + SessionOrchestrator +
+    # create_app + TestClient + `with client:`. Two accounts; "low" outranks "high".
+    from ccswitch.oauth import Usage
+    reset = datetime.now(timezone.utc) + timedelta(hours=3)
+    low = Usage(session_pct=10.0, session_resets_at=reset, weekly_pct=5.0,
+                weekly_resets_at=reset, extra_usage_enabled=False)
+    high = Usage(session_pct=60.0, session_resets_at=reset, weekly_pct=30.0,
+                 weekly_resets_at=reset, extra_usage_enabled=False)
+    with temp_env():
+        _seed_slot("low")
+        _seed_slot("high")
+        usage_fn = _make_usage_fn({"low": low, "high": high})
+        # ...build orch/app/client exactly as the existing test does...
+        with client:
+            resp = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+    assert resp.status_code == 200
+    body = {a["name"]: a for a in resp.json()}
+    # No live sessions in this harness -> all zero.
+    assert body["low"]["liveSessions"] == {"active": 0, "idle": 0}
+    ranks = sorted(a["rank"] for a in resp.json() if a["rank"] is not None)
+    assert ranks == [1, 2]
+    ranked_one = next(a for a in resp.json() if a["rank"] == 1)
+    assert isinstance(ranked_one["rankReason"], str)
 
 
 def test_get_accounts_at_ceiling_has_null_rank():
-    usages = {"busy": _busy_usage()}  # helper already in test_api.py: 100% both dims
-    with temp_env(...):
-        app, client = _make_app_and_client(usage_fn=_make_usage_fn(usages))
-        resp = client.get("/api/accounts", headers=IDENTITY_HEADERS)
-        busy = next(a for a in resp.json() if a["name"] == "busy")
-        assert busy["rank"] is None
-        assert busy["rankReason"] is None
-        assert "liveSessions" in busy
+    from ccswitch.oauth import Usage
+    reset = datetime.now(timezone.utc) + timedelta(hours=3)
+    busy = Usage(session_pct=100.0, session_resets_at=reset, weekly_pct=50.0,
+                 weekly_resets_at=reset, extra_usage_enabled=False)
+    with temp_env():
+        _seed_slot("busy")
+        usage_fn = _make_usage_fn({"busy": busy})
+        # ...build orch/app/client exactly as the existing test does...
+        with client:
+            resp = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+    acct = next(a for a in resp.json() if a["name"] == "busy")
+    assert acct["rank"] is None
+    assert acct["rankReason"] is None
+    assert "liveSessions" in acct
 ```
 
-> NOTE: match the exact `temp_env`/setup wrapper used by `test_get_accounts_returns_usage_shape` (lines ~117-161) — copy its account-registration boilerplate. `make_usage` may take positional args; check `tests/helpers.py` for its signature and adapt the calls above. Live-session counts can't be exercised through this real-orchestrator harness without a live driver, so the count assertions stay at zero here; the active/idle split is covered by Task 2's orchestrator unit tests.
+> NOTE: `tests/helpers.usage()` uses positional `(session, weekly, extra, mins)`, NOT `session_pct=` — that's why these tests construct `Usage(...)` directly instead. Copy the orch/app/client construction verbatim from `test_get_accounts_returns_usage_shape`. Live-session counts can't be exercised through this real-orchestrator harness without a live driver, so the count assertions stay at zero here; the active/idle split is covered by Task 2's orchestrator unit tests.
 
 - [ ] **Step 2: Run to verify failure**
 
