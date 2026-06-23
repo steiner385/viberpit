@@ -28,8 +28,8 @@ import type { Account, LiveSessionCounts, Session } from '@/api/types'
 
 // ── Sessions + Rank Badges ───────────────────────────────────────────────────
 
-function SessionsBadge({ counts }: { counts: LiveSessionCounts }) {
-  const { active, idle } = counts
+function SessionsBadge({ counts }: { counts?: LiveSessionCounts | null }) {
+  const { active, idle } = counts ?? { active: 0, idle: 0 }
   let text: string
   if (active === 0 && idle === 0) text = '—'
   else if (active > 0 && idle > 0) text = `${active} active · ${idle} idle`
@@ -48,8 +48,8 @@ function SessionsBadge({ counts }: { counts: LiveSessionCounts }) {
   )
 }
 
-function RankBadge({ rank, reason }: { rank: number | null; reason: string | null }) {
-  if (rank === null) {
+function RankBadge({ rank, reason }: { rank?: number | null; reason?: string | null }) {
+  if (rank == null) {
     return <span className="text-xs text-gray-400 dark:text-gray-600">unavailable</span>
   }
   const label = rank === 1 ? '#1 next' : `#${rank}`
