@@ -5,6 +5,7 @@ import { SessionView } from './components/session/SessionView'
 import { SubSessionView } from './components/session/SubSessionView'
 import { ReviewView } from './components/ReviewView'
 import { GlobalUpdateBanner } from './components/GlobalUpdateBanner'
+import { ToastViewport } from '@/components/ToastViewport'
 import { useMediaQuery } from './lib/useMediaQuery'
 
 // Routing is the source of truth for which view is shown:
@@ -106,6 +107,7 @@ function App() {
           <Route path="*" element={<Navigate to="/sessions" replace />} />
         </Routes>
       )}
+      <ToastViewport />
     </>
   )
 }
