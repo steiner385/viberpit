@@ -19,9 +19,8 @@ export interface SessionOrdering {
  * localStorage.
  */
 export function useSessionOrdering(sessions: readonly Session[]): SessionOrdering {
-  const initial = loadSessionOrder()
-  const [groupBy, setGroupBy] = useState<GroupBy>(initial.groupBy)
-  const [sortBy, setSortBy] = useState<SortBy>(initial.sortBy)
+  const [groupBy, setGroupBy] = useState<GroupBy>(() => loadSessionOrder().groupBy)
+  const [sortBy, setSortBy] = useState<SortBy>(() => loadSessionOrder().sortBy)
 
   useEffect(() => {
     saveSessionOrder({ groupBy, sortBy })
