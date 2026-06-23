@@ -40,7 +40,6 @@ class RemoteDriver:
     def seed_idle_suggestions(self, user_text: str, assistant_text: str) -> None:
         # Fire-and-forget: the daemon's real driver generates suggestions; the
         # resulting Suggestions event flows back over this session's event stream.
-        import asyncio
         asyncio.create_task(self._client.call(
             "seed_idle_suggestions", session_id=self._session_id,
             user_text=user_text, assistant_text=assistant_text))

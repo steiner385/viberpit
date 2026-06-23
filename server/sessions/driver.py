@@ -51,7 +51,7 @@ class SessionDriver:
         # ready_review / done / idle), not just the live working/idle of the StatusBar.
         self._on_status = on_status
         # async callback ``on_recoverable_failure(session_id, kind, retry_after)`` fired
-        # when a turn fails with a recoverable kind (rate_limit / auth_401). The
+        # when a turn fails with a recoverable kind (rate_limit / auth_401 / process_crash). The
         # orchestrator drives the actual recovery (same-account retry/recompose, then
         # rotation). ``clock`` is injected only for deterministic retry-after-from-reset
         # tests; production uses wall-clock time.

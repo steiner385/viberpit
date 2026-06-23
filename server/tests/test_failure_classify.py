@@ -76,3 +76,4 @@ def test_positive_exit_code_is_not_a_crash():
     # a clean non-signal exit is not a hard crash we auto-respawn
     f = classify("driver_error", "ProcessError: Command failed with exit code 1")
     assert f.kind == "other"
+    assert classify("driver_error", "ProcessError: Command failed with exit code 1").is_recoverable is False

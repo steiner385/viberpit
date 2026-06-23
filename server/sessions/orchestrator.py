@@ -1106,9 +1106,9 @@ class SessionOrchestrator:
                 continue
             if now - driver.last_progress_at <= STALL_TIMEOUT:
                 continue
-            if self._recovery.crash_cap_reached(sid, now=now):
+            if self._recovery.stall_cap_reached(sid, now=now):
                 continue  # repeatedly stalling — don't interrupt-loop
-            self._recovery.record_crash(sid, now=now)
+            self._recovery.record_stall(sid, now=now)
             log.warning("stall watchdog: interrupting wedged turn session=%s", sid)
             await driver.interrupt()
 

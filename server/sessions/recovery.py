@@ -23,6 +23,8 @@ MAX_ROTATIONS: int = 3            # rotations per session allowed within ROTATIO
 ROTATION_WINDOW: float = 300.0
 CRASH_CAP: int = 3                # crashes per session allowed within CRASH_WINDOW
 CRASH_WINDOW: float = 120.0       # window (seconds) for tracking session crashes
+STALL_CAP: int = 3                # stall-watchdog interrupts per session within STALL_WINDOW
+STALL_WINDOW: float = 120.0       # window (seconds) for tracking session stalls
 STALL_TIMEOUT: float = float(os.environ.get("CCSWITCH_STALL_TIMEOUT_SEC", "300"))
 
 
@@ -35,6 +37,9 @@ class RecoveryState:
         self._crashes: dict[str, list[float]] = defaultdict(list)  # session_id -> crash timestamps
         self._crash_cap = CRASH_CAP
         self._crash_window = CRASH_WINDOW
+        self._stalls: dict[str, list[float]] = defaultdict(list)  # session_id -> stall timestamps
+        self._stall_cap = STALL_CAP
+        self._stall_window = STALL_WINDOW
 
     # --- quarantine -----------------------------------------------------------
     def quarantine(self, account: str, *, until: float) -> None:
@@ -69,3 +74,14 @@ class RecoveryState:
         recent = [t for t in self._crashes.get(session_id, ()) if t > cutoff]
         self._crashes[session_id] = recent
         return len(recent) >= self._crash_cap
+
+    # --- per-session stall cap ------------------------------------------------
+    def record_stall(self, session_id: str, *, now: float) -> None:
+        self._stalls[session_id].append(now)
+
+    def stall_cap_reached(self, session_id: str, *, now: float) -> bool:
+        """True if *session_id* has already stalled ``stall_cap`` times in the window."""
+        cutoff = now - self._stall_window
+        recent = [t for t in self._stalls.get(session_id, ()) if t > cutoff]
+        self._stalls[session_id] = recent
+        return len(recent) >= self._stall_cap

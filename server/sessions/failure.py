@@ -23,7 +23,7 @@ _RECOVERABLE = frozenset({"rate_limit", "auth_401", "process_crash"})
 
 @dataclass(frozen=True)
 class TurnFailure:
-    kind: str  # "rate_limit" | "auth_401" | "other"
+    kind: str  # "rate_limit" | "auth_401" | "process_crash" | "other"
     retry_after: float | None = None
 
     @property
