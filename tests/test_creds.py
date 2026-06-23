@@ -77,3 +77,38 @@ class TestCreds(unittest.TestCase):
             # write_json_secure must force the store ROOT to 0700 too (via paths.ensure_root)
             root_mode = stat.S_IMODE(os.stat(paths.root()).st_mode)
             self.assertEqual(root_mode, 0o700)
+
+    def test_write_json_secure_concurrent_same_path_no_race(self):
+        # Regression: a FIXED temp filename ("<name>.tmp") made concurrent writers
+        # to the SAME path collide — one writer's os.replace renamed the temp away
+        # before another's os.chmod(tmp) ran, raising FileNotFoundError (seen live
+        # as the usage-poller writing the shared mcp.shared.json from every account
+        # thread at once). Unique per-write temp names fix it.
+        import threading
+
+        with temp_env():
+            from ccswitch import paths
+            from ccswitch.creds import write_json_secure, read_json
+            paths.store_dir().mkdir(parents=True)
+            p = paths.slot_path("shared")
+            errors: list[str] = []
+
+            def worker(i: int) -> None:
+                try:
+                    for j in range(40):
+                        write_json_secure(p, {"w": i, "j": j})
+                except Exception as e:  # noqa: BLE001 — capture any race failure
+                    errors.append(repr(e))
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(16)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            self.assertEqual(errors, [], f"concurrent writes raced: {errors[:3]}")
+            # Final file is always valid JSON (never half-written / corrupted).
+            self.assertIn("w", read_json(p))
+            # No leftover temp files.
+            leftover = [f.name for f in p.parent.iterdir() if f.name.endswith(".tmp")]
+            self.assertEqual(leftover, [], f"leftover temp files: {leftover}")
