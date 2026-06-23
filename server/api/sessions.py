@@ -671,15 +671,20 @@ async def get_session_transcript(
                 detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
             )
 
+    # In-process orchestrator yields event objects (.to_wire()); the remote/daemon
+    # orchestrator returns already-serialised wire dicts. Handle both (#172).
+    def _wire(e):
+        return redact_event(e.to_wire() if hasattr(e, "to_wire") else e)
+
     if before is None:
         events = await orch.transcript_events(session_id)
-        return {"events": [redact_event(e.to_wire()) for e in events]}
+        return {"events": [_wire(e) for e in events]}
 
     window = await orch.transcript_window(session_id, before=before, limit=limit)
     if window is None:
         return {"events": [], "earliestTurn": 0, "totalTurns": 0}
     return {
-        "events": [redact_event(e.to_wire()) for e in window.events],
+        "events": [_wire(e) for e in window.events],
         "earliestTurn": window.earliest_turn,
         "totalTurns": window.total_turns,
     }
@@ -702,7 +707,12 @@ async def export_session_markdown(
     record = await orch.get_session(session_id)
     title = (getattr(record, "name", None) or getattr(record, "title", None) or session_id) if record else session_id
     events = await orch.transcript_events(session_id)
-    md = transcript_markdown([redact_event(e.to_wire()) for e in events], title=str(title))
+    # In-process orchestrator yields event objects (.to_wire()); the remote/daemon
+    # orchestrator returns already-serialised wire dicts. Handle both (#172).
+    md = transcript_markdown(
+        [redact_event(e.to_wire() if hasattr(e, "to_wire") else e) for e in events],
+        title=str(title),
+    )
     fname = safe_filename(f"{title}-{session_id}") + ".md"
     return Response(content=md, media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})

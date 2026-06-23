@@ -12,12 +12,10 @@ import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
-from server.sessions.replay import ReplayWindow
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 _IDENT = {"Tailscale-User-Login": "apitest@example.com"}

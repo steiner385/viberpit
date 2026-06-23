@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from server.sessions.export import transcript_markdown
@@ -144,7 +143,7 @@ class TestExportEndpoints:
         assert r.headers["content-type"].startswith("application/x-ndjson")
         assert "attachment" in r.headers["content-disposition"]
         # raw passthrough: first non-empty line parses as JSON
-        first = next(l for l in r.text.splitlines() if l.strip())
+        first = next(line for line in r.text.splitlines() if line.strip())
         json.loads(first)
 
     def test_export_missing_transcript_404(self, tmp_path):
