@@ -142,3 +142,24 @@ def test_rotate_away_excludes_quarantined_and_reassigns(monkeypatch):
     assert reassigned == [("s1", "primary")]
     # excludes both the quarantined account and the current account
     assert {"kindash", "secondary"} <= seen_exclude["v"]
+
+
+def test_process_crash_reassigns_same_account():
+    o = _make_orch(); rec = _rec(o)
+    async def spy_reassign(record, new_account, *, reason):
+        o.calls.append(("reassign", record.id, new_account, reason))
+    o._reassign = spy_reassign
+    asyncio.run(o._recover_session(rec, "process_crash", None))
+    assert ("reassign", "s1", "kindash", "process_crash") in o.calls
+
+
+def test_process_crash_guard_pauses_after_cap():
+    o = _make_orch(); rec = _rec(o)
+    async def spy_reassign(record, new_account, *, reason):
+        o.calls.append(("reassign", record.id, new_account, reason))
+    o._reassign = spy_reassign
+    for _ in range(R.CRASH_CAP):
+        o._recovery.record_crash("s1", now=1000.0)
+    asyncio.run(o._recover_session(rec, "process_crash", None))
+    assert ("pause", "s1", "crash_cap") in o.calls
+    assert ("reassign", "s1", "kindash", "process_crash") not in o.calls

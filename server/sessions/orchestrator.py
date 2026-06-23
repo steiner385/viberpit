@@ -1164,6 +1164,16 @@ class SessionOrchestrator:
         if self._recovery.rotation_cap_reached(record.id, now=now):
             await self._pause_session(record, reason="rotation_cap")
             return
+        if kind == "process_crash":
+            if self._recovery.crash_cap_reached(record.id, now=now):
+                await self._pause_session(record, reason="crash_cap")
+                return
+            self._recovery.record_crash(record.id, now=now)
+            # Rebuild the driver in place on the same account, resuming the
+            # conversation; _reassign re-sends the last prompt so the interrupted
+            # turn continues. Same machinery rate-limit recovery uses.
+            await self._reassign(record, record.account, reason="process_crash")
+            return
         if kind == "rate_limit":
             if retry_after is not None and retry_after <= RETRY_AFTER_MAX:
                 await self._replay_same_account(record, retry_after)
