@@ -59,6 +59,7 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
   const histPosRef = useRef(0)
   const draftRef = useRef('')
   const caretToEndRef = useRef(false)
+  const prevPendingGenerateRef = useRef(false)
 
   // Focus the prompt on mount (and when the active session changes) so the user
   // can start typing immediately on entering a session. Also reset recall state.
@@ -152,6 +153,24 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
     setPendingGenerate(true)
     onRequestSuggestions()
   }, [suggestions, onPrompt, onRequestSuggestions])
+
+  // When the render-phase pendingGenerate→prefill block fires (pendingGenerate goes
+  // true→false while suggestions just arrived), focus and auto-resize the textarea
+  // so the user can immediately press Enter to confirm.
+  // We detect the transition by comparing pendingGenerate to its value from the
+  // previous render (tracked in prevPendingGenerateRef, updated safely in this effect).
+  useEffect(() => {
+    const wasPending = prevPendingGenerateRef.current
+    prevPendingGenerateRef.current = pendingGenerate
+    if (wasPending && !pendingGenerate && text !== '') {
+      const el = textareaRef.current
+      if (el) {
+        el.focus()
+        el.style.height = 'auto'
+        el.style.height = `${Math.min(el.scrollHeight, 192)}px`
+      }
+    }
+  })
 
   // Quiet-fail: if generation produces nothing within 8s, drop the spinner.
   useEffect(() => {

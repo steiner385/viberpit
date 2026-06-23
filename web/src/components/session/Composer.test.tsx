@@ -114,6 +114,17 @@ describe('Composer play button', () => {
     expect(onPrompt).not.toHaveBeenCalled()
   })
 
+  it('generated suggestion focuses the textarea after prefill', () => {
+    const onPrompt = vi.fn()
+    const { rerender } = renderComposer({ status: { state: 'done', count: 0 }, suggestions: [], onRequestSuggestions: vi.fn(), onPrompt })
+    fireEvent.click(screen.getByRole('button', { name: /resume/i }))
+    rerender(<Composer {...defaultProps({ status: { state: 'done', count: 0 }, suggestions: ['Finish the task'], onPrompt })} />)
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
+    expect(textarea.value).toBe('Finish the task')
+    // jsdom focus is synchronous after useEffect; document.activeElement reflects it
+    expect(document.activeElement).toBe(textarea)
+  })
+
   it('caret menu appears with >=2 suggestions and picking sends that item', () => {
     const onPrompt = vi.fn()
     renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['First', 'Second'], onPrompt })
