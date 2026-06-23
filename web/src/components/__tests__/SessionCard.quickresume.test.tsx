@@ -35,24 +35,30 @@ function renderCard(props: {
 }
 
 describe('SessionCard — quick-resume play button', () => {
-  it('live session with a suggestion: play fires in place with the first suggestion', () => {
+  it('with a suggestion: play fires in place with the first suggestion', () => {
     const onQuickResume = vi.fn()
     renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: ['Run the tests'] }), onQuickResume })
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
     expect(onQuickResume).toHaveBeenCalledWith('s1', 'Run the tests')
   })
 
-  it('no suggestion: play calls onQuickResume with no text (caller navigates)', () => {
+  it('no suggestion: play sends "continue"', () => {
     const onQuickResume = vi.fn()
     renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: [] }), onQuickResume })
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
-    expect(onQuickResume).toHaveBeenCalledWith('s1', undefined)
+    expect(onQuickResume).toHaveBeenCalledWith('s1', 'continue')
   })
 
-  it('detached session with a suggestion: play passes no text (navigate to resume)', () => {
+  it('detached "Ready" session with no suggestion: play still sends "continue" (backend resumes it)', () => {
     const onQuickResume = vi.fn()
-    renderCard({ session: mkSession({ status: 'done', detached: true, latestSuggestions: ['x'] }), onQuickResume })
+    renderCard({ session: mkSession({ status: 'idle', detached: true, latestSuggestions: [] }), onQuickResume })
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
-    expect(onQuickResume).toHaveBeenCalledWith('s1', undefined)
+    expect(onQuickResume).toHaveBeenCalledWith('s1', 'continue')
+  })
+
+  it('actively-working session: no resume button', () => {
+    const onQuickResume = vi.fn()
+    renderCard({ session: mkSession({ status: 'in_progress', detached: false, latestSuggestions: [] }), onQuickResume })
+    expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument()
   })
 })
