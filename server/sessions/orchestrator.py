@@ -41,7 +41,7 @@ from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory
 from server.sessions.suggestions import SuggestionService
 from server.sessions.recovery import (
-    RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401,
+    RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
 )
 from server.sessions.selection import AllAccountsBusy, select_account
 from server.sessions.title_generator import generate_title
@@ -164,6 +164,7 @@ class SessionOrchestrator:
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
+        self._stall_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
         # Serialises the check-build-register critical section in ensure_driver
@@ -202,10 +203,11 @@ class SessionOrchestrator:
         self._titling_task = asyncio.create_task(
             self._titling_monitor(), name="titling-monitor"
         )
+        self._stall_task = asyncio.create_task(self._stall_loop(), name="stall-watchdog")
 
     async def stop(self) -> None:
         """Stop the titling sweep, rotation monitor and usage poller."""
-        for attr in ("_titling_task", "_rotation_task"):
+        for attr in ("_titling_task", "_rotation_task", "_stall_task"):
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
@@ -1077,7 +1079,8 @@ class SessionOrchestrator:
         """Dispatch a slash command. Raises KeyError if the command is unknown."""
         d = self._drivers.get(session_id)
         if d is None:
-            raise KeyError(name)
+            return {"name": str(name).lstrip("/"), "render": "notice",
+                    "data": {"text": "This session isn't live — open it and try again."}}
         if str(name).lstrip("/") == "model":
             arg = (args or "").strip()
             await self.set_model_for_session(session_id, arg or None)
@@ -1167,6 +1170,30 @@ class SessionOrchestrator:
         return None
 
     # ------------------------------------------------------------------
+    # Stall watchdog (background task)
+    # ------------------------------------------------------------------
+
+    async def _check_stalls(self, now: float) -> None:
+        for sid, driver in list(self._drivers.items()):
+            if not getattr(driver, "_turn_active", False):
+                continue
+            if now - driver.last_progress_at <= STALL_TIMEOUT:
+                continue
+            if self._recovery.stall_cap_reached(sid, now=now):
+                continue  # repeatedly stalling — don't interrupt-loop
+            self._recovery.record_stall(sid, now=now)
+            log.warning("stall watchdog: interrupting wedged turn session=%s", sid)
+            await driver.interrupt()
+
+    async def _stall_loop(self) -> None:
+        while True:
+            await asyncio.sleep(30)
+            try:
+                await self._check_stalls(self._clock())
+            except Exception:
+                log.exception("stall watchdog tick failed")
+
+    # ------------------------------------------------------------------
     # Rotation monitor (background task)
     # ------------------------------------------------------------------
 
@@ -1241,6 +1268,16 @@ class SessionOrchestrator:
         now = self._clock()
         if self._recovery.rotation_cap_reached(record.id, now=now):
             await self._pause_session(record, reason="rotation_cap")
+            return
+        if kind == "process_crash":
+            if self._recovery.crash_cap_reached(record.id, now=now):
+                await self._pause_session(record, reason="crash_cap")
+                return
+            self._recovery.record_crash(record.id, now=now)
+            # Rebuild the driver in place on the same account, resuming the
+            # conversation; _reassign re-sends the last prompt so the interrupted
+            # turn continues. Same machinery rate-limit recovery uses.
+            await self._reassign(record, record.account, reason="process_crash")
             return
         if kind == "rate_limit":
             if retry_after is not None and retry_after <= RETRY_AFTER_MAX:
