@@ -761,3 +761,28 @@ def test_batch_unarchive_requires_identity():
         with _client_with_account(d) as client:
             resp = client.post("/api/sessions/batch/unarchive", json={"ids": ["x"]})
             assert resp.status_code == 401
+
+
+def test_batch_permanent_delete_all_success():
+    """POST /batch/permanent-delete removes every id; archived list empties."""
+    with temp_env() as d:
+        with _client_with_account(d) as client:
+            a = _create_and_archive(client, "A")
+            b = _create_and_archive(client, "B")
+            resp = client.post("/api/sessions/batch/permanent-delete", json={"ids": [a, b]}, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert set(body["succeeded"]) == {a, b}
+            assert body["failed"] == []
+            assert client.get("/api/sessions/archived", headers=IDENTITY_HEADERS).json() == []
+
+
+def test_batch_permanent_delete_partial_failure():
+    with temp_env() as d:
+        with _client_with_account(d) as client:
+            a = _create_and_archive(client, "A")
+            resp = client.post("/api/sessions/batch/permanent-delete", json={"ids": [a, "ghost"]}, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["succeeded"] == [a]
+            assert body["failed"] == [{"id": "ghost", "error": "not found"}]

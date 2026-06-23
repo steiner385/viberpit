@@ -412,6 +412,37 @@ async def batch_unarchive_sessions(
     return {"succeeded": succeeded, "failed": failed}
 
 
+@router.post("/batch/permanent-delete")
+async def batch_permanent_delete_sessions(
+    body: BatchSessionIdsRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Permanently delete multiple sessions. Best-effort: returns per-id succeeded/failed."""
+    orch = _get_orchestrator(request)
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
+        try:
+            deleted = await orch.permanent_delete(session_id)
+        except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
+            log.warning("batch permanent-delete failed for %s: %s", session_id, exc)
+            failed.append({"id": session_id, "error": str(exc)})
+            continue
+        if not deleted:
+            failed.append({"id": session_id, "error": "not found"})
+            continue
+        succeeded.append(session_id)
+        await record_audit(
+            db=db,
+            type="session.permanent_delete",
+            identity=identity,
+            detail={"session_id": session_id},
+        )
+    return {"succeeded": succeeded, "failed": failed}
+
+
 @router.get("/{session_id}")
 async def get_session(
     session_id: str,
