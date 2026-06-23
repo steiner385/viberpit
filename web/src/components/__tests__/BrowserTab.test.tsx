@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import { BrowserTab } from '../BrowserTab'
 
@@ -7,7 +7,7 @@ vi.mock('../../vnc/vncClient', () => ({
     on() {}
     connect() {}
     disconnect() {}
-    setScale() {}
+    refit() {}
     focus() {}
     blur() {}
   },
@@ -65,5 +65,25 @@ describe('BrowserTab', () => {
     } finally {
       document.removeEventListener('keydown', parentListener)
     }
+  })
+
+  it('defaults to Fit and hides the Fit-reset control until zoomed', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    expect(screen.getByText('Fit')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /reset to fit/i })).toBeNull()
+  })
+
+  it('zoom-in updates the pill to a percentage and reveals Fit-reset', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    fireEvent.click(screen.getByRole('button', { name: /zoom in/i }))
+    expect(screen.getByText('110%')).toBeInTheDocument()
+    const reset = screen.getByRole('button', { name: /reset to fit/i })
+    fireEvent.click(reset)
+    expect(screen.getByText('Fit')).toBeInTheDocument()
+  })
+
+  it('never renders a "1:1" label', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+    expect(screen.queryByText('1:1')).toBeNull()
   })
 })
