@@ -43,6 +43,8 @@ class _DaemonThread:
         async def _serve():
             dapp = create_daemon_app()
             register_orchestrator_rpc(dapp, self._orch)  # running loop → pump starts
+            from server.ipc.x11_rpc import register_x11
+            register_x11(dapp, getattr(self._orch, "_x11", None))
             async with serve_daemon_uds(dapp) as sock:
                 self.sock = sock
                 self._ready.set()
@@ -213,3 +215,56 @@ def test_rest_daemonerror_maps_to_409(remote_edge):
     resp = client.get("/api/sessions", headers=_IDENT)
     assert resp.status_code == 409, resp.text
     assert resp.json()["detail"] == "account"
+
+
+def test_vnc_end_to_end_remote(tmp_path):
+    """browser → edge /ws/vnc → daemon /vnc → local RFB echo → browser, in real remote mode."""
+    import socket
+    import threading
+    from server.tests.test_x11_rpc import _FakeX11
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+
+    def _serve():
+        try:
+            conn, _ = srv.accept()
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    break
+                conn.sendall(b"E:" + data)
+            conn.close()
+        except OSError:
+            pass
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+
+    orch = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0,
+                               usage_fn=lambda n: None)
+    orch._x11 = _FakeX11(has_display=True, port=port)
+    daemon = _DaemonThread(orch)
+    daemon.start()
+    env = {
+        "CCSWITCH_SESSIOND_SOCKET": daemon.sock,
+        "CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}",
+        "CCSWITCH_TAILNET_ALLOWLIST": _IDENT["Tailscale-User-Login"],
+    }
+    try:
+        with mock.patch.dict(os.environ, env):
+            app = create_app()
+            assert app.state.x11 is None  # remote mode: no local manager
+            with TestClient(app, raise_server_exceptions=False) as client:
+                with client.websocket_connect("/ws/vnc?session=S", headers=_IDENT) as ws:
+                    ws.send_bytes(b"HI")
+                    assert ws.receive_bytes() == b"E:HI"
+                m = client.get("/api/x11/metrics", headers=_IDENT)
+                assert m.status_code == 200 and m.json().get("displays_allocated") == 1
+    finally:
+        daemon.stop()
+        srv.close()
+        t.join(timeout=2)

@@ -121,6 +121,18 @@ class RateLimit:
     resets_at: int | None = None; status: str | None = None
 
 @dataclass
+class Condensing:
+    """Context auto-compaction state. Forwarded to the UI: ``active`` toggles the
+    progress bar; ``expected_ms`` (set on the active=True start event) is the learned
+    expected duration the bar animates against. ``pre_tokens`` is informational."""
+    active: bool
+    trigger: str | None = None
+    pre_tokens: int | None = None
+    expected_ms: float | None = None
+    def to_wire(self):
+        return {"type": "condensing", "active": self.active, "expectedMs": self.expected_ms}
+
+@dataclass
 class TurnFailure:
     """A turn failed with a recoverable kind (rate_limit / auth_401). Informational
     for the UI; the orchestrator drives the actual recovery off the same signal."""

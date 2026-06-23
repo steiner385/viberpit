@@ -139,4 +139,17 @@ describe('SessionMeta', () => {
     expect(screen.getByText('Explore')).toBeInTheDocument()
     expect(screen.getByText('Plan')).toBeInTheDocument()
   })
+
+  it('marks the ctx readout danger and shows hint when context nearly full', () => {
+    render(<SessionMeta {...baseProps} contextPct={5} />)
+    const ctx = screen.getByLabelText('Remaining context')
+    expect(ctx.className).toMatch(/red/)
+    expect(screen.getByText(/compacts soon/i)).toBeInTheDocument()
+  })
+
+  it('stays calm with plenty of context remaining', () => {
+    render(<SessionMeta {...baseProps} contextPct={80} />)
+    const ctx = screen.getByLabelText('Remaining context')
+    expect(ctx.className).not.toMatch(/red|amber/)
+  })
 })

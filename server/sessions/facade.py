@@ -54,4 +54,6 @@ class InProcessOrchestratorAdapter:
     async def usage(self, name): return await _maybe_await(self._orch.poller.get(name))
     async def pending_permissions(self, session_id): return await _maybe_await(self._orch._registry.pending(session_id))
     async def active_session_count(self): return await _maybe_await(self._orch.active_session_count())
+    async def live_session_load(self): return await _maybe_await(self._orch.live_session_load())
+    async def live_session_counts(self): return await _maybe_await(self._orch.live_session_counts())
     def pr_for(self, repo, branch): return self._orch.pr_for(repo, branch)

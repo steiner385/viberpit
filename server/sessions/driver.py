@@ -33,7 +33,8 @@ class SessionDriver:
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
-                 on_status=None, on_recoverable_failure=None, clock=None, suggester=None):
+                 on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
+                 on_recoverable_failure=None, clock=None, suggester=None):
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -50,6 +51,9 @@ class SessionDriver:
         # real state, using the RICH derived vocabulary (in_progress / waiting_input /
         # ready_review / done / idle), not just the live working/idle of the StatusBar.
         self._on_status = on_status
+        self._on_record_condense_ms = on_record_condense_ms
+        self._get_condense_estimate = get_condense_estimate
+        self._condense_started_at: float | None = None
         # async callback ``on_recoverable_failure(session_id, kind, retry_after)`` fired
         # when a turn fails with a recoverable kind (rate_limit / auth_401 / process_crash). The
         # orchestrator drives the actual recovery (same-account retry/recompose, then
@@ -69,6 +73,7 @@ class SessionDriver:
         self._titled: bool = False
         self._queue: list[tuple[str, list[dict]]] = []
         self._turn_active: bool = False
+        self._condensing: bool = False
         self._turns_completed: int = 0
         self._last_turn_outcome: str = "success"
         self._suggester = suggester
@@ -115,6 +120,35 @@ class SessionDriver:
     def current_status(self) -> str:
         """The rich derived status right now (no side effects). Used on WS attach."""
         return derive_status(self._dash_signals())
+
+    async def _on_pre_compact(self, input=None, tool_use_id=None, ctx=None) -> dict:
+        """SDK PreCompact hook: compaction is starting. Stamp the start, advertise the
+        learned expected duration to the UI, flip the status. Never blocks compaction."""
+        self._condense_started_at = self._clock()
+        self._condensing = True
+        est: float | None = None
+        if self._get_condense_estimate is not None:
+            try:
+                est = await self._get_condense_estimate()
+            except Exception:
+                log.warning("driver.get_condense_estimate failed session=%s", self.session_id, exc_info=True)
+        await self._out.put(ev.Condensing(active=True, expected_ms=est))
+        await self._emit_status()
+        return {}
+
+    async def _consume_condensing(self, e) -> None:
+        """Toggle the flag, record a real boundary's duration, forward to the UI."""
+        self._condensing = e.active
+        if not e.active and self._condense_started_at is not None:
+            ms = (self._clock() - self._condense_started_at) * 1000
+            self._condense_started_at = None
+            if self._on_record_condense_ms is not None:
+                try:
+                    await self._on_record_condense_ms(ms)
+                except Exception:
+                    log.warning("driver.record_condense_ms failed session=%s", self.session_id, exc_info=True)
+        await self._emit_status()
+        await self._out.put(e)   # forward so the UI clears the bar
 
     async def _emit_status(self, count: int | None = None) -> None:
         """Single status emitter — rich vocabulary to BOTH consumers.
@@ -259,6 +293,7 @@ class SessionDriver:
             pending_plan=any(p.get("tool") == "ExitPlanMode" for p in perms),
             turns_completed=self._turns_completed,
             last_turn_outcome=self._last_turn_outcome,
+            condensing=self._condensing,
         )
 
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
@@ -280,7 +315,8 @@ class SessionDriver:
         return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied by user")
 
     async def start(self):
-        self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, self.resume)
+        self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
+                                     self.resume, on_pre_compact=self._on_pre_compact)
         await self._client.__aenter__()
 
     async def send_prompt(self, text: str, images: list[dict] | None = None):
@@ -375,6 +411,9 @@ class SessionDriver:
                         if e.resets_at is not None:
                             self._last_rate_reset = e.resets_at
                         continue
+                    if isinstance(e, ev.Condensing):
+                        await self._consume_condensing(e)
+                        continue
                     if isinstance(e, ev.TextDelta):
                         self._last_assistant_parts.append(e.text)
                     elif isinstance(e, ev.TurnEnd):
@@ -405,6 +444,9 @@ class SessionDriver:
         finally:
             # Capture any token rotation the SDK performed during this turn.
             await self._call_sync_back()
+            # Compaction is turn-scoped; never let a condensing flag outlive the turn.
+            self._condensing = False
+            self._condense_started_at = None
             # If queued prompts remain, pop the front and start the next turn.
             if self._queue:
                 next_text, next_images = self._queue.pop(0)
@@ -548,7 +590,8 @@ class SessionDriver:
         self._queue.clear()
         self._turn_active = False
         self._tr = Translator()
-        client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None)
+        client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None,
+                               on_pre_compact=self._on_pre_compact)
         self._client = client
         await client.__aenter__()
 

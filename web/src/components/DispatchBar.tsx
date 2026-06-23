@@ -18,16 +18,14 @@ export interface DispatchBarProps {
   onNavigate: (dir: 'up' | 'down') => void
   /** Enter on an EMPTY prompt, or →. */
   onOpenHighlighted: () => void
-  /** Ctrl+R / Ctrl+X / Alt+1..9 on the highlighted row. */
-  onRowAction: (
-    action: { type: 'rename' } | { type: 'delete' } | { type: 'jump'; index: number },
-  ) => void
+  /** Tab on an empty prompt — drop into list-focus mode. */
+  onEnterList: () => void
+  /** Alt+1..9 — open session by index. */
+  onJump: (index: number) => void
   /** ? — open the shortcuts overlay. */
   onShowHelp: () => void
   /** Esc — also clears highlight in the parent. */
   onEscape: () => void
-  /** When set, show a "press Ctrl+X again to close '<name>'" hint. */
-  confirmDeleteName?: string | null
   /** id of the highlighted row's button, e.g. "row-<id>", for aria-activedescendant. */
   activeDescendantId?: string
   /** Auto-focus the textarea when this changes / on mount. */
@@ -42,10 +40,10 @@ export function DispatchBar({
   onDispatch,
   onNavigate,
   onOpenHighlighted,
-  onRowAction,
+  onEnterList,
+  onJump,
   onShowHelp,
   onEscape,
-  confirmDeleteName,
   activeDescendantId,
   autoFocusKey,
   isPending,
@@ -104,7 +102,7 @@ export function DispatchBar({
     // Alt+Digit1..9 → jump to session by index
     if (e.altKey && /^[1-9]$/.test(e.key)) {
       e.preventDefault()
-      onRowAction({ type: 'jump', index: Number(e.key) - 1 })
+      onJump(Number(e.key) - 1)
       return
     }
 
@@ -154,19 +152,11 @@ export function DispatchBar({
       return
     }
 
-    // Ctrl+R → rename highlighted row. preventDefault ALWAYS so the browser never
-    // reloads and discards an in-progress prompt; act only when the prompt is empty.
-    if (e.ctrlKey && (e.key === 'r' || e.key === 'R')) {
+    // Tab on an empty prompt → enter list-focus mode. With a draft, Tab keeps its
+    // native job (move focus to the Create button) so keyboard send still works.
+    if (empty && e.key === 'Tab' && !e.shiftKey) {
       e.preventDefault()
-      if (empty) onRowAction({ type: 'rename' })
-      return
-    }
-
-    // Ctrl+X → close (delete) highlighted row; two-press guard lives in the parent.
-    // Only when the prompt is empty, so native "cut" still works while editing a draft.
-    if (empty && e.ctrlKey && (e.key === 'x' || e.key === 'X')) {
-      e.preventDefault()
-      onRowAction({ type: 'delete' })
+      onEnterList()
       return
     }
   }
@@ -243,17 +233,6 @@ export function DispatchBar({
           )}
         </select>
       </div>
-
-      {/* Press-twice delete confirmation hint */}
-      {confirmDeleteName && (
-        <p
-          role="status"
-          aria-live="polite"
-          className="text-xs text-amber-700 dark:text-amber-400 px-1"
-        >
-          Press Ctrl+X again to close &lsquo;{confirmDeleteName}&rsquo;
-        </p>
-      )}
 
       <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
 
