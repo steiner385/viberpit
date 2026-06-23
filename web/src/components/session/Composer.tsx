@@ -6,7 +6,7 @@ import { AttachmentChips } from './AttachmentChips'
 import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
 import { MicButton } from './MicButton'
 import { useDictationField } from '@/lib/useDictationField'
-import type { Command } from '@/session/events'
+import type { Command, QueuedItem } from '@/session/events'
 import { statusTier } from '@/session/statusTier'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 
@@ -14,7 +14,7 @@ interface Props {
   status: { state: string; count: number }
   onPrompt: (text: string, attachmentIds: string[]) => void
   onInterrupt: () => void
-  queued?: string[]
+  queued?: QueuedItem[]
   onCancelQueued?: (index: number) => void
   chatArmed?: boolean
   commands?: Command[]
@@ -238,13 +238,25 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
         <div className="flex flex-col gap-1">
           {queued.map((item, index) => (
             <div
-              key={`${index}-${item.slice(0, 20)}`}
+              key={`${index}-${item.text.slice(0, 20)}`}
               className={cn(
                 'flex items-center justify-between gap-2 px-2 py-1 rounded',
                 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-xs',
               )}
             >
-              <span className="truncate flex-1">{item.length > 80 ? item.slice(0, 80) + '…' : item}</span>
+              <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                {item.images.map((img, i) => (
+                  <img
+                    key={i}
+                    src={img.url}
+                    alt={img.name || 'attachment'}
+                    className="h-8 w-8 rounded object-cover flex-shrink-0"
+                  />
+                ))}
+                <span className="truncate flex-1">
+                  {item.text.length > 80 ? item.text.slice(0, 80) + '…' : item.text}
+                </span>
+              </div>
               <button
                 type="button"
                 aria-label="Cancel queued prompt"
