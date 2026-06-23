@@ -30,6 +30,7 @@ vi.mock('@/api/hooks', () => ({
   usePermanentDeleteSession: vi.fn(),
   useBulkUnarchiveSessions: vi.fn(),
   useBulkPermanentDeleteSessions: vi.fn(),
+  useSendPrompt: () => ({ mutate: vi.fn() }),
   QK: {
     accounts: ['accounts'],
     sessions: ['sessions'],

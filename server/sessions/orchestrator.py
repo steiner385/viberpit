@@ -41,7 +41,7 @@ from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory
 from server.sessions.suggestions import SuggestionService
 from server.sessions.recovery import (
-    RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401,
+    RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
 )
 from server.sessions.selection import AllAccountsBusy, select_account
 from server.sessions.title_generator import generate_title
@@ -164,6 +164,7 @@ class SessionOrchestrator:
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
+        self._stall_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
         # Serialises the check-build-register critical section in ensure_driver
@@ -202,10 +203,11 @@ class SessionOrchestrator:
         self._titling_task = asyncio.create_task(
             self._titling_monitor(), name="titling-monitor"
         )
+        self._stall_task = asyncio.create_task(self._stall_loop(), name="stall-watchdog")
 
     async def stop(self) -> None:
         """Stop the titling sweep, rotation monitor and usage poller."""
-        for attr in ("_titling_task", "_rotation_task"):
+        for attr in ("_titling_task", "_rotation_task", "_stall_task"):
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
@@ -645,6 +647,7 @@ class SessionOrchestrator:
                 adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
                 model=getattr(row, "model", None),
                 account_pinned=bool(getattr(row, "account_pinned", False)),
+                active_goal=getattr(row, "active_goal", None),
                 branch=branch,
             )
             added += 1
@@ -764,6 +767,17 @@ class SessionOrchestrator:
     def driver(self, session_id: str) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, or None."""
         return self._drivers.get(session_id)
+
+    def seed_idle_suggestions(self, session_id: str, user_text: str, assistant_text: str) -> None:
+        """Seed idle-session suggestions on the live driver (best-effort).
+
+        Forwarded here over RPC by the edge's RemoteDriver so daemon mode matches
+        the in-process path, where ws.py calls the driver directly. No live driver
+        for the session → no-op (the seeding is best-effort and gated driver-side).
+        """
+        d = self._drivers.get(session_id)
+        if d is not None:
+            d.seed_idle_suggestions(user_text, assistant_text)
 
     async def ensure_driver(self, session_id: str, identity: str = "system") -> SessionDriver | None:
         """Return the live SessionDriver for session_id, resuming from DB if detached.
@@ -1029,6 +1043,21 @@ class SessionOrchestrator:
         if d:
             await d.interrupt()
 
+    def latest_suggestions(self, session_id: str) -> list[str]:
+        """Latest cached next-prompt suggestions for a live session.
+
+        Returns [] when the session has no live driver (detached) or none were
+        generated. Read straight off the driver — suggestions are ephemeral and
+        never persisted (see suggestions.py)."""
+        d = self._drivers.get(session_id)
+        return list(getattr(d, "_last_suggestions", []) or []) if d else []
+
+    async def request_suggestions(self, session_id: str) -> None:
+        """Ask a live session to (re)generate next-prompt suggestions now."""
+        d = self._drivers.get(session_id)
+        if d:
+            d.request_suggestions()
+
     async def set_permission_mode(self, session_id, mode):
         d = self._drivers.get(session_id)
         if d:
@@ -1050,7 +1079,8 @@ class SessionOrchestrator:
         """Dispatch a slash command. Raises KeyError if the command is unknown."""
         d = self._drivers.get(session_id)
         if d is None:
-            raise KeyError(name)
+            return {"name": str(name).lstrip("/"), "render": "notice",
+                    "data": {"text": "This session isn't live — open it and try again."}}
         if str(name).lstrip("/") == "model":
             arg = (args or "").strip()
             await self.set_model_for_session(session_id, arg or None)
@@ -1068,6 +1098,14 @@ class SessionOrchestrator:
                         "data": {"text": f"Unknown account: {acct}"}}
             return {"name": "account", "render": "notice",
                     "data": {"text": f"Account → {acct}"}}
+        if str(name).lstrip("/") == "goal":
+            cond = (args or "").strip()
+            cleared = (not cond) or cond.lower() == "clear"
+            try:
+                await self.set_goal_for_session(session_id, None if cleared else cond)
+            except Exception:
+                log.warning("goal capture/persist failed session=%s", session_id, exc_info=True)
+            # fall through: forward /goal to the CLI regardless
         info = await d.server_info()
         by_name = {c.name: c for c in cmd_catalog.build_catalog(info)}
         cmd = by_name.get(str(name).lstrip("/"))
@@ -1130,6 +1168,30 @@ class SessionOrchestrator:
             if matches:
                 return matches[0]
         return None
+
+    # ------------------------------------------------------------------
+    # Stall watchdog (background task)
+    # ------------------------------------------------------------------
+
+    async def _check_stalls(self, now: float) -> None:
+        for sid, driver in list(self._drivers.items()):
+            if not getattr(driver, "_turn_active", False):
+                continue
+            if now - driver.last_progress_at <= STALL_TIMEOUT:
+                continue
+            if self._recovery.stall_cap_reached(sid, now=now):
+                continue  # repeatedly stalling — don't interrupt-loop
+            self._recovery.record_stall(sid, now=now)
+            log.warning("stall watchdog: interrupting wedged turn session=%s", sid)
+            await driver.interrupt()
+
+    async def _stall_loop(self) -> None:
+        while True:
+            await asyncio.sleep(30)
+            try:
+                await self._check_stalls(self._clock())
+            except Exception:
+                log.exception("stall watchdog tick failed")
 
     # ------------------------------------------------------------------
     # Rotation monitor (background task)
@@ -1206,6 +1268,16 @@ class SessionOrchestrator:
         now = self._clock()
         if self._recovery.rotation_cap_reached(record.id, now=now):
             await self._pause_session(record, reason="rotation_cap")
+            return
+        if kind == "process_crash":
+            if self._recovery.crash_cap_reached(record.id, now=now):
+                await self._pause_session(record, reason="crash_cap")
+                return
+            self._recovery.record_crash(record.id, now=now)
+            # Rebuild the driver in place on the same account, resuming the
+            # conversation; _reassign re-sends the last prompt so the interrupted
+            # turn continues. Same machinery rate-limit recovery uses.
+            await self._reassign(record, record.account, reason="process_crash")
             return
         if kind == "rate_limit":
             if retry_after is not None and retry_after <= RETRY_AFTER_MAX:
@@ -1329,6 +1401,22 @@ class SessionOrchestrator:
             from sqlalchemy import update as sa_update
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(model=model)
+            )
+
+    async def set_goal_for_session(self, session_id: str, goal: str | None) -> None:
+        """Record the session's active /goal condition AND persist it, so the badge
+        survives rehydrate. The /goal text is still forwarded to the CLI by run_command;
+        this only mirrors the state for the UI (no SDK method exists for goals)."""
+        record = self._records.get(session_id)
+        if record is not None:
+            record.active_goal = goal
+        await self._persist_goal(session_id, goal)
+
+    async def _persist_goal(self, session_id: str, goal: str | None) -> None:
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(active_goal=goal)
             )
 
     async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str) -> None:
@@ -1540,6 +1628,7 @@ class SessionOrchestrator:
             updated_at=getattr(row, "updated_at", None),
             model=getattr(row, "model", None),
             account_pinned=bool(getattr(row, "account_pinned", False)),
+            active_goal=getattr(row, "active_goal", None),
         )
         self._records[session_id] = record
         log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)
