@@ -934,6 +934,7 @@ def test_forward_live_emits_error_frame_on_crash():
     errs = [fr for fr in frames if fr.get("type") == "error"]
     assert errs, f"expected an error frame, got {[fr.get('type') for fr in frames]}"
     assert "RuntimeError" in errs[0]["message"]
+    assert "pty closed unexpectedly" in errs[0]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -959,6 +960,7 @@ def test_prompt_during_drain_returns_promptRejected(ws_env):
         assert rejected[0]["sessionId"] == session_id
         assert rejected[0]["text"] == "held please"
         assert rejected[0]["reason"] == "draining"
+        assert rejected[0]["attachmentIds"] is None
 
     # No cancel_drain needed: the fixture tears down the app/loop on exit, which
     # cancels the in-memory drain + its self-clear timer task.
