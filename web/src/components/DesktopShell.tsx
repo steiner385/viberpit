@@ -17,7 +17,7 @@
  * via SessionRuntimeProvider keyed by the focused id.
  */
 
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { Plus, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SessionList } from './SessionList'
@@ -33,7 +33,7 @@ import { useSidebarWidth } from '@/lib/useSidebarWidth'
 import { RenameDialog, PermanentDeleteDialog } from './Dashboard'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from './session/SessionRuntimeProvider'
 import { SessionBody } from './session/SessionBody'
-import { Composer } from './session/Composer'
+import { SessionComposer } from './session/SessionComposer'
 import { CommandResultOverlay } from './session/CommandResultOverlay'
 import {
   useAccounts,
@@ -46,7 +46,6 @@ import {
   useGithubRepos,
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
-import { deriveHistory } from '@/session/history'
 
 type TabId = 'sessions' | 'accounts' | 'archived'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
@@ -75,23 +74,11 @@ function MainPaneSession() {
   )
 }
 
-function SessionComposer() {
+// Context bridge: the bottom prompt is rendered inside the SessionRuntimeProvider,
+// so it can read the runtime from context and hand it to the shared SessionComposer.
+function BottomComposer() {
   const rt = useSessionRuntimeContext()
-  const history = useMemo(() => deriveHistory(rt.state.turns), [rt.state.turns])
-  return (
-    <Composer
-      status={rt.state.status}
-      mode={rt.mode}
-      onPrompt={rt.onPrompt}
-      onInterrupt={rt.onInterrupt}
-      onSetMode={rt.onSetMode}
-      queued={rt.state.queued}
-      onCancelQueued={rt.onCancelQueued}
-      commands={rt.commands}
-      onCommand={rt.onCommand}
-      history={history}
-    />
-  )
+  return <SessionComposer rt={rt} />
 }
 
 // ── Welcome / empty main-pane state (when New Session is the target) ───────────
@@ -407,7 +394,7 @@ export function DesktopShell() {
   const sessionActive = tab === 'sessions' && selection.type === 'session'
 
   const bottomPrompt = sessionActive ? (
-    <SessionComposer />
+    <BottomComposer />
   ) : (
     <DispatchBar
       repos={reposQuery.data ?? []}

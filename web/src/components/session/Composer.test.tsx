@@ -52,6 +52,15 @@ describe('Composer ghost-text suggestion', () => {
     expect(onPrompt).not.toHaveBeenCalled()
   })
 
+  it('tapping the ghost fills the box without sending (touch path)', () => {
+    const { onPrompt } = setupStatus(['Run the tests'])
+    fireEvent.click(screen.getByTestId('ghost-suggestion'))
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
+    expect(textarea.value).toBe('Run the tests')
+    expect(onPrompt).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('ghost-suggestion')).toBeNull()
+  })
+
   it('Shift+Tab does not accept the suggestion', () => {
     setupStatus(['Run the tests'])
     const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
