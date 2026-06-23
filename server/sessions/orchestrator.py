@@ -974,6 +974,15 @@ class SessionOrchestrator:
         if d:
             await d.interrupt()
 
+    def latest_suggestions(self, session_id: str) -> list[str]:
+        """Latest cached next-prompt suggestions for a live session.
+
+        Returns [] when the session has no live driver (detached) or none were
+        generated. Read straight off the driver — suggestions are ephemeral and
+        never persisted (see suggestions.py)."""
+        d = self._drivers.get(session_id)
+        return list(getattr(d, "_last_suggestions", []) or []) if d else []
+
     async def set_permission_mode(self, session_id, mode):
         d = self._drivers.get(session_id)
         if d:

@@ -426,6 +426,7 @@ class SessionDriver:
         items = await self._suggester.generate(self.cwd, self.config_dir, context)
         log.info("suggestions session=%s turn=%s n=%d", self.session_id, turn_id, len(items))
         if items:
+            self._last_suggestions = items
             await self._out.put(ev.Suggestions(self.session_id, turn_id, items))
 
     def seed_idle_suggestions(self, user_text: str, assistant_text: str) -> None:
