@@ -382,7 +382,11 @@ export function DesktopShell() {
           sessions={sessions}
           accounts={accounts}
           isLoading={sessionsLoading}
-          selectedId={selectedSessionId}
+          // Visible cursor: mark the open session, else the keyboard-highlighted
+          // row. The two are mutually exclusive in practice — the list-nav
+          // DispatchBar only renders when no session is open — so this also makes
+          // ↑/↓ visibly move the highlight on the new-session view.
+          selectedId={selectedSessionId ?? highlighted?.id}
           onNew={focusNew}
           onOpen={focusSession}
           onRename={handleRename}
