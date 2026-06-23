@@ -140,8 +140,8 @@ def test_replay_attaches_iso_timestamp_as_ms(tmp_path):
     ])
     out = replay._parse(path, max_turns=20)
     by = {type(e).__name__: e for e in out}
-    assert by["UserMessage"].ts == 1782561600000.0          # 2026-06-23T12:00:00Z
-    assert by["TextDelta"].ts == 1782561601500.0            # +1.5s
+    assert by["UserMessage"].ts == 1782216000000.0          # 2026-06-23T12:00:00Z (UTC)
+    assert by["TextDelta"].ts == 1782216001500.0            # +1.5s
 
 
 def test_replay_missing_timestamp_is_none(tmp_path):
