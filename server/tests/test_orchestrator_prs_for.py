@@ -1,3 +1,4 @@
+import pytest
 from unittest import mock
 
 from server.github.pr_status import PullRequestInfo
@@ -46,9 +47,6 @@ def test_pr_pairs_unions_authored_branches():
         cwd="/tmp", repo="o/r", authored_branches=["feat/a", "feat/b"],
     )
     assert set(orch._pr_pairs()) == {("o/r", "feat/a"), ("o/r", "feat/b")}
-
-
-import pytest
 
 
 @pytest.mark.asyncio

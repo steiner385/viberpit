@@ -258,6 +258,11 @@ class SessionOrchestrator:
         """Stop the titling sweep, rotation monitor and usage poller."""
         if self._pr_branch_task is not None:
             self._pr_branch_task.cancel()
+            try:
+                await self._pr_branch_task
+            except asyncio.CancelledError:
+                pass
+            self._pr_branch_task = None
         for attr in ("_titling_task", "_rotation_task", "_stall_task", "_token_refresh_task"):
             task = getattr(self, attr)
             if task is not None:
@@ -768,9 +773,13 @@ class SessionOrchestrator:
         for rec in list(self._records.values()):
             if not rec.cwd:
                 continue
-            fresh = await asyncio.to_thread(
-                worktrees.authored_branches, rec.cwd, getattr(rec, "branch", None)
-            )
+            try:
+                fresh = await asyncio.to_thread(
+                    worktrees.authored_branches, rec.cwd, getattr(rec, "branch", None)
+                )
+            except Exception:
+                log.debug("authored_branches.resolve_failed id=%s", rec.id, exc_info=True)
+                continue
             if not fresh:
                 continue
             merged = sorted(set(getattr(rec, "authored_branches", None) or []) | set(fresh))
