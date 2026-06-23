@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
-import { Paperclip, X, Play, Loader2, ChevronUp } from 'lucide-react'
+import { Paperclip, X, Play, ChevronUp } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useImageAttachments } from './useImageAttachments'
 import { AttachmentChips } from './AttachmentChips'
@@ -23,16 +23,11 @@ interface Props {
   autoFocusKey?: unknown
   suggestions?: string[]
   history?: string[]
-  onRequestSuggestions: () => void
 }
 
-export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [], onRequestSuggestions }: Props) {
+export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [] }: Props) {
   const [text, setText] = useState('')
-  const [pendingGenerate, setPendingGenerate] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
-  // prevSuggestions tracks which suggestions array we last acted on for the
-  // pendingGenerate→prefill flow, so we only prefill once per new suggestions array.
-  const [prevSuggestions, setPrevSuggestions] = useState<string[] | undefined>(undefined)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const paletteRef = useRef<CommandPaletteHandle>(null)
@@ -59,7 +54,6 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
   const histPosRef = useRef(0)
   const draftRef = useRef('')
   const caretToEndRef = useRef(false)
-  const prevPendingGenerateRef = useRef(false)
 
   // Focus the prompt on mount (and when the active session changes) so the user
   // can start typing immediately on entering a session. Also reset recall state.
@@ -135,49 +129,17 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
 
   const showPlay = !isWorking && text === ''
 
-  // When suggestions arrive while pendingGenerate is true, prefill the box for
-  // confirmation (never auto-send). This uses the React "derived state during render"
-  // pattern (setState during render = immediate re-render, no cascading side effect).
-  // prevSuggestions guards against re-running on every re-render when nothing changed.
-  if (pendingGenerate && suggestions !== prevSuggestions && suggestions && suggestions.length > 0) {
-    setPrevSuggestions(suggestions)
-    setText(suggestions[0])
-    setPendingGenerate(false)
-  }
-
   const play = useCallback(() => {
+    // Existing suggestion (shown as ghost text) → send it immediately. Otherwise
+    // prefill "continue", focused + editable, for the user to confirm — instant and
+    // reliable on any session (a detached/idle session has no live driver to
+    // generate against, so on-demand generation can't work there).
     if (suggestions && suggestions.length > 0) {
       onPrompt(suggestions[0], [])
       return
     }
-    setPendingGenerate(true)
-    onRequestSuggestions()
-  }, [suggestions, onPrompt, onRequestSuggestions])
-
-  // When the render-phase pendingGenerate→prefill block fires (pendingGenerate goes
-  // true→false while suggestions just arrived), focus and auto-resize the textarea
-  // so the user can immediately press Enter to confirm.
-  // We detect the transition by comparing pendingGenerate to its value from the
-  // previous render (tracked in prevPendingGenerateRef, updated safely in this effect).
-  useEffect(() => {
-    const wasPending = prevPendingGenerateRef.current
-    prevPendingGenerateRef.current = pendingGenerate
-    if (wasPending && !pendingGenerate && text !== '') {
-      const el = textareaRef.current
-      if (el) {
-        el.focus()
-        el.style.height = 'auto'
-        el.style.height = `${Math.min(el.scrollHeight, 192)}px`
-      }
-    }
-  })
-
-  // Quiet-fail: if generation produces nothing within 8s, drop the spinner.
-  useEffect(() => {
-    if (!pendingGenerate) return
-    const t = setTimeout(() => setPendingGenerate(false), 8000)
-    return () => clearTimeout(t)
-  }, [pendingGenerate])
+    prefill('continue')
+  }, [suggestions, onPrompt, prefill])
 
   function handlePaste(e: React.ClipboardEvent) {
     const files = Array.from(e.clipboardData?.files || [])
@@ -357,17 +319,15 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
             <button
               type="button"
               aria-label="Resume (send suggested next step)"
-              title="Resume — send the suggested next step"
+              title={suggestions && suggestions.length > 0 ? 'Resume — send the suggested next step' : 'Resume — prefill “continue”'}
               onClick={play}
-              disabled={pendingGenerate}
               className={cn(
                 'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-[44px]',
-                'bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60',
+                'bg-emerald-600 text-white hover:bg-emerald-700',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400',
               )}
             >
-              {pendingGenerate ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />
-                               : <Play size={16} aria-hidden="true" />}
+              <Play size={16} aria-hidden="true" />
             </button>
             {suggestions && suggestions.length >= 2 && (
               <button

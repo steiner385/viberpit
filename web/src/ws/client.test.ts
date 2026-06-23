@@ -353,17 +353,4 @@ describe('SessionSocket', () => {
     const sent = parseSent(lastSock(), 0)
     expect(sent).toEqual({ type: 'cancelQueued', sessionId: 's', index: 2 })
   })
-
-  // ── Outbound: requestSuggestions ──────────────────────────────────────────
-
-  it('requestSuggestions sends a request_suggestions frame', () => {
-    const sock = new SessionSocket('/ws')
-    sock.connect()
-    lastSock().simulateOpen()
-
-    sock.requestSuggestions('s1')
-
-    const sent = parseSent(lastSock(), 0)
-    expect(sent).toEqual({ type: 'request_suggestions', sessionId: 's1' })
-  })
 })
