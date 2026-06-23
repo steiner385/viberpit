@@ -21,7 +21,7 @@ def test_echo_round_trips_to_subscriber():
             ws.send_text(json.dumps({"type": "subscribe", "stream": "s2"}))
             c.post("/rpc/echo", json={"stream": "s2", "text": "hi"})
             frame = json.loads(ws.receive_text())
-    assert frame == {"type": "event", "stream": "s2", "event": {"type": "echo", "text": "hi"}}
+    assert frame == {"type": "event", "stream": "s2", "event": {"type": "echo", "text": "hi"}, "seq": 0}
 
 
 def test_unsubscribed_stream_not_delivered():
