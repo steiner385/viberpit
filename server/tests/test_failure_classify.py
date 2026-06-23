@@ -52,3 +52,28 @@ def test_none_code_and_empty_message_is_other():
 def test_turnfailure_is_frozen_dataclass():
     f = TurnFailure(kind="rate_limit", retry_after=3.0)
     assert f.kind == "rate_limit" and f.retry_after == 3.0
+
+
+def test_process_crash_signatures_are_recoverable():
+    for msg in (
+        "ProcessError: Command failed with exit code -6",
+        "ProcessError: Command failed with exit code -4 (exit code: -4)",
+        "CLIConnectionError: Failed to start Claude Code: [Errno 11] Resource temporarily unavailable",
+        "CLIConnectionError: Cannot write to terminated process (exit code: -6)",
+    ):
+        f = classify("driver_error", msg)
+        assert f.kind == "process_crash", msg
+        assert f.is_recoverable is True
+
+
+def test_ordinary_driver_error_stays_other():
+    f = classify("driver_error", "ValueError: bad thing happened")
+    assert f.kind == "other"
+    assert f.is_recoverable is False
+
+
+def test_positive_exit_code_is_not_a_crash():
+    # a clean non-signal exit is not a hard crash we auto-respawn
+    f = classify("driver_error", "ProcessError: Command failed with exit code 1")
+    assert f.kind == "other"
+    assert classify("driver_error", "ProcessError: Command failed with exit code 1").is_recoverable is False

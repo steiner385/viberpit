@@ -18,7 +18,7 @@ from server.audit import install_redacting_filter
 from server.auth.middleware import IdentityMiddleware, current_identity
 from server.bridge.ws import build_ws_router
 from server.db import init_db
-from server.ipc.client import DaemonUnavailable
+from server.ipc.client import DaemonUnavailable, DaemonError
 from server.reauth import ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
 
@@ -245,6 +245,10 @@ def create_app(
     @app.exception_handler(DaemonUnavailable)
     async def _daemon_unavailable_handler(_request, _exc):  # noqa: ANN001
         return JSONResponse(status_code=503, content={"detail": "session daemon unavailable"})
+
+    @app.exception_handler(DaemonError)
+    async def _daemon_error_handler(_request, _exc):  # noqa: ANN001
+        return JSONResponse(status_code=409, content={"detail": _exc.message})
 
     @app.get("/api/health")
     async def health(_identity: str = Depends(current_identity)) -> dict:

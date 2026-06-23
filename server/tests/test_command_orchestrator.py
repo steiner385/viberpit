@@ -31,6 +31,14 @@ async def test_run_command_unknown_raises():
 
 
 @pytest.mark.anyio
+async def test_run_command_not_live_session_returns_notice():
+    orch, _ = _orch_with_driver()  # no driver registered
+    res = await orch.run_command("ghost", "account", "primary")
+    assert res is not None and res["render"] == "notice"
+    assert "live" in res["data"]["text"].lower()
+
+
+@pytest.mark.anyio
 async def test_run_command_dispatches_passthrough():
     orch, client = _orch_with_driver(server_info={"commands": [{"name": "review"}]})
     from server.sessions.driver import SessionDriver
