@@ -856,37 +856,6 @@ def test_prompt_resume_timeout_emits_error_and_keeps_ws_alive(tmp_path):
                 )
 
 
-# ---------------------------------------------------------------------------
-# request_suggestions WS dispatch
-# ---------------------------------------------------------------------------
-
-def test_request_suggestions_dispatch(ws_env):
-    """Sending request_suggestions over WS calls orchestrator.request_suggestions."""
-    _app, orch, client = ws_env([])
-    session = client.portal.call(orch.create_session, "test-req-sugg")
-    session_id = session.id
-
-    called_with: list[str] = []
-
-    async def _fake_request_suggestions(sid):
-        called_with.append(sid)
-
-    orch.request_suggestions = _fake_request_suggestions
-
-    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
-        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
-        _drain_events(ws, until_type="replayComplete")
-
-        ws.send_text(json.dumps({"type": "request_suggestions", "sessionId": session_id}))
-        # Give the server coroutine time to execute the dispatch.
-        import time as _time
-        _time.sleep(0.2)
-
-    client.portal.call(orch.close_session, session_id)
-    assert called_with == [session_id], (
-        f"expected request_suggestions called with {session_id!r}, got {called_with}"
-    )
-
 
 # ---------------------------------------------------------------------------
 # Live-forwarder: a crash mid-stream still reaches the UI as an error frame

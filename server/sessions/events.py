@@ -1,6 +1,11 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+import time
+
+
+def _now_ms() -> float:
+    return time.time() * 1000
 
 class ToolKind(str, Enum):
     EDIT = "edit"; WRITE = "write"; READ = "read"; BASH = "bash"
@@ -44,42 +49,53 @@ class TurnEnd:
 @dataclass
 class TextDelta:
     turn_id: str; text: str; src_uuid: str | None = None; parent_tool_use_id: str | None = None
+    ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "textDelta", "turnId": self.turn_id, "text": self.text,
-                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id}
+                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id,
+                               "ts": self.ts}
 
 @dataclass
 class ThinkingDelta:
     turn_id: str; text: str; src_uuid: str | None = None; parent_tool_use_id: str | None = None
+    ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "thinkingDelta", "turnId": self.turn_id, "text": self.text,
-                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id}
+                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id,
+                               "ts": self.ts}
 
 @dataclass
 class ToolCall:
     turn_id: str; tool_id: str; name: str; kind: ToolKind; input: dict
     src_uuid: str | None = None; parent_tool_use_id: str | None = None
+    ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "toolCall", "turnId": self.turn_id, "toolId": self.tool_id,
                                "name": self.name, "toolKind": self.kind.value, "input": self.input,
-                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id}
+                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id,
+                               "ts": self.ts}
 
 @dataclass
 class ToolResult:
     tool_id: str; ok: bool; payload: dict; src_uuid: str | None = None
     parent_tool_use_id: str | None = None
+    ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "toolResult", "toolId": self.tool_id, "ok": self.ok,
                                "payload": self.payload, "srcUuid": self.src_uuid,
-                               "parentToolUseId": self.parent_tool_use_id}
+                               "parentToolUseId": self.parent_tool_use_id, "ts": self.ts}
 
 @dataclass
 class PermissionRequest:
     perm_id: str; turn_id: str; tool: str; kind: ToolKind; input: dict; plan: bool = False
+    ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "permissionRequest", "permId": self.perm_id, "turnId": self.turn_id,
-                               "tool": self.tool, "toolKind": self.kind.value, "input": self.input, "plan": self.plan}
+                               "tool": self.tool, "toolKind": self.kind.value, "input": self.input, "plan": self.plan,
+                               "ts": self.ts}
 
 @dataclass
 class Question:
     question_id: str; turn_id: str; header: str; question: str; options: list[dict]; multi_select: bool = False
+    ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "question", "questionId": self.question_id, "turnId": self.turn_id,
-                               "header": self.header, "question": self.question, "options": self.options, "multiSelect": self.multi_select}
+                               "header": self.header, "question": self.question, "options": self.options,
+                               "multiSelect": self.multi_select, "ts": self.ts}
 
 @dataclass
 class Title:
@@ -115,8 +131,9 @@ class TurnFailure:
 @dataclass
 class ErrorEvent:
     code: str; message: str; resets_at: str | None = None; turn_id: str | None = None
+    ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "error", "code": self.code, "message": self.message,
-                               "resetsAt": self.resets_at, "turnId": self.turn_id}
+                               "resetsAt": self.resets_at, "turnId": self.turn_id, "ts": self.ts}
 
 @dataclass
 class ReplayComplete:
@@ -125,7 +142,9 @@ class ReplayComplete:
 @dataclass
 class UserMessage:
     turn_id: str; text: str; src_uuid: str | None = None; images: list[dict] | None = None
-    def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid, "images": self.images or []}
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid,
+                               "images": self.images or [], "ts": self.ts}
 
 @dataclass
 class QueueUpdate:

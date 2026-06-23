@@ -26,7 +26,6 @@ export function SessionComposer({ rt }: { rt: SessionRuntime }) {
       autoFocusKey={rt.sessionId}
       suggestions={rt.state.latestSuggestions}
       history={history}
-      onRequestSuggestions={rt.onRequestSuggestions}
       sessionId={rt.sessionId}
     />
   )

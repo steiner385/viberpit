@@ -25,14 +25,3 @@ def test_orchestrator_latest_suggestions_reads_driver():
     orch._drivers["s1"] = types.SimpleNamespace(_last_suggestions=["A", "B"])
     assert orch.latest_suggestions("s1") == ["A", "B"]
     assert orch.latest_suggestions("missing") == []
-
-
-def test_orchestrator_request_suggestions_calls_driver():
-    orch = SessionOrchestrator()
-    calls = []
-    orch._drivers["s1"] = types.SimpleNamespace(request_suggestions=lambda: calls.append("s1"))
-    asyncio.run(orch.request_suggestions("s1"))
-    assert calls == ["s1"]
-    # Unknown session is a no-op, not an error.
-    asyncio.run(orch.request_suggestions("missing"))
-    assert calls == ["s1"]

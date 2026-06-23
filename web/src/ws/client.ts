@@ -146,10 +146,6 @@ export class SessionSocket {
     this._send({ type: 'prompt', sessionId, text, ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}) })
   }
 
-  requestSuggestions(sessionId: string) {
-    this._send({ type: 'request_suggestions', sessionId })
-  }
-
   sendInterrupt(sessionId: string) {
     this._send({ type: 'interrupt', sessionId })
   }
@@ -345,7 +341,6 @@ export function useSessionSocket() {
   const setPermissionMode   = useCallback((sessionId: string, mode: string) => socket.setPermissionMode(sessionId, mode), [socket])
   const cancelQueued        = useCallback((sessionId: string, index: number) => socket.cancelQueued(sessionId, index), [socket])
   const command             = useCallback((sessionId: string, name: string, args: string) => socket.command(sessionId, name, args), [socket])
-  const requestSuggestions  = useCallback((sessionId: string) => socket.requestSuggestions(sessionId), [socket])
 
   const on  = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.on(event, cb), [socket])
   const off = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.off(event, cb), [socket])
@@ -353,7 +348,7 @@ export function useSessionSocket() {
   return {
     attach, detach, interrupt,
     prompt, sendInterrupt, permissionResponse, answerQuestion, setPermissionMode, cancelQueued,
-    command, requestSuggestions,
+    command,
     on, off,
     connectionState,
     socket,

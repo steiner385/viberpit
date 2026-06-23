@@ -8,14 +8,14 @@ export const OPTIMISTIC_USER_ID = 'optimistic:user'
 // ── Block types ───────────────────────────────────────────────────────────────
 
 export type Block =
-  | { kind: 'text';       id: string; text: string }
-  | { kind: 'thinking';   id: string; text: string }
-  | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }> }
-  | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown> } }
-  | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean }
-  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean }
-  | { kind: 'notice';     id: string; text: string }
-  | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null }
+  | { kind: 'text';       id: string; text: string; ts?: number }
+  | { kind: 'thinking';   id: string; text: string; ts?: number }
+  | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }>; ts?: number }
+  | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown> }; ts?: number }
+  | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; ts?: number }
+  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; ts?: number }
+  | { kind: 'notice';     id: string; text: string; ts?: number }
+  | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; ts?: number }
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
@@ -131,9 +131,9 @@ function ensureAssistantTurn(turns: Turn[], turnId: string): [Turn[], number] {
  * optimistic-seed adoption, sub-thread) renders attachments identically. The image
  * `url` is used verbatim as an <img> src — a serve URL live, a `data:` URL on replay.
  */
-function userTurnBlocks(turnId: string, text: string, images?: EvUser['images']): Block[] {
-  const blocks: Block[] = [{ kind: 'text', id: `${turnId}:u`, text }]
-  if (images && images.length) blocks.push({ kind: 'image', id: `${turnId}:img`, images })
+function userTurnBlocks(turnId: string, text: string, images?: EvUser['images'], ts?: number): Block[] {
+  const blocks: Block[] = [{ kind: 'text', id: `${turnId}:u`, text, ts }]
+  if (images && images.length) blocks.push({ kind: 'image', id: `${turnId}:img`, images, ts })
   return blocks
 }
 
@@ -150,7 +150,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
   switch (ev.type) {
     case 'user': {
       const { turnId, text } = ev
-      const blocks = userTurnBlocks(turnId, text, ev.images)
+      const blocks = userTurnBlocks(turnId, text, ev.images, ev.ts)
       const idx = findTurnIdx(thread.turns, turnId)
       const turns =
         idx === -1
@@ -188,7 +188,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
       }
       const blockId = `${turnId}:t${turn.blocks.length}`
       const nextTurns = replaceTurn(turns, idx, (t) => ({
-        ...t, blocks: [...t.blocks, { kind: 'text', id: blockId, text }],
+        ...t, blocks: [...t.blocks, { kind: 'text', id: blockId, text, ts: ev.ts }],
       }))
       return { turns: nextTurns, openBlockId: blockId }
     }
@@ -210,7 +210,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
       }
       const blockId = `${turnId}:th${turn.blocks.length}`
       const nextTurns = replaceTurn(turns, idx, (t) => ({
-        ...t, blocks: [...t.blocks, { kind: 'thinking', id: blockId, text }],
+        ...t, blocks: [...t.blocks, { kind: 'thinking', id: blockId, text, ts: ev.ts }],
       }))
       return { turns: nextTurns, openBlockId: blockId }
     }
@@ -223,7 +223,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
         if (thread.openBlockId === null && turns === thread.turns) return thread
         return { turns, openBlockId: null }
       }
-      const newBlock: Block = { kind: 'tool', id: toolId, toolId, name, toolKind, input }
+      const newBlock: Block = { kind: 'tool', id: toolId, toolId, name, toolKind, input, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({ ...t, blocks: [...t.blocks, newBlock] }))
       return { turns: nextTurns, openBlockId: null }
     }
@@ -271,7 +271,7 @@ export function transcriptReducer(
     // ── user ─────────────────────────────────────────────────────────────────
     case 'user': {
       const { turnId, text } = ev
-      const blocks = userTurnBlocks(turnId, text, ev.images)
+      const blocks = userTurnBlocks(turnId, text, ev.images, ev.ts)
 
       // Adopt an optimistic seed turn if present: re-key it in place to the real
       // server turnId instead of appending a duplicate. Unconditional adoption is
@@ -341,7 +341,7 @@ export function transcriptReducer(
       } else {
         // Open a new text block
         const blockId = `${turnId}:t${turn.blocks.length}`
-        const newBlock: Block = { kind: 'text', id: blockId, text }
+        const newBlock: Block = { kind: 'text', id: blockId, text, ts: ev.ts }
         const nextTurns = replaceTurn(turns, idx, (t) => ({
           ...t,
           blocks: [...t.blocks, newBlock],
@@ -375,7 +375,7 @@ export function transcriptReducer(
       } else {
         // Open a new thinking block (closes any open text block)
         const blockId = `${turnId}:th${turn.blocks.length}`
-        const newBlock: Block = { kind: 'thinking', id: blockId, text }
+        const newBlock: Block = { kind: 'thinking', id: blockId, text, ts: ev.ts }
         const nextTurns = replaceTurn(turns, idx, (t) => ({
           ...t,
           blocks: [...t.blocks, newBlock],
@@ -396,7 +396,7 @@ export function transcriptReducer(
         return { ...state, turns, openBlockId: null }
       }
 
-      const newBlock: Block = { kind: 'tool', id: toolId, toolId, name, toolKind, input }
+      const newBlock: Block = { kind: 'tool', id: toolId, toolId, name, toolKind, input, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t,
         blocks: [...t.blocks, newBlock],
@@ -433,7 +433,7 @@ export function transcriptReducer(
         return { ...state, turns }
       }
 
-      const newBlock: Block = { kind: 'permission', id: permId, permId, tool, toolKind, input, plan }
+      const newBlock: Block = { kind: 'permission', id: permId, permId, tool, toolKind, input, plan, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t,
         blocks: [...t.blocks, newBlock],
@@ -466,7 +466,7 @@ export function transcriptReducer(
         return { ...state, turns }
       }
 
-      const newBlock: Block = { kind: 'question', id: questionId, questionId, header, question, options, multiSelect, live: !state.replaying }
+      const newBlock: Block = { kind: 'question', id: questionId, questionId, header, question, options, multiSelect, live: !state.replaying, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t,
         blocks: [...t.blocks, newBlock],
@@ -534,7 +534,7 @@ export function transcriptReducer(
       const turn = withTurn[idx]
       const errBlock: Block = {
         kind: 'error', id: `${ev.turnId}:err:${turn.blocks.length}`,
-        code: ev.code, message: ev.message, resetsAt: ev.resetsAt,
+        code: ev.code, message: ev.message, resetsAt: ev.resetsAt, ts: ev.ts,
       }
       const turns = replaceTurn(withTurn, idx, (t) => ({ ...t, blocks: [...t.blocks, errBlock] }))
       return { ...state, turns, error: banner }
