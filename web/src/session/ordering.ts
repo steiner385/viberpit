@@ -40,6 +40,7 @@ export function orderSessions(
   groupBy: GroupBy,
   sortBy: SortBy,
 ): SessionGroup[] {
+  if (sessions.length === 0) return []
   const sorted = [...sessions].sort(COMPARATORS[sortBy])
 
   if (groupBy === 'none') {

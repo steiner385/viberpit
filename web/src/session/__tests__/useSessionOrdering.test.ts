@@ -35,4 +35,25 @@ describe('useSessionOrdering', () => {
     expect(result.current.groupBy).toBe('status')
     expect(result.current.sortBy).toBe('name')
   })
+
+  it('filters sessions to matchedIds before grouping', () => {
+    const sessions = [mk('a'), mk('b'), mk('c')]
+    const { result } = renderHook(() =>
+      useSessionOrdering(sessions, new Set(['a', 'c'])),
+    )
+    expect(result.current.orderedSessions.map((s) => s.id)).toEqual(['a', 'c'])
+    expect(result.current.groups.flatMap((g) => g.sessions).map((s) => s.id)).toEqual(['a', 'c'])
+  })
+
+  it('treats null matchedIds as no filter', () => {
+    const sessions = [mk('a'), mk('b')]
+    const { result } = renderHook(() => useSessionOrdering(sessions, null))
+    expect(result.current.orderedSessions.map((s) => s.id)).toEqual(['a', 'b'])
+  })
+
+  it('yields empty groups when matchedIds excludes everything', () => {
+    const { result } = renderHook(() => useSessionOrdering([mk('a')], new Set<string>()))
+    expect(result.current.orderedSessions).toEqual([])
+    expect(result.current.groups).toEqual([])
+  })
 })
