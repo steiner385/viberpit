@@ -55,7 +55,7 @@ log = logging.getLogger(__name__)
 # Statuses that mean a session is mid-turn or awaiting user input — restarting now
 # would lose in-flight work. All other statuses (idle / ready_review / done /
 # limited / ended / archived) are restart-safe: resume + transcript replay recover them.
-_ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input"})
+_ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "condensing"})
 
 
 class BranchSwitchError(Exception):
@@ -659,7 +659,7 @@ class SessionOrchestrator:
             if row.id in self._records:
                 continue
             # A pre-crash live status has no driver anymore → normalize to idle.
-            status = "idle" if row.status in ("working", "in_progress") else row.status
+            status = "idle" if row.status in ("working", "in_progress", "condensing") else row.status
             # Backfill the PR-join branch for legacy sessions created before the
             # branch was persisted (NULL column). Derive it once from the session's
             # worktree and write it back so the column becomes the source of truth.

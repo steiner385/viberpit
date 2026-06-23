@@ -24,6 +24,7 @@ export interface Account {
 export type SessionStatus =
   | 'idle'
   | 'in_progress'
+  | 'condensing'
   | 'waiting_input'
   | 'waiting_question'
   | 'ready_review'
