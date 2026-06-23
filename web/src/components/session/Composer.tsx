@@ -12,10 +12,8 @@ import { caretLineEdges } from '@/lib/caretLineEdges'
 
 interface Props {
   status: { state: string; count: number }
-  mode: string
   onPrompt: (text: string, attachmentIds: string[]) => void
   onInterrupt: () => void
-  onSetMode: (mode: string) => void
   queued?: string[]
   onCancelQueued?: (index: number) => void
   chatArmed?: boolean
@@ -27,7 +25,7 @@ interface Props {
   history?: string[]
 }
 
-export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [] }: Props) {
+export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [] }: Props) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -172,10 +170,6 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
     // Shift+Enter: let the browser insert a newline naturally (no action needed)
   }
 
-  function handlePlanToggle() {
-    onSetMode(mode === 'plan' ? 'default' : 'plan')
-  }
-
   return (
     <div
       className={cn(
@@ -249,12 +243,19 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
             style={{ maxHeight: '192px' }}
           />
           {ghost && (
-            <div
+            // Tap-to-accept: soft keyboards have no Tab/→, so the overlay itself is the
+            // touch affordance. Keyboard users still accept via Tab/→ in handleKeyDown
+            // (which fires while the textarea keeps focus); tabIndex -1 keeps this button
+            // out of the tab order so it doesn't add a second stop or steal that flow.
+            <button
+              type="button"
               data-testid="ghost-suggestion"
-              aria-hidden="true"
+              tabIndex={-1}
+              aria-label={`Use suggestion: ${ghost}`}
+              onClick={() => prefill(ghost)}
               className={cn(
-                'pointer-events-none absolute inset-0 flex items-center justify-between gap-2',
-                'px-3 py-2 text-sm',
+                'absolute inset-0 flex items-center justify-between gap-2 text-left',
+                'px-3 py-2 text-sm focus-visible:outline-none',
               )}
             >
               <span className="truncate text-gray-400 dark:text-gray-500">{ghost}</span>
@@ -264,7 +265,7 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
               )}>
                 ⇥ Tab
               </span>
-            </div>
+            </button>
           )}
         </div>
 
@@ -354,27 +355,6 @@ export function Composer({ status, mode, onPrompt, onInterrupt, onSetMode, queue
             Send
           </button>
         )}
-      </div>
-
-      {/* Plan mode toggle */}
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          role="switch"
-          aria-checked={mode === 'plan'}
-          aria-label="Plan mode"
-          onClick={handlePlanToggle}
-          className={cn(
-            'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
-            'border',
-            mode === 'plan'
-              ? 'bg-blue-100 dark:bg-blue-900/40 border-blue-400 text-blue-700 dark:text-blue-300'
-              : 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-          )}
-        >
-          Plan mode
-        </button>
       </div>
     </div>
   )

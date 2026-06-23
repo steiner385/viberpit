@@ -664,11 +664,6 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
             <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
               {displayLabel}
             </span>
-            {account.nickname && (
-              <span className="text-xs text-gray-400 dark:text-gray-500 truncate">
-                {account.name}
-              </span>
-            )}
           </div>
         )}
         {!editing && (

@@ -74,6 +74,26 @@ async def test_remote_driver_snapshot_and_wire_events():
 
 
 @pytest.mark.asyncio
+async def test_remote_driver_seed_idle_suggestions_issues_rpc():
+    # RemoteDriver must mirror the local Driver's seed_idle_suggestions so the WS
+    # attach path (kick_idle_suggestions) works in daemon mode instead of raising
+    # AttributeError. It is best-effort and fire-and-forget: a sync call that
+    # schedules the RPC on the daemon-side driver.
+    c = _FakeClient([])
+    d = RemoteDriver(c, "s1")
+    assert d.seed_idle_suggestions("do the thing", "earlier answer") is None
+    # fire-and-forget: let the scheduled task run
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if c.calls:
+            break
+    assert (
+        "seed_idle_suggestions",
+        {"session_id": "s1", "user_text": "do the thing", "assistant_text": "earlier answer"},
+    ) in c.calls
+
+
+@pytest.mark.asyncio
 async def test_remote_driver_subscribes_with_head_seq_anchor():
     captured = {}
 
@@ -100,13 +120,3 @@ async def test_remote_driver_subscribes_with_head_seq_anchor():
     except StopAsyncIteration:
         pass
     assert captured["since"] == 7
-
-
-@pytest.mark.asyncio
-async def test_remote_driver_seed_idle_suggestions_calls_rpc():
-    c = _FakeClient([])
-    d = RemoteDriver(c, "s1")
-    d.seed_idle_suggestions("hi", "there")
-    await asyncio.sleep(0.05)   # let the fire-and-forget task run
-    assert ("seed_idle_suggestions",
-            {"session_id": "s1", "user_text": "hi", "assistant_text": "there"}) in c.calls

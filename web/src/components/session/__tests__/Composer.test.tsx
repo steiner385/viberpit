@@ -6,10 +6,8 @@ import { Composer } from '../Composer'
 describe('Composer', () => {
   const defaults = {
     status: { state: 'idle', count: 0 },
-    mode: 'interactive',
     onPrompt: vi.fn(),
     onInterrupt: vi.fn(),
-    onSetMode: vi.fn(),
   }
 
   beforeEach(() => {
@@ -126,34 +124,6 @@ describe('Composer', () => {
     await user.click(screen.getByRole('button', { name: /send reply/i }))
     expect(onPrompt).toHaveBeenCalledWith('lets chat', [])
     expect(textarea).toHaveValue('')
-  })
-
-  it('plan mode toggle shows aria-checked=false when not in plan mode', () => {
-    render(<Composer {...defaults} mode="interactive" />)
-    const toggle = screen.getByRole('switch', { name: /plan mode/i })
-    expect(toggle).toHaveAttribute('aria-checked', 'false')
-  })
-
-  it('plan mode toggle shows aria-checked=true when in plan mode', () => {
-    render(<Composer {...defaults} mode="plan" />)
-    const toggle = screen.getByRole('switch', { name: /plan mode/i })
-    expect(toggle).toHaveAttribute('aria-checked', 'true')
-  })
-
-  it('clicking plan toggle calls onSetMode with "plan" when not in plan mode', async () => {
-    const user = userEvent.setup()
-    const onSetMode = vi.fn()
-    render(<Composer {...defaults} mode="interactive" onSetMode={onSetMode} />)
-    await user.click(screen.getByRole('switch', { name: /plan mode/i }))
-    expect(onSetMode).toHaveBeenCalledWith('plan')
-  })
-
-  it('clicking plan toggle calls onSetMode with "default" when in plan mode', async () => {
-    const user = userEvent.setup()
-    const onSetMode = vi.fn()
-    render(<Composer {...defaults} mode="plan" onSetMode={onSetMode} />)
-    await user.click(screen.getByRole('switch', { name: /plan mode/i }))
-    expect(onSetMode).toHaveBeenCalledWith('default')
   })
 
   it('does not submit empty/whitespace-only text', async () => {

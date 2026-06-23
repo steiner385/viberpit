@@ -66,3 +66,15 @@ async def test_launch_browser_respects_cap(tmp_path):
     await mgr.start_display("S")
     assert await mgr.launch_browser("S", "https://example.com") is True
     assert await mgr.launch_browser("S", None) is False  # cap=1
+
+@pytest.mark.asyncio
+async def test_xvfb_screen_geometry_comes_from_resolution(tmp_path):
+    spawned = []
+    async def fake_spawn(*argv, **kw):
+        spawned.append(argv); return FakeProc()
+    mgr = X11Manager(DisplayAllocator(100, 1, 6100), resolution="1280x800x24",
+                     max_browsers=1, spawn=fake_spawn,
+                     ready_check=lambda d: True, run_dir=str(tmp_path))
+    await mgr.start_display("sess-geom")
+    xvfb_argv = next(a for a in spawned if a[0] == "Xvfb")
+    assert "1280x800x24" in xvfb_argv, xvfb_argv

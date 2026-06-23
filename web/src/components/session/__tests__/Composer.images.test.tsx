@@ -18,8 +18,8 @@ function paste(el: Element, file: File) {
 describe('Composer image paste', () => {
   it('pasting an image adds a chip and includes its id in the sent prompt', async () => {
     const onPrompt = vi.fn()
-    render(<Composer status={{ state: 'idle', count: 0 }} mode="default"
-      onPrompt={onPrompt} onInterrupt={() => {}} onSetMode={() => {}} />)
+    render(<Composer status={{ state: 'idle', count: 0 }}
+      onPrompt={onPrompt} onInterrupt={() => {}} />)
     const ta = screen.getByLabelText('Message')
     paste(ta, new File([new Uint8Array(10)], 'x.png', { type: 'image/png' }))
     await waitFor(() => screen.getByTestId('attachment-chips'))
@@ -30,8 +30,8 @@ describe('Composer image paste', () => {
 
   it('image-only send fires onPrompt with empty text and the attachment id', async () => {
     const onPrompt = vi.fn()
-    render(<Composer status={{ state: 'idle', count: 0 }} mode="default"
-      onPrompt={onPrompt} onInterrupt={() => {}} onSetMode={() => {}} />)
+    render(<Composer status={{ state: 'idle', count: 0 }}
+      onPrompt={onPrompt} onInterrupt={() => {}} />)
     const ta = screen.getByLabelText('Message')
     paste(ta, new File([new Uint8Array(10)], 'x.png', { type: 'image/png' }))
     await waitFor(() => screen.getByTestId('attachment-chips'))
@@ -41,8 +41,8 @@ describe('Composer image paste', () => {
 
   it('empty send (no text, no images) does not fire onPrompt', async () => {
     const onPrompt = vi.fn()
-    render(<Composer status={{ state: 'idle', count: 0 }} mode="default"
-      onPrompt={onPrompt} onInterrupt={() => {}} onSetMode={() => {}} />)
+    render(<Composer status={{ state: 'idle', count: 0 }}
+      onPrompt={onPrompt} onInterrupt={() => {}} />)
     fireEvent.click(screen.getByLabelText('Send message'))
     expect(onPrompt).not.toHaveBeenCalled()
   })

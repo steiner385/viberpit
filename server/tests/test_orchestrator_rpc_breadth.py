@@ -60,6 +60,32 @@ def test_adopt_session_unpacks_tuple():
     assert r["result"]["metadata"] == {"resumed": True, "terminatedPid": None}
 
 
+def test_seed_idle_suggestions_routes_to_driver():
+    # The orchestrator method (invoked over RPC by RemoteDriver) must forward to
+    # the live driver's seed_idle_suggestions for the given session.
+    _, orch = _app()
+    drv = mock.MagicMock()
+    orch._drivers["s1"] = drv
+    assert orch.seed_idle_suggestions(session_id="s1", user_text="u", assistant_text="a") is None
+    drv.seed_idle_suggestions.assert_called_once_with("u", "a")
+
+
+def test_seed_idle_suggestions_noop_without_driver():
+    # No live driver for the session → best-effort no-op, never raises.
+    _, orch = _app()
+    assert orch.seed_idle_suggestions(session_id="missing", user_text="u", assistant_text="a") is None
+
+
+def test_seed_idle_suggestions_registered_as_rpc():
+    app, orch = _app()
+    orch.seed_idle_suggestions = mock.MagicMock(return_value=None)
+    with TestClient(app) as c:
+        r = c.post("/rpc/seed_idle_suggestions",
+                   json={"session_id": "s1", "user_text": "u", "assistant_text": "a"}).json()
+    assert r["result"] is None
+    orch.seed_idle_suggestions.assert_called_once_with(session_id="s1", user_text="u", assistant_text="a")
+
+
 def test_transcript_events_to_wire():
     app, orch = _app()
 
