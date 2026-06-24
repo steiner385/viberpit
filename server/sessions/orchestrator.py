@@ -1572,8 +1572,10 @@ class SessionOrchestrator:
         if not rec.repo:
             return None
         repo = rec.repo
-        clock = self._clock if self._clock is not None else time.monotonic
-        now = clock()
+        # TTL uses a monotonic clock, coherent with the timestamps stored by
+        # _refresh_issue_proposal. (self._clock is wall-clock `time.time`, used for
+        # recovery timing elsewhere — mixing it with monotonic deltas would be wrong.)
+        now = time.monotonic()
         cached = self._issue_proposals.get(repo)
         if cached is not None and (now - cached[0]) < _ISSUE_TTL_S:
             return cached[1]
