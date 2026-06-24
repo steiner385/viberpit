@@ -7,13 +7,16 @@ export type ListRowAction =
   | { type: 'permanent-delete' }
   | { type: 'navigate'; dir: 'up' | 'down' }
   | { type: 'exit' } // back to compose (focus the prompt)
+  | { type: 'expand' } // group header: open the group
+  | { type: 'collapse' } // group header: close the group
+  | { type: 'toggle' } // group header: toggle open/closed
 
 export type KeyboardLike = Pick<
   KeyboardEvent,
   'key' | 'code' | 'altKey' | 'ctrlKey' | 'metaKey' | 'shiftKey'
 >
 
-export type ShortcutGroup = 'compose' | 'list-mode' | 'in-session'
+export type ShortcutGroup = 'compose' | 'list-mode' | 'list-mode-header' | 'in-session'
 
 export interface Shortcut {
   id: string
@@ -52,6 +55,21 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'list.exit', keys: 'Esc / ← / Tab', description: 'Return to the prompt (compose)',
     group: 'list-mode', action: { type: 'exit' },
     match: plain((e) => e.key === 'Escape' || e.key === 'ArrowLeft' || e.key === 'Tab') },
+  // ── List mode, group header focused — WIRED ──────────────────────────
+  { id: 'header.expand', keys: '→', description: 'Expand the focused group',
+    group: 'list-mode-header', action: { type: 'expand' }, match: plain((e) => e.key === 'ArrowRight') },
+  { id: 'header.collapse', keys: '←', description: 'Collapse the focused group',
+    group: 'list-mode-header', action: { type: 'collapse' }, match: plain((e) => e.key === 'ArrowLeft') },
+  { id: 'header.toggle', keys: 'Enter / Space', description: 'Toggle the focused group',
+    group: 'list-mode-header', action: { type: 'toggle' },
+    match: plain((e) => e.key === 'Enter' || e.key === ' ') },
+  { id: 'header.up', keys: '↑', description: 'Move to the previous row',
+    group: 'list-mode-header', action: { type: 'navigate', dir: 'up' }, match: plain((e) => e.key === 'ArrowUp') },
+  { id: 'header.down', keys: '↓', description: 'Move to the next row',
+    group: 'list-mode-header', action: { type: 'navigate', dir: 'down' }, match: plain((e) => e.key === 'ArrowDown') },
+  { id: 'header.exit', keys: 'Esc / Tab', description: 'Return to the prompt (compose)',
+    group: 'list-mode-header', action: { type: 'exit' },
+    match: plain((e) => e.key === 'Escape' || e.key === 'Tab') },
   // ── Compose mode — DISPLAY-ONLY (handled in DispatchBar) ──────────────
   { id: 'compose.enterList', keys: 'Tab', description: 'Enter list mode (empty prompt)', group: 'compose' },
   { id: 'compose.nav', keys: '↑ / ↓', description: 'Move the highlight', group: 'compose' },
@@ -68,7 +86,11 @@ export const SHORTCUTS: Shortcut[] = [
 ]
 
 export function matchListShortcut(e: KeyboardLike): ListRowAction | undefined {
-  return SHORTCUTS.find((s) => s.match?.(e))?.action
+  return SHORTCUTS.find((s) => s.group !== 'list-mode-header' && s.match?.(e))?.action
+}
+
+export function matchHeaderShortcut(e: KeyboardLike): ListRowAction | undefined {
+  return SHORTCUTS.find((s) => s.group === 'list-mode-header' && s.match?.(e))?.action
 }
 
 export function shortcutsByGroup(group: ShortcutGroup): Shortcut[] {
