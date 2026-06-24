@@ -5,6 +5,7 @@ the vertical-slice methods; A2.2 adds the rest.
 """
 import asyncio
 from server.ipc.daemon import register_rpc
+from server.sessions.types import SYSTEM_IDENTITY
 
 
 def register_orchestrator_rpc(app, orch) -> None:
@@ -28,7 +29,7 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     async def ensure_driver(params: dict) -> dict:
         session_id = params["session_id"]
-        driver = await orch.ensure_driver(session_id, params.get("identity", "system"))
+        driver = await orch.ensure_driver(session_id, params.get("identity", SYSTEM_IDENTITY))
         if driver is None:
             return {"found": False}
         if session_id not in app.state.pumped:

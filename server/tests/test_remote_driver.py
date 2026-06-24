@@ -26,6 +26,19 @@ class _FakeClient:
         return self._gen()
 
 
+def test_remote_driver_queue_wire_matches_local_shape():
+    """ws.py calls driver.queue_wire() on every attach. RemoteDriver must implement
+    it (returning [{text, images}]) or remote attaches raise AttributeError and
+    queued prompts go invisible. Regression for the daemon-mode WS attach crash."""
+    d = RemoteDriver(_FakeClient([]), "s1", queued=["first prompt", "second prompt"])
+    assert d.queue_wire() == [
+        {"text": "first prompt", "images": []},
+        {"text": "second prompt", "images": []},
+    ]
+    # Empty queue → empty wire (mirrors local SessionDriver.queue_wire).
+    assert RemoteDriver(_FakeClient([]), "s2").queue_wire() == []
+
+
 @pytest.mark.asyncio
 async def test_remote_driver_events_wrap_subscribe():
     c = _FakeClient([{"type": "textDelta", "text": "hi"}, {"type": "turnEnd"}])
