@@ -23,5 +23,5 @@ def test_run_suggestions_caches_items():
 def test_orchestrator_latest_suggestions_reads_driver():
     orch = SessionOrchestrator()
     orch._drivers["s1"] = types.SimpleNamespace(_last_suggestions=["A", "B"])
-    assert orch.latest_suggestions("s1") == ["A", "B"]
-    assert orch.latest_suggestions("missing") == []
+    assert asyncio.run(orch.latest_suggestions("s1")) == ["A", "B"]
+    assert asyncio.run(orch.latest_suggestions("missing")) == []
