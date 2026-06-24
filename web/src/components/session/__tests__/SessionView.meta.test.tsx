@@ -35,6 +35,8 @@ vi.mock('@/api/hooks', () => ({
   useAccounts: () => ({ data: [{ name: 'work-max', status: 'ok', usage: { session: { pct: 42, resetsAt: null }, weekly: { pct: 18, resetsAt: null } } }] }),
   useSettings: () => ({ data: undefined }),
   useModels: () => ({ data: [] }),
+  useCloseSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  usePermanentDeleteSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 function emitSessionEvent(event: SessionEvent) {

@@ -76,6 +76,66 @@ def test_persist_status_ended_does_not_broadcast(tmp_path):
     assert asyncio.run(run()) is True
 
 
+def _parked_transcript(tmp_path):
+    """A transcript whose last turn armed a ScheduleWakeup → the session is parked."""
+    p = tmp_path / "claude-s1.jsonl"
+    p.write_text(
+        '{"type":"user","message":{"role":"user","content":"poll the PRs"}}\n'
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1",'
+        '"name":"ScheduleWakeup","input":{"delaySeconds":1200,"reason":"watching CI"}}]}}\n'
+    )
+    return p
+
+
+def test_persist_status_done_overlays_waiting_external_when_parked(tmp_path):
+    """A finished turn that left an armed wakeup is "Waiting…", not "Your turn"."""
+    async def run():
+        orch = await _build_orch(tmp_path, name_is_auto=False)  # isolate from auto-naming
+        orch.transcript_path = lambda sid: str(_parked_transcript(tmp_path))
+        await orch._persist_status("s1", "done")
+        return orch.record("s1").status
+    assert asyncio.run(run()) == "waiting_external"
+
+
+def test_persist_status_done_stays_done_when_not_parked(tmp_path):
+    transcript = tmp_path / "claude-s1.jsonl"
+    transcript.write_text('{"type":"assistant","message":{"content":[]}}\n')
+
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch.transcript_path = lambda sid: str(transcript)
+        await orch._persist_status("s1", "done")
+        return orch.record("s1").status
+    assert asyncio.run(run()) == "done"
+
+
+def test_persist_status_waiting_external_does_not_advance_active_clock(tmp_path):
+    """Parking is not a fresh "return": the 'active … ago' clock keeps the prior turn's
+    time, so a parked card shows how long it has been waiting (since the last turn)
+    rather than resetting to 'now' on every re-arm."""
+    async def run():
+        orch = await _build_orch(tmp_path, name_is_auto=False)
+        orch.transcript_path = lambda sid: str(_parked_transcript(tmp_path))
+        orch.record("s1").last_turn_at = None
+        await orch._persist_status("s1", "done")  # parked → waiting_external
+        return orch.record("s1").status, orch.record("s1").last_turn_at
+    status, last_turn_at = asyncio.run(run())
+    assert status == "waiting_external"
+    assert last_turn_at is None  # the parked turn must NOT bump the clock
+
+
+def test_persist_status_waiting_external_broadcasts_overlaid_status(tmp_path):
+    """The live-push event carries the overlaid status, not the raw `done`."""
+    async def run():
+        orch = await _build_orch(tmp_path, name_is_auto=False)  # isolate from auto-naming
+        orch.transcript_path = lambda sid: str(_parked_transcript(tmp_path))
+        q = orch.subscribe_events()
+        await orch._persist_status("s1", "done")
+        return q.get_nowait()
+    event = asyncio.run(run())
+    assert event == {"type": "status", "sessionId": "s1", "status": "waiting_external"}
+
+
 def test_rename_pins_name_is_auto_false(tmp_path):
     async def run():
         orch = await _build_orch(tmp_path)

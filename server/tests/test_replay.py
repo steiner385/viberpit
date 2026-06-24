@@ -81,6 +81,33 @@ def test_replay_handles_string_content(tmp_path):
     assert user_evs[0].to_wire()["text"] == "tell me a lullaby"
 
 
+def test_replay_skips_meta_skill_body(tmp_path):
+    """A Skill invocation injects the skill body as a `type:"user"` entry flagged
+    `isMeta: true` (with a `sourceToolUseID`). That is harness-injected context, not
+    a real user turn — replay must NOT render it as a conversation message, while the
+    sibling `"Launching skill: …"` tool_result (a non-meta entry) still shows."""
+    p = tmp_path / "skill.jsonl"
+    rows = [
+        {"type": "assistant", "uuid": "a1",
+         "message": {"model": "claude", "content": [
+             {"type": "tool_use", "id": "tu1", "name": "Skill", "input": {"command": "x"}}]}},
+        {"type": "user", "uuid": "u1",
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "tu1", "content": "Launching skill: x"}]}},
+        {"type": "user", "uuid": "u2", "isMeta": True, "sourceToolUseID": "tu1",
+         "message": {"role": "user", "content": "Base directory for this skill: /x\n# Skill body"}},
+    ]
+    p.write_text("\n".join(json.dumps(r) for r in rows))
+    out = _parse(str(p), 20)
+    texts = [getattr(e, "text", None) for e in out]
+    assert "Base directory for this skill: /x\n# Skill body" not in texts
+    user_evs = [e for e in out if e.to_wire()["type"] == "user"]
+    assert not user_evs, "isMeta skill body must not produce a user message"
+    # The real tool_result still renders.
+    results = [e for e in out if e.to_wire()["type"] == "toolResult"]
+    assert results and results[0].payload["content"] == "Launching skill: x"
+
+
 def test_replay_skips_sidechain_entries(tmp_path):
     p = tmp_path / "t.jsonl"
     rows = [

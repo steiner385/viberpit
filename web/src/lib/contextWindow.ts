@@ -37,3 +37,39 @@ export function remainingContextPct(usage: UsageTotals | null, model: string | n
   const remaining = ((window - used) / window) * 100
   return Math.min(100, Math.max(0, Math.round(remaining)))
 }
+
+/**
+ * Exact context-window occupancy reported by the SDK (the `/context` data),
+ * carried by the `contextUsage` event. `maxTokens` is the EFFECTIVE max (may be
+ * trimmed by the autocompact buffer), so remaining hits 0 right as compaction looms.
+ */
+export interface ContextUsageExact {
+  usedTokens: number
+  maxTokens: number
+}
+
+/**
+ * Percent of the context window still available from EXACT usage, 0–100 (rounded,
+ * clamped), or null when there is no exact reading or no usable denominator. This is
+ * the source of truth for the live ctx% readout; `remainingContextPct` (above) is the
+ * per-call approximation used only as a fallback for historic/detached sessions.
+ */
+export function remainingFromContextUsage(usage: ContextUsageExact | null): number | null {
+  if (usage == null || !(usage.maxTokens > 0)) return null
+  const remaining = ((usage.maxTokens - usage.usedTokens) / usage.maxTokens) * 100
+  return Math.min(100, Math.max(0, Math.round(remaining)))
+}
+
+export type ContextSeverity = 'neutral' | 'warning' | 'danger'
+
+/**
+ * Severity for a remaining-context percentage (100 = window empty). Drives the
+ * color escalation on the session's `ctx %` readout. `null` (no usage yet) is
+ * neutral so the readout stays calm until there is real data.
+ */
+export function contextSeverity(remainingPct: number | null): ContextSeverity {
+  if (remainingPct == null) return 'neutral'
+  if (remainingPct <= 10) return 'danger'
+  if (remainingPct <= 25) return 'warning'
+  return 'neutral'
+}

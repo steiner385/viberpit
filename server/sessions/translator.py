@@ -56,6 +56,20 @@ class Translator:
                 model = data.get("model")
                 if model:
                     return [ev.SessionMeta(model=model, session_id=self.session_id or "")]
+            if msg.subtype == "api_error":
+                data = msg.data or {}
+                err = data.get("error") or {}
+                tid = self._turn_ids.get(None) or "turn"
+                return [ev.ApiRetry(
+                    turn_id=tid,
+                    status=err.get("status"),
+                    attempt=data.get("retryAttempt"),
+                    max_retries=data.get("maxRetries"),
+                )]
+            if msg.subtype == "compact_boundary":
+                meta = (msg.data or {}).get("compact_metadata") or {}
+                return [ev.Condensing(active=False, trigger=meta.get("trigger"),
+                                      pre_tokens=meta.get("pre_tokens"))]
             return []
 
         if isinstance(msg, StreamEvent):
@@ -165,7 +179,11 @@ def _error_from_result(msg, turn_id: str):
     subtype = getattr(msg, "subtype", None) or ""
     if api_status is not None:
         code = f"api_{api_status}"
-        default = f"The model API returned an error (HTTP {api_status})."
+        if api_status in (500, 502, 503, 529):
+            default = (f"Anthropic is overloaded (HTTP {api_status}). The model API was "
+                       f"retried and is still overloaded — re-send when capacity recovers.")
+        else:
+            default = f"The model API returned an error (HTTP {api_status})."
     elif subtype == "error_max_turns":
         code = "max_turns"
         default = "The agent reached the maximum number of turns."
@@ -184,4 +202,20 @@ def _error_from_result(msg, turn_id: str):
     if not message:
         message = default
 
-    return ev.ErrorEvent(code=code, message=message, turn_id=turn_id)
+    return ev.ErrorEvent(code=code, message=_humanize(code, message), turn_id=turn_id)
+
+
+# The CLI tags a turn that ended on a pending tool_use (no matching tool_result) with
+# this diagnostic. It's an interrupted-mid-tool-call transcript, not anything the user
+# did wrong — and ccswitch heals it on the next resume (see transcript_repair). Replace
+# the cryptic internals with an honest, actionable message.
+_EDE_MARKER = "[ede_diagnostic]"
+_EDE_HUMAN = ("The previous turn was interrupted while a tool was running, leaving the "
+              "conversation inconsistent. Send another message to continue — the "
+              "transcript is repaired automatically on the next turn.")
+
+
+def _humanize(code: str, message: str) -> str:
+    if code == "execution_error" and _EDE_MARKER in message and "stop_reason=tool_use" in message:
+        return _EDE_HUMAN
+    return message

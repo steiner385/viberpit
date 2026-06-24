@@ -28,11 +28,17 @@ _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-def _make_engine(db_url: str):
+def _make_engine(db_url: str, *, poolclass=None):
     connect_args = {}
     if db_url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
-    engine = create_async_engine(db_url, connect_args=connect_args, echo=False)
+    engine_kwargs = {"connect_args": connect_args, "echo": False}
+    # `poolclass` lets a caller pin the pool strategy (the test harness pins
+    # StaticPool so a file-backed stand-in for an in-memory DB keeps the same
+    # single-connection semantics). Default None = SQLAlchemy's own choice.
+    if poolclass is not None:
+        engine_kwargs["poolclass"] = poolclass
+    engine = create_async_engine(db_url, **engine_kwargs)
     if db_url.startswith("sqlite"):
         # WAL = concurrent readers + a single serialized writer, so the daemon
         # (sessions) and edge (audit/settings) can share one DB file across

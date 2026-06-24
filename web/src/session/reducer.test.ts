@@ -408,12 +408,12 @@ describe('transcriptReducer', () => {
   // ── queueUpdate ────────────────────────────────────────────────────────────
 
   it('queueUpdate sets state.queued to the provided items', () => {
-    const s = transcriptReducer(initialTranscript, { type: 'queueUpdate', items: ['prompt one', 'prompt two'] })
-    expect(s.queued).toEqual(['prompt one', 'prompt two'])
+    const s = transcriptReducer(initialTranscript, { type: 'queueUpdate', items: [{ text: 'prompt one', images: [] }, { text: 'prompt two', images: [] }] })
+    expect(s.queued.map(i => i.text)).toEqual(['prompt one', 'prompt two'])
   })
 
   it('queueUpdate with empty array clears state.queued', () => {
-    const withQueued = transcriptReducer(initialTranscript, { type: 'queueUpdate', items: ['x', 'y'] })
+    const withQueued = transcriptReducer(initialTranscript, { type: 'queueUpdate', items: [{ text: 'x', images: [] }, { text: 'y', images: [] }] })
     const cleared = transcriptReducer(withQueued, { type: 'queueUpdate', items: [] })
     expect(cleared.queued).toEqual([])
   })
@@ -594,4 +594,28 @@ describe('sub-agent thread routing', () => {
     const block = s.subAgents['task1'].turns[0].blocks[0]
     expect(block).toMatchObject({ kind: 'tool', toolId: 'g1', result: { ok: true } })
   })
+})
+
+// ── Block timestamp (ts) tests ─────────────────────────────────────────────────
+
+test('block ts is stamped at creation and not overwritten by streaming append', () => {
+  let s = transcriptReducer(initialTranscript, { type: 'turnStart', turnId: 'a1' })
+  s = transcriptReducer(s, { type: 'textDelta', turnId: 'a1', text: 'Hel', ts: 1000 })
+  s = transcriptReducer(s, { type: 'textDelta', turnId: 'a1', text: 'lo', ts: 2000 })
+  const block = s.turns.at(-1)!.blocks[0]
+  expect(block.text).toBe('Hello')
+  expect(block.ts).toBe(1000) // first delta wins
+})
+
+test('tool block keeps its create-time ts after toolResult', () => {
+  let s = transcriptReducer(initialTranscript, { type: 'turnStart', turnId: 'a1' })
+  s = transcriptReducer(s, { type: 'toolCall', turnId: 'a1', toolId: 'x', name: 'Bash', toolKind: 'bash', input: {}, ts: 500 })
+  s = transcriptReducer(s, { type: 'toolResult', toolId: 'x', ok: true, payload: {}, ts: 999 })
+  const block = s.turns.at(-1)!.blocks.find((b) => b.kind === 'tool')!
+  expect(block.ts).toBe(500)
+})
+
+test('user block carries ts', () => {
+  const s = transcriptReducer(initialTranscript, { type: 'user', turnId: 'u1', text: 'hi', ts: 42 })
+  expect(s.turns[0].blocks[0].ts).toBe(42)
 })

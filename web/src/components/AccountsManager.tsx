@@ -8,7 +8,7 @@
 import * as React from 'react'
 import { useState, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Pencil, Check, X, Trash2 } from 'lucide-react'
+import { RefreshCw, Pencil, Check, X, Trash2, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { UsageBadge, StatusPill } from './UsageBadge'
@@ -23,7 +23,50 @@ import {
   useCancelReauth,
   QK,
 } from '@/api/hooks'
-import type { Account, Session } from '@/api/types'
+import { AddAccountDialog } from './AddAccountDialog'
+import type { Account, LiveSessionCounts, Session } from '@/api/types'
+
+// ── Sessions + Rank Badges ───────────────────────────────────────────────────
+
+function SessionsBadge({ counts }: { counts?: LiveSessionCounts | null }) {
+  const { active, idle } = counts ?? { active: 0, idle: 0 }
+  let text: string
+  if (active === 0 && idle === 0) text = '—'
+  else if (active > 0 && idle > 0) text = `${active} active · ${idle} idle`
+  else if (active > 0) text = `${active} active`
+  else text = `${idle} idle`
+  return (
+    <span
+      className={cn(
+        'text-xs whitespace-nowrap',
+        active === 0 && idle === 0 ? 'text-gray-400 dark:text-gray-600' : 'text-gray-600 dark:text-gray-300',
+      )}
+      aria-label="Live sessions using this account"
+    >
+      {text}
+    </span>
+  )
+}
+
+function RankBadge({ rank, reason }: { rank?: number | null; reason?: string | null }) {
+  if (rank == null) {
+    return <span className="text-xs text-gray-400 dark:text-gray-600">unavailable</span>
+  }
+  const label = rank === 1 ? '#1 next' : `#${rank}`
+  return (
+    <span
+      title={reason ?? undefined}
+      className={cn(
+        'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
+        rank === 1
+          ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+          : 'text-gray-500 dark:text-gray-400',
+      )}
+    >
+      {label}
+    </span>
+  )
+}
 
 // ── Delete Account Dialog ────────────────────────────────────────────────────
 
@@ -284,6 +327,8 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
         {!editing && (
           <div className="flex items-center gap-3 flex-shrink-0">
             <StatusPill status={account.status} />
+            <SessionsBadge counts={account.liveSessions} />
+            <RankBadge rank={account.rank} reason={account.rankReason} />
             {account.usage && (
               <>
                 <UsageBadge
@@ -440,6 +485,7 @@ export function AccountsManager() {
 
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
+  const [showAdd, setShowAdd] = useState(false)
 
   function handleRefreshAccount(name: string) {
     setRefreshingAccount(name)
@@ -470,9 +516,21 @@ export function AccountsManager() {
 
   return (
     <div className="space-y-2">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-        Accounts
-      </h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          Accounts
+        </h2>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => setShowAdd(true)}
+          className="gap-1.5"
+        >
+          <Plus size={14} aria-hidden="true" />
+          Add account
+        </Button>
+      </div>
       {!accountsLoading && (
         <AccountsStrip
           accounts={accounts}
@@ -482,6 +540,8 @@ export function AccountsManager() {
           onDelete={handleDeleteAccount}
         />
       )}
+
+      {showAdd && <AddAccountDialog onClose={() => setShowAdd(false)} />}
 
       {deleteTarget && (
         <DeleteAccountDialog

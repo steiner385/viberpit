@@ -27,7 +27,7 @@ class RecordingSDK:
 
 def test_images_sent_as_content_blocks(tmp_path):
     sdk = RecordingSDK()
-    def factory(cwd, cfg, can_use_tool, mode, resume): return sdk
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None): return sdk
     img_path = tmp_path / "abc.png"
     img_path.write_bytes(base64.b64decode(PNG_B64))
     images = [{"sha": "abc", "mime": "image/png", "name": "shot.png",
@@ -59,7 +59,7 @@ def test_images_sent_as_content_blocks(tmp_path):
 
 def test_text_only_unchanged(tmp_path):
     msgs = [f.stream_start(uuid="t1"), f.assistant(TextBlock(text="hi"), uuid="t1"), f.result(uuid="t1")]
-    def factory(cwd, cfg, cut, mode, resume): return FakeSDKClient(msgs, on_can_use_tool=cut)
+    def factory(cwd, cfg, cut, mode, resume, *, on_pre_compact=None): return FakeSDKClient(msgs, on_can_use_tool=cut)
     async def run():
         d = SessionDriver("s2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")

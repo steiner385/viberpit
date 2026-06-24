@@ -4,6 +4,8 @@ import { DesktopShell } from './components/DesktopShell'
 import { SessionView } from './components/session/SessionView'
 import { SubSessionView } from './components/session/SubSessionView'
 import { ReviewView } from './components/ReviewView'
+import { GlobalUpdateBanner } from './components/GlobalUpdateBanner'
+import { ToastViewport } from '@/components/ToastViewport'
 import { useMediaQuery } from './lib/useMediaQuery'
 
 // Routing is the source of truth for which view is shown:
@@ -88,21 +90,25 @@ function App() {
   // routed full-screen views below. useMediaQuery returns false when matchMedia
   // is unavailable (jsdom), so tests default to the mobile/routed branch.
   const isWide = useMediaQuery('(min-width: 1024px)')
-  if (isWide) {
-    return <DesktopShell />
-  }
-
   return (
-    <Routes>
-      <Route path="/" element={<Navigate to="/sessions" replace />} />
-      <Route path="/sessions" element={<DashboardRoute tab="sessions" />} />
-      <Route path="/accounts" element={<DashboardRoute tab="accounts" />} />
-      <Route path="/archived" element={<DashboardRoute tab="archived" />} />
-      <Route path="/session/:sessionId" element={<SessionRoute />} />
-      <Route path="/session/:sessionId/subagent/:agentId" element={<SubSessionRoute />} />
-      <Route path="/review/:sessionId" element={<ReviewRoute />} />
-      <Route path="*" element={<Navigate to="/sessions" replace />} />
-    </Routes>
+    <>
+      <GlobalUpdateBanner />
+      {isWide ? (
+        <DesktopShell />
+      ) : (
+        <Routes>
+          <Route path="/" element={<Navigate to="/sessions" replace />} />
+          <Route path="/sessions" element={<DashboardRoute tab="sessions" />} />
+          <Route path="/accounts" element={<DashboardRoute tab="accounts" />} />
+          <Route path="/archived" element={<DashboardRoute tab="archived" />} />
+          <Route path="/session/:sessionId" element={<SessionRoute />} />
+          <Route path="/session/:sessionId/subagent/:agentId" element={<SubSessionRoute />} />
+          <Route path="/review/:sessionId" element={<ReviewRoute />} />
+          <Route path="*" element={<Navigate to="/sessions" replace />} />
+        </Routes>
+      )}
+      <ToastViewport />
+    </>
   )
 }
 

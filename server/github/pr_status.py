@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+PRODUCTION_ENVIRONMENT = "production"
+
 
 @dataclass(frozen=True)
 class PullRequestInfo:
@@ -17,6 +19,7 @@ class PullRequestInfo:
     state: str   # 'open' | 'draft' | 'merged' | 'closed'
     checks: str  # 'passing' | 'failing' | 'pending' | 'none'
     title: str
+    deployed: bool = False  # merged AND live in the active production deployment
 
     def to_dict(self) -> dict:
         return {
@@ -25,7 +28,20 @@ class PullRequestInfo:
             "state": self.state,
             "checks": self.checks,
             "title": self.title,
+            "deployed": self.deployed,
         }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PullRequestInfo":
+        """Inverse of ``to_dict`` — rebuild from a daemon→edge RPC payload."""
+        return cls(
+            number=d["number"],
+            url=d["url"],
+            state=d["state"],
+            checks=d["checks"],
+            title=d.get("title", ""),
+            deployed=d.get("deployed", False),
+        )
 
 
 def _alias(i: int) -> str:
@@ -47,9 +63,13 @@ def build_pr_query(pairs: list[tuple[str, str]]) -> str:
             f"{_alias(i)}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
             f"  pullRequests(headRefName: {json.dumps(branch)}, first: 5, "
             f"orderBy: {{field: UPDATED_AT, direction: DESC}}) {{\n"
-            f"    nodes {{ number url title state isDraft updatedAt\n"
+            f"    nodes {{ number url title state isDraft updatedAt mergedAt\n"
             f"      commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}\n"
             f"    }}\n"
+            f"  }}\n"
+            f"  deployments(environments: [{json.dumps(PRODUCTION_ENVIRONMENT)}], "
+            f"orderBy: {{field: CREATED_AT, direction: DESC}}, first: 5) {{\n"
+            f"    nodes {{ commitOid latestStatus {{ state }} commit {{ committedDate }} }}\n"
             f"  }}\n"
             f"}}"
         )
@@ -86,7 +106,22 @@ def _rollup_state(pr: dict) -> str | None:
     return rollup.get("state") if rollup else None
 
 
-def _to_info(pr: dict) -> PullRequestInfo:
+def _active_deploy_date(node: dict) -> str | None:
+    """committedDate of the newest production deployment whose latest status is SUCCESS."""
+    nodes = ((node.get("deployments") or {}).get("nodes")) or []
+    for dep in nodes:  # already ordered newest-first by the query
+        status = (dep.get("latestStatus") or {}).get("state")
+        if status == "SUCCESS":
+            return (dep.get("commit") or {}).get("committedDate")
+    return None
+
+
+def _is_deployed(pr: dict, state: str, active_date: str | None) -> bool:
+    merged_at = pr.get("mergedAt")
+    return bool(state == "merged" and merged_at and active_date and merged_at <= active_date)
+
+
+def _to_info(pr: dict, active_date: str | None) -> PullRequestInfo:
     state = _classify_state(pr.get("state", ""), bool(pr.get("isDraft")))
     return PullRequestInfo(
         number=pr["number"],
@@ -94,6 +129,7 @@ def _to_info(pr: dict) -> PullRequestInfo:
         state=state,
         checks=_classify_checks(_rollup_state(pr)),
         title=pr.get("title", ""),
+        deployed=_is_deployed(pr, state, active_date),
     )
 
 
@@ -106,11 +142,12 @@ def parse_pr_response(
         node = data.get(_alias(i))
         if not node:
             continue
+        active_date = _active_deploy_date(node)
         prs = ((node.get("pullRequests") or {}).get("nodes")) or []
         best: PullRequestInfo | None = None
         best_sort: tuple | None = None
         for raw in prs:
-            info = _to_info(raw)
+            info = _to_info(raw, active_date)
             # Rank ascending, then newest updatedAt first (negate via reverse compare).
             sort_key = (_STATE_RANK.get(info.state, 99), _neg_iso(raw.get("updatedAt", "")))
             if best_sort is None or sort_key < best_sort:

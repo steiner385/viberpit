@@ -29,7 +29,10 @@ Build phase-by-phase: P0 config-dir launch correctness → P1 backend engine+API
 ## Completion workflow
 
 When a unit of work is complete and verified (tests + lint green), finish it without being asked:
-1. Branch off `master` — never commit feature work directly to `master`.
+1. Branch off `origin/master` — `git fetch` first, then `git checkout -b <branch> origin/master`. NEVER
+   branch off the local `master` ref: in a worktree it is a stale leftover (the deploy worktree owns
+   `master`) and lags `origin/master` by hundreds of commits, so branching off it silently bases your
+   work on ancient code. Never commit feature work directly to `master`.
 2. Commit (end message with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`).
 3. Push and open a PR via `gh pr create` (end body with the Claude Code trailer).
 4. ALWAYS mark the PR ready for review (never leave it a draft) and ALWAYS flip auto-merge on

@@ -17,7 +17,7 @@ describe('SessionCard PR pill', () => {
   it('shows the PR pill when the session has a PR', () => {
     render(<SessionCard session={{ ...session, pr: {
       number: 7, url: 'https://github.com/o/r/pull/7', state: 'open',
-      checks: 'passing', title: 't',
+      checks: 'passing', title: 't', deployed: false,
     } }} {...props} />)
     expect(screen.getByRole('link', { name: /#7/ })).toBeInTheDocument()
   })
