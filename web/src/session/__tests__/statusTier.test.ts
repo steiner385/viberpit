@@ -13,6 +13,7 @@ describe('statusTier', () => {
     ['needs_attention', 'error'],
     ['limited', 'error'],
     ['ended', 'your-turn'],
+    ['waiting_external', 'waiting'],   // parked on an external event
     ['working', 'busy'],            // legacy alias tolerated
   ])('maps %s -> %s', (state, tier) => {
     expect(statusTier(state)).toBe(tier)
@@ -35,6 +36,7 @@ describe('statusPresentation', () => {
     ['needs_attention', 'Turn failed'],
     ['limited', 'Usage limit'],
     ['ended', 'Ended'],
+    ['waiting_external', 'Waiting…'],
   ])('labels %s as "%s"', (state, label) => {
     expect(statusPresentation(state).label).toBe(label)
   })
@@ -52,6 +54,16 @@ describe('sortSessionsByTier', () => {
     ]
     const result = sortSessionsByTier(input)
     expect(result.map((s) => s.id)).toEqual(['c', 'e', 'b', 'a', 'd'])
+  })
+
+  it('ranks waiting (parked) below your-turn and above busy', () => {
+    const input = [
+      { id: 'busy', status: 'in_progress' },
+      { id: 'wait', status: 'waiting_external' },
+      { id: 'turn', status: 'done' },
+    ]
+    const result = sortSessionsByTier(input)
+    expect(result.map((s) => s.id)).toEqual(['turn', 'wait', 'busy'])
   })
 
   it('does not mutate the original array', () => {

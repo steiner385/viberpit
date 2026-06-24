@@ -24,6 +24,9 @@ interface SessionListProps {
   collapsedKeys?: Set<string>
   /** Toggle a group's collapsed state by its key. */
   onToggleCollapse?: (key: string) => void
+  listMode?: boolean
+  onNavigate?: (dir: 'up' | 'down') => void
+  onExit?: () => void
 }
 
 function SkeletonCard() {
@@ -62,6 +65,9 @@ export function SessionList({
   onQuickResume,
   collapsedKeys,
   onToggleCollapse,
+  listMode,
+  onNavigate,
+  onExit,
 }: SessionListProps) {
   if (isLoading) {
     return (
@@ -104,11 +110,14 @@ export function SessionList({
       session={session}
       account={accountMap.get(session.accountName)}
       selected={session.id === selectedId}
+      listMode={listMode}
       onOpen={onOpen}
       onRename={onRename}
       onClose={onClose}
       onDelete={onDelete}
       onQuickResume={onQuickResume}
+      onNavigate={onNavigate}
+      onExit={onExit}
     />
   )
 

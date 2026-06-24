@@ -108,12 +108,13 @@ def _record_to_dict(
         "adoptedInPlace": getattr(record, "adopted_in_place", False),
         "subAgents": getattr(record, "sub_agents", None) or [],
         "createdAt": record.created_at.isoformat() if record.created_at else None,
-        # Last-activity timestamp for the "active … ago" label. Fall back to the
-        # creation time so a brand-new session reads "active just now" rather than
-        # null (which the client would otherwise parse as epoch 0 → "20627d ago").
+        # Last-turn-response time for the "active … ago" label (NOT record.updated_at,
+        # which any row write bumps — that pinned every card to "0s ago"). Fall back to
+        # the creation time so a session with no turn yet reads "active just now" rather
+        # than null (which the client would parse as epoch 0 → "20627d ago").
         "updatedAt": (
-            (record.updated_at or record.created_at).isoformat()
-            if (record.updated_at or record.created_at)
+            (record.last_turn_at or record.created_at).isoformat()
+            if (record.last_turn_at or record.created_at)
             else None
         ),
         "accountPinned": getattr(record, "account_pinned", False),

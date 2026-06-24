@@ -87,7 +87,7 @@ async def test_list_get_create_send_over_uds():
     orch._records["s1"] = _rec("s1")
     with mock.patch.object(orch, "create_session",
                            new=mock.AsyncMock(return_value=_rec("new1"))), \
-         mock.patch.object(orch, "send_prompt", new=mock.AsyncMock()) as sp:
+         mock.patch.object(orch, "send_prompt", new=mock.AsyncMock(return_value="sent")) as sp:
         async with serve_daemon_uds(app) as sock:
             ro = RemoteOrchestrator(DaemonClient(sock))
             try:

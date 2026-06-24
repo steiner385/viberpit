@@ -1,4 +1,6 @@
 """Unit tests for server.sessions.failure — turn-failure classification."""
+import pytest
+
 from server.sessions.failure import classify, TurnFailure
 
 
@@ -77,3 +79,23 @@ def test_positive_exit_code_is_not_a_crash():
     f = classify("driver_error", "ProcessError: Command failed with exit code 1")
     assert f.kind == "other"
     assert classify("driver_error", "ProcessError: Command failed with exit code 1").is_recoverable is False
+
+
+@pytest.mark.parametrize("code", ["api_500", "api_502", "api_503", "api_529"])
+def test_overload_codes_classify_overloaded_not_recoverable(code):
+    f = classify(code, "529 Overloaded")
+    assert f.kind == "overloaded"
+    assert f.is_recoverable is False
+
+
+def test_overload_message_fallback_without_code():
+    f = classify("driver_error", '529 {"type":"error","error":{"type":"overloaded_error"}}')
+    assert f.kind == "overloaded"
+
+
+def test_429_still_rate_limit_not_overloaded():
+    assert classify("api_429", "429 rate limit").kind == "rate_limit"
+
+
+def test_401_still_auth_not_overloaded():
+    assert classify("api_401", "401 Invalid authentication credentials").kind == "auth_401"

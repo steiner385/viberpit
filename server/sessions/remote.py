@@ -107,8 +107,9 @@ class RemoteOrchestrator:
         r = await self._client.call("create_session", **kwargs)
         return SessionRecord.from_dict(r["session"])
 
-    async def send_prompt(self, session_id: str, text: str, images=None) -> None:
-        await self._client.call("send_prompt", session_id=session_id, text=text, images=images)
+    async def send_prompt(self, session_id: str, text: str, images=None) -> str | None:
+        r = await self._client.call("send_prompt", session_id=session_id, text=text, images=images)
+        return (r or {}).get("status")
 
     async def ensure_driver(self, session_id: str, identity: str = "system") -> "RemoteDriver | None":
         r = await self._client.call("ensure_driver", session_id=session_id, identity=identity)
@@ -229,6 +230,12 @@ class RemoteOrchestrator:
 
     def subscribe(self, session_id: str):
         return self._client.subscribe(session_id)
+
+    async def x11_metrics(self) -> dict:
+        return await self._client.call("x11_metrics")
+
+    async def x11_open_browser(self, session_id: str, url: str | None = None) -> dict:
+        return await self._client.call("x11_open_browser", session_id=session_id, url=url)
 
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():
