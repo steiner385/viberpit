@@ -28,6 +28,10 @@ def test_pick_top_empty_is_none():
     assert dispatch.pick_top_issue([]) is None
 
 
+def test_broken_pr_proposal_text():
+    assert dispatch.broken_pr_proposal_text(218, "fix the thing") == "Fix the failing CI on PR #218: fix the thing"
+
+
 def test_fetch_open_issues_parses(monkeypatch):
     def fake_gh(args):
         assert "issue" in args and "list" in args

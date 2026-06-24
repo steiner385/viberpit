@@ -61,6 +61,15 @@ def issue_proposal_text(issue: dict) -> str:
     return f"Work on issue #{issue['number']}: {issue['title']}"
 
 
+def broken_pr_proposal_text(number: int, title: str) -> str:
+    """Return a chip-ready proposal string for a session's PR that is failing CI.
+
+    Higher priority than an issue proposal: an idle/done session whose own PR
+    broke should fix it before starting new backlog work (see _dispatch_proposal).
+    """
+    return f"Fix the failing CI on PR #{number}: {title}"
+
+
 def fetch_open_issues(
     repo: str,
     *,
