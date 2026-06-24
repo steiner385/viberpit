@@ -42,6 +42,7 @@ import { useSessionOrdering } from '@/session/useSessionOrdering'
 import { useSessionSearch } from '@/session/useSessionSearch'
 import { useListNavigation } from '@/session/useListNavigation'
 import { useNeedsYouTitle } from '@/hooks/useNeedsYouTitle'
+import { DeployPanel } from './DeployPanel'
 
 // ── New Session Dialog ──────────────────────────────────────────────────────
 
@@ -1065,6 +1066,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       {inputHold.holding && (
         <UpdatePendingBanner queuedCount={inputHold.count} mode={inputHold.mode} />
       )}
+
+      <DeployPanel />
 
       {/* Tab bar */}
       <div

@@ -136,6 +136,28 @@ export interface PullRequestInfo {
 
 export interface ModelOption { id: string; label: string }
 
+export interface PendingDeploy {
+  behind: boolean
+  liveSha: string
+  targetSha: string
+  commits: { sha: string; subject: string; author: string; iso: string }[]
+  ci: string
+}
+
+export interface DeployProgress {
+  running: boolean
+  phases: Record<string, string>
+  error: string | null
+  warnings: string[]
+  targetSha: string
+  restore?: { restored: string[]; failed: string[] }
+}
+
+export interface DeployStatusResponse {
+  pending: PendingDeploy
+  deploy: DeployProgress
+}
+
 export interface ApiError {
   status: number
   error: { code: string; message: string }

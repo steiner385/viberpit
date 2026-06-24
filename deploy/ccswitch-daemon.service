@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=tony
 RuntimeDirectory=ccswitch
+RuntimeDirectoryPreserve=yes
 WorkingDirectory=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
 EnvironmentFile=/etc/ccswitch/ccswitch.env
 ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m server.ipc
