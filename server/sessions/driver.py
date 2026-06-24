@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import time
 import uuid
 from typing import Callable
@@ -12,10 +13,20 @@ from .translator import Translator
 from .permissions import PermissionRegistry
 from .questions import QuestionRegistry
 from .status import StatusSignals, derive_status
+from .transcript_repair import repair_resumed_transcript
 
 log = logging.getLogger(__name__)
 
+# DIAGNOSTIC (temporary): gate the per-emit status trace. Off by default — set
+# CCSWITCH_STATUS_TRACE=1 to capture the raw derived status + its input signals
+# when chasing false-"Ready" reports. Remove with the trace itself once settled.
+_STATUS_TRACE = os.environ.get("CCSWITCH_STATUS_TRACE", "false").lower() in ("1", "true", "yes", "on")
+
 _STREAM_DONE = object()
+
+# How long aclose() waits for the CLI to flush its synthetic interrupt result for a
+# turn wedged mid-tool-call before giving up and cancelling the drain.
+_CLOSE_GRACE_SEC = 5.0
 
 
 async def _aiter_one(message: dict):
@@ -159,8 +170,25 @@ class SessionDriver:
         depth shown in the busy label; defaults to the live queue length.
         Best-effort on the callback: a failure must never break the session loop.
         """
-        status = derive_status(self._dash_signals())
+        sig = self._dash_signals()
+        status = derive_status(sig)
         n = len(self._queue) if count is None else count
+        # DIAGNOSTIC (temporary): trace the raw status + the signals that produced
+        # it, to tell a genuine idle/done from a "Ready" the UI fell back to. Logs
+        # the inputs to derive_status plus the staleness clock the stall watchdog
+        # uses, so a session that looks idle while monitoring is identifiable.
+        # Gated by CCSWITCH_STATUS_TRACE (off by default — fires on every emit).
+        # Remove once the false-"Ready" question is settled.
+        if _STATUS_TRACE:
+            log.info(
+                "status.derive session=%s status=%s turn_active=%s turns_completed=%s "
+                "last_outcome=%s pending_perm=%s pending_q=%s pending_plan=%s "
+                "awaiting_user=%s idle_age=%.1f queue=%d",
+                self.session_id, status, sig.turn_active, sig.turns_completed,
+                sig.last_turn_outcome, sig.pending_permission, sig.pending_question,
+                sig.pending_plan, self.awaiting_user_input,
+                self._clock() - self._last_progress_at, n,
+            )
         await self._out.put(ev.Status(state=status, count=n))
         if self._on_status is not None:
             try:
@@ -317,6 +345,19 @@ class SessionDriver:
         return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied by user")
 
     async def start(self):
+        # A turn interrupted mid-tool-call (manual Stop, stall-watchdog, or a deploy
+        # drain that cancels the drain before the CLI writes its synthetic
+        # "[Request interrupted by user for tool use]" result) leaves an ORPHANED
+        # tool_use as the transcript tail. On resume the CLI rejects that state with
+        # error_during_execution / [ede_diagnostic] and every turn dead-ends. Heal it
+        # before handing the session back to the SDK. Best-effort — never block start.
+        if self.resume:
+            try:
+                await asyncio.to_thread(
+                    repair_resumed_transcript, self.config_dir, self.resume)
+            except Exception:
+                log.warning("driver.start: transcript repair failed session=%s",
+                            self.session_id, exc_info=True)
         self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
                                      self.resume, on_pre_compact=self._on_pre_compact)
         await self._client.__aenter__()
@@ -473,6 +514,8 @@ class SessionDriver:
             else:
                 self._turn_active = False
                 self._turns_completed += 1
+                # Turn settled — refresh the exact context-window readout.
+                await self._emit_context_usage()
                 await self._emit_status()
                 self._maybe_start_suggestions()
 
@@ -583,6 +626,28 @@ class SessionDriver:
             return {}
         return await self._client.get_context_usage()
 
+    async def _emit_context_usage(self) -> None:
+        """Forward exact context-window occupancy (same source as `/context`) so the
+        persistent ctx% readout reflects REAL remaining context — not the per-turn
+        ``turnEnd.usage`` aggregate, which sums cache reads across a turn's API calls
+        and pins the readout at 0%. Best-effort: a dead client or missing data emits
+        nothing (the frontend keeps its per-call approximation as a fallback)."""
+        try:
+            cu = await self.context_usage()
+        except Exception:
+            log.debug("context_usage pull failed session=%s", self.session_id, exc_info=True)
+            return
+        if not isinstance(cu, dict):
+            return
+        used, mx = cu.get("totalTokens"), cu.get("maxTokens")
+        if not isinstance(used, int) or not isinstance(mx, int) or mx <= 0:
+            return
+        pct, model = cu.get("percentage"), cu.get("model")
+        await self._out.put(ev.ContextUsage(
+            used_tokens=used, max_tokens=mx,
+            percentage=float(pct) if isinstance(pct, (int, float)) else round(used / mx * 100, 1),
+            model=model if isinstance(model, str) else None))
+
     async def reconnect(self) -> None:
         """Tear down the SDK client and start a FRESH session (resume=None).
 
@@ -618,12 +683,32 @@ class SessionDriver:
         self._cancel_suggest()
         self._reg.deny_all(self.session_id)
         self._qreg.deny_all(self.session_id)
-        if self._pump:
-            self._pump.cancel()
+        if self._pump is not None and not self._pump.done():
+            # A turn wedged mid-tool-call must not be abandoned: hard-cancelling the
+            # drain kills the subprocess before the CLI writes its synthetic
+            # "[Request interrupted by user for tool use]" result, orphaning the
+            # tool_use and dead-ending the next resume (see transcript_repair).
+            # Interrupt and give the CLI a bounded chance to flush; only cancel if it
+            # doesn't finish in time. Drop queued prompts first so the drain's finally
+            # can't launch a fresh turn while we're closing.
+            self._queue.clear()
+            if self._turn_active and self._client is not None:
+                try:
+                    await self._client.interrupt()
+                except Exception:
+                    log.warning("driver.aclose: interrupt failed session=%s",
+                                self.session_id, exc_info=True)
+            grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
             try:
-                await self._pump
-            except asyncio.CancelledError:
+                await asyncio.wait_for(asyncio.shield(self._pump), timeout=grace)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
+            if not self._pump.done():
+                self._pump.cancel()
+                try:
+                    await self._pump
+                except asyncio.CancelledError:
+                    pass
         if self._client:
             await self._client.__aexit__(None, None, None)
         # Final sync_back: capture any token rotation that occurred during the

@@ -46,3 +46,17 @@ def test_factory_registers_precompact_hook_when_callback_given():
 def test_factory_no_hooks_without_callback():
     client = real_sdk_factory("/tmp", "/tmp/cfg", None, "default", None)
     assert client.options.hooks is None
+
+
+def test_factory_auto_trusts_project_mcp_servers(monkeypatch):
+    """The session must never hit the binary's project-`.mcp.json` trust gate.
+
+    The gate (`LX1()` in the CLI) leaves a project server `"pending"` — i.e. prompts —
+    unless `enableAllProjectMcpServers` is set in the flag-settings layer.  The SDK only
+    loads filesystem settings when `setting_sources` is passed (we don't), so we inject the
+    flag inline via the `--settings` channel (`ClaudeAgentOptions.settings`)."""
+    import json
+    opts = _captured_options(monkeypatch)
+    assert opts.settings is not None, "factory must pass an inline --settings payload"
+    parsed = json.loads(opts.settings)
+    assert parsed.get("enableAllProjectMcpServers") is True
