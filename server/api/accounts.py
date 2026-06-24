@@ -30,6 +30,7 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.reauth import ReauthBusy, ReauthNoKey
+from server.time_iso import iso_utc
 
 if TYPE_CHECKING:
     from server.sessions.facade import InProcessOrchestratorAdapter
@@ -55,11 +56,11 @@ def _usage_to_dict(usage) -> dict[str, Any] | None:
     return {
         "session": {
             "pct": usage.session_pct,
-            "resetsAt": usage.session_resets_at.isoformat() if usage.session_resets_at else None,
+            "resetsAt": iso_utc(usage.session_resets_at),
         },
         "weekly": {
             "pct": usage.weekly_pct,
-            "resetsAt": usage.weekly_resets_at.isoformat() if usage.weekly_resets_at else None,
+            "resetsAt": iso_utc(usage.weekly_resets_at),
         },
     }
 
