@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import re
 import subprocess
 from typing import Callable
 
@@ -26,3 +27,20 @@ def ci_verdict(sha: str, gh_api: Callable[[str], str] | None = None) -> str:
     if any((r.get("conclusion") or "") not in _OK_CONCLUSIONS for r in runs):
         return "red"
     return "green"
+
+
+# Edge-only ALLOWLIST — mirrors scripts/auto-deploy.sh exactly. Anything NOT matching
+# (incl. shared modules the daemon imports: server/config, server/db, server/audit,
+# server/usage, the orchestrator, IPC, agent-SDK glue) forces a daemon restart.
+_EDGE_ONLY = re.compile(
+    r"^(web/|server/api/|server/app\.py|server/bridge/|server/spa\.py|"
+    r"server/tests/|docs/|deploy/|\.github/|.*\.md$)"
+)
+
+
+def classify_change(changed_files: list[str] | None) -> str:
+    if changed_files is None:
+        return "daemon_changed"   # fail-safe: cannot classify → treat as daemon change
+    if all(_EDGE_ONLY.match(f) for f in changed_files):
+        return "edge_only"
+    return "daemon_changed"
