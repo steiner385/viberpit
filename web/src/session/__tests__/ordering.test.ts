@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { orderSessions } from '../ordering'
 import { sortSessionsByTier } from '../statusTier'
-import type { Session } from '@/api/types'
+import type { Session, PullRequestInfo } from '@/api/types'
 
 function mk(over: Partial<Session> & { id: string }): Session {
   return {
@@ -9,6 +9,13 @@ function mk(over: Partial<Session> & { id: string }): Session {
     createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z',
     ...over,
   }
+}
+
+function mkWithPr(id: string, status: string, checks: PullRequestInfo['checks']): Session {
+  return mk({
+    id, status,
+    pr: { number: 1, url: 'u', state: 'open', checks, title: 't' } as PullRequestInfo,
+  })
 }
 
 const flat = (s: Session[], g: Parameters<typeof orderSessions>[1], so: Parameters<typeof orderSessions>[2]) =>
@@ -87,5 +94,25 @@ describe('orderSessions', () => {
       mk({ id: 'a', status: 'idle' }),
     ]
     expect(flat(s, 'none', 'status')).toEqual(['z', 'a'])
+  })
+
+  it('done+failing-PR sorts above idle+no-PR (AUT-03)', () => {
+    const s = [
+      mk({ id: 'idle', status: 'idle' }),
+      mkWithPr('broken', 'done', 'failing'),
+    ]
+    expect(flat(s, 'none', 'status')).toEqual(['broken', 'idle'])
+  })
+
+  it('group by status: done+failing-PR lands in error ("Needs attention") group', () => {
+    const s = [
+      mk({ id: 'idle', status: 'idle' }),
+      mkWithPr('broken', 'done', 'failing'),
+    ]
+    const g = orderSessions(s, 'status', 'status')
+    const errorGroup = g.find((x) => x.label === 'Needs attention')
+    expect(errorGroup?.sessions.map((x) => x.id)).toEqual(['broken'])
+    const doneGroup = g.find((x) => x.label === 'Done')
+    expect(doneGroup?.sessions.map((x) => x.id)).toEqual(['idle'])
   })
 })
