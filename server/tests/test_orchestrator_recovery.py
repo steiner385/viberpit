@@ -230,3 +230,19 @@ def test_stall_does_not_consume_crash_respawn_budget():
         o._recovery.record_stall("s1", now=1000.0)
     asyncio.run(o._recover_session(rec, "process_crash", None))
     assert ("reassign", "s1", "kindash", "process_crash") in o.calls
+
+
+def test_turn_dropped_replays_same_account_immediately():
+    o = _make_orch(); rec = _rec(o)
+    asyncio.run(o._recover_session(rec, "turn_dropped", None))
+    assert o.calls == [("replay", "s1", 0.0)]
+    # not an account fault → nothing quarantined
+    assert o._recovery.quarantined(now=1000.0) == frozenset()
+
+
+def test_turn_dropped_stops_after_resend_cap():
+    o = _make_orch(); rec = _rec(o)
+    for _ in range(R.RESEND_CAP):
+        o._recovery.record_resend("s1", now=1000.0)
+    asyncio.run(o._recover_session(rec, "turn_dropped", None))
+    assert o.calls == []  # cap reached → no resend, no pause/rotate
