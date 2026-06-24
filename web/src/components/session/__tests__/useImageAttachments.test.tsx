@@ -3,7 +3,11 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useImageAttachments } from '../useImageAttachments'
 
+const heic2any = vi.fn(async () => new Blob([new Uint8Array(10)], { type: 'image/jpeg' }))
+vi.mock('heic2any', () => ({ default: heic2any }))
+
 beforeEach(() => {
+  heic2any.mockClear()
   // jsdom lacks createObjectURL
   // @ts-expect-error test shim
   URL.createObjectURL = vi.fn(() => 'blob:preview')
@@ -39,6 +43,8 @@ describe('useImageAttachments', () => {
     const pdf = new File([new Uint8Array(10)], 'x.pdf', { type: 'application/pdf' })
     await act(async () => { await result.current.addFiles([pdf]) })
     expect(result.current.attachments[0].error).toMatch(/unsupported/i)
+    // error chips render no thumbnail, so they hold no object URL
+    expect(result.current.attachments[0].previewUrl).toBe('')
   })
 
   it('remove drops the attachment by key', async () => {
@@ -86,5 +92,29 @@ describe('useImageAttachments', () => {
     expect(result.current.attachments).toHaveLength(1)
     expect(result.current.attachments[0].previewUrl).toBe('/api/attachments/att-9')
     expect(result.current.refs()).toEqual(['att-9'])
+  })
+
+  it('converts a HEIC capture to JPEG and uploads it', async () => {
+    const { result } = renderHook(() => useImageAttachments())
+    const heic = new File([new Uint8Array(10)], 'photo.heic', { type: 'image/heic' })
+    await act(async () => { await result.current.addFiles([heic]) })
+    await waitFor(() => expect(result.current.attachments).toHaveLength(1))
+    expect(heic2any).toHaveBeenCalledOnce()
+    expect(result.current.attachments[0].error).toBeUndefined()
+    expect(result.current.refs()).toEqual(['att-1'])
+  })
+
+  it('shows an error chip when HEIC conversion fails', async () => {
+    heic2any.mockRejectedValueOnce(new Error('decode failed'))
+    const fetchSpy = vi.fn(async () =>
+      ({ ok: true, json: async () => ({ id: 'att-1', mediaType: 'image/png', filename: 'x.png', byteSize: 10, url: '/x' }) }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { result } = renderHook(() => useImageAttachments())
+    const heic = new File([new Uint8Array(10)], 'photo.heic', { type: 'image/heic' })
+    await act(async () => { await result.current.addFiles([heic]) })
+    await waitFor(() => expect(result.current.attachments).toHaveLength(1))
+    expect(result.current.attachments[0].error).toMatch(/read photo/i)
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(result.current.refs()).toHaveLength(0)
   })
 })
