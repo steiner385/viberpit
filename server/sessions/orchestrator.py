@@ -46,7 +46,7 @@ from server.sessions.suggestions import SuggestionService, last_turn_context
 from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
 )
-from server.sessions.selection import AllAccountsBusy, select_account
+from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
@@ -400,12 +400,15 @@ class SessionOrchestrator:
         # join key to its GitHub PR. Surfaced as a PR pill on the dashboard.
         branch_name = worktree_info.branch if worktree_info is not None else None
 
+        usage_unverified = False
         if account is None:
             # Skip accounts currently quarantined for a 429/401 so a fresh session
             # doesn't land on an account we already know is struggling.
-            account = select_account(
+            picked = select_account(
                 exclude=self._recovery.quarantined(now=self._clock()),
                 load=self.live_session_load())
+            account = picked.name
+            usage_unverified = picked.optimistic
         else:
             # Verify the given account exists (will raise if cred file missing — acceptable)
             pass
@@ -483,6 +486,7 @@ class SessionOrchestrator:
             # Stamp activity now so the new card reads "active just now" rather than
             # waiting for the first status event (mirrors the DB row's utcnow default).
             updated_at=datetime.utcnow(),
+            usage_unverified=usage_unverified,
         )
         self._records[session_id] = record
         log.info("session.create id=%s account=%s", session_id, account)
@@ -1957,7 +1961,7 @@ class SessionOrchestrator:
         old = record.account
         exclude = self._recovery.quarantined(now=now) | frozenset({old})
         try:
-            new_account = select_account(exclude=exclude, load=self.live_session_load())
+            new_account = select_account(exclude=exclude, load=self.live_session_load()).name
         except AllAccountsBusy as e:
             await self._pause_session(record, reason="all_accounts_busy",
                                       earliest_reset=e.earliest_reset)

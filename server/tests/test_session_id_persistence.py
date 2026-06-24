@@ -1,5 +1,6 @@
 """Tests for Task 1: persist claude_session_id to DB the moment the driver captures it."""
 import asyncio
+from ccswitch.selector import Picked
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.events import TurnEnd
@@ -65,7 +66,7 @@ def test_orchestrator_persists_claude_session_id_to_db(tmp_path):
         await init_db(db_url=db_url)
         with patch("server.sessions.orchestrator.compose", return_value=tmp_path/"cfg"), \
              patch("server.sessions.orchestrator.configdir.trust_project"), \
-             patch("server.sessions.orchestrator.select_account", return_value="alpha"):
+             patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")):
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(msgs),
                                        work_dir=str(tmp_path))
             rec = await orch.create_session("s")
