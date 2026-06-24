@@ -13,6 +13,19 @@ PRODUCTION_ENVIRONMENT = "production"
 
 
 @dataclass(frozen=True)
+class CheckDetail:
+    name: str
+    conclusion: str  # 'success' | 'failure' | 'pending' | 'neutral' | 'skipped' | ...
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "conclusion": self.conclusion}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CheckDetail":
+        return cls(name=d.get("name", ""), conclusion=d.get("conclusion", ""))
+
+
+@dataclass(frozen=True)
 class PullRequestInfo:
     number: int
     url: str
@@ -20,6 +33,11 @@ class PullRequestInfo:
     checks: str  # 'passing' | 'failing' | 'pending' | 'none'
     title: str
     deployed: bool = False  # merged AND live in the active production deployment
+    head_sha: str = ""
+    is_draft: bool = False
+    merged: bool = False
+    updated_at: str = ""
+    checks_detail: tuple[CheckDetail, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -29,6 +47,11 @@ class PullRequestInfo:
             "checks": self.checks,
             "title": self.title,
             "deployed": self.deployed,
+            "head_sha": self.head_sha,
+            "is_draft": self.is_draft,
+            "merged": self.merged,
+            "updated_at": self.updated_at,
+            "checks_detail": [c.to_dict() for c in self.checks_detail],
         }
 
     @classmethod
@@ -41,6 +64,11 @@ class PullRequestInfo:
             checks=d["checks"],
             title=d.get("title", ""),
             deployed=d.get("deployed", False),
+            head_sha=d.get("head_sha", ""),
+            is_draft=d.get("is_draft", False),
+            merged=d.get("merged", False),
+            updated_at=d.get("updated_at", ""),
+            checks_detail=tuple(CheckDetail.from_dict(c) for c in d.get("checks_detail", [])),
         )
 
 

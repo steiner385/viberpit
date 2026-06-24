@@ -1,5 +1,5 @@
 from server.github.pr_status import (
-    PRODUCTION_ENVIRONMENT, PullRequestInfo, build_pr_query, parse_pr_response,
+    PRODUCTION_ENVIRONMENT, CheckDetail, PullRequestInfo, build_pr_query, parse_pr_response,
 )
 
 
@@ -168,3 +168,21 @@ def test_active_deploy_ignores_non_success_status():
 def test_deployed_defaults_false_in_dict():
     info = PullRequestInfo(1, "u", "open", "none", "t")
     assert info.to_dict()["deployed"] is False
+
+
+def test_pull_request_info_parity_fields_roundtrip():
+    pr = PullRequestInfo(
+        number=9, url="u", state="open", checks="passing", title="t",
+        head_sha="abc123", is_draft=False, merged=False,
+        updated_at="2026-06-22T10:00:00Z",
+        checks_detail=(CheckDetail(name="ci", conclusion="success"),),
+    )
+    back = PullRequestInfo.from_dict(pr.to_dict())
+    assert back == pr
+    assert back.head_sha == "abc123"
+    assert back.checks_detail[0].name == "ci"
+    # Defaults still round-trip (older payloads without the new keys):
+    legacy = PullRequestInfo.from_dict(
+        {"number": 1, "url": "u", "state": "open", "checks": "none", "title": "t"}
+    )
+    assert legacy.head_sha == "" and legacy.checks_detail == ()
