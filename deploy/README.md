@@ -1,20 +1,27 @@
-# Deploy — ccswitch web (self-hosted, auto-deploy from master)
+# Deploy — ccswitch web (self-hosted)
 
-The server runs as a **systemd service** on the Tailscale host and is kept in sync
-with `origin/master` by a **polling timer** (no inbound ports — GitHub can't reach
-a `100.x` Tailscale address, so we poll rather than use a webhook).
+The server runs as a **systemd service** on the Tailscale host.
 
 ## Components
 
 | Unit | Role |
 |------|------|
 | `ccswitch.service` | Long-running uvicorn server (`server.app:app`), serves the API + built `web/dist`. |
-| `scripts/auto-deploy.sh` | Poll → if behind `origin/master`: `git pull` → `npm run build` → **test gate** → `systemctl restart ccswitch`. No-op when current. |
-| `ccswitch-deploy.service` | Oneshot wrapper that runs the script. |
-| `ccswitch-deploy.timer` | Fires the deploy every 2 minutes. |
+| `ccswitch-daemon.service` | Session daemon (`python -m server.ipc`) — owns live `claude` PTY sessions in remote mode. |
 
-The **test gate** runs the frontend build and `pytest server/tests` before restarting;
-if either fails the running service is left untouched, so a broken master never goes live.
+## Deploy (Plan 1: manual)
+
+Deploys are no longer automatic. Run one on demand:
+
+    PYTHONPATH=<repo>/src <repo>/.venv/bin/python -m server.deploy --once
+
+This gates on GitHub CI being green, fast-forwards `origin/master`, syncs deps only
+when lockfiles changed, rebuilds `web/dist`, restarts the daemon (if daemon code
+changed) then the edge, health-gates on the deployed SHA, and rolls back on failure.
+
+> The notify-on-pending UI and one-click trigger (a long-lived `ccswitch-deploy-controller`
+> service) land in Plans 2–3. Until then, `--once` is the supported path and the
+> `ccswitch-deploy.timer`/`.service` units have been removed (no more auto-deploy).
 
 ## Runtime env (`/etc/ccswitch/ccswitch.env`, root-only, NOT committed)
 
@@ -26,12 +33,9 @@ Holds the secrets/config the server needs — `CCSWITCH_DB_URL`, `CCSWITCH_MASTE
 
 ```bash
 sudo install -m644 deploy/ccswitch.service          /etc/systemd/system/
-sudo install -m644 deploy/ccswitch-deploy.service   /etc/systemd/system/
-sudo install -m644 deploy/ccswitch-deploy.timer     /etc/systemd/system/
-chmod +x scripts/auto-deploy.sh
+sudo install -m644 deploy/ccswitch-daemon.service   /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now ccswitch.service
-sudo systemctl enable --now ccswitch-deploy.timer
 ```
 
 ## Operate
@@ -39,24 +43,25 @@ sudo systemctl enable --now ccswitch-deploy.timer
 ```bash
 systemctl status ccswitch.service                 # server health
 journalctl -u ccswitch.service -f                 # server logs
-systemctl list-timers ccswitch-deploy.timer       # next poll
-journalctl -u ccswitch-deploy.service -n 50       # deploy history
-sudo systemctl start ccswitch-deploy.service      # force a deploy check now
+journalctl -u ccswitch-daemon.service -f          # daemon logs
+# Force a deploy now:
+PYTHONPATH=<repo>/src <repo>/.venv/bin/python -m server.deploy --once
 ```
 
 ## Notes
 
-- **Backend dependency changes** (new Python deps) need a manual `uv sync`; the deploy
-  script intentionally doesn't, to stay robust on a bandwidth-limited host. A missing dep
-  surfaces as a red test gate (deploy aborts, old version stays live) rather than a crash.
+- **Backend dependency changes** (new Python deps) trigger `pip install -e .[server]`
+  automatically when `uv.lock`/`pyproject.toml` changed since the last deploy.
+- **Frontend dependency changes** trigger `npm ci` automatically when
+  `web/package-lock.json` changed.
 - The deploy runs as `tony` and uses passwordless `sudo` only for `systemctl restart`.
 
 ## Session daemon (`ccswitch-daemon.service`)
 
-`ccswitch-daemon.service` runs `python -m server.ipc` — the session daemon that will own
-live `claude` PTY sessions once the edge switches to remote mode (A2.3). The daemon is
-**not enabled until A2.3**; the unit file is shipped now so `auto-deploy.sh` can restart
-it on hosts where it is enabled, without affecting CI or other hosts where it isn't.
+`ccswitch-daemon.service` runs `python -m server.ipc` — the session daemon that owns
+live `claude` PTY sessions in remote mode. The daemon is **not enabled until remote
+mode is deployed**; the unit file is shipped so `server.deploy` can restart it on
+hosts where it is enabled, without affecting hosts where it isn't.
 
 The `RuntimeDirectory=ccswitch` directive creates `/run/ccswitch/` on each start; the
 daemon's Unix socket lives at `/run/ccswitch/sessiond.sock`.
@@ -66,10 +71,10 @@ daemon's Unix socket lives at `/run/ccswitch/sessiond.sock`.
 ```bash
 sudo install -m644 deploy/ccswitch-daemon.service /etc/systemd/system/
 sudo systemctl daemon-reload
-# Enable only when A2.3 is deployed (remote-mode edge):
+# Enable only when remote-mode edge is deployed:
 # sudo systemctl enable --now ccswitch-daemon.service
 ```
 
-The `auto-deploy.sh` script restarts `ccswitch-daemon.service` after a successful edge
-restart, but only when `systemctl is-enabled ccswitch-daemon.service` succeeds — making
-the block a complete no-op on CI and any host where the unit is not yet enabled.
+`server.deploy` restarts `ccswitch-daemon.service` before the edge when daemon code
+changed, but only when `systemctl is-enabled ccswitch-daemon.service` succeeds — making
+the block a complete no-op on hosts where the unit is not yet enabled.

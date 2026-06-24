@@ -33,7 +33,7 @@ def ci_verdict(sha: str, gh_api: Callable[[str], str] | None = None) -> str:
     return "green"
 
 
-# Edge-only ALLOWLIST — mirrors scripts/auto-deploy.sh exactly. Anything NOT matching
+# Edge-only ALLOWLIST (fail-safe): only these paths are edge-only; anything NOT matching
 # (incl. shared modules the daemon imports: server/config, server/db, server/audit,
 # server/usage, the orchestrator, IPC, agent-SDK glue) forces a daemon restart.
 _EDGE_ONLY = re.compile(
