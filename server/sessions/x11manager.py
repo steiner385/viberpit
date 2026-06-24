@@ -183,6 +183,20 @@ class X11Manager:
                 pass
         await self._allocator.release(spec.lease)
 
+    async def stop_all(self) -> None:
+        """Concurrently tear down every tracked display — the shutdown sweep (issue #206).
+
+        Closing sessions sequentially summed each ~10s ``stop_display`` past systemd's
+        ``TimeoutStopSec``, so the process was SIGKILLed before cleanup finished and
+        per-session Xvfb/x11vnc/chrome leaked. Stopping all displays concurrently bounds
+        total teardown to roughly a single ``stop_display``; ``return_exceptions`` ensures
+        one session's failure can't abort the rest.
+        """
+        sids = list(self._specs.keys())
+        if not sids:
+            return
+        await asyncio.gather(*(self.stop_display(sid) for sid in sids), return_exceptions=True)
+
     async def ensure_vnc(self, session_id: str) -> int | None:
         async with self._lock:
             spec = self._specs.get(session_id)

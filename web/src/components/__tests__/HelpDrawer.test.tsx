@@ -8,7 +8,7 @@ describe('HelpDrawer', () => {
   it('is a labelled dialog with a row per registry shortcut (drift guard)', () => {
     render(<HelpDrawer onClose={vi.fn()} />)
     expect(screen.getByRole('dialog', { name: /help/i })).toBeInTheDocument()
-    for (const s of SHORTCUTS) expect(screen.getByText(s.description)).toBeInTheDocument()
+    for (const s of SHORTCUTS) expect(screen.getAllByText(s.description).length).toBeGreaterThan(0)
   })
   it('shows list-mode keys and not the old Ctrl bindings', () => {
     render(<HelpDrawer onClose={vi.fn()} />)

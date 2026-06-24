@@ -39,6 +39,7 @@ import { setLastRepo } from '@/lib/lastRepo'
 import { SessionListControls } from './SessionListControls'
 import { useSessionOrdering } from '@/session/useSessionOrdering'
 import { useSessionSearch } from '@/session/useSessionSearch'
+import { useListNavigation } from '@/session/useListNavigation'
 import { useNeedsYouTitle } from '@/hooks/useNeedsYouTitle'
 
 // ── New Session Dialog ──────────────────────────────────────────────────────
@@ -723,7 +724,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const sessionSearch = useSessionSearch()
-  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, collapsedKeys, toggleCollapse } =
+  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, navItems, collapsedKeys, toggleCollapse, expandGroup, collapseGroup } =
     useSessionOrdering(sessions, sessionSearch.matchedIds)
   useNeedsYouTitle(sessions)
   const { data: archivedSessions = [] } = useArchivedSessions()
@@ -769,9 +770,11 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const [archivedSummary, setArchivedSummary] = useState<string | null>(null)
 
   // ── Keyboard selection state ─────────────────────────────────────────────────
-  const [highlightedIndex, setHighlightedIndex] = useState(-1)
-  const selectedSession = highlightedIndex >= 0 ? orderedSessions[highlightedIndex] : undefined
-  const selectedId = selectedSession?.id ?? null
+  const {
+    highlightedIndex, setHighlightedIndex,
+    highlightedSession, highlightedGroupKey, navigate, highlightSession,
+  } = useListNavigation(navItems)
+  const selectedId = highlightedSession?.id ?? null
 
   // ── List-focus mode ───────────────────────────────────────────────────────────
   const [listMode, setListMode] = useState(false)
@@ -787,17 +790,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   }
   function handleJump(index: number) {
     const s = orderedSessions[index]
-    if (s) { setHighlightedIndex(index); handleOpen(s.id) }
-  }
-
-  // Clamp highlighted index during render when the sessions list shrinks.
-  // Doing this at render time (not in an effect) avoids the set-state-in-effect
-  // lint rule while still being safe — React re-renders synchronously when state
-  // set during render differs from the current value (React 18 batching).
-  const clampedIndex =
-    sessions.length === 0 ? -1 : Math.min(highlightedIndex, sessions.length - 1)
-  if (clampedIndex !== highlightedIndex) {
-    setHighlightedIndex(clampedIndex)
+    if (s) { highlightSession(s.id); handleOpen(s.id) }
   }
 
   const newButtonRef = useRef<HTMLButtonElement>(null)
@@ -905,20 +898,16 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   // ── DispatchBar handlers ─────────────────────────────────────────────────────
 
-  const handleNavigate = useCallback((dir: 'up' | 'down') => {
-    if (sessions.length === 0) return
-    setHighlightedIndex((i) => {
-      if (dir === 'up') return i <= 0 ? 0 : i - 1
-      return Math.min(sessions.length - 1, i + 1)
-    })
-  }, [sessions.length])
-
-  useGlobalListNav({ enabled: activeTab === 'sessions', onNavigate: handleNavigate })
+  useGlobalListNav({ enabled: activeTab === 'sessions', onNavigate: navigate })
   useGlobalHelpKey({ enabled: activeTab === 'sessions', onShowHelp: () => setShowHelp(true) })
 
   function handleOpenHighlighted() {
-    if (selectedSession && !selectedSession.pending) handleOpen(selectedSession.id)
+    if (highlightedSession) handleOpen(highlightedSession.id)
   }
+
+  function handleExpandHighlighted() { if (highlightedGroupKey) expandGroup(highlightedGroupKey) }
+  function handleCollapseHighlighted() { if (highlightedGroupKey) collapseGroup(highlightedGroupKey) }
+  function handleToggleHighlighted() { if (highlightedGroupKey) toggleCollapse(highlightedGroupKey) }
 
   function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
@@ -1176,6 +1165,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             accounts={accounts}
             isLoading={isLoading}
             selectedId={selectedId}
+            selectedGroupKey={highlightedGroupKey ?? null}
             onNew={openNewDialog}
             onOpen={handleOpen}
             onRename={handleRename}
@@ -1185,10 +1175,12 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             onClearSearch={() => sessionSearch.setQuery('')}
             onQuickResume={handleQuickResume}
             listMode={listMode}
-            onNavigate={handleNavigate}
+            onNavigate={navigate}
             onExit={handleExitList}
             collapsedKeys={collapsedKeys}
             onToggleCollapse={toggleCollapse}
+            onExpand={expandGroup}
+            onCollapse={collapseGroup}
           />
 
           {config?.adoptionEnabled && <AdoptPanel />}
@@ -1198,13 +1190,21 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             reposLoading={reposQuery.isLoading}
             reposError={reposQuery.isError}
             onDispatch={handleDispatch}
-            onNavigate={handleNavigate}
+            onNavigate={navigate}
             onOpenHighlighted={handleOpenHighlighted}
+            onExpandHighlighted={handleExpandHighlighted}
+            onCollapseHighlighted={handleCollapseHighlighted}
+            onToggleHighlighted={handleToggleHighlighted}
             onEnterList={handleEnterList}
             onJump={handleJump}
             onShowHelp={() => setShowHelp(true)}
             onEscape={() => setHighlightedIndex(-1)}
-            activeDescendantId={selectedId ? `row-${selectedId}` : undefined}
+            activeDescendantId={
+              highlightedSession ? `row-${highlightedSession.id}`
+              : highlightedGroupKey ? `group-header-${highlightedGroupKey}`
+              : undefined
+            }
+            activeDescendantIsHeader={!!highlightedGroupKey}
             autoFocusKey={`${String(focusDispatchSignal)}:${focusNonce}`}
             isPending={createSession.isPending}
           />

@@ -78,3 +78,41 @@ async def test_xvfb_screen_geometry_comes_from_resolution(tmp_path):
     await mgr.start_display("sess-geom")
     xvfb_argv = next(a for a in spawned if a[0] == "Xvfb")
     assert "1280x800x24" in xvfb_argv, xvfb_argv
+
+
+@pytest.mark.asyncio
+async def test_stop_all_terminates_every_display(tmp_path):
+    """Shutdown sweep (issue #206): stop_all clears every tracked display."""
+    async def fake_spawn(*argv, **kw): return FakeProc()
+    mgr = X11Manager(DisplayAllocator(100, 4, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn,
+                     ready_check=lambda d: True, run_dir=str(tmp_path))
+    await mgr.start_display("a")
+    await mgr.start_display("b")
+    assert mgr.display_for("a") is not None and mgr.display_for("b") is not None
+
+    await mgr.stop_all()
+
+    assert mgr.display_for("a") is None and mgr.display_for("b") is None
+    assert mgr._specs == {}
+
+
+@pytest.mark.asyncio
+async def test_stop_all_resilient_to_one_failure(tmp_path):
+    """One session's teardown raising must not abort the rest (return_exceptions)."""
+    async def fake_spawn(*argv, **kw): return FakeProc()
+    mgr = X11Manager(DisplayAllocator(100, 4, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn,
+                     ready_check=lambda d: True, run_dir=str(tmp_path))
+    await mgr.start_display("a")
+    await mgr.start_display("b")
+
+    real_stop = mgr.stop_display
+    async def flaky(sid):
+        if sid == "a":
+            raise RuntimeError("boom")
+        await real_stop(sid)
+    mgr.stop_display = flaky
+
+    await mgr.stop_all()   # must not raise
+    assert mgr.display_for("b") is None  # b cleaned despite a failing

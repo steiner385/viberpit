@@ -33,6 +33,7 @@ from server.db import db_session
 from server.db.models import Session as DbSession
 from server.sessions import adopt as _adopt
 from server.sessions import attachments as _attachments
+from server.sessions import dispatch
 from server.sessions import events as ev
 from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
@@ -71,6 +72,19 @@ PUSH_STATUSES: frozenset[str] = frozenset(
 
 def is_push_worthy(status: str) -> bool:
     return status in PUSH_STATUSES
+
+
+# TTL for cached issue proposals (seconds).
+_ISSUE_TTL_S: float = 300.0
+
+
+def _prepend_proposal(proposal: str | None, base: list[str]) -> list[str]:
+    """Prepend *proposal* to *base* iff truthy and not already present."""
+    if not proposal:
+        return base
+    if proposal in base:
+        return base
+    return [proposal, *base]
 
 
 class BranchSwitchError(Exception):
@@ -144,6 +158,20 @@ class SessionOrchestrator:
         # the same transcript state is not re-generated on every /sessions poll.
         self._detached_suggestions: dict[str, tuple[float, list[str]]] = {}
         self._suggest_inflight: set[str] = set()
+        # Issue-proposal cache: repo → (monotonic_ts, proposal_or_None).
+        # Populated lazily by _refresh_issue_proposal; TTL = _ISSUE_TTL_S.
+        self._issue_proposals: dict[str, tuple[float, str | None]] = {}
+        self._issue_inflight: set[str] = set()
+        # Collision-avoidance (US-8): top issue number per repo, and which live session
+        # currently "holds" each issue, so two idle/done sessions in the same repo are
+        # never pointed at the same backlog issue. Claims are refreshed each
+        # _dispatch_proposal call and pruned to current idle/done sessions.
+        self._issue_numbers: dict[str, int | None] = {}
+        self._proposed_issue: dict[str, int] = {}
+        # Review-comment cache: (repo, pr_number) → (monotonic_ts, proposal_or_None).
+        # Populated lazily by _refresh_review_proposal; TTL = _ISSUE_TTL_S.
+        self._review_proposals: dict[tuple[str, int], tuple[float, str | None]] = {}
+        self._review_inflight: set[tuple[str, int]] = set()
         self._last_prompt: dict[str, str] = {}
         # Failure-driven recovery: quarantine + per-session rotation cap. Clock is
         # injectable for deterministic tests; production uses wall-clock time. The
@@ -1483,38 +1511,45 @@ class SessionOrchestrator:
         ``done``/``idle`` sessions generate from their on-disk transcript and
         cache the result keyed by transcript mtime (see
         _generate_detached_suggestions). Best-effort: never raises.
+
+        For done/idle detached sessions, the top open GitHub issue proposal is
+        prepended as the first item when available (lazy TTL cache via
+        _dispatch_proposal / _refresh_issue_proposal).
         """
         d = self._drivers.get(session_id)
         if d is not None:
             return list(getattr(d, "_last_suggestions", []) or [])
 
         rec = self._records.get(session_id)
-        if rec is None or self._suggester is None:
+        if rec is None:
             return []
         if rec.status not in ("done", "idle"):
             return []
 
+        # Issue-proposal: lazy TTL cache + bg refresh; best-effort, never blocks.
+        proposal = self._dispatch_proposal(rec)
+
         try:
             path = await self._resolve_transcript_path(session_id)
             if not path:
-                return []
+                return _prepend_proposal(proposal, [])
             signature = os.path.getmtime(path)
         except Exception:
-            return []
+            return _prepend_proposal(proposal, [])
 
         cached = self._detached_suggestions.get(session_id)
         if cached is not None and cached[0] == signature:
-            return list(cached[1])
+            return _prepend_proposal(proposal, list(cached[1]))
 
-        if session_id not in self._suggest_inflight:
+        # Only schedule a background suggestion refresh when a suggester is available.
+        if self._suggester is not None and session_id not in self._suggest_inflight:
             self._suggest_inflight.add(session_id)
             asyncio.create_task(
                 self._generate_detached_suggestions(session_id, rec, path, signature)
             )
-        # Cache miss or stale (transcript changed): serve nothing rather than stale
-        # suggestions from an outdated transcript. The scheduled task lands within a
-        # poll cycle (the dashboard refetches /sessions), then the cache-hit above wins.
-        return []
+        # Cache miss or stale (transcript changed): serve only the proposal (if any)
+        # rather than stale suggestions from an outdated transcript.
+        return _prepend_proposal(proposal, [])
 
     async def _generate_detached_suggestions(self, session_id, rec, path, signature) -> None:
         """Generate suggestions for a detached session from its transcript (best-effort).
@@ -1536,6 +1571,121 @@ class SessionOrchestrator:
             self._detached_suggestions[session_id] = (signature, [])
         finally:
             self._suggest_inflight.discard(session_id)
+
+    def _dispatch_proposal(self, rec: SessionRecord) -> str | None:
+        """Return the cached issue-proposal string for *rec*'s repo (or None).
+
+        Never blocks: if the cache is missing or stale, schedules a background
+        refresh (fire-and-forget) and returns the stale value if any, else None.
+        Never raises.
+        """
+        if not rec.repo:
+            return None
+        repo = rec.repo
+        # Priority 1 — this session's own PR is failing CI: propose fixing it before
+        # starting new backlog work. Cheap: reads the PR poller's in-memory cache (no
+        # gh call). Guarded so a missing poller / any error never breaks suggestions.
+        if rec.branch:
+            try:
+                pr = self.pr_for(repo, rec.branch)
+            except Exception:
+                pr = None
+            if pr is not None and getattr(pr, "checks", None) == "failing":
+                return dispatch.broken_pr_proposal_text(pr.number, pr.title)
+            # Priority 2 — unresolved review comments on the session's own PR.
+            # Only consulted when PR exists and is NOT failing (handled above).
+            if pr is not None:
+                try:
+                    review_text = self._review_proposal(repo, pr.number, pr.title)
+                    if review_text:
+                        return review_text
+                except Exception:
+                    pass
+        # Priority 3 — top open issue (cached, background-refreshed).
+        # TTL uses a monotonic clock, coherent with the timestamps stored by
+        # _refresh_issue_proposal. (self._clock is wall-clock `time.time`, used for
+        # recovery timing elsewhere — mixing it with monotonic deltas would be wrong.)
+        now = time.monotonic()
+        cached = self._issue_proposals.get(repo)
+        # Schedule a background refresh on cache miss/stale (return stale meanwhile).
+        if cached is None or (now - cached[0]) >= _ISSUE_TTL_S:
+            if repo not in self._issue_inflight:
+                self._issue_inflight.add(repo)
+                asyncio.create_task(self._refresh_issue_proposal(repo))
+        text = cached[1] if cached is not None else None
+        # Release this session's prior claim and prune claims for sessions that are no
+        # longer idle/done (so an issue frees up once its session moves on or is removed).
+        self._proposed_issue = {
+            sid: n for sid, n in self._proposed_issue.items()
+            if sid != rec.id
+            and sid in self._records
+            and self._records[sid].status in ("done", "idle")
+        }
+        if not text:
+            return None
+        # Collision-avoidance (US-8): if another live session already holds this repo's
+        # top issue, don't propose the same one — return nothing rather than double-book.
+        number = self._issue_numbers.get(repo)
+        if number is not None:
+            if number in self._proposed_issue.values():
+                return None
+            self._proposed_issue[rec.id] = number
+        return text
+
+    async def _refresh_issue_proposal(self, repo: str) -> None:
+        """Fetch open issues and cache the top-issue proposal for *repo*.
+
+        Best-effort: stores (now, None) on any error.  Always clears inflight flag.
+        Never raises.
+        """
+        try:
+            issues = await asyncio.to_thread(dispatch.fetch_open_issues, repo)
+            top = dispatch.pick_top_issue(issues)
+            text: str | None = dispatch.issue_proposal_text(top) if top else None
+            self._issue_proposals[repo] = (time.monotonic(), text)
+            self._issue_numbers[repo] = top["number"] if top else None
+        except Exception:
+            log.warning("_refresh_issue_proposal failed repo=%s", repo, exc_info=True)
+            self._issue_proposals[repo] = (time.monotonic(), None)
+            self._issue_numbers[repo] = None
+        finally:
+            self._issue_inflight.discard(repo)
+
+    def _review_proposal(self, repo: str, number: int, title: str) -> str | None:
+        """Return the cached review-comment proposal for *(repo, number)*, or None.
+
+        Never blocks: on cache miss or TTL expiry, schedules a background refresh
+        (fire-and-forget) and returns the stale value if any, else None.
+        Never raises.
+        """
+        key = (repo, number)
+        now = time.monotonic()
+        cached = self._review_proposals.get(key)
+        if cached is not None and (now - cached[0]) < _ISSUE_TTL_S:
+            return cached[1]
+        # Cache miss or stale: schedule a background refresh if not already in-flight.
+        if key not in self._review_inflight:
+            self._review_inflight.add(key)
+            asyncio.create_task(self._refresh_review_proposal(repo, number, title))
+        # Return stale value if available, else None.
+        return cached[1] if cached is not None else None
+
+    async def _refresh_review_proposal(self, repo: str, number: int, title: str) -> None:
+        """Fetch unresolved review count and cache the proposal for *(repo, number)*.
+
+        Best-effort: stores (now, None) on any error.  Always clears inflight flag.
+        Never raises.
+        """
+        key = (repo, number)
+        try:
+            count = await asyncio.to_thread(dispatch.fetch_unresolved_review_count, repo, number)
+            text: str | None = dispatch.review_proposal_text(number, title, count) if count > 0 else None
+            self._review_proposals[key] = (time.monotonic(), text)
+        except Exception:
+            log.warning("_refresh_review_proposal failed repo=%s pr=%d", repo, number, exc_info=True)
+            self._review_proposals[key] = (time.monotonic(), None)
+        finally:
+            self._review_inflight.discard(key)
 
     async def set_permission_mode(self, session_id, mode):
         d = self._drivers.get(session_id)
