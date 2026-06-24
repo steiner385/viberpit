@@ -60,6 +60,36 @@ def test_dispatch_proposal_none_for_no_repo():
     assert result is None
 
 
+def _record_with_branch(session_id: str, repo: str, branch: str, status: str = "done") -> SessionRecord:
+    return SessionRecord(
+        id=session_id, name="test", account="acct-a", claude_session_id="",
+        cols=80, rows=24, cwd="/tmp", repo=repo, branch=branch, status=status,
+    )
+
+
+def test_dispatch_proposal_prefers_broken_pr_over_issue():
+    """M3b: a session whose own PR is failing CI gets the fix proposal, not an issue."""
+    from server.github.pr_status import PullRequestInfo
+    orch = _make_orch()
+    rec = _record_with_branch("s1", repo="o/r", branch="feat/x")
+    orch.pr_for = lambda repo, branch: PullRequestInfo(218, "u", "open", "failing", "fix the thing")
+    # Even with a cached issue proposal, the broken PR wins.
+    import time
+    orch._issue_proposals["o/r"] = (time.monotonic(), "Work on issue #5: x")
+    assert orch._dispatch_proposal(rec) == "Fix the failing CI on PR #218: fix the thing"
+
+
+def test_dispatch_proposal_non_failing_pr_falls_through_to_issue():
+    """M3b: a passing/None PR does not preempt the issue source."""
+    from server.github.pr_status import PullRequestInfo
+    import time
+    orch = _make_orch()
+    rec = _record_with_branch("s1", repo="o/r", branch="feat/x")
+    orch.pr_for = lambda repo, branch: PullRequestInfo(9, "u", "open", "passing", "t")
+    orch._issue_proposals["o/r"] = (time.monotonic(), "Work on issue #5: x")
+    assert orch._dispatch_proposal(rec) == "Work on issue #5: x"
+
+
 # ---------------------------------------------------------------------------
 # Test: After refreshing, _dispatch_proposal returns the proposal string
 # ---------------------------------------------------------------------------
