@@ -20,10 +20,13 @@ _RETRY_AFTER_CAP = 120.0
 
 _RECOVERABLE = frozenset({"rate_limit", "auth_401", "process_crash"})
 
+_OVERLOAD_STATUSES = frozenset({500, 502, 503, 529})
+_OVERLOAD_CODES = frozenset(f"api_{s}" for s in _OVERLOAD_STATUSES)
+
 
 @dataclass(frozen=True)
 class TurnFailure:
-    kind: str  # "rate_limit" | "auth_401" | "process_crash" | "other"
+    kind: str  # "rate_limit" | "auth_401" | "process_crash" | "overloaded" | "other"
     retry_after: float | None = None
 
     @property
@@ -79,6 +82,8 @@ def classify(code: str | None, message: str = "", *, retry_after: float | None =
         return rate_limit()
     if code == "api_401":
         return TurnFailure(kind="auth_401")
+    if code in _OVERLOAD_CODES:
+        return TurnFailure(kind="overloaded")
 
     # Check for process crash signatures before general content inference.
     if _is_process_crash(text):
@@ -93,4 +98,7 @@ def classify(code: str | None, message: str = "", *, retry_after: float | None =
         return TurnFailure(kind="auth_401")
     if is_429:
         return rate_limit()
+    is_overload = "overloaded" in low or any(str(s) in text for s in _OVERLOAD_STATUSES)
+    if is_overload:
+        return TurnFailure(kind="overloaded")
     return TurnFailure(kind="other")

@@ -24,11 +24,12 @@ class SessionRecord:
     repo: str | None = None          # GitHub nameWithOwner this session works on (None = scratch)
     branch: str | None = None        # per-session worktree branch (joins to PR headRefName)
     detached: bool = False           # True for rehydrated sessions with no live driver
-    status: str = "idle"             # idle / in_progress / condensing / waiting_input / ready_review / done / limited / ended
+    status: str = "idle"             # idle / in_progress / condensing / waiting_input / ready_review / done / waiting_external / limited / ended
     name_is_auto: bool = True        # False once the user manually renames the session
     permission_mode: str = "interactive"
     created_at: datetime | None = None
-    updated_at: datetime | None = None   # last activity; mirrors DB Session.updated_at, drives the "active … ago" label
+    updated_at: datetime | None = None   # generic row-write time; mirrors DB Session.updated_at (archivedAt)
+    last_turn_at: datetime | None = None  # last turn's response; drives the "active … ago" label (see ACTIVITY_STATUSES)
     adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
     sub_agents: list | None = None   # [{agentId,parentAgentId,agentType,description,status}], refreshed at status changes
     model: str | None = None         # persisted model alias/id; None = account default
@@ -36,6 +37,12 @@ class SessionRecord:
     active_goal: str | None = None    # active /goal condition; None = no goal
 
     def to_dict(self) -> dict:
+        # `updatedAt` is the "active … ago" / last-activity time, matching the HTTP
+        # serializer (server/api/sessions.py `_record_to_dict`): the last turn's response,
+        # falling back to creation — NOT the raw `updated_at` row-write column (which any
+        # write bumps → the "0s ago" pin). `lastTurnAt` below carries the raw turn time so
+        # `from_dict` restores it faithfully over RPC.
+        active = self.last_turn_at or self.created_at
         return {
             "id": self.id, "name": self.name, "account": self.account,
             "claudeSessionId": self.claude_session_id, "cols": self.cols, "rows": self.rows,
@@ -43,7 +50,8 @@ class SessionRecord:
             "status": self.status, "nameIsAuto": self.name_is_auto,
             "permissionMode": self.permission_mode,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
-            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+            "updatedAt": active.isoformat() if active else None,
+            "lastTurnAt": self.last_turn_at.isoformat() if self.last_turn_at else None,
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
             "accountPinned": self.account_pinned,
@@ -54,7 +62,11 @@ class SessionRecord:
     def from_dict(cls, d: dict) -> "SessionRecord":
         from datetime import datetime
         created = d.get("createdAt")
-        updated = d.get("updatedAt")
+        last_turn = d.get("lastTurnAt")
+        # `updated_at` (raw row-write column) is daemon-internal and not carried over RPC:
+        # `to_dict`'s `updatedAt` now means the last-activity time, and the edge never reads
+        # `record.updated_at`. Reconstructing it from `updatedAt` would wrongly stamp the
+        # last-activity time onto the row-write field — leave it unset.
         return cls(
             id=d["id"], name=d["name"], account=d["account"],
             claude_session_id=d["claudeSessionId"], cols=d["cols"], rows=d["rows"],
@@ -62,7 +74,7 @@ class SessionRecord:
             status=d.get("status", "idle"), name_is_auto=d.get("nameIsAuto", True),
             permission_mode=d.get("permissionMode", "interactive"),
             created_at=datetime.fromisoformat(created) if created else None,
-            updated_at=datetime.fromisoformat(updated) if updated else None,
+            last_turn_at=datetime.fromisoformat(last_turn) if last_turn else None,
             adopted_in_place=d.get("adoptedInPlace", False),
             model=d.get("model"),
             account_pinned=d.get("accountPinned", False),

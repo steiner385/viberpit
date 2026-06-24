@@ -16,6 +16,11 @@ const actionBtn = cn(
   'h-11 w-11 [@media(hover:hover)]:h-8 [@media(hover:hover)]:w-8',
   'flex items-center justify-center rounded-md',
   'focus-visible:outline-none focus-visible:ring-2',
+  // Press feedback: a quick scale-down + background darken so a tap/click
+  // is unmistakable (hover alone gives no change once the cursor is already
+  // over the button, and touch has no hover at all). active: fires on both.
+  'transition-[background-color,transform] duration-100',
+  'active:scale-90 active:duration-75',
 )
 
 interface SessionCardProps {
@@ -93,6 +98,31 @@ export function SessionCard({ session, account, selected = false, listMode = fal
     }
   }
 
+  if (session.pending) {
+    return (
+      <article
+        data-testid="session-card-pending"
+        aria-busy="true"
+        className={cn(
+          'group flex flex-col rounded-lg border border-gray-200 dark:border-gray-700',
+          'bg-white dark:bg-gray-800 px-3 py-2 min-h-[44px]',
+          'opacity-70 cursor-default select-none',
+        )}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span
+            className="inline-block h-3 w-3 flex-shrink-0 animate-spin rounded-full border-2 border-gray-400 border-t-transparent"
+            aria-hidden="true"
+          />
+          <span className="flex-1 min-w-0 truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+            {session.name}
+          </span>
+        </div>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Starting…</p>
+      </article>
+    )
+  }
+
   return (
     <article
       ref={articleRef}
@@ -162,13 +192,21 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               {subAgents.length} {subAgents.length === 1 ? 'agent' : 'agents'}
             </span>
           )}
-          <span className="flex-shrink-0 text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
+          {/* The chip yields before the title does: capped at 45% of the row and
+              truncating, so a long account email can't starve the session name on
+              a narrow (mobile) width. `title` keeps the full value reachable. */}
+          <span
+            className="flex-shrink-0 max-w-[45%] truncate text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded"
+            title={account?.nickname || session.accountName}
+          >
             {account?.nickname || session.accountName}
           </span>
         </div>
-
         {/* Row 2 — context: repo gives way (truncates) so the status pill and
-            goal/PR markers stay visible. */}
+            goal/PR markers stay visible. Repo anchors the left and absorbs slack
+            (flex-1 min-w-0 → truncates under pressure); the state chips form a
+            single non-shrinking group anchored to the right, so the status pill
+            always lands at the same edge regardless of repo length. */}
         <div data-testid="card-context" className="flex items-center gap-2 min-w-0">
           <span
             className={cn(
@@ -182,17 +220,19 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
             <span className="truncate">{repoLabel.text}</span>
           </span>
-          <StatusPill status={session.status} className="flex-shrink-0" />
-          {session.activeGoal && (
-            <span
-              className="flex-shrink-0 inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300"
-              title={`Goal: ${session.activeGoal}`}
-            >
-              <Target size={12} aria-hidden="true" className="flex-shrink-0" />
-              <span>Goal</span>
-            </span>
-          )}
-          {session.pr && <PrPill pr={session.pr} />}
+          <div className="flex flex-shrink-0 items-center gap-2">
+            <StatusPill status={session.status} />
+            {session.activeGoal && (
+              <span
+                className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
+                title={`Goal: ${session.activeGoal}`}
+              >
+                <Target size={12} aria-hidden="true" className="flex-shrink-0" />
+                <span className="truncate">Goal</span>
+              </span>
+            )}
+            {session.pr && <PrPill pr={session.pr} />}
+          </div>
         </div>
 
         {/* Row 3 — telemetry: session usage left, last-active pinned right via
@@ -245,7 +285,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           <button
             type="button"
             className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
-              'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500')}
+              'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500',
+              'active:bg-emerald-100 dark:active:bg-emerald-900/40')}
             aria-label={`Resume session ${session.name}`}
             title={suggestions.length > 0 ? 'Resume — send the suggested next step' : 'Resume — send “continue”'}
             onClick={() => onQuickResume(session.id, resumeText)}
@@ -261,7 +302,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
-                'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500')}
+                'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500',
+              'active:bg-emerald-100 dark:active:bg-emerald-900/40')}
               onClick={() => setMenuOpen((o) => !o)}
             >
               <ChevronDown size={16} aria-hidden="true" />
@@ -294,7 +336,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         <button
           type="button"
           className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
-            'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500')}
+            'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
+            'active:bg-gray-200 dark:active:bg-gray-600')}
           aria-label={`Rename session ${session.name}`}
           title="Rename"
           onClick={() => onRename(session.id)}
@@ -304,7 +347,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         <button
           type="button"
           className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
-            'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500')}
+            'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
+            'active:bg-gray-200 dark:active:bg-gray-600')}
           aria-label={`Archive session ${session.name}`}
           title="Archive"
           onClick={() => onClose(session.id)}
@@ -314,7 +358,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         <button
           type="button"
           className={cn(actionBtn, 'text-red-600 dark:text-red-400',
-            'hover:bg-red-50 dark:hover:bg-red-900/20 focus-visible:ring-red-500')}
+            'hover:bg-red-50 dark:hover:bg-red-900/20 focus-visible:ring-red-500',
+            'active:bg-red-100 dark:active:bg-red-900/40')}
           aria-label={`Delete session ${session.name}`}
           title="Delete"
           onClick={() => onDelete(session.id)}

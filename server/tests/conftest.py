@@ -125,3 +125,60 @@ def _install_real_store_write_guard():
 
 
 _install_real_store_write_guard()
+
+
+# --------------------------------------------------------------------------- #
+# Durable in-memory test DBs — structural fix for the recurring test_ws.py     #
+# "no such table: sessions" flake (red CI on PRs #188/#192/#197/#200).         #
+#                                                                              #
+# ~20 test files point CCSWITCH_DB_URL at `sqlite+aiosqlite:///:memory:`.      #
+# SQLAlchemy maps a `:memory:` SQLite URL to a StaticPool, so the ENTIRE DB    #
+# lives inside one connection: when that connection closes — engine dispose /  #
+# GC on app-lifespan shutdown, or replacement by the next test's init_db() —   #
+# the schema is destroyed. A background task that writes AFTER teardown (an    #
+# orchestrator status writer persisting `status='ended'`, which is not always  #
+# cancelled before the engine goes away) then forces StaticPool to reopen a    #
+# FRESH, EMPTY in-memory DB and dies with "no such table: sessions". Whether   #
+# the late write lands before or after teardown is a race, so it flaked        #
+# intermittently — only in test_ws.py, the one suite that drives the full app  #
+# (WebSocket bridge + orchestrator background loops) hard enough to hit it.    #
+#                                                                              #
+# `server.db._make_engine` is the SOLE engine factory, so wrapping it here     #
+# redirects every in-memory URL to a unique temp FILE, pinned to StaticPool so #
+# it keeps the SAME single-connection semantics a `:memory:` DB has (one       #
+# shared connection — uncommitted writes visible to later reads, no QueuePool  #
+# cross-connection visibility surprises) while being durable across connection #
+# close. Each init_db still gets its own empty DB (per-init isolation), but a   #
+# late write reopens the same file with its tables intact and is harmless      #
+# instead of crashing. Production is unaffected (real file DB, never this shim).#
+# --------------------------------------------------------------------------- #
+def _cleanup_sqlite_file(path: str) -> None:
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.unlink(path + suffix)
+        except OSError:
+            pass
+
+
+def _install_durable_inmemory_db():
+    import server.db as _db
+    from sqlalchemy.pool import StaticPool
+
+    _orig_make_engine = _db._make_engine
+    if getattr(_orig_make_engine, "_durable_inmemory_shim", False):
+        return  # already wrapped (conftest re-imported)
+
+    def _durable_make_engine(db_url: str, *, poolclass=None):
+        if db_url.startswith("sqlite") and ":memory:" in db_url:
+            fd, path = tempfile.mkstemp(prefix="ccswitch-test-db-", suffix=".sqlite")
+            os.close(fd)
+            atexit.register(_cleanup_sqlite_file, path)
+            db_url = f"sqlite+aiosqlite:///{path}"
+            poolclass = StaticPool  # keep the one-connection semantics of :memory:
+        return _orig_make_engine(db_url, poolclass=poolclass)
+
+    _durable_make_engine._durable_inmemory_shim = True
+    _db._make_engine = _durable_make_engine
+
+
+_install_durable_inmemory_db()

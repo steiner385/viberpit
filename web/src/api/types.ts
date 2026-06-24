@@ -38,6 +38,7 @@ export type SessionStatus =
   | 'ready_review'
   | 'done'
   | 'complete'
+  | 'waiting_external'
   | 'needs_attention'
   | 'limited'
   | 'ended'
@@ -76,6 +77,8 @@ export interface Session {
   activeGoal?: string | null
   /** The PR opened from this session's branch, or null when there is none. */
   pr?: PullRequestInfo | null
+  /** Client-only: true while an optimistic create placeholder awaits the server. Never sent by the server. */
+  pending?: boolean
 }
 
 export interface ArchivedSession {

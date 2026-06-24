@@ -77,9 +77,17 @@ class Session(Base):
     # still rotates and clears the pin. Nullable for the same backfill reason.
     account_pinned: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    # Generic row-write time: bumped on EVERY update (status, sub-agents, branch, name,
+    # model, pin…). Used for the archived-sessions list's "archived at" only — NOT the
+    # "active … ago" label, which would otherwise reset on every incidental write.
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+    # Time the most recent turn handed output back to the user (see ACTIVITY_STATUSES).
+    # Drives the dashboard's "active … ago" label. Advanced ONLY on a response, never by
+    # incidental row writes — so it stays meaningful. Nullable so init_db backfills on the
+    # dev SQLite DB without a migration; NULL = no turn yet → label falls back to created_at.
+    last_turn_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
 
 class AppSession(Base):

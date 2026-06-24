@@ -1,6 +1,7 @@
 import type {
   SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult, QueuedItem,
 } from './events'
+import type { ContextUsageExact } from '@/lib/contextWindow'
 
 /** Sentinel id for the optimistic user turn seeded before the SDK echoes the prompt. */
 export const OPTIMISTIC_USER_ID = 'optimistic:user'
@@ -58,6 +59,7 @@ export interface TranscriptState {
   title: string | null
   model: string | null          // current model id (from sessionMeta / replay)
   usage: UsageSnapshot | null   // most recent result's token/cost snapshot
+  contextUsage: ContextUsageExact | null  // exact ctx-window occupancy (SDK /context data); preferred over `usage` for the ctx% readout
   replaying: boolean            // true until replayComplete
   earliestTurn: number          // lowest turn ordinal currently loaded (0 = at session start)
   totalTurns: number            // total turns in the on-disk transcript
@@ -77,6 +79,7 @@ export const initialTranscript: TranscriptState = {
   title: null,
   model: null,
   usage: null,
+  contextUsage: null,
   replaying: true,
   earliestTurn: 0,
   totalTurns: 0,
@@ -513,6 +516,18 @@ export function transcriptReducer(
         costUsd: num(ev.costUsd),
       }
       return { ...state, openBlockId: null, usage }
+    }
+
+    // ── contextUsage ──────────────────────────────────────────────────────────
+    case 'contextUsage': {
+      // Exact context-window occupancy from the SDK (same data as `/context`),
+      // emitted after each live turn settles. Preferred over the `usage`-based
+      // approximation for the ctx% readout — see useSessionRuntime. Live-only:
+      // replay never re-emits it, so it is intentionally preserved across
+      // replayReset (like rotations/queue) rather than cleared.
+      const maxTokens = num(ev.maxTokens)
+      if (!(maxTokens > 0)) return state
+      return { ...state, contextUsage: { usedTokens: num(ev.usedTokens), maxTokens } }
     }
 
     // ── replayReset ───────────────────────────────────────────────────────────
