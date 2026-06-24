@@ -111,3 +111,29 @@ def test_record_dict_roundtrip_preserves_last_turn_at():
     )
     back = SessionRecord.from_dict(rec.to_dict())
     assert back.last_turn_at == turn
+
+
+def test_to_dict_updatedat_is_last_turn_not_row_write():
+    """The RPC `to_dict` must use the SAME meaning of `updatedAt` as the HTTP
+    `_record_to_dict` — the last-turn time, not the raw row-write column — so a consumer
+    reading either serializer's `updatedAt` never gets the "0s ago" row-write value."""
+    from datetime import datetime
+    turn = datetime(2020, 1, 2, 3, 4, 5)
+    row_write = datetime(2020, 6, 6, 6, 6, 6)  # later, bumped by an incidental write
+    created = datetime(2020, 1, 1, 0, 0, 0)
+    rec = SessionRecord(
+        id="s1", name="n", account="a", claude_session_id="c", cols=80, rows=24, cwd="/x",
+        created_at=created, updated_at=row_write, last_turn_at=turn,
+    )
+    assert rec.to_dict()["updatedAt"] == turn.isoformat()  # not row_write
+
+
+def test_to_dict_updatedat_falls_back_to_created_at():
+    from datetime import datetime
+    created = datetime(2020, 1, 1, 0, 0, 0)
+    row_write = datetime(2020, 6, 6, 6, 6, 6)
+    rec = SessionRecord(
+        id="s1", name="n", account="a", claude_session_id="c", cols=80, rows=24, cwd="/x",
+        created_at=created, updated_at=row_write, last_turn_at=None,
+    )
+    assert rec.to_dict()["updatedAt"] == created.isoformat()  # not row_write
