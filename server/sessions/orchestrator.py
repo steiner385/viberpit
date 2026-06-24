@@ -32,6 +32,7 @@ from server.audit import record_audit
 from server.db import db_session
 from server.db.models import Session as DbSession
 from server.sessions import adopt as _adopt
+from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions import attachments as _attachments
 from server.sessions import events as ev
 from server.sessions import push as push_mod
@@ -2198,3 +2199,25 @@ class SessionOrchestrator:
         except Exception:
             log.warning("session.transcript_window id=%s replay failed", session_id, exc_info=True)
             return None
+
+    def snapshot_deploy(self, *, path: str | None = None) -> dict:
+        """SAVE step: record sessions with a live driver so a daemon-affecting restart
+        can eagerly re-launch them (rehydrate alone is lazy + flattens 'working'→'idle')."""
+        live = [{"id": sid, "status": getattr(self._records.get(sid), "status", "idle")}
+                for sid in list(self._drivers.keys())]
+        _deploy_snapshot.write_snapshot(live, path=path)
+        return {"live": live}
+
+    async def restore_deploy(self, *, path: str | None = None) -> dict:
+        """RESUME step: eagerly re-launch each snapshotted session in the fresh daemon."""
+        restored: list[str] = []
+        failed: list[str] = []
+        for entry in _deploy_snapshot.read_snapshot(path=path):
+            sid = entry["id"]
+            try:
+                driver = await self.ensure_driver(sid, "system")
+            except Exception:
+                driver = None
+            (restored if driver is not None else failed).append(sid)
+        _deploy_snapshot.clear_snapshot(path=path)
+        return {"restored": restored, "failed": failed}
