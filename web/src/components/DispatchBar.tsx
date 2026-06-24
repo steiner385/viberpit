@@ -31,6 +31,14 @@ export interface DispatchBarProps {
   /** Auto-focus the textarea when this changes / on mount. */
   autoFocusKey?: unknown
   isPending: boolean
+  /** Empty prompt + header highlighted: → expands it. */
+  onExpandHighlighted?: () => void
+  /** Empty prompt + header highlighted: ← collapses it. */
+  onCollapseHighlighted?: () => void
+  /** Empty prompt + header highlighted: Enter toggles it. */
+  onToggleHighlighted?: () => void
+  /** True when the active descendant is a group header (not a session row). */
+  activeDescendantIsHeader?: boolean
 }
 
 export function DispatchBar({
@@ -47,6 +55,10 @@ export function DispatchBar({
   activeDescendantId,
   autoFocusKey,
   isPending,
+  onExpandHighlighted,
+  onCollapseHighlighted,
+  onToggleHighlighted,
+  activeDescendantIsHeader,
 }: DispatchBarProps) {
   const [text, setText] = useState('')
   const [repo, setRepo] = useState<string>(() => getLastRepo() ?? '')
@@ -106,9 +118,10 @@ export function DispatchBar({
       return
     }
 
-    // Enter (no Shift) → dispatch or open highlighted
+    // Enter (no Shift) → toggle a highlighted header (empty prompt), else dispatch/open.
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
+      if (empty && activeDescendantIsHeader) { onToggleHighlighted?.(); return }
       dispatchNow()
       return
     }
@@ -144,11 +157,18 @@ export function DispatchBar({
       return
     }
 
-    // ArrowRight → open highlighted session, ONLY when the prompt is empty, so it never
-    // hijacks cursor movement / loses a draft while you're typing.
+    // ArrowRight (empty prompt) → expand a highlighted header, else open the highlighted session.
     if (empty && e.key === 'ArrowRight') {
       e.preventDefault()
-      onOpenHighlighted()
+      if (activeDescendantIsHeader) onExpandHighlighted?.()
+      else onOpenHighlighted()
+      return
+    }
+
+    // ArrowLeft (empty prompt) → collapse a highlighted header. (No-op otherwise.)
+    if (empty && e.key === 'ArrowLeft' && activeDescendantIsHeader) {
+      e.preventDefault()
+      onCollapseHighlighted?.()
       return
     }
 
