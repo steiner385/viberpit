@@ -20,6 +20,7 @@ import { PERMISSION_MODES } from '@/session/permissionModes'
 import { SessionComposer } from './SessionComposer'
 import { SessionBody } from './SessionBody'
 import { CommandResultOverlay } from './CommandResultOverlay'
+import { SessionActions } from '@/components/session/SessionActions'
 
 /**
  * Cycle to the next permission mode in PERMISSION_MODES order.
@@ -132,7 +133,14 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
           ← Back
         </button>
 
-        <span className="text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
+        <span className="flex-1 text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
+
+        <SessionActions
+          sessionId={sessionId}
+          sessionName={rt.title}
+          onDone={handleBack}
+          variant="dark"
+        />
       </div>
 
       {/* Transcript + status strip + banners + pinned live-question panel
