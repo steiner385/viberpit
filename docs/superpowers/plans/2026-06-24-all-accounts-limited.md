@@ -4,115 +4,132 @@
 
 **Goal:** Stop showing the misleading "All accounts at limit · No reset time available" banner when accounts are merely unreadable; create the session optimistically instead, keep an accurate self-clearing banner for genuine exhaustion, and surface a distinct message when accounts truly need re-auth.
 
-**Architecture:** Split the single `AllAccountsBusy` outcome into three states — (A) genuinely at-ceiling → block with reset time; (B) usage unreadable but account healthy → create optimistically with a `usageUnverified` flag; (C) all accounts need re-auth → distinct 409. The selector gains an "optimistic" last-resort tier and a `kind` on its exception; the flag rides a transient `SessionRecord.usage_unverified` field to the HTTP boundary; the frontend toasts on B/C and auto-clears the A banner from the existing 30s accounts poll.
+**Architecture:** Split the single `AllAccountsBusy` outcome into three states — (A) genuinely at-ceiling → block with reset time; (B) usage unreadable but account healthy → create optimistically with a `usageUnverified` flag; (C) all accounts need re-auth → distinct 409. The optimistic behavior is **opt-in** (a new `optimistic_fallback` flag), scoped to the web session-create path only; `select_best`, the CLI launcher, and the accounts list keep their exact legacy behavior.
 
-**Tech Stack:** Python (FastAPI, dataclasses, pytest) backend in `src/ccswitch` + `server/`; React + TypeScript + vitest frontend in `web/`.
+**Tech Stack:** Python (FastAPI, dataclasses, pytest/unittest) backend in `src/ccswitch` + `server/`; React + TypeScript + vitest frontend in `web/`.
 
 ## Global Constraints
 
-- Backend lint gate (run before pushing): `ruff` + `mypy` + `pytest server/tests/` and `pytest` for `src/ccswitch`. mypy skips untyped fn bodies.
-- Web gates: `vitest run`, `tsc -b` (NOT `tsc --noEmit` — it checks nothing here), `eslint` with `--max-warnings 0`.
-- Run worktree backend tests with the prebuilt env and `PYTHONPATH=<worktree>/src` (the venv's editable ccswitch resolves to a stale deploy checkout). Symlink `web/node_modules` from the deploy worktree for web tests; use the local `.bin`, not `npx`.
+- **Worktree:** `/mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/45767c57` (branch `fix/all-accounts-limited-disambiguation`).
+- **Prebuilt venv (the worktree has none):** `/mnt/ssk-ssd/tony/GitHub/.ccswitch/clones/steiner385/cc-account-switcher/.venv/bin/python`.
+- **Backend test command:** from the worktree root, `PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/.ccswitch/clones/steiner385/cc-account-switcher/.venv/bin/python -m pytest <paths> -q` (the venv's editable ccswitch resolves to a STALE deploy checkout without `PYTHONPATH=$PWD/src`).
+- **ccswitch unit tests** live in top-level `tests/` (NOT `src/ccswitch/tests/`). Reuse `from tests.helpers import temp_env, usage`; `usage(session=10.0, weekly=20.0, extra=False, mins=120)` builds a `Usage` whose reset windows are `now + mins`.
+- **Backend lint gate (run before final PR):** `ruff check server/ src/` + `mypy` (mypy skips untyped fn bodies).
+- **Web (run in `web/`):** `./node_modules/.bin/vitest run`, `./node_modules/.bin/tsc -b` (NOT `tsc --noEmit` — it checks nothing here), `./node_modules/.bin/eslint src --max-warnings 0`. `web/node_modules` is already symlinked from the deploy clone; use the local `.bin`, not `npx`.
+- **Regression guard:** the existing 24 tests in `tests/test_selector.py` MUST stay green — `select_best` keeps its `-> str` contract and legacy behavior.
 - New `SessionRecord` field MUST default (`= False`) so the ~25 existing `create_session` call sites keep compiling.
 - The `at_ceiling` predicate (`u.session_pct >= ceiling or u.weekly_pct >= ceiling`) stays the single source of truth in `selector.py` — do not duplicate it.
-- Wire timestamps: never use bare `.isoformat()` for NEW timestamps — but this plan adds no new wire timestamps (reuses existing `earliest_reset.isoformat()`).
+- This plan adds no new wire timestamps (reuses existing `earliest_reset.isoformat()`).
 
 ---
 
 ## File Structure
 
-- `src/ccswitch/selector.py` — pure ranking. Add `Picked` dataclass, `RankedAccount.optimistic`, `AllAccountsBusy.kind`, an `unhealthy` param + optimistic tier in `rank_accounts`, and change `select_best` to return `Picked`.
+- `src/ccswitch/selector.py` — pure ranking. Add `Picked` dataclass, `RankedAccount.optimistic`, `AllAccountsBusy.kind`, `unhealthy` + `optimistic_fallback` params on `rank_accounts`, a new `select_picked(...) -> Picked` core, and make `select_best(...) -> str` a thin `select_picked(...).name` shim (legacy behavior preserved).
 - `src/ccswitch/ledger.py` — add `get_status(led, name) -> str | None`.
-- `src/ccswitch/accounts.py` — `pick_account_detailed(...) -> Picked` (threads `unhealthy`), `pick_account(...) -> str` thin wrapper.
+- `src/ccswitch/accounts.py` — `pick_account_detailed(...) -> Picked` (threads `unhealthy`, `optimistic_fallback=True`), `pick_account(...) -> str` thin wrapper.
 - `server/sessions/selection.py` — `select_account(...) -> Picked`.
 - `server/sessions/types.py` — `SessionRecord.usage_unverified: bool = False` + to_dict/from_dict.
 - `server/sessions/orchestrator.py` — set `record.usage_unverified` in create path; use `.name` at the rotation call site.
-- `server/api/sessions.py` — `usageUnverified` in 201 body; `accounts_need_reauth` 409 via `kind`.
-- `server/api/accounts.py` — pass `unhealthy` to `rank_accounts` so needs-reauth accounts don't show an optimistic rank.
+- `server/api/sessions.py` — `usageUnverified` in 201 body (automatic via `to_dict`); `accounts_need_reauth` 409 via `kind`.
 - `web/src/api/types.ts` — `Session.usageUnverified?: boolean`.
 - `web/src/components/Dashboard.tsx`, `web/src/components/DesktopShell.tsx` — toast on B/C + auto-clear effect.
 
+> Note: `server/api/accounts.py` is intentionally NOT changed — it keeps the legacy rank display (`optimistic_fallback=False`), so needs-reauth/unreadable accounts keep `rank=null`. The banner auto-clear keys on accounts RECOVERING to readable (`rank !== null`), which legacy ranking already provides.
+
 ---
 
-## Task 1: Selector — optimistic tier, `kind`, `Picked`
+## Task 1: Selector — opt-in optimistic tier, `kind`, `Picked`
 
 **Files:**
 - Modify: `src/ccswitch/selector.py`
-- Test: `src/ccswitch/tests/test_selector.py` (create if absent; else add to the existing selector test module)
+- Test: `tests/test_selector.py` (append new tests; do NOT alter the existing 24)
 
 **Interfaces:**
 - Produces:
-  - `class Picked: name: str; optimistic: bool` (dataclass)
-  - `RankedAccount.optimistic: bool` (new field, default `False`)
+  - `class Picked: name: str; optimistic: bool = False` (dataclass)
+  - `RankedAccount.optimistic: bool = False` (new field)
   - `AllAccountsBusy(earliest_reset: datetime | None, kind: str = "at_ceiling")` with `.kind` in `{"at_ceiling","no_usable_accounts"}`
-  - `rank_accounts(usages, reserved, cfg, now, exclude=frozenset(), load=None, unhealthy=frozenset()) -> tuple[list[RankedAccount], datetime | None]` — unreadable-but-healthy accounts (`u is None and name not in unhealthy/exclude/reserved`) appear as a last-resort tier ranked strictly after all readable candidates, ordered by least `load`, each `optimistic=True`.
-  - `select_best(usages, reserved, cfg, now, exclude=frozenset(), load=None, unhealthy=frozenset()) -> Picked` — returns `Picked(ranked[0].name, ranked[0].optimistic)`; raises `AllAccountsBusy(earliest, kind)` when `ranked` is empty, `kind="at_ceiling"` if `earliest is not None` else `"no_usable_accounts"`.
+  - `rank_accounts(usages, reserved, cfg, now, exclude=frozenset(), load=None, unhealthy=frozenset(), optimistic_fallback=False) -> tuple[list[RankedAccount], datetime | None]`. When `optimistic_fallback=False` the behavior is byte-for-byte the legacy behavior (None usage excluded, no optimistic tier). When `True`, accounts with `u is None and name not in unhealthy/exclude/reserved` are appended as a last-resort tier (ranked strictly after every readable candidate, ordered by least `load`, each `optimistic=True`).
+  - `select_picked(usages, reserved, cfg, now, exclude=frozenset(), load=None, unhealthy=frozenset(), optimistic_fallback=False) -> Picked` — returns `Picked(ranked[0].name, ranked[0].optimistic)`; raises `AllAccountsBusy(earliest, kind)` when `ranked` is empty (`kind="at_ceiling"` if `earliest is not None` else `"no_usable_accounts"`).
+  - `select_best(usages, reserved, cfg, now, exclude=frozenset(), load=None) -> str` — now `return select_picked(usages, reserved, cfg, now, exclude, load).name` (default `optimistic_fallback=False`; identical observable behavior to today).
 
-- [ ] **Step 1: Write the failing tests**
-
-Add to `src/ccswitch/tests/test_selector.py` (use the existing test helpers/fixtures if the module exists; otherwise this minimal harness):
+- [ ] **Step 1: Write the failing tests** (append to `tests/test_selector.py`, pytest-style like the existing `rank_accounts` tests at the bottom of the file; reuse the module-level `NOW`, `SOON`, `_cfg`)
 
 ```python
-from datetime import datetime, timedelta, timezone
-import pytest
-from ccswitch.config import Config
-from ccswitch.oauth import Usage
-from ccswitch.selector import rank_accounts, select_best, AllAccountsBusy, Picked
+# --- optimistic fallback + kind (new) ---
 
-NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+def test_select_picked_readable_is_not_optimistic():
+    from ccswitch.selector import select_picked, Picked
+    usages = {"a": Usage(10.0, SOON, 5.0, SOON, False)}
+    assert select_picked(usages, set(), _cfg(), NOW) == Picked(name="a", optimistic=False)
 
-def _cfg() -> Config:
-    return Config()  # defaults: hard_ceiling, load_sensitivity, prefer_soon_reset
 
-def _u(session_pct: float, weekly_pct: float = 0.0, reset_h: float | None = 24.0) -> Usage:
-    reset = NOW + timedelta(hours=reset_h) if reset_h is not None else None
-    return Usage(session_pct, reset, weekly_pct, reset, False)
+def test_optimistic_fallback_off_excludes_none_usage():
+    # Legacy behavior: with the flag off, an all-None set has no candidates.
+    from ccswitch.selector import rank_accounts
+    ranked, earliest = rank_accounts({"a": None, "b": None}, set(), _cfg(), NOW)
+    assert ranked == []
+    assert earliest is None
 
-def test_readable_below_ceiling_picks_normally():
-    picked = select_best({"a": _u(10.0)}, frozenset(), _cfg(), NOW)
-    assert picked == Picked(name="a", optimistic=False)
 
-def test_all_at_ceiling_raises_at_ceiling_kind_with_reset():
-    with pytest.raises(AllAccountsBusy) as ei:
-        select_best({"a": _u(100.0), "b": _u(100.0)}, frozenset(), _cfg(), NOW)
-    assert ei.value.kind == "at_ceiling"
-    assert ei.value.earliest_reset is not None
-
-def test_all_unreadable_healthy_picks_optimistically_least_load():
-    picked = select_best(
-        {"a": None, "b": None}, frozenset(), _cfg(), NOW,
-        load={"a": 2.0, "b": 0.0}, unhealthy=frozenset(),
-    )
+def test_optimistic_fallback_picks_least_load_when_all_unreadable():
+    from ccswitch.selector import select_picked, Picked
+    picked = select_picked({"a": None, "b": None}, set(), _cfg(), NOW,
+                           load={"a": 2.0, "b": 0.0}, optimistic_fallback=True)
     assert picked == Picked(name="b", optimistic=True)
 
-def test_all_unhealthy_raises_no_usable_accounts():
+
+def test_optimistic_fallback_skips_unhealthy():
+    from ccswitch.selector import select_picked, AllAccountsBusy
+    import pytest
     with pytest.raises(AllAccountsBusy) as ei:
-        select_best({"a": None}, frozenset(), _cfg(), NOW, unhealthy=frozenset({"a"}))
+        select_picked({"a": None}, set(), _cfg(), NOW,
+                      unhealthy=frozenset({"a"}), optimistic_fallback=True)
     assert ei.value.kind == "no_usable_accounts"
     assert ei.value.earliest_reset is None
 
-def test_readable_wins_over_optimistic():
-    picked = select_best({"a": _u(10.0), "b": None}, frozenset(), _cfg(), NOW)
+
+def test_readable_outranks_optimistic():
+    from ccswitch.selector import select_picked, Picked
+    picked = select_picked({"a": Usage(10.0, SOON, 5.0, SOON, False), "b": None},
+                           set(), _cfg(), NOW, optimistic_fallback=True)
     assert picked == Picked(name="a", optimistic=False)
 
-def test_mixed_ceiling_plus_unreadable_picks_optimistic_no_raise():
-    picked = select_best({"a": _u(100.0), "b": None}, frozenset(), _cfg(), NOW, unhealthy=frozenset())
+
+def test_mixed_ceiling_plus_unreadable_picks_optimistic():
+    from ccswitch.selector import select_picked, Picked
+    reset = NOW + timedelta(hours=2)
+    picked = select_picked({"a": Usage(100.0, reset, 0.0, None, False), "b": None},
+                           set(), _cfg(), NOW, optimistic_fallback=True)
     assert picked == Picked(name="b", optimistic=True)
 
+
+def test_all_at_ceiling_raises_at_ceiling_kind():
+    from ccswitch.selector import select_picked, AllAccountsBusy
+    import pytest
+    reset = NOW + timedelta(hours=1)
+    with pytest.raises(AllAccountsBusy) as ei:
+        select_picked({"x": Usage(100.0, reset, 0.0, None, False)}, set(), _cfg(), NOW,
+                      optimistic_fallback=True)
+    assert ei.value.kind == "at_ceiling"
+    assert ei.value.earliest_reset == reset
+
+
 def test_optimistic_ranked_after_readable_in_list():
-    ranked, _ = rank_accounts({"a": _u(10.0), "b": None}, frozenset(), _cfg(), NOW)
+    from ccswitch.selector import rank_accounts
+    ranked, _ = rank_accounts({"a": Usage(10.0, SOON, 5.0, SOON, False), "b": None},
+                              set(), _cfg(), NOW, optimistic_fallback=True)
     assert [r.name for r in ranked] == ["a", "b"]
     assert ranked[0].optimistic is False and ranked[1].optimistic is True
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run the new tests to verify they fail**
 
-Run: `PYTHONPATH=$PWD/src <deploy-venv>/bin/python -m pytest src/ccswitch/tests/test_selector.py -v`
-Expected: FAIL — `ImportError: cannot import name 'Picked'` / `AllAccountsBusy.__init__` missing `kind` / `select_best` returns `str`.
+Run: `PYTHONPATH=$PWD/src <VENV> -m pytest tests/test_selector.py -k "optimistic or select_picked or at_ceiling_kind or readable_outranks or mixed_ceiling" -v`
+Expected: FAIL — `ImportError: cannot import name 'Picked'` / `select_picked` missing / `rank_accounts() got an unexpected keyword 'optimistic_fallback'`.
 
-- [ ] **Step 3: Implement the selector changes**
-
-In `src/ccswitch/selector.py`:
+- [ ] **Step 3: Implement the selector changes** in `src/ccswitch/selector.py`
 
 Add the `Picked` dataclass near `RankedAccount`:
 
@@ -134,7 +151,7 @@ class RankedAccount:
     optimistic: bool = False
 ```
 
-Add `kind` to the exception:
+Add `kind` to the exception (keep the existing message + `earliest_reset`):
 
 ```python
 class AllAccountsBusy(Exception):
@@ -144,23 +161,23 @@ class AllAccountsBusy(Exception):
         self.kind = kind
 ```
 
-Rewrite the loop in `rank_accounts` to add the optimistic tier (replace the body from the `for name, u` loop through the `return`):
+In `rank_accounts`, add the two new params and the opt-in optimistic tier. Replace the signature and the loop/return (keep `_perishability`/`_reason` usage identical):
 
 ```python
 def rank_accounts(usages, reserved, cfg, now, exclude=frozenset(),
-                  load=None, unhealthy=frozenset()):
+                  load=None, unhealthy=frozenset(), optimistic_fallback=False):
     load = load or {}
     ceiling = cfg.hard_ceiling * 100.0
     candidates: list[tuple[float, float, float, float, str]] = []
-    optimistic: list[tuple[float, str]] = []   # (load, name)
+    optimistic: list[tuple[float, str]] = []   # (load, name) — last-resort tier
     busy_resets: list[datetime] = []
     for name, u in usages.items():
         if name in exclude or name in reserved:
             continue
         if u is None:
-            # Usage unreadable. A healthy account is a last-resort optimistic
-            # pick; a needs-reauth account is simply ineligible.
-            if name not in unhealthy:
+            # Usage unreadable. Only an opt-in caller treats a healthy account as a
+            # last-resort optimistic pick; legacy callers exclude it entirely.
+            if optimistic_fallback and name not in unhealthy:
                 optimistic.append((load.get(name, 0.0), name))
             continue
         at_ceiling = u.session_pct >= ceiling or u.weekly_pct >= ceiling
@@ -192,29 +209,34 @@ def rank_accounts(usages, reserved, cfg, now, exclude=frozenset(),
     return ranked, earliest
 ```
 
-Rewrite `select_best` to return `Picked` and raise with `kind`:
+Add `select_picked` and rewrite `select_best` to delegate (replace the existing `select_best`):
 
 ```python
-def select_best(usages, reserved, cfg, now, exclude=frozenset(),
-                load=None, unhealthy=frozenset()) -> Picked:
-    ranked, earliest = rank_accounts(usages, reserved, cfg, now, exclude, load, unhealthy)
+def select_picked(usages, reserved, cfg, now, exclude=frozenset(),
+                  load=None, unhealthy=frozenset(), optimistic_fallback=False) -> Picked:
+    ranked, earliest = rank_accounts(usages, reserved, cfg, now, exclude, load,
+                                     unhealthy, optimistic_fallback)
     if not ranked:
         kind = "at_ceiling" if earliest is not None else "no_usable_accounts"
         raise AllAccountsBusy(earliest, kind)
     top = ranked[0]
     return Picked(name=top.name, optimistic=top.optimistic)
+
+
+def select_best(usages, reserved, cfg, now, exclude=frozenset(), load=None) -> str:
+    return select_picked(usages, reserved, cfg, now, exclude, load).name
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run the full selector suite (new + existing 24)**
 
-Run: `PYTHONPATH=$PWD/src <deploy-venv>/bin/python -m pytest src/ccswitch/tests/test_selector.py -v`
-Expected: PASS (all 7).
+Run: `PYTHONPATH=$PWD/src <VENV> -m pytest tests/test_selector.py -v`
+Expected: PASS — all 24 existing + 8 new.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/ccswitch/selector.py src/ccswitch/tests/test_selector.py
-git commit -m "feat(selector): optimistic last-resort tier + AllAccountsBusy.kind
+git add src/ccswitch/selector.py tests/test_selector.py
+git commit -m "feat(selector): opt-in optimistic tier + AllAccountsBusy.kind + Picked
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -225,18 +247,16 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `src/ccswitch/ledger.py`, `src/ccswitch/accounts.py`
-- Test: `src/ccswitch/tests/test_pick_account_detailed.py` (create)
+- Test: `tests/test_pick_account_detailed.py` (create)
 
 **Interfaces:**
-- Consumes: `Picked`, `select_best(..., unhealthy=...)` from Task 1.
+- Consumes: `Picked`, `select_picked(..., unhealthy=..., optimistic_fallback=True)` from Task 1.
 - Produces:
   - `ledger.get_status(led: dict, name: str) -> str | None`
-  - `accounts.pick_account_detailed(cfg, exclude=frozenset(), load=None) -> Picked` — builds `usages`, `reserved`, and `unhealthy = {n for n in names if get_status(led, n) == "needs-reauth"}`, calls `select_best`, reserves the picked account, returns `Picked`.
+  - `accounts.pick_account_detailed(cfg, exclude=frozenset(), load=None) -> Picked` — builds `usages`, `reserved`, and `unhealthy = {n for n in names if get_status(led, n) == "needs-reauth"}`; calls `select_picked(..., unhealthy=unhealthy, optimistic_fallback=True)`; reserves the picked account; returns `Picked`.
   - `accounts.pick_account(cfg, exclude=frozenset(), load=None) -> str` — returns `pick_account_detailed(...).name` (unchanged contract for `launcher.py`, `cli.py`, `runner.py`).
 
-- [ ] **Step 1: Write the failing test**
-
-Create `src/ccswitch/tests/test_pick_account_detailed.py`. Follow the existing `server/tests/test_selection.py` slot-writing fixture pattern for credential slots; mock `usage_for` to control readability:
+- [ ] **Step 1: Write the failing test** — create `tests/test_pick_account_detailed.py`
 
 ```python
 from unittest.mock import patch
@@ -245,8 +265,7 @@ from ccswitch.selector import Picked
 from ccswitch import accounts
 
 
-def test_pick_account_detailed_returns_optimistic_when_usage_none(tmp_path, monkeypatch):
-    # Two healthy accounts whose usage can't be read → optimistic pick.
+def test_pick_account_detailed_optimistic_when_usage_none(monkeypatch):
     monkeypatch.setattr(accounts, "_account_names", lambda: ["a", "b"])
     with patch.object(accounts, "usage_for", return_value=None), \
          patch("ccswitch.ledger.get_status", return_value="ok"), \
@@ -254,24 +273,35 @@ def test_pick_account_detailed_returns_optimistic_when_usage_none(tmp_path, monk
          patch("ccswitch.ledger.reserve"):
         picked = accounts.pick_account_detailed(Config(), load={"a": 1.0, "b": 0.0})
     assert isinstance(picked, Picked)
-    assert picked.optimistic is True
-    assert picked.name == "b"  # least load
+    assert picked == Picked(name="b", optimistic=True)
 
 
-def test_pick_account_str_wrapper_returns_name(tmp_path, monkeypatch):
+def test_pick_account_detailed_skips_needs_reauth(monkeypatch):
+    from ccswitch.selector import AllAccountsBusy
+    import pytest
+    monkeypatch.setattr(accounts, "_account_names", lambda: ["a"])
+    with patch.object(accounts, "usage_for", return_value=None), \
+         patch("ccswitch.ledger.get_status", return_value="needs-reauth"), \
+         patch("ccswitch.ledger.reservation_active", return_value=False), \
+         patch("ccswitch.ledger.reserve"):
+        with pytest.raises(AllAccountsBusy) as ei:
+            accounts.pick_account_detailed(Config())
+    assert ei.value.kind == "no_usable_accounts"
+
+
+def test_pick_account_str_wrapper_returns_name(monkeypatch):
     monkeypatch.setattr(accounts, "_account_names", lambda: ["a"])
     with patch.object(accounts, "usage_for", return_value=None), \
          patch("ccswitch.ledger.get_status", return_value="ok"), \
          patch("ccswitch.ledger.reservation_active", return_value=False), \
          patch("ccswitch.ledger.reserve"):
-        name = accounts.pick_account(Config())
-    assert name == "a"
+        assert accounts.pick_account(Config()) == "a"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `PYTHONPATH=$PWD/src <deploy-venv>/bin/python -m pytest src/ccswitch/tests/test_pick_account_detailed.py -v`
-Expected: FAIL — `AttributeError: module 'ccswitch.accounts' has no attribute 'pick_account_detailed'` / `ledger.get_status` missing.
+Run: `PYTHONPATH=$PWD/src <VENV> -m pytest tests/test_pick_account_detailed.py -v`
+Expected: FAIL — `module 'ccswitch.accounts' has no attribute 'pick_account_detailed'` / `ledger.get_status` missing.
 
 - [ ] **Step 3: Implement**
 
@@ -282,10 +312,10 @@ def get_status(led: dict, name: str) -> str | None:
     return _acct(led, name).get("status")
 ```
 
-In `src/ccswitch/accounts.py`, change the import and replace `pick_account` (lines 193-203):
+In `src/ccswitch/accounts.py`, update the import (line 13) and replace `pick_account` (lines 193-203):
 
 ```python
-from .selector import Picked, select_best  # replaces the `select_best`-only import
+from .selector import Picked, select_picked  # was: from .selector import select_best
 ```
 
 ```python
@@ -298,7 +328,8 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
     with ledger.locked_ledger() as led:
         reserved = {n for n in names if ledger.reservation_active(led, n, now_ts)}
         unhealthy = frozenset(n for n in names if ledger.get_status(led, n) == "needs-reauth")
-        picked = select_best(usages, reserved, cfg, now, exclude, load or {}, unhealthy)
+        picked = select_picked(usages, reserved, cfg, now, exclude, load or {},
+                               unhealthy, optimistic_fallback=True)
         ledger.reserve(led, picked.name, now_ts + cfg.reservation_ttl_sec)
     return picked
 
@@ -308,20 +339,17 @@ def pick_account(cfg: Config, exclude: set[str] = frozenset(),
     return pick_account_detailed(cfg, exclude, load).name
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+> Check: if `select_best` is no longer imported/used anywhere in `accounts.py`, that's expected — `select_best` stays in `selector.py` for the existing selector tests and as the legacy string API.
 
-Run: `PYTHONPATH=$PWD/src <deploy-venv>/bin/python -m pytest src/ccswitch/tests/test_pick_account_detailed.py src/ccswitch/tests/test_selector.py -v`
-Expected: PASS.
+- [ ] **Step 4: Run new tests + regressions**
 
-- [ ] **Step 5: Run the existing selection suite for regressions**
+Run: `PYTHONPATH=$PWD/src <VENV> -m pytest tests/test_pick_account_detailed.py tests/test_selector.py tests/test_accounts.py server/tests/test_selection.py -q`
+Expected: PASS (the `test_selection.py` suite exercises `pick_account` end-to-end through the new path).
 
-Run: `PYTHONPATH=$PWD/src <deploy-venv>/bin/python -m pytest server/tests/test_selection.py -v`
-Expected: PASS (the `select_best` return-type change is internal to `pick_account`).
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/ccswitch/ledger.py src/ccswitch/accounts.py src/ccswitch/tests/test_pick_account_detailed.py
+git add src/ccswitch/ledger.py src/ccswitch/accounts.py tests/test_pick_account_detailed.py
 git commit -m "feat(accounts): pick_account_detailed threads unhealthy + returns Picked
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
@@ -336,15 +364,13 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Test: `server/tests/test_types_usage_unverified.py` (create)
 
 **Interfaces:**
-- Consumes: `Picked` from Task 1; `pick_account_detailed` from Task 2.
+- Consumes: `Picked` (Task 1); `pick_account_detailed` (Task 2).
 - Produces:
   - `server.sessions.selection.select_account(exclude=frozenset(), load=None) -> Picked`
   - `SessionRecord.usage_unverified: bool = False`, round-tripped through `to_dict` (`"usageUnverified"`) / `from_dict`.
-  - `orchestrator.create_session(...)` sets `record.usage_unverified = picked.optimistic` when it selected the account itself.
+  - `orchestrator.create_session(...)` sets `record.usage_unverified = picked.optimistic` when it selected the account itself (account not supplied by the caller).
 
-- [ ] **Step 1: Write the failing test**
-
-Create `server/tests/test_types_usage_unverified.py`:
+- [ ] **Step 1: Write the failing test** — create `server/tests/test_types_usage_unverified.py`
 
 ```python
 from server.sessions.types import SessionRecord
@@ -375,35 +401,31 @@ def test_from_dict_missing_key_defaults_false():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `PYTHONPATH=$PWD/src <deploy-venv>/bin/python -m pytest server/tests/test_types_usage_unverified.py -v`
+Run: `PYTHONPATH=$PWD/src <VENV> -m pytest server/tests/test_types_usage_unverified.py -v`
 Expected: FAIL — `TypeError: unexpected keyword argument 'usage_unverified'`.
 
-- [ ] **Step 3: Implement the record field**
+- [ ] **Step 3: Implement the record field** in `server/sessions/types.py`
 
-In `server/sessions/types.py`, add the field after `active_goal` (keep the defaulted-field grouping):
+Add the field after `active_goal` (line 37):
 
 ```python
     active_goal: str | None = None    # active /goal condition; None = no goal
     usage_unverified: bool = False    # transient: account picked without a usage read (optimistic)
 ```
 
-Add to `to_dict`'s returned dict (after `"activeGoal"`):
+Add to `to_dict`'s returned dict (after `"activeGoal": self.active_goal,`):
 
 ```python
-            "activeGoal": self.active_goal,
             "usageUnverified": self.usage_unverified,
 ```
 
-Add to `from_dict`'s constructor call (after `active_goal=...`):
+Add to `from_dict`'s constructor call (after `active_goal=d.get("activeGoal"),`):
 
 ```python
-            active_goal=d.get("activeGoal"),
             usage_unverified=d.get("usageUnverified", False),
 ```
 
-- [ ] **Step 4: Update `select_account` to return `Picked`**
-
-In `server/sessions/selection.py`, change the import and body:
+- [ ] **Step 4: Update `select_account` to return `Picked`** in `server/sessions/selection.py`
 
 ```python
 from ccswitch.accounts import pick_account_detailed
@@ -419,15 +441,15 @@ def select_account(exclude: frozenset[str] = frozenset(),
     return pick_account_detailed(cfg, exclude=set(exclude), load=load)
 ```
 
-- [ ] **Step 5: Update the two orchestrator call sites**
+- [ ] **Step 5: Update the two orchestrator call sites** in `server/sessions/orchestrator.py`
 
-In `server/sessions/orchestrator.py`, update the import (line 47):
+Update the import (line 47):
 
 ```python
 from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
 ```
 
-Create path (lines 344-349): capture the `Picked` and the optimistic flag. Replace:
+Create path (lines 344-352) — capture the optimistic flag (read `server/sessions/orchestrator.py` around there to place it correctly):
 
 ```python
         usage_unverified = False
@@ -437,9 +459,12 @@ Create path (lines 344-349): capture the `Picked` and the optimistic flag. Repla
                 load=self.live_session_load())
             account = picked.name
             usage_unverified = picked.optimistic
+        else:
+            # Verify the given account exists (will raise if cred file missing — acceptable)
+            pass
 ```
 
-Then, where the `SessionRecord(` is constructed in `create_session` (near line 412), pass `usage_unverified=usage_unverified` into the constructor.
+Then in the `SessionRecord(` construction inside `create_session` (around line 412), pass `usage_unverified=usage_unverified`.
 
 Rotation path (line 1646) — selection returns `Picked` now, take `.name`:
 
@@ -449,8 +474,8 @@ Rotation path (line 1646) — selection returns `Picked` now, take `.name`:
 
 - [ ] **Step 6: Run tests**
 
-Run: `PYTHONPATH=$PWD/src <deploy-venv>/bin/python -m pytest server/tests/test_types_usage_unverified.py server/tests/test_session_repo.py server/tests/test_orchestrator_worktree.py -v`
-Expected: PASS (record round-trips; create paths still build records).
+Run: `PYTHONPATH=$PWD/src <VENV> -m pytest server/tests/test_types_usage_unverified.py server/tests/test_session_repo.py server/tests/test_orchestrator_worktree.py server/tests/test_selection.py -q`
+Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
@@ -463,54 +488,51 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
-## Task 4: API — `usageUnverified` body + `accounts_need_reauth` 409 + accounts rank fix
+## Task 4: API — `usageUnverified` body + `accounts_need_reauth` 409
 
 **Files:**
-- Modify: `server/api/sessions.py`, `server/api/accounts.py`
+- Modify: `server/api/sessions.py`
 - Test: `server/tests/test_api.py`
 
 **Interfaces:**
 - Consumes: `AllAccountsBusy.kind` (Task 1), `record.usage_unverified` (Task 3).
 - Produces:
-  - `POST /api/sessions` 201 body includes `usageUnverified` (already present via `_record_to_dict` → `to_dict`; assert it).
+  - `POST /api/sessions` 201 body includes `usageUnverified` (already flows via `_record_to_dict` → `to_dict`; the test asserts it).
   - `AllAccountsBusy` with `kind=="no_usable_accounts"` → `409 { error.code: "accounts_need_reauth" }`; `kind=="at_ceiling"` → existing `all_accounts_limited` + `earliestReset`.
-  - `GET /api/accounts` passes `unhealthy` to `rank_accounts` so needs-reauth accounts keep `rank=None`.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Read the existing all-busy tests** at `server/tests/test_api.py:377-438`. They currently patch `server.sessions.selection.pick_account`. Update those patches to `pick_account_detailed` and have the mock raise `AllAccountsBusy(reset, kind="at_ceiling")` (the `at_ceiling`/`null-reset` variants stay, asserting `all_accounts_limited` + `earliestReset` as before).
 
-Add to `server/tests/test_api.py` (mirror the existing `pick_account` patch pattern at lines 383/416 — note it patches `server.sessions.selection.pick_account`; update to `pick_account_detailed`):
+- [ ] **Step 2: Write the new failing tests** — add to `server/tests/test_api.py` (mirror the existing test class's client/auth fixtures):
 
 ```python
-def test_create_optimistic_sets_usage_unverified(self, client, ...):
+def test_create_optimistic_sets_usage_unverified(self, ...):
     """Usage unreadable but account healthy → 201 with usageUnverified true."""
     from ccswitch.selector import Picked
     with patch("server.sessions.selection.pick_account_detailed",
                return_value=Picked(name="acct-a", optimistic=True)):
-        resp = client.post("/api/sessions", json={"name": "opt"})
+        resp = <client POST /api/sessions with a valid body>
     assert resp.status_code == 201
     assert resp.json()["usageUnverified"] is True
 
 
-def test_create_all_unusable_returns_needs_reauth(self, client, ...):
+def test_create_all_unusable_returns_needs_reauth(self, ...):
     """All accounts need reauth → 409 accounts_need_reauth, no earliestReset."""
     from server.sessions.selection import AllAccountsBusy
     with patch("server.sessions.selection.pick_account_detailed",
                side_effect=AllAccountsBusy(None, kind="no_usable_accounts")):
-        resp = client.post("/api/sessions", json={"name": "x"})
+        resp = <client POST /api/sessions with a valid body>
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "accounts_need_reauth"
 ```
 
-(Keep the existing `test_create_session_all_busy_*` tests; update their patch target from `pick_account` to `pick_account_detailed` and have the mock raise `AllAccountsBusy(reset, kind="at_ceiling")`.)
+(Use the same request-construction + auth headers as the neighboring `test_create_session_all_busy_*` tests — copy their fixture usage verbatim.)
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `PYTHONPATH=$PWD/src <deploy-venv>/bin/python -m pytest server/tests/test_api.py -k "optimistic or needs_reauth or all_busy" -v`
-Expected: FAIL — `accounts_need_reauth` not produced; `pick_account_detailed` patch target missing.
+Run: `PYTHONPATH=$PWD/src <VENV> -m pytest server/tests/test_api.py -k "optimistic or needs_reauth or all_busy" -v`
+Expected: FAIL — `accounts_need_reauth` not produced; `pick_account_detailed` patch target not yet used by the code.
 
-- [ ] **Step 3: Implement the API branch**
-
-In `server/api/sessions.py`, replace the `except AllAccountsBusy` block (lines 315-327):
+- [ ] **Step 4: Implement the API branch** in `server/api/sessions.py` — replace the `except AllAccountsBusy` block (lines 315-327):
 
 ```python
     except AllAccountsBusy as exc:
@@ -537,37 +559,22 @@ In `server/api/sessions.py`, replace the `except AllAccountsBusy` block (lines 3
         )
 ```
 
-(The 201 body already carries `usageUnverified` because `_record_to_dict` delegates to `SessionRecord.to_dict`. No change needed there — the test asserts it.)
-
-- [ ] **Step 4: Fix accounts rank to exclude needs-reauth from the optimistic tier**
-
-In `server/api/accounts.py`, build `unhealthy` from the per-account status already in scope and pass it (replace the `rank_accounts(...)` call at lines 137-140):
-
-```python
-    unhealthy = frozenset(
-        acct["name"] for acct in accounts_info
-        if acct.get("status") == "needs-reauth"
-    )
-    ranked, _earliest = rank_accounts(
-        usages, reserved=frozenset(), cfg=load_config(),
-        now=datetime.now(timezone.utc), load=load, unhealthy=unhealthy,
-    )
-```
+(The 201 body already carries `usageUnverified` because `_record_to_dict` delegates to `SessionRecord.to_dict`. No change needed there.)
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `PYTHONPATH=$PWD/src <deploy-venv>/bin/python -m pytest server/tests/test_api.py -v`
+Run: `PYTHONPATH=$PWD/src <VENV> -m pytest server/tests/test_api.py -v`
 Expected: PASS.
 
 - [ ] **Step 6: Backend lint**
 
-Run: `ruff check server/ src/ && <deploy-venv>/bin/python -m mypy server/api/sessions.py server/api/accounts.py src/ccswitch/selector.py src/ccswitch/accounts.py`
+Run: `ruff check server/ src/ && PYTHONPATH=$PWD/src <VENV> -m mypy server/api/sessions.py server/sessions/selection.py src/ccswitch/selector.py src/ccswitch/accounts.py`
 Expected: clean.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add server/api/sessions.py server/api/accounts.py server/tests/test_api.py
+git add server/api/sessions.py server/tests/test_api.py
 git commit -m "feat(api): usageUnverified on create + accounts_need_reauth 409
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
@@ -575,27 +582,23 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
-## Task 5: Frontend types + create hook passthrough
+## Task 5: Frontend types + create-response field
 
 **Files:**
 - Modify: `web/src/api/types.ts`
-- Test: covered by Task 6's component tests (no standalone test — a one-line optional field).
+- Test: covered by Task 6's component tests (a one-line optional field).
 
 **Interfaces:**
 - Produces: `Session.usageUnverified?: boolean`.
 
-- [ ] **Step 1: Add the field**
-
-In `web/src/api/types.ts`, inside `interface Session`, add:
+- [ ] **Step 1: Add the field** in `web/src/api/types.ts`, inside `interface Session`:
 
 ```ts
   /** True when the session was created without a verified usage read (optimistic pick). */
   usageUnverified?: boolean
 ```
 
-- [ ] **Step 2: Verify it type-checks**
-
-Run (in `web/`): `./node_modules/.bin/tsc -b`
+- [ ] **Step 2: Verify it type-checks** — run in `web/`: `./node_modules/.bin/tsc -b`
 Expected: clean.
 
 - [ ] **Step 3: Commit**
@@ -616,40 +619,35 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Test: `web/src/components/__tests__/Dashboard.test.tsx`, `web/src/components/__tests__/DesktopShell.test.tsx` (add cases to existing files)
 
 **Interfaces:**
-- Consumes: `Session.usageUnverified` (Task 5); 409 `error.code` values `all_accounts_limited` / `accounts_need_reauth` (Task 4); `useAccounts()` returning `Account[]` with `rank: number | null`; `toast({ message, variant })` from `@/lib/toast`.
+- Consumes: `Session.usageUnverified` (Task 5); 409 `error.code` values `all_accounts_limited` / `accounts_need_reauth` (Task 4); `useAccounts()` returning `Account[]` with `rank: number | null`; `toast({ message, variant })` from `@/lib/toast` (variants include `info`, `success`, `error`, `warning`).
 
-- [ ] **Step 1: Write the failing tests**
-
-In `Dashboard.test.tsx`, add (follow the file's existing mock-factory pattern for `@/api/hooks` and `@/lib/toast`):
+- [ ] **Step 1: Read the existing test files** to copy their `@/api/hooks` + `@/lib/toast` mock-factory patterns (these tests mock hooks via `vi.mock`). Then add three cases to EACH of `Dashboard.test.tsx` and `DesktopShell.test.tsx`:
 
 ```tsx
 it('shows a subtle toast when a session is created optimistically', async () => {
-  // createSession mock resolves with { ...session, usageUnverified: true }
-  // expect toast called with variant 'warning' (or 'info') and a "started anyway" message
+  // createSession mock resolves with a session where usageUnverified === true
+  // assert toast() called with a "started anyway" message (variant 'warning')
 })
 
 it('routes accounts_need_reauth 409 to a toast, not the limit banner', async () => {
   // createSession mock rejects with { status: 409, body: { error: { code: 'accounts_need_reauth' } } }
-  // expect toast called; expect AllLimitedBanner NOT rendered
+  // assert toast() called; assert AllLimitedBanner is NOT in the document
 })
 
 it('auto-clears the all-limited banner once an account becomes selectable', async () => {
-  // 1) trigger all_accounts_limited 409 → banner shows
-  // 2) re-render with useAccounts returning an account with rank=1
-  // 3) expect AllLimitedBanner removed
+  // 1) drive an all_accounts_limited 409 → AllLimitedBanner shows
+  // 2) re-render with useAccounts returning an account whose rank === 1
+  // 3) assert AllLimitedBanner is removed
 })
 ```
 
-Add the equivalent three cases to `DesktopShell.test.tsx`.
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run (in `web/`): `./node_modules/.bin/vitest run src/components/__tests__/Dashboard.test.tsx src/components/__tests__/DesktopShell.test.tsx`
+- [ ] **Step 2: Run tests to verify they fail** — run in `web/`:
+`./node_modules/.bin/vitest run src/components/__tests__/Dashboard.test.tsx src/components/__tests__/DesktopShell.test.tsx`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement in `Dashboard.tsx`**
 
-`onSuccess` of `createSession` (inside `handleCreateSubmit`, line ~1312) — add the optimistic toast:
+`onSuccess` of `createSession` (inside `handleCreateSubmit`, ~line 1312):
 
 ```tsx
       onSuccess: (session) => {
@@ -661,7 +659,7 @@ Expected: FAIL.
       },
 ```
 
-`onError` 409 handler (line ~1318) — add the `accounts_need_reauth` branch:
+`onError` 409 handler (~line 1318) — add the `accounts_need_reauth` branch:
 
 ```tsx
         if (err.status === 409) {
@@ -691,19 +689,15 @@ Auto-clear effect — add near the other effects, using the already-in-scope `ac
 
 Ensure `toast` is imported (`import { toast } from '@/lib/toast'`) and `useEffect` is in the React import.
 
-- [ ] **Step 4: Implement the same three changes in `DesktopShell.tsx`**
+- [ ] **Step 4: Implement the same three changes in `DesktopShell.tsx`** — optimistic toast in `onSuccess` (~line 290), `accounts_need_reauth` branch in the 409 `onError` (~line 294, which currently only special-cases `branch_switch_failed`), and the auto-clear `useEffect` using `accounts` (line 112) and `allLimitedReset` (line 133). Add the `toast` import if missing.
 
-Mirror Step 3 in `DesktopShell.tsx`: optimistic toast in `onSuccess` (line ~290), `accounts_need_reauth` branch in the 409 `onError` (line ~294), and the auto-clear `useEffect` using `accounts` (line 112) and `allLimitedReset` (line 133). Add the `toast` import if missing.
-
-- [ ] **Step 5: Run tests to verify they pass**
-
-Run (in `web/`): `./node_modules/.bin/vitest run src/components/__tests__/Dashboard.test.tsx src/components/__tests__/DesktopShell.test.tsx`
+- [ ] **Step 5: Run tests to verify they pass** — run in `web/`:
+`./node_modules/.bin/vitest run src/components/__tests__/Dashboard.test.tsx src/components/__tests__/DesktopShell.test.tsx`
 Expected: PASS.
 
-- [ ] **Step 6: Full web gates**
-
-Run (in `web/`): `./node_modules/.bin/vitest run && ./node_modules/.bin/tsc -b && ./node_modules/.bin/eslint src --max-warnings 0`
-Expected: clean. (Watch the react-hooks "no ref read during render" + exhaustive-deps rules — the effect deps are `[accounts, allLimitedReset]`.)
+- [ ] **Step 6: Full web gates** — run in `web/`:
+`./node_modules/.bin/vitest run && ./node_modules/.bin/tsc -b && ./node_modules/.bin/eslint src --max-warnings 0`
+Expected: clean. (Watch react-hooks `exhaustive-deps`: the effect deps are `[accounts, allLimitedReset]`.)
 
 - [ ] **Step 7: Commit**
 
@@ -718,17 +712,17 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ## Final verification (before PR)
 
-- [ ] Backend: `PYTHONPATH=$PWD/src <deploy-venv>/bin/python -m pytest src/ccswitch/tests/ server/tests/ -q`
-- [ ] Backend lint: `ruff check server/ src/ && <deploy-venv>/bin/python -m mypy server/ src/ccswitch`
+- [ ] Backend: `PYTHONPATH=$PWD/src <VENV> -m pytest tests/ server/tests/ -q`
+- [ ] Backend lint: `ruff check server/ src/ && PYTHONPATH=$PWD/src <VENV> -m mypy server/ src/ccswitch`
 - [ ] Web: in `web/` → `./node_modules/.bin/vitest run && ./node_modules/.bin/tsc -b && ./node_modules/.bin/eslint src --max-warnings 0`
-- [ ] Manual smoke (optional, per `verify` skill): force `usage_for` to return None for all accounts and confirm a session creates with the subtle toast rather than the amber banner.
 
 ---
 
 ## Spec coverage check
 
 - State A (at ceiling) → Task 1 (`kind="at_ceiling"` + earliest), Task 4 (`all_accounts_limited`), Task 6 (banner + auto-clear). ✓
-- State B (usage unreadable) → Task 1 (optimistic tier), Task 2 (`unhealthy` gating), Task 3 (`usage_unverified`), Task 4 (201 body), Task 5/6 (toast). ✓
+- State B (usage unreadable) → Task 1 (opt-in optimistic tier), Task 2 (`unhealthy` gating + `optimistic_fallback=True`), Task 3 (`usage_unverified`), Task 4 (201 body), Task 5/6 (toast). ✓
 - State C (needs reauth) → Task 1 (`no_usable_accounts`), Task 2 (`unhealthy` set), Task 4 (`accounts_need_reauth`), Task 6 (toast → Accounts tab). ✓
-- Auto-clear on recovery → Task 6 effect on `useAccounts().rank`. ✓
+- Auto-clear on recovery → Task 6 effect on `useAccounts().rank` (legacy ranking already yields `rank !== null` on recovery — no accounts-API change needed). ✓
+- Scoping: optimistic behavior is opt-in (`optimistic_fallback`), so CLI/launcher/runner and the accounts list keep legacy behavior; the existing 24 selector tests stay green. ✓
 - No new SSE / no rotation-recovery changes / no usage-fetch retry → respected (rotation path only adjusted for the `.name` return shape). ✓
