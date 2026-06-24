@@ -15,7 +15,7 @@ import asyncio
 import inspect
 import logging
 import re
-from typing import Any, TYPE_CHECKING
+from typing import Any, Literal, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -396,36 +396,51 @@ async def list_archived_sessions(
     return await orch.list_archived()
 
 
+async def _search_ids(items, resolve, terms) -> list[str]:
+    """items: list[(id, name)]; resolve: async (id)->path|None. Returns matching ids.
+
+    The transcript file is read here in the edge process (see note below) for each
+    candidate; blank `terms` skips the reads entirely.
+    """
+    async def _matches(sid: str, name: str) -> bool:
+        text = ""
+        if terms:
+            path = await resolve(sid)
+            if path:
+                # Read happens in the edge process (not the daemon). Safe because the
+                # daemon shares the host filesystem over a local Unix socket. If the
+                # daemon is ever split to another host, move this behind a daemon RPC.
+                text = await asyncio.to_thread(transcript_text, path)
+        return session_matches(terms, name, text)
+
+    flags = await asyncio.gather(*(_matches(i, n) for i, n in items))
+    return [i for (i, _), ok in zip(items, flags) if ok]
+
+
 @router.get("/search")
 async def search_sessions(
     request: Request,
     q: str = "",
+    scope: Literal["live", "archived"] = "live",
     _identity: str = Depends(current_identity),
 ) -> dict:
-    """Return active session IDs whose name or transcript matches every term in `q`.
+    """Return session IDs whose name or transcript matches every term in `q`.
 
-    Registered before GET /{session_id} so FastAPI does not match `search` as an id.
+    `scope=live` (default) searches active sessions; `scope=archived` searches
+    archived rows. Registered before GET /{session_id} so FastAPI does not match
+    `search` as an id.
     """
     orch = _get_orchestrator(request)
     terms = parse_terms(q)
-    records = await orch.list_sessions()
-
-    async def _matches(rec) -> bool:
-        text = ""
-        if terms:  # blank query short-circuits the file reads
-            path = await orch.transcript_path(rec.id)
-            if path:
-                # The transcript file is read here in the edge process (not on the
-                # daemon). This is safe because the daemon talks over a host-local
-                # Unix socket, so daemon and edge share the filesystem. If the daemon
-                # is ever split to a separate host, this read would fail and search
-                # would silently degrade to name-only — move the read behind a daemon
-                # RPC (like transcript_events) at that point.
-                text = await asyncio.to_thread(transcript_text, path)
-        return session_matches(terms, rec.name, text)
-
-    flags = await asyncio.gather(*(_matches(r) for r in records))
-    return {"ids": [r.id for r, ok in zip(records, flags) if ok]}
+    if scope == "archived":
+        rows = await orch.list_archived()
+        items = [(r["id"], r["name"]) for r in rows]
+        ids = await _search_ids(items, orch._resolve_transcript_path, terms)
+    else:
+        records = await orch.list_sessions()
+        items = [(r.id, r.name) for r in records]
+        ids = await _search_ids(items, orch.transcript_path, terms)
+    return {"ids": ids}
 
 
 # ---------------------------------------------------------------------------
