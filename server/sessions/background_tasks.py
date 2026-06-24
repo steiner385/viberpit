@@ -45,7 +45,19 @@ def _is_background_launch(name: str, inp: dict) -> bool:
     return name == "Monitor" or bool(inp.get("run_in_background"))
 
 
-def scan_open_background_tasks(jsonl_path: str) -> list[OpenBgTask]:
+def scan_open_background_tasks(
+    jsonl_path: str, *, treat_killed_as_open: bool = True
+) -> list[OpenBgTask]:
+    """Open background tasks (launched, not yet terminated) in a transcript.
+
+    ``treat_killed_as_open`` distinguishes the two callers. Re-arm (the default)
+    keeps a ``killed`` task "open" so it can be relaunched. ``is_parked`` passes
+    False: a killed task is dead, not a live external wait — and it is re-armed
+    under a *new* tool-use-id (nothing ever marks the old killed id
+    completed/failed), so counting it as open would pin the session on
+    ``waiting_external`` forever.
+    """
+    terminal = _TERMINAL if treat_killed_as_open else _TERMINAL | {"killed"}
     launches: dict[str, OpenBgTask] = {}
     terminated: set[str] = set()
     try:
@@ -83,7 +95,7 @@ def scan_open_background_tasks(jsonl_path: str) -> list[OpenBgTask]:
             content = o.get("content")
             if isinstance(content, str) and "<task-notification>" in content:
                 ms, mt = _STATUS.search(content), _TUID.search(content)
-                if ms and mt and ms.group(1) in _TERMINAL:
+                if ms and mt and ms.group(1) in terminal:
                     terminated.add(mt.group(1))
     open_tasks = [t for tid, t in launches.items() if tid not in terminated]
     open_tasks.reverse()   # newest-first (dict preserves file order)
@@ -156,7 +168,8 @@ def is_parked(jsonl_path: str | None) -> bool:
     wakeup. Drives the dashboard's ``waiting_external`` ("Waiting…") status overlay."""
     if not jsonl_path:
         return False
-    return bool(scan_open_background_tasks(jsonl_path)) or scan_pending_wakeup(jsonl_path)
+    return (bool(scan_open_background_tasks(jsonl_path, treat_killed_as_open=False))
+            or scan_pending_wakeup(jsonl_path))
 
 
 def build_rearm_prompt(tasks: list[OpenBgTask]) -> str:

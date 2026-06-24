@@ -143,6 +143,29 @@ def test_is_parked_false_when_neither(tmp_path):
     assert is_parked(path) is False
 
 
+def test_is_parked_false_for_killed_task(tmp_path):
+    # A background poller killed by a deploy restart is NOT a live external wait:
+    # it is dead, and is re-armed (under a NEW tool-use-id) from the pre-kill
+    # `pending_rearm` snapshot, not from this scan. Counting the dead killed id as
+    # "open" pins the session on `waiting_external` forever (the real bug). The
+    # re-arm scan still keeps killed tasks — see the test below.
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_killed", "Bash", {"command": "gh pr view 10616", "run_in_background": True}),
+        _notif("toolu_killed", "killed"),
+    ])
+    assert is_parked(path) is False
+
+
+def test_killed_task_still_open_for_rearm_snapshot(tmp_path):
+    # The re-arm path (default) MUST still see a killed task so it can relaunch it.
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_killed", "Bash", {"command": "x", "run_in_background": True}),
+        _notif("toolu_killed", "killed"),
+    ])
+    assert {t.tool_use_id for t in scan_open_background_tasks(path)} == {"toolu_killed"}
+    assert scan_open_background_tasks(path, treat_killed_as_open=False) == []
+
+
 def test_is_parked_false_on_missing_path(tmp_path):
     assert is_parked(str(tmp_path / "nope.jsonl")) is False
     assert is_parked(None) is False
