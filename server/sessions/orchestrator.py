@@ -39,7 +39,8 @@ from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory
-from server.sessions.suggestions import SuggestionService
+from server.sessions.replay import replay_events
+from server.sessions.suggestions import SuggestionService, last_turn_context
 from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
 )
@@ -124,6 +125,12 @@ class SessionOrchestrator:
         self._title_fn: Callable = title_fn or self._default_title_fn
         self._registry = PermissionRegistry()
         self._drivers: dict[str, SessionDriver] = {}
+        # Detached-session next-prompt suggestions: session_id -> (transcript mtime, items).
+        # Generated from the on-disk transcript without resuming the driver (see
+        # latest_suggestions / _generate_detached_suggestions). Cached even when empty so
+        # the same transcript state is not re-generated on every /sessions poll.
+        self._detached_suggestions: dict[str, tuple[float, list[str]]] = {}
+        self._suggest_inflight: set[str] = set()
         self._last_prompt: dict[str, str] = {}
         # Failure-driven recovery: quarantine + per-session rotation cap. Clock is
         # injectable for deterministic tests; production uses wall-clock time. The
@@ -510,6 +517,18 @@ class SessionOrchestrator:
         rec = self._records.get(session_id)
         if rec is not None and rec.status == "ended":
             return
+        # Overlay: a turn that finished (`done`) but left the agent parked on an external
+        # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
+        # not "Your turn". Computed here (not in the pure `derive_status`) because it needs
+        # the transcript, like the `limited`/`ended` overlays. Scan only on `done` so the
+        # per-emit cost is paid once per turn-end. `waiting_external` is NOT in
+        # ACTIVITY_STATUSES, so parking does NOT bump the "active … ago" clock below — the
+        # card shows time since the last real turn, not a reset on every re-arm.
+        completed_turn = status == "done"
+        if completed_turn:
+            from .background_tasks import is_parked
+            if is_parked(self.transcript_path(session_id)):
+                status = "waiting_external"
         # Advance the "active … ago" clock ONLY when the assistant hands output back —
         # a finished or user-paused turn (ACTIVITY_STATUSES). Bumping it on every status
         # (in_progress) or incidental row write is the bug that pinned every card to
@@ -538,7 +557,7 @@ class SessionOrchestrator:
         # WS bridge forwards lifecycle frames top-level so the client's status handler
         # (_patchSessionStatus) patches the cached session record.
         self._publish_event({"type": "status", "sessionId": session_id, "status": status})
-        if status == "done":
+        if completed_turn:
             await self._maybe_apply_auto_name(session_id)
 
     async def _condense_estimate(self) -> float:
@@ -795,8 +814,25 @@ class SessionOrchestrator:
         """Return the in-memory SessionRecord for session_id, or None."""
         return self._records.get(session_id)
 
-    def _pr_pairs(self) -> list[tuple[str, str]]:
-        """Distinct (repo, branch) pairs for live sessions that have both."""
+    async def _refresh_live_branches(self) -> None:
+        """Re-read each repo-backed session's branch from its live worktree HEAD.
+
+        The completion workflow moves a worktree onto a fresh PR branch after the
+        record's branch was first set, so the stored value goes stale. Re-derive it
+        off the event loop; only overwrite with a real (non-None) live branch.
+        """
+        for rec in list(self._records.values()):
+            if not (rec.repo and rec.cwd):
+                continue
+            if not await asyncio.to_thread(worktrees.is_git_repo, rec.cwd):
+                continue
+            live = await asyncio.to_thread(worktrees.current_branch, rec.cwd)
+            if live and live != rec.branch:
+                rec.branch = live
+
+    async def _pr_pairs(self) -> list[tuple[str, str]]:
+        """Distinct (repo, live-branch) pairs for sessions that have both."""
+        await self._refresh_live_branches()
         seen: set[tuple[str, str]] = set()
         for r in self._records.values():
             branch = getattr(r, "branch", None)
@@ -1293,14 +1329,66 @@ class SessionOrchestrator:
         if d:
             await d.interrupt()
 
-    def latest_suggestions(self, session_id: str) -> list[str]:
-        """Latest cached next-prompt suggestions for a live session.
+    async def latest_suggestions(self, session_id: str) -> list[str]:
+        """Latest cached next-prompt suggestions for a session.
 
-        Returns [] when the session has no live driver (detached) or none were
-        generated. Read straight off the driver — suggestions are ephemeral and
-        never persisted (see suggestions.py)."""
+        Live (attached) sessions read straight off the driver. Detached
+        ``done``/``idle`` sessions generate from their on-disk transcript and
+        cache the result keyed by transcript mtime (see
+        _generate_detached_suggestions). Best-effort: never raises.
+        """
         d = self._drivers.get(session_id)
-        return list(getattr(d, "_last_suggestions", []) or []) if d else []
+        if d is not None:
+            return list(getattr(d, "_last_suggestions", []) or [])
+
+        rec = self._records.get(session_id)
+        if rec is None or self._suggester is None:
+            return []
+        if rec.status not in ("done", "idle"):
+            return []
+
+        try:
+            path = await self._resolve_transcript_path(session_id)
+            if not path:
+                return []
+            signature = os.path.getmtime(path)
+        except Exception:
+            return []
+
+        cached = self._detached_suggestions.get(session_id)
+        if cached is not None and cached[0] == signature:
+            return list(cached[1])
+
+        if session_id not in self._suggest_inflight:
+            self._suggest_inflight.add(session_id)
+            asyncio.create_task(
+                self._generate_detached_suggestions(session_id, rec, path, signature)
+            )
+        # Cache miss or stale (transcript changed): serve nothing rather than stale
+        # suggestions from an outdated transcript. The scheduled task lands within a
+        # poll cycle (the dashboard refetches /sessions), then the cache-hit above wins.
+        return []
+
+    async def _generate_detached_suggestions(self, session_id, rec, path, signature) -> None:
+        """Generate suggestions for a detached session from its transcript (best-effort).
+
+        Caches (signature, items) even when items is empty, so the same transcript
+        state is not re-generated on the next poll. Always clears the in-flight flag.
+        """
+        try:
+            if self._suggester is None:
+                self._detached_suggestions[session_id] = (signature, [])
+                return
+            events = await replay_events(path)
+            user_text, assistant_text = last_turn_context(events)
+            context = f"User: {user_text}\n\nAssistant: {assistant_text}"
+            items = await self._suggester.generate(rec.cwd, str(compose(rec.account)), context)
+            self._detached_suggestions[session_id] = (signature, list(items or []))
+        except Exception:
+            log.warning("detached suggestion generation failed id=%s", session_id, exc_info=True)
+            self._detached_suggestions[session_id] = (signature, [])
+        finally:
+            self._suggest_inflight.discard(session_id)
 
     async def set_permission_mode(self, session_id, mode):
         d = self._drivers.get(session_id)

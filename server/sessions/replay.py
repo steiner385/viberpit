@@ -61,11 +61,21 @@ def _build_events(path: str) -> tuple[list, object | None]:
             for b in content:
                 if b.get("type") == "image":
                     src = b.get("source") or {}
-                    if src.get("type") == "base64":
+                    # Skip blocks whose base64 payload was elided/truncated in the
+                    # transcript: `data:{mt};base64,` with no payload is a structurally
+                    # invalid URL the browser rejects (net::ERR_INVALID_URL).
+                    data = src.get("data") or ""
+                    if src.get("type") == "base64" and data:
                         mt = src.get("media_type", "image/png")
-                        imgs.append({"url": f"data:{mt};base64,{src.get('data', '')}",
+                        imgs.append({"url": f"data:{mt};base64,{data}",
                                      "mime": mt, "name": ""})
-            if text or imgs:
+            # `isMeta` user entries are harness-injected context, not a real user
+            # turn: the Skill-tool body ("Base directory for this skill: …"), the
+            # "Continue from where you left off." resume prompt, Stop-hook notices,
+            # etc. Rendering them makes the skill's own prompt look like the user's
+            # (or our) message — suppress the bubble. (Any tool_results on the entry
+            # still emit below; in practice these meta entries carry only text.)
+            if (text or imgs) and not o.get("isMeta"):
                 out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
                                           images=imgs or None, ts=ts))
             for r in results:

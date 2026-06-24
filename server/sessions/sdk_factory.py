@@ -1,8 +1,15 @@
 """Production factory: builds a real ClaudeSDKClient for a SessionDriver."""
 from __future__ import annotations
+import json
 import os
 
 from .completion import COMPLETION_INSTRUCTION
+
+# Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
+# project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)
+# never fires.  We inject it here rather than via a settings *file* because ccswitch does not
+# pass `setting_sources`, so the binary loads no filesystem settings — only this inline layer.
+_MCP_TRUST_SETTINGS = json.dumps({"enableAllProjectMcpServers": True})
 
 
 def _import_sdk():
@@ -24,6 +31,7 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
         permission_mode=("plan" if mode == "plan" else "default"),
         include_partial_messages=True, resume=resume,
         hooks=hooks,
+        settings=_MCP_TRUST_SETTINGS,
         system_prompt={
             "type": "preset",
             "preset": "claude_code",
