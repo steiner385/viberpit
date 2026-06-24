@@ -18,6 +18,10 @@ log = logging.getLogger(__name__)
 
 _STREAM_DONE = object()
 
+# How long aclose() waits for the CLI to flush its synthetic interrupt result for a
+# turn wedged mid-tool-call before giving up and cancelling the drain.
+_CLOSE_GRACE_SEC = 5.0
+
 
 async def _aiter_one(message: dict):
     yield message
@@ -632,12 +636,32 @@ class SessionDriver:
         self._cancel_suggest()
         self._reg.deny_all(self.session_id)
         self._qreg.deny_all(self.session_id)
-        if self._pump:
-            self._pump.cancel()
+        if self._pump is not None and not self._pump.done():
+            # A turn wedged mid-tool-call must not be abandoned: hard-cancelling the
+            # drain kills the subprocess before the CLI writes its synthetic
+            # "[Request interrupted by user for tool use]" result, orphaning the
+            # tool_use and dead-ending the next resume (see transcript_repair).
+            # Interrupt and give the CLI a bounded chance to flush; only cancel if it
+            # doesn't finish in time. Drop queued prompts first so the drain's finally
+            # can't launch a fresh turn while we're closing.
+            self._queue.clear()
+            if self._turn_active and self._client is not None:
+                try:
+                    await self._client.interrupt()
+                except Exception:
+                    log.warning("driver.aclose: interrupt failed session=%s",
+                                self.session_id, exc_info=True)
+            grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
             try:
-                await self._pump
-            except asyncio.CancelledError:
+                await asyncio.wait_for(asyncio.shield(self._pump), timeout=grace)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
+            if not self._pump.done():
+                self._pump.cancel()
+                try:
+                    await self._pump
+                except asyncio.CancelledError:
+                    pass
         if self._client:
             await self._client.__aexit__(None, None, None)
         # Final sync_back: capture any token rotation that occurred during the
