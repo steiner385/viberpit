@@ -5,15 +5,16 @@ import type { ReactNode } from 'react'
 import { useBulkPermanentDeleteSessions, useBulkUnarchiveSessions, QK } from './hooks'
 import { api } from './client'
 import type { ArchivedSession, BatchResult } from './types'
-import { getToasts, __resetToasts } from '@/lib/toast'
 
 vi.mock('./client', () => ({ api: { post: vi.fn() }, ApiRequestError: class extends Error {} }))
+vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+import { toast } from 'sonner'
 
 const mk = (id: string): ArchivedSession => ({ id, name: id, account: 'a', cwd: '/x', claudeSessionId: null, permissionMode: 'interactive', createdAt: 'x', archivedAt: 'y' })
 
 describe('useBulkUnarchiveSessions — optimistic', () => {
   let qc: QueryClient
-  beforeEach(() => { vi.clearAllMocks(); __resetToasts(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
+  beforeEach(() => { vi.clearAllMocks(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 
   it('removes all targeted ids from archived immediately on mutate', async () => {
@@ -32,7 +33,7 @@ describe('useBulkUnarchiveSessions — optimistic', () => {
     vi.mocked(api.post).mockResolvedValue({ succeeded: ['a', 'b'], failed: [] } as BatchResult)
     const { result } = renderHook(() => useBulkUnarchiveSessions(), { wrapper })
     result.current.mutate(['a', 'b'])
-    await waitFor(() => expect(getToasts()[0]).toMatchObject({ message: 'Restored 2' }))
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Restored 2'))
   })
 
   it('toasts Restored <n> · <f> failed with variant error on partial failure', async () => {
@@ -41,13 +42,13 @@ describe('useBulkUnarchiveSessions — optimistic', () => {
     vi.mocked(api.post).mockResolvedValue(partialResult)
     const { result } = renderHook(() => useBulkUnarchiveSessions(), { wrapper })
     result.current.mutate(['a', 'b', 'c'])
-    await waitFor(() => expect(getToasts()[0]).toMatchObject({ message: 'Restored 2 · 1 failed', variant: 'error' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Restored 2 · 1 failed'))
   })
 })
 
 describe('useBulkPermanentDeleteSessions — optimistic', () => {
   let qc: QueryClient
-  beforeEach(() => { vi.clearAllMocks(); __resetToasts(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
+  beforeEach(() => { vi.clearAllMocks(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 
   it('removes all targeted ids immediately and summarizes partial failure', async () => {
@@ -57,7 +58,7 @@ describe('useBulkPermanentDeleteSessions — optimistic', () => {
     const { result } = renderHook(() => useBulkPermanentDeleteSessions(), { wrapper })
     result.current.mutate(['a', 'b', 'c'])
     await waitFor(() => expect(qc.getQueryData<ArchivedSession[]>(QK.archived)).toEqual([]))
-    await waitFor(() => expect(getToasts()[0]).toMatchObject({ message: 'Deleted 2 · 1 failed', variant: 'error' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Deleted 2 · 1 failed'))
   })
 
   it('rolls back all on whole-request failure', async () => {
@@ -68,7 +69,7 @@ describe('useBulkPermanentDeleteSessions — optimistic', () => {
     result.current.mutate(['a', 'b'])
     await waitFor(() => {
       expect(qc.getQueryData<ArchivedSession[]>(QK.archived)).toEqual(initial)
-      expect(getToasts()[0]).toMatchObject({ variant: 'error' })
+      expect(toast.error).toHaveBeenCalledWith("Couldn't delete sessions")
     })
   })
 })
