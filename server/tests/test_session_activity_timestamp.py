@@ -103,14 +103,16 @@ def test_resuming_work_does_not_rewind_or_reset_activity(tmp_path):
 # --- IPC contract round-trips the new field (remote/daemon mode) ---
 
 def test_record_dict_roundtrip_preserves_last_turn_at():
-    from datetime import datetime
+    from datetime import datetime, timezone
     turn = datetime(2020, 1, 2, 3, 4, 5)
     rec = SessionRecord(
         id="s1", name="n", account="a", claude_session_id="c",
         cols=80, rows=24, cwd="/x", last_turn_at=turn,
     )
     back = SessionRecord.from_dict(rec.to_dict())
-    assert back.last_turn_at == turn
+    # The wire carries an explicit UTC offset now, so from_dict reconstructs a
+    # tz-aware datetime — the SAME instant as the naive UTC input.
+    assert back.last_turn_at == turn.replace(tzinfo=timezone.utc)
 
 
 def test_to_dict_updatedat_is_last_turn_not_row_write():
@@ -125,7 +127,7 @@ def test_to_dict_updatedat_is_last_turn_not_row_write():
         id="s1", name="n", account="a", claude_session_id="c", cols=80, rows=24, cwd="/x",
         created_at=created, updated_at=row_write, last_turn_at=turn,
     )
-    assert rec.to_dict()["updatedAt"] == turn.isoformat()  # not row_write
+    assert rec.to_dict()["updatedAt"] == "2020-01-02T03:04:05+00:00"  # not row_write; UTC-aware
 
 
 def test_to_dict_updatedat_falls_back_to_created_at():
@@ -136,4 +138,4 @@ def test_to_dict_updatedat_falls_back_to_created_at():
         id="s1", name="n", account="a", claude_session_id="c", cols=80, rows=24, cwd="/x",
         created_at=created, updated_at=row_write, last_turn_at=None,
     )
-    assert rec.to_dict()["updatedAt"] == created.isoformat()  # not row_write
+    assert rec.to_dict()["updatedAt"] == "2020-01-01T00:00:00+00:00"  # not row_write; UTC-aware

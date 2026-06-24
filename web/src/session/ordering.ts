@@ -1,5 +1,6 @@
 import type { Session } from '@/api/types'
-import { statusTier, TIER_RANK, TIER_LABEL, type StatusTier } from './statusTier'
+import { TIER_RANK, TIER_LABEL, type StatusTier } from './statusTier'
+import { triageTier, triageRank } from './triageTier'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp } from '@/lib/relativeTime'
 
@@ -22,7 +23,7 @@ const lastActiveMs = (iso: string | null | undefined): number | null =>
 // tie-break for stability across refetches. `status` intentionally omits it so
 // it stays byte-identical to sortSessionsByTier (stable sort → input order).
 const COMPARATORS: Record<SortBy, (a: Session, b: Session) => number> = {
-  status: (a, b) => TIER_RANK[statusTier(a.status)] - TIER_RANK[statusTier(b.status)],
+  status: (a, b) => triageRank(a) - triageRank(b),
   lastActive: (a, b) => {
     const ta = lastActiveMs(a.updatedAt)
     const tb = lastActiveMs(b.updatedAt)
@@ -56,7 +57,7 @@ export function orderSessions(
     )
     const groups: SessionGroup[] = []
     for (const tier of tiers) {
-      const inTier = sorted.filter((s) => statusTier(s.status) === tier)
+      const inTier = sorted.filter((s) => triageTier(s) === tier)
       if (inTier.length) {
         groups.push({ key: tier, label: TIER_LABEL[tier], count: inTier.length, sessions: inTier })
       }

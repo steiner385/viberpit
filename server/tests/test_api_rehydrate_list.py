@@ -53,8 +53,8 @@ def test_rehydrated_session_reports_real_status_and_created_at(tmp_path):
         sess = next((s for s in sessions if s["id"] == session_id), None)
         assert sess is not None, f"session {session_id!r} not found in {sessions}"
         assert sess["status"] == "idle", f"expected status=idle, got {sess['status']!r}"
-        assert sess["createdAt"] == "2026-06-20T12:00:00", (
-            f"expected createdAt=2026-06-20T12:00:00, got {sess['createdAt']!r}"
+        assert sess["createdAt"] == "2026-06-20T12:00:00+00:00", (
+            f"expected createdAt=2026-06-20T12:00:00+00:00, got {sess['createdAt']!r}"
         )
 
 

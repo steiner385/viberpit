@@ -49,6 +49,7 @@ from server.sessions.background_tasks import scan_open_background_tasks, build_r
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import SessionRecord
+from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
 
 log = logging.getLogger(__name__)
@@ -818,8 +819,25 @@ class SessionOrchestrator:
         """Return the in-memory SessionRecord for session_id, or None."""
         return self._records.get(session_id)
 
-    def _pr_pairs(self) -> list[tuple[str, str]]:
-        """Distinct (repo, branch) pairs for live sessions that have both."""
+    async def _refresh_live_branches(self) -> None:
+        """Re-read each repo-backed session's branch from its live worktree HEAD.
+
+        The completion workflow moves a worktree onto a fresh PR branch after the
+        record's branch was first set, so the stored value goes stale. Re-derive it
+        off the event loop; only overwrite with a real (non-None) live branch.
+        """
+        for rec in list(self._records.values()):
+            if not (rec.repo and rec.cwd):
+                continue
+            if not await asyncio.to_thread(worktrees.is_git_repo, rec.cwd):
+                continue
+            live = await asyncio.to_thread(worktrees.current_branch, rec.cwd)
+            if live and live != rec.branch:
+                rec.branch = live
+
+    async def _pr_pairs(self) -> list[tuple[str, str]]:
+        """Distinct (repo, live-branch) pairs for sessions that have both."""
+        await self._refresh_live_branches()
         seen: set[tuple[str, str]] = set()
         for r in self._records.values():
             branch = getattr(r, "branch", None)
@@ -1669,7 +1687,7 @@ class SessionOrchestrator:
         self._publish_event({
             "type": "paused", "sessionId": record.id, "account": record.account,
             "reason": reason,
-            "earliestReset": earliest_reset.isoformat() if earliest_reset else None,
+            "earliestReset": iso_utc(earliest_reset),
         })
         log.warning("recover.paused session=%s reason=%s", record.id, reason)
 
@@ -1890,8 +1908,8 @@ class SessionOrchestrator:
                 "cwd": row.cwd,
                 "claudeSessionId": row.claude_session_id,
                 "permissionMode": row.permission_mode,
-                "createdAt": row.created_at.isoformat() if row.created_at else None,
-                "archivedAt": row.updated_at.isoformat() if row.updated_at else None,
+                "createdAt": iso_utc(row.created_at),
+                "archivedAt": iso_utc(row.updated_at),
             }
             for row in rows
         ]
