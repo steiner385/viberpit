@@ -105,6 +105,18 @@ def test_drain_exception_with_401_is_classified_auth():
     assert calls and calls[0][1] == "auth_401"
 
 
+def test_dropped_turn_result_invokes_recovery_as_turn_dropped():
+    msgs = [f.sys_init("sess-1"), f.stream_start(uuid="t1"),
+            f.result(session_id="sess-1", uuid="t1", subtype="error_during_execution",
+                     is_error=True,
+                     errors=["[ede_diagnostic] result_type=user last_content_type=n/a "
+                             "stop_reason=null"])]
+    seen, calls = _run(msgs)
+    assert calls and calls[0][0] == "s1" and calls[0][1] == "turn_dropped"
+    tf = [e for e in seen if isinstance(e, ev.TurnFailure)]
+    assert tf and tf[0].kind == "turn_dropped" and tf[0].account == "kindash"
+
+
 def test_subprocess_crash_signals_process_crash():
     calls = []
     async def on_fail(session_id, kind, retry_after):
