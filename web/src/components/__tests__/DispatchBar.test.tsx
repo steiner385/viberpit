@@ -227,4 +227,35 @@ describe('DispatchBar', () => {
     await user.keyboard('{ArrowDown}')
     expect(onNavigate).toHaveBeenCalledWith('down')
   })
+
+  it('empty prompt + header highlighted: → expands, ← collapses, Enter toggles', async () => {
+    const u = userEvent.setup()
+    const onExpandHighlighted = vi.fn()
+    const onCollapseHighlighted = vi.fn()
+    const onToggleHighlighted = vi.fn()
+    const onOpenHighlighted = vi.fn()
+    render(<DispatchBar {...makeProps({
+      activeDescendantIsHeader: true,
+      onExpandHighlighted, onCollapseHighlighted, onToggleHighlighted, onOpenHighlighted,
+    })} />)
+    const ta = screen.getByLabelText('New session prompt')
+    ta.focus()
+    await u.keyboard('{ArrowRight}')
+    expect(onExpandHighlighted).toHaveBeenCalled()
+    expect(onOpenHighlighted).not.toHaveBeenCalled()
+    await u.keyboard('{ArrowLeft}')
+    expect(onCollapseHighlighted).toHaveBeenCalled()
+    await u.keyboard('{Enter}')
+    expect(onToggleHighlighted).toHaveBeenCalled()
+  })
+
+  it('empty prompt + session highlighted: → still opens (unchanged)', async () => {
+    const u = userEvent.setup()
+    const onOpenHighlighted = vi.fn()
+    render(<DispatchBar {...makeProps({ activeDescendantIsHeader: false, onOpenHighlighted })} />)
+    const ta = screen.getByLabelText('New session prompt')
+    ta.focus()
+    await u.keyboard('{ArrowRight}')
+    expect(onOpenHighlighted).toHaveBeenCalled()
+  })
 })
