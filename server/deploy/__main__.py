@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 
-from server.deploy.controller import DeployController
+from server.deploy.controller import DeployController, default_daemon_factory
 
 
 def _daemon_enabled() -> bool:
@@ -39,7 +39,8 @@ def main(argv: list[str] | None = None) -> int:
     daemon_enabled = (args.daemon_enabled == "true") if args.daemon_enabled else _daemon_enabled()
 
     controller = DeployController(args.repo, health_url=health_url, venv_pip=venv_pip,
-                                  daemon_enabled=daemon_enabled)
+                                  daemon_enabled=daemon_enabled,
+                                  daemon_client_factory=default_daemon_factory(daemon_enabled))
     status = asyncio.run(controller.deploy_once())
     for phase, state in status.phases.items():
         print(f"[deploy] {phase}: {state}")

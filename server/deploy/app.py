@@ -7,7 +7,7 @@ from typing import Coroutine, Protocol, runtime_checkable
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from server.deploy.controller import DeployController
+from server.deploy.controller import DeployController, default_daemon_factory
 from server.deploy.detect import DetectLoop
 from server.deploy.types import DeployStatus
 
@@ -26,7 +26,8 @@ def build_controller_app(*, repo: str, health_url: str, venv_pip: str, daemon_en
                          controller: _ControllerLike | None = None):
     loop = detect_loop or DetectLoop(repo)
     ctrl = controller or DeployController(repo, health_url=health_url, venv_pip=venv_pip,
-                                          daemon_enabled=daemon_enabled)
+                                          daemon_enabled=daemon_enabled,
+                                          daemon_client_factory=default_daemon_factory(daemon_enabled))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

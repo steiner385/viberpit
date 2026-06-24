@@ -60,3 +60,20 @@ def test_status_includes_restore(client):
     ctrl.status.restore = {"restored": ["s1"], "failed": ["s2"]}
     body = c.get("/status").json()
     assert body["deploy"]["restore"] == {"restored": ["s1"], "failed": ["s2"]}
+
+def test_build_controller_app_wires_daemon_factory_when_enabled():
+    """build_controller_app with daemon_enabled=True yields a controller with a non-None
+    factory that returns a DaemonClient; daemon_enabled=False yields None factory."""
+    from server.ipc.client import DaemonClient
+    from server.deploy import app as deploy_app
+
+    _, _, ctrl_enabled = deploy_app.build_controller_app(
+        repo="/r", health_url="http://h", venv_pip="/v", daemon_enabled=True)
+    assert ctrl_enabled._client_factory is not None
+    # The factory must be callable and return a DaemonClient instance.
+    client = ctrl_enabled._client_factory()
+    assert isinstance(client, DaemonClient)
+
+    _, _, ctrl_disabled = deploy_app.build_controller_app(
+        repo="/r", health_url="http://h", venv_pip="/v", daemon_enabled=False)
+    assert ctrl_disabled._client_factory is None

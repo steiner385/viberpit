@@ -3,11 +3,11 @@ on a Unix socket."""
 from __future__ import annotations
 import logging
 import os
-import subprocess
 
 import uvicorn
 
 from server.deploy.app import build_controller_app
+from server.deploy.__main__ import _daemon_enabled
 
 log = logging.getLogger("server.deploy.serve")
 DEFAULT_DEPLOY_SOCKET = "/run/ccswitch/deploy.sock"
@@ -26,8 +26,7 @@ def serve(socket_path: str | None = None) -> None:
     host = os.environ.get("CCSWITCH_HOST", "127.0.0.1")
     port = os.environ.get("CCSWITCH_PORT", "8787")
     venv_pip = os.environ.get("CCSWITCH_DEPLOY_VENV_PIP", os.path.join(repo, ".venv", "bin", "pip"))
-    daemon_enabled = subprocess.run(
-        ["systemctl", "is-enabled", "ccswitch-daemon.service"], capture_output=True).returncode == 0
+    daemon_enabled = _daemon_enabled()
     app, _, _ = build_controller_app(repo=repo, health_url=f"http://{host}:{port}/healthz",
                                      venv_pip=venv_pip, daemon_enabled=daemon_enabled)
     log.info("deploy controller serving on %s", sock)

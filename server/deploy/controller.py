@@ -11,6 +11,15 @@ from server.deploy.types import DeployError, DeployStatus, Phase, PhaseState
 log = logging.getLogger("server.deploy.controller")
 
 
+def default_daemon_factory(daemon_enabled: bool) -> "Callable[[], Any] | None":
+    """Return a factory that constructs a DaemonClient, or None if daemon is disabled."""
+    if not daemon_enabled:
+        return None
+    from server.ipc.client import DaemonClient
+    from server.ipc.paths import sessiond_socket
+    return lambda: DaemonClient(sessiond_socket())
+
+
 def _default_changed_files(repo: str, a: str, b: str) -> list[str] | None:
     try:
         r = subprocess.run(["git", "-C", repo, "diff", "--name-only", a, b],
@@ -94,8 +103,11 @@ class DeployController:
                 result = await self._drain.drain_and_wait(client)
                 if result != "ready":
                     self.status.warnings.append(f"drain {result} — restarting anyway")
-            self._steps.restart_units(daemon_changed=daemon_changed,
-                                      daemon_enabled=self.daemon_enabled)
+            try:
+                self._steps.restart_units(daemon_changed=daemon_changed,
+                                          daemon_enabled=self.daemon_enabled)
+            except Exception as e:
+                raise DeployError("restart", str(e)) from e
             short = self._git.short_sha(self.repo, remote)
             if not self._steps.wait_healthy(short, url=self.health_url):
                 raise DeployError("restart", "health gate failed")
