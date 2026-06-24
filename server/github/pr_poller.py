@@ -58,6 +58,7 @@ class PrStatusPoller:
             | Callable[[], Awaitable[list[tuple[str, str]]]]
             | None
         ) = None
+        self._on_change: Callable | None = None
         self._task: asyncio.Task | None = None
 
     def set_pairs_provider(
@@ -76,6 +77,15 @@ class PrStatusPoller:
         if inspect.isawaitable(result):
             result = await result
         return result or []
+
+    def set_on_change(self, fn: Callable) -> None:
+        """Register a callback invoked when a tracked PR's checks field changes.
+
+        ``fn(repo: str, branch: str, old_checks: str | None, new_checks: str)``
+        may be a plain function or a coroutine function — both are supported.
+        A callback that raises is swallowed so it never breaks the poll sweep.
+        """
+        self._on_change = fn
 
     def cached(self, repo: str | None, branch: str | None) -> PullRequestInfo | None:
         if not repo or not branch:
@@ -97,11 +107,27 @@ class PrStatusPoller:
             return False
         self._fail_count = 0
         self._cooldown_until = 0.0
+        # Snapshot old values before mutating the cache so we can diff after.
+        old_snapshot: dict[tuple[str, str], PullRequestInfo | None] = {
+            k: self._cache.get(k) for k in pairs
+        }
         # Rebuild cache entries for the pairs we just queried: drop stale keys
         # (PR closed/branch gone) and refresh present ones.
         for key in pairs:
             self._cache.pop(key, None)
         self._cache.update(fresh)
+        # Fire the on_change callback for each pair whose checks value changed.
+        if self._on_change is not None:
+            for (repo, branch), new_info in fresh.items():
+                old_info = old_snapshot.get((repo, branch))
+                old_checks = old_info.checks if old_info is not None else None
+                if old_checks != new_info.checks:
+                    try:
+                        result = self._on_change(repo, branch, old_checks, new_info.checks)
+                        if inspect.isawaitable(result):
+                            await result
+                    except Exception:
+                        log.warning("pr_poller.on_change callback raised", exc_info=True)
         return True
 
     async def start(self) -> None:
