@@ -99,3 +99,24 @@ def test_429_still_rate_limit_not_overloaded():
 
 def test_401_still_auth_not_overloaded():
     assert classify("api_401", "401 Invalid authentication credentials").kind == "auth_401"
+
+
+def test_dropped_turn_ede_is_recoverable_turn_dropped():
+    f = classify("execution_error",
+                 "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null")
+    assert f.kind == "turn_dropped"
+    assert f.is_recoverable
+
+
+def test_orphaned_tool_use_ede_is_not_turn_dropped():
+    # the tool_use variant is healed by transcript_repair on resume, NOT auto-resent
+    f = classify("execution_error",
+                 "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use")
+    assert f.kind != "turn_dropped"
+    assert not f.is_recoverable
+
+
+def test_plain_execution_error_is_not_turn_dropped():
+    f = classify("execution_error", "The agent stopped on an execution error.")
+    assert f.kind == "other"
+    assert not f.is_recoverable
