@@ -68,6 +68,24 @@ class TestAccounts(unittest.TestCase):
                 self.assertIsNone(accounts.usage_for("alpha"))
             self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
 
+    def test_usage_for_refresh_403_does_not_mark_needs_reauth(self):
+        """Expired token + a 403 from the token endpoint (Cloudflare edge block) must
+        NOT mark needs-reauth. This is the mass-reauth incident: a header-less refresh
+        drew `error code: 1010` from Cloudflare, the 403 was misclassified as a dead
+        grant, and every idle account in the sweep flipped to needs-reauth in the same
+        second. A 403 is environmental — leave the status alone."""
+        with temp_env():
+            from ccswitch import accounts, oauth, ledger
+            _seed_account("alpha", expires_in_ms=-1)  # expired → forces a refresh
+            with ledger.locked_ledger() as led:
+                ledger.set_status(led, "alpha", "ok")
+            # Mock at the HTTP layer so the REAL refresh_access_token classifier runs:
+            # a 403 must become TransientError, not AuthError. (Mocking refresh itself
+            # would bypass the very classification this regression-tests.)
+            with mock.patch.object(oauth, "http_request", return_value=(403, b"error code: 1010\n")):
+                self.assertIsNone(accounts.usage_for("alpha"))
+            self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
+
     def test_usage_for_usageerror_returns_none_without_changing_status(self):
         """A transient usage-endpoint error (429/5xx) returns None and leaves status
         unchanged — it must NOT mark needs-reauth or propagate (which 500s the list)."""
