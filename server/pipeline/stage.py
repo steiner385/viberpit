@@ -16,8 +16,16 @@ Plotroom reference: server/estimator/classify.ts (open-stage branch):
   checks == failing → parked
   checks == pending → ci
   else (passing/none): merge_state_status == DIRTY → parked; else → ready
+
+Plotroom reference: server/estimator/classify.ts (merged branch):
+  pr.mergedAt → ageDays = (now - mergedAt) / 86400000
+  ageDays > retentionDays → null (off the board)
+  !deploy.hasDeploy → 'merged'
+  (deploy stages qa-deploy/awaiting-prod/prod are out of scope, slice 1d)
 """
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 
 _OPEN_STAGES = frozenset({"ci", "ready", "parked"})
@@ -48,6 +56,48 @@ def derive_open_stage(
     if merge_state_status == "DIRTY":
         return "parked"
     return "ready"
+
+
+def derive_merged_stage(
+    merged_at: str | None,
+    now: datetime,
+    retention_days: int = 7,
+    has_deploy: bool = False,
+) -> str | None:
+    """Return the stage for a merged PR, or None if off-board / not merged.
+
+    Args:
+        merged_at: ISO-8601 timestamp string when the PR was merged, or None.
+        now: current UTC datetime (timezone-aware).
+        retention_days: how many days after merge a PR stays on the board.
+        has_deploy: True when the repo has deploy environments configured.
+            For repos without deploy envs (the common case), merged PRs remain
+            at 'merged'. Deploy stages (qa-deploy/awaiting-prod/prod) are not
+            implemented here — see slice 1d.
+
+    Returns:
+        'merged' | None (off-board or not merged)
+    """
+    if merged_at is None:
+        return None
+    # Parse ISO-8601; handle trailing Z (Python < 3.11 doesn't parse 'Z' directly)
+    ts = merged_at.replace("Z", "+00:00")
+    try:
+        merged_dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    # Ensure both sides are timezone-aware for subtraction
+    if merged_dt.tzinfo is None:
+        merged_dt = merged_dt.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    age_days = (now - merged_dt).total_seconds() / 86400.0
+    if age_days > retention_days:
+        return None  # off the board
+    if not has_deploy:
+        return "merged"
+    # TODO slice 1d: deploy stages (qa-deploy / awaiting-prod / prod)
+    return None
 
 
 def derive_queue_stage(

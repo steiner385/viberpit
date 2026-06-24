@@ -1,5 +1,7 @@
 """Unit tests for the open-stage classifier (server/pipeline/stage.py)."""
-from server.pipeline.stage import derive_open_stage, derive_queue_stage
+from datetime import datetime, timezone, timedelta
+
+from server.pipeline.stage import derive_open_stage, derive_queue_stage, derive_merged_stage
 
 
 def test_draft_is_parked():
@@ -41,6 +43,42 @@ def test_none_checks_dirty_is_parked():
 def test_passing_no_merge_state_is_ready():
     # None merge_state_status (e.g. API not yet returned) → ready (not DIRTY)
     assert derive_open_stage("passing", None, is_draft=False) == "ready"
+
+
+# --- Merged stage ---
+
+_NOW = datetime(2026, 6, 24, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_merged_within_retention_returns_merged():
+    merged_at = (_NOW - timedelta(days=2)).isoformat()
+    assert derive_merged_stage(merged_at, _NOW) == "merged"
+
+
+def test_merged_older_than_retention_returns_none():
+    merged_at = (_NOW - timedelta(days=8)).isoformat()
+    assert derive_merged_stage(merged_at, _NOW) is None
+
+
+def test_merged_none_merged_at_returns_none():
+    assert derive_merged_stage(None, _NOW) is None
+
+
+def test_merged_with_trailing_z_parses():
+    merged_at = "2026-06-23T10:00:00Z"
+    assert derive_merged_stage(merged_at, _NOW) == "merged"
+
+
+def test_merged_has_deploy_returns_none():
+    # has_deploy=True: deploy stages not implemented (TODO slice 1d)
+    merged_at = (_NOW - timedelta(days=1)).isoformat()
+    assert derive_merged_stage(merged_at, _NOW, has_deploy=True) is None
+
+
+def test_merged_exactly_at_retention_boundary():
+    # age == retention_days: still on board (> not >=)
+    merged_at = (_NOW - timedelta(days=7)).isoformat()
+    assert derive_merged_stage(merged_at, _NOW) == "merged"
 
 
 # --- Queue stage (slice 1b — unit-tested; not live-parity-gated on a no-merge-queue repo) ---
