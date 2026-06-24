@@ -32,6 +32,7 @@ from server.audit import record_audit
 from server.db import db_session
 from server.db.models import Session as DbSession
 from server.sessions import adopt as _adopt
+from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions import attachments as _attachments
 from server.sessions import dispatch
 from server.sessions import events as ev
@@ -50,7 +51,7 @@ from server.sessions.selection import AllAccountsBusy, Picked, select_account  #
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
-from server.sessions.types import SessionRecord
+from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
 from server.github.pr_status import PullRequestInfo
@@ -85,6 +86,21 @@ def _prepend_proposal(proposal: str | None, base: list[str]) -> list[str]:
     if proposal in base:
         return base
     return [proposal, *base]
+
+
+def _rethread_identity(driver, identity: str) -> None:
+    """Upgrade a live driver's identity to a real attaching user.
+
+    A driver first built by an internal/background path (rehydrate, dispatch,
+    eager re-launch) carries ``SYSTEM_IDENTITY``. AskUserQuestion/permission
+    answers are registered under ``driver.identity`` and resolved against the
+    answering WS identity, so if a real user attaches to a system-built driver and
+    its identity isn't upgraded, every answer is rejected and the agent hangs on
+    the question forever. Only upgrade FROM the system sentinel TO a real user —
+    never downgrade a real identity back to system (an internal call must not clobber
+    the attached user)."""
+    if identity != SYSTEM_IDENTITY and driver.identity == SYSTEM_IDENTITY:
+        driver.identity = identity
 
 
 class BranchSwitchError(Exception):
@@ -347,7 +363,7 @@ class SessionOrchestrator:
         cwd: str | None = None,
         branch: str | None = None,
         repo: str | None = None,
-        identity: str = "system",
+        identity: str = SYSTEM_IDENTITY,
         permission_mode: str = "interactive",
         attachment_ids: list[str] | None = None,
         name_is_auto: bool = True,
@@ -1246,7 +1262,7 @@ class SessionOrchestrator:
         if d is not None:
             d.seed_idle_suggestions(user_text, assistant_text)
 
-    async def ensure_driver(self, session_id: str, identity: str = "system") -> SessionDriver | None:
+    async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, resuming from DB if detached.
 
         - If a live driver already exists, return it (idempotent).
@@ -1264,6 +1280,7 @@ class SessionOrchestrator:
         # Fast path: live driver already exists (no lock needed — read-only check)
         existing = self._drivers.get(session_id)
         if existing is not None:
+            _rethread_identity(existing, identity)
             return existing
 
         # Look up the in-memory record (populated by rehydrate())
@@ -1280,6 +1297,7 @@ class SessionOrchestrator:
             # driver while we were waiting.
             existing = self._drivers.get(session_id)
             if existing is not None:
+                _rethread_identity(existing, identity)
                 return existing
 
             # Build and start a new driver resuming from the stored claude_session_id
@@ -2412,3 +2430,25 @@ class SessionOrchestrator:
         except Exception:
             log.warning("session.transcript_window id=%s replay failed", session_id, exc_info=True)
             return None
+
+    def snapshot_deploy(self, *, path: str | None = None) -> dict:
+        """SAVE step: record sessions with a live driver so a daemon-affecting restart
+        can eagerly re-launch them (rehydrate alone is lazy + flattens 'working'→'idle')."""
+        live = [{"id": sid, "status": getattr(self._records.get(sid), "status", "idle")}
+                for sid in list(self._drivers.keys())]
+        _deploy_snapshot.write_snapshot(live, path=path)
+        return {"live": live}
+
+    async def restore_deploy(self, *, path: str | None = None) -> dict:
+        """RESUME step: eagerly re-launch each snapshotted session in the fresh daemon."""
+        restored: list[str] = []
+        failed: list[str] = []
+        for entry in _deploy_snapshot.read_snapshot(path=path):
+            sid = entry["id"]
+            try:
+                driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
+            except Exception:
+                driver = None
+            (restored if driver is not None else failed).append(sid)
+        _deploy_snapshot.clear_snapshot(path=path)
+        return {"restored": restored, "failed": failed}

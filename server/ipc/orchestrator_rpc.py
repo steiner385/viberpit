@@ -5,6 +5,7 @@ the vertical-slice methods; A2.2 adds the rest.
 """
 import asyncio
 from server.ipc.daemon import register_rpc
+from server.sessions.types import SYSTEM_IDENTITY
 
 
 def register_orchestrator_rpc(app, orch) -> None:
@@ -28,7 +29,7 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     async def ensure_driver(params: dict) -> dict:
         session_id = params["session_id"]
-        driver = await orch.ensure_driver(session_id, params.get("identity", "system"))
+        driver = await orch.ensure_driver(session_id, params.get("identity", SYSTEM_IDENTITY))
         if driver is None:
             return {"found": False}
         if session_id not in app.state.pumped:
@@ -72,7 +73,7 @@ def register_orchestrator_rpc(app, orch) -> None:
     async def _maybe_await(r):
         return await r if inspect.isawaitable(r) else r
 
-    # 20 methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
+    # 22 methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
     _SIMPLE = [
         "archive_session", "rename_session", "interrupt",
         "set_permission_mode", "cancel_queued", "resolve_permission", "answer_question",
@@ -81,6 +82,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "latest_suggestions", "seed_idle_suggestions",
         "begin_drain", "drain_status",
         "live_session_load", "live_session_counts",
+        "snapshot_deploy", "restore_deploy",
     ]
 
     def _make_simple(method_name):
