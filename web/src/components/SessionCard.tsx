@@ -197,9 +197,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             {account?.nickname || session.accountName}
           </span>
         </div>
-
         {/* Row 2 — context: repo gives way (truncates) so the status pill and
-            goal/PR markers stay visible. */}
+            goal/PR markers stay visible. Repo anchors the left and absorbs slack
+            (flex-1 min-w-0 → truncates under pressure); the state chips form a
+            single non-shrinking group anchored to the right, so the status pill
+            always lands at the same edge regardless of repo length. */}
         <div data-testid="card-context" className="flex items-center gap-2 min-w-0">
           <span
             className={cn(
@@ -213,17 +215,19 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
             <span className="truncate">{repoLabel.text}</span>
           </span>
-          <StatusPill status={session.status} className="flex-shrink-0" />
-          {session.activeGoal && (
-            <span
-              className="flex-shrink-0 inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300"
-              title={`Goal: ${session.activeGoal}`}
-            >
-              <Target size={12} aria-hidden="true" className="flex-shrink-0" />
-              <span>Goal</span>
-            </span>
-          )}
-          {session.pr && <PrPill pr={session.pr} />}
+          <div className="flex flex-shrink-0 items-center gap-2">
+            <StatusPill status={session.status} />
+            {session.activeGoal && (
+              <span
+                className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
+                title={`Goal: ${session.activeGoal}`}
+              >
+                <Target size={12} aria-hidden="true" className="flex-shrink-0" />
+                <span className="truncate">Goal</span>
+              </span>
+            )}
+            {session.pr && <PrPill pr={session.pr} />}
+          </div>
         </div>
 
         {/* Row 3 — telemetry: session usage left, last-active pinned right via
