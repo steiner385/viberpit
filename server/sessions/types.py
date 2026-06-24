@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from server.time_iso import iso_utc
+
 
 @dataclass
 class SessionRecord:
@@ -49,9 +51,9 @@ class SessionRecord:
             "cwd": self.cwd, "repo": self.repo, "branch": self.branch, "detached": self.detached,
             "status": self.status, "nameIsAuto": self.name_is_auto,
             "permissionMode": self.permission_mode,
-            "createdAt": self.created_at.isoformat() if self.created_at else None,
-            "updatedAt": active.isoformat() if active else None,
-            "lastTurnAt": self.last_turn_at.isoformat() if self.last_turn_at else None,
+            "createdAt": iso_utc(self.created_at),
+            "updatedAt": iso_utc(active),
+            "lastTurnAt": iso_utc(self.last_turn_at),
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
             "accountPinned": self.account_pinned,
