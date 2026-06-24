@@ -25,6 +25,16 @@ const multiQ: QuestionBlock = {
   multiSelect: true,
 }
 
+const describedQ: QuestionBlock = {
+  ...singleQ,
+  id: 'q-desc',
+  questionId: 'q-desc',
+  options: [
+    { label: 'Option A', description: 'The first choice' },
+    { label: 'Option B' },
+  ],
+}
+
 describe('QuestionCard', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
@@ -183,6 +193,87 @@ describe('QuestionCard', () => {
     await user.type(textarea, '2')
     expect(textarea).toHaveValue('2')
     expect(screen.getByRole('checkbox', { name: /option b/i })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('renders an option description when present', () => {
+    render(<QuestionCard block={describedQ} onAnswer={vi.fn()} />)
+    expect(screen.getByText('The first choice')).toBeInTheDocument()
+  })
+
+  it('renders no description element for options without one', () => {
+    render(<QuestionCard block={describedQ} onAnswer={vi.fn()} />)
+    // Option B has no description; only one description string exists.
+    expect(screen.queryAllByText(/choice/i)).toHaveLength(1)
+  })
+
+  it('renders descriptions in read-only mode', () => {
+    render(<QuestionCard block={describedQ} onAnswer={vi.fn()} readOnly />)
+    expect(screen.getByText('The first choice')).toBeInTheDocument()
+  })
+})
+
+describe('QuestionCard grouped (staged) single-select', () => {
+  it('staging an option calls onStage instead of onAnswer', async () => {
+    const user = userEvent.setup()
+    const onAnswer = vi.fn()
+    const onStage = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={onAnswer} onStage={onStage} staged={null} />)
+    await user.click(screen.getByRole('radio', { name: 'Option A' }))
+    expect(onStage).toHaveBeenCalledWith('q-1', { selected: ['Option A'], mode: 'option' })
+    expect(onAnswer).not.toHaveBeenCalled()
+  })
+
+  it('reflects the staged option as checked', () => {
+    render(
+      <QuestionCard
+        block={singleQ}
+        onAnswer={vi.fn()}
+        onStage={vi.fn()}
+        staged={{ selected: ['Option B'], mode: 'option' }}
+      />)
+    expect(screen.getByRole('radio', { name: 'Option B' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Option A' })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('hides the chat hatch in grouped mode but keeps write-a-response', () => {
+    render(<QuestionCard block={singleQ} onAnswer={vi.fn()} onStage={vi.fn()} onChat={vi.fn()} staged={null} />)
+    expect(screen.queryByRole('button', { name: /chat about this/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /write a response/i })).toBeInTheDocument()
+  })
+
+  it('grouped freeform stages text instead of sending', async () => {
+    const user = userEvent.setup()
+    const onStage = vi.fn()
+    render(<QuestionCard block={singleQ} onAnswer={vi.fn()} onStage={onStage} staged={null} />)
+    await user.click(screen.getByRole('button', { name: /write a response/i }))
+    await user.type(screen.getByRole('textbox', { name: /write a response/i }), 'custom text')
+    await user.click(screen.getByRole('button', { name: /set response/i }))
+    expect(onStage).toHaveBeenCalledWith('q-1', { selected: ['custom text'], mode: 'freeform' })
+  })
+})
+
+describe('QuestionCard grouped (staged) multi-select', () => {
+  it('toggling stages the next checked set and shows no per-card submit', async () => {
+    const user = userEvent.setup()
+    const onStage = vi.fn()
+    render(<QuestionCard block={multiQ} onAnswer={vi.fn()} onStage={onStage} staged={{ selected: [], mode: 'option' }} />)
+    expect(screen.queryByRole('button', { name: /^submit$/i })).toBeNull()
+    await user.click(screen.getByRole('checkbox', { name: /option a/i }))
+    expect(onStage).toHaveBeenCalledWith('q-2', { selected: ['Option A'], mode: 'option' })
+  })
+
+  it('reflects the staged checked set', () => {
+    render(<QuestionCard block={multiQ} onAnswer={vi.fn()} onStage={vi.fn()} staged={{ selected: ['Option B'], mode: 'option' }} />)
+    expect(screen.getByRole('checkbox', { name: /option b/i })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('checkbox', { name: /option a/i })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('unchecks a staged option on toggle', async () => {
+    const user = userEvent.setup()
+    const onStage = vi.fn()
+    render(<QuestionCard block={multiQ} onAnswer={vi.fn()} onStage={onStage} staged={{ selected: ['Option A'], mode: 'option' }} />)
+    await user.click(screen.getByRole('checkbox', { name: /option a/i }))
+    expect(onStage).toHaveBeenCalledWith('q-2', { selected: [], mode: 'option' })
   })
 })
 

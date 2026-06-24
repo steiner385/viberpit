@@ -7,16 +7,25 @@ type QuestionBlock = Extract<Block, { kind: 'question' }>
 
 type AnswerMode = 'option' | 'freeform' | 'chat'
 
+export type StagedAnswer = { selected: string[]; mode: Exclude<AnswerMode, 'chat'> }
+
 interface Props {
   block: QuestionBlock
   onAnswer: (questionId: string, selected: string[], mode?: AnswerMode) => void
   onChat?: (questionId: string) => void
   armedForChat?: boolean
   readOnly?: boolean
+  staged?: StagedAnswer | null
+  onStage?: (questionId: string, answer: StagedAnswer) => void
 }
 
 function optionLabel(opt: Record<string, unknown>): string {
   return String(opt.label ?? opt)
+}
+
+function optionDescription(opt: Record<string, unknown>): string | null {
+  const d = opt.description
+  return typeof d === 'string' && d.trim() ? d : null
 }
 
 const hatchBtn = cn(
@@ -27,21 +36,19 @@ const hatchBtn = cn(
 )
 
 function MultiSelectOptions({
-  block, onAnswer,
-}: { block: QuestionBlock; onAnswer: Props['onAnswer'] }) {
-  const [checked, setChecked] = useState<Set<string>>(new Set())
-  const toggle = (label: string) =>
-    setChecked((prev) => {
-      const next = new Set(prev)
-      if (next.has(label)) next.delete(label)
-      else next.add(label)
-      return next
-    })
+  block, checked, onToggle, onSubmit, showSubmit,
+}: {
+  block: QuestionBlock
+  checked: Set<string>
+  onToggle: (label: string) => void
+  onSubmit?: () => void
+  showSubmit: boolean
+}) {
   const kb = useCardKeyboard({
     count: block.options.length,
     multiSelect: true,
-    onToggle: (i) => toggle(optionLabel(block.options[i])),
-    onSubmit: () => onAnswer(block.questionId, Array.from(checked)),
+    onToggle: (i) => onToggle(optionLabel(block.options[i])),
+    onSubmit: () => onSubmit?.(),
   })
   return (
     <>
@@ -56,68 +63,85 @@ function MultiSelectOptions({
               role="checkbox"
               aria-checked={isChecked}
               {...kb.itemProps(i)}
-              onClick={() => toggle(label)}
+              onClick={() => onToggle(label)}
               className={cn(
-                'flex items-center gap-2 w-full text-left rounded px-3 py-2 text-sm',
+                'flex items-start gap-2 w-full text-left rounded px-3 py-2 text-sm',
                 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700',
                 'text-gray-800 dark:text-gray-200',
                 'hover:bg-blue-50 dark:hover:bg-blue-900/30',
+                isChecked && 'ring-2 ring-blue-400 bg-blue-50 dark:bg-blue-900/30',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
                 'min-h-[44px]',
               )}
             >
               <span aria-hidden="true" className="inline-block w-4">{isChecked ? '☑' : '☐'}</span>
-              <span>{label}</span>
+              <span className="block">
+                <span className="block">{label}</span>
+                {optionDescription(opt) && (
+                  <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    {optionDescription(opt)}
+                  </span>
+                )}
+              </span>
             </button>
           )
         })}
       </div>
-      <button
-        type="button"
-        onClick={() => onAnswer(block.questionId, Array.from(checked))}
-        className={cn(
-          'rounded px-4 py-2 text-sm font-medium',
-          'bg-blue-600 text-white hover:bg-blue-700',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-          'min-h-[44px]',
-        )}
-      >
-        Submit
-      </button>
+      {showSubmit && (
+        <button
+          type="button"
+          onClick={() => onSubmit?.()}
+          className={cn(
+            'rounded px-4 py-2 text-sm font-medium',
+            'bg-blue-600 text-white hover:bg-blue-700',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            'min-h-[44px]',
+          )}
+        >
+          Submit
+        </button>
+      )}
     </>
   )
 }
 
 function SingleSelectOptions({
-  block, onAnswer,
-}: { block: QuestionBlock; onAnswer: Props['onAnswer'] }) {
+  block, onPick, selectedLabel,
+}: { block: QuestionBlock; onPick: (label: string) => void; selectedLabel?: string }) {
   const headerId = `q-header-${block.questionId}`
   const kb = useCardKeyboard({
     count: block.options.length,
-    onActivate: (i) => onAnswer(block.questionId, [optionLabel(block.options[i])]),
+    onActivate: (i) => onPick(optionLabel(block.options[i])),
   })
   return (
     <div role="radiogroup" aria-labelledby={headerId} className="space-y-1" {...kb.containerProps}>
       {block.options.map((opt, i) => {
         const label = optionLabel(opt)
+        const checked = selectedLabel !== undefined ? label === selectedLabel : i === kb.activeIndex
         return (
           <button
             key={i}
             type="button"
             role="radio"
-            aria-checked={i === kb.activeIndex}
+            aria-checked={checked}
             {...kb.itemProps(i)}
-            onClick={() => onAnswer(block.questionId, [label])}
+            onClick={() => onPick(label)}
             className={cn(
               'w-full text-left rounded px-3 py-2 text-sm',
               'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700',
               'text-gray-800 dark:text-gray-200',
               'hover:bg-blue-50 dark:hover:bg-blue-900/30',
+              checked && selectedLabel !== undefined && 'ring-2 ring-blue-400 bg-blue-50 dark:bg-blue-900/30',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
               'min-h-[44px]',
             )}
           >
-            {label}
+            <span className="block">{label}</span>
+            {optionDescription(opt) && (
+              <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                {optionDescription(opt)}
+              </span>
+            )}
           </button>
         )
       })}
@@ -125,9 +149,12 @@ function SingleSelectOptions({
   )
 }
 
-export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, readOnly = false }: Props) {
+export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, readOnly = false, staged, onStage }: Props) {
   const [writing, setWriting] = useState(false)
   const [draft, setDraft] = useState('')
+  const [localChecked, setLocalChecked] = useState<Set<string>>(new Set())
+
+  const grouped = typeof onStage === 'function'
 
   const containerClass = 'rounded border border-gray-200 dark:border-gray-700 p-3 my-1'
   const headerId = `q-header-${block.questionId}`
@@ -156,7 +183,12 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
                 'text-gray-500 dark:text-gray-400',
               )}
             >
-              {optionLabel(opt)}
+              <span className="block">{optionLabel(opt)}</span>
+              {optionDescription(opt) && (
+                <span className="block text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+                  {optionDescription(opt)}
+                </span>
+              )}
             </li>
           ))}
         </ul>
@@ -201,7 +233,8 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
             onClick={() => {
               const t = draft.trim()
               if (!t) return
-              onAnswer(block.questionId, [t], 'freeform')
+              if (grouped) onStage!(block.questionId, { selected: [t], mode: 'freeform' })
+              else onAnswer(block.questionId, [t], 'freeform')
             }}
             className={cn(
               'rounded px-4 py-2 text-sm font-medium min-h-[44px]',
@@ -209,7 +242,7 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
             )}
           >
-            Send response
+            {grouped ? 'Set response' : 'Send response'}
           </button>
         </div>
       ) : (
@@ -217,9 +250,11 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
           <button type="button" onClick={() => setWriting(true)} className={hatchBtn}>
             ✍️ Write a response
           </button>
-          <button type="button" onClick={() => onChat?.(block.questionId)} className={hatchBtn}>
-            💬 Chat about this
-          </button>
+          {!grouped && (
+            <button type="button" onClick={() => onChat?.(block.questionId)} className={hatchBtn}>
+              💬 Chat about this
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -229,16 +264,48 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
     return (
       <div role="group" aria-labelledby={headerId} className={containerClass}>
         {heading}
-        <SingleSelectOptions block={block} onAnswer={onAnswer} />
+        {/* Grouped: selectedLabel highlights the staged option ('' = nothing
+            staged yet, so no radio is checked). Uncontrolled (undefined): fall
+            back to the roving keyboard highlight (activeIndex) as before. */}
+        <SingleSelectOptions
+          block={block}
+          onPick={(label) =>
+            grouped
+              ? onStage!(block.questionId, { selected: [label], mode: 'option' })
+              : onAnswer(block.questionId, [label])
+          }
+          selectedLabel={grouped ? (staged?.selected[0] ?? '') : undefined}
+        />
         {escapeHatches}
       </div>
     )
   }
 
+  const stagedSet = new Set(staged?.selected ?? [])
+  const toggleStaged = (label: string) => {
+    const next = new Set(stagedSet)
+    if (next.has(label)) next.delete(label)
+    else next.add(label)
+    onStage!(block.questionId, { selected: Array.from(next), mode: 'option' })
+  }
+  const toggleLocal = (label: string) =>
+    setLocalChecked((prev) => {
+      const next = new Set(prev)
+      if (next.has(label)) next.delete(label)
+      else next.add(label)
+      return next
+    })
+
   return (
     <div role="group" aria-labelledby={headerId} className={containerClass}>
       {heading}
-      <MultiSelectOptions block={block} onAnswer={onAnswer} />
+      <MultiSelectOptions
+        block={block}
+        checked={grouped ? stagedSet : localChecked}
+        onToggle={grouped ? toggleStaged : toggleLocal}
+        onSubmit={grouped ? undefined : () => onAnswer(block.questionId, Array.from(localChecked))}
+        showSubmit={!grouped}
+      />
       {escapeHatches}
     </div>
   )
