@@ -769,8 +769,10 @@ class SessionOrchestrator:
                 DbSession.status.notin_(["ended", "archived"])
             )
             )).scalars().all()
+        from .background_tasks import is_parked
         added = 0
         backfilled: dict[str, str] = {}
+        healed: dict[str, str] = {}
         for row in rows:
             if row.id in self._records:
                 continue
@@ -809,15 +811,31 @@ class SessionOrchestrator:
                 authored_branches=list(getattr(row, "authored_branches", None) or []),
             )
             added += 1
-        # Persist any derived branches so the next rehydrate reads them directly.
-        if backfilled:
+            # Self-heal a stuck `waiting_external`: that status is only ever an overlay
+            # on a finished `done` turn (see _persist_status), so if the session is no
+            # longer parked — e.g. its background pollers were killed by a deploy and are
+            # now dead, or a self-scheduled wakeup was lost — its true status is `done`.
+            # Restore it so the card stops showing "Waiting…" forever. Cheap: only the
+            # (few) waiting_external rows hit the transcript scan.
+            if status == "waiting_external":
+                path = self.transcript_path(row.id)
+                if not await asyncio.to_thread(is_parked, path):
+                    self._records[row.id].status = "done"
+                    healed[row.id] = "done"
+        # Persist any derived branches + healed statuses so the next rehydrate reads them directly.
+        if backfilled or healed:
             from sqlalchemy import update as sa_update
             async with db_session() as db:
                 for sid, br in backfilled.items():
                     await db.execute(
                         sa_update(DbSession).where(DbSession.id == sid).values(branch=br)
                     )
-        log.info("rehydrate: %d session(s) restored (%d branch backfilled)", added, len(backfilled))
+                for sid, st in healed.items():
+                    await db.execute(
+                        sa_update(DbSession).where(DbSession.id == sid).values(status=st)
+                    )
+        log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
+                 added, len(backfilled), len(healed))
         return added
 
     async def rearm_background_tasks(self) -> int:
