@@ -6,6 +6,10 @@ describe('SESSION_EVENT_TYPES', () => {
   it('includes sessionMeta so the WS fan-out routes it to the reducer', () => {
     expect(SESSION_EVENT_TYPES.has('sessionMeta')).toBe(true)
   })
+
+  it('includes contextUsage so the exact ctx% readout reaches the reducer', () => {
+    expect(SESSION_EVENT_TYPES.has('contextUsage')).toBe(true)
+  })
 })
 
 describe('parentToolUseId field', () => {

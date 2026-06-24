@@ -845,8 +845,25 @@ class SessionOrchestrator:
         """Return the in-memory SessionRecord for session_id, or None."""
         return self._records.get(session_id)
 
-    def _pr_pairs(self) -> list[tuple[str, str]]:
-        """Distinct (repo, branch) pairs for live sessions that have both."""
+    async def _refresh_live_branches(self) -> None:
+        """Re-read each repo-backed session's branch from its live worktree HEAD.
+
+        The completion workflow moves a worktree onto a fresh PR branch after the
+        record's branch was first set, so the stored value goes stale. Re-derive it
+        off the event loop; only overwrite with a real (non-None) live branch.
+        """
+        for rec in list(self._records.values()):
+            if not (rec.repo and rec.cwd):
+                continue
+            if not await asyncio.to_thread(worktrees.is_git_repo, rec.cwd):
+                continue
+            live = await asyncio.to_thread(worktrees.current_branch, rec.cwd)
+            if live and live != rec.branch:
+                rec.branch = live
+
+    async def _pr_pairs(self) -> list[tuple[str, str]]:
+        """Distinct (repo, live-branch) pairs for sessions that have both."""
+        await self._refresh_live_branches()
         seen: set[tuple[str, str]] = set()
         for r in self._records.values():
             branch = getattr(r, "branch", None)

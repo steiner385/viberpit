@@ -151,3 +151,46 @@ async def test_rehydrate_leaves_branch_none_when_not_derivable(monkeypatch):
 
     await orch.rehydrate()
     assert orch._records["s1"].branch is None
+
+
+# ── _refresh_live_branches tests ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_refresh_live_branches_updates_moved_worktree(monkeypatch):
+    import server.sessions.orchestrator as orch_mod
+    orch = _make_orch()
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        cwd="/tmp/wt", repo="o/r", branch="ccswitch/old-frozen",
+    )
+    monkeypatch.setattr(orch_mod.worktrees, "is_git_repo", lambda p: True)
+    monkeypatch.setattr(orch_mod.worktrees, "current_branch", lambda p: "feat/new-pr-branch")
+    await orch._refresh_live_branches()
+    assert orch._records["s1"].branch == "feat/new-pr-branch"
+    assert ("o/r", "feat/new-pr-branch") in await orch._pr_pairs()
+
+@pytest.mark.asyncio
+async def test_refresh_live_branches_keeps_branch_when_detached(monkeypatch):
+    import server.sessions.orchestrator as orch_mod
+    orch = _make_orch()
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        cwd="/tmp/wt", repo="o/r", branch="feat/keep",
+    )
+    monkeypatch.setattr(orch_mod.worktrees, "is_git_repo", lambda p: True)
+    monkeypatch.setattr(orch_mod.worktrees, "current_branch", lambda p: None)
+    await orch._refresh_live_branches()
+    assert orch._records["s1"].branch == "feat/keep"
+
+@pytest.mark.asyncio
+async def test_refresh_live_branches_skips_non_git(monkeypatch):
+    import server.sessions.orchestrator as orch_mod
+    orch = _make_orch()
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        cwd="/tmp/wt", repo="o/r", branch="feat/keep",
+    )
+    monkeypatch.setattr(orch_mod.worktrees, "is_git_repo", lambda p: False)
+    await orch._refresh_live_branches()
+    assert orch._records["s1"].branch == "feat/keep"
