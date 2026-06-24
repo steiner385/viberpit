@@ -15,7 +15,10 @@ const base: Session = {
   id: '1',
   name: 'Fix login bug',
   accountName: 'work',
-  status: 'in_progress',
+  // Non-busy: the telemetry row's "active … ago" label is suppressed on the busy
+  // tier (see SessionCard.meta.test), so the skeleton tests below — which assert
+  // the telemetry row and its timestamp — use a handed-back status.
+  status: 'done',
   createdAt: '2026-06-22T11:00:00Z',
   updatedAt: '2026-06-22T11:58:00Z',
 }
