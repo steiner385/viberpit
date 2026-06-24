@@ -25,16 +25,18 @@ def test_identical_snapshots_match():
 
 
 def test_field_mismatch_detected():
-    rep = diff_snapshots({("o/r", 1): _cand(state="open")},
-                         {("o/r", 1): _oracle(state="merged")}, phase=0)
+    # `checks` is in PHASE_FIELDS[0]; a difference there fails parity.
+    rep = diff_snapshots({("o/r", 1): _cand(checks="passing")},
+                         {("o/r", 1): _oracle(checks="failing")}, phase=0)
     assert not rep.ok
-    assert any(m.field == "state" for m in rep.mismatches)
+    assert any(m.field == "checks" for m in rep.mismatches)
 
 
 def test_uncovered_field_ignored():
-    # 'title' is NOT in PHASE_FIELDS[0]; a difference there must NOT fail parity.
-    rep = diff_snapshots({("o/r", 1): _cand(title="A")},
-                         {("o/r", 1): _oracle()}, phase=0)  # oracle has no title
+    # `state` is NOT in PHASE_FIELDS[0] (Plotroom has no PR state); a difference
+    # there must NOT fail parity.
+    rep = diff_snapshots({("o/r", 1): _cand(state="open")},
+                         {("o/r", 1): _oracle(state="merged")}, phase=0)
     assert rep.ok
 
 
