@@ -1572,6 +1572,17 @@ class SessionOrchestrator:
         if not rec.repo:
             return None
         repo = rec.repo
+        # Priority 1 — this session's own PR is failing CI: propose fixing it before
+        # starting new backlog work. Cheap: reads the PR poller's in-memory cache (no
+        # gh call). Guarded so a missing poller / any error never breaks suggestions.
+        if rec.branch:
+            try:
+                pr = self.pr_for(repo, rec.branch)
+            except Exception:
+                pr = None
+            if pr is not None and getattr(pr, "checks", None) == "failing":
+                return dispatch.broken_pr_proposal_text(pr.number, pr.title)
+        # Priority 2 — top open issue (cached, background-refreshed).
         # TTL uses a monotonic clock, coherent with the timestamps stored by
         # _refresh_issue_proposal. (self._clock is wall-clock `time.time`, used for
         # recovery timing elsewhere — mixing it with monotonic deltas would be wrong.)
