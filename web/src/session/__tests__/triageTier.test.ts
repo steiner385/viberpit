@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { triageTier } from '../triageTier'
-import type { Session } from '@/api/types'
+import type { Session, PullRequestInfo } from '@/api/types'
 
 const s = (status: string, checks?: 'passing'|'failing'|'pending'|'none'): Session =>
-  ({ id: 'x', name: 'n', status, pr: checks ? ({ number: 1, url: 'u', state: 'open', checks, title: 't' } as any) : null } as Session)
+  ({ id: 'x', name: 'n', status, pr: checks ? ({ number: 1, url: 'u', state: 'open', checks, title: 't', deployed: false } as PullRequestInfo) : null } as Session)
 
 describe('triageTier', () => {
   it('elevates a done session with a failing PR to error tier (AUT-03)', () => {
