@@ -7,7 +7,7 @@ import asyncio
 
 from server.sessions import orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator
-from server.sessions.selection import AllAccountsBusy
+from server.sessions.selection import AllAccountsBusy, Picked
 from server.sessions.types import SessionRecord
 from server.sessions import recovery as R
 
@@ -136,7 +136,7 @@ def test_rotate_away_excludes_quarantined_and_reassigns(monkeypatch):
     seen_exclude = {}
     def pick(exclude=frozenset(), load=None):
         seen_exclude["v"] = set(exclude)
-        return "primary"
+        return Picked("primary")
     monkeypatch.setattr(orch_mod, "select_account", pick)
     asyncio.run(o._rotate_away(rec, reason="rate_limit"))
     assert reassigned == [("s1", "primary")]

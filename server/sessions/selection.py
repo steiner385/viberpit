@@ -1,6 +1,6 @@
 """Account selection for session creation.
 
-Thin wrapper around ``ccswitch.accounts.pick_account`` that:
+Thin wrapper around ``ccswitch.accounts.pick_account_detailed`` that:
 - Loads the current ``Config`` on each call (so tests can mutate env between calls).
 - Re-raises ``ccswitch.selector.AllAccountsBusy`` with its ``.earliest_reset``.
 - Accepts an ``exclude`` frozenset so rotation can skip the current account.
