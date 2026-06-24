@@ -97,6 +97,52 @@ def test_persist_status_done_overlays_waiting_external_when_parked(tmp_path):
     assert asyncio.run(run()) == "waiting_external"
 
 
+def _killed_only_transcript(tmp_path):
+    """A transcript whose only background poller was killed by a deploy → NOT parked
+    (killed tasks are dead, re-armed under a new id), so is_parked() is False."""
+    p = tmp_path / "claude-s1.jsonl"
+    p.write_text(
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1",'
+        '"name":"Bash","input":{"command":"gh pr view 1","run_in_background":true}}]}}\n'
+        '{"type":"queue-operation","operation":"enqueue","content":'
+        '"<task-notification>\\n<tool-use-id>t1</tool-use-id>\\n'
+        '<status>killed</status>\\n</task-notification>"}\n'
+    )
+    return p
+
+
+async def _seed_and_rehydrate(tmp_path, transcript_factory, **row):
+    """Seed one row, override transcript_path, rehydrate, return (record_status, db_status)."""
+    from sqlalchemy import select as sa_select
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
+    await init_db(db_url=db_url)
+    base = dict(id="s1", name="x", account_name="a", claude_session_id="cs1",
+                status="waiting_external", cwd="/repo/s1", name_is_auto=False)
+    base.update(row)
+    await _seed([base])
+    orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+    orch.transcript_path = lambda sid: str(transcript_factory(tmp_path))
+    await orch.rehydrate()
+    async with db_session() as db:
+        db_status = (await db.execute(
+            sa_select(DbSession.status).where(DbSession.id == "s1"))).scalar_one()
+    return orch.record("s1").status, db_status
+
+
+def test_rehydrate_heals_stuck_waiting_external_when_no_longer_parked(tmp_path):
+    # The real bug: a deploy killed the pollers, the row is stuck on waiting_external.
+    # Rehydrate (next daemon start) restores the underlying `done`.
+    rec, db = asyncio.run(_seed_and_rehydrate(tmp_path, _killed_only_transcript))
+    assert rec == "done"
+    assert db == "done"
+
+
+def test_rehydrate_keeps_waiting_external_when_still_parked(tmp_path):
+    rec, db = asyncio.run(_seed_and_rehydrate(tmp_path, _parked_transcript))
+    assert rec == "waiting_external"
+    assert db == "waiting_external"
+
+
 def test_persist_status_done_stays_done_when_not_parked(tmp_path):
     transcript = tmp_path / "claude-s1.jsonl"
     transcript.write_text('{"type":"assistant","message":{"content":[]}}\n')
