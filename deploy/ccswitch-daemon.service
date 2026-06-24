@@ -12,7 +12,7 @@ EnvironmentFile=/etc/ccswitch/ccswitch.env
 ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m server.ipc
 Restart=on-failure
 RestartSec=3
-TimeoutStopSec=60
+TimeoutStopSec=90
 KillMode=control-group
 MemoryMax=12G
 # No pids ceiling: this daemon owns every live claude session, and each spawns a
