@@ -147,6 +147,7 @@ export function useCreateSession() {
         status: 'in_progress',
         createdAt: new Date().toISOString(),
         repo: input.repo ?? null,
+        prs: [],
       })
       return { tempId }
     },
