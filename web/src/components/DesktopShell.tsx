@@ -32,11 +32,13 @@ import { ArchivedManager } from './ArchivedManager'
 import { ReviewView } from './ReviewView'
 import { SidebarResizer } from './SidebarResizer'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
-import { RenameDialog, PermanentDeleteDialog } from './Dashboard'
+import { RenameDialog } from './Dashboard'
+import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from './session/SessionRuntimeProvider'
 import { SessionBody } from './session/SessionBody'
 import { SessionComposer } from './session/SessionComposer'
 import { CommandResultOverlay } from './session/CommandResultOverlay'
+import { SessionActions } from '@/components/session/SessionActions'
 import {
   useAccounts,
   useSessions,
@@ -57,7 +59,7 @@ type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: s
 
 // ── Session subtree (rendered only under SessionRuntimeProvider) ──────────────
 
-function MainPaneSession() {
+export function MainPaneSession({ sessionId, onClosed }: { sessionId: string; onClosed: () => void }) {
   const rt = useSessionRuntimeContext()
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -65,7 +67,13 @@ function MainPaneSession() {
         'flex items-center gap-3 px-3 py-2 flex-shrink-0',
         'bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700',
       )}>
-        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{rt.title}</span>
+        <span className="flex-1 text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{rt.title}</span>
+        <SessionActions
+          sessionId={sessionId}
+          sessionName={rt.title}
+          onDone={onClosed}
+          variant="light"
+        />
       </div>
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-gray-950">
         <SessionBody rt={rt} />
@@ -405,7 +413,9 @@ export function DesktopShell() {
       ? <ReviewView sessionId={reviewId} onBack={() => setReviewId(null)} />
       : <div className="p-4 overflow-y-auto h-full"><ArchivedManager onReviewSession={setReviewId} /></div>
   } else {
-    mainPane = selection.type === 'session' ? <MainPaneSession /> : <WelcomePane />
+    mainPane = selection.type === 'session'
+      ? <MainPaneSession sessionId={selection.id} onClosed={() => setSelection({ type: 'new' })} />
+      : <WelcomePane />
   }
 
   const sessionActive = tab === 'sessions' && selection.type === 'session'
