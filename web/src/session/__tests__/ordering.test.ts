@@ -14,7 +14,7 @@ function mk(over: Partial<Session> & { id: string }): Session {
 function mkWithPr(id: string, status: string, checks: PullRequestInfo['checks']): Session {
   return mk({
     id, status,
-    pr: { number: 1, url: 'u', state: 'open', checks, title: 't' } as PullRequestInfo,
+    prs: [{ number: 1, url: 'u', state: 'open', checks, title: 't', deployed: false } as PullRequestInfo],
   })
 }
 

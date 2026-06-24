@@ -8,6 +8,7 @@ const session: Session = {
   id: 's1', name: 'My session', accountName: 'acct', repo: 'o/r',
   status: 'in_progress', createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
+  prs: [],
 }
 
 const noop = () => {}
@@ -15,10 +16,10 @@ const props = { account: undefined, onOpen: noop, onRename: noop, onClose: noop,
 
 describe('SessionCard PR pill', () => {
   it('shows the PR pill when the session has a PR', () => {
-    render(<SessionCard session={{ ...session, pr: {
+    render(<SessionCard session={{ ...session, prs: [{
       number: 7, url: 'https://github.com/o/r/pull/7', state: 'open',
       checks: 'passing', title: 't', deployed: false,
-    } }} {...props} />)
+    }] }} {...props} />)
     expect(screen.getByRole('link', { name: /#7/ })).toBeInTheDocument()
   })
 
