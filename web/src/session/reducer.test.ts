@@ -615,6 +615,14 @@ test('tool block keeps its create-time ts after toolResult', () => {
   expect(block.ts).toBe(500)
 })
 
+test('toolResult records its own ts on the block result (completion time)', () => {
+  let s = transcriptReducer(initialTranscript, { type: 'turnStart', turnId: 'a1' })
+  s = transcriptReducer(s, { type: 'toolCall', turnId: 'a1', toolId: 'x', name: 'Task', toolKind: 'task', input: {}, ts: 500 })
+  s = transcriptReducer(s, { type: 'toolResult', toolId: 'x', ok: true, payload: {}, ts: 999 })
+  const block = s.turns.at(-1)!.blocks.find((b) => b.kind === 'tool')!
+  expect(block.kind === 'tool' && block.result).toEqual({ ok: true, payload: {}, ts: 999 })
+})
+
 test('user block carries ts', () => {
   const s = transcriptReducer(initialTranscript, { type: 'user', turnId: 'u1', text: 'hi', ts: 42 })
   expect(s.turns[0].blocks[0].ts).toBe(42)
