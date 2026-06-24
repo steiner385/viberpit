@@ -154,6 +154,7 @@ export function DesktopShell() {
   const selectedSessionId = selection.type === 'session' ? selection.id : null
 
   const focusSession = useCallback((id: string, initialPrompt?: string) => {
+    if (id.startsWith('pending-')) return
     setTab('sessions')
     setSelection({ type: 'session', id, initialPrompt })
   }, [])

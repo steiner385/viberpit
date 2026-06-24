@@ -1330,6 +1330,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   }
 
   const handleOpen = useCallback((id: string) => {
+    if (id.startsWith('pending-')) return
     if (onOpenSession) onOpenSession(id)
   }, [onOpenSession])
 
@@ -1383,7 +1384,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   useGlobalHelpKey({ enabled: activeTab === 'sessions', onShowHelp: () => setShowHelp(true) })
 
   function handleOpenHighlighted() {
-    if (selectedSession) handleOpen(selectedSession.id)
+    if (selectedSession && !selectedSession.pending) handleOpen(selectedSession.id)
   }
 
   function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {

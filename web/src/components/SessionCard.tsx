@@ -93,6 +93,31 @@ export function SessionCard({ session, account, selected = false, listMode = fal
     }
   }
 
+  if (session.pending) {
+    return (
+      <article
+        data-testid="session-card-pending"
+        aria-busy="true"
+        className={cn(
+          'group flex flex-col rounded-lg border border-gray-200 dark:border-gray-700',
+          'bg-white dark:bg-gray-800 px-3 py-2 min-h-[44px]',
+          'opacity-70 cursor-default select-none',
+        )}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span
+            className="inline-block h-3 w-3 flex-shrink-0 animate-spin rounded-full border-2 border-gray-400 border-t-transparent"
+            aria-hidden="true"
+          />
+          <span className="flex-1 min-w-0 truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+            {session.name}
+          </span>
+        </div>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Starting…</p>
+      </article>
+    )
+  }
+
   return (
     <article
       ref={articleRef}
