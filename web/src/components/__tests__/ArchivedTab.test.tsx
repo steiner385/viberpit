@@ -362,6 +362,24 @@ describe('Dashboard — Archived tab', () => {
     } as ReturnType<typeof hooks.useArchivedSessions>)
   }
 
+  function fourArchived() {
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
+      data: [
+        makeArchived({ id: 'arc-1', name: 'Alpha' }),
+        makeArchived({ id: 'arc-2', name: 'Beta' }),
+        makeArchived({ id: 'arc-3', name: 'Gamma' }),
+        makeArchived({ id: 'arc-4', name: 'Delta' }),
+      ],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useArchivedSessions>)
+  }
+
+  async function shiftClick(user: ReturnType<typeof userEvent.setup>, el: HTMLElement) {
+    await user.keyboard('{Shift>}')
+    await user.click(el)
+    await user.keyboard('{/Shift}')
+  }
+
   it('selecting a row reveals the bulk action bar with a count', async () => {
     const user = userEvent.setup()
     twoArchived()
@@ -421,6 +439,52 @@ describe('Dashboard — Archived tab', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /delete permanently/i }))
     expect(bulkDeleteMutate).toHaveBeenCalledWith(['arc-1'], expect.anything())
+  })
+
+  it('shift-clicking a second row selects the whole range between the two clicks', async () => {
+    const user = userEvent.setup()
+    fourArchived()
+    render(<Dashboard />, { wrapper })
+    await user.click(screen.getByRole('tab', { name: /archived/i }))
+
+    // Anchor on Alpha (index 0), then shift-click Gamma (index 2) → Alpha, Beta, Gamma.
+    await user.click(screen.getByRole('checkbox', { name: /select alpha/i }))
+    await shiftClick(user, screen.getByRole('checkbox', { name: /select gamma/i }))
+
+    expect(screen.getByRole('region', { name: /bulk actions/i })).toHaveTextContent(/3 selected/i)
+    expect(screen.getByRole('checkbox', { name: /select alpha/i })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /select beta/i })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /select gamma/i })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /select delta/i })).not.toBeChecked()
+  })
+
+  it('shift-click range works upward (anchor below the shift-clicked row)', async () => {
+    const user = userEvent.setup()
+    fourArchived()
+    render(<Dashboard />, { wrapper })
+    await user.click(screen.getByRole('tab', { name: /archived/i }))
+
+    // Anchor on Delta (index 3), then shift-click Beta (index 1) → Beta, Gamma, Delta.
+    await user.click(screen.getByRole('checkbox', { name: /select delta/i }))
+    await shiftClick(user, screen.getByRole('checkbox', { name: /select beta/i }))
+
+    expect(screen.getByRole('region', { name: /bulk actions/i })).toHaveTextContent(/3 selected/i)
+    expect(screen.getByRole('checkbox', { name: /select alpha/i })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /select beta/i })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /select gamma/i })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /select delta/i })).toBeChecked()
+  })
+
+  it('shift-clicking with no prior selection just selects the single row', async () => {
+    const user = userEvent.setup()
+    fourArchived()
+    render(<Dashboard />, { wrapper })
+    await user.click(screen.getByRole('tab', { name: /archived/i }))
+
+    await shiftClick(user, screen.getByRole('checkbox', { name: /select gamma/i }))
+
+    expect(screen.getByRole('region', { name: /bulk actions/i })).toHaveTextContent(/1 selected/i)
+    expect(screen.getByRole('checkbox', { name: /select gamma/i })).toBeChecked()
   })
 
   it('Clear deselects all and hides the action bar', async () => {

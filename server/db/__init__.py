@@ -137,6 +137,21 @@ def _reconcile_sqlite_columns(sync_conn) -> None:
             ))
 
 
+def _normalize_pending_rearm_null(sync_conn) -> None:
+    """Rewrite the JSON-`null` sentinel in ``sessions.pending_rearm`` to SQL NULL.
+
+    Before the column used ``JSON(none_as_null=True)``, clearing it via ``None`` stored
+    the JSON literal text ``'null'`` rather than SQL NULL. Such rows are harmless (the
+    rearm query's Python ``if r.pending_rearm`` filter skips them) but make
+    ``pending_rearm IS NOT NULL`` over-select them. One-time, idempotent backfill:
+    matches nothing once the rows are clean.
+    """
+    if "sessions" in set(sa_inspect(sync_conn).get_table_names()):
+        sync_conn.execute(sa_text(
+            "UPDATE sessions SET pending_rearm = NULL WHERE pending_rearm = 'null'"
+        ))
+
+
 def _assert_no_schema_drift(sync_conn) -> None:
     """After reconcile, verify every model column exists in its table.
 
@@ -172,6 +187,7 @@ async def init_db(db_url: str | None = None) -> None:
         if url.startswith("sqlite"):
             await conn.run_sync(_reconcile_sqlite_columns)
             await conn.run_sync(_assert_no_schema_drift)
+            await conn.run_sync(_normalize_pending_rearm_null)
 
 
 @asynccontextmanager

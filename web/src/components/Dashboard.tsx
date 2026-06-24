@@ -35,6 +35,7 @@ import {
 } from '@/api/hooks'
 import type { Account, ArchivedSession, BatchResult } from '@/api/types'
 import { PERMISSION_MODES } from '@/session/permissionModes'
+import { toast } from 'sonner'
 import { setLastRepo } from '@/lib/lastRepo'
 import { SessionListControls } from './SessionListControls'
 import { useSessionOrdering } from '@/session/useSessionOrdering'
@@ -569,7 +570,7 @@ function BulkActionBar({ count, onUnarchive, onDelete, onClear, unarchivePending
 interface ArchivedListProps {
   sessions: ArchivedSession[]
   selected: Set<string>
-  onToggle: (id: string) => void
+  onToggle: (id: string, shiftKey: boolean) => void
   onToggleAll: () => void
   onReview: (id: string) => void
   onUnarchive: (id: string) => void
@@ -582,6 +583,9 @@ function ArchivedList({
   onReview, onUnarchive, onPermanentDelete, unarchivingId,
 }: ArchivedListProps) {
   const selectAllRef = useRef<HTMLInputElement>(null)
+  // A checkbox's `change` event doesn't carry modifier keys, but its `click` does — and click
+  // always fires first (even for keyboard/space toggles). Capture shift here, read it in onChange.
+  const shiftHeld = useRef(false)
   const allSelected = sessions.length > 0 && sessions.every((s) => selected.has(s.id))
   const someSelected = sessions.some((s) => selected.has(s.id))
 
@@ -631,7 +635,8 @@ function ArchivedList({
                   <input
                     type="checkbox"
                     checked={selected.has(s.id)}
-                    onChange={() => onToggle(s.id)}
+                    onClick={(e) => { shiftHeld.current = e.shiftKey }}
+                    onChange={() => onToggle(s.id, shiftHeld.current)}
                     aria-label={`Select ${displayName}`}
                     className={cn(ARCHIVED_CHECKBOX_CLS, 'mt-0.5')}
                   />
@@ -766,6 +771,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const [unarchivingId, setUnarchivingId] = useState<string | null>(null)
   // Bulk selection state for the archived panel
   const [archivedSelected, setArchivedSelected] = useState<Set<string>>(new Set())
+  // Last archived row toggled without shift — the pivot for shift-click range selection.
+  const [archivedAnchorId, setArchivedAnchorId] = useState<string | null>(null)
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   const [archivedSummary, setArchivedSummary] = useState<string | null>(null)
 
@@ -821,6 +828,22 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     (a) => a.status === 'needs-reauth' || a.status === 'needs-relogin',
   )
 
+  // Auto-clear the all-limited banner once any account becomes selectable.
+  // Done at render time (not in an effect) — React 18 batches synchronous setState
+  // calls during render and re-renders synchronously when state changes.
+  if (allLimitedReset !== undefined && accounts.some((a) => a.rank !== null)) {
+    setAllLimitedReset(undefined)
+  }
+
+  // Auto-clear when the reset time passes (uses setTimeout to defer the setState
+  // call so that Date.now() is not called during render per react-hooks/purity,
+  // and setState is called from the timeout callback per react-hooks/set-state-in-effect).
+  useEffect(() => {
+    if (allLimitedReset === undefined || allLimitedReset === null) return
+    const id = setTimeout(() => setAllLimitedReset(undefined), Math.max(0, new Date(allLimitedReset).getTime() - Date.now()))
+    return () => clearTimeout(id)
+  }, [allLimitedReset])
+
   function openNewDialog() {
     setAllLimitedReset(undefined)
     if (dialogControlled) onDialogChange!('new')
@@ -837,6 +860,9 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     createSession.mutate(input, {
       onSuccess: (session) => {
         dismissNewDialog()
+        if (session.usageUnverified) {
+          toast("Couldn't verify account usage — started anyway.")
+        }
         // Auto-open the new session and carry the prompt so it shows immediately.
         if (onOpenSession) onOpenSession(session.id, input.initialPrompt)
       },
@@ -845,6 +871,9 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           const body = err.body as { error?: { code?: string; message?: string }; earliestReset?: string | null }
           if (body?.error?.code === 'branch_switch_failed') {
             setBranchError(body.error.message ?? 'Could not switch branch')
+          } else if (body?.error?.code === 'accounts_need_reauth') {
+            toast.error('No usable accounts — check the Accounts tab to re-authenticate.')
+            dismissNewDialog()
           } else {
             const reset = body.earliestReset ?? null
             setAllLimitedReset(reset)
@@ -964,13 +993,30 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     if (changed) setArchivedSelected(pruned)
   }
 
-  function toggleArchivedOne(id: string) {
+  function toggleArchivedOne(id: string, shiftKey = false) {
+    const ids = archivedSessions.map((s) => s.id)
+    const anchorIdx = archivedAnchorId === null ? -1 : ids.indexOf(archivedAnchorId)
+
+    if (shiftKey && anchorIdx !== -1) {
+      // Shift-click: select the inclusive range from the anchor to this row.
+      const end = ids.indexOf(id)
+      const [lo, hi] = anchorIdx < end ? [anchorIdx, end] : [end, anchorIdx]
+      setArchivedSelected((prev) => {
+        const next = new Set(prev)
+        for (let i = lo; i <= hi; i++) next.add(ids[i])
+        return next
+      })
+      // Anchor stays put so the range can be re-extended in either direction.
+      return
+    }
+
     setArchivedSelected((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
+    setArchivedAnchorId(id)
   }
 
   function toggleArchivedAll() {

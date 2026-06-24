@@ -121,6 +121,7 @@ def _record_to_dict(
         "latestSuggestions": list(suggestions or []),
         "activeGoal": getattr(record, "active_goal", None),
         "prs": [p.to_dict() for p in (prs or [])],
+        "usageUnverified": getattr(record, "usage_unverified", False),
     }
 
 
@@ -311,8 +312,17 @@ async def create_session(
             },
         )
     except AllAccountsBusy as exc:
-        earliest = exc.earliest_reset
-        reset_iso = iso_utc(earliest)
+        if exc.kind == "no_usable_accounts":
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "error": {
+                        "code": "accounts_need_reauth",
+                        "message": "No usable accounts — one or more need re-authentication",
+                    },
+                },
+            )
+        reset_iso = iso_utc(exc.earliest_reset)
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={
