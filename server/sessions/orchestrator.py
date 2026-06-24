@@ -181,6 +181,7 @@ class SessionOrchestrator:
         from server.github.pr_poller import PrStatusPoller
         self._pr_poller: PrStatusPoller = PrStatusPoller()
         self._pr_poller.set_pairs_provider(self._pr_pairs)
+        self._pr_poller.set_on_change(self._on_pr_change)
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
         # Sessions whose background tasks have been re-armed this process (dedup the
@@ -189,6 +190,9 @@ class SessionOrchestrator:
         # Session-ids currently in a push-worthy state (AUT-02 debounce): push fires once
         # on entry; cleared when the session transitions out so re-entry fires again.
         self._pushed: set[str] = set()
+        # (repo, branch) pairs whose PR is currently in a failing-CI state (M2b.2 debounce):
+        # push fires once on entry into failing; cleared on recovery so a re-break re-fires.
+        self._pushed_pr: set[tuple[str, str]] = set()
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
@@ -603,6 +607,30 @@ class SessionOrchestrator:
                 await push_mod.push("ccswitch — needs you", f"{name}: {status}")
         else:
             self._pushed.discard(session_id)
+
+    async def _on_pr_change(
+        self, repo: str, branch: str, old_checks: str | None, new_checks: str
+    ) -> None:
+        """PR-poller transition callback: alert when a session's PR enters failing CI.
+
+        Routed to the owning session by (repo, live branch). Debounced via ``_pushed_pr``:
+        fires once on entry into ``failing``; cleared on recovery so a re-break re-fires
+        (M2b.2 / AUT-02). A transition for a (repo, branch) with no live session is a no-op.
+        """
+        key = (repo, branch)
+        if new_checks != "failing":
+            self._pushed_pr.discard(key)
+            return
+        if key in self._pushed_pr:
+            return
+        rec = next(
+            (r for r in self._records.values() if r.repo == repo and r.branch == branch),
+            None,
+        )
+        if rec is None:
+            return
+        self._pushed_pr.add(key)
+        await push_mod.push("ccswitch — PR broke", f"{rec.name}: {repo} CI failing")
 
     async def _condense_estimate(self) -> float:
         from server.sessions import compaction_stats
@@ -2094,10 +2122,15 @@ class SessionOrchestrator:
         return record
 
     async def permanent_delete(self, session_id: str) -> bool:
-        """Permanently delete an archived session: remove archive folder + DB row.
+        """Permanently delete a session: remove archive folder + DB row.
 
         Returns True if deleted, False if the session was not found in DB.
         Containment guard: only removes paths that are direct children of archive_dir().
+
+        A *live* session (still in _records/_drivers, or status != 'archived') is
+        archived first: archive_session stops the driver and moves the cwd into the
+        archive. Deleting a live session directly would otherwise leave a zombie
+        driver running and orphan the working directory outside archive_dir().
         """
         from ccswitch.paths import archive_dir
         from sqlalchemy import select as sa_select
@@ -2108,6 +2141,15 @@ class SessionOrchestrator:
             )).scalars().first()
         if row is None:
             return False
+
+        # Archive-then-delete: a live session must be torn down before its row and
+        # working dir are removed, or we leak a driver and orphan the cwd.
+        if (
+            session_id in self._records
+            or session_id in self._drivers
+            or row.status != "archived"
+        ):
+            await self.archive_session(session_id)
 
         # Containment guard: candidate must be a direct child of archive_dir().
         archive_base = archive_dir().resolve()
