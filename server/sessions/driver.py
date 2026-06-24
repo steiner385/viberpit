@@ -13,6 +13,7 @@ from .translator import Translator
 from .permissions import PermissionRegistry
 from .questions import QuestionRegistry
 from .status import StatusSignals, derive_status
+from .transcript_repair import repair_resumed_transcript
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +23,10 @@ log = logging.getLogger(__name__)
 _STATUS_TRACE = os.environ.get("CCSWITCH_STATUS_TRACE", "false").lower() in ("1", "true", "yes", "on")
 
 _STREAM_DONE = object()
+
+# How long aclose() waits for the CLI to flush its synthetic interrupt result for a
+# turn wedged mid-tool-call before giving up and cancelling the drain.
+_CLOSE_GRACE_SEC = 5.0
 
 
 async def _aiter_one(message: dict):
@@ -340,6 +345,19 @@ class SessionDriver:
         return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied by user")
 
     async def start(self):
+        # A turn interrupted mid-tool-call (manual Stop, stall-watchdog, or a deploy
+        # drain that cancels the drain before the CLI writes its synthetic
+        # "[Request interrupted by user for tool use]" result) leaves an ORPHANED
+        # tool_use as the transcript tail. On resume the CLI rejects that state with
+        # error_during_execution / [ede_diagnostic] and every turn dead-ends. Heal it
+        # before handing the session back to the SDK. Best-effort — never block start.
+        if self.resume:
+            try:
+                await asyncio.to_thread(
+                    repair_resumed_transcript, self.config_dir, self.resume)
+            except Exception:
+                log.warning("driver.start: transcript repair failed session=%s",
+                            self.session_id, exc_info=True)
         self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
                                      self.resume, on_pre_compact=self._on_pre_compact)
         await self._client.__aenter__()
@@ -641,12 +659,32 @@ class SessionDriver:
         self._cancel_suggest()
         self._reg.deny_all(self.session_id)
         self._qreg.deny_all(self.session_id)
-        if self._pump:
-            self._pump.cancel()
+        if self._pump is not None and not self._pump.done():
+            # A turn wedged mid-tool-call must not be abandoned: hard-cancelling the
+            # drain kills the subprocess before the CLI writes its synthetic
+            # "[Request interrupted by user for tool use]" result, orphaning the
+            # tool_use and dead-ending the next resume (see transcript_repair).
+            # Interrupt and give the CLI a bounded chance to flush; only cancel if it
+            # doesn't finish in time. Drop queued prompts first so the drain's finally
+            # can't launch a fresh turn while we're closing.
+            self._queue.clear()
+            if self._turn_active and self._client is not None:
+                try:
+                    await self._client.interrupt()
+                except Exception:
+                    log.warning("driver.aclose: interrupt failed session=%s",
+                                self.session_id, exc_info=True)
+            grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
             try:
-                await self._pump
-            except asyncio.CancelledError:
+                await asyncio.wait_for(asyncio.shield(self._pump), timeout=grace)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
+            if not self._pump.done():
+                self._pump.cancel()
+                try:
+                    await self._pump
+                except asyncio.CancelledError:
+                    pass
         if self._client:
             await self._client.__aexit__(None, None, None)
         # Final sync_back: capture any token rotation that occurred during the
