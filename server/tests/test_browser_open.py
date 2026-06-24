@@ -28,8 +28,12 @@ class FakeX11:
 
 
 def _make_client(fake_x11):
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.tests.fakes.fake_factory import fake_sdk_factory
+
     with patch.dict(os.environ, _ENV_PATCH):
-        app = create_app()
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
+        app = create_app(orchestrator=orch)
         app.state.x11 = fake_x11
         return TestClient(app, raise_server_exceptions=False)
 
@@ -70,8 +74,12 @@ def test_open_browser_no_display():
 
 
 def test_open_browser_no_x11():
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.tests.fakes.fake_factory import fake_sdk_factory
+
     with patch.dict(os.environ, _ENV_PATCH):
-        app = create_app()
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
+        app = create_app(orchestrator=orch)
         app.state.x11 = None
         client = TestClient(app, raise_server_exceptions=False)
     r = client.post(

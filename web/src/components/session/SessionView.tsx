@@ -20,6 +20,7 @@ import { PERMISSION_MODES } from '@/session/permissionModes'
 import { SessionComposer } from './SessionComposer'
 import { SessionBody } from './SessionBody'
 import { CommandResultOverlay } from './CommandResultOverlay'
+import { SessionActions } from '@/components/session/SessionActions'
 
 /**
  * Cycle to the next permission mode in PERMISSION_MODES order.
@@ -56,6 +57,8 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
   // In-session keyboard shortcuts:
   //   Esc  → back to session list (guard: skip if composer textarea has text mid-draft,
   //           or if a permission/question card is pending — let user act on the card first)
+  //   ←    → back to session list, but only from the prompt's left edge: empty composer,
+  //           or caret at the very start with no selection. Otherwise ← moves the caret.
   //   Shift+Tab → cycle permission mode through PERMISSION_MODES
   const { hasOpenAction, onSetMode } = rt
   useEffect(() => {
@@ -66,11 +69,14 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
         onSetMode(next)
         return
       }
-      // Composer-with-text guard, shared by ←/Esc (cursor move keeps the draft) and
-      // Ctrl+Z (yield to textarea undo while editing).
       const ae2 = document.activeElement as HTMLTextAreaElement | null
-      const inComposerWithText =
-        ae2?.getAttribute('aria-label') === 'Message' && (ae2?.value ?? '') !== ''
+      const inComposer = ae2?.getAttribute('aria-label') === 'Message'
+      // Esc/Ctrl+Z yield to the composer whenever it holds a draft (keep the text).
+      const inComposerWithText = inComposer && (ae2?.value ?? '') !== ''
+      // ← yields to the composer only when the caret is past the start or text is
+      // selected; from the left edge (or an empty prompt) it detaches to the list.
+      const caretPastComposerStart =
+        inComposer && !(ae2!.selectionStart === 0 && ae2!.selectionEnd === 0)
       // Ctrl+Z → unconditional force-detach escape hatch (bypasses the pending-card guard).
       if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
         if (inComposerWithText) return
@@ -78,10 +84,18 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
         handleBack()
         return
       }
-      // ← (empty prompt) and Esc → detach to the list. Shared guards: composer-with-text,
-      // and a pending permission/question card (answer it first).
-      if (e.key === 'ArrowLeft' || e.key === 'Escape') {
+      // Esc → detach to the list. Guards: composer-with-text, and a pending
+      // permission/question card (answer it first).
+      if (e.key === 'Escape') {
         if (inComposerWithText) return
+        if (hasOpenAction) return
+        e.preventDefault()
+        handleBack()
+        return
+      }
+      // ← (from the prompt's left edge) → detach to the list. Same pending-card guard.
+      if (e.key === 'ArrowLeft') {
+        if (caretPastComposerStart) return
         if (hasOpenAction) return
         e.preventDefault()
         handleBack()
@@ -119,7 +133,14 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
           ← Back
         </button>
 
-        <span className="text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
+        <span className="flex-1 text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
+
+        <SessionActions
+          sessionId={sessionId}
+          sessionName={rt.title}
+          onDone={handleBack}
+          variant="dark"
+        />
       </div>
 
       {/* Transcript + status strip + banners + pinned live-question panel

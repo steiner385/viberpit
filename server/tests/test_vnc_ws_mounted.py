@@ -13,6 +13,9 @@ _IDENTITY_HEADERS = {"Tailscale-User-Login": "vnctest@example.com"}
 @pytest.fixture()
 def app_client(tmp_path):
     """Build a TestClient for the app with x11 disabled (None)."""
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.tests.fakes.fake_factory import fake_sdk_factory
+
     store_home = tmp_path / "store"
     store_home.mkdir()
     shared_base = tmp_path / "dot-claude"
@@ -28,7 +31,11 @@ def app_client(tmp_path):
     })
 
     with env_patch:
-        app = create_app()
+        # Inject an explicit orchestrator so create_app() takes the in-process
+        # path regardless of whether a live session daemon is detected at the
+        # default socket path.
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
+        app = create_app(orchestrator=orch)
         # Force x11 to None (disabled path)
         app.state.x11 = None
         with TestClient(app, raise_server_exceptions=False) as client:

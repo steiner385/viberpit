@@ -18,7 +18,8 @@ function makeProps(overrides: Partial<React.ComponentProps<typeof DispatchBar>> 
     onDispatch: vi.fn(),
     onNavigate: vi.fn(),
     onOpenHighlighted: vi.fn(),
-    onRowAction: vi.fn(),
+    onEnterList: vi.fn(),
+    onJump: vi.fn(),
     onShowHelp: vi.fn(),
     onEscape: vi.fn(),
     isPending: false,
@@ -174,52 +175,31 @@ describe('DispatchBar', () => {
 
   it('Alt+2 jumps to row index 1', async () => {
     const user = userEvent.setup()
-    const onRowAction = vi.fn()
-    render(<DispatchBar {...makeProps({ onRowAction })} />)
+    const onJump = vi.fn()
+    render(<DispatchBar {...makeProps({ onJump })} />)
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{Alt>}2{/Alt}')
-    expect(onRowAction).toHaveBeenCalledWith({ type: 'jump', index: 1 })
+    expect(onJump).toHaveBeenCalledWith(1)
   })
 
-  it('Ctrl+R on an empty prompt triggers rename action', async () => {
+  it('Tab on an empty prompt enters list mode', async () => {
     const user = userEvent.setup()
-    const onRowAction = vi.fn()
-    render(<DispatchBar {...makeProps({ onRowAction })} />)
+    const onEnterList = vi.fn()
+    render(<DispatchBar {...makeProps({ onEnterList })} />)
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('{Control>}r{/Control}')
-    expect(onRowAction).toHaveBeenCalledWith({ type: 'rename' })
+    await user.keyboard('{Tab}')
+    expect(onEnterList).toHaveBeenCalledTimes(1)
   })
 
-  it('Ctrl+R when the prompt has text does NOT rename and inserts no char', async () => {
+  it('Tab with a draft does NOT enter list mode (native focus move)', async () => {
     const user = userEvent.setup()
-    const onRowAction = vi.fn()
-    render(<DispatchBar {...makeProps({ onRowAction })} />)
+    const onEnterList = vi.fn()
+    render(<DispatchBar {...makeProps({ onEnterList })} />)
     const box = screen.getByRole('textbox', { name: /new session prompt/i })
     await user.click(box)
-    await user.type(box, 'fix ')
-    await user.keyboard('{Control>}r{/Control}')
-    expect(onRowAction).not.toHaveBeenCalled()
-    expect(box).toHaveValue('fix ')
-  })
-
-  it('Ctrl+X on an empty prompt triggers delete action', async () => {
-    const user = userEvent.setup()
-    const onRowAction = vi.fn()
-    render(<DispatchBar {...makeProps({ onRowAction })} />)
-    await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
-    await user.keyboard('{Control>}x{/Control}')
-    expect(onRowAction).toHaveBeenCalledWith({ type: 'delete' })
-  })
-
-  it('Ctrl+X when the prompt has text does NOT delete (native cut)', async () => {
-    const user = userEvent.setup()
-    const onRowAction = vi.fn()
-    render(<DispatchBar {...makeProps({ onRowAction })} />)
-    const box = screen.getByRole('textbox', { name: /new session prompt/i })
-    await user.click(box)
-    await user.type(box, 'hi')
-    await user.keyboard('{Control>}x{/Control}')
-    expect(onRowAction).not.toHaveBeenCalled()
+    await user.type(box, 'draft')
+    await user.keyboard('{Tab}')
+    expect(onEnterList).not.toHaveBeenCalled()
   })
 
   it('seeds the repo select from getLastRepo()', () => {

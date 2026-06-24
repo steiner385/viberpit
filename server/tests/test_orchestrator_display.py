@@ -15,7 +15,7 @@ class FakeX11:
 async def test_factory_closure_injects_display(monkeypatch):
     x11 = FakeX11()
     seen = {}
-    def fake_factory(cwd, cfg, cut, mode, resume, extra_env=None):
+    def fake_factory(cwd, cfg, cut, mode, resume, extra_env=None, *, on_pre_compact=None):
         seen["extra_env"] = extra_env
         class C:  # minimal fake SDK client
             async def connect(self,*a,**k): ...
@@ -31,7 +31,7 @@ async def test_factory_closure_injects_display(monkeypatch):
 @pytest.mark.asyncio
 async def test_factory_closure_noop_without_x11():
     seen = {}
-    def fake_factory(cwd, cfg, cut, mode, resume, extra_env=None):
+    def fake_factory(cwd, cfg, cut, mode, resume, extra_env=None, *, on_pre_compact=None):
         seen["extra_env"] = extra_env; return object()
     orch = SessionOrchestrator(sdk_factory=fake_factory, x11=None)
     orch._session_factory("S")("/c","/cfg",None,"interactive",None)

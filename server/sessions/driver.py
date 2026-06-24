@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import time
 import uuid
 from typing import Callable
@@ -12,10 +13,20 @@ from .translator import Translator
 from .permissions import PermissionRegistry
 from .questions import QuestionRegistry
 from .status import StatusSignals, derive_status
+from .transcript_repair import repair_resumed_transcript
 
 log = logging.getLogger(__name__)
 
+# DIAGNOSTIC (temporary): gate the per-emit status trace. Off by default — set
+# CCSWITCH_STATUS_TRACE=1 to capture the raw derived status + its input signals
+# when chasing false-"Ready" reports. Remove with the trace itself once settled.
+_STATUS_TRACE = os.environ.get("CCSWITCH_STATUS_TRACE", "false").lower() in ("1", "true", "yes", "on")
+
 _STREAM_DONE = object()
+
+# How long aclose() waits for the CLI to flush its synthetic interrupt result for a
+# turn wedged mid-tool-call before giving up and cancelling the drain.
+_CLOSE_GRACE_SEC = 5.0
 
 
 async def _aiter_one(message: dict):
@@ -33,7 +44,8 @@ class SessionDriver:
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
-                 on_status=None, on_recoverable_failure=None, clock=None, suggester=None):
+                 on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
+                 on_recoverable_failure=None, clock=None, suggester=None):
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -50,6 +62,9 @@ class SessionDriver:
         # real state, using the RICH derived vocabulary (in_progress / waiting_input /
         # ready_review / done / idle), not just the live working/idle of the StatusBar.
         self._on_status = on_status
+        self._on_record_condense_ms = on_record_condense_ms
+        self._get_condense_estimate = get_condense_estimate
+        self._condense_started_at: float | None = None
         # async callback ``on_recoverable_failure(session_id, kind, retry_after)`` fired
         # when a turn fails with a recoverable kind (rate_limit / auth_401 / process_crash). The
         # orchestrator drives the actual recovery (same-account retry/recompose, then
@@ -69,6 +84,8 @@ class SessionDriver:
         self._titled: bool = False
         self._queue: list[tuple[str, list[dict]]] = []
         self._turn_active: bool = False
+        self._retrying: bool = False
+        self._condensing: bool = False
         self._turns_completed: int = 0
         self._last_turn_outcome: str = "success"
         self._suggester = suggester
@@ -109,12 +126,41 @@ class SessionDriver:
         if isinstance(e, (ev.TextDelta, ev.ThinkingDelta)):
             if e.text:
                 self._last_progress_at = self._clock()
-        elif isinstance(e, (ev.ToolCall, ev.ToolResult, ev.TurnEnd, ev.Question, ev.PermissionRequest)):
+        elif isinstance(e, (ev.ToolCall, ev.ToolResult, ev.TurnEnd, ev.Question, ev.PermissionRequest, ev.ApiRetry)):
             self._last_progress_at = self._clock()
 
     def current_status(self) -> str:
         """The rich derived status right now (no side effects). Used on WS attach."""
         return derive_status(self._dash_signals())
+
+    async def _on_pre_compact(self, input=None, tool_use_id=None, ctx=None) -> dict:
+        """SDK PreCompact hook: compaction is starting. Stamp the start, advertise the
+        learned expected duration to the UI, flip the status. Never blocks compaction."""
+        self._condense_started_at = self._clock()
+        self._condensing = True
+        est: float | None = None
+        if self._get_condense_estimate is not None:
+            try:
+                est = await self._get_condense_estimate()
+            except Exception:
+                log.warning("driver.get_condense_estimate failed session=%s", self.session_id, exc_info=True)
+        await self._out.put(ev.Condensing(active=True, expected_ms=est))
+        await self._emit_status()
+        return {}
+
+    async def _consume_condensing(self, e) -> None:
+        """Toggle the flag, record a real boundary's duration, forward to the UI."""
+        self._condensing = e.active
+        if not e.active and self._condense_started_at is not None:
+            ms = (self._clock() - self._condense_started_at) * 1000
+            self._condense_started_at = None
+            if self._on_record_condense_ms is not None:
+                try:
+                    await self._on_record_condense_ms(ms)
+                except Exception:
+                    log.warning("driver.record_condense_ms failed session=%s", self.session_id, exc_info=True)
+        await self._emit_status()
+        await self._out.put(e)   # forward so the UI clears the bar
 
     async def _emit_status(self, count: int | None = None) -> None:
         """Single status emitter — rich vocabulary to BOTH consumers.
@@ -124,8 +170,25 @@ class SessionDriver:
         depth shown in the busy label; defaults to the live queue length.
         Best-effort on the callback: a failure must never break the session loop.
         """
-        status = derive_status(self._dash_signals())
+        sig = self._dash_signals()
+        status = derive_status(sig)
         n = len(self._queue) if count is None else count
+        # DIAGNOSTIC (temporary): trace the raw status + the signals that produced
+        # it, to tell a genuine idle/done from a "Ready" the UI fell back to. Logs
+        # the inputs to derive_status plus the staleness clock the stall watchdog
+        # uses, so a session that looks idle while monitoring is identifiable.
+        # Gated by CCSWITCH_STATUS_TRACE (off by default — fires on every emit).
+        # Remove once the false-"Ready" question is settled.
+        if _STATUS_TRACE:
+            log.info(
+                "status.derive session=%s status=%s turn_active=%s turns_completed=%s "
+                "last_outcome=%s pending_perm=%s pending_q=%s pending_plan=%s "
+                "awaiting_user=%s idle_age=%.1f queue=%d",
+                self.session_id, status, sig.turn_active, sig.turns_completed,
+                sig.last_turn_outcome, sig.pending_permission, sig.pending_question,
+                sig.pending_plan, self.awaiting_user_input,
+                self._clock() - self._last_progress_at, n,
+            )
         await self._out.put(ev.Status(state=status, count=n))
         if self._on_status is not None:
             try:
@@ -259,6 +322,8 @@ class SessionDriver:
             pending_plan=any(p.get("tool") == "ExitPlanMode" for p in perms),
             turns_completed=self._turns_completed,
             last_turn_outcome=self._last_turn_outcome,
+            retrying=self._retrying,
+            condensing=self._condensing,
         )
 
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
@@ -280,7 +345,21 @@ class SessionDriver:
         return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied by user")
 
     async def start(self):
-        self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, self.resume)
+        # A turn interrupted mid-tool-call (manual Stop, stall-watchdog, or a deploy
+        # drain that cancels the drain before the CLI writes its synthetic
+        # "[Request interrupted by user for tool use]" result) leaves an ORPHANED
+        # tool_use as the transcript tail. On resume the CLI rejects that state with
+        # error_during_execution / [ede_diagnostic] and every turn dead-ends. Heal it
+        # before handing the session back to the SDK. Best-effort — never block start.
+        if self.resume:
+            try:
+                await asyncio.to_thread(
+                    repair_resumed_transcript, self.config_dir, self.resume)
+            except Exception:
+                log.warning("driver.start: transcript repair failed session=%s",
+                            self.session_id, exc_info=True)
+        self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
+                                     self.resume, on_pre_compact=self._on_pre_compact)
         await self._client.__aenter__()
 
     async def send_prompt(self, text: str, images: list[dict] | None = None):
@@ -375,6 +454,21 @@ class SessionDriver:
                         if e.resets_at is not None:
                             self._last_rate_reset = e.resets_at
                         continue
+                    if isinstance(e, ev.ApiRetry):
+                        # Internal: count as progress so the stall watchdog leaves a
+                        # 529-backoff turn alone; flip the retrying flag on transition.
+                        self._note_progress(e)
+                        if not self._retrying:
+                            self._retrying = True
+                            await self._emit_status()
+                        continue   # internal — do not forward to the client
+                    # Any real (non-retry) event resumes the turn; clear the flag.
+                    if self._retrying:
+                        self._retrying = False
+                        await self._emit_status()
+                    if isinstance(e, ev.Condensing):
+                        await self._consume_condensing(e)
+                        continue
                     if isinstance(e, ev.TextDelta):
                         self._last_assistant_parts.append(e.text)
                     elif isinstance(e, ev.TurnEnd):
@@ -403,8 +497,13 @@ class SessionDriver:
             self._last_turn_outcome = "failed"
             await self._maybe_signal_recovery("driver_error", full)
         finally:
+            # Reset retrying flag so a turn that ends mid-retry doesn't leak into the next.
+            self._retrying = False
             # Capture any token rotation the SDK performed during this turn.
             await self._call_sync_back()
+            # Compaction is turn-scoped; never let a condensing flag outlive the turn.
+            self._condensing = False
+            self._condense_started_at = None
             # If queued prompts remain, pop the front and start the next turn.
             if self._queue:
                 next_text, next_images = self._queue.pop(0)
@@ -548,7 +647,8 @@ class SessionDriver:
         self._queue.clear()
         self._turn_active = False
         self._tr = Translator()
-        client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None)
+        client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None,
+                               on_pre_compact=self._on_pre_compact)
         self._client = client
         await client.__aenter__()
 
@@ -559,12 +659,32 @@ class SessionDriver:
         self._cancel_suggest()
         self._reg.deny_all(self.session_id)
         self._qreg.deny_all(self.session_id)
-        if self._pump:
-            self._pump.cancel()
+        if self._pump is not None and not self._pump.done():
+            # A turn wedged mid-tool-call must not be abandoned: hard-cancelling the
+            # drain kills the subprocess before the CLI writes its synthetic
+            # "[Request interrupted by user for tool use]" result, orphaning the
+            # tool_use and dead-ending the next resume (see transcript_repair).
+            # Interrupt and give the CLI a bounded chance to flush; only cancel if it
+            # doesn't finish in time. Drop queued prompts first so the drain's finally
+            # can't launch a fresh turn while we're closing.
+            self._queue.clear()
+            if self._turn_active and self._client is not None:
+                try:
+                    await self._client.interrupt()
+                except Exception:
+                    log.warning("driver.aclose: interrupt failed session=%s",
+                                self.session_id, exc_info=True)
+            grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
             try:
-                await self._pump
-            except asyncio.CancelledError:
+                await asyncio.wait_for(asyncio.shield(self._pump), timeout=grace)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
+            if not self._pump.done():
+                self._pump.cancel()
+                try:
+                    await self._pump
+                except asyncio.CancelledError:
+                    pass
         if self._client:
             await self._client.__aexit__(None, None, None)
         # Final sync_back: capture any token rotation that occurred during the

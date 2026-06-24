@@ -354,3 +354,124 @@ describe('SessionSocket', () => {
     expect(sent).toEqual({ type: 'cancelQueued', sessionId: 's', index: 2 })
   })
 })
+
+describe('SessionSocket update-pending queue', () => {
+  beforeEach(() => {
+    MockWebSocket.instances = []
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('buffers prompts while pending and resends them on reconnect', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    let ws = lastSock()
+    ws.simulateOpen()
+
+    ws.simulateMessage({ type: 'updatePending' })
+    sock.prompt('s1', 'hello', [])
+    // Not sent while pending (only the attach frame from open, no prompt frame):
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"'))).toBe(false)
+
+    // Daemon restarts: socket drops then reconnects.
+    ws.simulateClose()
+    sock.connect()
+    ws = lastSock()
+    ws.simulateOpen()
+
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"') && s.includes('hello'))).toBe(true)
+  })
+
+  it('flushes immediately on updateCancelled (no restart)', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+
+    ws.simulateMessage({ type: 'updatePending' })
+    sock.prompt('s1', 'queued one', [])
+    ws.simulateMessage({ type: 'updateCancelled' })
+
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"') && s.includes('queued one'))).toBe(true)
+  })
+
+  it('emits updatePendingChange with active flag and count', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+
+    const handler = vi.fn()
+    sock.on('updatePendingChange', handler)
+    lastSock().simulateMessage({ type: 'updatePending' })
+    sock.prompt('s1', 'a', [])
+
+    expect(handler).toHaveBeenLastCalledWith({ active: true, count: 1 })
+  })
+
+  it('emits updatePendingChange {active:false,count:0} after flush on reconnect', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    let ws = lastSock()
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'updatePending' })
+    sock.prompt('s1', 'hello', [])
+    const handler = vi.fn()
+    sock.on('updatePendingChange', handler)
+    ws.simulateClose()
+    sock.connect()
+    ws = lastSock()
+    ws.simulateOpen()
+    expect(handler).toHaveBeenLastCalledWith({ active: false, count: 0 })
+  })
+
+  it('buffers a prompt typed while disconnected (no drain) and flushes it on reconnect', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    let ws = lastSock()
+    ws.simulateOpen()
+    sock.attach('s1')
+
+    ws.simulateClose()                       // socket CLOSED, NOT draining
+    sock.prompt('s1', 'typed offline', [])   // must buffer, not drop
+    expect(sock.updatePendingState.count).toBe(1)
+
+    sock.connect()
+    ws = lastSock()
+    ws.simulateOpen()
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"') && s.includes('typed offline'))).toBe(true)
+  })
+
+  it('drops the oldest held prompt and surfaces an error when the buffer is full', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+    ws.simulateMessage({ type: 'updatePending' })   // enter holding so prompts buffer
+
+    const errors: { code?: string }[] = []
+    sock.on('error', (e) => errors.push(e as { code?: string }))
+    for (let i = 0; i < 51; i++) sock.prompt('s1', `m${i}`, [])
+
+    expect(sock.updatePendingState.count).toBe(50)        // capped, not 51
+    expect(errors.some((e) => e.code === 'PENDING_BUFFER_FULL')).toBe(true)
+  })
+
+  it('re-queues a promptRejected frame and flushes it on reconnect', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    let ws = lastSock()
+    ws.simulateOpen()
+
+    ws.simulateMessage({ type: 'promptRejected', sessionId: 's1', text: 'refused', attachmentIds: [] })
+    expect(sock.updatePendingState).toEqual({ active: true, count: 1 })
+
+    ws.simulateClose()
+    sock.connect()
+    ws = lastSock()
+    ws.simulateOpen()
+    expect(ws.sent.some((s) => s.includes('"type":"prompt"') && s.includes('refused'))).toBe(true)
+  })
+})

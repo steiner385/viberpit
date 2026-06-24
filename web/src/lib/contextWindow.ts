@@ -37,3 +37,17 @@ export function remainingContextPct(usage: UsageTotals | null, model: string | n
   const remaining = ((window - used) / window) * 100
   return Math.min(100, Math.max(0, Math.round(remaining)))
 }
+
+export type ContextSeverity = 'neutral' | 'warning' | 'danger'
+
+/**
+ * Severity for a remaining-context percentage (100 = window empty). Drives the
+ * color escalation on the session's `ctx %` readout. `null` (no usage yet) is
+ * neutral so the readout stays calm until there is real data.
+ */
+export function contextSeverity(remainingPct: number | null): ContextSeverity {
+  if (remainingPct == null) return 'neutral'
+  if (remainingPct <= 10) return 'danger'
+  if (remainingPct <= 25) return 'warning'
+  return 'neutral'
+}
