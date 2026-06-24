@@ -243,3 +243,47 @@ def test_repo_memory_dir_not_auto_allowed(tmp_path, monkeypatch):
     repo = str(tmp_path / "repo" / "projects" / "x" / "memory" / "note.md")
     pid = _request(reg, "Write", repo, "allowlist")
     assert pid is not None, "memory dirs outside cfg_root must still prompt"
+
+
+# ---------------------------------------------------------------------------
+# MCP tools (mcp__<server>__<tool>) must never prompt — the user opted into
+# trusting MCP unconditionally, so they are auto-allowed in EVERY mode, mirroring
+# the account-memory-write auto-allow.  These FAIL before the fix: in interactive
+# and allowlist modes an MCP tool would otherwise create a pending permission.
+# ---------------------------------------------------------------------------
+
+def _request_tool(reg, tool, mode, input=None):
+    async def run():
+        pid, fut = await reg.request("s1", "t1", tool, input or {},
+                                     mode=mode, denylist=PermissionRegistry.DANGEROUS,
+                                     allowlist=True, identity="me")
+        if pid is not None:
+            reg.resolve(pid, "allow", "me")
+            await fut
+        return pid
+    return asyncio.run(run())
+
+
+def test_mcp_tool_auto_allowed_in_interactive():
+    reg = PermissionRegistry()
+    pid = _request_tool(reg, "mcp__railway__deploy", "interactive", {"serviceId": "x"})
+    assert pid is None, "MCP tools must auto-allow (no prompt) even in interactive mode"
+
+
+def test_mcp_tool_auto_allowed_in_allowlist():
+    reg = PermissionRegistry()
+    pid = _request_tool(reg, "mcp__github__create_pull_request", "allowlist")
+    assert pid is None, "MCP tools must auto-allow in allowlist mode"
+
+
+def test_mcp_tool_auto_allowed_in_auto():
+    reg = PermissionRegistry()
+    pid = _request_tool(reg, "mcp__chrome-devtools__navigate_page", "auto")
+    assert pid is None, "MCP tools must auto-allow in auto mode"
+
+
+def test_non_mcp_unknown_tool_still_prompts_in_interactive():
+    # Guard: the mcp__ prefix is what triggers the auto-allow, not "any unknown tool".
+    reg = PermissionRegistry()
+    pid = _request_tool(reg, "SomeRandomTool", "interactive")
+    assert pid is not None, "non-MCP tools must still prompt in interactive mode"
