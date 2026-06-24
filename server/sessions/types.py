@@ -5,7 +5,7 @@ usage, and WS layers can import this without pulling in SQLAlchemy.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from server.time_iso import iso_utc
@@ -38,6 +38,7 @@ class SessionRecord:
     account_pinned: bool = False      # user pinned the account (skips usage-ceiling rotation)
     active_goal: str | None = None    # active /goal condition; None = no goal
     usage_unverified: bool = False    # transient: account picked without a usage read (optimistic)
+    authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
 
     def to_dict(self) -> dict:
         # `updatedAt` is the "active … ago" / last-activity time, matching the HTTP
@@ -60,6 +61,7 @@ class SessionRecord:
             "accountPinned": self.account_pinned,
             "activeGoal": self.active_goal,
             "usageUnverified": self.usage_unverified,
+            "authoredBranches": list(self.authored_branches),
         }
 
     @classmethod
@@ -84,4 +86,5 @@ class SessionRecord:
             account_pinned=d.get("accountPinned", False),
             active_goal=d.get("activeGoal"),
             usage_unverified=d.get("usageUnverified", False),
+            authored_branches=list(d.get("authoredBranches") or []),
         )

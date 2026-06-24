@@ -55,12 +55,17 @@ def register_orchestrator_rpc(app, orch) -> None:
         info = orch.pr_for(params.get("repo"), params.get("branch"))
         return {"pr": info.to_dict() if info is not None else None}
 
+    async def prs_for(params: dict) -> dict:
+        infos = orch.prs_for(params.get("session_id"))
+        return {"prs": [i.to_dict() for i in infos]}
+
     register_rpc(app, "ensure_driver", ensure_driver)
     register_rpc(app, "list_sessions", list_sessions)
     register_rpc(app, "get_session", get_session)
     register_rpc(app, "create_session", create_session)
     register_rpc(app, "send_prompt", send_prompt)
     register_rpc(app, "pr_for", pr_for)
+    register_rpc(app, "prs_for", prs_for)
 
     import inspect
 
