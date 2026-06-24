@@ -17,6 +17,11 @@ def _daemon_enabled() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "serve":
+        from server.deploy import serve as _serve
+        _serve.serve()
+        return 0
     p = argparse.ArgumentParser(prog="python -m server.deploy")
     p.add_argument("--once", action="store_true", help="run a single deploy and exit")
     p.add_argument("--repo", default=os.getcwd())
