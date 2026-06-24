@@ -164,7 +164,13 @@ export function SessionList({
                   />
                 )}
                 {!collapsed && (
-                  <div id={panelId} className="space-y-2">
+                  <div
+                    id={panelId}
+                    className="space-y-2"
+                    {...(group.label !== null
+                      ? { role: 'group', 'aria-labelledby': `group-header-${group.key}` }
+                      : {})}
+                  >
                     {group.sessions.map(renderCard)}
                   </div>
                 )}

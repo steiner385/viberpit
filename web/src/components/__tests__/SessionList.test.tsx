@@ -508,6 +508,61 @@ describe('SessionList — group header keyboard nav', () => {
   })
 })
 
+describe('SessionList — group panel ARIA disclosure', () => {
+  function mkSession(id: string): Session {
+    return {
+      id,
+      name: `Session ${id}`,
+      accountName: 'alice',
+      status: 'idle',
+      createdAt: '2026-06-24T10:00:00Z',
+      updatedAt: '2026-06-24T10:00:00Z',
+    }
+  }
+
+  it('group panel has role=group and aria-labelledby pointing at the header when group.label is non-null', () => {
+    const groups = [
+      { key: 'busy', label: 'Working', count: 1, sessions: [mkSession('s1')] },
+    ]
+    render(
+      <SessionList
+        sessions={groups.flatMap((g) => g.sessions)}
+        groups={groups}
+        accounts={[]}
+        collapsedKeys={new Set()}
+        onNew={vi.fn()} onOpen={vi.fn()} onRename={vi.fn()}
+        onClose={vi.fn()} onDelete={vi.fn()} onQuickResume={vi.fn()}
+      />,
+      { wrapper },
+    )
+    const panel = document.getElementById('group-panel-busy')!
+    expect(panel).not.toBeNull()
+    expect(panel).toHaveAttribute('role', 'group')
+    expect(panel).toHaveAttribute('aria-labelledby', 'group-header-busy')
+  })
+
+  it('group panel has NO role or aria-labelledby when group.label is null (ungrouped)', () => {
+    const groups = [
+      { key: 'all', label: null, count: 2, sessions: [mkSession('s1'), mkSession('s2')] },
+    ]
+    render(
+      <SessionList
+        sessions={groups.flatMap((g) => g.sessions)}
+        groups={groups}
+        accounts={[]}
+        collapsedKeys={new Set()}
+        onNew={vi.fn()} onOpen={vi.fn()} onRename={vi.fn()}
+        onClose={vi.fn()} onDelete={vi.fn()} onQuickResume={vi.fn()}
+      />,
+      { wrapper },
+    )
+    const panel = document.getElementById('group-panel-all')!
+    expect(panel).not.toBeNull()
+    expect(panel).not.toHaveAttribute('role')
+    expect(panel).not.toHaveAttribute('aria-labelledby')
+  })
+})
+
 describe('SessionList — no-matches state', () => {
   it('shows a no-matches state (not EmptyState) when filtered to zero', async () => {
     const onClearSearch = vi.fn()
