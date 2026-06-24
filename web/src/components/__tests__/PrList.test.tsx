@@ -34,4 +34,25 @@ describe('PrList', () => {
     expect(screen.getByRole('link', { name: /#1/ })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /#2/ })).toBeInTheDocument()
   })
+
+  it('tints the collapsed chip red and announces failing checks when any PR is failing', () => {
+    render(<PrList prs={[pr(1), pr(2, { checks: 'failing' })]} />)
+    const chip = screen.getByRole('button', { name: /2 PRs/i })
+    expect(chip.className).toMatch(/red/)
+    expect(chip).toHaveAttribute('aria-label', expect.stringMatching(/checks failing/i))
+  })
+
+  it('keeps the chip neutral (no red) when no PR is failing', () => {
+    render(<PrList prs={[pr(1), pr(2, { checks: 'pending' })]} />)
+    const chip = screen.getByRole('button', { name: /2 PRs/i })
+    expect(chip.className).not.toMatch(/red/)
+    expect(chip).toHaveAttribute('aria-label', expect.not.stringMatching(/checks failing/i))
+  })
+
+  it('keeps the chip neutral for a CLOSED PR with frozen failing checks (terminal)', () => {
+    render(<PrList prs={[pr(1), pr(2, { state: 'closed', checks: 'failing' })]} />)
+    const chip = screen.getByRole('button', { name: /2 PRs/i })
+    expect(chip.className).not.toMatch(/red/)
+    expect(chip).toHaveAttribute('aria-label', expect.not.stringMatching(/checks failing/i))
+  })
 })

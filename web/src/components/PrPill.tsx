@@ -1,6 +1,7 @@
 import { GitPullRequest, GitMerge, GitPullRequestClosed, Check, X, Dot, Rocket } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { PullRequestInfo } from '@/api/types'
+import { isActionablePrState } from '@/session/prStatus'
 
 // Color per PR state — mirrors GitHub's semantics (open green, draft gray,
 // merged purple, closed red).
@@ -27,7 +28,13 @@ function ChecksIcon({ checks }: { checks: PullRequestInfo['checks'] }) {
 
 export function PrPill({ pr }: { pr: PullRequestInfo }) {
   const StateIcon = STATE_ICON[pr.state]
-  const checksLabel = pr.checks === 'none' ? '' : `, checks ${pr.checks}`
+  // Checks only matter while a PR is live. GitHub freezes a terminal PR's
+  // rollup (a closed PR keeps `checks: 'failing'` forever) but there's nothing
+  // to act on, so we don't surface it — the state background (closed=red,
+  // merged=violet) already carries the terminal meaning. `data-checks` stays
+  // factual for tests/inspection; only the visible icon + label are gated.
+  const showChecks = isActionablePrState(pr.state)
+  const checksLabel = showChecks && pr.checks !== 'none' ? `, checks ${pr.checks}` : ''
   const deployedLabel = pr.deployed ? ', deployed' : ''
   return (
     <a
@@ -48,7 +55,7 @@ export function PrPill({ pr }: { pr: PullRequestInfo }) {
     >
       <StateIcon size={11} aria-hidden />
       <span className="tabular-nums">#{pr.number}</span>
-      <ChecksIcon checks={pr.checks} />
+      {showChecks && <ChecksIcon checks={pr.checks} />}
       {pr.deployed && <Rocket size={11} aria-hidden className="text-emerald-600 dark:text-emerald-400" />}
     </a>
   )
