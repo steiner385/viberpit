@@ -183,10 +183,11 @@ describe('DesktopShell', () => {
     // (idle → 'your-turn' tier, header "Done"; in_progress → 'busy' tier, header "Working")
     expect(screen.getByText('Done')).toBeInTheDocument()
     expect(screen.getByText('Working')).toBeInTheDocument()
-    // keyboard nav still works: ArrowDown should highlight a row
+    // keyboard nav still works: ArrowDown should highlight something (header or row).
+    // With grouped nav, the first ArrowDown lands on the first group header.
     const prompt = screen.getByRole('textbox', { name: /new session prompt/i })
     await user.click(prompt)
     await user.keyboard('{ArrowDown}')
-    expect(prompt.getAttribute('aria-activedescendant')).toMatch(/^row-s/)
+    expect(prompt.getAttribute('aria-activedescendant')).toMatch(/^(row-s|group-header-)/)
   })
 })

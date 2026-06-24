@@ -84,4 +84,36 @@ describe('useSessionOrdering', () => {
     const second = renderHook(() => useSessionOrdering([mk('s1')]))
     expect(second.result.current.collapsedKeys.has('busy')).toBe(true)
   })
+
+  it('navItems: ungrouped has no headers (one item per session)', () => {
+    const { result } = renderHook(() => useSessionOrdering([mk('a'), mk('b')]))
+    expect(result.current.navItems.every((i) => i.kind === 'session')).toBe(true)
+    expect(result.current.navItems).toHaveLength(2)
+  })
+
+  it('navItems: grouped emits headers; collapseGroup drops that group\'s sessions', () => {
+    const { result } = renderHook(() =>
+      useSessionOrdering([mk('a', { repo: 'o/r1' }), mk('b', { repo: 'o/r2' })]),
+    )
+    act(() => result.current.setGroupBy('repo'))
+    expect(result.current.navItems.filter((i) => i.kind === 'header')).toHaveLength(2)
+    const firstKey = result.current.groups[0].key
+    act(() => result.current.collapseGroup(firstKey))
+    const header = result.current.navItems.find((i) => i.kind === 'header' && i.key === firstKey)
+    expect(header && header.kind === 'header' && header.collapsed).toBe(true)
+    // collapsed group contributes no session items
+    expect(result.current.navItems.some(
+      (i) => i.kind === 'session' && result.current.groups[0].sessions.some((s) => s.id === i.session.id),
+    )).toBe(false)
+  })
+
+  it('expandGroup re-expands a collapsed group (idempotent)', () => {
+    const { result } = renderHook(() => useSessionOrdering([mk('a', { repo: 'o/r1' })]))
+    act(() => result.current.setGroupBy('repo'))
+    const key = result.current.groups[0].key
+    act(() => result.current.collapseGroup(key))
+    act(() => result.current.expandGroup(key))
+    act(() => result.current.expandGroup(key)) // idempotent
+    expect(result.current.collapsedKeys.has(key)).toBe(false)
+  })
 })
