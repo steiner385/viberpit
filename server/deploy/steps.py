@@ -184,3 +184,27 @@ def rollback_to(repo: str, sha: str, *, daemon_changed: bool, daemon_enabled: bo
         pass
     # Restart BOTH together so they run the same (old) code — split-version is worse.
     restart_units(daemon_changed=daemon_changed, daemon_enabled=daemon_enabled, run=run)
+
+
+def _default_gh_api_json(path: str, body: str) -> str:
+    r = subprocess.run(["gh", "api", "-X", "POST", path, "--input", "-"],
+                       input=body, check=True, capture_output=True, text=True)
+    return r.stdout
+
+
+def publish_deployment(sha: str, gh_api_json: Callable[[str, str], str] | None = None) -> bool:
+    gh_api_json = gh_api_json or _default_gh_api_json
+    try:
+        dep_body = json.dumps({
+            "ref": sha, "environment": "production", "production_environment": True,
+            "auto_merge": False, "required_contexts": [],
+        })
+        dep = json.loads(gh_api_json("repos/{owner}/{repo}/deployments", dep_body))
+        dep_id = dep.get("id")
+        if not dep_id:
+            return False
+        gh_api_json(f"repos/{{owner}}/{{repo}}/deployments/{dep_id}/statuses",
+                    json.dumps({"state": "success", "auto_inactive": True}))
+        return True
+    except Exception:
+        return False
