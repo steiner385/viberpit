@@ -262,6 +262,20 @@ class TestHttpRequestRetry(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(slept, [])  # 400 is terminal — no retry
 
+    def test_retries_on_403_then_succeeds(self):
+        """403 is a Cloudflare edge block (error 1010), not a dead credential — retry
+        with backoff so an intermittent block self-heals instead of surfacing as a
+        spurious transient failure on the first hit."""
+        from ccswitch import oauth
+        slept = []
+        responses = [_http_error(403), _FakeResp(200, b'{"ok":1}')]
+        with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=responses):
+            status, _ = oauth.http_request(
+                "GET", "https://x", max_retries=3, sleep=slept.append, rng=lambda: 0.5
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(slept), 1)  # one 403 → one backoff sleep, then success
+
     def test_retries_on_network_error_then_succeeds(self):
         """A connection-level failure (URLError) is transient — retry, don't crash."""
         from ccswitch import oauth
