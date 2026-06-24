@@ -14,6 +14,7 @@ import { StatusBar } from './StatusBar'
 import { TranscriptView } from './TranscriptView'
 import { SessionPlaceholder } from './SessionPlaceholder'
 import { WorkingIndicator } from './WorkingIndicator'
+import { CondensingProgress } from './CondensingProgress'
 import { PendingQuestionPanel } from './PendingQuestionPanel'
 import { PendingPermissionPanel } from './PendingPermissionPanel'
 import { SessionAriaLive } from './SessionAriaLive'
@@ -21,6 +22,7 @@ import { statusTier } from '@/session/statusTier'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { BrowserTab } from '../BrowserTab'
 import { useModels, useAccounts, useSessions } from '@/api/hooks'
+import { ExportMenu } from './ExportMenu'
 
 export function SessionBody({ rt }: { rt: SessionRuntime }) {
   const runningSubAgents = selectRunningSubAgentCount(rt.state.turns)
@@ -67,8 +69,9 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           quota={rt.quota}
           subAgents={rt.subAgents}
           statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} subAgentCount={runningSubAgents} />}
+          exportSlot={<ExportMenu sessionId={rt.sessionId} />}
           models={models}
-          accounts={accounts.map((a) => ({ name: a.name }))}
+          accounts={accounts.map((a) => ({ name: a.name, nickname: a.nickname }))}
           accountPinned={pinned}
           onSelectModel={(id) => rt.onCommand('model', id)}
           onSelectAccount={(name) => rt.onCommand('account', name)}
@@ -166,20 +169,27 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                 streamingBlockId={rt.state.replaying ? null : rt.state.openBlockId}
                 onAnswer={rt.onAnswer}
                 subAgents={rt.state.subAgents}
+                earliestTurn={rt.state.earliestTurn}
+                loadingOlder={rt.state.loadingOlder}
+                onLoadOlder={rt.onLoadOlder}
               />
             )}
 
             {/* Prominent "waiting for Claude" indicator shown below the last turn */}
             {statusTier(rt.state.status.state) === 'busy' && (
-              <div
-                aria-hidden="true"
-                className={cn(
-                  'flex-shrink-0 flex items-center px-4 py-2',
-                  'text-xs text-gray-400 dark:text-gray-500',
-                )}
-              >
-                <WorkingIndicator count={rt.state.status.count} subAgentCount={runningSubAgents} />
-              </div>
+              rt.state.status.state === 'condensing' ? (
+                <CondensingProgress expectedMs={rt.state.condense?.expectedMs ?? 12000} />
+              ) : (
+                <div
+                  aria-hidden="true"
+                  className={cn(
+                    'flex-shrink-0 flex items-center px-4 py-2',
+                    'text-xs text-gray-400 dark:text-gray-500',
+                  )}
+                >
+                  <WorkingIndicator count={rt.state.status.count} subAgentCount={runningSubAgents} />
+                </div>
+              )
             )}
 
             {/* Pinned permission panel for the live open permission (respond in place).

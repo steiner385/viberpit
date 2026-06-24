@@ -24,7 +24,7 @@ vi.mock('./ws/client', async (importOriginal) => {
 })
 
 const MOCK_ACCOUNTS: Account[] = [
-  { name: 'alice', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 30, resetsAt: null } } },
+  { name: 'alice', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 30, resetsAt: null } }, liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null },
 ]
 const MOCK_SESSIONS: Session[] = []
 

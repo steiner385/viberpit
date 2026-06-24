@@ -4,6 +4,8 @@ import type { ToolDetailMode } from '@/session/groupBlocks'
 import { Turn } from './Turn'
 import { RotationDivider } from './RotationDivider'
 
+const TOP_THRESHOLD = 64
+
 interface Props {
   turns: TurnType[]
   rotations?: RotationMarker[]
@@ -14,6 +16,12 @@ interface Props {
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
   /** Nested sub-agent threads keyed by spawning Task toolId. Absent in read-only views (e.g. ReviewView). */
   subAgents?: Record<string, SubThread>
+  /** The earliest turn index known to the server (0 = at the very start). Absent in read-only views. */
+  earliestTurn?: number
+  /** True while an older-page fetch is in flight. */
+  loadingOlder?: boolean
+  /** Called when the user scrolls near the top and more history is available. */
+  onLoadOlder?: () => void
 }
 
 /**
@@ -36,19 +44,38 @@ function groupRotationsByAnchor(rotations: RotationMarker[]) {
   return { byTurn, top }
 }
 
-export function TranscriptView({ turns, rotations = [], toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {} }: Props) {
+export function TranscriptView({ turns, rotations = [], toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
   const isNearBottomRef = useRef(true)
+  // Snapshot of scrollHeight taken just before onLoadOlder() is called, used to
+  // restore the scroll anchor after older turns are prepended.
+  const prevScrollHeightRef = useRef<number | null>(null)
 
-  // Update isNearBottom on scroll
+  // Update isNearBottom on scroll; trigger paging when near the top.
   function handleScroll() {
     const el = containerRef.current
     if (!el) return
     const threshold = 80 // px from bottom counts as "near bottom"
     isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
+    if (el.scrollTop <= TOP_THRESHOLD && (earliestTurn ?? 0) > 0 && !loadingOlder && onLoadOlder) {
+      prevScrollHeightRef.current = el.scrollHeight // anchor before the prepend
+      onLoadOlder()
+    }
   }
+
+  // Preserve scroll position when older turns are prepended (turns grew at the top).
+  // Runs before the ResizeObserver pin below can fire; the observer early-returns
+  // while the user is reading history (isNearBottomRef false), so the two don't fight.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    if (prevScrollHeightRef.current != null) {
+      el.scrollTop += el.scrollHeight - prevScrollHeightRef.current
+      prevScrollHeightRef.current = null
+    }
+  }, [turns])
 
   // Pin to the true bottom whenever the content height changes — not just when
   // turns/rotations change. Entering an active session replays the whole
@@ -85,6 +112,15 @@ export function TranscriptView({ turns, rotations = [], toolDetailMode, thinking
       {/* Inner wrapper so the ResizeObserver above measures content height; the
           scroll container itself has a fixed flex height and never reports growth. */}
       <div ref={contentRef}>
+        {/* Older-page loading spinner */}
+        {loadingOlder && (
+          <div className="py-2 text-center text-xs text-gray-400">Loading earlier history…</div>
+        )}
+        {/* Beginning-of-session marker — only shown when earliestTurn is explicitly 0 (live view at start) */}
+        {turns.length > 0 && earliestTurn === 0 && (
+          <div className="py-2 text-center text-xs text-gray-400">— Beginning of session —</div>
+        )}
+
         {/* Rotations that occurred before any turn arrived */}
         {top.map((r, i) => (
           <RotationDivider key={`rot-top-${i}`} from={r.from} to={r.to} reason={r.reason} />

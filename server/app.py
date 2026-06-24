@@ -251,23 +251,26 @@ def create_app(
         from server.ipc.client import DaemonClient
         from server.sessions.remote import RemoteOrchestrator
         app.state.remote_mode = True
+        app.state.daemon_socket = socket_path
         app.state.orchestrator = None
         app.state.sessions = RemoteOrchestrator(DaemonClient(socket_path))
     else:
         if orchestrator is None:
             orchestrator = SessionOrchestrator()
         app.state.remote_mode = False
+        app.state.daemon_socket = None
         app.state.orchestrator = orchestrator
         app.state.sessions = InProcessOrchestratorAdapter(orchestrator)
 
     # X11 manager — None when feature is disabled or preflight fails (fail-loud warning)
     from server.config import get_settings as _gs
     from server.sessions.x11manager import build_x11_manager
-    app.state.x11 = build_x11_manager(_gs())
-    if orchestrator is not None:
-        # Share the manager with the in-process orchestrator. In remote mode the
-        # daemon owns the orchestrator (and its x11), so there is nothing to share.
-        orchestrator._x11 = app.state.x11
+    if getattr(app.state, "remote_mode", False):
+        app.state.x11 = None          # daemon owns the displays; edge proxies over IPC
+    else:
+        app.state.x11 = build_x11_manager(_gs())
+        if orchestrator is not None:
+            orchestrator._x11 = app.state.x11
 
     # Attach the ReauthManager (allows tests to inject a fake)
     if reauth_manager is None:
@@ -307,8 +310,15 @@ def create_app(
         except DaemonUnavailable:
             active = 0
             daemon_state = "unavailable"
-        x11 = getattr(app.state, "x11", None)
-        vnc_attached = bool(x11 and x11.metrics().get("vnc_clients_attached", 0) > 0)
+        if app.state.remote_mode:
+            try:
+                m = await app.state.sessions.x11_metrics()
+                vnc_attached = bool(m.get("vnc_clients_attached", 0) > 0)
+            except (DaemonUnavailable, DaemonError):
+                vnc_attached = False
+        else:
+            x11 = getattr(app.state, "x11", None)
+            vnc_attached = bool(x11 and x11.metrics().get("vnc_clients_attached", 0) > 0)
         try:
             async with _db.db_session() as db:
                 await db.execute(_sa_select(_SessionModel).limit(1))
@@ -340,10 +350,18 @@ def create_app(
 
     # VNC WebSocket bridge — gated by x11 state at call time
     from server.bridge.vnc_ws import build_vnc_ws_router
-    app.include_router(build_vnc_ws_router(lambda: getattr(app.state, "x11", None)))
+    app.include_router(build_vnc_ws_router(
+        lambda: getattr(app.state, "x11", None),
+        lambda: getattr(app.state, "daemon_socket", None),
+    ))
 
     @app.get("/api/x11/metrics")
     async def x11_metrics(_identity: str = Depends(current_identity)) -> dict:
+        if getattr(app.state, "remote_mode", False):
+            try:
+                return await app.state.sessions.x11_metrics()
+            except DaemonUnavailable:
+                return {"enabled": False}
         x11 = getattr(app.state, "x11", None)
         return x11.metrics() if x11 else {"enabled": False}
 
@@ -355,6 +373,12 @@ def create_app(
         payload: dict = Body(default={}),
         _identity: str = Depends(current_identity),
     ) -> dict:
+        if getattr(app.state, "remote_mode", False):
+            res = await app.state.sessions.x11_open_browser(session_id, payload.get("url"))
+            if not res.get("ok"):
+                detail = "no display for session" if res.get("reason") == "no_display" else "browser cap reached"
+                raise HTTPException(status_code=409, detail=detail)
+            return {"ok": True}
         x11 = getattr(app.state, "x11", None)
         if x11 is None or x11.display_for(session_id) is None:
             raise HTTPException(status_code=409, detail="no display for session")

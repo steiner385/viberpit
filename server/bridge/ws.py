@@ -36,7 +36,7 @@ from server.auth.middleware import require_ws_identity
 from server.db import db_session
 from server.ipc.client import DaemonUnavailable
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
-from server.sessions.replay import replay_events
+from server.sessions.replay import replay_window
 
 if TYPE_CHECKING:
     from server.sessions.facade import InProcessOrchestratorAdapter
@@ -172,12 +172,20 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             A transcript that can't be located or parsed must NOT crash the WS (which
             would close the socket → client reconnect-loop on a blank screen) — skip the
             history and continue. replayComplete ALWAYS fires so the client's loading
-            spinner clears. Returns the replayed events (for idle-suggestion seeding).
+            spinner clears, and now carries earliestTurn/totalTurns so the client knows
+            whether older history exists. Returns the replayed events (for idle-suggestion
+            seeding).
             """
             events: list = []
+            earliest_turn = 0
+            total_turns = 0
             try:
                 path = await orchestrator.transcript_path(session_id)
-                events = await replay_events(path) if path else []
+                if path:
+                    window = await replay_window(path)
+                    events = window.events
+                    earliest_turn = window.earliest_turn
+                    total_turns = window.total_turns
                 if events:
                     # Lead the replay with a reset. attach is re-sent on every WS
                     # reconnect (client.ts onopen), so the same transcript is replayed
@@ -192,7 +200,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     await _send({"type": "batch", "events": redacted_replay})
             except Exception:
                 log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
-            await _send({"type": "replayComplete"})
+            await _send({"type": "replayComplete", "earliestTurn": earliest_turn, "totalTurns": total_turns})
             return events
 
         async def _resume_driver_or_error(session_id: str):
@@ -304,6 +312,15 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 ).to_wire()))
             except Exception:
                 log.warning("ws.attach: live status emit failed for %s", session_id, exc_info=True)
+
+            # Re-emit the live queue so a reattach repopulates the queued-prompt
+            # chips (with their images). The driver holds the queue across attaches;
+            # without this, a navigate-away/back showed an empty strip. Best-effort.
+            try:
+                if driver.queued():
+                    await _send(redact_event(ev.QueueUpdate(driver.queue_wire()).to_wire()))
+            except Exception:
+                log.warning("ws.attach: queue re-emit failed for %s", session_id, exc_info=True)
 
             # Send the deferred initial prompt (if any) now that the client is watching.
             # The prompt was stored in create_session instead of being sent immediately
@@ -430,8 +447,15 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     # send. send_prompt no-ops without a live driver, so the resume must
                     # happen here — not on attach, where it would block mere viewing.
                     if await _ensure_live(session_id):
-                        await orchestrator.send_prompt(
-                            session_id, msg.get("text", ""), msg.get("attachmentIds"))
+                        text = msg.get("text", "")
+                        attachment_ids = msg.get("attachmentIds")
+                        status = await orchestrator.send_prompt(session_id, text, attachment_ids)
+                        if status == "draining":
+                            # Deploy drain refused the turn — ack it so the browser
+                            # re-queues instead of losing the prompt.
+                            await _send({"type": "promptRejected", "sessionId": session_id,
+                                         "text": text, "attachmentIds": attachment_ids,
+                                         "reason": "draining"})
                 elif msg_type == "interrupt":
                     await orchestrator.interrupt(session_id)
                     try:
@@ -441,8 +465,6 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     except Exception:
                         log.warning("ws.audit_failed event=%s session=%s",
                                     "session.interrupt", session_id, exc_info=True)
-                elif msg_type == "request_suggestions":
-                    await orchestrator.request_suggestions(session_id)
                 elif msg_type == "permissionResponse":
                     decision = msg.get("decision", "")
                     perm_id = msg.get("permId", "")

@@ -195,7 +195,10 @@ describe('Composer', () => {
     render(
       <Composer
         {...defaults}
-        queued={['first queued prompt', 'second queued prompt']}
+        queued={[
+          { text: 'first queued prompt', images: [] },
+          { text: 'second queued prompt', images: [] },
+        ]}
         onCancelQueued={vi.fn()}
       />
     )
@@ -209,7 +212,10 @@ describe('Composer', () => {
     render(
       <Composer
         {...defaults}
-        queued={['first prompt', 'second prompt']}
+        queued={[
+          { text: 'first prompt', images: [] },
+          { text: 'second prompt', images: [] },
+        ]}
         onCancelQueued={onCancelQueued}
       />
     )

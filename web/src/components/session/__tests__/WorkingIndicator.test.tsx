@@ -148,4 +148,14 @@ describe('WorkingIndicator', () => {
       expect(formatElapsed(125_000)).toBe('2m 5s')
     })
   })
+
+  describe('WorkingIndicator phrase override', () => {
+    it('shows the override phrase and keeps the elapsed readout', () => {
+      render(<WorkingIndicator phrase="Condensing context" />)
+      // Both the sr-only label and the visible shimmer span carry the phrase;
+      // use getAllByText since the text appears in both rendered nodes.
+      expect(screen.getAllByText(/Condensing context…/).length).toBeGreaterThan(0)
+      expect(screen.getByTestId('working-elapsed')).toBeInTheDocument()
+    })
+  })
 })

@@ -191,6 +191,22 @@ def test_check_stalls_leaves_progressing_turn_alone():
     assert interrupted == []
 
 
+def test_check_stalls_leaves_turn_blocked_on_user_alone():
+    """A turn blocked awaiting user input (permission/question/plan) is not wedged —
+    last_progress_at is frozen only because the human hasn't answered yet."""
+    o = _make_orch()
+    interrupted = []
+    class _StubDriver:
+        _turn_active = True
+        last_progress_at = 0.0
+        awaiting_user_input = True
+        async def interrupt(self):
+            interrupted.append(True)
+    o._drivers["s1"] = _StubDriver()
+    asyncio.run(o._check_stalls(now=10_000.0))
+    assert interrupted == []
+
+
 def test_check_stalls_stops_after_stall_cap():
     o = _make_orch()
     interrupted = []

@@ -16,9 +16,10 @@ import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { TranscriptState } from '@/session/reducer'
 import type { SessionEvent, Command } from '@/session/events'
 import { selectSubAgents } from '@/session/selectors'
-import { remainingContextPct } from '@/lib/contextWindow'
+import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWindow'
 import { useSessions, useAccounts, useSettings } from '@/api/hooks'
 import type { ToolDetailMode } from '@/session/groupBlocks'
+import { fetchOlderTurns } from '@/api/transcript'
 
 // Dispatch payload for attached images: the DB-backed attachment ids.
 export type AttachmentIds = string[]
@@ -54,7 +55,6 @@ export interface SessionRuntime {
   /** Set/clear the chat-armed question (toggles off if the same id is passed again). */
   onChat: (questionId: string) => void
   onPrompt: (text: string, attachmentIds: AttachmentIds) => void
-  onRequestSuggestions: () => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   onCancelQueued: (index: number) => void
@@ -62,6 +62,8 @@ export interface SessionRuntime {
   commandResult: { render: 'help' | 'context'; data: unknown } | null
   onCommand: (name: string, args: string) => void
   dismissCommandResult: () => void
+  /** Fetch and prepend the previous window of older turns (lazy scrollback). */
+  onLoadOlder: () => void
 }
 
 export function useSessionRuntime(sessionId: string, initialPrompt?: string): SessionRuntime {
@@ -78,7 +80,6 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     setPermissionMode,
     cancelQueued,
     command,
-    requestSuggestions,
   } = useSessionSocket()
 
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
@@ -225,10 +226,6 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     },
     [sessionId, prompt, answerQuestion, armedQuestionId],
   )
-  const onRequestSuggestions = useCallback(
-    () => requestSuggestions(sessionId),
-    [requestSuggestions, sessionId],
-  )
   const onInterrupt = useCallback(
     () => {
       setArmedQuestionId(null)
@@ -298,11 +295,33 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
       }
     : null
 
-  const contextPct = remainingContextPct(state.usage, state.model)
+  // Prefer the SDK's exact context occupancy (the `/context` data) when a live turn
+  // has reported it; fall back to the per-call usage approximation for historic or
+  // not-yet-run sessions. The approximation must NOT use `usage.input + cacheRead`
+  // from a live ResultMessage — that is a per-turn aggregate that reads 0%.
+  const contextPct = remainingFromContextUsage(state.contextUsage)
+    ?? remainingContextPct(state.usage, state.model)
   const subAgents = selectSubAgents(state.turns)
 
   // Re-send attach to recover from a stuck load (the SessionPlaceholder Retry).
   const reattach = useCallback(() => attach(sessionId), [attach, sessionId])
+
+  // Lazy scrollback: fetch and prepend the previous window of older turns.
+  const loadingOlderRef = useRef(false)
+  const onLoadOlder = useCallback(() => {
+    if (loadingOlderRef.current) return
+    if (state.earliestTurn <= 0) return     // already at session start
+    loadingOlderRef.current = true
+    dispatch({ type: '_setLoadingOlder', value: true })
+    fetchOlderTurns(sessionId, state.earliestTurn)
+      .then((res) => {
+        dispatch({ type: '_prependHistory', events: res.events, earliestTurn: res.earliestTurn })
+      })
+      .catch(() => {
+        dispatch({ type: '_setLoadingOlder', value: false })
+      })
+      .finally(() => { loadingOlderRef.current = false })
+  }, [sessionId, state.earliestTurn])
 
   return {
     sessionId,
@@ -325,7 +344,6 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     onAnswer,
     onChat,
     onPrompt,
-    onRequestSuggestions,
     onInterrupt,
     onSetMode,
     onCancelQueued,
@@ -333,5 +351,6 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     commandResult,
     onCommand,
     dismissCommandResult,
+    onLoadOlder,
   }
 }
