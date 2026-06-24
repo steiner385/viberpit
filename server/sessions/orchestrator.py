@@ -162,6 +162,10 @@ class SessionOrchestrator:
         # Populated lazily by _refresh_issue_proposal; TTL = _ISSUE_TTL_S.
         self._issue_proposals: dict[str, tuple[float, str | None]] = {}
         self._issue_inflight: set[str] = set()
+        # Review-comment cache: (repo, pr_number) → (monotonic_ts, proposal_or_None).
+        # Populated lazily by _refresh_review_proposal; TTL = _ISSUE_TTL_S.
+        self._review_proposals: dict[tuple[str, int], tuple[float, str | None]] = {}
+        self._review_inflight: set[tuple[str, int]] = set()
         self._last_prompt: dict[str, str] = {}
         # Failure-driven recovery: quarantine + per-session rotation cap. Clock is
         # injectable for deterministic tests; production uses wall-clock time. The
@@ -1582,7 +1586,16 @@ class SessionOrchestrator:
                 pr = None
             if pr is not None and getattr(pr, "checks", None) == "failing":
                 return dispatch.broken_pr_proposal_text(pr.number, pr.title)
-        # Priority 2 — top open issue (cached, background-refreshed).
+            # Priority 2 — unresolved review comments on the session's own PR.
+            # Only consulted when PR exists and is NOT failing (handled above).
+            if pr is not None:
+                try:
+                    review_text = self._review_proposal(repo, pr.number, pr.title)
+                    if review_text:
+                        return review_text
+                except Exception:
+                    pass
+        # Priority 3 — top open issue (cached, background-refreshed).
         # TTL uses a monotonic clock, coherent with the timestamps stored by
         # _refresh_issue_proposal. (self._clock is wall-clock `time.time`, used for
         # recovery timing elsewhere — mixing it with monotonic deltas would be wrong.)
@@ -1613,6 +1626,42 @@ class SessionOrchestrator:
             self._issue_proposals[repo] = (time.monotonic(), None)
         finally:
             self._issue_inflight.discard(repo)
+
+    def _review_proposal(self, repo: str, number: int, title: str) -> str | None:
+        """Return the cached review-comment proposal for *(repo, number)*, or None.
+
+        Never blocks: on cache miss or TTL expiry, schedules a background refresh
+        (fire-and-forget) and returns the stale value if any, else None.
+        Never raises.
+        """
+        key = (repo, number)
+        now = time.monotonic()
+        cached = self._review_proposals.get(key)
+        if cached is not None and (now - cached[0]) < _ISSUE_TTL_S:
+            return cached[1]
+        # Cache miss or stale: schedule a background refresh if not already in-flight.
+        if key not in self._review_inflight:
+            self._review_inflight.add(key)
+            asyncio.create_task(self._refresh_review_proposal(repo, number, title))
+        # Return stale value if available, else None.
+        return cached[1] if cached is not None else None
+
+    async def _refresh_review_proposal(self, repo: str, number: int, title: str) -> None:
+        """Fetch unresolved review count and cache the proposal for *(repo, number)*.
+
+        Best-effort: stores (now, None) on any error.  Always clears inflight flag.
+        Never raises.
+        """
+        key = (repo, number)
+        try:
+            count = await asyncio.to_thread(dispatch.fetch_unresolved_review_count, repo, number)
+            text: str | None = dispatch.review_proposal_text(number, title, count) if count > 0 else None
+            self._review_proposals[key] = (time.monotonic(), text)
+        except Exception:
+            log.warning("_refresh_review_proposal failed repo=%s pr=%d", repo, number, exc_info=True)
+            self._review_proposals[key] = (time.monotonic(), None)
+        finally:
+            self._review_inflight.discard(key)
 
     async def set_permission_mode(self, session_id, mode):
         d = self._drivers.get(session_id)

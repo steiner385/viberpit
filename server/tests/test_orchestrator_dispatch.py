@@ -28,6 +28,8 @@ def _make_orch():
     orch._drivers = {}
     orch._issue_proposals = {}
     orch._issue_inflight = set()
+    orch._review_proposals = {}
+    orch._review_inflight = set()
     orch._detached_suggestions = {}
     orch._suggest_inflight = set()
     orch._suggester = None
@@ -80,13 +82,19 @@ def test_dispatch_proposal_prefers_broken_pr_over_issue():
 
 
 def test_dispatch_proposal_non_failing_pr_falls_through_to_issue():
-    """M3b: a passing/None PR does not preempt the issue source."""
+    """M3b/M3c: a passing PR with no reviews falls through to the issue source.
+
+    Seed the review cache with None so the cascade falls through without
+    scheduling a background asyncio.create_task (no event loop in sync tests).
+    """
     from server.github.pr_status import PullRequestInfo
     import time
     orch = _make_orch()
     rec = _record_with_branch("s1", repo="o/r", branch="feat/x")
     orch.pr_for = lambda repo, branch: PullRequestInfo(9, "u", "open", "passing", "t")
     orch._issue_proposals["o/r"] = (time.monotonic(), "Work on issue #5: x")
+    # Seed review cache with None so no background task is scheduled
+    orch._review_proposals[("o/r", 9)] = (time.monotonic(), None)
     assert orch._dispatch_proposal(rec) == "Work on issue #5: x"
 
 
@@ -188,3 +196,74 @@ async def test_latest_suggestions_prepends_proposal_for_done_session(monkeypatch
     assert result[0] == "Work on issue #99: Top issue"
     assert "Run tests" in result
     assert result.count("Work on issue #99: Top issue") == 1  # not duplicated
+
+
+# ---------------------------------------------------------------------------
+# M3c: review-comment proposal (Task 2)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_refresh_review_proposal_stores_text(monkeypatch):
+    """After _refresh_review_proposal, _review_proposal returns the formatted string."""
+    monkeypatch.setattr(orch_mod.dispatch, "fetch_unresolved_review_count", lambda repo, number: 2)
+
+    orch = _make_orch()
+    await orch._refresh_review_proposal("o/r", 7, "t")
+
+    result = orch._review_proposal("o/r", 7, "t")
+    assert result == "Address 2 review comments on PR #7: t"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_proposal_review_between_broken_pr_and_issue(monkeypatch):
+    """Cascade: passing PR with unresolved reviews returns review proposal, NOT issue."""
+    from server.github.pr_status import PullRequestInfo
+    import time
+
+    monkeypatch.setattr(orch_mod.dispatch, "fetch_unresolved_review_count", lambda repo, number: 3)
+
+    orch = _make_orch()
+    rec = _record_with_branch("s1", repo="o/r", branch="feat/x")
+    # Passing PR
+    orch.pr_for = lambda repo, branch: PullRequestInfo(7, "u", "open", "passing", "PR title")
+    # Seed a fresh issue proposal — review should win
+    orch._issue_proposals["o/r"] = (time.monotonic(), "Work on issue #5: x")
+    # Seed a fresh review cache with unresolved count
+    orch._review_proposals[("o/r", 7)] = (time.monotonic(), "Address 3 review comments on PR #7: PR title")
+
+    result = orch._dispatch_proposal(rec)
+    assert result == "Address 3 review comments on PR #7: PR title"
+
+
+def test_dispatch_proposal_failing_pr_wins_over_review():
+    """Cascade priority: a failing PR proposal is returned, review not consulted."""
+    from server.github.pr_status import PullRequestInfo
+    import time
+
+    orch = _make_orch()
+    rec = _record_with_branch("s1", repo="o/r", branch="feat/x")
+    # Failing PR
+    orch.pr_for = lambda repo, branch: PullRequestInfo(7, "u", "open", "failing", "PR title")
+    # Seed review cache with unresolved reviews
+    orch._review_proposals[("o/r", 7)] = (time.monotonic(), "Address 2 review comments on PR #7: PR title")
+
+    result = orch._dispatch_proposal(rec)
+    assert result == "Fix the failing CI on PR #7: PR title"
+
+
+def test_dispatch_proposal_passing_pr_no_reviews_falls_through_to_issue():
+    """Passing PR with zero unresolved reviews (cache → None) falls through to issue."""
+    from server.github.pr_status import PullRequestInfo
+    import time
+
+    orch = _make_orch()
+    rec = _record_with_branch("s1", repo="o/r", branch="feat/x")
+    # Passing PR
+    orch.pr_for = lambda repo, branch: PullRequestInfo(7, "u", "open", "passing", "PR title")
+    # Review cache seeded with None (no unresolved reviews)
+    orch._review_proposals[("o/r", 7)] = (time.monotonic(), None)
+    # Issue cache seeded
+    orch._issue_proposals["o/r"] = (time.monotonic(), "Work on issue #5: x")
+
+    result = orch._dispatch_proposal(rec)
+    assert result == "Work on issue #5: x"

@@ -44,3 +44,47 @@ def test_fetch_open_issues_error_is_empty(monkeypatch):
     def boom(args):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="gh fail")
     assert dispatch.fetch_open_issues("o/r", run_gh=boom) == []
+
+
+# ---------------------------------------------------------------------------
+# review_proposal_text
+# ---------------------------------------------------------------------------
+
+def test_review_proposal_text_plural():
+    assert dispatch.review_proposal_text(3, "t", 3) == "Address 3 review comments on PR #3: t"
+
+
+def test_review_proposal_text_singular():
+    assert dispatch.review_proposal_text(7, "my title", 1) == "Address 1 review comment on PR #7: my title"
+
+
+# ---------------------------------------------------------------------------
+# fetch_unresolved_review_count
+# ---------------------------------------------------------------------------
+
+def _graphql_response(nodes):
+    import json
+    payload = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": nodes}}}}}
+    return json.dumps(payload)
+
+
+def test_fetch_unresolved_review_count_returns_count():
+    """2 unresolved + 1 resolved → returns 2."""
+    nodes = [
+        {"isResolved": False},
+        {"isResolved": True},
+        {"isResolved": False},
+    ]
+
+    def fake_gh(args):
+        return subprocess.CompletedProcess(args, 0, stdout=_graphql_response(nodes), stderr="")
+
+    assert dispatch.fetch_unresolved_review_count("o/r", 7, run_gh=fake_gh) == 2
+
+
+def test_fetch_unresolved_review_count_nonzero_rc_returns_zero():
+    """Non-zero exit code → returns 0 without raising."""
+    def fake_gh(args):
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="error")
+
+    assert dispatch.fetch_unresolved_review_count("o/r", 7, run_gh=fake_gh) == 0
