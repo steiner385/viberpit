@@ -11,6 +11,7 @@ import os
 from unittest.mock import patch
 
 
+from ccswitch.selector import Picked
 from ccswitch.worktrees import worktrees_base
 from server.db import init_db
 from server.sessions.orchestrator import SessionOrchestrator
@@ -54,7 +55,7 @@ def test_no_repo_session_cwd_is_scratch_dir_not_server_cwd(tmp_path):
     })
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")
-    select_patch = patch("server.sessions.orchestrator.select_account", return_value="alpha")
+    select_patch = patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha"))
 
     with env_patch, compose_patch, trust_patch, select_patch:
         _seed_account("alpha")
@@ -114,7 +115,7 @@ def test_close_session_removes_scratch_dir(tmp_path):
     })
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")
-    select_patch = patch("server.sessions.orchestrator.select_account", return_value="alpha")
+    select_patch = patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha"))
 
     with env_patch, compose_patch, trust_patch, select_patch:
         _seed_account("alpha")
@@ -169,7 +170,7 @@ def test_close_session_never_removes_paths_outside_scratch_base(tmp_path):
     })
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")
-    select_patch = patch("server.sessions.orchestrator.select_account", return_value="alpha")
+    select_patch = patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha"))
 
     with env_patch, compose_patch, trust_patch, select_patch:
         _seed_account("alpha")

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from server.sessions.background_tasks import (
     scan_open_background_tasks, scan_pending_wakeup, is_parked, build_rearm_prompt,
     OpenBgTask,
@@ -116,6 +117,44 @@ def test_pending_wakeup_true_when_rearmed_after_firing(tmp_path):
     assert scan_pending_wakeup(path) is True
 
 
+def _wakeup_at(tid, ts, delay):
+    o = _assistant_tool(tid, "ScheduleWakeup", {"delaySeconds": delay, "reason": "x"})
+    o["timestamp"] = ts
+    return o
+
+
+def test_pending_wakeup_false_when_overdue_means_lost(tmp_path):
+    # Armed at 12:00 with a 1200s (20min) delay → should have fired by 12:20. A wakeup
+    # is not re-armed across a restart, so if no later turn exists well past its fire
+    # time, the daemon missed it — it is lost, not pending.
+    path = _write(tmp_path, [
+        _user("watch the deploy"),
+        _wakeup_at("toolu_w", "2026-06-24T12:00:00.000Z", 1200),
+    ])
+    now = datetime(2026, 6, 24, 13, 0, 0, tzinfo=timezone.utc)  # 60min later
+    assert scan_pending_wakeup(path, now=now) is False
+
+
+def test_pending_wakeup_true_when_not_yet_overdue(tmp_path):
+    # Same wakeup, but "now" is before fire time + grace → still legitimately pending.
+    path = _write(tmp_path, [
+        _user("watch the deploy"),
+        _wakeup_at("toolu_w", "2026-06-24T12:00:00.000Z", 1200),
+    ])
+    now = datetime(2026, 6, 24, 12, 10, 0, tzinfo=timezone.utc)  # 10min later, < 20min
+    assert scan_pending_wakeup(path, now=now) is True
+
+
+def test_pending_wakeup_true_when_armed_without_timestamp(tmp_path):
+    # No timestamp to time it against → conservatively treat as pending (not lost).
+    path = _write(tmp_path, [
+        _user("watch the deploy"),
+        _assistant_tool("toolu_w", "ScheduleWakeup", {"delaySeconds": 1200, "reason": "x"}),
+    ])
+    now = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    assert scan_pending_wakeup(path, now=now) is True
+
+
 def test_pending_wakeup_false_on_missing_file(tmp_path):
     assert scan_pending_wakeup(str(tmp_path / "nope.jsonl")) is False
 
@@ -141,6 +180,29 @@ def test_is_parked_false_when_neither(tmp_path):
         _assistant_tool("toolu_fg", "Bash", {"command": "ls"}),
     ])
     assert is_parked(path) is False
+
+
+def test_is_parked_false_for_killed_task(tmp_path):
+    # A background poller killed by a deploy restart is NOT a live external wait:
+    # it is dead, and is re-armed (under a NEW tool-use-id) from the pre-kill
+    # `pending_rearm` snapshot, not from this scan. Counting the dead killed id as
+    # "open" pins the session on `waiting_external` forever (the real bug). The
+    # re-arm scan still keeps killed tasks — see the test below.
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_killed", "Bash", {"command": "gh pr view 10616", "run_in_background": True}),
+        _notif("toolu_killed", "killed"),
+    ])
+    assert is_parked(path) is False
+
+
+def test_killed_task_still_open_for_rearm_snapshot(tmp_path):
+    # The re-arm path (default) MUST still see a killed task so it can relaunch it.
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_killed", "Bash", {"command": "x", "run_in_background": True}),
+        _notif("toolu_killed", "killed"),
+    ])
+    assert {t.tool_use_id for t in scan_open_background_tasks(path)} == {"toolu_killed"}
+    assert scan_open_background_tasks(path, treat_killed_as_open=False) == []
 
 
 def test_is_parked_false_on_missing_path(tmp_path):

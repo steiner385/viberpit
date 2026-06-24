@@ -25,6 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from claude_agent_sdk import TextBlock
+from ccswitch.selector import Picked
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -129,7 +130,7 @@ def ws_env(tmp_path):
     })
     usage_patch = patch("ccswitch.accounts.usage_for", side_effect=_fake_usage)
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
-    select_patch = patch("server.sessions.orchestrator.select_account", return_value="alpha")
+    select_patch = patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha"))
 
     created: list[TestClient] = []
 
@@ -818,7 +819,7 @@ def _rehydrated_detached_client(tmp_path, msgs, *, claude_session_id="resume-me"
     with patch.dict(os.environ, env), \
          patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
          patch("server.sessions.orchestrator.configdir"), \
-         patch("server.sessions.orchestrator.select_account", return_value="alpha"), \
+         patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")), \
          patch("ccswitch.accounts.usage_for", side_effect=_fake_usage):
         # Seed INSIDE the CCSWITCH_HOME patch so paths.slot_path() resolves to the
         # temp store — otherwise it leaks an "alpha" account into the real store

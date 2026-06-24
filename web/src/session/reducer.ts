@@ -12,7 +12,7 @@ export type Block =
   | { kind: 'text';       id: string; text: string; ts?: number }
   | { kind: 'thinking';   id: string; text: string; ts?: number }
   | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }>; ts?: number }
-  | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown> }; ts?: number }
+  | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown>; ts?: number }; ts?: number }
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; ts?: number }
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; ts?: number }
   | { kind: 'notice';     id: string; text: string; ts?: number }
@@ -251,7 +251,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
         return {
           ...turn,
           blocks: turn.blocks.map((b, i) =>
-            i === blockIdx && b.kind === 'tool' ? { ...b, result: { ok, payload } } : b),
+            i === blockIdx && b.kind === 'tool' ? { ...b, result: { ok, payload, ts: ev.ts } } : b),
         }
       })
       if (!found) return thread
@@ -427,7 +427,7 @@ export function transcriptReducer(
         if (blockIdx === -1) return turn
         found = true
         const newBlocks = turn.blocks.map((b, i) =>
-          i === blockIdx && b.kind === 'tool' ? { ...b, result: { ok, payload } } : b,
+          i === blockIdx && b.kind === 'tool' ? { ...b, result: { ok, payload, ts: ev.ts } } : b,
         )
         return { ...turn, blocks: newBlocks }
       })

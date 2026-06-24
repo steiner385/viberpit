@@ -81,3 +81,31 @@ export function orderSessions(
     )
     .map((b) => ({ key: b.label, label: b.label, count: b.sessions.length, sessions: b.sessions }))
 }
+
+/** A single keyboard-navigable item in the session list: a group header or a session row. */
+export type NavItem =
+  | { kind: 'header'; key: string; label: string; count: number; collapsed: boolean }
+  | { kind: 'session'; session: Session }
+
+/**
+ * Flatten ordered groups into the cursor's navigation domain: a labelled group
+ * contributes a header item; a non-collapsed group also contributes its session
+ * items. When a group has no label (groupBy='none') no header is emitted, so the
+ * result is exactly the flat session list — the ungrouped view is unchanged.
+ */
+export function buildNavItems(
+  groups: readonly SessionGroup[],
+  collapsedKeys: ReadonlySet<string>,
+): NavItem[] {
+  const items: NavItem[] = []
+  for (const g of groups) {
+    const collapsed = collapsedKeys.has(g.key)
+    if (g.label !== null) {
+      items.push({ kind: 'header', key: g.key, label: g.label, count: g.count, collapsed })
+    }
+    if (!collapsed) {
+      for (const s of g.sessions) items.push({ kind: 'session', session: s })
+    }
+  }
+  return items
+}

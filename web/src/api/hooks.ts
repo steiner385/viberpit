@@ -9,7 +9,7 @@ import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
-import { toast } from '@/lib/toast'
+import { toast } from 'sonner'
 
 // Query keys
 export const QK = {
@@ -197,12 +197,11 @@ export function useCloseSession() {
     },
     onError: (_e, _id, ctx) => {
       if (ctx?.prev) qc.setQueryData(QK.sessions, ctx.prev)
-      toast({ message: `Couldn't archive ${ctx?.removed?.name ?? 'session'}`, variant: 'error' })
+      toast.error(`Couldn't archive ${ctx?.removed?.name ?? 'session'}`)
     },
     onSuccess: (_data, id, ctx) => {
-      toast({
-        message: `Archived ${ctx?.removed?.name ?? 'session'}`,
-        variant: 'success',
+      toast.success(`Archived ${ctx?.removed?.name ?? 'session'}`, {
+        duration: 8000,
         action: {
           label: 'Undo',
           onClick: () => {
@@ -337,7 +336,7 @@ export function useUnarchiveSession() {
     },
     onError: (_e, _id, ctx) => {
       if (ctx?.prev) qc.setQueryData(QK.archived, ctx.prev)
-      toast({ message: `Couldn't restore ${ctx?.removed?.name ?? 'session'}`, variant: 'error' })
+      toast.error(`Couldn't restore ${ctx?.removed?.name ?? 'session'}`)
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.sessions })
@@ -363,10 +362,10 @@ export function usePermanentDeleteSession() {
     onError: (_e, _id, ctx) => {
       if (ctx?.prevArchived) qc.setQueryData(QK.archived, ctx.prevArchived)
       if (ctx?.prevSessions) qc.setQueryData(QK.sessions, ctx.prevSessions)
-      toast({ message: `Couldn't delete ${ctx?.name ?? 'session'}`, variant: 'error' })
+      toast.error(`Couldn't delete ${ctx?.name ?? 'session'}`)
     },
     onSuccess: (_d, _id, ctx) => {
-      toast({ message: `Deleted ${ctx?.name ?? 'session'}`, variant: 'success' })
+      toast.success(`Deleted ${ctx?.name ?? 'session'}`)
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.archived })
@@ -388,12 +387,13 @@ export function useBulkUnarchiveSessions() {
     },
     onError: (_e, _ids, ctx) => {
       if (ctx?.prev) qc.setQueryData(QK.archived, ctx.prev)
-      toast({ message: `Couldn't restore sessions`, variant: 'error' })
+      toast.error(`Couldn't restore sessions`)
     },
     onSuccess: (result) => {
       const n = result.succeeded.length
       const f = result.failed.length
-      toast({ message: f > 0 ? `Restored ${n} · ${f} failed` : `Restored ${n}`, variant: f > 0 ? 'error' : 'success' })
+      if (f > 0) toast.error(`Restored ${n} · ${f} failed`)
+      else toast.success(`Restored ${n}`)
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.sessions })
@@ -415,12 +415,13 @@ export function useBulkPermanentDeleteSessions() {
     },
     onError: (_e, _ids, ctx) => {
       if (ctx?.prev) qc.setQueryData(QK.archived, ctx.prev)
-      toast({ message: `Couldn't delete sessions`, variant: 'error' })
+      toast.error(`Couldn't delete sessions`)
     },
     onSuccess: (result) => {
       const n = result.succeeded.length
       const f = result.failed.length
-      toast({ message: f > 0 ? `Deleted ${n} · ${f} failed` : `Deleted ${n}`, variant: f > 0 ? 'error' : 'success' })
+      if (f > 0) toast.error(`Deleted ${n} · ${f} failed`)
+      else toast.success(`Deleted ${n}`)
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.archived })

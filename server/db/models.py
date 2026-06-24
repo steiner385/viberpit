@@ -66,8 +66,11 @@ class Session(Base):
     # Open background tasks (Monitors / backgrounded Bash|Task) snapshotted at deploy
     # drain so the daemon can relaunch them after the restart that reaps them. JSON list
     # of {tool_use_id, kind, name, input, description}; NULL = nothing pending. Nullable
-    # so init_db backfills it on the dev SQLite DB without a migration.
-    pending_rearm: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # so init_db backfills it on the dev SQLite DB without a migration. none_as_null=True
+    # so clearing it via None persists SQL NULL — not the JSON literal text 'null', which
+    # would defeat the rearm query's `pending_rearm IS NOT NULL` filter.
+    pending_rearm: Mapped[list | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
     # Persisted model for this session (alias like "opus"/"sonnet" or a pinned id
     # like "claude-haiku-4-5"). NULL = account/binary default. Nullable so init_db
     # backfills on the dev SQLite DB without a migration.
