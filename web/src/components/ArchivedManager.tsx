@@ -4,6 +4,8 @@
  * multi-select operations, and the permanent-delete dialog (single or bulk).
  * Owns its own data hooks; `onReviewSession` is called when the user opens a
  * read-only transcript review.
+ *
+ * Includes grouping / sorting / search via SessionListControls + GroupedList.
  */
 
 import * as React from 'react'
@@ -19,6 +21,15 @@ import {
   useBulkPermanentDeleteSessions,
 } from '@/api/hooks'
 import type { ArchivedSession, BatchResult } from '@/api/types'
+import { useSessionSearch } from '@/session/useSessionSearch'
+import { useItemOrdering } from '@/session/useSessionOrdering'
+import {
+  ARCHIVED_SPEC,
+  ARCHIVED_GROUP_OPTIONS,
+  ARCHIVED_SORT_OPTIONS,
+} from '@/session/archivedOrdering'
+import { SessionListControls } from '@/components/SessionListControls'
+import { GroupedList } from '@/components/GroupedList'
 
 const CHECKBOX_CLS = cn(
   'h-4 w-4 rounded border-gray-300 dark:border-gray-600',
@@ -190,140 +201,6 @@ function BulkActionBar({ count, onUnarchive, onDelete, onClear, unarchivePending
   )
 }
 
-// ── Archived List ──────────────────────────────────────────────────────────────
-
-interface ArchivedListProps {
-  sessions: ArchivedSession[]
-  selected: Set<string>
-  onToggle: (id: string, shiftKey: boolean) => void
-  onToggleAll: () => void
-  onReview: (id: string) => void
-  onUnarchive: (id: string) => void
-  onPermanentDelete: (session: ArchivedSession) => void
-  unarchivingId: string | null
-}
-
-function ArchivedList({
-  sessions, selected, onToggle, onToggleAll,
-  onReview, onUnarchive, onPermanentDelete, unarchivingId,
-}: ArchivedListProps) {
-  const selectAllRef = useRef<HTMLInputElement>(null)
-  // A checkbox's `change` event doesn't carry modifier keys, but its `click` does — and click
-  // always fires first (even for keyboard/space toggles). Capture shift here, read it in onChange.
-  const shiftHeld = useRef(false)
-  const allSelected = sessions.length > 0 && sessions.every((s) => selected.has(s.id))
-  const someSelected = sessions.some((s) => selected.has(s.id))
-
-  useEffect(() => {
-    if (selectAllRef.current) selectAllRef.current.indeterminate = someSelected && !allSelected
-  }, [someSelected, allSelected])
-
-  if (sessions.length === 0) {
-    return (
-      <p className="text-sm text-gray-500 dark:text-gray-400 py-6 text-center">
-        No archived sessions.
-      </p>
-    )
-  }
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2 px-1">
-        <input
-          ref={selectAllRef}
-          type="checkbox"
-          checked={allSelected}
-          onChange={onToggleAll}
-          aria-label="Select all"
-          className={CHECKBOX_CLS}
-        />
-        <span className="text-xs text-gray-500 dark:text-gray-400">Select all</span>
-      </div>
-
-      <ul className="space-y-2" aria-label="Archived sessions">
-        {sessions.map((s) => {
-          const displayName = displayNameOf(s)
-          const archivedDate = new Date(s.archivedAt).toLocaleDateString(undefined, {
-            year: 'numeric', month: 'short', day: 'numeric',
-          })
-          return (
-            <li
-              key={s.id}
-              className={cn(
-                'flex flex-col gap-2 rounded-lg border border-gray-200 dark:border-gray-700',
-                'bg-white dark:bg-gray-800 px-3 py-2',
-              )}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-start gap-3 flex-1 min-w-0">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(s.id)}
-                    onClick={(e) => { shiftHeld.current = e.shiftKey }}
-                    onChange={() => onToggle(s.id, shiftHeld.current)}
-                    aria-label={`Select ${displayName}`}
-                    className={cn(CHECKBOX_CLS, 'mt-0.5')}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{displayName}</p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                      {s.account} · Archived {archivedDate}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => onReview(s.id)}
-                    className={cn(
-                      'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
-                      'border border-gray-300 dark:border-gray-600',
-                      'text-gray-700 dark:text-gray-300',
-                      'hover:bg-gray-100 dark:hover:bg-gray-700',
-                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-                    )}
-                    aria-label={`Review ${displayName}`}
-                  >
-                    Review
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onUnarchive(s.id)}
-                    disabled={unarchivingId === s.id}
-                    className={cn(
-                      'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
-                      'bg-blue-600 hover:bg-blue-700 text-white',
-                      'dark:bg-blue-700 dark:hover:bg-blue-600',
-                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-                      'disabled:opacity-40',
-                    )}
-                    aria-label={`Unarchive ${displayName}`}
-                  >
-                    {unarchivingId === s.id ? 'Restoring…' : 'Unarchive'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onPermanentDelete(s)}
-                    className={cn(
-                      'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-                      'text-red-500 dark:text-red-400',
-                      'hover:bg-red-50 dark:hover:bg-red-900/30',
-                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500',
-                    )}
-                    aria-label={`Delete ${displayName} permanently`}
-                  >
-                    <Trash2 size={14} aria-hidden="true" />
-                  </button>
-                </div>
-              </div>
-            </li>
-          )
-        })}
-      </ul>
-    </div>
-  )
-}
-
 // ── ArchivedManager ──────────────────────────────────────────────────────────
 
 export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: string) => void }) {
@@ -332,6 +209,12 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
   const permanentDeleteSession = usePermanentDeleteSession()
   const bulkUnarchive = useBulkUnarchiveSessions()
   const bulkDelete = useBulkPermanentDeleteSessions()
+
+  // Search + ordering
+  const search = useSessionSearch('archived')
+  const ordering = useItemOrdering(archivedSessions, ARCHIVED_SPEC, search.matchedIds)
+  // visible = filtered + sorted + collapsed-aware
+  const visible = ordering.orderedSessions
 
   const [permDeleteTarget, setPermDeleteTarget] = useState<ArchivedSession | null>(null)
   const [unarchivingId, setUnarchivingId] = useState<string | null>(null)
@@ -356,7 +239,10 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
   }
 
   function toggleOne(id: string, shiftKey = false) {
-    const ids = archivedSessions.map((s) => s.id)
+    // Range over the VISIBLE (grouped/sorted/filtered) order — a shift-click range
+    // must follow what the user sees, not the raw archived list. A click whose anchor
+    // is currently hidden (anchorIdx === -1) falls through to a plain toggle.
+    const ids = visible.map((s) => s.id)
     const anchorIdx = anchorId === null ? -1 : ids.indexOf(anchorId)
 
     if (shiftKey && anchorIdx !== -1) {
@@ -381,11 +267,12 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
     setAnchorId(id)
   }
 
+  // toggleAll operates on the VISIBLE (filtered) set, not the raw list
   function toggleAll() {
     setSelected((prev) => {
-      const allIds = archivedSessions.map((s) => s.id)
-      const everySelected = allIds.length > 0 && allIds.every((id) => prev.has(id))
-      return everySelected ? new Set() : new Set(allIds)
+      const visibleIds = visible.map((s) => s.id)
+      const everySelected = visibleIds.length > 0 && visibleIds.every((id) => prev.has(id))
+      return everySelected ? new Set() : new Set(visibleIds)
     })
   }
 
@@ -431,6 +318,100 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
 
   const selectedNames = archivedSessions.filter((s) => selected.has(s.id)).map(displayNameOf)
 
+  // ── Per-row renderer ──────────────────────────────────────────────────────────
+  // Returns a keyed <div> (not <li>) because GroupedList panels are <div role="group">
+  // and bare <li> elements inside a <div> are invalid HTML.
+  function renderArchivedRow(s: ArchivedSession) {
+    const displayName = displayNameOf(s)
+    const archivedDate = new Date(s.archivedAt).toLocaleDateString(undefined, {
+      year: 'numeric', month: 'short', day: 'numeric',
+    })
+    return (
+      <div
+        key={s.id}
+        className={cn(
+          'flex flex-col gap-2 rounded-lg border border-gray-200 dark:border-gray-700',
+          'bg-white dark:bg-gray-800 px-3 py-2',
+        )}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 flex-1 min-w-0">
+            <input
+              type="checkbox"
+              checked={selected.has(s.id)}
+              onClick={(e) => { shiftHeld.current = e.shiftKey }}
+              onChange={() => toggleOne(s.id, shiftHeld.current)}
+              aria-label={`Select ${displayName}`}
+              className={cn(CHECKBOX_CLS, 'mt-0.5')}
+            />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{displayName}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                {s.account} · Archived {archivedDate}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => onReviewSession(s.id)}
+              className={cn(
+                'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
+                'border border-gray-300 dark:border-gray-600',
+                'text-gray-700 dark:text-gray-300',
+                'hover:bg-gray-100 dark:hover:bg-gray-700',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+              )}
+              aria-label={`Review ${displayName}`}
+            >
+              Review
+            </button>
+            <button
+              type="button"
+              onClick={() => handleUnarchive(s.id)}
+              disabled={unarchivingId === s.id}
+              className={cn(
+                'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
+                'bg-blue-600 hover:bg-blue-700 text-white',
+                'dark:bg-blue-700 dark:hover:bg-blue-600',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                'disabled:opacity-40',
+              )}
+              aria-label={`Unarchive ${displayName}`}
+            >
+              {unarchivingId === s.id ? 'Restoring…' : 'Unarchive'}
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePermanentDelete(s)}
+              className={cn(
+                'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+                'text-red-500 dark:text-red-400',
+                'hover:bg-red-50 dark:hover:bg-red-900/30',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500',
+              )}
+              aria-label={`Delete ${displayName} permanently`}
+            >
+              <Trash2 size={14} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Select-all header state — operates on the VISIBLE (filtered) set ──────────
+  const selectAllRef = useRef<HTMLInputElement>(null)
+  // A checkbox's `change` event doesn't carry modifier keys, but its `click` does — and click
+  // always fires first (even for keyboard/space toggles). Capture shift here, read it in onChange.
+  const shiftHeld = useRef(false)
+  const allSelected = visible.length > 0 && visible.every((s) => selected.has(s.id))
+  const someSelected = visible.some((s) => selected.has(s.id))
+
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someSelected && !allSelected
+  }, [someSelected, allSelected])
+
   return (
     <div className="space-y-3">
       <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
@@ -451,16 +432,75 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
         />
       )}
 
-      <ArchivedList
-        sessions={archivedSessions}
-        selected={selected}
-        onToggle={toggleOne}
-        onToggleAll={toggleAll}
-        onReview={onReviewSession}
-        onUnarchive={handleUnarchive}
-        onPermanentDelete={handlePermanentDelete}
-        unarchivingId={unarchivingId}
-      />
+      {/* Controls strip — only when there are archived sessions at all */}
+      {archivedSessions.length > 0 && (
+        <SessionListControls
+          groupBy={ordering.groupBy}
+          sortBy={ordering.sortBy}
+          onGroupByChange={ordering.setGroupBy}
+          onSortByChange={ordering.setSortBy}
+          groupOptions={ARCHIVED_GROUP_OPTIONS}
+          sortOptions={ARCHIVED_SORT_OPTIONS}
+          searchQuery={search.query}
+          onSearchChange={search.setQuery}
+          searchPlaceholder="Search archived…"
+          searchAriaLabel="Search archived sessions"
+        />
+      )}
+
+      {/* Empty state: no archived sessions at all */}
+      {archivedSessions.length === 0 && (
+        <p className="text-sm text-gray-500 dark:text-gray-400 py-6 text-center">
+          No archived sessions.
+        </p>
+      )}
+
+      {/* Empty state: search active but no matches */}
+      {archivedSessions.length > 0 && search.isFiltered && visible.length === 0 && (
+        <div className="py-6 text-center space-y-2">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            No archived sessions match your search.
+          </p>
+          <button
+            type="button"
+            onClick={() => search.setQuery('')}
+            className={cn(
+              'text-xs text-blue-600 dark:text-blue-400 underline',
+              'hover:text-blue-700 dark:hover:text-blue-300',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
+            )}
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
+      {/* List with grouping — only when there are visible sessions */}
+      {archivedSessions.length > 0 && visible.length > 0 && (
+        <div className="space-y-2">
+          {/* Select-all header row */}
+          <div className="flex items-center gap-2 px-1">
+            <input
+              ref={selectAllRef}
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleAll}
+              aria-label="Select all"
+              className={CHECKBOX_CLS}
+            />
+            <span className="text-xs text-gray-500 dark:text-gray-400">Select all</span>
+          </div>
+
+          <div role="list" aria-label="Archived sessions">
+            <GroupedList
+              groups={ordering.groups}
+              renderRow={renderArchivedRow}
+              collapsedKeys={ordering.collapsedKeys}
+              onToggleCollapse={ordering.toggleCollapse}
+            />
+          </div>
+        </div>
+      )}
 
       {permDeleteTarget && (
         <PermanentDeleteDialog

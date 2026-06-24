@@ -1,0 +1,18 @@
+/**
+ * Best-effort "which repo is this?" label from a working-directory path, for the
+ * archived list (archived rows carry `cwd`, not the live `repo` field). Feed the
+ * result into formatRepoLabel(), which renders null/empty as the "Scratch" bucket.
+ *
+ * ccswitch worktrees live at `<repo>/.ccswitch/worktrees/<name>/<hash>`, so the
+ * basename is a meaningless hash — we take the segment just above `.ccswitch`
+ * instead. Everything else falls back to the path basename.
+ */
+export function repoFromCwd(cwd: string | null | undefined): string | null {
+  const trimmed = cwd?.trim()
+  if (!trimmed) return null
+  const parts = trimmed.split('/').filter(Boolean)
+  if (parts.length === 0) return null
+  const ccIdx = parts.indexOf('.ccswitch')
+  if (ccIdx > 0) return parts[ccIdx - 1]
+  return parts[parts.length - 1]
+}

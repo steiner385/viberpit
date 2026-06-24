@@ -1,5 +1,5 @@
 import type { Session } from '@/api/types'
-import { TIER_RANK, TIER_LABEL, type StatusTier } from './statusTier'
+import { TIER_RANK, TIER_LABEL } from './statusTier'
 import { triageTier, triageRank } from './triageTier'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp } from '@/lib/relativeTime'
@@ -7,11 +7,24 @@ import { isValidTimestamp } from '@/lib/relativeTime'
 export type GroupBy = 'none' | 'repo' | 'status'
 export type SortBy = 'status' | 'lastActive' | 'age' | 'name'
 
-export interface SessionGroup {
+export interface SessionGroup<T = Session> {
   key: string
   label: string | null
   count: number
-  sessions: Session[]
+  sessions: T[]
+}
+
+export interface GroupDef<T> {
+  /** Map an item to its bucket. `order` sorts buckets (lower first); ties break on label. */
+  bucketOf: (item: T) => { key: string; label: string; order?: number }
+}
+
+export interface OrderingConfig<T> {
+  idOf: (item: T) => string
+  /** Keyed by GroupBy value. 'none' is implicit (single null-label group). */
+  groupings: Record<string, GroupDef<T>>
+  /** Keyed by SortBy value. */
+  sorts: Record<string, (a: T, b: T) => number>
 }
 
 const byId = (a: Session, b: Session): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
@@ -36,56 +49,66 @@ const COMPARATORS: Record<SortBy, (a: Session, b: Session) => number> = {
   name: (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || byId(a, b),
 }
 
+/** Generic group+sort engine. Buckets via config.groupings[groupBy]; 'none' = flat. */
+export function orderItems<T>(
+  items: readonly T[],
+  groupBy: string,
+  sortBy: string,
+  config: OrderingConfig<T>,
+): SessionGroup<T>[] {
+  if (items.length === 0) return []
+  const sorted = [...items].sort(config.sorts[sortBy])
+  const def = config.groupings[groupBy]
+  if (groupBy === 'none' || !def) {
+    return [{ key: 'all', label: null, count: sorted.length, sessions: sorted }]
+  }
+  const buckets = new Map<string, { label: string; order: number; sessions: T[] }>()
+  for (const it of sorted) {
+    const b = def.bucketOf(it)
+    const cur = buckets.get(b.key) ?? { label: b.label, order: b.order ?? 0, sessions: [] }
+    cur.sessions.push(it)
+    buckets.set(b.key, cur)
+  }
+  return [...buckets.entries()]
+    .sort(
+      ([, a], [, b]) =>
+        a.order - b.order || a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }),
+    )
+    .map(([key, b]) => ({ key, label: b.label, count: b.sessions.length, sessions: b.sessions }))
+}
+
+/** Live-session ordering: repo + status grouping, status/lastActive/age/name sorts. */
+export const LIVE_ORDERING: OrderingConfig<Session> = {
+  idOf: (s) => s.id,
+  groupings: {
+    repo: {
+      bucketOf: (s) => {
+        const rl = formatRepoLabel(s.repo)
+        return { key: rl.text, label: rl.text, order: rl.isScratch ? 1 : 0 }
+      },
+    },
+    status: {
+      bucketOf: (s) => {
+        const tier = triageTier(s)
+        return { key: tier, label: TIER_LABEL[tier], order: TIER_RANK[tier] }
+      },
+    },
+  },
+  sorts: COMPARATORS,
+}
+
+/** Live wrapper — unchanged signature; existing callers/tests keep working. */
 export function orderSessions(
   sessions: readonly Session[],
   groupBy: GroupBy,
   sortBy: SortBy,
 ): SessionGroup[] {
-  if (sessions.length === 0) return []
-  const sorted = [...sessions].sort(COMPARATORS[sortBy])
-
-  if (groupBy === 'none') {
-    return [{ key: 'all', label: null, count: sorted.length, sessions: sorted }]
-  }
-
-  if (groupBy === 'status') {
-    // Derive the tier list from TIER_RANK (single source of truth) so a newly-added
-    // tier can't be silently dropped from the grouped view — adding one to the rank
-    // table is enough. Ordered ascending by rank.
-    const tiers = (Object.keys(TIER_RANK) as StatusTier[]).sort(
-      (a, b) => TIER_RANK[a] - TIER_RANK[b],
-    )
-    const groups: SessionGroup[] = []
-    for (const tier of tiers) {
-      const inTier = sorted.filter((s) => triageTier(s) === tier)
-      if (inTier.length) {
-        groups.push({ key: tier, label: TIER_LABEL[tier], count: inTier.length, sessions: inTier })
-      }
-    }
-    return groups
-  }
-
-  // groupBy === 'repo'
-  const buckets = new Map<string, { label: string; isScratch: boolean; sessions: Session[] }>()
-  for (const s of sorted) {
-    const rl = formatRepoLabel(s.repo)
-    const bucket = buckets.get(rl.text) ?? { label: rl.text, isScratch: rl.isScratch, sessions: [] }
-    bucket.sessions.push(s)
-    buckets.set(rl.text, bucket)
-  }
-  return [...buckets.values()]
-    .sort(
-      (a, b) =>
-        (a.isScratch ? 1 : 0) - (b.isScratch ? 1 : 0) ||
-        a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }),
-    )
-    .map((b) => ({ key: b.label, label: b.label, count: b.sessions.length, sessions: b.sessions }))
+  return orderItems(sessions, groupBy, sortBy, LIVE_ORDERING)
 }
 
-/** A single keyboard-navigable item in the session list: a group header or a session row. */
-export type NavItem =
+export type NavItem<T = Session> =
   | { kind: 'header'; key: string; label: string; count: number; collapsed: boolean }
-  | { kind: 'session'; session: Session }
+  | { kind: 'session'; session: T }
 
 /**
  * Flatten ordered groups into the cursor's navigation domain: a labelled group
@@ -93,11 +116,11 @@ export type NavItem =
  * items. When a group has no label (groupBy='none') no header is emitted, so the
  * result is exactly the flat session list — the ungrouped view is unchanged.
  */
-export function buildNavItems(
-  groups: readonly SessionGroup[],
+export function buildNavItems<T>(
+  groups: readonly SessionGroup<T>[],
   collapsedKeys: ReadonlySet<string>,
-): NavItem[] {
-  const items: NavItem[] = []
+): NavItem<T>[] {
+  const items: NavItem<T>[] = []
   for (const g of groups) {
     const collapsed = collapsedKeys.has(g.key)
     if (g.label !== null) {
