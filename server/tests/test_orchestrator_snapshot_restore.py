@@ -43,3 +43,10 @@ async def test_restore_relaunches_and_splits_results(tmp_path):
     assert res["restored"] == ["s1"] and res["failed"] == ["s2"]
     assert set(o.ensured) == {"s1", "s2"}
     assert ds.read_snapshot(path=p) == []   # cleared
+
+
+def test_snapshot_restore_registered_as_rpc():
+    import inspect
+    from server.ipc import orchestrator_rpc
+    src = inspect.getsource(orchestrator_rpc.register_orchestrator_rpc)
+    assert "snapshot_deploy" in src and "restore_deploy" in src
