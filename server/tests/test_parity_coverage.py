@@ -1,6 +1,6 @@
 import pytest
 
-from server.github.parity.coverage import PHASE_FIELDS, covered_fields
+from server.github.parity.coverage import covered_fields
 
 
 def test_phase0_covers_basic_pr_fields():
