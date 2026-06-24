@@ -1,9 +1,10 @@
-from server.tests.fakes import fake_sdk as f
-from server.sessions.translator import Translator
-from server.sessions import events as ev
-from server.sessions.events import (TurnStart, ThinkingDelta, ToolCall, ToolResult,
-                                     TurnEnd, ToolKind, SessionMeta, TextDelta, ErrorEvent)
 from claude_agent_sdk import TextBlock
+from claude_agent_sdk.types import SystemMessage
+from server.sessions import events as ev
+from server.sessions.events import (ErrorEvent, SessionMeta, TextDelta, ThinkingDelta,
+                                     ToolCall, ToolKind, ToolResult, TurnEnd, TurnStart)
+from server.sessions.translator import Translator
+from server.tests.fakes import fake_sdk as f
 
 def _run(msgs):
     tr = Translator(); out = []
@@ -249,6 +250,29 @@ def test_marker_only_in_interim_top_level_message_is_not_complete():
     assert _turn_end(_drive(msgs)).outcome == "success"
 
 
+# ---- ApiRetry event tests ----
+
+def _api_error_msg(status=529, attempt=3, max_retries=20):
+    return SystemMessage(subtype="api_error", data={
+        "type": "system", "subtype": "api_error",
+        "error": {"status": status, "formatted": f"{status} Overloaded"},
+        "retryAttempt": attempt, "maxRetries": max_retries,
+    })
+
+
+def test_translator_emits_apiretry_for_midturn_api_error():
+    tr = Translator()
+    out = tr.feed(_api_error_msg())
+    assert len(out) == 1
+    e = out[0]
+    assert isinstance(e, ev.ApiRetry)
+    assert e.status == 529 and e.attempt == 3 and e.max_retries == 20
+
+
+def test_apiretry_has_no_wire_form():
+    assert not hasattr(ev.ApiRetry(turn_id="t", status=529, attempt=1, max_retries=20), "to_wire")
+
+
 def test_compact_boundary_emits_condensing_inactive():
     tr = Translator()
     out = tr.feed(f.sys_compact_boundary(trigger="auto", pre_tokens=1234))
@@ -261,5 +285,4 @@ def test_compact_boundary_emits_condensing_inactive():
 
 def test_non_init_non_boundary_system_message_is_ignored():
     tr = Translator()
-    from claude_agent_sdk import SystemMessage
     assert tr.feed(SystemMessage(subtype="something_else", data={})) == []

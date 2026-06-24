@@ -3,7 +3,8 @@
 Kept dependency-free and side-effect-free so it is exhaustively table-testable.
 Precedence (highest first): a pending plan-approval, then a pending question
 (``waiting_question``), then a pending permission (``waiting_input``), then
-context condensing (``condensing``), then an active turn, then a completed turn,
+context condensing (``condensing``), then an active turn that is backing off on a
+529/5xx overload (``retrying``), then any other active turn, then a completed turn,
 else never-ran. ``limited``/``ended`` are orchestrator overlays and intentionally
 NOT modelled here.
 """
@@ -21,6 +22,7 @@ class StatusSignals:
     turns_completed: int
     last_turn_outcome: str = "success"
     condensing: bool = False
+    retrying: bool = False
 
 
 # Statuses at which the assistant has handed output back to the user — either a
@@ -47,6 +49,8 @@ def derive_status(sig: StatusSignals) -> str:
         return "waiting_input"
     if sig.condensing:
         return "condensing"
+    if sig.turn_active and sig.retrying:
+        return "retrying"
     if sig.turn_active:
         return "in_progress"
     if sig.turns_completed >= 1:
