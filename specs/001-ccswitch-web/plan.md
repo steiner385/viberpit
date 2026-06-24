@@ -6,6 +6,31 @@
 **Created:** 2026-06-19
 **Branch:** `impl/ccswitch` (recommend branching the web work fresh from `master` after PR #1 merges)
 
+## Status as of 2026-06-24
+
+This plan is the **design-time roadmap**; the shipped system has outgrown it. Phases 0–2 functional
+goals are met and the app runs in production (Tailscale-hosted, daemon-mode). Two architectural
+pivots are **not** reflected in the original roadmap below — recorded here rather than rewriting it:
+
+1. **Terminal → structured view.** The planned Phase 2 centerpiece (xterm.js raw terminal) was
+   **never built**. The Phase 3 "deferred alternate" — an Agent-SDK stream-json structured view
+   (message bubbles, tool cards, diffs) — became the **sole, primary** UI. Rendering is
+   `SessionBody`→`TranscriptView`→`Turn` over a normalized event reducer (`web/src/session/reducer.ts`,
+   `events.ts`); there is no terminal emulator in `web/`. **Phase 3 is therefore effectively complete,
+   not deferred.**
+2. **Daemon/IPC process separation, pulled forward from Phase 4.** Sessions are owned by an
+   out-of-process daemon (`server/ipc/daemon.py`, `orchestrator_rpc.py`, `ccswitch-daemon.service`),
+   so they survive web-process restarts — the "Phase 4 detached supervisor" mitigation shipped early.
+   The bounded scrollback ring lives there (`daemon.py`, `deque(maxlen=256)`); the in-process path
+   still uses an unbounded `asyncio.Queue` (`server/sessions/driver.py`) — a minor latent divergence.
+
+Still deferred (Phase 4): app-level passkey/WebAuthn (scaffolded, `WEBAUTHN_ENABLED=false`),
+rate-limited login, public-hosting hardening. The data model is faithful to `data-model.md`
+(snake_case columns) with extra `Session` columns added for features built past the original spec
+(`repo`, `branch`, `title`, `permission_mode`, `model`, `sub_agents`, `last_turn_at`, …).
+
+Per-phase status is annotated inline in the roadmap below.
+
 ## Technical Context
 
 | Area | Decision |
@@ -68,7 +93,7 @@ cc-account-switcher/
 Each phase is independently shippable and ends with passing tests (and, where it launches sessions,
 a live smoke). Phases map to spec §Roadmap.
 
-### Phase 0 — Config-dir launch correctness (foundation; fixes current breakage)
+### Phase 0 — Config-dir launch correctness (foundation; fixes current breakage)  — ✅ SHIPPED
 - Capture per-account `.claude.json` in `ccswitch add`; compose per-account `.claude.json`
   (account identity + shared allowlist: `mcpServers`, `projects`, `allowedTools`).
 - Rewrite `reconcile_links` to a **share allowlist** (`plugins`, `commands`, `settings*.json`,
@@ -76,7 +101,7 @@ a live smoke). Phases map to spec §Roadmap.
   `sessions/`, `agents/`, `tasks/`, history) per account.
 - **Acceptance:** a real `claude -p "ok"` runs under `cfg/<acct>`; `ccmax`-style resume works.
 
-### Phase 1 — Backend session engine + API
+### Phase 1 — Backend session engine + API  — ✅ SHIPPED (+ daemon/IPC mode, pulled forward from Phase 4)
 - `SessionManager`: PTY spawn under composed config dir; per-session scrollback ring (bounded);
   **wait-for-idle rotation** (detect idle = no PTY output for the idle threshold, then on a limit
   signal kill + `--resume` on next-best account, rebridge same session id, force repaint).
@@ -86,7 +111,7 @@ a live smoke). Phases map to spec §Roadmap.
 - REST (`sessions`/`accounts`/`auth`/`health`) + WebSocket bridge + control/event channel.
 - **Acceptance:** API + WS tests green (fake-`claude` PTY stub); ≥85% coverage on critical paths.
 
-### Phase 2 — Frontend (dashboard + terminal)
+### Phase 2 — Frontend (dashboard + terminal)  — ⚠️ SHIPPED EXCEPT xterm.js terminal (replaced by the Phase 3 structured view)
 - Dashboard: cross-account session list (name · account badge · status · usage), usage strip,
   new/rename/close/switch; empty/first-run state; 44px targets; status by text+icon.
 - Session view: xterm.js terminal over WS; mobile helper-key bar; full-screen on phone with a
@@ -95,17 +120,22 @@ a live smoke). Phases map to spec §Roadmap.
 - a11y: management UI WCAG 2.1 AA; terminal `aria-live` recent-output region + documented note.
 - **Acceptance:** Vitest/RTL component tests; Playwright dashboard↔session + mobile-viewport pass.
 
-### Phase 3 — Structured session view (deferred)
-Agent SDK stream-json structured (message/tool-card/diff) view as an alternate to the terminal.
+### Phase 3 — Structured session view  — ✅ SHIPPED AS PRIMARY (no longer deferred; replaced the terminal)
+Agent SDK stream-json structured (message/tool-card/diff) view. Originally scoped as an *alternate*
+to the terminal; in practice it is the **only** session UI (`TranscriptView`/`Turn` + the
+`web/src/session/` reducer). The xterm.js terminal from Phase 2 was not built.
 
-### Phase 4 — Public-hosting hardening (deferred)
+### Phase 4 — Public-hosting hardening (deferred; partially pulled forward)
 Enable the app-level passkey/WebAuthn auth, rate-limited login, audit log, Railway deploy.
+**Done early:** the detached session supervisor (daemon/IPC mode) and the audit-event log.
+**Still deferred:** passkey/WebAuthn (scaffolded, `WEBAUTHN_ENABLED=false`), rate-limited login,
+public exposure.
 
 ## Complexity Tracking
 
 | Risk | Mitigation |
 |------|------------|
-| PTY ownership vs server restart (sessions are Uvicorn children) | v1: sessions live within a server lifetime; document the restart limitation; Phase 4 can add a detached supervisor. (research.md R3) |
+| PTY ownership vs server restart (sessions are Uvicorn children) | ✅ Resolved ahead of plan: sessions are owned by a detached daemon (`server/ipc/`), surviving web-process restarts; the original "v1 lives within server lifetime" limitation no longer applies. (research.md R3) |
 | `.claude.json` account-identity coupling | Per-account capture + compose with shared non-identity allowlist (Phase 0). (research.md R1) |
 | Limit detection in terminal (non-structured) mode | Primary = authoritative usage poll; secondary = transcript-tail (reused from `ccmax`). (research.md R4) |
 | Wait-for-idle could stall rotation if a turn never ends | Idle threshold + a max-wait ceiling, then fall back to interrupt-then-rotate. (research.md R2) |
