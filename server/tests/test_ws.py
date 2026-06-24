@@ -301,6 +301,35 @@ def test_replay_batch_leads_with_reset_on_every_attach(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# attach re-emits the persisted exact context usage (so a reloaded idle session
+# shows real remaining context, not the per-call approximation that reads 0% for
+# 1M-window sessions whose model string lost its [1m] marker)
+# ---------------------------------------------------------------------------
+
+def test_attach_reemits_persisted_context_usage(ws_env):
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-ctx")
+    session_id = session.id
+    # A 1M-window opus session sitting at ~566k tokens — the exact reading the SDK
+    # gave on the last turn, persisted on the record. Without re-emit, a fresh
+    # attach would fall back to the model-string guess (200k → 0%).
+    rec = orch._records[session_id]
+    rec.context_used_tokens = 566286
+    rec.context_max_tokens = 1_000_000
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="replayComplete")
+
+    cu = next((e for e in events if e.get("type") == "contextUsage"), None)
+    assert cu is not None, f"attach did not re-emit contextUsage; saw {[e.get('type') for e in events]}"
+    assert cu["usedTokens"] == 566286
+    assert cu["maxTokens"] == 1_000_000
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
 # replayComplete carries totalTurns / earliestTurn for history extent
 # ---------------------------------------------------------------------------
 
