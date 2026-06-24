@@ -12,6 +12,7 @@ from .translator import Translator
 from .permissions import PermissionRegistry
 from .questions import QuestionRegistry
 from .status import StatusSignals, derive_status
+from .transcript_repair import repair_resumed_transcript
 
 log = logging.getLogger(__name__)
 
@@ -317,6 +318,19 @@ class SessionDriver:
         return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied by user")
 
     async def start(self):
+        # A turn interrupted mid-tool-call (manual Stop, stall-watchdog, or a deploy
+        # drain that cancels the drain before the CLI writes its synthetic
+        # "[Request interrupted by user for tool use]" result) leaves an ORPHANED
+        # tool_use as the transcript tail. On resume the CLI rejects that state with
+        # error_during_execution / [ede_diagnostic] and every turn dead-ends. Heal it
+        # before handing the session back to the SDK. Best-effort — never block start.
+        if self.resume:
+            try:
+                await asyncio.to_thread(
+                    repair_resumed_transcript, self.config_dir, self.resume)
+            except Exception:
+                log.warning("driver.start: transcript repair failed session=%s",
+                            self.session_id, exc_info=True)
         self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
                                      self.resume, on_pre_compact=self._on_pre_compact)
         await self._client.__aenter__()
