@@ -38,6 +38,7 @@ class PullRequestInfo:
     merged: bool = False
     updated_at: str = ""
     checks_detail: tuple[CheckDetail, ...] = ()
+    stage: str = ""  # open-stage classifier output: 'ci' | 'ready' | 'parked' | ''
 
     def to_dict(self) -> dict:
         return {
@@ -52,6 +53,7 @@ class PullRequestInfo:
             "merged": self.merged,
             "updated_at": self.updated_at,
             "checks_detail": [c.to_dict() for c in self.checks_detail],
+            "stage": self.stage,
         }
 
     @classmethod
@@ -69,6 +71,7 @@ class PullRequestInfo:
             merged=d.get("merged", False),
             updated_at=d.get("updated_at", ""),
             checks_detail=tuple(CheckDetail.from_dict(c) for c in d.get("checks_detail", [])),
+            stage=d.get("stage", ""),
         )
 
 

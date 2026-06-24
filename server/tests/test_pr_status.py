@@ -18,6 +18,22 @@ def test_from_dict_roundtrips_to_dict():
     assert PullRequestInfo.from_dict(deployed.to_dict()).deployed is True
 
 
+def test_stage_field_roundtrips():
+    """stage field survives to_dict → from_dict (RPC round-trip)."""
+    pr = PullRequestInfo(42, "https://github.com/o/r/pull/42", "open", "passing", "t",
+                         stage="ready")
+    roundtripped = PullRequestInfo.from_dict(pr.to_dict())
+    assert roundtripped.stage == "ready"
+    # Default stage is empty string
+    pr_no_stage = PullRequestInfo(43, "u", "open", "passing", "t")
+    assert pr_no_stage.stage == ""
+    assert PullRequestInfo.from_dict(pr_no_stage.to_dict()).stage == ""
+    # Absent key in wire dict → default empty string
+    d = pr.to_dict()
+    del d["stage"]
+    assert PullRequestInfo.from_dict(d).stage == ""
+
+
 def _pr(number, state, *, draft=False, rollup="SUCCESS", updated="2026-06-22T10:00:00Z"):
     # Non-merged PRs only — `mergedAt` is absent here; use `_merged_pr` for MERGED-state cases.
     commit = {"commit": {"statusCheckRollup": {"state": rollup} if rollup else None}}

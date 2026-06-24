@@ -14,6 +14,7 @@ from __future__ import annotations
 # source of that data and widen this map.
 PHASE_FIELDS: dict[int, frozenset[str]] = {
     0: frozenset({"number", "url", "checks"}),
+    1: frozenset({"number", "url", "checks"}) | frozenset({"stage"}),
 }
 
 
