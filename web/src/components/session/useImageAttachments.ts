@@ -1,5 +1,6 @@
 // web/src/components/session/useImageAttachments.ts
 import { useCallback, useState } from 'react'
+import { maybeConvertHeic } from './heicConvert'
 
 export const ALLOWED = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 export const MAX_BYTES = 10 * 1024 * 1024
@@ -22,20 +23,31 @@ export function useImageAttachments(initial?: Attachment[]) {
   const addFiles = useCallback(async (files: FileList | File[]) => {
     const list = Array.from(files)
     let accepted = attachments.length
-    for (const file of list) {
+    for (const original of list) {
       if (accepted >= MAX_IMAGES) break
-      const previewUrl = URL.createObjectURL(file)
+      let file: File
+      try {
+        file = await maybeConvertHeic(original)
+      } catch {
+        setAttachments((a) => [...a, {
+          key: _nextKey(), mime: original.type, name: original.name,
+          previewUrl: '', error: 'Couldn’t read photo' }])
+        accepted++
+        continue
+      }
+      // Error chips never render a thumbnail (see AttachmentChips), so only a
+      // successful upload allocates an object URL — no orphaned blob: URLs.
       if (!ALLOWED.includes(file.type)) {
         setAttachments((a) => [...a, {
           key: _nextKey(), mime: file.type, name: file.name,
-          previewUrl, error: 'Unsupported file type' }])
+          previewUrl: '', error: 'Unsupported file type' }])
         accepted++
         continue
       }
       if (file.size > MAX_BYTES) {
         setAttachments((a) => [...a, {
           key: _nextKey(), mime: file.type, name: file.name,
-          previewUrl, error: 'Image too large (max 10 MB)' }])
+          previewUrl: '', error: 'Image too large (max 10 MB)' }])
         accepted++
         continue
       }
@@ -48,12 +60,12 @@ export function useImageAttachments(initial?: Attachment[]) {
         const ref = await resp.json()
         setAttachments((a) => [...a, {
           key, id: ref.id, mime: ref.mediaType || file.type,
-          name: ref.filename || file.name, previewUrl }])
+          name: ref.filename || file.name, previewUrl: URL.createObjectURL(file) }])
         accepted++
       } catch {
         setAttachments((a) => [...a, {
           key, mime: file.type, name: file.name,
-          previewUrl, error: 'Upload failed' }])
+          previewUrl: '', error: 'Upload failed' }])
         accepted++
       }
     }

@@ -55,8 +55,15 @@ class UsageError(Exception):
 
 
 def _is_transient_status(status: int) -> bool:
-    """True for statuses that mean 'back off and retry', not 'credential is dead'."""
-    return status == 429 or 500 <= status <= 599
+    """True for statuses that mean 'back off and retry', not 'credential is dead'.
+
+    403 is included because the OAuth endpoints sit behind Cloudflare, which returns
+    it (error 1010) when it blocks a request at the edge — the token never reached
+    Anthropic, so an intermittent block is worth retrying. A genuinely dead grant is
+    400 (invalid_grant) / 401, which stay terminal. refresh_access_token still treats
+    a 403 that survives retries as TransientError (only 400/401 flip needs-reauth).
+    """
+    return status in (403, 429) or 500 <= status <= 599
 
 
 @dataclass
@@ -116,11 +123,11 @@ def http_request(method: str, url: str, headers: dict | None = None,
                  sleep=time.sleep, rng=random.random, clock=time.monotonic) -> tuple[int, bytes]:
     """Issue an HTTP request, retrying transient failures with backoff.
 
-    Retries transient HTTP statuses (429 / 5xx) AND network errors (URLError /
+    Retries transient HTTP statuses (403 / 429 / 5xx) AND network errors (URLError /
     timeout). Retries are safe for our callers: such failures happen before the
     (single-use) refresh token is consumed server-side. Terminal statuses (4xx
-    other than 429) and 2xx return immediately; a persistent network failure
-    raises TransientError so callers leave the account status unchanged.
+    other than 403/429 — notably 400/401) and 2xx return immediately; a persistent
+    network failure raises TransientError so callers leave the account status unchanged.
 
     ``max_total_sec`` bounds total wall-clock across all attempts so a stalling
     endpoint can't turn max_retries x socket-timeout into minutes of blocking.
