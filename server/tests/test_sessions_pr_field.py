@@ -1,6 +1,6 @@
 import pytest
 
-from server.api.sessions import _record_to_dict, _resolve_pr
+from server.api.sessions import _record_to_dict, _resolve_prs
 from server.github.pr_status import PullRequestInfo
 from server.sessions.types import SessionRecord
 
@@ -12,39 +12,37 @@ def _rec():
     )
 
 
+def test_record_to_dict_includes_prs_when_given():
+    prs = [PullRequestInfo(9, "https://github.com/o/r/pull/9", "open", "passing", "t")]
+    d = _record_to_dict(_rec(), repo="o/r", prs=prs)
+    assert d["prs"] == [{
+        "number": 9, "url": "https://github.com/o/r/pull/9",
+        "state": "open", "checks": "passing", "title": "t", "deployed": False,
+    }]
+    assert "pr" not in d
+
+
+def test_record_to_dict_prs_empty_by_default():
+    assert _record_to_dict(_rec(), repo="o/r")["prs"] == []
+
+
 class _SyncOrch:
-    """In-process orchestrator: pr_for is synchronous."""
-    def pr_for(self, repo, branch):
-        return PullRequestInfo(1, "u", "open", "none", "t") if branch else None
+    def prs_for(self, sid):
+        return [PullRequestInfo(1, "u", "open", "none", "t")]
 
 
 class _AsyncOrch:
-    """Remote orchestrator: pr_for awaits an RPC."""
-    async def pr_for(self, repo, branch):
-        return PullRequestInfo(2, "u", "merged", "passing", "t") if branch else None
+    async def prs_for(self, sid):
+        return [PullRequestInfo(2, "u", "merged", "passing", "t")]
 
 
-class _NoPrOrch:
-    """An orchestrator with no pr_for at all (must not raise)."""
+class _NoOrch:
+    pass
 
 
 @pytest.mark.asyncio
-async def test_resolve_pr_handles_sync_async_and_missing():
+async def test_resolve_prs_handles_sync_async_and_missing():
     rec = _rec()
-    assert (await _resolve_pr(_SyncOrch(), rec)).number == 1   # in-process: sync
-    assert (await _resolve_pr(_AsyncOrch(), rec)).number == 2  # remote: awaited
-    assert await _resolve_pr(_NoPrOrch(), rec) is None         # absent: graceful
-
-
-def test_record_to_dict_includes_pr_when_given():
-    pr = PullRequestInfo(9, "https://github.com/o/r/pull/9", "open", "passing", "t")
-    d = _record_to_dict(_rec(), repo="o/r", pr=pr)
-    assert d["pr"] == {
-        "number": 9, "url": "https://github.com/o/r/pull/9",
-        "state": "open", "checks": "passing", "title": "t",
-        "deployed": False,
-    }
-
-
-def test_record_to_dict_pr_null_by_default():
-    assert _record_to_dict(_rec(), repo="o/r")["pr"] is None
+    assert [p.number for p in await _resolve_prs(_SyncOrch(), rec)] == [1]
+    assert [p.number for p in await _resolve_prs(_AsyncOrch(), rec)] == [2]
+    assert await _resolve_prs(_NoOrch(), rec) == []
