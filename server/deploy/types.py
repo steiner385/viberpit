@@ -33,3 +33,4 @@ class DeployStatus:
     phases: dict[str, str] = field(default_factory=dict)  # phase -> PhaseState value
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
+    restore: dict = field(default_factory=dict)

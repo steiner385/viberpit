@@ -95,3 +95,48 @@ async def test_concurrent_deploy_rejected():
     c._lock_acquired = True   # simulate an in-flight deploy
     with pytest.raises(RuntimeError, match="in progress"):
         await c.deploy_once()
+
+
+@pytest.mark.asyncio
+async def test_daemon_deploy_snapshots_and_restores():
+    g = FakeGit("a", "b", [])
+    s, calls = make_steps(healthy=True)
+    s.classify_change = lambda files: "daemon_changed"
+
+    rpc_calls = []
+    class FakeDaemon:
+        async def call(self, method, **params):
+            rpc_calls.append(method)
+            if method == "begin_drain": return {}
+            if method == "drain_status": return {"state": "ready"}
+            if method == "snapshot_deploy": return {"live": [{"id": "s1", "status": "working"}]}
+            if method == "restore_deploy": return {"restored": ["s1"], "failed": ["s2"]}
+            raise AssertionError(method)
+
+    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s, daemon_enabled=True,
+                         daemon_client_factory=lambda: FakeDaemon(),
+                         changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
+    st = await c.deploy_once()
+    assert "snapshot_deploy" in rpc_calls and "restore_deploy" in rpc_calls
+    assert st.restore == {"restored": ["s1"], "failed": ["s2"]}
+    assert any("s2" in w for w in st.warnings)        # failed restore flagged, deploy stands
+    assert st.phases["save"] == "done" and st.phases["resume"] == "done"
+    assert st.error is None
+
+
+@pytest.mark.asyncio
+async def test_edge_only_skips_snapshot_and_restore():
+    g = FakeGit("a", "b", [])
+    s, calls = make_steps(healthy=True)
+    rpc_calls = []
+    class FakeDaemon:
+        async def call(self, method, **params):
+            rpc_calls.append(method); return {}
+    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s, daemon_enabled=True,
+                         daemon_client_factory=lambda: FakeDaemon(),
+                         changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
+    st = await c.deploy_once()
+    assert "restore_deploy" not in rpc_calls
+    assert st.error is None

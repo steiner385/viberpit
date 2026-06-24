@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import subprocess
-from typing import Callable
+from typing import Any, Callable
 
 from server.deploy import git as _git
 from server.deploy import steps as _steps
@@ -22,7 +22,7 @@ def _default_changed_files(repo: str, a: str, b: str) -> list[str] | None:
 
 class DeployController:
     def __init__(self, repo: str, *, health_url: str, venv_pip: str,
-                 daemon_client_factory: Callable[[], object] | None = None,
+                 daemon_client_factory: Callable[[], Any] | None = None,
                  daemon_enabled: bool = False,
                  steps_mod=_steps, git_mod=_git, drain_mod=_drain,
                  changed_files_fn: Callable[[str, str, str], list[str] | None] = _default_changed_files):
@@ -64,6 +64,15 @@ class DeployController:
                 raise DeployError("preflight", f"CI verdict={verdict}")
             self._set(Phase.PREFLIGHT, PhaseState.DONE)
 
+            # --- save (snapshot live sessions; best-effort) ---
+            self._set(Phase.SAVE, PhaseState.RUNNING)
+            if self._client_factory is not None:
+                try:
+                    await self._client_factory().call("snapshot_deploy")
+                except Exception:
+                    self.status.warnings.append("session snapshot failed (continuing)")
+            self._set(Phase.SAVE, PhaseState.DONE)
+
             # --- update ---
             self._set(Phase.UPDATE, PhaseState.RUNNING)
             self._steps.guard_working_tree(self.repo)
@@ -91,6 +100,18 @@ class DeployController:
             if not self._steps.wait_healthy(short, url=self.health_url):
                 raise DeployError("restart", "health gate failed")
             self._set(Phase.RESTART, PhaseState.DONE)
+
+            # --- resume (eager re-launch; only when the daemon actually restarted) ---
+            if daemon_changed and self._client_factory is not None:
+                self._set(Phase.RESUME, PhaseState.RUNNING)
+                try:
+                    self.status.restore = await self._client_factory().call("restore_deploy")
+                    failed = self.status.restore.get("failed", [])
+                    if failed:
+                        self.status.warnings.append(f"resume failed for {len(failed)} session(s): {', '.join(failed)}")
+                except Exception:
+                    self.status.warnings.append("session restore call failed")
+                self._set(Phase.RESUME, PhaseState.DONE)
 
             # --- publish (best-effort) ---
             if not self._steps.publish_deployment(remote):
