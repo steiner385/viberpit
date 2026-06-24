@@ -16,7 +16,7 @@ import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { TranscriptState } from '@/session/reducer'
 import type { SessionEvent, Command } from '@/session/events'
 import { selectSubAgents } from '@/session/selectors'
-import { remainingContextPct } from '@/lib/contextWindow'
+import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWindow'
 import { useSessions, useAccounts, useSettings } from '@/api/hooks'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { fetchOlderTurns } from '@/api/transcript'
@@ -295,7 +295,12 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
       }
     : null
 
-  const contextPct = remainingContextPct(state.usage, state.model)
+  // Prefer the SDK's exact context occupancy (the `/context` data) when a live turn
+  // has reported it; fall back to the per-call usage approximation for historic or
+  // not-yet-run sessions. The approximation must NOT use `usage.input + cacheRead`
+  // from a live ResultMessage — that is a per-turn aggregate that reads 0%.
+  const contextPct = remainingFromContextUsage(state.contextUsage)
+    ?? remainingContextPct(state.usage, state.model)
   const subAgents = selectSubAgents(state.turns)
 
   // Re-send attach to recover from a stuck load (the SessionPlaceholder Retry).
