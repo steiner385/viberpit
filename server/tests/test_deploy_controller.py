@@ -126,7 +126,7 @@ async def test_daemon_deploy_snapshots_and_restores():
 
 
 @pytest.mark.asyncio
-async def test_edge_only_skips_snapshot_and_restore():
+async def test_edge_only_skips_restore_but_snapshots():
     g = FakeGit("a", "b", [])
     s, calls = make_steps(healthy=True)
     rpc_calls = []
@@ -138,5 +138,26 @@ async def test_edge_only_skips_snapshot_and_restore():
                          daemon_client_factory=lambda: FakeDaemon(),
                          changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
     st = await c.deploy_once()
+    assert "snapshot_deploy" in rpc_calls
     assert "restore_deploy" not in rpc_calls
     assert st.error is None
+
+@pytest.mark.asyncio
+async def test_restart_units_exception_triggers_rollback():
+    """If restart_units raises (e.g. CalledProcessError), rollback is called and
+    status.phases['restart'] == 'failed' with status.error set."""
+    import subprocess
+    g = FakeGit("a", "b", [])
+    s, calls = make_steps(healthy=True)
+    s.classify_change = lambda files: "daemon_changed"
+    # Make restart_units raise CalledProcessError (not a DeployError)
+    def bad_restart(*, daemon_changed, daemon_enabled, run=None):
+        raise subprocess.CalledProcessError(1, ["systemctl"])
+    s.restart_units = bad_restart
+    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s, daemon_enabled=True,
+                         changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
+    st = await c.deploy_once()
+    assert calls.rolled_back is True
+    assert st.phases["restart"] == PhaseState.FAILED.value
+    assert st.error is not None

@@ -10,6 +10,7 @@ EnvironmentFile=/etc/ccswitch/ccswitch.env
 # CCSWITCH_DEPLOY_REPO must point at the deploy checkout (the master worktree).
 WorkingDirectory=/home/tony/ccswitch
 RuntimeDirectory=ccswitch
+RuntimeDirectoryPreserve=yes
 ExecStart=/home/tony/ccswitch/.venv/bin/python -m server.deploy serve
 Restart=on-failure
 RestartSec=5

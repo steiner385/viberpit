@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { usePendingDeploy, useDeployStatus, useStartDeploy } from '@/api/hooks'
 
-const PHASES = ['save', 'update', 'report', 'restart', 'resume'] as const
+const PHASES = ['preflight', 'save', 'update', 'report', 'restart', 'resume'] as const
 const STATE_ICON: Record<string, string> = {
   pending: '○', running: '◐', done: '●', failed: '✗',
 }

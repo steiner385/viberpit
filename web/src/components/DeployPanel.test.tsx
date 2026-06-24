@@ -54,4 +54,12 @@ describe('DeployPanel', () => {
     render(<DeployPanel />)
     expect(screen.getByText(/2 session.*failed to resume/i)).toBeInTheDocument()
   })
+  it('shows preflight phase when it fails', () => {
+    mockHooks({ behind: true, commits: [], ci: 'green' },
+              { running: false, phases: { preflight: 'failed' }, warnings: [],
+                error: 'CI verdict=red' })
+    render(<DeployPanel />)
+    expect(screen.getByText(/preflight/i)).toBeInTheDocument()
+  })
+
 })

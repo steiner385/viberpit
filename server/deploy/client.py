@@ -16,14 +16,14 @@ class DeployControllerClient:
     async def get_status(self) -> dict:
         try:
             r = await self._http.get("/status")
-        except httpx.ConnectError as exc:
+        except httpx.HTTPError as exc:
             raise DeployControllerUnavailable(str(exc)) from exc
         return r.json()
 
     async def start(self) -> tuple[int, dict]:
         try:
             r = await self._http.post("/start")
-        except httpx.ConnectError as exc:
+        except httpx.HTTPError as exc:
             raise DeployControllerUnavailable(str(exc)) from exc
         return r.status_code, r.json()
 

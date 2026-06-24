@@ -35,3 +35,24 @@ async def test_connect_error_raises_unavailable():
     c._http = httpx.AsyncClient(transport=_mock_transport(handler), base_url="http://deploy")
     with pytest.raises(DeployControllerUnavailable):
         await c.get_status()
+
+@pytest.mark.asyncio
+async def test_read_timeout_raises_unavailable():
+    """Non-ConnectError httpx errors (e.g. ReadTimeout) also map to DeployControllerUnavailable."""
+    def handler(req):
+        raise httpx.ReadTimeout("timed out", request=req)
+    c = DeployControllerClient("/tmp/x.sock")
+    c._http = httpx.AsyncClient(transport=_mock_transport(handler), base_url="http://deploy")
+    with pytest.raises(DeployControllerUnavailable):
+        await c.get_status()
+
+
+@pytest.mark.asyncio
+async def test_start_read_timeout_raises_unavailable():
+    """start() also maps non-ConnectError httpx errors to DeployControllerUnavailable."""
+    def handler(req):
+        raise httpx.ReadTimeout("timed out", request=req)
+    c = DeployControllerClient("/tmp/x.sock")
+    c._http = httpx.AsyncClient(transport=_mock_transport(handler), base_url="http://deploy")
+    with pytest.raises(DeployControllerUnavailable):
+        await c.start()
