@@ -156,3 +156,31 @@ def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: fl
             return True
         sleep(sleep_s)
     return False
+
+
+def rollback_to(repo: str, sha: str, *, daemon_changed: bool, daemon_enabled: bool,
+                run: Run = subprocess.run) -> None:
+    """Reset to a known-good commit, rebuild frontend (best-effort), restart both units together.
+
+    Args:
+        repo: Path to repo root.
+        sha: Git commit SHA to reset to.
+        daemon_changed: Whether daemon code changed (controls daemon restart).
+        daemon_enabled: Whether daemon systemd unit is enabled.
+        run: Callable for subprocess execution (defaults to subprocess.run).
+
+    Behavior:
+        1. git reset --hard <sha> — first, reset to the good commit.
+        2. Rebuild frontend best-effort — a rollback build failure only leaves web/dist stale;
+           it must not raise (catches DeployError).
+        3. Restart BOTH units together via restart_units() so they run the same (old) code —
+           never split-version.
+    """
+    run(["git", "-C", repo, "reset", "--hard", sha], check=True, capture_output=True)
+    # Rebuild best-effort — a rollback build failure only leaves web/dist stale; never raise.
+    try:
+        build_frontend(repo, run=run)
+    except DeployError:
+        pass
+    # Restart BOTH together so they run the same (old) code — split-version is worse.
+    restart_units(daemon_changed=daemon_changed, daemon_enabled=daemon_enabled, run=run)
