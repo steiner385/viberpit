@@ -386,6 +386,62 @@ def test_permanent_delete_removes_folder_and_db_row(tmp_path):
     assert not folder_exists
 
 
+def test_permanent_delete_live_session_archives_then_deletes(tmp_path):
+    """permanent_delete on a LIVE session archives it first, then hard-deletes.
+
+    A live session is still in _records/_drivers with its cwd at the original
+    location (outside archive_dir). Deleting it directly would leave a zombie
+    driver and orphan the working directory. permanent_delete must archive first
+    (stop the driver, move the cwd into the archive) and only then remove the
+    archive folder + DB row.
+    """
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    cwd = tmp_path / "live_cwd"
+
+    async def run():
+        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+            cwd.mkdir()
+            (cwd / "work.txt").write_text("live work")
+
+            await init_db(db_url=db_url)
+            await _seed([
+                dict(id="live1", name="Live", account_name="acc1",
+                     claude_session_id=None, status="idle", cwd=str(cwd)),
+            ])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            from server.sessions.types import SessionRecord
+            orch._records["live1"] = SessionRecord(
+                id="live1", name="Live", account="acc1",
+                claude_session_id="", cols=80, rows=24, cwd=str(cwd),
+            )
+            fake_driver = MagicMock()
+            fake_driver.aclose = AsyncMock()
+            orch._drivers["live1"] = fake_driver
+
+            result = await orch.permanent_delete("live1")
+
+            from sqlalchemy import select as sa_select
+            async with db_session() as db:
+                row = (await db.execute(
+                    sa_select(DbSession).where(DbSession.id == "live1")
+                )).scalars().first()
+            return (
+                result, row, fake_driver.aclose.called,
+                "live1" in orch._records, "live1" in orch._drivers,
+                cwd.exists(), (tmp_path / "archive" / "live1").exists(),
+            )
+
+    (deleted, db_row, driver_closed, in_records, in_drivers,
+     cwd_exists, archive_exists) = asyncio.run(run())
+    assert deleted is True
+    assert db_row is None          # DB row hard-deleted
+    assert driver_closed           # driver stopped — no zombie
+    assert not in_records          # cleared from active state
+    assert not in_drivers
+    assert not cwd_exists          # live working dir not orphaned (moved then removed)
+    assert not archive_exists      # archive folder cleaned up too
+
+
 def test_permanent_delete_returns_false_for_unknown(tmp_path):
     """permanent_delete() returns False when the session is not in DB."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
