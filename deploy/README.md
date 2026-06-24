@@ -78,3 +78,14 @@ sudo systemctl daemon-reload
 `server.deploy` restarts `ccswitch-daemon.service` before the edge when daemon code
 changed, but only when `systemctl is-enabled ccswitch-daemon.service` succeeds — making
 the block a complete no-op on hosts where the unit is not yet enabled.
+
+## Deploy controller (`ccswitch-deploy-controller.service`)
+
+Long-lived service that polls `origin/master` (notify-only) and runs user-triggered deploys.
+Serves a UDS at `/run/ccswitch/deploy.sock`; the edge proxies `/api/deploy/*` to it.
+
+    sudo install -m644 deploy/ccswitch-deploy-controller.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now ccswitch-deploy-controller.service
+
+Replaces the retired `ccswitch-deploy.timer`/`.service` (no more auto-deploy).

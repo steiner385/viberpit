@@ -1,0 +1,18 @@
+[Unit]
+Description=ccswitch deploy controller (poll origin/master + user-triggered deploys)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tony
+EnvironmentFile=/etc/ccswitch/ccswitch.env
+# CCSWITCH_DEPLOY_REPO must point at the deploy checkout (the master worktree).
+WorkingDirectory=/home/tony/ccswitch
+RuntimeDirectory=ccswitch
+ExecStart=/home/tony/ccswitch/.venv/bin/python -m server.deploy serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
