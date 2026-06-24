@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import os
 import re
 import subprocess
 from typing import Callable
@@ -69,3 +70,33 @@ def fast_forward(repo: str, ref: str = "master", run: Run = subprocess.run) -> N
             capture_output=True, text=True)
     if r.returncode != 0:
         raise DeployError("update", f"fast-forward pull failed: {r.stderr.strip()}")
+
+
+def changed_paths(repo: str, a: str, b: str, paths: list[str], run: Run = subprocess.run) -> list[str]:
+    r = run(["git", "-C", repo, "diff", "--name-only", a, b, "--", *paths],
+            capture_output=True, text=True)
+    return [p for p in r.stdout.splitlines() if p.strip()]
+
+
+def sync_deps_if_changed(repo: str, a: str, b: str, *, venv_pip: str,
+                         run: Run = subprocess.run) -> list[str]:
+    done: list[str] = []
+    if changed_paths(repo, a, b, ["pyproject.toml", "uv.lock"], run=run):
+        r = run([venv_pip, "install", "-e", ".[server]", "--quiet"],
+                cwd=repo, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise DeployError("update", f"pip install failed: {r.stderr.strip()}")
+        done.append("pip")
+    if changed_paths(repo, a, b, ["web/package-lock.json"], run=run):
+        r = run(["npm", "ci"], cwd=os.path.join(repo, "web"), capture_output=True, text=True)
+        if r.returncode != 0:
+            raise DeployError("update", f"npm ci failed: {r.stderr.strip()}")
+        done.append("npm")
+    return done
+
+
+def build_frontend(repo: str, run: Run = subprocess.run) -> None:
+    r = run(["npm", "run", "build"], cwd=os.path.join(repo, "web"),
+            capture_output=True, text=True)
+    if r.returncode != 0:
+        raise DeployError("update", f"frontend build failed: {r.stderr.strip()}")
