@@ -69,3 +69,37 @@ def test_compute_candidate_by_number_skips_repo_on_gh_error():
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="gh fail")
 
     assert compute_candidate_by_number(["o/r"], run_gh=boom) == {}
+
+
+def test_compute_candidate_sets_stage_from_checks_and_merge_state():
+    """Stage is derived from checks + isDraft + mergeStateStatus."""
+    def fake_gh(args):
+        body = json.dumps({"data": {"repository": {"pullRequests": {"nodes": [
+            {
+                "number": 10, "url": "https://github.com/o/r/pull/10",
+                "isDraft": False, "mergeStateStatus": "CLEAN",
+                "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
+            },
+            {
+                "number": 11, "url": "https://github.com/o/r/pull/11",
+                "isDraft": True, "mergeStateStatus": "CLEAN",
+                "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
+            },
+            {
+                "number": 12, "url": "https://github.com/o/r/pull/12",
+                "isDraft": False, "mergeStateStatus": "DIRTY",
+                "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
+            },
+            {
+                "number": 13, "url": "https://github.com/o/r/pull/13",
+                "isDraft": False, "mergeStateStatus": "CLEAN",
+                "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "PENDING"}}}]},
+            },
+        ]}}}})
+        return subprocess.CompletedProcess(args, 0, stdout=body, stderr="")
+
+    cand = compute_candidate_by_number(["o/r"], run_gh=fake_gh)
+    assert cand[("o/r", 10)].stage == "ready"   # passing + clean → ready
+    assert cand[("o/r", 11)].stage == "parked"  # draft → parked
+    assert cand[("o/r", 12)].stage == "parked"  # passing + DIRTY → parked
+    assert cand[("o/r", 13)].stage == "ci"      # pending → ci

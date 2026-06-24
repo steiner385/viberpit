@@ -32,6 +32,16 @@ _STAGE_MAP = {
     "running": "open",
 }
 
+# Plotroom open stages that map cleanly to ccswitch open-stage vocabulary.
+# Only these are emitted into oracle fields for 1a parity; queue/deploy/merged/etc.
+# stages are out of scope and are silently excluded (the harness skips fields absent
+# from orc.fields, so non-open PRs just don't participate in the stage comparison).
+_OPEN_STAGE_MAP: dict[str, str] = {
+    "ci": "ci",
+    "ready": "ready",
+    "parked": "parked",
+}
+
 # Legacy/assumed-schema state field (plan test uses these values)
 _STATE_MAP = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
 
@@ -125,7 +135,7 @@ def normalize_state(state_json: dict) -> dict[tuple[str, int], OraclePr]:
             # branch: real Plotroom has no headRefName; assumed schema uses headRefName
             branch = pr.get("headRefName", "")
 
-            fields = {
+            fields: dict = {
                 "number": number,
                 "url": pr.get("url", ""),
                 "state": state,
@@ -135,6 +145,16 @@ def normalize_state(state_json: dict) -> dict[tuple[str, int], OraclePr]:
                 "checks": checks_rollup,
                 "checks_detail": checks_detail,
             }
+
+            # Extract oracle stage for 1a parity: only emit when the oracle stage is
+            # in the open set (ci/ready/parked). PRs in queue/deploy/merged/etc. are
+            # excluded so the harness skips them for the stage field.
+            if "stage" in pr and isinstance(pr["stage"], dict):
+                raw_stage = (pr["stage"].get("stage") or "").lower()
+                oracle_stage = _OPEN_STAGE_MAP.get(raw_stage)
+                if oracle_stage is not None:
+                    fields["stage"] = oracle_stage
+
             out[(name, number)] = OraclePr(
                 repo=name, number=number, branch=branch, fields=fields
             )

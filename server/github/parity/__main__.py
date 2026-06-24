@@ -14,6 +14,7 @@ from ccswitch import gitrepos
 from server.github.pr_status import PullRequestInfo, _classify_checks, _rollup_state
 from server.github.parity.harness import ParityReport, diff_snapshots
 from server.github.parity.normalize import normalize_state
+from server.pipeline.stage import derive_open_stage
 
 
 class HarnessError(RuntimeError):
@@ -36,12 +37,14 @@ def fetch_oracle(base_url: str, *, opener=urllib.request.urlopen) -> dict:
 
 def _pr_list_query(repo: str) -> str:
     """GraphQL doc listing OPEN PRs for *repo* with the same statusCheckRollup ccswitch
-    keys on, so the candidate's ``checks`` is classified identically to PrStatusPoller."""
+    keys on, so the candidate's ``checks`` is classified identically to PrStatusPoller.
+    Also requests isDraft and mergeStateStatus for the stage classifier (Phase 1a).
+    """
     owner, _, name = repo.partition("/")
     return (
         f"query {{ repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{"
         f"  pullRequests(states: OPEN, first: 100, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{"
-        f"    nodes {{ number url"
+        f"    nodes {{ number url isDraft mergeStateStatus"
         f"      commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}"
         f"    }} }} }} }}"
     )
@@ -64,9 +67,13 @@ def compute_candidate_by_number(
             continue  # repo-level fetch failure is informational, not a parity verdict
         data = (json.loads(proc.stdout or "{}").get("data") or {}).get("repository") or {}
         for node in ((data.get("pullRequests") or {}).get("nodes") or []):
+            checks = _classify_checks(_rollup_state(node))
+            is_draft = bool(node.get("isDraft"))
+            merge_state_status = node.get("mergeStateStatus")
+            stage = derive_open_stage(checks, merge_state_status, is_draft)
             out[(repo, node["number"])] = PullRequestInfo(
                 number=node["number"], url=node.get("url", ""), state="open",
-                checks=_classify_checks(_rollup_state(node)), title="",
+                checks=checks, title="", is_draft=is_draft, stage=stage,
             )
     return out
 
