@@ -16,20 +16,26 @@ The turn surfaces a red error banner and dead-ends. The user's proven workaround
 re-send the **exact same last message** (e.g. "keep going"), which succeeds immediately.
 We want ccswitch to do that resend automatically.
 
-### Why this is safe to auto-resend
+### Why this is safe to auto-resend — and the exact discriminator
 
-`last_content_type=n/a` means **the model produced no assistant content** — the turn died
-with the user message as the transcript tail and nothing after it. There is no partial tool
-call or partial output to duplicate, so re-sending the same prompt is idempotent. This is the
-core safety invariant the whole feature rests on.
+The discriminating signal is **`stop_reason=null`**. The turn ended without the model
+committing to any continuation (no `tool_use`, no `end_turn`) — it dropped. Re-sending the
+same prompt is idempotent because nothing downstream was committed. The user's screenshot
+confirms a manual resend of the identical message succeeds immediately.
+
+`last_content_type=n/a` is NOT the discriminator: the existing translator test
+(`test_ede_orphaned_tool_use_gets_a_legible_message`) shows the **unsafe** orphaned-tool_use
+case *also* reports `last_content_type=n/a`. The only field that separates safe from unsafe is
+`stop_reason`. The classifier MUST therefore gate on the positive, exact token
+`stop_reason=null` — which can never overlap `stop_reason=tool_use`.
 
 ### What this is NOT
 
 This is a **distinct** `ede_diagnostic` variant from the orphaned-tool_use case
 (`stop_reason=tool_use`), which is already healed by `transcript_repair` on resume
-(`driver.start`). In that variant a tool *did* run, so a naive resend would be unsafe.
-The classifier MUST gate on `last_content_type=n/a` and explicitly exclude
-`stop_reason=tool_use`.
+(`driver.start`). In that variant a tool *did* run, so a naive resend would be unsafe. Gating
+on `stop_reason=null` (not merely "not `tool_use`") also avoids auto-resending any unknown
+future `ede` variant with some other `stop_reason` — tighter is safer.
 
 ## Approach
 
@@ -65,8 +71,10 @@ same-account resend**.
 - In `classify()`, return `TurnFailure(kind="turn_dropped")` when **all** hold:
   - `code == "execution_error"`, and
   - message contains `[ede_diagnostic]`, and
-  - message contains `last_content_type=n/a`, and
-  - message does **not** contain `stop_reason=tool_use`.
+  - message contains `stop_reason=null`.
+
+  (The `stop_reason=null` token alone excludes the `stop_reason=tool_use` variant; no
+  `last_content_type` check is needed and none should be added — both variants share `n/a`.)
 - Order: place this check so it does not shadow / is not shadowed by the existing
   429/401/overload/crash inference. `execution_error` + the `ede` marker is unambiguous, so it
   can be checked early alongside the explicit-code branches.
@@ -99,7 +107,7 @@ if kind == "turn_dropped":
 
 ### 4. `server/sessions/translator.py` — soften the banner
 
-- Extend `_humanize` to also rewrite the `last_content_type=n/a` variant (today only
+- Extend `_humanize` to also rewrite the `stop_reason=null` variant (today only
   `stop_reason=tool_use` is humanized). Use a message that reflects auto-recovery, e.g.:
   > "The turn ended before the model responded. Resending your last message automatically…"
 - Keep the existing `_EDE_HUMAN` (tool_use) wording for that variant.
@@ -117,15 +125,15 @@ if kind == "turn_dropped":
 
 ## Loop-safety guards (summary)
 
-1. **Classifier** — precise `last_content_type=n/a` gate, excludes `tool_use`.
+1. **Classifier** — precise `stop_reason=null` gate, structurally excludes `tool_use`.
 2. **Bound** — `resend_cap_reached` (3 / 120s); on exhaustion, stop and surface.
-3. **Idempotency** — `n/a` ⇒ no assistant output executed ⇒ resend duplicates nothing.
+3. **Idempotency** — `stop_reason=null` ⇒ no continuation committed ⇒ resend duplicates nothing.
 
 ## Testing
 
-- `failure.py` (pure): unit tests in `test_failure_classify.py` — the n/a variant →
-  `turn_dropped` & recoverable; the `tool_use` variant → NOT `turn_dropped`; unrelated
-  `execution_error` → `other`.
+- `failure.py` (pure): unit tests in `test_failure_classify.py` — the `stop_reason=null`
+  variant → `turn_dropped` & recoverable; the `stop_reason=tool_use` variant → NOT
+  `turn_dropped` (stays `other`); unrelated `execution_error` → `other`.
 - `recovery.py`: `record_resend` / `resend_cap_reached` window + cap behavior.
 - `orchestrator`: a `turn_dropped` failure triggers exactly one `send_prompt(last)` per event;
   the 4th within the window does not resend (cap); no quarantine/rotation occurs.
