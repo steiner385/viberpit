@@ -54,3 +54,32 @@ describe('transcriptReducer — usage snapshot', () => {
     expect(s.usage).toBeNull()
   })
 })
+
+describe('transcriptReducer — exact context usage', () => {
+  it('starts with contextUsage null', () => {
+    expect(initialTranscript.contextUsage).toBeNull()
+  })
+
+  it('records exact used/max tokens from a contextUsage event', () => {
+    const s = transcriptReducer(initialTranscript, {
+      type: 'contextUsage', usedTokens: 65_729, maxTokens: 200_000, percentage: 32.9,
+      model: 'claude-opus-4-8',
+    })
+    expect(s.contextUsage).toEqual({ usedTokens: 65_729, maxTokens: 200_000 })
+  })
+
+  it('ignores a contextUsage event with a non-positive max', () => {
+    const s = transcriptReducer(initialTranscript, {
+      type: 'contextUsage', usedTokens: 10, maxTokens: 0, percentage: 0,
+    })
+    expect(s.contextUsage).toBeNull()
+  })
+
+  it('preserves contextUsage across a replayReset (live-only state)', () => {
+    const s1 = transcriptReducer(initialTranscript, {
+      type: 'contextUsage', usedTokens: 50_000, maxTokens: 200_000, percentage: 25,
+    })
+    const s2 = transcriptReducer(s1, { type: 'replayReset' })
+    expect(s2.contextUsage).toEqual({ usedTokens: 50_000, maxTokens: 200_000 })
+  })
+})

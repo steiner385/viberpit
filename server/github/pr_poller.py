@@ -7,11 +7,12 @@ cache the HTTP path reads. Tests inject ``query_fn`` so no real gh call is made.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import random
 import time
-from typing import Callable
+from typing import Awaitable, Callable, Union
 
 from ccswitch import gitrepos
 
@@ -52,11 +53,29 @@ class PrStatusPoller:
         self._fail_count = 0
         self._cooldown_until = 0.0
         self._cache: dict[tuple[str, str], PullRequestInfo] = {}
-        self._pairs_provider: Callable[[], list[tuple[str, str]]] | None = None
+        self._pairs_provider: (
+            Callable[[], list[tuple[str, str]]]
+            | Callable[[], Awaitable[list[tuple[str, str]]]]
+            | None
+        ) = None
         self._task: asyncio.Task | None = None
 
-    def set_pairs_provider(self, fn: Callable[[], list[tuple[str, str]]]) -> None:
-        self._pairs_provider = fn
+    def set_pairs_provider(
+        self,
+        fn: Union[
+            Callable[[], list[tuple[str, str]]],
+            Callable[[], Awaitable[list[tuple[str, str]]]],
+        ],
+    ) -> None:
+        self._pairs_provider = fn  # type: ignore[assignment]
+
+    async def _resolve_pairs(self) -> list[tuple[str, str]]:
+        if not self._pairs_provider:
+            return []
+        result = self._pairs_provider()
+        if inspect.isawaitable(result):
+            result = await result
+        return result or []
 
     def cached(self, repo: str | None, branch: str | None) -> PullRequestInfo | None:
         if not repo or not branch:
@@ -104,5 +123,5 @@ class PrStatusPoller:
             if self._clock() < self._cooldown_until:
                 delay = max(delay, self._cooldown_until - self._clock())
             await asyncio.sleep(delay)
-            pairs = self._pairs_provider() if self._pairs_provider else []
+            pairs = await self._resolve_pairs()
             await self.refresh_once(pairs)

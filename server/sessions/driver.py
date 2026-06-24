@@ -514,6 +514,8 @@ class SessionDriver:
             else:
                 self._turn_active = False
                 self._turns_completed += 1
+                # Turn settled — refresh the exact context-window readout.
+                await self._emit_context_usage()
                 await self._emit_status()
                 self._maybe_start_suggestions()
 
@@ -623,6 +625,28 @@ class SessionDriver:
         if self._client is None:
             return {}
         return await self._client.get_context_usage()
+
+    async def _emit_context_usage(self) -> None:
+        """Forward exact context-window occupancy (same source as `/context`) so the
+        persistent ctx% readout reflects REAL remaining context — not the per-turn
+        ``turnEnd.usage`` aggregate, which sums cache reads across a turn's API calls
+        and pins the readout at 0%. Best-effort: a dead client or missing data emits
+        nothing (the frontend keeps its per-call approximation as a fallback)."""
+        try:
+            cu = await self.context_usage()
+        except Exception:
+            log.debug("context_usage pull failed session=%s", self.session_id, exc_info=True)
+            return
+        if not isinstance(cu, dict):
+            return
+        used, mx = cu.get("totalTokens"), cu.get("maxTokens")
+        if not isinstance(used, int) or not isinstance(mx, int) or mx <= 0:
+            return
+        pct, model = cu.get("percentage"), cu.get("model")
+        await self._out.put(ev.ContextUsage(
+            used_tokens=used, max_tokens=mx,
+            percentage=float(pct) if isinstance(pct, (int, float)) else round(used / mx * 100, 1),
+            model=model if isinstance(model, str) else None))
 
     async def reconnect(self) -> None:
         """Tear down the SDK client and start a FRESH session (resume=None).

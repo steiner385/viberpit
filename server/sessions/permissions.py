@@ -85,6 +85,13 @@ class PermissionRegistry:
         if tool in _FILE_WRITE_TOOLS and _is_account_memory_path(
                 input.get("file_path") or input.get("notebook_path")):
             return None, _resolved(True)
+        # Auto-allow MCP tools (`mcp__<server>__<tool>`) in EVERY mode, including
+        # "interactive".  The operator opted into trusting MCP unconditionally, so a
+        # configured MCP server's tools are never gated here.  (The binary's separate
+        # project-`.mcp.json` server-trust gate is suppressed in sdk_factory via
+        # enableAllProjectMcpServers — this only governs ccswitch's own per-tool card.)
+        if tool.startswith("mcp__"):
+            return None, _resolved(True)
         if mode == "auto" and tool not in denylist:
             # Auto-approve safe tools: approve anything not on the dangerous denylist.
             return None, _resolved(True)

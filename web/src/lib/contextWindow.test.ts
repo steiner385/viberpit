@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { modelContextWindow, remainingContextPct, contextSeverity } from './contextWindow'
+import { modelContextWindow, remainingContextPct, contextSeverity, remainingFromContextUsage } from './contextWindow'
 
 describe('modelContextWindow', () => {
   it('defaults to 200k for a normal model id', () => {
@@ -35,6 +35,25 @@ describe('remainingContextPct', () => {
   it('clamps to 0 when usage exceeds the window (never negative)', () => {
     const usage = { input: 300_000, output: 0, cacheRead: 0, costUsd: 0 }
     expect(remainingContextPct(usage, 'claude-sonnet-4-5')).toBe(0)
+  })
+})
+
+describe('remainingFromContextUsage', () => {
+  it('returns null when there is no exact usage', () => {
+    expect(remainingFromContextUsage(null)).toBeNull()
+  })
+
+  it('computes remaining % from exact used/max tokens', () => {
+    // 65,729 of 200,000 used → 67% remaining (the value the buggy approximation pinned to 0)
+    expect(remainingFromContextUsage({ usedTokens: 65_729, maxTokens: 200_000 })).toBe(67)
+  })
+
+  it('clamps to 0 and never goes negative when over the effective max', () => {
+    expect(remainingFromContextUsage({ usedTokens: 210_000, maxTokens: 200_000 })).toBe(0)
+  })
+
+  it('returns null for a non-positive max (no usable denominator)', () => {
+    expect(remainingFromContextUsage({ usedTokens: 10, maxTokens: 0 })).toBeNull()
   })
 })
 
