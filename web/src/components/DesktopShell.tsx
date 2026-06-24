@@ -53,6 +53,7 @@ import {
 import { setLastRepo } from '@/lib/lastRepo'
 import { useSessionOrdering } from '@/session/useSessionOrdering'
 import { useSessionSearch } from '@/session/useSessionSearch'
+import { useListNavigation } from '@/session/useListNavigation'
 
 type TabId = 'sessions' | 'accounts' | 'archived'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
@@ -112,7 +113,7 @@ export function DesktopShell() {
   const { data: accounts = [] } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const sessionSearch = useSessionSearch()
-  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, collapsedKeys, toggleCollapse } =
+  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, navItems, collapsedKeys, toggleCollapse, expandGroup, collapseGroup } =
     useSessionOrdering(sessions, sessionSearch.matchedIds)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const reposQuery = useGithubRepos()
@@ -133,8 +134,10 @@ export function DesktopShell() {
   const [allLimitedReset, setAllLimitedReset] = useState<string | null | undefined>(undefined)
 
   // Keyboard highlight (for the new-session DispatchBar nav affordances)
-  const [highlightedIndex, setHighlightedIndex] = useState(-1)
-  const highlighted = highlightedIndex >= 0 ? orderedSessions[highlightedIndex] : undefined
+  const {
+    highlightedIndex, setHighlightedIndex,
+    highlightedSession, highlightedGroupKey, navigate, highlightSession,
+  } = useListNavigation(navItems)
 
   // Bumped to return focus to the DispatchBar after detaching from a session.
   const [dispatchFocusNonce, setDispatchFocusNonce] = useState(0)
@@ -144,10 +147,6 @@ export function DesktopShell() {
 
   // `?` opens the help slide-out from anywhere on the sessions tab.
   useGlobalHelpKey({ enabled: tab === 'sessions', onShowHelp: () => setShowHelp(true) })
-
-  // Clamp highlight when the list shrinks.
-  const clampedIndex = orderedSessions.length === 0 ? -1 : Math.min(highlightedIndex, orderedSessions.length - 1)
-  if (clampedIndex !== highlightedIndex) setHighlightedIndex(clampedIndex)
 
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
 
@@ -167,12 +166,9 @@ export function DesktopShell() {
   const detachToList = useCallback(() => {
     const id = selection.type === 'session' ? selection.id : null
     setSelection({ type: 'new' })
-    if (id) {
-      const idx = orderedSessions.findIndex((s) => s.id === id)
-      if (idx >= 0) setHighlightedIndex(idx)
-    }
+    if (id) highlightSession(id)
     setDispatchFocusNonce((n) => n + 1) // return focus to DispatchBar for ↑/↓ nav
-  }, [selection, orderedSessions])
+  }, [selection, highlightSession])
 
   // In-session detach gestures (desktop): ← / Esc / Ctrl+Z return to the list.
   // Active only while a session is focused. Guards: Esc/Ctrl+Z yield to the composer
@@ -252,16 +248,8 @@ export function DesktopShell() {
 
   // ── DispatchBar handlers (new-session mode) ─────────────────────────────────
 
-  function handleNavigate(dir: 'up' | 'down') {
-    if (orderedSessions.length === 0) return
-    setHighlightedIndex((i) => {
-      if (dir === 'up') return i <= 0 ? 0 : i - 1
-      return Math.min(orderedSessions.length - 1, i + 1)
-    })
-  }
-
   function handleOpenHighlighted() {
-    if (highlighted) focusSession(highlighted.id)
+    if (highlightedSession) focusSession(highlightedSession.id)
   }
 
   function handleEnterList() {
@@ -274,8 +262,12 @@ export function DesktopShell() {
   }
   function handleJump(index: number) {
     const s = orderedSessions[index]
-    if (s) { setHighlightedIndex(index); focusSession(s.id) }
+    if (s) { highlightSession(s.id); focusSession(s.id) }
   }
+
+  function handleExpandHighlighted() { if (highlightedGroupKey) expandGroup(highlightedGroupKey) }
+  function handleCollapseHighlighted() { if (highlightedGroupKey) collapseGroup(highlightedGroupKey) }
+  function handleToggleHighlighted() { if (highlightedGroupKey) toggleCollapse(highlightedGroupKey) }
 
   function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
@@ -386,7 +378,8 @@ export function DesktopShell() {
           // row. The two are mutually exclusive in practice — the list-nav
           // DispatchBar only renders when no session is open — so this also makes
           // ↑/↓ visibly move the highlight on the new-session view.
-          selectedId={selectedSessionId ?? highlighted?.id}
+          selectedId={selectedSessionId ?? highlightedSession?.id}
+          selectedGroupKey={highlightedGroupKey ?? null}
           onNew={focusNew}
           onOpen={focusSession}
           onRename={handleRename}
@@ -396,10 +389,12 @@ export function DesktopShell() {
           onClearSearch={() => sessionSearch.setQuery('')}
           onQuickResume={handleQuickResume}
           listMode={listMode}
-          onNavigate={handleNavigate}
+          onNavigate={navigate}
           onExit={handleExitList}
           collapsedKeys={collapsedKeys}
           onToggleCollapse={toggleCollapse}
+          onExpand={expandGroup}
+          onCollapse={collapseGroup}
         />
       </div>
     </aside>
@@ -428,13 +423,21 @@ export function DesktopShell() {
       reposLoading={reposQuery.isLoading}
       reposError={reposQuery.isError}
       onDispatch={handleDispatch}
-      onNavigate={handleNavigate}
+      onNavigate={navigate}
       onOpenHighlighted={handleOpenHighlighted}
+      onExpandHighlighted={handleExpandHighlighted}
+      onCollapseHighlighted={handleCollapseHighlighted}
+      onToggleHighlighted={handleToggleHighlighted}
       onEnterList={handleEnterList}
       onJump={handleJump}
       onShowHelp={() => setShowHelp(true)}
       onEscape={() => setHighlightedIndex(-1)}
-      activeDescendantId={highlighted ? `row-${highlighted.id}` : undefined}
+      activeDescendantId={
+        highlightedSession ? `row-${highlightedSession.id}`
+        : highlightedGroupKey ? `group-header-${highlightedGroupKey}`
+        : undefined
+      }
+      activeDescendantIsHeader={!!highlightedGroupKey}
       autoFocusKey={dispatchFocusNonce}
       isPending={createSession.isPending}
     />
