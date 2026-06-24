@@ -12,7 +12,10 @@ function wrapper({ children }: { children: ReactNode }) {
 
 describe('useSessionSearch', () => {
   beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }))
-  afterEach(() => vi.useRealTimers())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
 
   it('returns null matchedIds and never fetches for an empty query', () => {
     const spy = vi.spyOn(api, 'get')
@@ -39,7 +42,6 @@ describe('useSessionSearch', () => {
   })
 
   it('targets the archived scope when asked', async () => {
-    vi.restoreAllMocks()
     const spy = vi.spyOn(api, 'get').mockResolvedValue({ ids: ['a1', 'a2'] })
     const { result } = renderHook(() => useSessionSearch('archived'), { wrapper })
 
