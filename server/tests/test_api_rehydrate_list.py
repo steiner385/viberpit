@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from server.app import create_app
 from server.db import init_db, db_session
 from server.db.models import Session as DbSession
+from ccswitch.selector import Picked
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -93,7 +94,7 @@ def test_create_session_status_reflects_initial_prompt(tmp_path):
     with patch.dict(os.environ, env), \
          patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
          patch("server.sessions.orchestrator.configdir"), \
-         patch("server.sessions.orchestrator.select_account", return_value="alpha"), \
+         patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")), \
          patch("ccswitch.accounts.usage_for", side_effect=_fake_usage):
 
         # Seed a fake account credential — MUST be inside the CCSWITCH_HOME patch,

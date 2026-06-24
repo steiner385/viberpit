@@ -7,16 +7,16 @@ Thin wrapper around ``ccswitch.accounts.pick_account`` that:
 """
 from __future__ import annotations
 
-from ccswitch.accounts import pick_account
+from ccswitch.accounts import pick_account_detailed
 from ccswitch.config import load_config
-from ccswitch.selector import AllAccountsBusy  # re-exported so callers only import from here
+from ccswitch.selector import AllAccountsBusy, Picked  # re-exported so callers only import from here
 
 
-__all__ = ["select_account", "AllAccountsBusy"]
+__all__ = ["select_account", "AllAccountsBusy", "Picked"]
 
 
 def select_account(exclude: frozenset[str] = frozenset(),
-                   load: dict[str, float] | None = None) -> str:
+                   load: dict[str, float] | None = None) -> Picked:
     """Select the best available account, skipping any in *exclude*.
 
     Writes a soft reservation into the ledger so concurrent calls don't
@@ -29,5 +29,4 @@ def select_account(exclude: frozenset[str] = frozenset(),
             The exception carries ``.earliest_reset`` (datetime | None).
     """
     cfg = load_config()
-    # pick_account already calls select_best + ledger.reserve under a lock.
-    return pick_account(cfg, exclude=set(exclude), load=load)
+    return pick_account_detailed(cfg, exclude=set(exclude), load=load)

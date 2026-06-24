@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from ccswitch.selector import Picked
 from tests.helpers import temp_env, usage as make_usage
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -281,7 +282,7 @@ def test_session_lifecycle():
         usage_fn = _make_usage_fn({"account1": make_usage(session=10.0, weekly=20.0)})
 
         with patch("ccswitch.accounts.usage_for", side_effect=usage_fn), \
-             patch("server.sessions.orchestrator.select_account", return_value="account1"), \
+             patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
              patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "account1"), \
              patch.dict(os.environ, {
                  "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
@@ -764,7 +765,7 @@ def _client_with_account(d):
     _seed_slot("account1")
     usage_fn = _make_usage_fn({"account1": make_usage(session=10.0, weekly=20.0)})
     with patch("ccswitch.accounts.usage_for", side_effect=usage_fn), \
-         patch("server.sessions.orchestrator.select_account", return_value="account1"), \
+         patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
          patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "account1"), \
          patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
         (d / "cfg" / "account1").mkdir(parents=True, exist_ok=True)

@@ -26,6 +26,7 @@ from server.db import db_session
 from server.db.models import Session as DbSession
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
+from ccswitch.selector import Picked
 
 _IDENT = {"Tailscale-User-Login": "repotest@example.com"}
 
@@ -71,7 +72,7 @@ def repo_setup(tmp_path):
             patch("ccswitch.accounts.usage_for", side_effect=_fake_usage), \
             patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
             patch("server.sessions.orchestrator.configdir"), \
-            patch("server.sessions.orchestrator.select_account", return_value="alpha"):
+            patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")):
         _seed_account("alpha")
         orch = SessionOrchestrator(
             sdk_factory=fake_sdk_factory(),
