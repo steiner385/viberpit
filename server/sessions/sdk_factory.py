@@ -10,15 +10,20 @@ def _import_sdk():
     return ClaudeSDKClient, ClaudeAgentOptions
 
 
-def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None):
+def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
     ClaudeSDKClient, ClaudeAgentOptions = _import_sdk()
     env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
     if extra_env:
         env.update(extra_env)
+    hooks = None
+    if on_pre_compact is not None:
+        from claude_agent_sdk import HookMatcher
+        hooks = {"PreCompact": [HookMatcher(hooks=[on_pre_compact])]}
     opts = ClaudeAgentOptions(
         cwd=cwd, env=env, can_use_tool=can_use_tool,
         permission_mode=("plan" if mode == "plan" else "default"),
         include_partial_messages=True, resume=resume,
+        hooks=hooks,
         system_prompt={
             "type": "preset",
             "preset": "claude_code",

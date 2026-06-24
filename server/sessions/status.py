@@ -2,9 +2,11 @@
 
 Kept dependency-free and side-effect-free so it is exhaustively table-testable.
 Precedence (highest first): a pending plan-approval, then a pending question
-(``waiting_question``), then a pending permission (``waiting_input``), then an
-active turn, then a completed turn, else never-ran. ``limited``/``ended`` are
-orchestrator overlays and intentionally NOT modelled here.
+(``waiting_question``), then a pending permission (``waiting_input``), then
+context condensing (``condensing``), then an active turn that is backing off on a
+529/5xx overload (``retrying``), then any other active turn, then a completed turn,
+else never-ran. ``limited``/``ended`` are orchestrator overlays and intentionally
+NOT modelled here.
 """
 from __future__ import annotations
 
@@ -19,6 +21,23 @@ class StatusSignals:
     pending_plan: bool
     turns_completed: int
     last_turn_outcome: str = "success"
+    condensing: bool = False
+    retrying: bool = False
+
+
+# Statuses at which the assistant has handed output back to the user — either a
+# finished turn (done/complete/needs_attention) or a turn paused awaiting the user
+# (waiting_input/waiting_question/ready_review). These — and only these — advance a
+# session's "active … ago" clock (see SessionOrchestrator._persist_status). `in_progress`
+# (working, nothing handed back yet), `idle` (never ran), and the orchestrator overlays
+# `limited`/`ended`/`archived` are deliberately excluded. `waiting_external` is also
+# excluded: parking on a background task / wakeup is NOT a fresh return, so the clock keeps
+# the prior turn's time and the card shows how long it has been parked (since the last
+# turn) instead of resetting on every /loop re-arm.
+ACTIVITY_STATUSES: frozenset[str] = frozenset({
+    "done", "complete", "needs_attention",
+    "waiting_input", "waiting_question", "ready_review",
+})
 
 
 def derive_status(sig: StatusSignals) -> str:
@@ -28,6 +47,10 @@ def derive_status(sig: StatusSignals) -> str:
         return "waiting_question"
     if sig.pending_permission:
         return "waiting_input"
+    if sig.condensing:
+        return "condensing"
+    if sig.turn_active and sig.retrying:
+        return "retrying"
     if sig.turn_active:
         return "in_progress"
     if sig.turns_completed >= 1:

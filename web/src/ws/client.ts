@@ -21,6 +21,9 @@ export interface WsErrorMsg        { type: 'error';         sessionId?: string; 
 export interface WsBatchMsg        { type: 'batch';         events: SessionEvent[] }
 export interface WsCommandsMsg      { type: 'commands';      sessionId: string; commands: import('@/session/events').Command[] }
 export interface WsCommandResultMsg { type: 'commandResult'; sessionId: string; ok: boolean; name?: string; render?: 'help' | 'context' | 'notice' | 'clear'; data?: unknown; error?: string }
+export interface WsUpdatePendingMsg   { type: 'updatePending' }
+export interface WsUpdateCancelledMsg { type: 'updateCancelled' }
+export interface WsPromptRejectedMsg   { type: 'promptRejected'; sessionId: string; text: string; attachmentIds?: string[]; reason?: string }
 
 export type WsInboundMsg =
   | WsStatusMsg
@@ -30,6 +33,9 @@ export type WsInboundMsg =
   | WsBatchMsg
   | WsCommandsMsg
   | WsCommandResultMsg
+  | WsUpdatePendingMsg
+  | WsUpdateCancelledMsg
+  | WsPromptRejectedMsg
 
 // ── Callback registry type ───────────────────────────────────────────────────
 
@@ -42,6 +48,7 @@ type EventMap = {
   sessionEvent:  (e: SessionEvent) => void
   commands:      (msg: WsCommandsMsg) => void
   commandResult: (msg: WsCommandResultMsg) => void
+  updatePendingChange: (s: { active: boolean; count: number }) => void
 }
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting'
@@ -65,6 +72,9 @@ export class SessionSocket {
   private _listeners: { [K in keyof EventMap]?: Set<EventMap[K]> } = {}
   private _queryClient: QueryClient | null = null
   private readonly url: string
+  private _updatePending = false
+  private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[] }[] = []
+  private static readonly MAX_PENDING = 50
 
   constructor(url: string = '/ws') {
     this.url = url
@@ -74,6 +84,9 @@ export class SessionSocket {
 
   get connectionState(): ConnectionState { return this._connectionState }
   get activeSessionId(): string | null { return this._activeSessionId }
+  get updatePendingState(): { active: boolean; count: number } {
+    return { active: this._updatePending, count: this._pendingPrompts.length }
+  }
 
   setQueryClient(qc: QueryClient) {
     this._queryClient = qc
@@ -94,6 +107,7 @@ export class SessionSocket {
       if (this._activeSessionId) {
         this._send({ type: 'attach', sessionId: this._activeSessionId })
       }
+      if (this._pendingPrompts.length) this._flushPending()
     }
 
     ws.onmessage = (event) => {
@@ -143,6 +157,13 @@ export class SessionSocket {
   }
 
   prompt(sessionId: string, text: string, attachmentIds?: string[]) {
+    // Never silently drop input. Buffer whenever it can't be trusted to land — the
+    // server is draining (updatePending) OR the socket isn't open — and flush on the
+    // next reconnect (after re-attach). Otherwise send straight through.
+    if (this._updatePending || this.ws?.readyState !== WebSocket.OPEN) {
+      this._enqueuePrompt({ sessionId, text, attachmentIds })
+      return
+    }
     this._send({ type: 'prompt', sessionId, text, ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}) })
   }
 
@@ -185,6 +206,36 @@ export class SessionSocket {
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────────
+
+  private _emitUpdatePending() {
+    this._emit('updatePendingChange', { active: this._updatePending, count: this._pendingPrompts.length })
+  }
+
+  private _enqueuePrompt(p: { sessionId: string; text: string; attachmentIds?: string[] }) {
+    if (this._pendingPrompts.length >= SessionSocket.MAX_PENDING) {
+      const dropped = this._pendingPrompts.shift()
+      // No silent caps — tell the user a held message was lost rather than dropping it quietly.
+      this._emit('error', {
+        type: 'error',
+        code: 'PENDING_BUFFER_FULL',
+        message: `Too many unsent messages (${SessionSocket.MAX_PENDING}) — the oldest was dropped.`,
+      })
+      if (dropped) console.warn('[ws] pending-prompt buffer full — dropped oldest', dropped.sessionId)
+    }
+    this._pendingPrompts.push(p)
+    this._emitUpdatePending()
+  }
+
+  private _flushPending() {
+    const pending = this._pendingPrompts
+    this._pendingPrompts = []
+    this._updatePending = false
+    for (const p of pending) {
+      this._send({ type: 'prompt', sessionId: p.sessionId, text: p.text,
+        ...(p.attachmentIds && p.attachmentIds.length ? { attachmentIds: p.attachmentIds } : {}) })
+    }
+    this._emitUpdatePending()
+  }
 
   /** Returns true if the frame was written to an open socket, false if dropped. */
   private _send(msg: object): boolean {
@@ -250,6 +301,19 @@ export class SessionSocket {
         break
       case 'commandResult':
         this._emit('commandResult', msg)
+        break
+      case 'updatePending':
+        this._updatePending = true
+        this._emitUpdatePending()
+        break
+      case 'updateCancelled':
+        this._flushPending()
+        break
+      case 'promptRejected':
+        // Server refused this prompt (deploy drain). Re-queue it so it flushes on
+        // the next reconnect/cancel instead of being lost, and enter holding.
+        this._updatePending = true
+        this._enqueuePrompt({ sessionId: msg.sessionId, text: msg.text, attachmentIds: msg.attachmentIds })
         break
       default:
         // Fan out individual session events sent directly (not wrapped in batch)

@@ -9,7 +9,7 @@ from server.tests.fakes import fake_sdk as f
 
 
 def _factory(msgs):
-    def make(cwd, config_dir, can_use_tool, mode, resume):
+    def make(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return FakeSDKClient(msgs, on_can_use_tool=can_use_tool)
     return make
 
@@ -87,7 +87,7 @@ def test_drain_exception_with_401_is_classified_auth():
             yield
         async def interrupt(self): pass
         async def set_permission_mode(self, m): pass
-    def factory(cwd, config_dir, can_use_tool, mode, resume):
+    def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return _Raising()
     calls = []
     async def on_fail(session_id, kind, retry_after):

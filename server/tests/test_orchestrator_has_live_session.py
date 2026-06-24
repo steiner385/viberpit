@@ -188,3 +188,23 @@ def test_live_session_load_skips_driver_without_record():
     d = MagicMock(); d.account = "acct1"
     orch._drivers["orphan"] = d  # no matching record
     assert orch.live_session_load() == {}
+
+
+# ---------------------------------------------------------------------------
+# live_session_counts — raw active/idle counts per account
+# ---------------------------------------------------------------------------
+
+def test_live_session_counts_splits_active_and_idle():
+    orch = SessionOrchestrator(sdk_factory=MagicMock())
+    # account "a": one working (active) + one idle; account "b": one idle
+    _plant(orch, "s1", account="a", status="working")
+    _plant(orch, "s2", account="a", status="idle")
+    _plant(orch, "s3", account="b", status="idle")
+    counts = orch.live_session_counts()
+    assert counts["a"] == {"active": 1, "idle": 1}
+    assert counts["b"] == {"active": 0, "idle": 1}
+
+
+def test_live_session_counts_omits_accounts_without_live_sessions():
+    orch = SessionOrchestrator(sdk_factory=MagicMock())
+    assert orch.live_session_counts() == {}

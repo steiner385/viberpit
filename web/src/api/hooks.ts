@@ -1,10 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMemo, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
 } from './types'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
+import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
+import { toast } from '@/lib/toast'
 
 // Query keys
 export const QK = {
@@ -38,12 +41,18 @@ export function useAccounts() {
 }
 
 export function useSessions() {
-  return useQuery<Session[]>({
+  const pending = useSyncExternalStore(subscribePending, getPendingSessions, getPendingSessions)
+  const query = useQuery<Session[]>({
     queryKey: QK.sessions,
     queryFn: () => api.get<Session[]>('/sessions'),
     staleTime: 3_000,
     refetchInterval: 5_000,
   })
+  const data = useMemo<Session[] | undefined>(() => {
+    if (pending.length === 0) return query.data
+    return [...(query.data ?? []), ...pending]
+  }, [query.data, pending])
+  return { ...query, data }
 }
 
 export interface GithubRepo {
@@ -127,16 +136,31 @@ export interface CreateSessionInput {
 
 export function useCreateSession() {
   const qc = useQueryClient()
-  return useMutation<Session, ApiRequestError, CreateSessionInput>({
+  return useMutation<Session, ApiRequestError, CreateSessionInput, { tempId: string }>({
     mutationFn: (input) => api.post<Session>('/sessions', input),
+    onMutate: (input) => {
+      // Placeholder lives outside the query cache so the 5s poll can't wipe it
+      // while the backend spins up the claude PTY.
+      const tempId = addPendingSession({
+        name: input.name?.trim() || input.initialPrompt?.trim().slice(0, 60) || 'New session',
+        accountName: input.account ?? '',
+        status: 'in_progress',
+        createdAt: new Date().toISOString(),
+        repo: input.repo ?? null,
+      })
+      return { tempId }
+    },
     onSuccess: (session) => {
-      // Show the new card immediately instead of waiting up to 5s for the poll.
+      // Inject the real card before the placeholder is removed (onSettled) to avoid a flicker.
       qc.setQueryData<Session[]>(QK.sessions, (prev) => {
         const list = prev ?? []
         if (list.some((s) => s.id === session.id)) return list
         return [...list, session]
       })
       qc.invalidateQueries({ queryKey: QK.sessions })
+    },
+    onSettled: (_data, _err, _input, ctx) => {
+      if (ctx?.tempId) removePendingSession(ctx.tempId)
     },
   })
 }
@@ -159,9 +183,35 @@ export function useSendPrompt() {
 
 export function useCloseSession() {
   const qc = useQueryClient()
-  return useMutation<void, ApiRequestError, string>({
+  return useMutation<void, ApiRequestError, string, { prev?: Session[]; removed?: Session }>({
     mutationFn: (id) => api.del<void>(`/sessions/${id}`),
-    onSuccess: () => {
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: QK.sessions })
+      const prev = qc.getQueryData<Session[]>(QK.sessions)
+      const removed = prev?.find((x) => x.id === id)
+      qc.setQueryData<Session[]>(QK.sessions, (cur) => (cur ?? []).filter((x) => x.id !== id))
+      return { prev, removed }
+    },
+    onError: (_e, _id, ctx) => {
+      if (ctx?.prev) qc.setQueryData(QK.sessions, ctx.prev)
+      toast({ message: `Couldn't archive ${ctx?.removed?.name ?? 'session'}`, variant: 'error' })
+    },
+    onSuccess: (_data, id, ctx) => {
+      toast({
+        message: `Archived ${ctx?.removed?.name ?? 'session'}`,
+        variant: 'success',
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            void unarchiveRequest(id).then(() => {
+              qc.invalidateQueries({ queryKey: QK.sessions })
+              qc.invalidateQueries({ queryKey: QK.archived })
+            })
+          },
+        },
+      })
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.sessions })
       qc.invalidateQueries({ queryKey: QK.archived })
     },
@@ -211,6 +261,8 @@ export function useReauthStatus(name: string, enabled: boolean) {
 export function useCancelReauth() {
   return useMutation<ReauthState, ApiRequestError, string>({
     mutationFn: (name) => api.post<ReauthState>(`/accounts/${encodeURIComponent(name)}/reauth/cancel`),
+    // fire-and-forget cancel: never toast on error (see queryClient global handler)
+    meta: { suppressErrorToast: true },
   })
 }
 
@@ -219,6 +271,38 @@ export function useDeleteAccount() {
   return useMutation<void, ApiRequestError, string>({
     mutationFn: (name) => api.del<void>(`/accounts/${encodeURIComponent(name)}`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
+  })
+}
+
+// Add-account reuses the interactive browser-OAuth login (same global state
+// machine as reauth) to create a brand-new account slot. The name is sent in
+// the body since the slot does not exist yet.
+export function useAddAccount() {
+  return useMutation<ReauthState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<ReauthState>('/accounts/add', { name }),
+  })
+}
+
+export function useAddAccountStatus(enabled: boolean) {
+  return useQuery<ReauthState>({
+    queryKey: ['add-account-status'],
+    queryFn: () => api.get<ReauthState>('/accounts/add'),
+    enabled,
+    // Poll while the login is in flight; stop once a terminal state is reached.
+    refetchInterval: (query) => {
+      const s = query.state.data?.state
+      return s === 'success' || s === 'error' || s === 'timeout' ? false : 1500
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 0,
+  })
+}
+
+export function useCancelAddAccount() {
+  return useMutation<ReauthState, ApiRequestError, void>({
+    mutationFn: () => api.post<ReauthState>('/accounts/add/cancel'),
+    // fire-and-forget cancel: never toast on error (see queryClient global handler)
+    meta: { suppressErrorToast: true },
   })
 }
 
@@ -231,11 +315,28 @@ export function useArchivedSessions() {
   })
 }
 
+// Single source of truth for the unarchive endpoint — reused by useUnarchiveSession
+// and the archive Undo action.
+function unarchiveRequest(id: string) {
+  return api.post<ArchivedSession>(`/sessions/${id}/unarchive`)
+}
+
 export function useUnarchiveSession() {
   const qc = useQueryClient()
-  return useMutation<ArchivedSession, ApiRequestError, string>({
-    mutationFn: (id) => api.post<ArchivedSession>(`/sessions/${id}/unarchive`),
-    onSuccess: () => {
+  return useMutation<ArchivedSession, ApiRequestError, string, { prev?: ArchivedSession[]; removed?: ArchivedSession }>({
+    mutationFn: (id) => unarchiveRequest(id),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: QK.archived })
+      const prev = qc.getQueryData<ArchivedSession[]>(QK.archived)
+      const removed = prev?.find((x) => x.id === id)
+      qc.setQueryData<ArchivedSession[]>(QK.archived, (cur) => (cur ?? []).filter((x) => x.id !== id))
+      return { prev, removed }
+    },
+    onError: (_e, _id, ctx) => {
+      if (ctx?.prev) qc.setQueryData(QK.archived, ctx.prev)
+      toast({ message: `Couldn't restore ${ctx?.removed?.name ?? 'session'}`, variant: 'error' })
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.sessions })
       qc.invalidateQueries({ queryKey: QK.archived })
     },
@@ -244,12 +345,28 @@ export function useUnarchiveSession() {
 
 export function usePermanentDeleteSession() {
   const qc = useQueryClient()
-  return useMutation<void, ApiRequestError, string>({
+  return useMutation<void, ApiRequestError, string, { prevArchived?: ArchivedSession[]; prevSessions?: Session[]; name?: string }>({
     mutationFn: (id) => api.del<void>(`/sessions/${id}/permanent`),
-    onSuccess: () => {
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: QK.archived })
+      await qc.cancelQueries({ queryKey: QK.sessions })
+      const prevArchived = qc.getQueryData<ArchivedSession[]>(QK.archived)
+      const prevSessions = qc.getQueryData<Session[]>(QK.sessions)
+      const name = prevArchived?.find((x) => x.id === id)?.name ?? prevSessions?.find((x) => x.id === id)?.name
+      qc.setQueryData<ArchivedSession[]>(QK.archived, (cur) => (cur ?? []).filter((x) => x.id !== id))
+      qc.setQueryData<Session[]>(QK.sessions, (cur) => (cur ?? []).filter((x) => x.id !== id))
+      return { prevArchived, prevSessions, name }
+    },
+    onError: (_e, _id, ctx) => {
+      if (ctx?.prevArchived) qc.setQueryData(QK.archived, ctx.prevArchived)
+      if (ctx?.prevSessions) qc.setQueryData(QK.sessions, ctx.prevSessions)
+      toast({ message: `Couldn't delete ${ctx?.name ?? 'session'}`, variant: 'error' })
+    },
+    onSuccess: (_d, _id, ctx) => {
+      toast({ message: `Deleted ${ctx?.name ?? 'session'}`, variant: 'success' })
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.archived })
-      // A live session can also be permanently deleted from its card, so the
-      // active sessions list must refresh too.
       qc.invalidateQueries({ queryKey: QK.sessions })
     },
   })
@@ -257,9 +374,25 @@ export function usePermanentDeleteSession() {
 
 export function useBulkUnarchiveSessions() {
   const qc = useQueryClient()
-  return useMutation<BatchResult, ApiRequestError, string[]>({
+  return useMutation<BatchResult, ApiRequestError, string[], { prev?: ArchivedSession[] }>({
     mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/unarchive', { ids }),
-    onSuccess: () => {
+    onMutate: async (ids) => {
+      await qc.cancelQueries({ queryKey: QK.archived })
+      const prev = qc.getQueryData<ArchivedSession[]>(QK.archived)
+      const idSet = new Set(ids)
+      qc.setQueryData<ArchivedSession[]>(QK.archived, (cur) => (cur ?? []).filter((x) => !idSet.has(x.id)))
+      return { prev }
+    },
+    onError: (_e, _ids, ctx) => {
+      if (ctx?.prev) qc.setQueryData(QK.archived, ctx.prev)
+      toast({ message: `Couldn't restore sessions`, variant: 'error' })
+    },
+    onSuccess: (result) => {
+      const n = result.succeeded.length
+      const f = result.failed.length
+      toast({ message: f > 0 ? `Restored ${n} · ${f} failed` : `Restored ${n}`, variant: f > 0 ? 'error' : 'success' })
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.sessions })
       qc.invalidateQueries({ queryKey: QK.archived })
     },
@@ -268,11 +401,26 @@ export function useBulkUnarchiveSessions() {
 
 export function useBulkPermanentDeleteSessions() {
   const qc = useQueryClient()
-  return useMutation<BatchResult, ApiRequestError, string[]>({
+  return useMutation<BatchResult, ApiRequestError, string[], { prev?: ArchivedSession[] }>({
     mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/permanent-delete', { ids }),
-    onSuccess: () => {
+    onMutate: async (ids) => {
+      await qc.cancelQueries({ queryKey: QK.archived })
+      const prev = qc.getQueryData<ArchivedSession[]>(QK.archived)
+      const idSet = new Set(ids)
+      qc.setQueryData<ArchivedSession[]>(QK.archived, (cur) => (cur ?? []).filter((x) => !idSet.has(x.id)))
+      return { prev }
+    },
+    onError: (_e, _ids, ctx) => {
+      if (ctx?.prev) qc.setQueryData(QK.archived, ctx.prev)
+      toast({ message: `Couldn't delete sessions`, variant: 'error' })
+    },
+    onSuccess: (result) => {
+      const n = result.succeeded.length
+      const f = result.failed.length
+      toast({ message: f > 0 ? `Deleted ${n} · ${f} failed` : `Deleted ${n}`, variant: f > 0 ? 'error' : 'success' })
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.archived })
-      // A live session can also be permanently deleted, so refresh active too.
       qc.invalidateQueries({ queryKey: QK.sessions })
     },
   })

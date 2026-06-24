@@ -48,7 +48,10 @@ export function orderSessions(
   }
 
   if (groupBy === 'status') {
-    const tiers = (['needs-you', 'error', 'your-turn', 'busy'] as StatusTier[]).sort(
+    // Derive the tier list from TIER_RANK (single source of truth) so a newly-added
+    // tier can't be silently dropped from the grouped view — adding one to the rank
+    // table is enough. Ordered ascending by rank.
+    const tiers = (Object.keys(TIER_RANK) as StatusTier[]).sort(
       (a, b) => TIER_RANK[a] - TIER_RANK[b],
     )
     const groups: SessionGroup[] = []

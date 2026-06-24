@@ -1,4 +1,5 @@
 """Pure account selection: exclude accounts at/above ceiling, rank by perishability."""
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -43,9 +44,34 @@ def _perishability(u: Usage, ceiling: float, now: datetime) -> float:
     return remaining / hours
 
 
-def select_best(usages: dict[str, Usage | None], reserved: set[str],
-                cfg: Config, now: datetime, exclude: set[str] = frozenset(),
-                load: dict[str, float] | None = None) -> str:
+@dataclass
+class RankedAccount:
+    name: str
+    rank: int
+    reason: str
+
+
+def _reason(composite: float, acct_load: float) -> str:
+    """Short, deterministic explanation of an account's standing (for the UI tooltip).
+
+    composite == 0 means the binding dimension has no active reset window — a fresh
+    account whose quota isn't perishable yet, so the selector saves it for last.
+    """
+    if composite <= 0.0:
+        return "fresh quota — saved for last"
+    return "perishable quota, lowest load" if acct_load == 0.0 else "perishable quota, sharing live load"
+
+
+def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
+                  cfg: Config, now: datetime, exclude: AbstractSet[str] = frozenset(),
+                  load: dict[str, float] | None = None,
+                  ) -> tuple[list[RankedAccount], datetime | None]:
+    """Rank all eligible accounts in selection-priority order.
+
+    Returns ``(ranked, earliest_reset)``: ``ranked`` is the priority-ordered list
+    (rank 1 = next pick); ``earliest_reset`` is the soonest reset among at-ceiling
+    accounts when nothing is eligible (else None). ``select_best`` is the rank-1 name.
+    """
     load = load or {}
     ceiling = cfg.hard_ceiling * 100.0
     candidates: list[tuple[float, float, float, float, str]] = []
@@ -55,8 +81,6 @@ def select_best(usages: dict[str, Usage | None], reserved: set[str],
             continue
         at_ceiling = u.session_pct >= ceiling or u.weekly_pct >= ceiling
         if at_ceiling:
-            # only the dimension(s) actually at ceiling contribute a reset time;
-            # a reset can be None (0%/no active window) — exclude those
             resets = []
             if u.session_pct >= ceiling and u.session_resets_at is not None:
                 resets.append(u.session_resets_at)
@@ -67,16 +91,21 @@ def select_best(usages: dict[str, Usage | None], reserved: set[str],
             continue
         acct_load = load.get(name, 0.0)
         perish = _perishability(u, ceiling, now) if cfg.prefer_soon_reset else 0.0
-        # Multiplicative discount: live load shrinks an account's score, so a busy
-        # perishable account can drop below a less-busy one. Bounded (1 + λ·load >= 1)
-        # so no divide-by-zero / NaN; with load={} this reduces to the legacy key.
         composite = perish / (1.0 + cfg.load_sensitivity * acct_load)
-        # Sort ascending: most-perishable-after-discount first (-composite); then raw
-        # load so spreading still applies when perishability can't differentiate
-        # (prefer_soon_reset off or all-fresh -> every composite is 0); then the
-        # legacy lowest-usage ordering; then name for determinism.
         candidates.append((-composite, acct_load, u.session_pct, u.weekly_pct, name))
-    if not candidates:
-        raise AllAccountsBusy(min(busy_resets) if busy_resets else None)
     candidates.sort()
-    return candidates[0][4]
+    earliest = min(busy_resets) if busy_resets else None
+    ranked = [
+        RankedAccount(name=c[4], rank=i + 1, reason=_reason(-c[0], c[1]))
+        for i, c in enumerate(candidates)
+    ]
+    return ranked, earliest
+
+
+def select_best(usages: dict[str, Usage | None], reserved: AbstractSet[str],
+                cfg: Config, now: datetime, exclude: AbstractSet[str] = frozenset(),
+                load: dict[str, float] | None = None) -> str:
+    ranked, earliest = rank_accounts(usages, reserved, cfg, now, exclude, load)
+    if not ranked:
+        raise AllAccountsBusy(earliest)
+    return ranked[0].name

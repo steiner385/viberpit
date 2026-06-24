@@ -97,7 +97,7 @@ def ws_env_ip(tmp_path):
         def build(msgs, client_cls=None):
             cls = client_cls or FakeSDKClient
 
-            def make(cwd, config_dir, can_use_tool, mode, resume):
+            def make(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
                 return cls(list(msgs), on_can_use_tool=can_use_tool)
 
             orch = SessionOrchestrator(
