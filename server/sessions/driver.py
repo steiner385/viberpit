@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import time
 import uuid
 from typing import Callable
@@ -14,6 +15,11 @@ from .questions import QuestionRegistry
 from .status import StatusSignals, derive_status
 
 log = logging.getLogger(__name__)
+
+# DIAGNOSTIC (temporary): gate the per-emit status trace. Off by default — set
+# CCSWITCH_STATUS_TRACE=1 to capture the raw derived status + its input signals
+# when chasing false-"Ready" reports. Remove with the trace itself once settled.
+_STATUS_TRACE = os.environ.get("CCSWITCH_STATUS_TRACE", "false").lower() in ("1", "true", "yes", "on")
 
 _STREAM_DONE = object()
 
@@ -159,8 +165,25 @@ class SessionDriver:
         depth shown in the busy label; defaults to the live queue length.
         Best-effort on the callback: a failure must never break the session loop.
         """
-        status = derive_status(self._dash_signals())
+        sig = self._dash_signals()
+        status = derive_status(sig)
         n = len(self._queue) if count is None else count
+        # DIAGNOSTIC (temporary): trace the raw status + the signals that produced
+        # it, to tell a genuine idle/done from a "Ready" the UI fell back to. Logs
+        # the inputs to derive_status plus the staleness clock the stall watchdog
+        # uses, so a session that looks idle while monitoring is identifiable.
+        # Gated by CCSWITCH_STATUS_TRACE (off by default — fires on every emit).
+        # Remove once the false-"Ready" question is settled.
+        if _STATUS_TRACE:
+            log.info(
+                "status.derive session=%s status=%s turn_active=%s turns_completed=%s "
+                "last_outcome=%s pending_perm=%s pending_q=%s pending_plan=%s "
+                "awaiting_user=%s idle_age=%.1f queue=%d",
+                self.session_id, status, sig.turn_active, sig.turns_completed,
+                sig.last_turn_outcome, sig.pending_permission, sig.pending_question,
+                sig.pending_plan, self.awaiting_user_input,
+                self._clock() - self._last_progress_at, n,
+            )
         await self._out.put(ev.Status(state=status, count=n))
         if self._on_status is not None:
             try:
