@@ -48,3 +48,32 @@ def derive_open_stage(
     if merge_state_status == "DIRTY":
         return "parked"
     return "ready"
+
+
+def derive_queue_stage(
+    *,
+    queue_state: str | None = None,
+    merge_state_status: str | None = None,
+    group_failed: bool = False,
+    unmergeable: bool = False,
+) -> tuple[str, str | None]:
+    """Return ``(stage, substate)`` for a PR sitting in the merge queue.
+
+    Faithful port of classify.ts's ``pr.queue`` branch:
+      - UNMERGEABLE (the queue-entry's own ``unmergeable`` signal OR entry
+        ``state == 'UNMERGEABLE'``) → facing ejection. Split on the PR's OWN
+        mergeStateStatus: ``DIRTY`` (genuine base conflict) → ``unmergeable``;
+        anything else (a cascade victim poisoned by a conflicting entry ahead) →
+        ``queue-blocked``.
+      - the merge-group build failed → ``group-failed``.
+      - otherwise progressing normally → no substate.
+
+    NOTE: not live-parity-gated on the current oracle repo — it has no GitHub merge
+    queue, so no ``queue``-stage PRs exist to compare against. This is a unit-tested
+    faithful port; parity is deferred to a merge-queue-configured repo (slice 1b caveat).
+    """
+    if unmergeable or queue_state == "UNMERGEABLE":
+        return "queue", ("unmergeable" if merge_state_status == "DIRTY" else "queue-blocked")
+    if group_failed:
+        return "queue", "group-failed"
+    return "queue", None
