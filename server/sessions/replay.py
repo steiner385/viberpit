@@ -61,9 +61,13 @@ def _build_events(path: str) -> tuple[list, object | None]:
             for b in content:
                 if b.get("type") == "image":
                     src = b.get("source") or {}
-                    if src.get("type") == "base64":
+                    # Skip blocks whose base64 payload was elided/truncated in the
+                    # transcript: `data:{mt};base64,` with no payload is a structurally
+                    # invalid URL the browser rejects (net::ERR_INVALID_URL).
+                    data = src.get("data") or ""
+                    if src.get("type") == "base64" and data:
                         mt = src.get("media_type", "image/png")
-                        imgs.append({"url": f"data:{mt};base64,{src.get('data', '')}",
+                        imgs.append({"url": f"data:{mt};base64,{data}",
                                      "mime": mt, "name": ""})
             # `isMeta` user entries are harness-injected context, not a real user
             # turn: the Skill-tool body ("Base directory for this skill: …"), the
