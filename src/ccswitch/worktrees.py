@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -106,6 +107,39 @@ def current_branch(path: str) -> str | None:
     if r.returncode != 0:
         return None
     return r.stdout.strip() or None
+
+
+_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+_REFLOG_CHECKOUT_RE = re.compile(r"^checkout: moving from (\S+) to (\S+)$")
+# Branches that are never a session's authored PR branch.
+_NON_AUTHORED = {"master", "main", "HEAD"}
+
+
+def authored_branches(cwd: str, scratch_branch: str | None = None) -> list[str]:
+    """Sorted, deduped feature branches this worktree has checked out.
+
+    Unions the live current branch with the worktree's reflog checkout history
+    (``checkout: moving from A to B``). Filters the session's scratch branch, the
+    repo default (master/main), HEAD, and bare commit SHAs (detached checkouts).
+    Returns [] for a non-git dir. The caller's PR query keeps only branches that
+    actually have a PR, so listing a no-PR feature branch here is harmless.
+    """
+    branches: set[str] = set()
+    cur = current_branch(cwd)
+    if cur:
+        branches.add(cur)
+    r = _run(["git", "-C", cwd, "reflog", "show", "--format=%gs", "HEAD"])
+    if r.returncode == 0:
+        for line in r.stdout.splitlines():
+            m = _REFLOG_CHECKOUT_RE.match(line.strip())
+            if m:
+                branches.add(m.group(1))
+                branches.add(m.group(2))
+    skip = _NON_AUTHORED | {scratch_branch}
+    return sorted(
+        b for b in branches
+        if b and b not in skip and not _SHA_RE.match(b)
+    )
 
 
 def worktrees_base(repo_root: str) -> Path:

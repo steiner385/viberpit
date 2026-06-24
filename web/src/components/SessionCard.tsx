@@ -6,7 +6,7 @@ import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { statusTier } from '@/session/statusTier'
 import { StatusPill, UsageBadge } from './UsageBadge'
-import { PrPill } from './PrPill'
+import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
 import type { Session, Account } from '@/api/types'
 
@@ -231,7 +231,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 <span className="truncate">Goal</span>
               </span>
             )}
-            {session.pr && <PrPill pr={session.pr} />}
+            <PrList prs={session.prs} />
           </div>
         </div>
 
