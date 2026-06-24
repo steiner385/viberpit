@@ -1,0 +1,55 @@
+import asyncio
+import pytest
+from fastapi.testclient import TestClient
+from server.deploy import app as deploy_app
+from server.deploy.detect import DetectLoop, PendingState
+from server.deploy.types import DeployStatus
+
+
+class FakeController:
+    def __init__(self):
+        self.status = DeployStatus(target_sha="def", running=False)
+        self.started = 0
+        self._running = False
+
+    async def deploy_once(self):
+        if self._running:
+            raise RuntimeError("deploy already in progress")
+        self.started += 1
+        self.status = DeployStatus(target_sha="def", running=False, phases={"update": "done"})
+        return self.status
+
+
+@pytest.fixture
+def client():
+    loop = DetectLoop("/r", compute=lambda r: PendingState(behind=True, target_sha="def",
+                                                            commits=[{"sha": "1"}], ci="green"))
+    loop.state = PendingState(behind=True, target_sha="def", commits=[{"sha": "1"}], ci="green")
+    ctrl = FakeController()
+    app, _, _ = deploy_app.build_controller_app(
+        repo="/r", health_url="http://h", venv_pip="/v", daemon_enabled=False,
+        detect_loop=loop, controller=ctrl)
+    return TestClient(app), ctrl
+
+
+def test_status_exposes_pending_and_deploy(client):
+    c, _ = client
+    body = c.get("/status").json()
+    assert body["pending"]["behind"] is True
+    assert body["pending"]["commits"][0]["sha"] == "1"
+    assert "running" in body["deploy"]
+
+
+def test_start_triggers_deploy(client):
+    c, ctrl = client
+    r = c.post("/start")
+    assert r.status_code == 200 and r.json()["started"] is True
+    # background task ran
+    assert ctrl.started == 1
+
+
+def test_start_conflict_when_running(client):
+    c, ctrl = client
+    ctrl._running = True
+    r = c.post("/start")
+    assert r.status_code == 409 and r.json()["started"] is False
