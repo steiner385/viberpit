@@ -16,6 +16,11 @@ const actionBtn = cn(
   'h-11 w-11 [@media(hover:hover)]:h-8 [@media(hover:hover)]:w-8',
   'flex items-center justify-center rounded-md',
   'focus-visible:outline-none focus-visible:ring-2',
+  // Press feedback: a quick scale-down + background darken so a tap/click
+  // is unmistakable (hover alone gives no change once the cursor is already
+  // over the button, and touch has no hover at all). active: fires on both.
+  'transition-[background-color,transform] duration-100',
+  'active:scale-90 active:duration-75',
 )
 
 interface SessionCardProps {
@@ -280,7 +285,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           <button
             type="button"
             className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
-              'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500')}
+              'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500',
+              'active:bg-emerald-100 dark:active:bg-emerald-900/40')}
             aria-label={`Resume session ${session.name}`}
             title={suggestions.length > 0 ? 'Resume — send the suggested next step' : 'Resume — send “continue”'}
             onClick={() => onQuickResume(session.id, resumeText)}
@@ -296,7 +302,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
-                'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500')}
+                'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500',
+              'active:bg-emerald-100 dark:active:bg-emerald-900/40')}
               onClick={() => setMenuOpen((o) => !o)}
             >
               <ChevronDown size={16} aria-hidden="true" />
@@ -329,7 +336,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         <button
           type="button"
           className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
-            'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500')}
+            'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
+            'active:bg-gray-200 dark:active:bg-gray-600')}
           aria-label={`Rename session ${session.name}`}
           title="Rename"
           onClick={() => onRename(session.id)}
@@ -339,7 +347,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         <button
           type="button"
           className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
-            'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500')}
+            'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
+            'active:bg-gray-200 dark:active:bg-gray-600')}
           aria-label={`Archive session ${session.name}`}
           title="Archive"
           onClick={() => onClose(session.id)}
@@ -349,7 +358,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         <button
           type="button"
           className={cn(actionBtn, 'text-red-600 dark:text-red-400',
-            'hover:bg-red-50 dark:hover:bg-red-900/20 focus-visible:ring-red-500')}
+            'hover:bg-red-50 dark:hover:bg-red-900/20 focus-visible:ring-red-500',
+            'active:bg-red-100 dark:active:bg-red-900/40')}
           aria-label={`Delete session ${session.name}`}
           title="Delete"
           onClick={() => onDelete(session.id)}
