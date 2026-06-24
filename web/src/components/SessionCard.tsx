@@ -316,7 +316,10 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               <div
                 role="menu"
                 className={cn(
-                  'absolute top-full right-0 mt-1 min-w-[12rem] max-w-xs z-10',
+                  // z-20 keeps the open menu above the sticky group headers
+                  // (GroupHeader: `sticky top-0 z-10`); at an equal z-index a later
+                  // group's header would paint over a menu opened from a card above it.
+                  'absolute top-full right-0 mt-1 min-w-[12rem] max-w-xs z-20',
                   'rounded-md border border-gray-200 dark:border-gray-700',
                   'bg-white dark:bg-gray-800 shadow-lg py-1',
                 )}
