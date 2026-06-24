@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Dashboard } from '../Dashboard'
 import * as hooks from '@/api/hooks'
-import * as toastLib from '@/lib/toast'
+import { toast } from 'sonner'
 import type { Account, Session } from '@/api/types'
 
 vi.mock('@/api/hooks', () => ({
@@ -47,7 +47,7 @@ vi.mock('@/session/useSessionSearch', () => ({
   useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
 }))
 
-vi.mock('@/lib/toast', () => ({ toast: vi.fn() }))
+vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 
 const NOOP_MUTATION = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
@@ -131,8 +131,8 @@ describe('Dashboard — all-limited banner + optimistic toasts', () => {
 
     act(() => { capturedCallbacks.onSuccess?.(session) })
 
-    expect(vi.mocked(toastLib.toast)).toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringContaining('started anyway') }),
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(
+      expect.stringContaining('started anyway'),
     )
   })
 
@@ -157,8 +157,8 @@ describe('Dashboard — all-limited banner + optimistic toasts', () => {
       capturedCallbacks.onError?.({ status: 409, body: { error: { code: 'accounts_need_reauth' } } })
     })
 
-    expect(vi.mocked(toastLib.toast)).toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringContaining('re-authenticate') }),
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      expect.stringContaining('re-authenticate'),
     )
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })

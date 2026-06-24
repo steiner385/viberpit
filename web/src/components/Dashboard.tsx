@@ -35,7 +35,7 @@ import {
 } from '@/api/hooks'
 import type { Account, ArchivedSession, BatchResult } from '@/api/types'
 import { PERMISSION_MODES } from '@/session/permissionModes'
-import { toast } from '@/lib/toast'
+import { toast } from 'sonner'
 import { setLastRepo } from '@/lib/lastRepo'
 import { SessionListControls } from './SessionListControls'
 import { useSessionOrdering } from '@/session/useSessionOrdering'
@@ -855,7 +855,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       onSuccess: (session) => {
         dismissNewDialog()
         if (session.usageUnverified) {
-          toast({ message: "Couldn't verify account usage — started anyway.", variant: 'info' })
+          toast("Couldn't verify account usage — started anyway.")
         }
         // Auto-open the new session and carry the prompt so it shows immediately.
         if (onOpenSession) onOpenSession(session.id, input.initialPrompt)
@@ -866,7 +866,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           if (body?.error?.code === 'branch_switch_failed') {
             setBranchError(body.error.message ?? 'Could not switch branch')
           } else if (body?.error?.code === 'accounts_need_reauth') {
-            toast({ message: 'No usable accounts — check the Accounts tab to re-authenticate.', variant: 'error' })
+            toast.error('No usable accounts — check the Accounts tab to re-authenticate.')
             dismissNewDialog()
           } else {
             const reset = body.earliestReset ?? null

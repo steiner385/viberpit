@@ -51,7 +51,7 @@ import {
   useSendPrompt,
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
-import { toast } from '@/lib/toast'
+import { toast } from 'sonner'
 import { useSessionOrdering } from '@/session/useSessionOrdering'
 import { useSessionSearch } from '@/session/useSessionSearch'
 import { useListNavigation } from '@/session/useListNavigation'
@@ -283,7 +283,7 @@ export function DesktopShell() {
         onSuccess: (session) => {
           if (repo) setLastRepo(repo)
           if (session.usageUnverified) {
-            toast({ message: "Couldn't verify account usage — started anyway.", variant: 'info' })
+            toast("Couldn't verify account usage — started anyway.")
           }
           focusSession(session.id, initialPrompt)
         },
@@ -293,7 +293,7 @@ export function DesktopShell() {
             if (body?.error?.code === 'branch_switch_failed') {
               // branch errors are handled elsewhere; ignore here
             } else if (body?.error?.code === 'accounts_need_reauth') {
-              toast({ message: 'No usable accounts — check the Accounts tab to re-authenticate.', variant: 'error' })
+              toast.error('No usable accounts — check the Accounts tab to re-authenticate.')
             } else {
               setAllLimitedReset(body.earliestReset ?? null)
             }
