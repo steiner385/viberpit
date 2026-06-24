@@ -1,4 +1,3 @@
-import asyncio
 from server.deploy import __main__ as cli
 from server.deploy.types import DeployStatus
 

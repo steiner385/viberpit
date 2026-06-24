@@ -1,4 +1,3 @@
-import asyncio
 import pytest
 from fastapi.testclient import TestClient
 from server.deploy import app as deploy_app

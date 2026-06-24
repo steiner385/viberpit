@@ -1,4 +1,3 @@
-import asyncio
 import pytest
 from types import SimpleNamespace
 from server.deploy.controller import DeployController

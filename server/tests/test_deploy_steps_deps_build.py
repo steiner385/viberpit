@@ -1,4 +1,3 @@
-import subprocess
 from types import SimpleNamespace
 from server.deploy import steps
 from server.deploy.types import DeployError

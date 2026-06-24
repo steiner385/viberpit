@@ -1,4 +1,3 @@
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from server.api.deploy import router, get_deploy_client

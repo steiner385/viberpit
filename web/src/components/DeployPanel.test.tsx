@@ -3,11 +3,19 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { DeployPanel } from './DeployPanel'
 import * as hooks from '@/api/hooks'
+import type { PendingDeploy, DeployProgress } from '@/api/types'
 
-function mockHooks(pending: any, deploy: any, mutate = vi.fn()) {
-  vi.spyOn(hooks, 'usePendingDeploy').mockReturnValue({ data: pending } as any)
-  vi.spyOn(hooks, 'useDeployStatus').mockReturnValue({ data: deploy } as any)
-  vi.spyOn(hooks, 'useStartDeploy').mockReturnValue({ mutate, isPending: false } as any)
+function mockHooks(
+  pending: Partial<PendingDeploy>,
+  deploy: Partial<DeployProgress>,
+  mutate = vi.fn(),
+) {
+  vi.spyOn(hooks, 'usePendingDeploy').mockReturnValue(
+    { data: pending } as unknown as ReturnType<typeof hooks.usePendingDeploy>)
+  vi.spyOn(hooks, 'useDeployStatus').mockReturnValue(
+    { data: deploy } as unknown as ReturnType<typeof hooks.useDeployStatus>)
+  vi.spyOn(hooks, 'useStartDeploy').mockReturnValue(
+    { mutate, isPending: false } as unknown as ReturnType<typeof hooks.useStartDeploy>)
 }
 
 describe('DeployPanel', () => {
