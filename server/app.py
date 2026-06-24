@@ -1,10 +1,8 @@
 from contextlib import asynccontextmanager
 import asyncio
-import functools
 import logging
 import os
 import signal
-import subprocess
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
@@ -21,6 +19,7 @@ from server.db import init_db
 from server.ipc.client import DaemonUnavailable, DaemonError
 from server.reauth import ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
+from server.version import running_git_sha
 
 # API routers (T036–T038)
 from server.api.sessions import router as sessions_router
@@ -57,6 +56,22 @@ def _daemon_compatible(socket_path: str, *, attempts: int = 5, interval: float =
     import time
     import httpx
     from server.ipc.protocol import PROTOCOL_VERSION
+    # Defense in depth: this probe does *synchronous*, blocking socket I/O. It must
+    # never run on a thread with a live asyncio loop — it would freeze the loop, and
+    # if the caller is the daemon probing its own socket, deadlock outright (the loop
+    # can't answer the request it just issued to itself). create_app() is sync and
+    # normally runs at import on a plain thread; if it is ever imported under a running
+    # loop, decline rather than hang. (The helper this used to drag into the daemon now
+    # lives in the side-effect-free server.version module, so this is a backstop.)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # no running loop on this thread — safe to block on sync I/O
+    else:
+        logging.getLogger("server").warning(
+            "skipping synchronous daemon probe at %s: create_app() ran under a live "
+            "event loop where blocking I/O would freeze (or self-deadlock) it", socket_path)
+        return False
     # No socket file → no daemon on this host; return immediately rather than burning
     # the retry budget (keeps the in-process dev/CI path fast).
     if not _daemon_socket_present(socket_path):
@@ -73,29 +88,6 @@ def _daemon_compatible(socket_path: str, *, attempts: int = 5, interval: float =
         if i < attempts - 1:
             time.sleep(interval)
     return False
-
-
-@functools.lru_cache(maxsize=1)
-def running_git_sha() -> str:
-    """Short git SHA of the running code, for deploy verification via /healthz.
-
-    Resolved once: ``CCSWITCH_GIT_SHA`` (the deployer can inject it) wins; else
-    ``git rev-parse --short HEAD`` against this checkout; else ``"unknown"`` (e.g.
-    a source tarball with no .git). Lets a deploy assert THIS commit is live, not
-    just that some process answered.
-    """
-    env_sha = os.environ.get("CCSWITCH_GIT_SHA")
-    if env_sha:
-        return env_sha.strip()
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=Path(__file__).resolve().parents[1],
-            capture_output=True, text=True, timeout=5, check=True,
-        )
-        return out.stdout.strip() or "unknown"
-    except (OSError, subprocess.SubprocessError):
-        return "unknown"
 
 
 @asynccontextmanager
