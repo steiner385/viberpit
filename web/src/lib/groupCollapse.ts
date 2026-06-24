@@ -1,16 +1,14 @@
 /**
- * Persists which session-list groups are collapsed. Mirrors sessionOrder.ts:
- * all access is try/catch-wrapped so a blocked/unavailable localStorage degrades
- * to "nothing collapsed" instead of crashing. We store the set of COLLAPSED group
- * keys (so an empty/absent value means everything is expanded, and any newly
- * appearing group defaults to expanded). Keys are the stable group.key produced by
- * orderSessions (status tier name or repo label).
+ * Persists which session-list groups are collapsed, namespaced per list. Stores
+ * the set of COLLAPSED group keys (empty/absent ⇒ all expanded). Namespace 'live'
+ * maps to the original key so existing collapse state survives.
  */
-const KEY = 'ccswitch.groupCollapse'
+const keyFor = (ns: string): string =>
+  ns === 'live' ? 'ccswitch.groupCollapse' : `ccswitch.groupCollapse.${ns}`
 
-export function loadGroupCollapse(): Set<string> {
+export function loadGroupCollapseNs(ns: string): Set<string> {
   try {
-    const raw = window.localStorage.getItem(KEY)
+    const raw = window.localStorage.getItem(keyFor(ns))
     if (!raw) return new Set()
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return new Set()
@@ -20,10 +18,18 @@ export function loadGroupCollapse(): Set<string> {
   }
 }
 
-export function saveGroupCollapse(keys: Set<string>): void {
+export function saveGroupCollapseNs(ns: string, keys: Set<string>): void {
   try {
-    window.localStorage.setItem(KEY, JSON.stringify([...keys]))
+    window.localStorage.setItem(keyFor(ns), JSON.stringify([...keys]))
   } catch {
     /* ignore — persistence is best-effort */
   }
+}
+
+// ── Live wrappers (unchanged public API) ─────────────────────────────────────
+export function loadGroupCollapse(): Set<string> {
+  return loadGroupCollapseNs('live')
+}
+export function saveGroupCollapse(keys: Set<string>): void {
+  saveGroupCollapseNs('live', keys)
 }
