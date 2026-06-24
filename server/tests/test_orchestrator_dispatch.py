@@ -1,0 +1,160 @@
+"""Tests for M3a orchestrator dispatch-proposal integration (Task 2).
+
+Tests:
+- _dispatch_proposal returns None for a repo-less record.
+- After awaiting _refresh_issue_proposal("o/r"), _dispatch_proposal returns the proposal.
+- TTL: a second _dispatch_proposal within TTL does not re-schedule a fetch.
+- latest_suggestions for a detached done session with a repo includes the proposal as FIRST item.
+"""
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+import server.sessions.orchestrator as orch_mod
+from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.types import SessionRecord
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_orch():
+    """Minimal orchestrator with only the dispatch-related state."""
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    orch._records = {}
+    orch._drivers = {}
+    orch._issue_proposals = {}
+    orch._issue_inflight = set()
+    orch._detached_suggestions = {}
+    orch._suggest_inflight = set()
+    orch._suggester = None
+    orch._clock = None  # Use default time.monotonic
+    return orch
+
+
+def _make_record(session_id: str, repo: str | None = None, status: str = "done") -> SessionRecord:
+    return SessionRecord(
+        id=session_id,
+        name="test",
+        account="acct-a",
+        claude_session_id="",
+        cols=80,
+        rows=24,
+        cwd="/tmp",
+        repo=repo,
+        status=status,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test: _dispatch_proposal returns None for a repo-less record
+# ---------------------------------------------------------------------------
+
+def test_dispatch_proposal_none_for_no_repo():
+    orch = _make_orch()
+    rec = _make_record("s1", repo=None)
+    result = orch._dispatch_proposal(rec)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Test: After refreshing, _dispatch_proposal returns the proposal string
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dispatch_proposal_returns_after_refresh(monkeypatch):
+    def fake_fetch(repo):
+        return [{"number": 42, "title": "Important fix", "labels": [], "updatedAt": "2026-06-24T10:00:00Z"}]
+
+    monkeypatch.setattr(orch_mod.dispatch, "fetch_open_issues", fake_fetch)
+
+    orch = _make_orch()
+    rec = _make_record("s1", repo="o/r")
+
+    # Before refresh: cache miss → returns None, schedules background task
+    result_before = orch._dispatch_proposal(rec)
+    assert result_before is None
+    assert "o/r" in orch._issue_inflight
+
+    # Run the refresh directly (simulating the background task)
+    await orch._refresh_issue_proposal("o/r")
+
+    # Cache is now populated
+    assert "o/r" in orch._issue_proposals
+    assert "o/r" not in orch._issue_inflight
+
+    result_after = orch._dispatch_proposal(rec)
+    assert result_after == "Work on issue #42: Important fix"
+
+
+# ---------------------------------------------------------------------------
+# Test: Second _dispatch_proposal within TTL does NOT re-schedule
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dispatch_proposal_ttl_no_reschedule(monkeypatch):
+    fetch_calls: list[str] = []
+
+    def fake_fetch(repo):
+        fetch_calls.append(repo)
+        return [{"number": 7, "title": "A task", "labels": [], "updatedAt": "2026-06-24T10:00:00Z"}]
+
+    monkeypatch.setattr(orch_mod.dispatch, "fetch_open_issues", fake_fetch)
+
+    orch = _make_orch()
+    rec = _make_record("s1", repo="o/r")
+
+    # Seed the cache with a fresh timestamp
+    import time
+    orch._issue_proposals["o/r"] = (time.monotonic(), "Work on issue #7: A task")
+
+    # Should return the cached proposal without scheduling a new fetch
+    tasks_before = len(asyncio.all_tasks())
+    result = orch._dispatch_proposal(rec)
+    tasks_after = len(asyncio.all_tasks())
+
+    assert result == "Work on issue #7: A task"
+    assert len(fetch_calls) == 0
+    assert tasks_after == tasks_before  # no new task scheduled
+
+
+# ---------------------------------------------------------------------------
+# Test: latest_suggestions prepends proposal as FIRST item for done detached session
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_latest_suggestions_prepends_proposal_for_done_session(monkeypatch):
+    """For a detached done session with repo + cached suggestions, proposal is first."""
+    def fake_fetch(repo):
+        return [{"number": 99, "title": "Top issue", "labels": ["priority"], "updatedAt": "2026-06-24T00:00:00Z"}]
+
+    monkeypatch.setattr(orch_mod.dispatch, "fetch_open_issues", fake_fetch)
+
+    orch = _make_orch()
+    rec = _make_record("s1", repo="o/r", status="done")
+    orch._records["s1"] = rec
+
+    # Stub the transcript path resolution so it returns a path without real file I/O
+    async def fake_resolve_transcript(session_id):
+        return "/fake/transcript.jsonl"
+
+    monkeypatch.setattr(orch, "_resolve_transcript_path", fake_resolve_transcript)
+
+    # Stub os.path.getmtime to return a stable signature
+    import os
+    monkeypatch.setattr(os.path, "getmtime", lambda p: 12345.0)
+
+    # Seed the detached suggestions cache with known items
+    orch._detached_suggestions["s1"] = (12345.0, ["Run tests", "Commit"])
+
+    # Seed the issue proposals cache so _dispatch_proposal returns immediately
+    import time
+    orch._issue_proposals["o/r"] = (time.monotonic(), "Work on issue #99: Top issue")
+
+    result = await orch.latest_suggestions("s1")
+    assert result[0] == "Work on issue #99: Top issue"
+    assert "Run tests" in result
+    assert result.count("Work on issue #99: Top issue") == 1  # not duplicated
