@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from typing import Callable
 
 from server.deploy.types import DeployError
@@ -100,3 +101,58 @@ def build_frontend(repo: str, run: Run = subprocess.run) -> None:
             capture_output=True, text=True)
     if r.returncode != 0:
         raise DeployError("update", f"frontend build failed: {r.stderr.strip()}")
+
+
+def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
+                  run: Run = subprocess.run) -> list[str]:
+    """Restart systemd units in order: daemon first (if changed+enabled), then edge.
+
+    Order is load-bearing (browser reconnect-flush race, #190).
+    Returns the ordered list of units restarted.
+    """
+    units: list[str] = []
+    # DAEMON FIRST — order is load-bearing (browser reconnect-flush race, #190).
+    if daemon_changed and daemon_enabled:
+        run(["sudo", "systemctl", "restart", "ccswitch-daemon.service"],
+            check=True, capture_output=True)
+        units.append("ccswitch-daemon.service")
+    run(["sudo", "systemctl", "restart", "ccswitch.service"], check=True, capture_output=True)
+    units.append("ccswitch.service")
+    return units
+
+
+def _default_fetch(url: str) -> str:
+    """Fetch URL body with a 3s timeout; return empty string on error."""
+    import httpx
+    try:
+        return httpx.get(url, timeout=3.0).text
+    except Exception:
+        return ""
+
+
+def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: float = 2.0,
+                 fetch: Callable[[str], str] | None = None,
+                 sleep: Callable[[float], None] = time.sleep) -> bool:
+    """Poll url for health status; return True when body contains status:ok AND expected sha.
+
+    Args:
+        expected_sha: SHORT git sha to match in body.
+        url: Health check endpoint URL.
+        attempts: Number of poll attempts (default 15).
+        sleep_s: Seconds between polls (default 2.0).
+        fetch: Callable(url) -> str; defaults to httpx.get().text (empty string on error).
+        sleep: Callable(seconds); defaults to time.sleep.
+
+    Returns:
+        True if both "status":"ok" and "sha":"<expected_sha>" are found in response body.
+        False if attempts exhausted without both conditions met.
+    """
+    fetch = fetch or _default_fetch
+    needle_status = '"status":"ok"'
+    needle_sha = f'"sha":"{expected_sha}"'
+    for _ in range(attempts):
+        body = fetch(url)
+        if needle_status in body and needle_sha in body:
+            return True
+        sleep(sleep_s)
+    return False
