@@ -5,15 +5,16 @@ import type { ReactNode } from 'react'
 import { usePermanentDeleteSession, useUnarchiveSession, QK } from './hooks'
 import { api } from './client'
 import type { ArchivedSession, Session } from './types'
-import { getToasts, __resetToasts } from '@/lib/toast'
 
 vi.mock('./client', () => ({ api: { del: vi.fn(), post: vi.fn() }, ApiRequestError: class extends Error {} }))
+vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+import { toast } from 'sonner'
 
 const arch: ArchivedSession = { id: 'a-1', name: 'Bar', account: 'a', cwd: '/x', claudeSessionId: null, permissionMode: 'interactive', createdAt: 'x', archivedAt: 'y' }
 
 describe('usePermanentDeleteSession — optimistic', () => {
   let qc: QueryClient
-  beforeEach(() => { vi.clearAllMocks(); __resetToasts(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
+  beforeEach(() => { vi.clearAllMocks(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 
   it('removes from archived immediately and toasts on success', async () => {
@@ -22,7 +23,7 @@ describe('usePermanentDeleteSession — optimistic', () => {
     const { result } = renderHook(() => usePermanentDeleteSession(), { wrapper })
     result.current.mutate('a-1')
     await waitFor(() => expect(qc.getQueryData<ArchivedSession[]>(QK.archived)).toEqual([]))
-    await waitFor(() => expect(getToasts()[0]).toMatchObject({ message: 'Deleted Bar' }))
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Deleted Bar'))
   })
 
   it('rolls back and error-toasts on failure', async () => {
@@ -32,14 +33,14 @@ describe('usePermanentDeleteSession — optimistic', () => {
     result.current.mutate('a-1')
     await waitFor(() => {
       expect(qc.getQueryData<ArchivedSession[]>(QK.archived)).toEqual([arch])
-      expect(getToasts()[0]).toMatchObject({ message: "Couldn't delete Bar", variant: 'error' })
+      expect(toast.error).toHaveBeenCalledWith("Couldn't delete Bar")
     })
   })
 })
 
 describe('useUnarchiveSession — optimistic', () => {
   let qc: QueryClient
-  beforeEach(() => { vi.clearAllMocks(); __resetToasts(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
+  beforeEach(() => { vi.clearAllMocks(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 
   it('removes from archived immediately on mutate', async () => {
@@ -57,14 +58,14 @@ describe('useUnarchiveSession — optimistic', () => {
     result.current.mutate('a-1')
     await waitFor(() => {
       expect(qc.getQueryData<ArchivedSession[]>(QK.archived)).toEqual([arch])
-      expect(getToasts()[0]).toMatchObject({ message: "Couldn't restore Bar", variant: 'error' })
+      expect(toast.error).toHaveBeenCalledWith("Couldn't restore Bar")
     })
   })
 })
 
 describe('usePermanentDeleteSession — dual-cache rollback', () => {
   let qc: QueryClient
-  beforeEach(() => { vi.clearAllMocks(); __resetToasts(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
+  beforeEach(() => { vi.clearAllMocks(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 
   it('rolls back both sessions and archived caches on failure', async () => {
