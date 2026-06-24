@@ -1,5 +1,5 @@
 from server.github.pr_status import (
-    PRODUCTION_ENVIRONMENT, PullRequestInfo, build_pr_query, parse_pr_response,
+    PRODUCTION_ENVIRONMENT, CheckDetail, PullRequestInfo, build_pr_query, parse_pr_response,
 )
 
 
@@ -16,6 +16,22 @@ def test_from_dict_roundtrips_to_dict():
     deployed = PullRequestInfo(9, "u", "merged", "passing", "t", deployed=True)
     assert PullRequestInfo.from_dict(deployed.to_dict()) == deployed
     assert PullRequestInfo.from_dict(deployed.to_dict()).deployed is True
+
+
+def test_stage_field_roundtrips():
+    """stage field survives to_dict → from_dict (RPC round-trip)."""
+    pr = PullRequestInfo(42, "https://github.com/o/r/pull/42", "open", "passing", "t",
+                         stage="ready")
+    roundtripped = PullRequestInfo.from_dict(pr.to_dict())
+    assert roundtripped.stage == "ready"
+    # Default stage is empty string
+    pr_no_stage = PullRequestInfo(43, "u", "open", "passing", "t")
+    assert pr_no_stage.stage == ""
+    assert PullRequestInfo.from_dict(pr_no_stage.to_dict()).stage == ""
+    # Absent key in wire dict → default empty string
+    d = pr.to_dict()
+    del d["stage"]
+    assert PullRequestInfo.from_dict(d).stage == ""
 
 
 def _pr(number, state, *, draft=False, rollup="SUCCESS", updated="2026-06-22T10:00:00Z"):
@@ -44,7 +60,10 @@ def test_parse_open_passing():
     pairs = [("o/r", "br")]
     out = parse_pr_response(_resp({"r0": [_pr(7, "OPEN", rollup="SUCCESS")]}), pairs)
     info = out[("o/r", "br")]
-    assert info == PullRequestInfo(7, "https://github.com/o/r/pull/7", "open", "passing", "PR 7")
+    assert info == PullRequestInfo(
+        7, "https://github.com/o/r/pull/7", "open", "passing", "PR 7",
+        updated_at="2026-06-22T10:00:00Z",
+    )
 
 
 def test_parse_state_classification():
@@ -168,3 +187,43 @@ def test_active_deploy_ignores_non_success_status():
 def test_deployed_defaults_false_in_dict():
     info = PullRequestInfo(1, "u", "open", "none", "t")
     assert info.to_dict()["deployed"] is False
+
+
+def test_parse_populates_parity_fields():
+    pairs = [("o/r", "br")]
+    node = {
+        "number": 7, "url": "https://github.com/o/r/pull/7", "title": "PR 7",
+        "state": "OPEN", "isDraft": False, "updatedAt": "2026-06-22T10:00:00Z",
+        "headRefOid": "deadbeef",
+        "commits": {"nodes": [{"commit": {"statusCheckRollup": {
+            "state": "PENDING",
+            "contexts": {"nodes": [
+                {"__typename": "CheckRun", "name": "ci", "conclusion": "SUCCESS"},
+                {"__typename": "StatusContext", "context": "deploy", "state": "PENDING"},
+            ]},
+        }}}]},
+    }
+    out = parse_pr_response(_resp({"r0": [node]}), pairs)[("o/r", "br")]
+    assert out.head_sha == "deadbeef"
+    assert out.is_draft is False and out.merged is False
+    assert out.updated_at == "2026-06-22T10:00:00Z"
+    assert CheckDetail(name="ci", conclusion="success") in out.checks_detail
+    assert CheckDetail(name="deploy", conclusion="pending") in out.checks_detail
+
+
+def test_pull_request_info_parity_fields_roundtrip():
+    pr = PullRequestInfo(
+        number=9, url="u", state="open", checks="passing", title="t",
+        head_sha="abc123", is_draft=False, merged=False,
+        updated_at="2026-06-22T10:00:00Z",
+        checks_detail=(CheckDetail(name="ci", conclusion="success"),),
+    )
+    back = PullRequestInfo.from_dict(pr.to_dict())
+    assert back == pr
+    assert back.head_sha == "abc123"
+    assert back.checks_detail[0].name == "ci"
+    # Defaults still round-trip (older payloads without the new keys):
+    legacy = PullRequestInfo.from_dict(
+        {"number": 1, "url": "u", "state": "open", "checks": "none", "title": "t"}
+    )
+    assert legacy.head_sha == "" and legacy.checks_detail == ()
