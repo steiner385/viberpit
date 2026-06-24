@@ -50,6 +50,7 @@ from server.sessions.background_tasks import scan_open_background_tasks, build_r
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import SessionRecord
+from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
 
 log = logging.getLogger(__name__)
@@ -1713,7 +1714,7 @@ class SessionOrchestrator:
         self._publish_event({
             "type": "paused", "sessionId": record.id, "account": record.account,
             "reason": reason,
-            "earliestReset": earliest_reset.isoformat() if earliest_reset else None,
+            "earliestReset": iso_utc(earliest_reset),
         })
         log.warning("recover.paused session=%s reason=%s", record.id, reason)
 
@@ -1934,8 +1935,8 @@ class SessionOrchestrator:
                 "cwd": row.cwd,
                 "claudeSessionId": row.claude_session_id,
                 "permissionMode": row.permission_mode,
-                "createdAt": row.created_at.isoformat() if row.created_at else None,
-                "archivedAt": row.updated_at.isoformat() if row.updated_at else None,
+                "createdAt": iso_utc(row.created_at),
+                "archivedAt": iso_utc(row.updated_at),
             }
             for row in rows
         ]
