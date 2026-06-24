@@ -510,6 +510,18 @@ class SessionOrchestrator:
         rec = self._records.get(session_id)
         if rec is not None and rec.status == "ended":
             return
+        # Overlay: a turn that finished (`done`) but left the agent parked on an external
+        # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
+        # not "Your turn". Computed here (not in the pure `derive_status`) because it needs
+        # the transcript, like the `limited`/`ended` overlays. Scan only on `done` so the
+        # per-emit cost is paid once per turn-end. `waiting_external` is NOT in
+        # ACTIVITY_STATUSES, so parking does NOT bump the "active … ago" clock below — the
+        # card shows time since the last real turn, not a reset on every re-arm.
+        completed_turn = status == "done"
+        if completed_turn:
+            from .background_tasks import is_parked
+            if is_parked(self.transcript_path(session_id)):
+                status = "waiting_external"
         # Advance the "active … ago" clock ONLY when the assistant hands output back —
         # a finished or user-paused turn (ACTIVITY_STATUSES). Bumping it on every status
         # (in_progress) or incidental row write is the bug that pinned every card to
@@ -538,7 +550,7 @@ class SessionOrchestrator:
         # WS bridge forwards lifecycle frames top-level so the client's status handler
         # (_patchSessionStatus) patches the cached session record.
         self._publish_event({"type": "status", "sessionId": session_id, "status": status})
-        if status == "done":
+        if completed_turn:
             await self._maybe_apply_auto_name(session_id)
 
     async def _condense_estimate(self) -> float:
