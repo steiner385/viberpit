@@ -65,7 +65,13 @@ def _build_events(path: str) -> tuple[list, object | None]:
                         mt = src.get("media_type", "image/png")
                         imgs.append({"url": f"data:{mt};base64,{src.get('data', '')}",
                                      "mime": mt, "name": ""})
-            if text or imgs:
+            # `isMeta` user entries are harness-injected context, not a real user
+            # turn: the Skill-tool body ("Base directory for this skill: …"), the
+            # "Continue from where you left off." resume prompt, Stop-hook notices,
+            # etc. Rendering them makes the skill's own prompt look like the user's
+            # (or our) message — suppress the bubble. (Any tool_results on the entry
+            # still emit below; in practice these meta entries carry only text.)
+            if (text or imgs) and not o.get("isMeta"):
                 out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
                                           images=imgs or None, ts=ts))
             for r in results:
