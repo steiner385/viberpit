@@ -15,7 +15,6 @@ def _make_orch():
 
 
 def _add_record(orch, session_id: str, name: str = "test-session", status: str = "idle") -> None:
-    from datetime import datetime
     orch._records[session_id] = SessionRecord(
         id=session_id,
         name=name,
