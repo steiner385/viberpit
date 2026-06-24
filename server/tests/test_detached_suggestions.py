@@ -15,7 +15,7 @@ def _orch_with_record(status="done", *, suggester_items=("Run tests", "Commit"))
     orch._suggester = types.SimpleNamespace(
         generate=AsyncMock(return_value=list(suggester_items))
     )
-    rec = types.SimpleNamespace(status=status, cwd="/x", account="acct")
+    rec = types.SimpleNamespace(status=status, cwd="/x", account="acct", repo=None)
     orch._records["s1"] = rec
     return orch, rec
 

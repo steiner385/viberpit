@@ -113,6 +113,7 @@ export function HelpDrawer({ onClose }: { onClose: () => void }) {
 
         <ShortcutSection title="Compose mode" bindings={shortcutsByGroup('compose')} />
         <ShortcutSection title="List-focus mode" bindings={shortcutsByGroup('list-mode')} />
+        <ShortcutSection title="Group headers" bindings={shortcutsByGroup('list-mode-header')} />
         <ShortcutSection title="In-session" bindings={shortcutsByGroup('in-session')} />
 
         <section>
