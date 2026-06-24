@@ -26,7 +26,7 @@ _OVERLOAD_CODES = frozenset(f"api_{s}" for s in _OVERLOAD_STATUSES)
 
 @dataclass(frozen=True)
 class TurnFailure:
-    kind: str  # "rate_limit" | "auth_401" | "process_crash" | "overloaded" | "other"
+    kind: str  # "rate_limit" | "auth_401" | "process_crash" | "turn_dropped" | "overloaded" | "other"
     retry_after: float | None = None
 
     @property
