@@ -108,6 +108,21 @@ def current_branch(path: str) -> str | None:
     return r.stdout.strip() or None
 
 
+def live_branch(cwd: str | None, fallback: str | None) -> str | None:
+    """The branch checked out at ``cwd``, falling back when it can't be read live.
+
+    Single source of truth for a session's PR-join branch. A session's worktree
+    HEAD moves off its creation branch once the agent checks out the real PR
+    branch, so the branch must be read live from disk — but when ``cwd`` is absent
+    or HEAD is detached / non-git, degrade to ``fallback`` (the stored branch).
+    """
+    if cwd:
+        derived = current_branch(cwd)
+        if derived:
+            return derived
+    return fallback
+
+
 def worktrees_base(repo_root: str) -> Path:
     """ccswitch-owned root for all session worktrees, under the user's repo root."""
     return Path(repo_root).expanduser() / ".ccswitch" / "worktrees"

@@ -147,6 +147,37 @@ def test_create_session_without_repo_reports_none(repo_setup):
     assert sess["repo"] is None, f"wire repo={sess.get('repo')!r}"
 
 
+def test_pr_badge_uses_live_worktree_branch_not_stale_stored(repo_setup):
+    """GET /api/sessions joins the PR by the worktree's CURRENT branch.
+
+    A ccswitch session is created on a per-session isolation branch, then the
+    agent checks out a real ``feat/*`` branch (the PR head) in the same worktree.
+    The PR cache is keyed only by that live branch — so the badge appears only if
+    the list route resolves the branch live rather than using the stored value.
+    """
+    orch, client, work, _db_url = repo_setup
+    _init_git_repo(work, "https://github.com/acme/widget.git")
+
+    rec = client.portal.call(
+        lambda: orch.create_session("pr-session", cwd=work, repo="acme/widget")
+    )
+    # The agent moves the worktree onto the real PR branch after creation.
+    subprocess.run(
+        ["git", "-C", rec.cwd, "checkout", "-q", "-b", "feat/real-pr"],
+        check=True, capture_output=True,
+    )
+    # The poller has only ever cached the PR under its live head branch.
+    from server.github.pr_status import PullRequestInfo
+    orch._pr_poller._cache[("acme/widget", "feat/real-pr")] = PullRequestInfo(
+        220, "https://github.com/acme/widget/pull/220", "open", "passing", "t"
+    )
+
+    resp = client.get("/api/sessions", headers=_IDENT)
+    sess = next(s for s in resp.json() if s["id"] == rec.id)
+    assert sess["pr"] is not None, f"pr missing; stored branch was {rec.branch!r}"
+    assert sess["pr"]["number"] == 220
+
+
 def test_repo_persists_to_db_and_survives_rehydrate(repo_setup):
     """The repo is written to the DB row and restored by rehydrate() after a restart."""
     orch, client, work, db_url = repo_setup

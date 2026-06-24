@@ -48,3 +48,29 @@ async def test_refresh_failure_keeps_cache():
 async def test_refresh_empty_pairs_is_noop_success():
     p = PrStatusPoller(query_fn=_good_query)
     assert await p.refresh_once([]) is True
+
+
+@pytest.mark.asyncio
+async def test_current_pairs_resolves_sync_provider():
+    p = PrStatusPoller(query_fn=_good_query)
+    p.set_pairs_provider(lambda: PAIRS)
+    assert await p._current_pairs() == PAIRS
+
+
+@pytest.mark.asyncio
+async def test_current_pairs_awaits_async_provider():
+    """The orchestrator's pairs provider resolves branches live (async); the
+    poller must await it rather than treat the coroutine as the pair list."""
+    p = PrStatusPoller(query_fn=_good_query)
+
+    async def _async_pairs():
+        return PAIRS
+
+    p.set_pairs_provider(_async_pairs)
+    assert await p._current_pairs() == PAIRS
+
+
+@pytest.mark.asyncio
+async def test_current_pairs_empty_without_provider():
+    p = PrStatusPoller(query_fn=_good_query)
+    assert await p._current_pairs() == []

@@ -807,14 +807,30 @@ class SessionOrchestrator:
         """Return the in-memory SessionRecord for session_id, or None."""
         return self._records.get(session_id)
 
-    def _pr_pairs(self) -> list[tuple[str, str]]:
-        """Distinct (repo, branch) pairs for live sessions that have both."""
+    async def _pr_pairs(self) -> list[tuple[str, str]]:
+        """Distinct (repo, branch) pairs for live sessions that have both.
+
+        The branch is resolved live from each session's worktree HEAD (off the
+        event loop) rather than read from the stored ``record.branch``: ccswitch's
+        completion workflow checks out a fresh ``feat/*``/``fix/*`` branch — the
+        real PR head — in the same worktree, so the stored value goes stale and the
+        poll would query (and cache) the wrong branch. Falls back to the stored
+        branch when the live HEAD is not resolvable (detached / non-git).
+        """
+        records = [r for r in self._records.values() if r.repo]
+        live = await asyncio.gather(*(self._live_branch(r) for r in records))
         seen: set[tuple[str, str]] = set()
-        for r in self._records.values():
-            branch = getattr(r, "branch", None)
-            if r.repo and branch:
-                seen.add((r.repo, branch))
+        for r, branch in zip(records, live):
+            repo = r.repo
+            if repo and branch:
+                seen.add((repo, branch))
         return list(seen)
+
+    async def _live_branch(self, record) -> str | None:
+        """Live worktree HEAD for a session, falling back to its stored branch."""
+        return await asyncio.to_thread(
+            worktrees.live_branch, getattr(record, "cwd", None), getattr(record, "branch", None)
+        )
 
     def pr_for(self, repo, branch):
         """Cached PullRequestInfo for a session's (repo, branch), or None."""

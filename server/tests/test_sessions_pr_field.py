@@ -31,9 +31,10 @@ class _NoPrOrch:
 @pytest.mark.asyncio
 async def test_resolve_pr_handles_sync_async_and_missing():
     rec = _rec()
-    assert (await _resolve_pr(_SyncOrch(), rec)).number == 1   # in-process: sync
-    assert (await _resolve_pr(_AsyncOrch(), rec)).number == 2  # remote: awaited
-    assert await _resolve_pr(_NoPrOrch(), rec) is None         # absent: graceful
+    # branch is passed explicitly (live-resolved), not read from record.branch.
+    assert (await _resolve_pr(_SyncOrch(), rec, "br")).number == 1   # in-process: sync
+    assert (await _resolve_pr(_AsyncOrch(), rec, "br")).number == 2  # remote: awaited
+    assert await _resolve_pr(_NoPrOrch(), rec, "br") is None         # absent: graceful
 
 
 def test_record_to_dict_includes_pr_when_given():

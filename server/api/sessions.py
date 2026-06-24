@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
+from ccswitch import worktrees
 from server.auth.middleware import current_identity
 from server.sessions import adopt as _adopt
 from server.sessions.search import transcript_text, parse_terms, session_matches
@@ -155,17 +156,34 @@ async def _resolve_repo(record) -> str | None:
     return await asyncio.to_thread(gitrepos.repo_at_path, cwd)
 
 
-async def _resolve_pr(orch, record):
+async def _resolve_branch(record) -> str | None:
+    """Read the PR-join branch live from the session's worktree HEAD.
+
+    The branch is half of the ``(repo, branch)`` key that joins a session to its
+    GitHub PR. It must be read live — not from the value stored at creation —
+    because ccswitch's completion workflow checks out a fresh ``feat/*``/``fix/*``
+    branch (the real PR head) in the same worktree, leaving the stored branch
+    stale. Mirrors ``_resolve_repo``: runs git off the event loop, falls back to
+    the stored ``record.branch`` only when the session has no working directory.
+    """
+    return await asyncio.to_thread(
+        worktrees.live_branch, getattr(record, "cwd", None), getattr(record, "branch", None)
+    )
+
+
+async def _resolve_pr(orch, record, branch):
     """Resolve a record's PR via ``orch.pr_for``, tolerating both orchestrators.
 
-    The in-process orchestrator's ``pr_for`` is synchronous; the remote (daemon)
-    one awaits an RPC. Returns ``PullRequestInfo | None``; an orchestrator with no
-    ``pr_for`` at all (older shim) yields ``None`` rather than raising.
+    ``branch`` is the live-resolved worktree branch (see ``_resolve_branch``), not
+    the stored ``record.branch``. The in-process orchestrator's ``pr_for`` is
+    synchronous; the remote (daemon) one awaits an RPC. Returns
+    ``PullRequestInfo | None``; an orchestrator with no ``pr_for`` at all (older
+    shim) yields ``None`` rather than raising.
     """
     fn = getattr(orch, "pr_for", None)
     if fn is None:
         return None
-    res = fn(record.repo, getattr(record, "branch", None))
+    res = fn(record.repo, branch)
     if inspect.isawaitable(res):
         res = await res
     return res
@@ -188,11 +206,12 @@ async def list_sessions(
     """Return all in-memory session records."""
     orch = _get_orchestrator(request)
     records = await orch.list_sessions()
-    # Read each session's repo (live, from its cwd), cached suggestions, and PR
-    # status in parallel.
+    # Read each session's repo and PR-join branch (both live, from its cwd),
+    # cached suggestions, and PR status in parallel.
     repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
+    branches = await asyncio.gather(*(_resolve_branch(r) for r in records))
     suggs = await asyncio.gather(*(orch.latest_suggestions(r.id) for r in records))
-    prs = await asyncio.gather(*(_resolve_pr(orch, r) for r in records))
+    prs = await asyncio.gather(*(_resolve_pr(orch, r, b) for r, b in zip(records, branches)))
     return [
         _record_to_dict(r, repo=repo, suggestions=s, pr=pr)
         for r, repo, s, pr in zip(records, repos, suggs, prs)

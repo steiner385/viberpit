@@ -232,5 +232,43 @@ class CurrentBranchTests(unittest.TestCase):
         self.assertIsNone(worktrees.current_branch(str(plain)))
 
 
+class LiveBranchTests(unittest.TestCase):
+    """worktrees.live_branch — the worktree's current branch, with a fallback.
+
+    Single source of truth for the PR-join branch: a session's worktree HEAD moves
+    off its creation branch (the agent checks out the real PR branch), so callers
+    must read it live, but degrade to a stored value when HEAD is not a branch.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_prefers_live_branch_over_fallback(self) -> None:
+        repo = self.root / "repo"
+        _make_repo(repo, branch="feat/real-pr")
+        self.assertEqual(
+            worktrees.live_branch(str(repo), "ccswitch/master-stale"), "feat/real-pr"
+        )
+
+    def test_falls_back_when_detached(self) -> None:
+        repo = self.root / "repo"
+        _make_repo(repo, branch="main")
+        _git("checkout", _rev(repo, "HEAD"), cwd=str(repo))   # detach
+        self.assertEqual(worktrees.live_branch(str(repo), "stored"), "stored")
+
+    def test_falls_back_when_no_cwd(self) -> None:
+        self.assertEqual(worktrees.live_branch(None, "stored"), "stored")
+        self.assertEqual(worktrees.live_branch("", "stored"), "stored")
+
+    def test_fallback_none_yields_none(self) -> None:
+        plain = self.root / "plain"
+        plain.mkdir()
+        self.assertIsNone(worktrees.live_branch(str(plain), None))
+
+
 if __name__ == "__main__":
     unittest.main()

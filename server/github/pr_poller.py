@@ -7,17 +7,23 @@ cache the HTTP path reads. Tests inject ``query_fn`` so no real gh call is made.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import random
 import time
-from typing import Callable
+from typing import Awaitable, Callable
 
 from ccswitch import gitrepos
 
 from .pr_status import PullRequestInfo, build_pr_query, parse_pr_response
 
 log = logging.getLogger(__name__)
+
+# The pairs provider may be sync (tests) or async (the orchestrator resolves each
+# session's branch live from its worktree, off the event loop).
+_Pairs = list[tuple[str, str]]
+_PairsProvider = Callable[[], "_Pairs | Awaitable[_Pairs]"]
 
 
 def _default_query(pairs: list[tuple[str, str]]) -> dict:
@@ -52,10 +58,10 @@ class PrStatusPoller:
         self._fail_count = 0
         self._cooldown_until = 0.0
         self._cache: dict[tuple[str, str], PullRequestInfo] = {}
-        self._pairs_provider: Callable[[], list[tuple[str, str]]] | None = None
+        self._pairs_provider: _PairsProvider | None = None
         self._task: asyncio.Task | None = None
 
-    def set_pairs_provider(self, fn: Callable[[], list[tuple[str, str]]]) -> None:
+    def set_pairs_provider(self, fn: _PairsProvider) -> None:
         self._pairs_provider = fn
 
     def cached(self, repo: str | None, branch: str | None) -> PullRequestInfo | None:
@@ -98,11 +104,24 @@ class PrStatusPoller:
                 pass
             self._task = None
 
+    async def _current_pairs(self) -> list[tuple[str, str]]:
+        """Resolve the pairs to poll, awaiting an async provider if needed.
+
+        The orchestrator's provider resolves each session's branch live from its
+        worktree (an async, off-the-event-loop git call), so it returns a coroutine
+        rather than a list.
+        """
+        if self._pairs_provider is None:
+            return []
+        pairs = self._pairs_provider()
+        if inspect.isawaitable(pairs):
+            pairs = await pairs
+        return pairs
+
     async def _loop(self) -> None:
         while True:
             delay = self._poll_interval * (1 + self._jitter_frac * self._rng())
             if self._clock() < self._cooldown_until:
                 delay = max(delay, self._cooldown_until - self._clock())
             await asyncio.sleep(delay)
-            pairs = self._pairs_provider() if self._pairs_provider else []
-            await self.refresh_once(pairs)
+            await self.refresh_once(await self._current_pairs())
