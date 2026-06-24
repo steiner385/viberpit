@@ -1,9 +1,10 @@
 import type { Session } from '@/api/types'
 import { statusTier, TIER_RANK, type StatusTier } from './statusTier'
+import { anyChecksFailing } from './prStatus'
 
 /** A broken PR is an attention signal even on an otherwise-calm session. */
 function prTier(session: Session): StatusTier | null {
-  return session.prs?.some((pr) => pr.checks === 'failing') ? 'error' : null
+  return anyChecksFailing(session.prs) ? 'error' : null
 }
 
 /** Triage tier = the MORE URGENT (lower TIER_RANK) of the session's status tier
