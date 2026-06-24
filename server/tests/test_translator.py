@@ -115,6 +115,31 @@ def test_execution_error_maps_to_execution_error_code():
     assert "boom" in err.message and "kapow" in err.message
 
 
+def test_ede_orphaned_tool_use_gets_a_legible_message():
+    """The CLI's raw [ede_diagnostic] string is meaningless to a user. When the
+    failure is the orphaned-tool_use shape (interrupted mid tool-call), surface a
+    clear, honest message instead of the cryptic internals."""
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="error_during_execution", is_error=True,
+                     errors=["[ede_diagnostic] result_type=user last_content_type=n/a "
+                             "stop_reason=tool_use"])]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    assert err.code == "execution_error"
+    assert not err.message.startswith("[ede_diagnostic]")
+    low = err.message.lower()
+    assert "interrupted" in low and "tool" in low
+
+
+def test_unrelated_execution_error_keeps_its_raw_text():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="error_during_execution", is_error=True,
+                     errors=["boom", "kapow"])]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    assert "boom" in err.message and "kapow" in err.message
+
+
 def test_api_error_status_maps_to_api_code():
     msgs = [f.stream_start(uuid="t1"),
             f.result(uuid="t1", subtype="success", is_error=True, api_error_status=429)]

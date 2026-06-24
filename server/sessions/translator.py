@@ -202,4 +202,20 @@ def _error_from_result(msg, turn_id: str):
     if not message:
         message = default
 
-    return ev.ErrorEvent(code=code, message=message, turn_id=turn_id)
+    return ev.ErrorEvent(code=code, message=_humanize(code, message), turn_id=turn_id)
+
+
+# The CLI tags a turn that ended on a pending tool_use (no matching tool_result) with
+# this diagnostic. It's an interrupted-mid-tool-call transcript, not anything the user
+# did wrong — and ccswitch heals it on the next resume (see transcript_repair). Replace
+# the cryptic internals with an honest, actionable message.
+_EDE_MARKER = "[ede_diagnostic]"
+_EDE_HUMAN = ("The previous turn was interrupted while a tool was running, leaving the "
+              "conversation inconsistent. Send another message to continue — the "
+              "transcript is repaired automatically on the next turn.")
+
+
+def _humanize(code: str, message: str) -> str:
+    if code == "execution_error" and _EDE_MARKER in message and "stop_reason=tool_use" in message:
+        return _EDE_HUMAN
+    return message
