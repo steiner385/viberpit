@@ -34,6 +34,7 @@ from server.db.models import Session as DbSession
 from server.sessions import adopt as _adopt
 from server.sessions import attachments as _attachments
 from server.sessions import events as ev
+from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.driver import SessionDriver
@@ -60,6 +61,16 @@ log = logging.getLogger(__name__)
 # would lose in-flight work. All other statuses (idle / ready_review / done /
 # limited / ended / archived) are restart-safe: resume + transcript replay recover them.
 _ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "condensing"})
+
+# Top-tier "needs you" and "crashed/failed" statuses that warrant an outbound push alert.
+# Derived from the same vocabulary as server/sessions/status.py — not a parallel list.
+PUSH_STATUSES: frozenset[str] = frozenset(
+    {"waiting_input", "waiting_question", "ready_review", "needs_attention"}
+)
+
+
+def is_push_worthy(status: str) -> bool:
+    return status in PUSH_STATUSES
 
 
 class BranchSwitchError(Exception):
@@ -175,6 +186,9 @@ class SessionOrchestrator:
         # Sessions whose background tasks have been re-armed this process (dedup the
         # auto pass against retry-on-attach). Cleared by a fresh process start.
         self._rearmed: set[str] = set()
+        # Session-ids currently in a push-worthy state (AUT-02 debounce): push fires once
+        # on entry; cleared when the session transitions out so re-entry fires again.
+        self._pushed: set[str] = set()
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
@@ -574,8 +588,25 @@ class SessionOrchestrator:
         # WS bridge forwards lifecycle frames top-level so the client's status handler
         # (_patchSessionStatus) patches the cached session record.
         self._publish_event({"type": "status", "sessionId": session_id, "status": status})
+        await self._maybe_push(session_id, status)
         if completed_turn:
             await self._maybe_apply_auto_name(session_id)
+
+    async def _maybe_push(self, session_id: str, status: str) -> None:
+        """Fire an outbound push alert when a session enters a top-tier needs-you status.
+
+        Debounced: fires once per condition while it holds; cleared when the session
+        transitions to a non-push-worthy status so re-entry fires again (AUT-02).
+        Never raises — failures in push_mod.push are already swallowed by the sink.
+        """
+        if is_push_worthy(status):
+            if session_id not in self._pushed:
+                self._pushed.add(session_id)
+                rec = self._records.get(session_id)
+                name = rec.name if rec else session_id
+                await push_mod.push("ccswitch — needs you", f"{name}: {status}")
+        else:
+            self._pushed.discard(session_id)
 
     async def _condense_estimate(self) -> float:
         from server.sessions import compaction_stats
@@ -2067,10 +2098,15 @@ class SessionOrchestrator:
         return record
 
     async def permanent_delete(self, session_id: str) -> bool:
-        """Permanently delete an archived session: remove archive folder + DB row.
+        """Permanently delete a session: remove archive folder + DB row.
 
         Returns True if deleted, False if the session was not found in DB.
         Containment guard: only removes paths that are direct children of archive_dir().
+
+        A *live* session (still in _records/_drivers, or status != 'archived') is
+        archived first: archive_session stops the driver and moves the cwd into the
+        archive. Deleting a live session directly would otherwise leave a zombie
+        driver running and orphan the working directory outside archive_dir().
         """
         from ccswitch.paths import archive_dir
         from sqlalchemy import select as sa_select
@@ -2081,6 +2117,15 @@ class SessionOrchestrator:
             )).scalars().first()
         if row is None:
             return False
+
+        # Archive-then-delete: a live session must be torn down before its row and
+        # working dir are removed, or we leak a driver and orphan the cwd.
+        if (
+            session_id in self._records
+            or session_id in self._drivers
+            or row.status != "archived"
+        ):
+            await self.archive_session(session_id)
 
         # Containment guard: candidate must be a direct child of archive_dir().
         archive_base = archive_dir().resolve()
