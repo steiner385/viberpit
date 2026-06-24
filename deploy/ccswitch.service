@@ -14,7 +14,7 @@ ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/uvicorn server.
 Restart=on-failure
 RestartSec=3
 # Chromium is slow to exit; cap host resources on the 19GB box
-TimeoutStopSec=60
+TimeoutStopSec=90
 KillMode=control-group
 MemoryMax=12G
 # No pids ceiling: in the in-process fallback (daemon unreachable) the edge runs
