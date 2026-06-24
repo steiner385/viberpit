@@ -79,7 +79,13 @@ export function SessionList({
     )
   }
 
-  if (sessions.length === 0) {
+  // "Nothing to show" must key off `groups` when grouping is active, not the
+  // flattened `sessions` prop. The caller feeds `sessions={orderedSessions}`,
+  // which excludes collapsed groups — so collapsing every group empties
+  // `sessions` while `groups` is still full. Keying the empty state off
+  // `sessions` there would swallow the headers and read as "all sessions gone".
+  const isEmpty = groups ? groups.length === 0 : sessions.length === 0
+  if (isEmpty) {
     if (isFiltered) {
       return (
         <div
