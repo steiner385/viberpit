@@ -22,7 +22,7 @@ export const QK = {
   githubRepos: ['github-repos'] as const,
   githubBranches: (repo?: string) => ['github-branches', repo] as const,
   settings: ['settings'] as const,
-  sessionSearch: (q: string) => ['session-search', q] as const,
+  sessionSearch: (q: string, scope: string = 'live') => ['session-search', scope, q] as const,
 }
 
 export function useModels() {

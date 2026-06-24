@@ -14,14 +14,17 @@ export interface SessionSearch {
   isFiltered: boolean
 }
 
-export function useSessionSearch(): SessionSearch {
+export function useSessionSearch(scope: 'live' | 'archived' = 'live'): SessionSearch {
   const [query, setQuery] = useState('')
   const debounced = useDebouncedValue(query, 250).trim()
   const enabled = debounced !== ''
 
   const { data, isError } = useQuery({
-    queryKey: QK.sessionSearch(debounced),
-    queryFn: () => api.get<{ ids: string[] }>(`/sessions/search?q=${encodeURIComponent(debounced)}`),
+    queryKey: QK.sessionSearch(debounced, scope),
+    queryFn: () =>
+      api.get<{ ids: string[] }>(
+        `/sessions/search?q=${encodeURIComponent(debounced)}&scope=${scope}`,
+      ),
     enabled,
     placeholderData: keepPreviousData,
     staleTime: 2_000,
