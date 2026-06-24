@@ -381,9 +381,9 @@ def test_post_sessions_409_when_all_busy():
     from ccswitch.selector import AllAccountsBusy
 
     with temp_env():
-        with patch("server.sessions.selection.pick_account") as mock_pick, \
+        with patch("server.sessions.selection.pick_account_detailed") as mock_pick, \
              patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            mock_pick.side_effect = AllAccountsBusy(reset_dt)
+            mock_pick.side_effect = AllAccountsBusy(reset_dt, kind="at_ceiling")
 
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
@@ -414,9 +414,9 @@ def test_post_sessions_409_null_earliest_reset():
     from ccswitch.selector import AllAccountsBusy
 
     with temp_env():
-        with patch("server.sessions.selection.pick_account") as mock_pick, \
+        with patch("server.sessions.selection.pick_account_detailed") as mock_pick, \
              patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            mock_pick.side_effect = AllAccountsBusy(None)
+            mock_pick.side_effect = AllAccountsBusy(None, kind="at_ceiling")
 
             from server.sessions.orchestrator import SessionOrchestrator
             from server.app import create_app
@@ -437,6 +437,70 @@ def test_post_sessions_409_null_earliest_reset():
     assert response.status_code == 409
     data = response.json()
     assert data["earliestReset"] is None
+
+
+def test_create_optimistic_sets_usage_unverified():
+    """Usage unreadable but account healthy → 201 with usageUnverified true."""
+    from ccswitch.selector import Picked
+
+    with temp_env() as d:
+        _seed_slot("acct-a")
+        usage_fn = _make_usage_fn({"acct-a": make_usage(session=10.0, weekly=20.0)})
+        with patch("ccswitch.accounts.usage_for", side_effect=usage_fn), \
+             patch("server.sessions.selection.pick_account_detailed",
+                   return_value=Picked(name="acct-a", optimistic=True)), \
+             patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "acct-a"), \
+             patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            (d / "cfg" / "acct-a").mkdir(parents=True, exist_ok=True)
+
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(
+                sdk_factory=fake_sdk_factory(),
+                usage_fn=usage_fn,
+                poll_interval=9999.0,
+            )
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=False)
+
+            with client:
+                resp = client.post(
+                    "/api/sessions",
+                    json={"name": "Optimistic Session"},
+                    headers=IDENTITY_HEADERS,
+                )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["usageUnverified"] is True
+
+
+def test_create_all_unusable_returns_needs_reauth():
+    """All accounts need reauth → 409 accounts_need_reauth, no earliestReset."""
+    from server.sessions.selection import AllAccountsBusy
+
+    with temp_env():
+        with patch("server.sessions.selection.pick_account_detailed",
+                   side_effect=AllAccountsBusy(None, kind="no_usable_accounts")), \
+             patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(
+                sdk_factory=fake_sdk_factory(),
+                poll_interval=9999.0,
+            )
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=False)
+
+            with client:
+                resp = client.post(
+                    "/api/sessions",
+                    json={"name": "Blocked"},
+                    headers=IDENTITY_HEADERS,
+                )
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["code"] == "accounts_need_reauth"
 
 
 # ---------------------------------------------------------------------------
