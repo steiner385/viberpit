@@ -13,8 +13,10 @@ EnvironmentFile=/etc/ccswitch/ccswitch.env
 ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/uvicorn server.app:app --host 100.102.11.121 --port 8787
 Restart=on-failure
 RestartSec=3
-# Chromium is slow to exit; cap host resources on the 19GB box
-TimeoutStopSec=60
+# Chromium is slow to exit; the shutdown handler tears displays down concurrently
+# within ~35s (issue #206), so 90s leaves generous margin before systemd SIGKILLs
+# (which would orphan Xvfb/x11vnc/chrome).
+TimeoutStopSec=90
 KillMode=control-group
 MemoryMax=12G
 # No pids ceiling: in the in-process fallback (daemon unreachable) the edge runs

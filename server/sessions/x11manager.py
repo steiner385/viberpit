@@ -183,6 +183,57 @@ class X11Manager:
                 pass
         await self._allocator.release(spec.lease)
 
+    async def shutdown_all(self, timeout: float = 15.0) -> int:
+        """Tear down every live display concurrently, bounded by ``timeout``.
+
+        On process shutdown the per-session teardown must finish within systemd's
+        ``TimeoutStopSec`` or systemd SIGKILLs us mid-teardown and leaks the
+        Xvfb/x11vnc/chrome processes (issue #206). ``stop_display`` gives each
+        process up to a 5s graceful SIGTERM wait, so running them SERIALLY across
+        N sessions costs ~10s×N; running them CONCURRENTLY makes wall-clock ≈ the
+        slowest single teardown instead. Any display still alive when the budget
+        elapses is hard-killed from a pre-captured snapshot so nothing is leaked.
+
+        Returns the number of displays that were torn down. Idempotent / safe to
+        call with no live displays.
+        """
+        async with self._lock:
+            specs = list(self._specs.values())   # snapshot WITH proc handles
+        if not specs:
+            return 0
+        sids = [s.session_id for s in specs]
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(self.stop_display(sid) for sid in sids),
+                               return_exceptions=True),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "x11: shutdown_all exceeded %.1fs budget — hard-killing %d display(s)",
+                timeout, len(specs),
+            )
+            self._hard_kill(specs)
+        return len(specs)
+
+    def _hard_kill(self, specs: list) -> None:
+        """SIGKILL every process of each snapshotted display, without waiting.
+
+        Operates on the snapshot (not ``self._specs``) so it still reaches procs
+        whose ``stop_display`` already popped the spec but was cancelled mid-wait
+        by the budget. Killing an already-dead proc is harmless.
+        """
+        for spec in specs:
+            for proc in (spec.x11vnc, spec.xvfb, *list(spec.browsers)):
+                if proc is None:
+                    continue
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    log.exception("x11: hard-kill failed")
+
     async def ensure_vnc(self, session_id: str) -> int | None:
         async with self._lock:
             spec = self._specs.get(session_id)

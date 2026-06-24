@@ -90,6 +90,14 @@ def _daemon_compatible(socket_path: str, *, attempts: int = 5, interval: float =
     return False
 
 
+# Shutdown teardown budgets (issue #206). Both stay well under the unit's
+# TimeoutStopSec so the handler completes and systemd never SIGKILLs us
+# mid-teardown (which orphaned Xvfb/x11vnc/chrome). Close runs concurrently, so
+# these are wall-clock ceilings, not per-session.
+_SHUTDOWN_CLOSE_BUDGET_S = 20.0
+_SHUTDOWN_DISPLAY_BUDGET_S = 15.0
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """App startup/shutdown: init DB, install log filter, start orchestrator."""
@@ -190,17 +198,40 @@ async def _lifespan(app: FastAPI):
         # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
         await app.state.sessions.aclose()
     else:
-        # Close live sessions before stopping orchestrator — triggers stop_display for each
-        if getattr(app.state, "x11", None) is not None:
-            for sid in list(app.state.orchestrator._drivers.keys()):
+        orch = app.state.orchestrator
+        # Close live sessions CONCURRENTLY and bounded. Each close tears down a
+        # virtual display (~10s worst case); doing them serially across N sessions
+        # blew past systemd's TimeoutStopSec and leaked Xvfb/x11vnc/chrome (#206).
+        sids = list(orch._drivers.keys())
+        if sids:
+            async def _close(sid: str) -> None:
                 try:
-                    await app.state.orchestrator.close_session(sid)
+                    await orch.close_session(sid)
                 except Exception:
                     _logging.getLogger("server").warning(
                         "shutdown: close %s failed", sid, exc_info=True
                     )
 
-        await app.state.orchestrator.stop()
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*(_close(s) for s in sids), return_exceptions=True),
+                    timeout=_SHUTDOWN_CLOSE_BUDGET_S,
+                )
+            except asyncio.TimeoutError:
+                _logging.getLogger("server").warning(
+                    "shutdown: session close exceeded %ss budget", _SHUTDOWN_CLOSE_BUDGET_S
+                )
+        # Guarantee every virtual display is gone even if a close hung or was
+        # skipped — final bounded sweep with a hard-kill fallback.
+        if getattr(app.state, "x11", None) is not None:
+            try:
+                await app.state.x11.shutdown_all(timeout=_SHUTDOWN_DISPLAY_BUDGET_S)
+            except Exception:
+                _logging.getLogger("server").warning(
+                    "shutdown: x11 teardown failed", exc_info=True
+                )
+
+        await orch.stop()
 
 
 def create_app(

@@ -50,6 +50,16 @@ async def daemon_lifespan(app, orchestrator):
     try:
         yield
     finally:
+        # Tear down every virtual display before stopping — bounded + concurrent so
+        # the daemon finishes within systemd's TimeoutStopSec and never leaks
+        # Xvfb/x11vnc/chrome on restart (#206). orchestrator.stop() only cancels
+        # background tasks, so without this the daemon-owned displays leak.
+        x11 = getattr(orchestrator, "_x11", None)
+        if x11 is not None:
+            try:
+                await x11.shutdown_all()
+            except Exception:
+                log.warning("daemon shutdown: x11 teardown failed", exc_info=True)
         await orchestrator.stop()
 
 
