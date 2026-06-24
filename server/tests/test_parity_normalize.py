@@ -30,7 +30,7 @@ def test_normalize_maps_state_vocabulary():
 
 
 def test_normalize_emits_stage_for_open_stages():
-    """Oracle stage is extracted only for open stages (ci/ready/parked)."""
+    """Oracle stage is extracted for open stages (ci/ready/parked) and merged."""
     def _pr_with_stage(number: int, stage_str: str) -> dict:
         return {"number": number, "url": f"u{number}", "checks": [],
                 "stage": {"stage": stage_str}}
@@ -39,12 +39,32 @@ def test_normalize_emits_stage_for_open_stages():
         _pr_with_stage(1, "ready"),
         _pr_with_stage(2, "ci"),
         _pr_with_stage(3, "parked"),
-        _pr_with_stage(4, "queue"),    # non-open → no stage field
-        _pr_with_stage(5, "merged"),   # non-open → no stage field
+        _pr_with_stage(4, "queue"),    # not covered → no stage field
+        _pr_with_stage(5, "merged"),   # covered → stage="merged"
     ]}]}
     out = normalize_state(sample)
     assert out[("o/r", 1)].fields["stage"] == "ready"
     assert out[("o/r", 2)].fields["stage"] == "ci"
     assert out[("o/r", 3)].fields["stage"] == "parked"
     assert "stage" not in out[("o/r", 4)].fields
-    assert "stage" not in out[("o/r", 5)].fields
+    assert out[("o/r", 5)].fields["stage"] == "merged"
+
+
+def test_normalize_open_pr_has_checks():
+    """Open PRs emit checks into fields."""
+    sample = {"repos": [{"repo": "o/r", "prs": [
+        {"number": 1, "url": "u1", "checks": [], "stage": {"stage": "ready"}},
+    ]}]}
+    out = normalize_state(sample)
+    assert "checks" in out[("o/r", 1)].fields
+
+
+def test_normalize_merged_pr_drops_checks():
+    """Merged PRs do NOT emit checks — frozen rollup causes false mismatches."""
+    sample = {"repos": [{"repo": "o/r", "prs": [
+        {"number": 42, "url": "u42", "checks": [], "stage": {"stage": "merged"}},
+    ]}]}
+    out = normalize_state(sample)
+    assert "checks" not in out[("o/r", 42)].fields
+    assert "checks_detail" not in out[("o/r", 42)].fields
+    assert out[("o/r", 42)].fields["stage"] == "merged"

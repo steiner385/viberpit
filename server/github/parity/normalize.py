@@ -33,14 +33,18 @@ _STAGE_MAP = {
 }
 
 # Plotroom open stages that map cleanly to ccswitch open-stage vocabulary.
-# Only these are emitted into oracle fields for 1a parity; queue/deploy/merged/etc.
+# Only these are emitted into oracle fields for 1a parity; queue/deploy/etc.
 # stages are out of scope and are silently excluded (the harness skips fields absent
-# from orc.fields, so non-open PRs just don't participate in the stage comparison).
+# from orc.fields, so non-covered PRs just don't participate in the stage comparison).
 _OPEN_STAGE_MAP: dict[str, str] = {
     "ci": "ci",
     "ready": "ready",
     "parked": "parked",
 }
+
+# Merged stage emitted as-is (within retention window; off-board PRs still appear
+# in Plotroom but won't be in the candidate, so they'll be oracle-only).
+_MERGED_STAGES = frozenset({"merged"})
 
 # Legacy/assumed-schema state field (plan test uses these values)
 _STATE_MAP = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
@@ -135,6 +139,19 @@ def normalize_state(state_json: dict) -> dict[tuple[str, int], OraclePr]:
             # branch: real Plotroom has no headRefName; assumed schema uses headRefName
             branch = pr.get("headRefName", "")
 
+            # Determine oracle stage for parity field emission decisions.
+            oracle_stage: str | None = None
+            if "stage" in pr and isinstance(pr["stage"], dict):
+                raw_stage = (pr["stage"].get("stage") or "").lower()
+                oracle_stage = _OPEN_STAGE_MAP.get(raw_stage)
+                if oracle_stage is None and raw_stage in _MERGED_STAGES:
+                    oracle_stage = raw_stage  # "merged"
+
+            # GitHub freezes statusCheckRollup on merged/closed PRs (project memory:
+            # closed-PR-frozen-failing-rollup), so checks is unreliable for merged PRs.
+            # Drop checks from fields when the PR is merged to avoid false mismatches.
+            is_merged_pr = state == "merged" or oracle_stage == "merged"
+
             fields: dict = {
                 "number": number,
                 "url": pr.get("url", ""),
@@ -142,18 +159,15 @@ def normalize_state(state_json: dict) -> dict[tuple[str, int], OraclePr]:
                 "is_draft": is_draft or state == "draft",
                 "merged": state == "merged",
                 "head_sha": head_sha,
-                "checks": checks_rollup,
-                "checks_detail": checks_detail,
             }
+            if not is_merged_pr:
+                fields["checks"] = checks_rollup
+                fields["checks_detail"] = checks_detail
 
-            # Extract oracle stage for 1a parity: only emit when the oracle stage is
-            # in the open set (ci/ready/parked). PRs in queue/deploy/merged/etc. are
-            # excluded so the harness skips them for the stage field.
-            if "stage" in pr and isinstance(pr["stage"], dict):
-                raw_stage = (pr["stage"].get("stage") or "").lower()
-                oracle_stage = _OPEN_STAGE_MAP.get(raw_stage)
-                if oracle_stage is not None:
-                    fields["stage"] = oracle_stage
+            # Emit stage into fields for parity: open stages (ci/ready/parked) and
+            # merged. Queue/deploy/etc. are excluded (harness skips absent fields).
+            if oracle_stage is not None:
+                fields["stage"] = oracle_stage
 
             out[(name, number)] = OraclePr(
                 repo=name, number=number, branch=branch, fields=fields
