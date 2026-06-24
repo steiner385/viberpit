@@ -8,7 +8,10 @@ const base: Session = {
   id: '1',
   name: 'Fix login bug',
   accountName: 'work',
-  status: 'in_progress',
+  // A handed-back (non-busy) status: `last_turn_at` only advances when a turn
+  // returns, so the "active … ago" label is only meaningful — and only shown —
+  // off the busy tier. Busy-tier suppression is covered explicitly below.
+  status: 'done',
   createdAt: '2026-06-22T11:00:00Z',
   updatedAt: '2026-06-22T11:58:00Z',
 }
@@ -43,6 +46,23 @@ describe('SessionCard last-active', () => {
   it('shows a relative last-active label from updatedAt', () => {
     renderCard(base)
     expect(screen.getByText(/^active \d+[smhd] ago$/)).toBeInTheDocument()
+  })
+
+  it('suppresses the label while the session is busy (the spinner conveys liveness)', () => {
+    // `last_turn_at` freezes for the whole in-progress turn, so a session that
+    // has been streaming for minutes still reads "active 10m ago" — looking
+    // stale/idle next to its live "Working…" spinner. Hide the misleading clock
+    // while busy; the pill already signals the session is alive.
+    renderCard({ ...base, status: 'in_progress' })
+    expect(screen.queryByText(/active/)).not.toBeInTheDocument()
+  })
+
+  it('suppresses the label for every busy-tier status (condensing/retrying), not just in_progress', () => {
+    for (const status of ['condensing', 'retrying'] as const) {
+      const { unmount } = renderCard({ ...base, status })
+      expect(screen.queryByText(/active/)).not.toBeInTheDocument()
+      unmount()
+    }
   })
 
   it('omits the label when updatedAt is missing/invalid', () => {
