@@ -46,6 +46,9 @@ class Session(Base):
     # to join the session to its GitHub PR by headRefName. NULL for detached/
     # scratch sessions. Nullable so init_db backfills it without a migration.
     branch: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Feature branches this session has authored (for multi-PR badges). JSON list,
+    # nullable so init_db backfills it on existing rows without a migration.
+    authored_branches: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     permission_mode: Mapped[str] = mapped_column(String, nullable=False, default="interactive")
     # True while the name is auto-derived (Claude title / first prompt); a manual

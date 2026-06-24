@@ -10,7 +10,7 @@ function s(id: string, status: string): Session {
 function sWithPr(id: string, status: string, checks: PullRequestInfo['checks']): Session {
   return {
     id, status,
-    pr: { number: 1, url: 'u', state: 'open', checks, title: 't' } as PullRequestInfo,
+    prs: [{ number: 1, url: 'u', state: 'open', checks, title: 't', deployed: false } as PullRequestInfo],
   } as unknown as Session
 }
 
