@@ -31,6 +31,7 @@ from server.config import get_settings
 from server.db import get_db
 from server.sessions.orchestrator import BranchSwitchError
 from server.sessions.selection import AllAccountsBusy
+from server.time_iso import iso_utc
 
 if TYPE_CHECKING:
     from server.sessions.facade import InProcessOrchestratorAdapter
@@ -107,16 +108,14 @@ def _record_to_dict(
         "detached": record.detached,
         "adoptedInPlace": getattr(record, "adopted_in_place", False),
         "subAgents": getattr(record, "sub_agents", None) or [],
-        "createdAt": record.created_at.isoformat() if record.created_at else None,
+        "createdAt": iso_utc(record.created_at),
         # Last-turn-response time for the "active … ago" label (NOT record.updated_at,
         # which any row write bumps — that pinned every card to "0s ago"). Fall back to
         # the creation time so a session with no turn yet reads "active just now" rather
-        # than null (which the client would parse as epoch 0 → "20627d ago").
-        "updatedAt": (
-            (record.last_turn_at or record.created_at).isoformat()
-            if (record.last_turn_at or record.created_at)
-            else None
-        ),
+        # than null (which the client would parse as epoch 0 → "20627d ago"). iso_utc
+        # tags the naive UTC column with a +00:00 offset so the browser doesn't reparse
+        # it as local time (which lands it in the future → clamped back to "0s ago").
+        "updatedAt": iso_utc(record.last_turn_at or record.created_at),
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
         "latestSuggestions": list(suggestions or []),
@@ -136,7 +135,7 @@ def _candidate_to_dict(c) -> dict[str, Any]:
         "mapped": c.mapped,
         "tracked": c.tracked,
         "skipReason": c.skip_reason,
-        "lastActivity": c.last_activity.isoformat() if c.last_activity else None,
+        "lastActivity": iso_utc(c.last_activity),
         "pidAlive": c.pid_alive,
     }
 
@@ -314,7 +313,7 @@ async def create_session(
         )
     except AllAccountsBusy as exc:
         earliest = exc.earliest_reset
-        reset_iso = earliest.isoformat() if earliest is not None else None
+        reset_iso = iso_utc(earliest)
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={
