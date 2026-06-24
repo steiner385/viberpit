@@ -318,6 +318,33 @@ describe('SessionList', () => {
     expect(screen.getByText('Research')).toBeInTheDocument()
   })
 
+  it('keeps group headers visible when every group is collapsed', () => {
+    // Regression: in the real app SessionList is fed sessions={orderedSessions},
+    // and useSessionOrdering excludes collapsed groups from orderedSessions. So
+    // collapsing every group makes the `sessions` prop empty while `groups` is
+    // still full. The empty-state guard must NOT swallow the headers, otherwise
+    // it looks like all sessions vanished.
+    const groups = [
+      { key: 'busy', label: 'Working', count: 1, sessions: [SESSIONS[0]] },
+      { key: 'your-turn', label: 'Done', count: 1, sessions: [SESSIONS[1]] },
+    ]
+    render(
+      <SessionList
+        {...baseProps}
+        sessions={[]} // orderedSessions when everything is collapsed
+        groups={groups}
+        collapsedKeys={new Set(['busy', 'your-turn'])}
+        onToggleCollapse={vi.fn()}
+      />,
+      { wrapper },
+    )
+    // Both headers (and their counts) are still shown so the user can re-expand.
+    expect(screen.getByRole('button', { name: /Working/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Done/i })).toBeInTheDocument()
+    // Not the "no sessions" empty state.
+    expect(screen.queryByRole('button', { name: /new session/i })).not.toBeInTheDocument()
+  })
+
   it('renders no header for a null-label group', () => {
     const groups = [{ key: 'all', label: null, count: SESSIONS.length, sessions: SESSIONS }]
     render(
