@@ -17,10 +17,17 @@ class Selection:
     name: str
 
 
+@dataclass
+class Picked:
+    name: str
+    optimistic: bool = False
+
+
 class AllAccountsBusy(Exception):
-    def __init__(self, earliest_reset: datetime | None):
+    def __init__(self, earliest_reset: datetime | None, kind: str = "at_ceiling"):
         super().__init__("all accounts at/above usage ceiling")
         self.earliest_reset = earliest_reset
+        self.kind = kind
 
 
 def _perishability(u: Usage, ceiling: float, now: datetime) -> float:
@@ -49,6 +56,7 @@ class RankedAccount:
     name: str
     rank: int
     reason: str
+    optimistic: bool = False
 
 
 def _reason(composite: float, acct_load: float) -> str:
@@ -65,19 +73,33 @@ def _reason(composite: float, acct_load: float) -> str:
 def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
                   cfg: Config, now: datetime, exclude: AbstractSet[str] = frozenset(),
                   load: dict[str, float] | None = None,
+                  unhealthy: AbstractSet[str] = frozenset(),
+                  optimistic_fallback: bool = False,
                   ) -> tuple[list[RankedAccount], datetime | None]:
     """Rank all eligible accounts in selection-priority order.
 
     Returns ``(ranked, earliest_reset)``: ``ranked`` is the priority-ordered list
     (rank 1 = next pick); ``earliest_reset`` is the soonest reset among at-ceiling
     accounts when nothing is eligible (else None). ``select_best`` is the rank-1 name.
+
+    When ``optimistic_fallback=False`` (default), accounts with ``u is None`` are
+    excluded entirely — identical to legacy behavior. When ``True``, healthy accounts
+    with unreadable usage are appended as a last-resort tier, ranked strictly after
+    every readable candidate, ordered by least load.
     """
     load = load or {}
     ceiling = cfg.hard_ceiling * 100.0
     candidates: list[tuple[float, float, float, float, str]] = []
+    optimistic: list[tuple[float, str]] = []   # (load, name) — last-resort tier
     busy_resets: list[datetime] = []
     for name, u in usages.items():
-        if name in exclude or name in reserved or u is None:
+        if name in exclude or name in reserved:
+            continue
+        if u is None:
+            # Usage unreadable. Only an opt-in caller treats a healthy account as a
+            # last-resort optimistic pick; legacy callers exclude it entirely.
+            if optimistic_fallback and name not in unhealthy:
+                optimistic.append((load.get(name, 0.0), name))
             continue
         at_ceiling = u.session_pct >= ceiling or u.weekly_pct >= ceiling
         if at_ceiling:
@@ -94,18 +116,35 @@ def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
         composite = perish / (1.0 + cfg.load_sensitivity * acct_load)
         candidates.append((-composite, acct_load, u.session_pct, u.weekly_pct, name))
     candidates.sort()
+    optimistic.sort()  # least live load first
     earliest = min(busy_resets) if busy_resets else None
     ranked = [
         RankedAccount(name=c[4], rank=i + 1, reason=_reason(-c[0], c[1]))
         for i, c in enumerate(candidates)
     ]
+    ranked += [
+        RankedAccount(name=name, rank=len(ranked) + i + 1,
+                      reason="usage unverified — optimistic pick", optimistic=True)
+        for i, (_, name) in enumerate(optimistic)
+    ]
     return ranked, earliest
+
+
+def select_picked(usages: dict[str, Usage | None], reserved: AbstractSet[str],
+                  cfg: Config, now: datetime, exclude: AbstractSet[str] = frozenset(),
+                  load: dict[str, float] | None = None,
+                  unhealthy: AbstractSet[str] = frozenset(),
+                  optimistic_fallback: bool = False) -> Picked:
+    ranked, earliest = rank_accounts(usages, reserved, cfg, now, exclude, load,
+                                     unhealthy, optimistic_fallback)
+    if not ranked:
+        kind = "at_ceiling" if earliest is not None else "no_usable_accounts"
+        raise AllAccountsBusy(earliest, kind)
+    top = ranked[0]
+    return Picked(name=top.name, optimistic=top.optimistic)
 
 
 def select_best(usages: dict[str, Usage | None], reserved: AbstractSet[str],
                 cfg: Config, now: datetime, exclude: AbstractSet[str] = frozenset(),
                 load: dict[str, float] | None = None) -> str:
-    ranked, earliest = rank_accounts(usages, reserved, cfg, now, exclude, load)
-    if not ranked:
-        raise AllAccountsBusy(earliest)
-    return ranked[0].name
+    return select_picked(usages, reserved, cfg, now, exclude, load).name

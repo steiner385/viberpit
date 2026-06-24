@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 from starlette.testclient import TestClient
 
+from ccswitch.selector import Picked
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -50,7 +51,7 @@ def orch_env(tmp_path):
     })
     usage_patch = patch("ccswitch.accounts.usage_for", side_effect=_fake_usage)
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
-    select_patch = patch("server.sessions.orchestrator.select_account", return_value="alpha")
+    select_patch = patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha"))
 
     with env_patch, usage_patch, compose_patch, select_patch:
         _seed_account("alpha")

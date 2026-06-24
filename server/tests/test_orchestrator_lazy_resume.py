@@ -6,6 +6,7 @@ import os
 from unittest.mock import patch
 
 
+from ccswitch.selector import Picked
 from server.db import init_db, db_session
 from server.db.models import Session as DbSession
 from server.sessions.orchestrator import SessionOrchestrator
@@ -202,7 +203,7 @@ def test_ensure_driver_returns_existing_driver(tmp_path):
         cfg_dir.mkdir(parents=True)
 
         with patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
-             patch("server.sessions.orchestrator.select_account", return_value="acct1"), \
+             patch("server.sessions.orchestrator.select_account", return_value=Picked("acct1")), \
              patch("server.sessions.orchestrator.configdir"):
             # create_session builds a live driver via the factory
             record = await orch.create_session("live-session", account="acct1", cwd=cwd)

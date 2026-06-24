@@ -2,14 +2,35 @@ import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { GroupBy, SortBy } from '@/session/ordering'
 
-interface SessionListControlsProps {
-  groupBy: GroupBy
-  sortBy: SortBy
-  onGroupByChange: (g: GroupBy) => void
-  onSortByChange: (s: SortBy) => void
+export interface SelectOption<V extends string> {
+  value: V
+  label: string
+}
+
+interface SessionListControlsProps<G extends string, S extends string> {
+  groupBy: G
+  sortBy: S
+  onGroupByChange: (g: G) => void
+  onSortByChange: (s: S) => void
   searchQuery: string
   onSearchChange: (q: string) => void
+  groupOptions?: SelectOption<G>[]
+  sortOptions?: SelectOption<S>[]
+  searchPlaceholder?: string
+  searchAriaLabel?: string
 }
+
+const LIVE_GROUP_OPTIONS: SelectOption<GroupBy>[] = [
+  { value: 'none', label: 'None' },
+  { value: 'repo', label: 'Repo' },
+  { value: 'status', label: 'Status' },
+]
+const LIVE_SORT_OPTIONS: SelectOption<SortBy>[] = [
+  { value: 'status', label: 'Status tier' },
+  { value: 'lastActive', label: 'Last active' },
+  { value: 'age', label: 'Age' },
+  { value: 'name', label: 'Name' },
+]
 
 const selectClass = cn(
   'text-xs rounded-md border border-gray-200 dark:border-gray-700',
@@ -17,21 +38,25 @@ const selectClass = cn(
   'px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
 )
 
-export function SessionListControls({
+export function SessionListControls<G extends string = GroupBy, S extends string = SortBy>({
   groupBy,
   sortBy,
   onGroupByChange,
   onSortByChange,
   searchQuery,
   onSearchChange,
-}: SessionListControlsProps) {
+  groupOptions = LIVE_GROUP_OPTIONS as unknown as SelectOption<G>[],
+  sortOptions = LIVE_SORT_OPTIONS as unknown as SelectOption<S>[],
+  searchPlaceholder = 'Search sessions…',
+  searchAriaLabel = 'Search sessions',
+}: SessionListControlsProps<G, S>) {
   return (
     <div className="flex items-center gap-3 flex-wrap">
       <div className="relative">
         <input
           type="search"
-          aria-label="Search sessions"
-          placeholder="Search sessions…"
+          aria-label={searchAriaLabel}
+          placeholder={searchPlaceholder}
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
           className={cn(selectClass, 'pr-7 w-44 [&::-webkit-search-cancel-button]:hidden')}
@@ -53,11 +78,11 @@ export function SessionListControls({
           aria-label="Group by"
           className={selectClass}
           value={groupBy}
-          onChange={(e) => onGroupByChange(e.target.value as GroupBy)}
+          onChange={(e) => onGroupByChange(e.target.value as G)}
         >
-          <option value="none">None</option>
-          <option value="repo">Repo</option>
-          <option value="status">Status</option>
+          {groupOptions.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
         </select>
       </label>
       <label className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
@@ -66,12 +91,11 @@ export function SessionListControls({
           aria-label="Sort by"
           className={selectClass}
           value={sortBy}
-          onChange={(e) => onSortByChange(e.target.value as SortBy)}
+          onChange={(e) => onSortByChange(e.target.value as S)}
         >
-          <option value="status">Status tier</option>
-          <option value="lastActive">Last active</option>
-          <option value="age">Age</option>
-          <option value="name">Name</option>
+          {sortOptions.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
         </select>
       </label>
     </div>

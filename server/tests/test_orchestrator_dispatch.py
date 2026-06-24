@@ -28,6 +28,8 @@ def _make_orch():
     orch._drivers = {}
     orch._issue_proposals = {}
     orch._issue_inflight = set()
+    orch._issue_numbers = {}
+    orch._proposed_issue = {}
     orch._review_proposals = {}
     orch._review_inflight = set()
     orch._detached_suggestions = {}
@@ -267,3 +269,40 @@ def test_dispatch_proposal_passing_pr_no_reviews_falls_through_to_issue():
 
     result = orch._dispatch_proposal(rec)
     assert result == "Work on issue #5: x"
+
+
+def test_dispatch_proposal_collision_avoidance_across_sessions():
+    """US-8: two idle sessions in the same repo are not both pointed at the same top issue."""
+    import time
+    orch = _make_orch()
+    orch._issue_numbers["o/r"] = 42
+    orch._issue_proposals["o/r"] = (time.monotonic(), "Work on issue #42: x")
+    r1 = _make_record("s1", repo="o/r")
+    r2 = _make_record("s2", repo="o/r")
+    orch._records["s1"] = r1
+    orch._records["s2"] = r2
+
+    # First session gets the issue and claims it.
+    assert orch._dispatch_proposal(r1) == "Work on issue #42: x"
+    # Second session in the same repo is NOT pointed at the same issue.
+    assert orch._dispatch_proposal(r2) is None
+    # The first session still gets it on re-call (its own claim never blocks itself).
+    assert orch._dispatch_proposal(r1) == "Work on issue #42: x"
+
+
+def test_dispatch_proposal_claim_released_when_session_no_longer_idle():
+    """A held issue frees up once its session leaves idle/done."""
+    import time
+    orch = _make_orch()
+    orch._issue_numbers["o/r"] = 42
+    orch._issue_proposals["o/r"] = (time.monotonic(), "Work on issue #42: x")
+    r1 = _make_record("s1", repo="o/r", status="done")
+    r2 = _make_record("s2", repo="o/r", status="done")
+    orch._records["s1"] = r1
+    orch._records["s2"] = r2
+    assert orch._dispatch_proposal(r1) == "Work on issue #42: x"   # s1 claims #42
+    assert orch._dispatch_proposal(r2) is None                     # blocked
+
+    # s1 starts working → its claim is released on the next dispatch sweep.
+    orch._records["s1"] = _make_record("s1", repo="o/r", status="in_progress")
+    assert orch._dispatch_proposal(r2) == "Work on issue #42: x"   # now free for s2

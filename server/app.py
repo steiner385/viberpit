@@ -30,6 +30,7 @@ from server.api.config import router as config_router
 from server.api.repos import router as github_router
 from server.api.settings import router as settings_router
 from server.api import models as api_models
+from server.api.deploy import router as deploy_router
 
 
 def _daemon_socket_present(socket_path: str) -> bool:
@@ -88,6 +89,12 @@ def _daemon_compatible(socket_path: str, *, attempts: int = 5, interval: float =
         if i < attempts - 1:
             time.sleep(interval)
     return False
+
+
+# Shutdown cleanup budget — must stay comfortably under systemd TimeoutStopSec (60s)
+# so graceful display teardown completes instead of being SIGKILLed (issue #206).
+_SHUTDOWN_CLOSE_TIMEOUT_S = 30.0
+_SHUTDOWN_SWEEP_TIMEOUT_S = 15.0
 
 
 @asynccontextmanager
@@ -159,7 +166,8 @@ async def _lifespan(app: FastAPI):
     if not remote_mode:
         await app.state.orchestrator.start()
 
-    # Sweep stale X lock/socket files from crashed previous runs
+    # Sweep stale X lock/socket files AND reap orphaned Xvfb/x11vnc/chrome left by a
+    # prior SIGKILLed shutdown (issue #206 — the self-healing startup half).
     if getattr(app.state, "x11", None) is not None:
         try:
             n = app.state.x11.sweep_stale()
@@ -167,6 +175,14 @@ async def _lifespan(app: FastAPI):
                 _logging.getLogger("server").info("startup: swept %d stale X lock/socket(s)", n)
         except Exception:
             _logging.getLogger("server").warning("startup: X sweep failed", exc_info=True)
+        try:
+            k = app.state.x11.sweep_orphan_processes()
+            if k:
+                _logging.getLogger("server").info(
+                    "startup: reaped %d orphaned X display process(es)", k
+                )
+        except Exception:
+            _logging.getLogger("server").warning("startup: X orphan reap failed", exc_info=True)
 
     # Sweep stale unbound attachments (uploaded but never sent) from prior runs.
     from server.db import db_session as _db_session
@@ -190,15 +206,41 @@ async def _lifespan(app: FastAPI):
         # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
         await app.state.sessions.aclose()
     else:
-        # Close live sessions before stopping orchestrator — triggers stop_display for each
+        # Close live sessions before stopping orchestrator — triggers stop_display for each.
         if getattr(app.state, "x11", None) is not None:
-            for sid in list(app.state.orchestrator._drivers.keys()):
+            log = _logging.getLogger("server")
+
+            async def _close(sid: str) -> None:
                 try:
                     await app.state.orchestrator.close_session(sid)
                 except Exception:
-                    _logging.getLogger("server").warning(
-                        "shutdown: close %s failed", sid, exc_info=True
+                    log.warning("shutdown: close %s failed", sid, exc_info=True)
+
+            sids = list(app.state.orchestrator._drivers.keys())
+            if sids:
+                # Close CONCURRENTLY and bound the total time. Sequential close of N
+                # sessions (~10s each: two 5s terminate timeouts + browser tree kill)
+                # exceeded systemd TimeoutStopSec → SIGKILL before cleanup → leaked
+                # Xvfb/x11vnc/chrome (issue #206). Concurrency + a hard cap keep
+                # graceful teardown well inside the timeout.
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*(_close(sid) for sid in sids)),
+                        timeout=_SHUTDOWN_CLOSE_TIMEOUT_S,
                     )
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "shutdown: session close exceeded %ss; sweeping displays",
+                        _SHUTDOWN_CLOSE_TIMEOUT_S,
+                    )
+            # Final sweep: terminate any display still tracked, so a hung close above
+            # can never leave Xvfb/x11vnc/chrome behind (defense-in-depth).
+            try:
+                await asyncio.wait_for(
+                    app.state.x11.stop_all(), timeout=_SHUTDOWN_SWEEP_TIMEOUT_S
+                )
+            except Exception:
+                log.warning("shutdown: x11 sweep incomplete", exc_info=True)
 
         await app.state.orchestrator.stop()
 
@@ -335,6 +377,7 @@ def create_app(
     app.include_router(github_router)
     app.include_router(settings_router)
     app.include_router(api_models.router)
+    app.include_router(deploy_router)
 
     # WebSocket bridge
     ws_router = build_ws_router(app.state.sessions)

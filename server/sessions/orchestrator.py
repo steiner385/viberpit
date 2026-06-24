@@ -32,6 +32,7 @@ from server.audit import record_audit
 from server.db import db_session
 from server.db.models import Session as DbSession
 from server.sessions import adopt as _adopt
+from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions import attachments as _attachments
 from server.sessions import dispatch
 from server.sessions import events as ev
@@ -46,11 +47,11 @@ from server.sessions.suggestions import SuggestionService, last_turn_context
 from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
 )
-from server.sessions.selection import AllAccountsBusy, select_account
+from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
-from server.sessions.types import SessionRecord
+from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
 from server.github.pr_status import PullRequestInfo
@@ -85,6 +86,21 @@ def _prepend_proposal(proposal: str | None, base: list[str]) -> list[str]:
     if proposal in base:
         return base
     return [proposal, *base]
+
+
+def _rethread_identity(driver, identity: str) -> None:
+    """Upgrade a live driver's identity to a real attaching user.
+
+    A driver first built by an internal/background path (rehydrate, dispatch,
+    eager re-launch) carries ``SYSTEM_IDENTITY``. AskUserQuestion/permission
+    answers are registered under ``driver.identity`` and resolved against the
+    answering WS identity, so if a real user attaches to a system-built driver and
+    its identity isn't upgraded, every answer is rejected and the agent hangs on
+    the question forever. Only upgrade FROM the system sentinel TO a real user —
+    never downgrade a real identity back to system (an internal call must not clobber
+    the attached user)."""
+    if identity != SYSTEM_IDENTITY and driver.identity == SYSTEM_IDENTITY:
+        driver.identity = identity
 
 
 class BranchSwitchError(Exception):
@@ -162,6 +178,12 @@ class SessionOrchestrator:
         # Populated lazily by _refresh_issue_proposal; TTL = _ISSUE_TTL_S.
         self._issue_proposals: dict[str, tuple[float, str | None]] = {}
         self._issue_inflight: set[str] = set()
+        # Collision-avoidance (US-8): top issue number per repo, and which live session
+        # currently "holds" each issue, so two idle/done sessions in the same repo are
+        # never pointed at the same backlog issue. Claims are refreshed each
+        # _dispatch_proposal call and pruned to current idle/done sessions.
+        self._issue_numbers: dict[str, int | None] = {}
+        self._proposed_issue: dict[str, int] = {}
         # Review-comment cache: (repo, pr_number) → (monotonic_ts, proposal_or_None).
         # Populated lazily by _refresh_review_proposal; TTL = _ISSUE_TTL_S.
         self._review_proposals: dict[tuple[str, int], tuple[float, str | None]] = {}
@@ -341,7 +363,7 @@ class SessionOrchestrator:
         cwd: str | None = None,
         branch: str | None = None,
         repo: str | None = None,
-        identity: str = "system",
+        identity: str = SYSTEM_IDENTITY,
         permission_mode: str = "interactive",
         attachment_ids: list[str] | None = None,
         name_is_auto: bool = True,
@@ -394,12 +416,15 @@ class SessionOrchestrator:
         # join key to its GitHub PR. Surfaced as a PR pill on the dashboard.
         branch_name = worktree_info.branch if worktree_info is not None else None
 
+        usage_unverified = False
         if account is None:
             # Skip accounts currently quarantined for a 429/401 so a fresh session
             # doesn't land on an account we already know is struggling.
-            account = select_account(
+            picked = select_account(
                 exclude=self._recovery.quarantined(now=self._clock()),
                 load=self.live_session_load())
+            account = picked.name
+            usage_unverified = picked.optimistic
         else:
             # Verify the given account exists (will raise if cred file missing — acceptable)
             pass
@@ -477,6 +502,7 @@ class SessionOrchestrator:
             # Stamp activity now so the new card reads "active just now" rather than
             # waiting for the first status event (mirrors the DB row's utcnow default).
             updated_at=datetime.utcnow(),
+            usage_unverified=usage_unverified,
         )
         self._records[session_id] = record
         log.info("session.create id=%s account=%s", session_id, account)
@@ -791,8 +817,10 @@ class SessionOrchestrator:
                 DbSession.status.notin_(["ended", "archived"])
             )
             )).scalars().all()
+        from .background_tasks import is_parked
         added = 0
         backfilled: dict[str, str] = {}
+        healed: dict[str, str] = {}
         for row in rows:
             if row.id in self._records:
                 continue
@@ -831,15 +859,31 @@ class SessionOrchestrator:
                 authored_branches=list(getattr(row, "authored_branches", None) or []),
             )
             added += 1
-        # Persist any derived branches so the next rehydrate reads them directly.
-        if backfilled:
+            # Self-heal a stuck `waiting_external`: that status is only ever an overlay
+            # on a finished `done` turn (see _persist_status), so if the session is no
+            # longer parked — e.g. its background pollers were killed by a deploy and are
+            # now dead, or a self-scheduled wakeup was lost — its true status is `done`.
+            # Restore it so the card stops showing "Waiting…" forever. Cheap: only the
+            # (few) waiting_external rows hit the transcript scan.
+            if status == "waiting_external":
+                path = self.transcript_path(row.id)
+                if not await asyncio.to_thread(is_parked, path):
+                    self._records[row.id].status = "done"
+                    healed[row.id] = "done"
+        # Persist any derived branches + healed statuses so the next rehydrate reads them directly.
+        if backfilled or healed:
             from sqlalchemy import update as sa_update
             async with db_session() as db:
                 for sid, br in backfilled.items():
                     await db.execute(
                         sa_update(DbSession).where(DbSession.id == sid).values(branch=br)
                     )
-        log.info("rehydrate: %d session(s) restored (%d branch backfilled)", added, len(backfilled))
+                for sid, st in healed.items():
+                    await db.execute(
+                        sa_update(DbSession).where(DbSession.id == sid).values(status=st)
+                    )
+        log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
+                 added, len(backfilled), len(healed))
         return added
 
     async def rearm_background_tasks(self) -> int:
@@ -1218,7 +1262,7 @@ class SessionOrchestrator:
         if d is not None:
             d.seed_idle_suggestions(user_text, assistant_text)
 
-    async def ensure_driver(self, session_id: str, identity: str = "system") -> SessionDriver | None:
+    async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, resuming from DB if detached.
 
         - If a live driver already exists, return it (idempotent).
@@ -1236,6 +1280,7 @@ class SessionOrchestrator:
         # Fast path: live driver already exists (no lock needed — read-only check)
         existing = self._drivers.get(session_id)
         if existing is not None:
+            _rethread_identity(existing, identity)
             return existing
 
         # Look up the in-memory record (populated by rehydrate())
@@ -1252,6 +1297,7 @@ class SessionOrchestrator:
             # driver while we were waiting.
             existing = self._drivers.get(session_id)
             if existing is not None:
+                _rethread_identity(existing, identity)
                 return existing
 
             # Build and start a new driver resuming from the stored claude_session_id
@@ -1601,14 +1647,30 @@ class SessionOrchestrator:
         # recovery timing elsewhere — mixing it with monotonic deltas would be wrong.)
         now = time.monotonic()
         cached = self._issue_proposals.get(repo)
-        if cached is not None and (now - cached[0]) < _ISSUE_TTL_S:
-            return cached[1]
-        # Cache miss or stale: schedule a background refresh if not already in-flight.
-        if repo not in self._issue_inflight:
-            self._issue_inflight.add(repo)
-            asyncio.create_task(self._refresh_issue_proposal(repo))
-        # Return stale value if available, else None.
-        return cached[1] if cached is not None else None
+        # Schedule a background refresh on cache miss/stale (return stale meanwhile).
+        if cached is None or (now - cached[0]) >= _ISSUE_TTL_S:
+            if repo not in self._issue_inflight:
+                self._issue_inflight.add(repo)
+                asyncio.create_task(self._refresh_issue_proposal(repo))
+        text = cached[1] if cached is not None else None
+        # Release this session's prior claim and prune claims for sessions that are no
+        # longer idle/done (so an issue frees up once its session moves on or is removed).
+        self._proposed_issue = {
+            sid: n for sid, n in self._proposed_issue.items()
+            if sid != rec.id
+            and sid in self._records
+            and self._records[sid].status in ("done", "idle")
+        }
+        if not text:
+            return None
+        # Collision-avoidance (US-8): if another live session already holds this repo's
+        # top issue, don't propose the same one — return nothing rather than double-book.
+        number = self._issue_numbers.get(repo)
+        if number is not None:
+            if number in self._proposed_issue.values():
+                return None
+            self._proposed_issue[rec.id] = number
+        return text
 
     async def _refresh_issue_proposal(self, repo: str) -> None:
         """Fetch open issues and cache the top-issue proposal for *repo*.
@@ -1621,9 +1683,11 @@ class SessionOrchestrator:
             top = dispatch.pick_top_issue(issues)
             text: str | None = dispatch.issue_proposal_text(top) if top else None
             self._issue_proposals[repo] = (time.monotonic(), text)
+            self._issue_numbers[repo] = top["number"] if top else None
         except Exception:
             log.warning("_refresh_issue_proposal failed repo=%s", repo, exc_info=True)
             self._issue_proposals[repo] = (time.monotonic(), None)
+            self._issue_numbers[repo] = None
         finally:
             self._issue_inflight.discard(repo)
 
@@ -1933,7 +1997,7 @@ class SessionOrchestrator:
         old = record.account
         exclude = self._recovery.quarantined(now=now) | frozenset({old})
         try:
-            new_account = select_account(exclude=exclude, load=self.live_session_load())
+            new_account = select_account(exclude=exclude, load=self.live_session_load()).name
         except AllAccountsBusy as e:
             await self._pause_session(record, reason="all_accounts_busy",
                                       earliest_reset=e.earliest_reset)
@@ -2366,3 +2430,25 @@ class SessionOrchestrator:
         except Exception:
             log.warning("session.transcript_window id=%s replay failed", session_id, exc_info=True)
             return None
+
+    def snapshot_deploy(self, *, path: str | None = None) -> dict:
+        """SAVE step: record sessions with a live driver so a daemon-affecting restart
+        can eagerly re-launch them (rehydrate alone is lazy + flattens 'working'→'idle')."""
+        live = [{"id": sid, "status": getattr(self._records.get(sid), "status", "idle")}
+                for sid in list(self._drivers.keys())]
+        _deploy_snapshot.write_snapshot(live, path=path)
+        return {"live": live}
+
+    async def restore_deploy(self, *, path: str | None = None) -> dict:
+        """RESUME step: eagerly re-launch each snapshotted session in the fresh daemon."""
+        restored: list[str] = []
+        failed: list[str] = []
+        for entry in _deploy_snapshot.read_snapshot(path=path):
+            sid = entry["id"]
+            try:
+                driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
+            except Exception:
+                driver = None
+            (restored if driver is not None else failed).append(sid)
+        _deploy_snapshot.clear_snapshot(path=path)
+        return {"restored": restored, "failed": failed}

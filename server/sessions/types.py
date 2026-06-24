@@ -10,6 +10,15 @@ from datetime import datetime
 
 from server.time_iso import iso_utc
 
+# Sentinel identity for internal/background callers (rehydrate, dispatch, eager
+# re-launch) that act with no authenticated user. Single source of truth so the
+# magic string isn't duplicated across orchestrator/remote/driver — and so the
+# "is this a real user?" check (which gates re-threading identity onto a resumed
+# driver) has one definition. A driver built under this identity registers
+# AskUserQuestion/permission answers under it, so a real user attaching later must
+# upgrade it (see SessionOrchestrator.ensure_driver) or their answers are rejected.
+SYSTEM_IDENTITY = "system"
+
 
 @dataclass
 class SessionRecord:
@@ -37,6 +46,7 @@ class SessionRecord:
     model: str | None = None         # persisted model alias/id; None = account default
     account_pinned: bool = False      # user pinned the account (skips usage-ceiling rotation)
     active_goal: str | None = None    # active /goal condition; None = no goal
+    usage_unverified: bool = False    # transient: account picked without a usage read (optimistic)
     authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
 
     def to_dict(self) -> dict:
@@ -59,6 +69,7 @@ class SessionRecord:
             "model": self.model,
             "accountPinned": self.account_pinned,
             "activeGoal": self.active_goal,
+            "usageUnverified": self.usage_unverified,
             "authoredBranches": list(self.authored_branches),
         }
 
@@ -83,5 +94,6 @@ class SessionRecord:
             model=d.get("model"),
             account_pinned=d.get("accountPinned", False),
             active_goal=d.get("activeGoal"),
+            usage_unverified=d.get("usageUnverified", False),
             authored_branches=list(d.get("authoredBranches") or []),
         )

@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, within, fireEvent } from '@testing-library/react'
+import { render, screen, within, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { DesktopShell } from '../DesktopShell'
 import * as hooks from '@/api/hooks'
-import type { Session } from '@/api/types'
+import { toast } from 'sonner'
+import type { Account, Session } from '@/api/types'
 
 vi.mock('@/ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/ws/client')>()
@@ -34,9 +35,14 @@ vi.mock('@/session/useSessionSearch', () => ({
   useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
 }))
 
+vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 function mk(o: Partial<Session> = {}): Session {
   return { id: 's1', name: 'One', accountName: 'work', status: 'idle', createdAt: '', updatedAt: '', ...o }
+}
+function mkAccount(o: Partial<Account> = {}): Account {
+  return { name: 'work', status: 'ok', usage: null, liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null, ...o }
 }
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -189,5 +195,72 @@ describe('DesktopShell', () => {
     await user.click(prompt)
     await user.keyboard('{ArrowDown}')
     expect(prompt.getAttribute('aria-activedescendant')).toMatch(/^(row-s|group-header-)/)
+  })
+
+  it('shows a subtle toast when a session is created optimistically', async () => {
+    const user = userEvent.setup()
+    const session = mk({ usageUnverified: true })
+    let capturedCallbacks: { onSuccess?: (s: Session) => void; onError?: (e: { status: number; body: unknown }) => void } = {}
+    vi.mocked(hooks.useCreateSession).mockReturnValue({
+      mutate: vi.fn((_input, callbacks) => { capturedCallbacks = callbacks ?? {} }),
+      isPending: false,
+      isSuccess: false,
+    } as never)
+    render(<DesktopShell />, { wrapper })
+    const prompt = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(prompt)
+    await user.type(prompt, 'hello')
+    await user.keyboard('{Enter}')
+    act(() => { capturedCallbacks.onSuccess?.(session) })
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(
+      expect.stringContaining('started anyway'),
+    )
+  })
+
+  it('routes accounts_need_reauth 409 to a toast, not the limit banner', async () => {
+    const user = userEvent.setup()
+    let capturedCallbacks: { onSuccess?: (s: Session) => void; onError?: (e: { status: number; body: unknown }) => void } = {}
+    vi.mocked(hooks.useCreateSession).mockReturnValue({
+      mutate: vi.fn((_input, callbacks) => { capturedCallbacks = callbacks ?? {} }),
+      isPending: false,
+      isSuccess: false,
+    } as never)
+    render(<DesktopShell />, { wrapper })
+    const prompt = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(prompt)
+    await user.type(prompt, 'hello')
+    await user.keyboard('{Enter}')
+    act(() => {
+      capturedCallbacks.onError?.({ status: 409, body: { error: { code: 'accounts_need_reauth' } } })
+    })
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      expect.stringContaining('re-authenticate'),
+    )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('auto-clears the all-limited banner once an account becomes selectable', async () => {
+    const user = userEvent.setup()
+    let capturedCallbacks: { onSuccess?: (s: Session) => void; onError?: (e: { status: number; body: unknown }) => void } = {}
+    vi.mocked(hooks.useCreateSession).mockReturnValue({
+      mutate: vi.fn((_input, callbacks) => { capturedCallbacks = callbacks ?? {} }),
+      isPending: false,
+      isSuccess: false,
+    } as never)
+    const { rerender } = render(<DesktopShell />, { wrapper })
+    const prompt = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(prompt)
+    await user.type(prompt, 'hello')
+    await user.keyboard('{Enter}')
+    act(() => {
+      capturedCallbacks.onError?.({ status: 409, body: { error: { code: 'all_accounts_limited' }, earliestReset: null } })
+    })
+    // Banner should now be visible
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    // Now simulate an account recovering (rank becomes non-null)
+    vi.mocked(hooks.useAccounts).mockReturnValue({ data: [mkAccount({ rank: 1 })], isLoading: false } as ReturnType<typeof hooks.useAccounts>)
+    rerender(<DesktopShell />)
+    // Auto-clear effect should remove the banner
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

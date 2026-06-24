@@ -7,7 +7,7 @@ import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from server.sessions.adopt import terminate_process_tree
+from server.sessions.adopt import _proc_lister, terminate_process_tree
 
 log = logging.getLogger("server.x11")
 
@@ -183,6 +183,20 @@ class X11Manager:
                 pass
         await self._allocator.release(spec.lease)
 
+    async def stop_all(self) -> None:
+        """Concurrently tear down every tracked display — the shutdown sweep (issue #206).
+
+        Closing sessions sequentially summed each ~10s ``stop_display`` past systemd's
+        ``TimeoutStopSec``, so the process was SIGKILLed before cleanup finished and
+        per-session Xvfb/x11vnc/chrome leaked. Stopping all displays concurrently bounds
+        total teardown to roughly a single ``stop_display``; ``return_exceptions`` ensures
+        one session's failure can't abort the rest.
+        """
+        sids = list(self._specs.keys())
+        if not sids:
+            return
+        await asyncio.gather(*(self.stop_display(sid) for sid in sids), return_exceptions=True)
+
     async def ensure_vnc(self, session_id: str) -> int | None:
         async with self._lock:
             spec = self._specs.get(session_id)
@@ -267,6 +281,71 @@ class X11Manager:
                             pass
                     removed += 1
         return removed
+
+    def sweep_orphan_processes(
+        self,
+        *,
+        lister=_proc_lister,
+        killer=lambda pid: terminate_process_tree(pid, grace=0.5),
+    ) -> int:
+        """Reap leaked Xvfb/x11vnc/chromium from a prior run (issue #206, startup half).
+
+        A process is an orphan when its X display falls inside this host's managed pool
+        (``display_start … display_start+display_count``) yet maps to no live session.
+        At process start ``_specs`` is empty, so every in-range display is reaped —
+        exactly what a fresh boot needs after a SIGKILLed shutdown left displays behind.
+        The managed-range gate keeps the sweep from ever touching a user's own ``:0``
+        browser. Counterpart to ``stop_all`` (clean shutdown) and ``sweep_stale`` (which
+        only unlinks stale lock/socket *files*, never the processes holding them).
+
+        ``lister``/``killer`` are injected so the sweep is unit-testable without /proc.
+        Returns the number of processes actually signalled.
+        """
+        managed = range(self._display_start, self._display_start + self._display_count)
+        live = {s.lease.display for s in self._specs.values()}
+        killed = 0
+        for proc in lister():
+            cmd = getattr(proc, "cmdline", None) or []
+            if not cmd:
+                continue
+            exe = os.path.basename(cmd[0])
+            if not (exe == "Xvfb" or exe == "x11vnc" or exe.startswith("chromium")):
+                continue
+            display = self._display_of(proc)
+            if display is None or display not in managed or display in live:
+                continue
+            try:
+                if killer(proc.pid):
+                    killed += 1
+            except Exception:
+                log.exception("x11: orphan reap failed pid=%s", getattr(proc, "pid", "?"))
+        return killed
+
+    @staticmethod
+    def _display_of(proc) -> int | None:
+        """Display number a process is bound to, parsed from argv (Xvfb/x11vnc) or the
+        ``DISPLAY`` env (chromium). Returns the int N from a ``:N`` / ``:N.screen`` token."""
+        cmd = getattr(proc, "cmdline", None) or []
+        exe = os.path.basename(cmd[0]) if cmd else ""
+        if exe == "Xvfb":
+            for tok in cmd[1:]:
+                n = X11Manager._parse_display(tok)
+                if n is not None:
+                    return n
+        elif exe == "x11vnc":
+            for i, tok in enumerate(cmd):
+                if tok == "-display" and i + 1 < len(cmd):
+                    return X11Manager._parse_display(cmd[i + 1])
+        return X11Manager._parse_display(getattr(proc, "environ", {}).get("DISPLAY", ""))
+
+    @staticmethod
+    def _parse_display(token: str) -> int | None:
+        if not token or not token.startswith(":"):
+            return None
+        try:
+            return int(token[1:].split(".", 1)[0])
+        except ValueError:
+            return None
 
     @staticmethod
     def _lock_owner_alive(lock_path: str) -> bool:

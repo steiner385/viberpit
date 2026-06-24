@@ -40,6 +40,24 @@ describe('PrPill', () => {
     expect(screen.getByRole('link')).toHaveAttribute('data-checks', 'pending')
   })
 
+  it('suppresses the stale checks label for a terminal PR with frozen failing checks', () => {
+    // A closed PR keeps `checks: 'failing'` frozen by GitHub, but there's no
+    // action to take — don't surface the red X / "checks failing" on it.
+    const { rerender } = render(<PrPill pr={{ ...base, state: 'closed', checks: 'failing' }} />)
+    let link = screen.getByRole('link')
+    expect(link).toHaveAttribute('data-checks', 'failing')  // data stays factual
+    expect(link.getAttribute('aria-label')).not.toMatch(/checks/i)
+
+    rerender(<PrPill pr={{ ...base, state: 'merged', checks: 'failing' }} />)
+    link = screen.getByRole('link')
+    expect(link.getAttribute('aria-label')).not.toMatch(/checks/i)
+  })
+
+  it('still surfaces failing checks on an actionable (open) PR', () => {
+    render(<PrPill pr={{ ...base, state: 'open', checks: 'failing' }} />)
+    expect(screen.getByRole('link').getAttribute('aria-label')).toMatch(/checks failing/i)
+  })
+
   it('shows a deployed affordance for a deployed merged PR', () => {
     render(<PrPill pr={{ ...base, state: 'merged', deployed: true }} />)
     const link = screen.getByRole('link')

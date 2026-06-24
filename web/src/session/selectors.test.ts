@@ -56,6 +56,26 @@ describe('selectSubAgents', () => {
     expect(selectSubAgents(turns)[0].status).toBe('failed')
   })
 
+  it('surfaces startedAt (block ts) and endedAt (result ts)', () => {
+    const turns: Turn[] = [
+      toolTurn([
+        {
+          kind: 'tool', id: 'b1', toolId: 'x1', name: 'Task', toolKind: 'task',
+          input: { subagent_type: 'Explore', description: 'find it' }, ts: 1000,
+          result: { ok: true, payload: {}, ts: 4000 },
+        },
+        {
+          kind: 'tool', id: 'b2', toolId: 'x2', name: 'Task', toolKind: 'task',
+          input: { subagent_type: 'Plan', description: 'still going' }, ts: 2000,
+        },
+      ]),
+    ]
+    const agents = selectSubAgents(turns)
+    expect(agents[0]).toMatchObject({ status: 'done', startedAt: 1000, endedAt: 4000 })
+    expect(agents[1]).toMatchObject({ status: 'running', startedAt: 2000 })
+    expect(agents[1].endedAt).toBeUndefined()
+  })
+
   it('falls back to "agent" / "" when subagent_type/description are missing', () => {
     const turns: Turn[] = [
       toolTurn([

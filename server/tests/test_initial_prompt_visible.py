@@ -23,6 +23,7 @@ import pytest
 from fastapi.testclient import TestClient
 from claude_agent_sdk import TextBlock
 
+from ccswitch.selector import Picked
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -87,7 +88,7 @@ def ws_env_ip(tmp_path):
     })
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")
-    select_patch = patch("server.sessions.orchestrator.select_account", return_value="alpha")
+    select_patch = patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha"))
 
     created: list[TestClient] = []
 

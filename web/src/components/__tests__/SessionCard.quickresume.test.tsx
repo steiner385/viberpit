@@ -61,4 +61,16 @@ describe('SessionCard — quick-resume play button', () => {
     renderCard({ session: mkSession({ status: 'in_progress', detached: false, latestSuggestions: [] }), onQuickResume })
     expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument()
   })
+
+  // Regression: the "more suggestions" menu shares the sessions-list stacking
+  // context with the sticky group headers (GroupHeader uses `sticky top-0
+  // z-10`). At an equal z-index a later group's header would paint over an open
+  // menu from a card above it. The menu must out-rank the header (z-20 > z-10).
+  it('renders the suggestions menu above the sticky group headers (z-20)', () => {
+    renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: ['First step', 'Second step'] }), onQuickResume: noop })
+    fireEvent.click(screen.getByRole('button', { name: /more suggestions/i }))
+    const menu = screen.getByRole('menu')
+    expect(menu.className).toMatch(/\bz-20\b/)
+    expect(menu.className).not.toMatch(/\bz-10\b/)
+  })
 })

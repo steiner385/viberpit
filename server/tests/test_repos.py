@@ -9,6 +9,7 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from ccswitch.selector import Picked
 from tests.helpers import temp_env
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -187,7 +188,7 @@ def test_create_session_with_repo_clones(tmp_path):
         cfg_dir = paths.account_cfg_dir("account1")
         cfg_dir.mkdir(parents=True, exist_ok=True)
 
-        with patch("server.sessions.orchestrator.select_account", return_value="account1"), \
+        with patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
              patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
              patch("ccswitch.gitrepos.ensure_clone", side_effect=fake_ensure_clone), \
              patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
@@ -231,7 +232,7 @@ def test_create_session_accepts_attachment_ids(tmp_path):
         cfg_dir = paths.account_cfg_dir("account1")
         cfg_dir.mkdir(parents=True, exist_ok=True)
 
-        with patch("server.sessions.orchestrator.select_account", return_value="account1"), \
+        with patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
              patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
              patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path),
                                      "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
