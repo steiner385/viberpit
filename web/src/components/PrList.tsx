@@ -54,7 +54,10 @@ export function PrList({ prs }: { prs?: PullRequestInfo[] | null }) {
       {open && (
         <div
           className={cn(
-            'absolute z-10 mt-1 left-0 flex flex-col gap-1 p-2 rounded-md',
+            // z-20 keeps the open popover above the sticky group headers
+            // (GroupHeader: `sticky top-0 z-10`); at an equal z-index a later
+            // group's header would paint over a popover opened from a card above it.
+            'absolute z-20 mt-1 left-0 flex flex-col gap-1 p-2 rounded-md',
             'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-lg',
           )}
           onClick={(e) => e.stopPropagation()}
