@@ -464,6 +464,50 @@ describe('SessionList — pure renderer (no internal sort)', () => {
   })
 })
 
+describe('SessionList — group header keyboard nav', () => {
+  function mkSession(id: string): Session {
+    return {
+      id,
+      name: `Session ${id}`,
+      accountName: 'alice',
+      status: 'idle',
+      createdAt: '2026-06-24T10:00:00Z',
+      updatedAt: '2026-06-24T10:00:00Z',
+    }
+  }
+
+  it('renders a highlighted group header and routes its keys', async () => {
+    const u = userEvent.setup()
+    const onExpand = vi.fn()
+    const groups = [
+      { key: 'busy', label: 'Working', count: 1, sessions: [mkSession('s1')] },
+    ]
+    render(
+      <SessionList
+        sessions={groups.flatMap((g) => g.sessions)}
+        groups={groups}
+        accounts={[]}
+        listMode
+        collapsedKeys={new Set(['busy'])}
+        selectedGroupKey="busy"
+        onToggleCollapse={vi.fn()}
+        onExpand={onExpand}
+        onCollapse={vi.fn()}
+        onNavigate={vi.fn()}
+        onExit={vi.fn()}
+        onNew={vi.fn()} onOpen={vi.fn()} onRename={vi.fn()}
+        onClose={vi.fn()} onDelete={vi.fn()} onQuickResume={vi.fn()}
+      />,
+      { wrapper },
+    )
+    const header = screen.getByRole('button', { name: /Working/ })
+    expect(header).toHaveAttribute('id', 'group-header-busy')
+    header.focus()
+    await u.keyboard('{ArrowRight}')
+    expect(onExpand).toHaveBeenCalledWith('busy')
+  })
+})
+
 describe('SessionList — no-matches state', () => {
   it('shows a no-matches state (not EmptyState) when filtered to zero', async () => {
     const onClearSearch = vi.fn()

@@ -1,6 +1,6 @@
-import { ChevronRight, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SessionCard } from './SessionCard'
+import { GroupHeader } from './GroupHeader'
 import { EmptyState } from './EmptyState'
 import type { Session, Account } from '@/api/types'
 import type { SessionGroup } from '@/session/ordering'
@@ -24,6 +24,9 @@ interface SessionListProps {
   collapsedKeys?: Set<string>
   /** Toggle a group's collapsed state by its key. */
   onToggleCollapse?: (key: string) => void
+  selectedGroupKey?: string | null
+  onExpand?: (key: string) => void
+  onCollapse?: (key: string) => void
   listMode?: boolean
   onNavigate?: (dir: 'up' | 'down') => void
   onExit?: () => void
@@ -65,6 +68,9 @@ export function SessionList({
   onQuickResume,
   collapsedKeys,
   onToggleCollapse,
+  selectedGroupKey,
+  onExpand,
+  onCollapse,
   listMode,
   onNavigate,
   onExit,
@@ -131,7 +137,9 @@ export function SessionList({
     <div
       id="session-listbox"
       aria-label="Sessions"
-      aria-activedescendant={selectedId ? `row-${selectedId}` : undefined}
+      aria-activedescendant={
+        selectedId ? `row-${selectedId}` : selectedGroupKey ? `group-header-${selectedGroupKey}` : undefined
+      }
       className="space-y-2"
     >
       {groups
@@ -141,27 +149,19 @@ export function SessionList({
             return (
               <div key={group.key} className="space-y-2">
                 {group.label !== null && (
-                  <button
-                    type="button"
-                    onClick={() => onToggleCollapse?.(group.key)}
-                    aria-expanded={!collapsed}
-                    aria-controls={collapsed ? undefined : panelId}
-                    className={cn(
-                      'sticky top-0 z-10 flex w-full items-center gap-2 px-1 py-1',
-                      'bg-gray-50/95 dark:bg-gray-900/95 backdrop-blur',
-                      'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400',
-                      'hover:text-gray-700 dark:hover:text-gray-200',
-                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
-                    )}
-                  >
-                    {collapsed ? (
-                      <ChevronRight size={14} aria-hidden />
-                    ) : (
-                      <ChevronDown size={14} aria-hidden />
-                    )}
-                    <span>{group.label}</span>
-                    <span className="tabular-nums text-gray-400 dark:text-gray-500">{group.count}</span>
-                  </button>
+                  <GroupHeader
+                    groupKey={group.key}
+                    label={group.label}
+                    count={group.count}
+                    collapsed={collapsed}
+                    selected={group.key === selectedGroupKey}
+                    listMode={listMode}
+                    onToggle={(k) => onToggleCollapse?.(k)}
+                    onExpand={onExpand}
+                    onCollapse={onCollapse}
+                    onNavigate={onNavigate}
+                    onExit={onExit}
+                  />
                 )}
                 {!collapsed && (
                   <div id={panelId} className="space-y-2">
