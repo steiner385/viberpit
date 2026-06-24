@@ -1,12 +1,15 @@
 # Combined App — Roadmap, Prioritization & Delivery Plan
 
-**Date:** 2026-06-23
-**Status:** Draft for review — **contains a recommended revision to the committed phase order; needs user sign-off (requirements §0).**
+**Date:** 2026-06-23 (sequencing decided 2026-06-24)
+**Status:** Approved — **Option A (value-first) is the committed sequencing.** Milestones M1–M6 below are the committed order.
 **Source:** Founder persona (scope/sequencing/metrics), reconciled with architect + CI/CD.
 
 ---
 
-## 1. The central recommendation: value-first sequencing
+## 1. The central recommendation: value-first sequencing — ✅ ADOPTED (2026-06-24)
+
+> **DECISION:** The user chose **Option A (value-first)**. Milestones M1–M6 (§4) are committed.
+> Level 3 stays the destination; it is no longer a gate on the automations.
 
 The committed program (overview design) order is: **Phase 0 parity harness → 1 stage+ETA port → 2 ancestry/stream/notifications → 3 frontend merge → 4 cost+decommission → 5 Triage → 6 Dispatch → 7 Follow-through.** That ships the *plumbing* first and the *automations you actually want* last.
 
@@ -115,4 +118,4 @@ So: **ship Triage + Dispatch + PR-broke-fix on the current PR data with Plotroom
 
 The engineering plan is sound; the **sequencing** is the threat. The three automations are the product, ride on primitives that already exist, and do **not** require the Level-3 rewrite to finish first. Ship them on a thin integration, get daily value in ~a month, and let the (real, worthwhile) Level-3 port happen afterward as consolidation — not as a gate the payoff is trapped behind. Cut ~half of Plotroom's surface outright.
 
-**Decision needed (requirements §0):** confirm **Option A (value-first, recommended)** or **Option B (committed foundation-first order)** before this roadmap is treated as committed.
+**Decision (requirements §0): ✅ Option A (value-first) adopted 2026-06-24.** This roadmap is committed. Next build step: **M1 — Live PR state on every session card** (Phase 0 Part A, i.e. Tasks 1–2 of the merged Phase 0 plan; the parity harness, Tasks 3–7, defers to M5).

@@ -1,7 +1,7 @@
 # Combined App (ccswitch ⨉ Plotroom) — Requirements Specification
 
-**Date:** 2026-06-23
-**Status:** Draft for review
+**Date:** 2026-06-23 (sequencing decided 2026-06-24)
+**Status:** Approved — **Option A (value-first) is the committed sequencing.**
 **Method:** Synthesized from three persona analyses — Software Architect, CI/CD & Quality specialist, and a part-time solo-dev/startup founder.
 **Companion docs:**
 - Architecture → `2026-06-23-combined-app-architecture.md`
@@ -11,7 +11,13 @@
 
 ---
 
-## 0. HEADLINE DECISION FOR THE USER: sequencing
+## 0. SEQUENCING — DECIDED: Option A (value-first)
+
+> **DECISION (2026-06-24):** The user chose **Option A — value-first**. The automations ship first
+> on ccswitch's current PR data (Plotroom left running as a separate tab); the Level-3 port follows
+> as consolidation. Level 3 remains the destination but is **no longer a gate** on the payoff. The
+> roadmap milestones M1–M6 (`...-combined-app-roadmap.md`) are the committed order. The rest of this
+> section records the reasoning that led there.
 
 All three personas independently converged on one tension, and it is the most important thing in this spec:
 
@@ -135,7 +141,7 @@ This spec is written to be **sequencing-agnostic for requirements** (the same re
 
 ## 8. Open decisions requiring user input
 
-1. **Sequencing — Option A (value-first) vs Option B (foundation-first).** See §0. *Recommended: A.*
+1. ✅ **Sequencing — RESOLVED: Option A (value-first).** Decided 2026-06-24. See §0.
 2. **SSE: port or drop** in favor of ccswitch's existing WebSocket live channel (architect ADR-4 vs founder "candidate to drop"). *Lean: reuse the existing channel; port SSE only if frame-dedup proves necessary.*
 3. **Notification delivery:** keep Plotroom's tuned event taxonomy + debounce, but deliver via ccswitch push/phone + chip rather than the browser-bell/host-command stack? *Recommended: taxonomy yes, parallel sinks no.*
 4. **Engine history store:** separate `pipeline_history.db` vs folding into the main SQLite (architect ADR-1). *Recommended: separate DB.*
