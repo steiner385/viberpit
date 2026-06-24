@@ -121,6 +121,13 @@ class RateLimit:
     resets_at: int | None = None; status: str | None = None
 
 @dataclass
+class ApiRetry:
+    """Decoded SDK SystemMessage(subtype='api_error'). Internal carrier only: the
+    driver consumes it to keep the stall watchdog alive during backoff and to flag
+    the transient 'retrying' status. Never forwarded to the client (no wire form)."""
+    turn_id: str; status: int | None = None; attempt: int | None = None; max_retries: int | None = None
+
+@dataclass
 class Condensing:
     """Context auto-compaction state. Forwarded to the UI: ``active`` toggles the
     progress bar; ``expected_ms`` (set on the active=True start event) is the learned

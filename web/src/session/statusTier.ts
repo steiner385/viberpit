@@ -23,6 +23,7 @@ const CALM = 'text-gray-600 dark:text-gray-400'
 const PRESENTATION: Record<string, StatusPresentation> = {
   in_progress:      { tier: 'busy',      label: 'Working…',          Icon: Loader2,       textClass: BUSY },
   working:          { tier: 'busy',      label: 'Working…',          Icon: Loader2,       textClass: BUSY },
+  retrying:         { tier: 'busy',      label: 'Overloaded — retrying', Icon: Loader2,   textClass: NEEDS_YOU },
   condensing:       { tier: 'busy',      label: 'Condensing…',       Icon: Minimize2,     textClass: BUSY },
   ready_review:     { tier: 'needs-you', label: 'Approve plan',      Icon: Eye,           textClass: NEEDS_YOU },
   waiting_input:    { tier: 'needs-you', label: 'Permission needed', Icon: CircleAlert,   textClass: NEEDS_YOU },
