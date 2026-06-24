@@ -41,7 +41,7 @@ def build_controller_app(*, repo: str, health_url: str, venv_pip: str, daemon_en
     def _deploy_dict() -> dict:
         s = ctrl.status
         return {"running": s.running, "phases": s.phases, "error": s.error,
-                "warnings": s.warnings, "targetSha": s.target_sha}
+                "warnings": s.warnings, "targetSha": s.target_sha, "restore": s.restore}
 
     @app.get("/status")
     async def status() -> dict:

@@ -53,3 +53,10 @@ def test_start_conflict_when_running(client):
     ctrl._running = True
     r = c.post("/start")
     assert r.status_code == 409 and r.json()["started"] is False
+
+
+def test_status_includes_restore(client):
+    c, ctrl = client
+    ctrl.status.restore = {"restored": ["s1"], "failed": ["s2"]}
+    body = c.get("/status").json()
+    assert body["deploy"]["restore"] == {"restored": ["s1"], "failed": ["s2"]}
