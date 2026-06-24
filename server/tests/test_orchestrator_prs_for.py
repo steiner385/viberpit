@@ -40,13 +40,14 @@ def test_prs_for_empty_when_no_repo_or_cache():
     assert orch.prs_for("s1") == []
 
 
-def test_pr_pairs_unions_authored_branches():
+@pytest.mark.asyncio
+async def test_pr_pairs_unions_authored_branches():
     orch = _orch()
     orch._records["s1"] = SessionRecord(
         id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
         cwd="/tmp", repo="o/r", authored_branches=["feat/a", "feat/b"],
     )
-    assert set(orch._pr_pairs()) == {("o/r", "feat/a"), ("o/r", "feat/b")}
+    assert set(await orch._pr_pairs()) == {("o/r", "feat/a"), ("o/r", "feat/b")}
 
 
 @pytest.mark.asyncio

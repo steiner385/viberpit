@@ -844,7 +844,14 @@ class SessionOrchestrator:
                 rec.branch = live
 
     async def _pr_pairs(self) -> list[tuple[str, str]]:
-        """Distinct (repo, live-branch) pairs for sessions that have both."""
+        """Distinct (repo, branch) pairs for every PR a session may have authored.
+
+        Unions two live-branch sources so neither PR-badge mechanism is lost:
+        ``authored_branches`` (the multi-PR set, derived from the worktree's
+        reflog + current HEAD) and the live-refreshed ``record.branch`` (the
+        single current PR head). A no-PR branch listed here is harmless — the
+        downstream PR query keeps only branches that actually resolve to a PR.
+        """
         await self._refresh_live_branches()
         seen: set[tuple[str, str]] = set()
         for r in self._records.values():
@@ -852,6 +859,8 @@ class SessionOrchestrator:
                 continue
             for br in getattr(r, "authored_branches", None) or []:
                 seen.add((r.repo, br))
+            if r.branch:
+                seen.add((r.repo, r.branch))
         return list(seen)
 
     def pr_for(self, repo, branch):
