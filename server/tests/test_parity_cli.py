@@ -1,7 +1,10 @@
 import json
+import subprocess
 import pytest
 
-from server.github.parity.__main__ import fetch_oracle, render_report, HarnessError
+from server.github.parity.__main__ import (
+    fetch_oracle, render_report, HarnessError, compute_candidate_by_number,
+)
 from server.github.parity.harness import ParityReport, FieldMismatch
 
 
@@ -45,3 +48,24 @@ def test_render_report_lists_mismatches():
     )
     text = render_report(rep)
     assert "state" in text and "open" in text and "merged" in text
+
+
+def test_compute_candidate_by_number_classifies_checks():
+    def fake_gh(args):
+        body = json.dumps({"data": {"repository": {"pullRequests": {"nodes": [
+            {"number": 7, "url": "https://github.com/o/r/pull/7",
+             "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}},
+        ]}}}})
+        return subprocess.CompletedProcess(args, 0, stdout=body, stderr="")
+
+    cand = compute_candidate_by_number(["o/r"], run_gh=fake_gh)
+    assert ("o/r", 7) in cand
+    assert cand[("o/r", 7)].checks == "passing"
+    assert cand[("o/r", 7)].url.endswith("/pull/7")
+
+
+def test_compute_candidate_by_number_skips_repo_on_gh_error():
+    def boom(args):
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="gh fail")
+
+    assert compute_candidate_by_number(["o/r"], run_gh=boom) == {}

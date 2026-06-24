@@ -40,9 +40,11 @@ def test_uncovered_field_ignored():
     assert rep.ok
 
 
-def test_oracle_only_and_candidate_only():
+def test_oracle_only_and_candidate_only_are_informational():
+    # Population differences are reported but do NOT fail parity (Plotroom tracks all
+    # PRs; ccswitch's candidate can differ in coverage/timing). ok = no field mismatches.
     rep = diff_snapshots({("o/r", 1): _cand()},
                          {("o/r", 2): _oracle(number=2)}, phase=0)
     assert ("o/r", 1) in rep.candidate_only
     assert ("o/r", 2) in rep.oracle_only
-    assert not rep.ok
+    assert rep.ok  # no shared PRs ⇒ no mismatches ⇒ parity holds

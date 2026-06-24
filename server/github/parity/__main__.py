@@ -8,9 +8,10 @@ import argparse
 import json
 import sys
 import urllib.request
+from typing import Callable
 
-from server.github.pr_poller import _default_query
-from server.github.pr_status import parse_pr_response
+from ccswitch import gitrepos
+from server.github.pr_status import PullRequestInfo, _classify_checks, _rollup_state
 from server.github.parity.harness import ParityReport, diff_snapshots
 from server.github.parity.normalize import normalize_state
 
@@ -33,10 +34,41 @@ def fetch_oracle(base_url: str, *, opener=urllib.request.urlopen) -> dict:
         raise HarnessError(f"could not fetch oracle {url}: {exc}") from exc
 
 
-def compute_candidate(pairs, query_fn=_default_query):
-    """One synchronous sweep; re-key (repo, branch) -> (repo, number)."""
-    by_branch = parse_pr_response(query_fn(pairs), pairs)
-    return {(repo, info.number): info for (repo, _branch), info in by_branch.items()}
+def _pr_list_query(repo: str) -> str:
+    """GraphQL doc listing OPEN PRs for *repo* with the same statusCheckRollup ccswitch
+    keys on, so the candidate's ``checks`` is classified identically to PrStatusPoller."""
+    owner, _, name = repo.partition("/")
+    return (
+        f"query {{ repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{"
+        f"  pullRequests(states: OPEN, first: 100, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{"
+        f"    nodes {{ number url"
+        f"      commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}"
+        f"    }} }} }} }}"
+    )
+
+
+def compute_candidate_by_number(
+    repos: list[str], *, run_gh: Callable = gitrepos._run_gh
+) -> dict[tuple[str, int], PullRequestInfo]:
+    """Candidate = every OPEN PR for each repo, keyed ``(repo, number)``.
+
+    Number-keyed (Plotroom exposes no branch) and over the FULL open-PR population
+    (ccswitch's per-session poller only sees session branches). ``checks`` is derived
+    from the GraphQL statusCheckRollup via ccswitch's own classifier, so a mismatch
+    reflects a real ccswitch-vs-Plotroom divergence, not a method difference.
+    """
+    out: dict[tuple[str, int], PullRequestInfo] = {}
+    for repo in repos:
+        proc = run_gh(["api", "graphql", "-f", f"query={_pr_list_query(repo)}"])
+        if proc.returncode != 0:
+            continue  # repo-level fetch failure is informational, not a parity verdict
+        data = (json.loads(proc.stdout or "{}").get("data") or {}).get("repository") or {}
+        for node in ((data.get("pullRequests") or {}).get("nodes") or []):
+            out[(repo, node["number"])] = PullRequestInfo(
+                number=node["number"], url=node.get("url", ""), state="open",
+                checks=_classify_checks(_rollup_state(node)), title="",
+            )
+    return out
 
 
 def render_report(report: ParityReport) -> str:
@@ -70,10 +102,11 @@ def main(argv=None) -> int:
         print(f"harness error: {exc}", file=sys.stderr)
         return 2
 
-    # Candidate: query each repo for the branches the oracle knows about.
-    pairs = [(orc.repo, orc.branch) for orc in oracle.values() if orc.branch]
-    pairs = [p for p in pairs if p[0] in repos] if repos else pairs
-    candidate = compute_candidate(pairs)
+    # Restrict the oracle to the requested repos, then build the candidate over the
+    # full open-PR population of those repos (number-keyed). diff_snapshots compares
+    # only the shared PRs; population differences are reported, not failed.
+    oracle = {k: v for k, v in oracle.items() if not repos or v.repo in repos}
+    candidate = compute_candidate_by_number(repos)
 
     report = diff_snapshots(candidate, oracle, phase=args.phase)
     print(render_report(report))

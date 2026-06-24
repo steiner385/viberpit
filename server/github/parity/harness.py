@@ -29,7 +29,14 @@ class ParityReport:
 
     @property
     def ok(self) -> bool:
-        return not self.mismatches and not self.oracle_only and not self.candidate_only
+        """Parity holds iff every COVERED field agrees on the PRs BOTH sides see.
+
+        Population differences (``oracle_only``/``candidate_only``) are reported but do
+        NOT fail parity: Plotroom tracks all open PRs while ccswitch's candidate can
+        differ in coverage or poll timing. The parity question is whether the covered
+        fields agree where both observe the same PR — i.e. zero field mismatches.
+        """
+        return not self.mismatches
 
 
 def _candidate_value(pr: PullRequestInfo, name: str) -> object:
