@@ -2122,10 +2122,15 @@ class SessionOrchestrator:
         return record
 
     async def permanent_delete(self, session_id: str) -> bool:
-        """Permanently delete an archived session: remove archive folder + DB row.
+        """Permanently delete a session: remove archive folder + DB row.
 
         Returns True if deleted, False if the session was not found in DB.
         Containment guard: only removes paths that are direct children of archive_dir().
+
+        A *live* session (still in _records/_drivers, or status != 'archived') is
+        archived first: archive_session stops the driver and moves the cwd into the
+        archive. Deleting a live session directly would otherwise leave a zombie
+        driver running and orphan the working directory outside archive_dir().
         """
         from ccswitch.paths import archive_dir
         from sqlalchemy import select as sa_select
@@ -2136,6 +2141,15 @@ class SessionOrchestrator:
             )).scalars().first()
         if row is None:
             return False
+
+        # Archive-then-delete: a live session must be torn down before its row and
+        # working dir are removed, or we leak a driver and orphan the cwd.
+        if (
+            session_id in self._records
+            or session_id in self._drivers
+            or row.status != "archived"
+        ):
+            await self.archive_session(session_id)
 
         # Containment guard: candidate must be a direct child of archive_dir().
         archive_base = archive_dir().resolve()
