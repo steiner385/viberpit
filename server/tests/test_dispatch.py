@@ -88,3 +88,11 @@ def test_fetch_unresolved_review_count_nonzero_rc_returns_zero():
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="error")
 
     assert dispatch.fetch_unresolved_review_count("o/r", 7, run_gh=fake_gh) == 0
+
+
+def test_fetch_unresolved_review_count_exception_returns_zero():
+    """A raising gh runner (e.g. gh missing) → returns 0, never propagates."""
+    def boom(args):
+        raise OSError("gh not found")
+
+    assert dispatch.fetch_unresolved_review_count("o/r", 7, run_gh=boom) == 0
