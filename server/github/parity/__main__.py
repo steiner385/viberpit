@@ -8,13 +8,14 @@ import argparse
 import json
 import sys
 import urllib.request
+from datetime import datetime, timezone
 from typing import Callable
 
 from ccswitch import gitrepos
 from server.github.pr_status import PullRequestInfo, _classify_checks, _rollup_state
 from server.github.parity.harness import ParityReport, diff_snapshots
 from server.github.parity.normalize import normalize_state
-from server.pipeline.stage import derive_open_stage
+from server.pipeline.stage import derive_open_stage, derive_merged_stage
 
 
 class HarnessError(RuntimeError):
@@ -50,31 +51,59 @@ def _pr_list_query(repo: str) -> str:
     )
 
 
+def _merged_pr_list_args(repo: str) -> list[str]:
+    """gh CLI args to list recently-merged PRs for *repo*.
+
+    Uses ``gh pr list`` (REST) rather than GraphQL because the merged-PR population
+    is large and REST paginates cleanly via --limit.  We ask for 300 which is enough
+    to cover the 7-day retention window for active repos.
+    """
+    return [
+        "pr", "list",
+        "--repo", repo,
+        "--state", "merged",
+        "--json", "number,url,mergedAt",
+        "--limit", "300",
+    ]
+
+
 def compute_candidate_by_number(
     repos: list[str], *, run_gh: Callable = gitrepos._run_gh
 ) -> dict[tuple[str, int], PullRequestInfo]:
-    """Candidate = every OPEN PR for each repo, keyed ``(repo, number)``.
+    """Candidate = every OPEN or recently-MERGED PR for each repo, keyed ``(repo, number)``.
 
-    Number-keyed (Plotroom exposes no branch) and over the FULL open-PR population
-    (ccswitch's per-session poller only sees session branches). ``checks`` is derived
-    from the GraphQL statusCheckRollup via ccswitch's own classifier, so a mismatch
-    reflects a real ccswitch-vs-Plotroom divergence, not a method difference.
+    Open PRs use GraphQL with statusCheckRollup so checks classification matches
+    PrStatusPoller exactly.  Merged PRs are fetched via gh pr list (REST); checks
+    is irrelevant for merged PRs because the oracle drops that field (frozen rollup).
     """
+    now = datetime.now(timezone.utc)
     out: dict[tuple[str, int], PullRequestInfo] = {}
     for repo in repos:
+        # --- Open PRs (Phase 1a) ---
         proc = run_gh(["api", "graphql", "-f", f"query={_pr_list_query(repo)}"])
-        if proc.returncode != 0:
-            continue  # repo-level fetch failure is informational, not a parity verdict
-        data = (json.loads(proc.stdout or "{}").get("data") or {}).get("repository") or {}
-        for node in ((data.get("pullRequests") or {}).get("nodes") or []):
-            checks = _classify_checks(_rollup_state(node))
-            is_draft = bool(node.get("isDraft"))
-            merge_state_status = node.get("mergeStateStatus")
-            stage = derive_open_stage(checks, merge_state_status, is_draft)
-            out[(repo, node["number"])] = PullRequestInfo(
-                number=node["number"], url=node.get("url", ""), state="open",
-                checks=checks, title="", is_draft=is_draft, stage=stage,
-            )
+        if proc.returncode == 0:
+            data = (json.loads(proc.stdout or "{}").get("data") or {}).get("repository") or {}
+            for node in ((data.get("pullRequests") or {}).get("nodes") or []):
+                checks = _classify_checks(_rollup_state(node))
+                is_draft = bool(node.get("isDraft"))
+                merge_state_status = node.get("mergeStateStatus")
+                stage = derive_open_stage(checks, merge_state_status, is_draft)
+                out[(repo, node["number"])] = PullRequestInfo(
+                    number=node["number"], url=node.get("url", ""), state="open",
+                    checks=checks, title="", is_draft=is_draft, stage=stage,
+                )
+
+        # --- Merged PRs (Phase 1, merged slice) ---
+        mproc = run_gh(_merged_pr_list_args(repo))
+        if mproc.returncode == 0:
+            for item in json.loads(mproc.stdout or "[]"):
+                merged_stage = derive_merged_stage(item.get("mergedAt"), now)
+                if merged_stage is None:
+                    continue  # off the board (older than retention) — skip
+                out[(repo, item["number"])] = PullRequestInfo(
+                    number=item["number"], url=item.get("url", ""), state="merged",
+                    checks="none", title="", is_draft=False, stage=merged_stage,
+                )
     return out
 
 

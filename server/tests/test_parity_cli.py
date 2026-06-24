@@ -52,10 +52,13 @@ def test_render_report_lists_mismatches():
 
 def test_compute_candidate_by_number_classifies_checks():
     def fake_gh(args):
-        body = json.dumps({"data": {"repository": {"pullRequests": {"nodes": [
-            {"number": 7, "url": "https://github.com/o/r/pull/7",
-             "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}},
-        ]}}}})
+        if "graphql" in args:
+            body = json.dumps({"data": {"repository": {"pullRequests": {"nodes": [
+                {"number": 7, "url": "https://github.com/o/r/pull/7",
+                 "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}},
+            ]}}}})
+        else:
+            body = json.dumps([])  # no merged PRs
         return subprocess.CompletedProcess(args, 0, stdout=body, stderr="")
 
     cand = compute_candidate_by_number(["o/r"], run_gh=fake_gh)
@@ -71,31 +74,77 @@ def test_compute_candidate_by_number_skips_repo_on_gh_error():
     assert compute_candidate_by_number(["o/r"], run_gh=boom) == {}
 
 
+def test_compute_candidate_includes_recently_merged_pr():
+    """Merged PRs within the retention window appear in the candidate with stage='merged'."""
+    from datetime import datetime, timezone, timedelta
+
+    recent_merged_at = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+
+    def fake_gh(args):
+        if "graphql" in args:
+            body = json.dumps({"data": {"repository": {"pullRequests": {"nodes": []}}}})
+        else:
+            # merged PR list
+            body = json.dumps([
+                {"number": 99, "url": "https://github.com/o/r/pull/99",
+                 "mergedAt": recent_merged_at},
+            ])
+        return subprocess.CompletedProcess(args, 0, stdout=body, stderr="")
+
+    cand = compute_candidate_by_number(["o/r"], run_gh=fake_gh)
+    assert ("o/r", 99) in cand
+    assert cand[("o/r", 99)].stage == "merged"
+    assert cand[("o/r", 99)].state == "merged"
+
+
+def test_compute_candidate_skips_off_board_merged_pr():
+    """Merged PRs older than 7 days are off the board and excluded from candidate."""
+    from datetime import datetime, timezone, timedelta
+
+    old_merged_at = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+
+    def fake_gh(args):
+        if "graphql" in args:
+            body = json.dumps({"data": {"repository": {"pullRequests": {"nodes": []}}}})
+        else:
+            body = json.dumps([
+                {"number": 55, "url": "https://github.com/o/r/pull/55",
+                 "mergedAt": old_merged_at},
+            ])
+        return subprocess.CompletedProcess(args, 0, stdout=body, stderr="")
+
+    cand = compute_candidate_by_number(["o/r"], run_gh=fake_gh)
+    assert ("o/r", 55) not in cand
+
+
 def test_compute_candidate_sets_stage_from_checks_and_merge_state():
     """Stage is derived from checks + isDraft + mergeStateStatus."""
     def fake_gh(args):
-        body = json.dumps({"data": {"repository": {"pullRequests": {"nodes": [
-            {
-                "number": 10, "url": "https://github.com/o/r/pull/10",
-                "isDraft": False, "mergeStateStatus": "CLEAN",
-                "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
-            },
-            {
-                "number": 11, "url": "https://github.com/o/r/pull/11",
-                "isDraft": True, "mergeStateStatus": "CLEAN",
-                "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
-            },
-            {
-                "number": 12, "url": "https://github.com/o/r/pull/12",
-                "isDraft": False, "mergeStateStatus": "DIRTY",
-                "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
-            },
-            {
-                "number": 13, "url": "https://github.com/o/r/pull/13",
-                "isDraft": False, "mergeStateStatus": "CLEAN",
-                "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "PENDING"}}}]},
-            },
-        ]}}}})
+        if "graphql" in args:
+            body = json.dumps({"data": {"repository": {"pullRequests": {"nodes": [
+                {
+                    "number": 10, "url": "https://github.com/o/r/pull/10",
+                    "isDraft": False, "mergeStateStatus": "CLEAN",
+                    "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
+                },
+                {
+                    "number": 11, "url": "https://github.com/o/r/pull/11",
+                    "isDraft": True, "mergeStateStatus": "CLEAN",
+                    "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
+                },
+                {
+                    "number": 12, "url": "https://github.com/o/r/pull/12",
+                    "isDraft": False, "mergeStateStatus": "DIRTY",
+                    "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
+                },
+                {
+                    "number": 13, "url": "https://github.com/o/r/pull/13",
+                    "isDraft": False, "mergeStateStatus": "CLEAN",
+                    "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "PENDING"}}}]},
+                },
+            ]}}}})
+        else:
+            body = json.dumps([])  # no merged PRs
         return subprocess.CompletedProcess(args, 0, stdout=body, stderr="")
 
     cand = compute_candidate_by_number(["o/r"], run_gh=fake_gh)
