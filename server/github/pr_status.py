@@ -91,8 +91,14 @@ def build_pr_query(pairs: list[tuple[str, str]]) -> str:
             f"{_alias(i)}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
             f"  pullRequests(headRefName: {json.dumps(branch)}, first: 5, "
             f"orderBy: {{field: UPDATED_AT, direction: DESC}}) {{\n"
-            f"    nodes {{ number url title state isDraft updatedAt mergedAt\n"
-            f"      commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}\n"
+            f"    nodes {{ number url title state isDraft updatedAt mergedAt headRefOid\n"
+            f"      commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state\n"
+            f"        contexts(first: 100) {{ nodes {{\n"
+            f"          __typename\n"
+            f"          ... on CheckRun {{ name conclusion }}\n"
+            f"          ... on StatusContext {{ context state }}\n"
+            f"        }} }}\n"
+            f"      }} }} }} }}\n"
             f"    }}\n"
             f"  }}\n"
             f"  deployments(environments: [{json.dumps(PRODUCTION_ENVIRONMENT)}], "
@@ -124,6 +130,34 @@ def _classify_checks(rollup_state: str | None) -> str:
 
 # Lower rank = more relevant. Tie-break by updatedAt (newest first).
 _STATE_RANK = {"open": 0, "draft": 1, "merged": 2, "closed": 3}
+
+
+_CONCLUSION_MAP = {
+    "SUCCESS": "success", "FAILURE": "failure", "ERROR": "failure",
+    "PENDING": "pending", "EXPECTED": "pending", "NEUTRAL": "neutral",
+    "SKIPPED": "skipped", "CANCELLED": "cancelled", "TIMED_OUT": "failure",
+    "ACTION_REQUIRED": "failure", "STARTUP_FAILURE": "failure", "STALE": "neutral",
+}
+
+
+def _checks_detail(pr: dict) -> tuple[CheckDetail, ...]:
+    nodes = ((pr.get("commits") or {}).get("nodes")) or []
+    if not nodes:
+        return ()
+    rollup = (nodes[0].get("commit") or {}).get("statusCheckRollup")
+    if not rollup:
+        return ()
+    ctx = ((rollup.get("contexts") or {}).get("nodes")) or []
+    out: list[CheckDetail] = []
+    for c in ctx:
+        if c.get("__typename") == "CheckRun":
+            name = c.get("name", "")
+            raw = c.get("conclusion") or "PENDING"  # null conclusion = still running
+        else:  # StatusContext
+            name = c.get("context", "")
+            raw = c.get("state", "")
+        out.append(CheckDetail(name=name, conclusion=_CONCLUSION_MAP.get(raw, raw.lower())))
+    return tuple(out)
 
 
 def _rollup_state(pr: dict) -> str | None:
@@ -158,6 +192,11 @@ def _to_info(pr: dict, active_date: str | None) -> PullRequestInfo:
         checks=_classify_checks(_rollup_state(pr)),
         title=pr.get("title", ""),
         deployed=_is_deployed(pr, state, active_date),
+        head_sha=pr.get("headRefOid", ""),
+        is_draft=bool(pr.get("isDraft")),
+        merged=(state == "merged"),
+        updated_at=pr.get("updatedAt", ""),
+        checks_detail=_checks_detail(pr),
     )
 
 

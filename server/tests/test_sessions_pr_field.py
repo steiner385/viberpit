@@ -18,6 +18,8 @@ def test_record_to_dict_includes_prs_when_given():
     assert d["prs"] == [{
         "number": 9, "url": "https://github.com/o/r/pull/9",
         "state": "open", "checks": "passing", "title": "t", "deployed": False,
+        "head_sha": "", "is_draft": False, "merged": False, "updated_at": "",
+        "checks_detail": [],
     }]
     assert "pr" not in d
 
