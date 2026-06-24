@@ -7,11 +7,15 @@ Wants=network-online.target
 Type=simple
 User=tony
 EnvironmentFile=/etc/ccswitch/ccswitch.env
-# CCSWITCH_DEPLOY_REPO must point at the deploy checkout (the master worktree).
-WorkingDirectory=/home/tony/ccswitch
+# Paths match the sibling units (ccswitch.service / ccswitch-daemon.service). Adjust
+# the checkout path at install time if this host's deploy checkout differs (e.g. the
+# live host uses .../cc-account-switcher-deploy). serve.py defaults CCSWITCH_DEPLOY_REPO
+# to WorkingDirectory, so keep the two in sync.
+WorkingDirectory=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
+Environment=CCSWITCH_DEPLOY_REPO=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
 RuntimeDirectory=ccswitch
 RuntimeDirectoryPreserve=yes
-ExecStart=/home/tony/ccswitch/.venv/bin/python -m server.deploy serve
+ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m server.deploy serve
 Restart=on-failure
 RestartSec=5
 

@@ -84,8 +84,19 @@ the block a complete no-op on hosts where the unit is not yet enabled.
 Long-lived service that polls `origin/master` (notify-only) and runs user-triggered deploys.
 Serves a UDS at `/run/ccswitch/deploy.sock`; the edge proxies `/api/deploy/*` to it.
 
+**Cutover from the old auto-deploy (one-time).** The merge that ships this controller also
+deletes `scripts/auto-deploy.sh`, so the old `ccswitch-deploy.timer` keeps firing against a
+now-missing script (`203/EXEC`) until you disable it. The new controller is a separate systemd
+unit, so it must be installed by hand — a deploy can't install its own successor:
+
+    # 1. retire the old timer (its script is gone after the cutover deploy)
+    sudo systemctl disable --now ccswitch-deploy.timer
+    # 2. install + start the controller (edit the unit's WorkingDirectory/ExecStart to
+    #    THIS host's deploy checkout first if it differs from the committed path)
     sudo install -m644 deploy/ccswitch-deploy-controller.service /etc/systemd/system/
     sudo systemctl daemon-reload
     sudo systemctl enable --now ccswitch-deploy-controller.service
 
-Replaces the retired `ccswitch-deploy.timer`/`.service` (no more auto-deploy).
+Until the controller runs, `/api/deploy/status` soft-degrades to "controller unavailable" and
+the dashboard's deploy panel stays inert. Replaces the retired `ccswitch-deploy.timer`/`.service`
+(no more auto-deploy).
