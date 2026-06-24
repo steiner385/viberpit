@@ -8,8 +8,13 @@ from server.ipc.serve import daemon_lifespan
 
 
 class _X11:
-    def __init__(self): self.stop_all_calls = 0
+    def __init__(self):
+        self.stop_all_calls = 0
+        self.sweep_stale_calls = 0
+        self.sweep_orphan_calls = 0
     async def stop_all(self, *a, **k): self.stop_all_calls += 1
+    def sweep_stale(self): self.sweep_stale_calls += 1; return 0
+    def sweep_orphan_processes(self): self.sweep_orphan_calls += 1; return 0
 
 
 class _Orch:
@@ -36,6 +41,23 @@ async def test_daemon_shutdown_tears_down_displays(monkeypatch):
     await cm.__aexit__(None, None, None)
     assert x11.stop_all_calls == 1   # displays swept before stop
     assert orch.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_daemon_startup_reaps_orphan_displays(monkeypatch):
+    """Issue #206 (startup half): the daemon swept nothing at boot, so orphaned
+    Xvfb/x11vnc/chrome from a prior SIGKILLed run accumulated. Startup must now both
+    unlink stale files and reap orphan processes."""
+    monkeypatch.setenv("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
+    x11 = _X11()
+    orch = _Orch(x11)
+    cm = daemon_lifespan(_App(), orch)
+    await cm.__aenter__()
+    try:
+        assert x11.sweep_orphan_calls == 1
+        assert x11.sweep_stale_calls == 1
+    finally:
+        await cm.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio

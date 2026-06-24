@@ -165,7 +165,8 @@ async def _lifespan(app: FastAPI):
     if not remote_mode:
         await app.state.orchestrator.start()
 
-    # Sweep stale X lock/socket files from crashed previous runs
+    # Sweep stale X lock/socket files AND reap orphaned Xvfb/x11vnc/chrome left by a
+    # prior SIGKILLed shutdown (issue #206 — the self-healing startup half).
     if getattr(app.state, "x11", None) is not None:
         try:
             n = app.state.x11.sweep_stale()
@@ -173,6 +174,14 @@ async def _lifespan(app: FastAPI):
                 _logging.getLogger("server").info("startup: swept %d stale X lock/socket(s)", n)
         except Exception:
             _logging.getLogger("server").warning("startup: X sweep failed", exc_info=True)
+        try:
+            k = app.state.x11.sweep_orphan_processes()
+            if k:
+                _logging.getLogger("server").info(
+                    "startup: reaped %d orphaned X display process(es)", k
+                )
+        except Exception:
+            _logging.getLogger("server").warning("startup: X orphan reap failed", exc_info=True)
 
     # Sweep stale unbound attachments (uploaded but never sent) from prior runs.
     from server.db import db_session as _db_session
