@@ -148,6 +148,7 @@ export interface DeployProgress {
   error: string | null
   warnings: string[]
   targetSha: string
+  restore?: { restored: string[]; failed: string[] }
 }
 
 export interface DeployStatusResponse {

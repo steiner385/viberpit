@@ -46,4 +46,12 @@ describe('DeployPanel', () => {
     render(<DeployPanel />)
     expect(screen.getByText(/update/i)).toBeInTheDocument()
   })
+
+  it('flags sessions that failed to resume', () => {
+    mockHooks({ behind: false, commits: [], ci: 'green' },
+              { running: false, phases: { resume: 'done' }, warnings: [],
+                restore: { restored: ['s1'], failed: ['s2', 's3'] } })
+    render(<DeployPanel />)
+    expect(screen.getByText(/2 session.*failed to resume/i)).toBeInTheDocument()
+  })
 })

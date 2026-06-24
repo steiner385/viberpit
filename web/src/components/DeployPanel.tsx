@@ -69,6 +69,12 @@ export function DeployPanel() {
           {deploy.warnings?.map((w, i) => (
             <p key={i} className="mt-1 text-xs text-amber-700">{w}</p>
           ))}
+          {deploy.restore?.failed?.length ? (
+            <p className="mt-1 text-xs text-red-600">
+              {deploy.restore.failed.length} session{deploy.restore.failed.length === 1 ? '' : 's'} failed to resume — open them to retry:{' '}
+              <span className="font-mono">{deploy.restore.failed.join(', ')}</span>
+            </p>
+          ) : null}
         </div>
       )}
     </div>
