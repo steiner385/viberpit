@@ -311,3 +311,21 @@ def test_compact_boundary_emits_condensing_inactive():
 def test_non_init_non_boundary_system_message_is_ignored():
     tr = Translator()
     assert tr.feed(SystemMessage(subtype="something_else", data={})) == []
+
+
+def test_ede_dropped_turn_gets_auto_resend_message_and_keeps_raw():
+    msgs = [f.stream_start(uuid="t1"),
+            f.result(uuid="t1", subtype="error_during_execution", is_error=True,
+                     errors=["[ede_diagnostic] result_type=user last_content_type=n/a "
+                             "stop_reason=null"])]
+    _, out = _run(msgs)
+    err = next(e for e in out if isinstance(e, ErrorEvent))
+    assert err.code == "execution_error"
+    # display text is softened
+    assert not err.message.startswith("[ede_diagnostic]")
+    assert "resend" in err.message.lower()
+    # raw diagnostic text is preserved for classification
+    assert err.raw_message is not None
+    assert "[ede_diagnostic]" in err.raw_message and "stop_reason=null" in err.raw_message
+    # raw text is internal — never serialized to the wire
+    assert "raw" not in err.to_wire()

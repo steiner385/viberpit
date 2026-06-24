@@ -151,6 +151,7 @@ class TurnFailure:
 class ErrorEvent:
     code: str; message: str; resets_at: str | None = None; turn_id: str | None = None
     ts: float | None = field(default_factory=_now_ms)
+    raw_message: str | None = None  # pre-humanize diagnostic text; internal, not wired
     def to_wire(self): return {"type": "error", "code": self.code, "message": self.message,
                                "resetsAt": self.resets_at, "turnId": self.turn_id, "ts": self.ts}
 
