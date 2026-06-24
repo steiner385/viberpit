@@ -10,6 +10,15 @@ from datetime import datetime
 
 from server.time_iso import iso_utc
 
+# Sentinel identity for internal/background callers (rehydrate, dispatch, eager
+# re-launch) that act with no authenticated user. Single source of truth so the
+# magic string isn't duplicated across orchestrator/remote/driver — and so the
+# "is this a real user?" check (which gates re-threading identity onto a resumed
+# driver) has one definition. A driver built under this identity registers
+# AskUserQuestion/permission answers under it, so a real user attaching later must
+# upgrade it (see SessionOrchestrator.ensure_driver) or their answers are rejected.
+SYSTEM_IDENTITY = "system"
+
 
 @dataclass
 class SessionRecord:
