@@ -465,7 +465,7 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
             <span className="text-xs text-gray-500 dark:text-gray-400">Select all</span>
           </div>
 
-          <div aria-label="Archived sessions">
+          <div role="list" aria-label="Archived sessions">
             <GroupedList
               groups={ordering.groups}
               renderRow={renderArchivedRow}

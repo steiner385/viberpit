@@ -8,7 +8,7 @@
  * - Empty-search state shows a "no match" message with a Clear button
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as React from 'react'
@@ -163,8 +163,9 @@ describe('ArchivedManager — controls strip', () => {
     expect(setQuery).toHaveBeenCalledWith('')
   })
 
-  it('select-all operates on the VISIBLE (filtered) set, not the raw list', () => {
-    // Only session '1' is visible after filtering
+  it('select-all operates on the VISIBLE (filtered) set, not the raw list', async () => {
+    const user = userEvent.setup()
+    // Only session '1' is visible after filtering; '2' is hidden
     searchState = {
       query: 'alpha',
       setQuery: vi.fn(),
@@ -177,7 +178,16 @@ describe('ArchivedManager — controls strip', () => {
     ])
     render(<ArchivedManager onReviewSession={() => {}} />, { wrapper })
 
-    // Before selecting all, bulk bar should not be visible
+    // Before selecting, bulk bar must not be visible
     expect(screen.queryByRole('region', { name: /bulk actions/i })).not.toBeInTheDocument()
+
+    // Click the "Select all" checkbox — only the ONE visible row should be selected
+    await user.click(screen.getByRole('checkbox', { name: /select all/i }))
+
+    // BulkActionBar shows "1 selected" — NOT "2 selected" (hidden row excluded)
+    await waitFor(() => {
+      expect(screen.getByRole('region', { name: /bulk actions/i })).toBeInTheDocument()
+    })
+    expect(screen.getByRole('region', { name: /bulk actions/i })).toHaveTextContent('1 selected')
   })
 })
