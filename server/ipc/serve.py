@@ -1,5 +1,6 @@
 """Production entrypoint plumbing for the session daemon: build the app with a real
 orchestrator, run its lifecycle, and serve it on a Unix socket."""
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -16,6 +17,10 @@ from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.x11manager import build_x11_manager
 
 log = logging.getLogger("server.ipc.serve")
+
+# Cap on the daemon's display-teardown sweep at shutdown — stays well under systemd's
+# TimeoutStopSec so graceful cleanup completes instead of being SIGKILLed (issue #206).
+_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S = 15.0
 
 
 def build_daemon(orchestrator=None):
@@ -47,9 +52,37 @@ async def daemon_lifespan(app, orchestrator):
     except Exception:
         log.error("daemon rearm_background_tasks() failed", exc_info=True)
     await orchestrator.start()
+    # Sweep stale X lock/socket files AND reap orphaned Xvfb/x11vnc/chrome left by a
+    # prior SIGKILLed run (issue #206, startup half). The daemon owns the displays in
+    # remote mode yet swept nothing at boot, so orphans accumulated across restarts.
+    x11 = getattr(orchestrator, "_x11", None)
+    if x11 is not None:
+        try:
+            n = x11.sweep_stale()
+            if n:
+                log.info("daemon startup: swept %d stale X lock/socket(s)", n)
+        except Exception:
+            log.warning("daemon startup: X sweep failed", exc_info=True)
+        try:
+            k = x11.sweep_orphan_processes()
+            if k:
+                log.info("daemon startup: reaped %d orphaned X display process(es)", k)
+        except Exception:
+            log.warning("daemon startup: X orphan reap failed", exc_info=True)
     try:
         yield
     finally:
+        # Tear down every virtual display before stopping (issue #206, daemon half).
+        # orchestrator.stop() only cancels background tasks — it never freed displays,
+        # so the daemon (which owns sessions in remote mode) leaked Xvfb/x11vnc/chrome
+        # on every restart. stop_all() tears them down CONCURRENTLY; the wait_for cap
+        # keeps it well inside systemd's TimeoutStopSec (mirrors the edge sweep).
+        x11 = getattr(orchestrator, "_x11", None)
+        if x11 is not None:
+            try:
+                await asyncio.wait_for(x11.stop_all(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except Exception:
+                log.warning("daemon shutdown: x11 teardown failed", exc_info=True)
         await orchestrator.stop()
 
 

@@ -82,7 +82,7 @@ def test_sequential_calls_return_different_accounts():
             first = select_account()
             second = select_account()
 
-        assert first != second, f"expected different accounts, got {first!r} twice"
+        assert first.name != second.name, f"expected different accounts, got {first!r} twice"
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ def test_ceiling_account_never_selected():
 
             result = select_account()
 
-        assert result == "alpha", f"expected 'alpha', got {result!r}"
+        assert result.name == "alpha", f"expected 'alpha', got {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -159,4 +159,4 @@ def test_exclude_prevents_current_account_selection():
 
             result = select_account(exclude=frozenset({"beta"}))
 
-        assert result == "alpha"
+        assert result.name == "alpha"

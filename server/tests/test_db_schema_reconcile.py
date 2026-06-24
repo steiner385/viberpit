@@ -130,6 +130,37 @@ def test_init_db_adds_not_null_datetime_column_with_epoch_sentinel(tmp_path):
     assert asyncio.run(_read()) == "1970-01-01 00:00:00"   # backfilled with the epoch sentinel
 
 
+def test_init_db_normalizes_pending_rearm_json_null_to_sql_null(tmp_path):
+    """A row whose pending_rearm holds the JSON literal text 'null' (from clearing it
+    via None before the column used none_as_null=True) is normalized to SQL NULL, so
+    the rearm query's `pending_rearm IS NOT NULL` no longer over-selects it."""
+    db_file = tmp_path / "old.db"
+    con = sqlite3.connect(db_file)
+    con.execute(
+        "CREATE TABLE sessions ("
+        " id TEXT PRIMARY KEY, name TEXT, account_name TEXT, status TEXT, cwd TEXT,"
+        " pending_rearm TEXT)"
+    )
+    con.execute("INSERT INTO sessions (id, name, account_name, status, cwd, pending_rearm)"
+                " VALUES ('jn','n','acct','idle','/tmp','null')")          # JSON-null sentinel
+    con.execute("INSERT INTO sessions (id, name, account_name, status, cwd, pending_rearm)"
+                " VALUES ('real','n','acct','idle','/tmp','[{\"x\": 1}]')")  # real snapshot kept
+    con.commit(); con.close()
+
+    asyncio.run(init_db(db_url=f"sqlite+aiosqlite:///{db_file}"))
+
+    async def _read():
+        async with db_session() as db:
+            over = (await db.execute(sa_text(
+                "SELECT count(*) FROM sessions WHERE pending_rearm IS NOT NULL"))).scalar_one()
+            jn = (await db.execute(sa_text(
+                "SELECT pending_rearm FROM sessions WHERE id='jn'"))).scalar_one()
+            return over, jn
+    over, jn = asyncio.run(_read())
+    assert jn is None              # 'null' text rewritten to SQL NULL
+    assert over == 1               # only the real snapshot remains IS NOT NULL
+
+
 def test_ddl_default_literal_handles_dict_default():
     """A NOT NULL column with default=dict (callable producing {}) synthesizes '{}'."""
     from sqlalchemy import Column, JSON

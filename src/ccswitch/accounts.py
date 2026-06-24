@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from . import ledger, oauth, paths
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
-from .selector import select_best
+from .selector import Picked, select_picked
 
 log = logging.getLogger(__name__)
 
@@ -190,17 +190,24 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
     return u
 
 
-def pick_account(cfg: Config, exclude: set[str] = frozenset(),
-                 load: dict[str, float] | None = None) -> str:
+def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
+                          load: dict[str, float] | None = None) -> Picked:
     names = _account_names()
     usages = {n: usage_for(n) for n in names}
     now = datetime.now(timezone.utc)
     now_ts = time.time()
     with ledger.locked_ledger() as led:
         reserved = {n for n in names if ledger.reservation_active(led, n, now_ts)}
-        name = select_best(usages, reserved, cfg, now, exclude, load or {})
-        ledger.reserve(led, name, now_ts + cfg.reservation_ttl_sec)
-    return name
+        unhealthy = frozenset(n for n in names if ledger.get_status(led, n) == "needs-reauth")
+        picked = select_picked(usages, reserved, cfg, now, exclude, load or {},
+                               unhealthy, optimistic_fallback=True)
+        ledger.reserve(led, picked.name, now_ts + cfg.reservation_ttl_sec)
+    return picked
+
+
+def pick_account(cfg: Config, exclude: set[str] = frozenset(),
+                 load: dict[str, float] | None = None) -> str:
+    return pick_account_detailed(cfg, exclude, load).name
 
 
 def sync_back(name: str) -> None:

@@ -219,6 +219,8 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
   const [permDeleteTarget, setPermDeleteTarget] = useState<ArchivedSession | null>(null)
   const [unarchivingId, setUnarchivingId] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  // Last row toggled without shift — the pivot for shift-click range selection.
+  const [anchorId, setAnchorId] = useState<string | null>(null)
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   const [summary, setSummary] = useState<string | null>(null)
 
@@ -236,13 +238,33 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
     if (changed) setSelected(pruned)
   }
 
-  function toggleOne(id: string) {
+  function toggleOne(id: string, shiftKey = false) {
+    // Range over the VISIBLE (grouped/sorted/filtered) order — a shift-click range
+    // must follow what the user sees, not the raw archived list. A click whose anchor
+    // is currently hidden (anchorIdx === -1) falls through to a plain toggle.
+    const ids = visible.map((s) => s.id)
+    const anchorIdx = anchorId === null ? -1 : ids.indexOf(anchorId)
+
+    if (shiftKey && anchorIdx !== -1) {
+      // Shift-click: select the inclusive range from the anchor to this row.
+      const end = ids.indexOf(id)
+      const [lo, hi] = anchorIdx < end ? [anchorIdx, end] : [end, anchorIdx]
+      setSelected((prev) => {
+        const next = new Set(prev)
+        for (let i = lo; i <= hi; i++) next.add(ids[i])
+        return next
+      })
+      // Anchor stays put so the range can be re-extended in either direction.
+      return
+    }
+
     setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
+    setAnchorId(id)
   }
 
   // toggleAll operates on the VISIBLE (filtered) set, not the raw list
@@ -317,7 +339,8 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
             <input
               type="checkbox"
               checked={selected.has(s.id)}
-              onChange={() => toggleOne(s.id)}
+              onClick={(e) => { shiftHeld.current = e.shiftKey }}
+              onChange={() => toggleOne(s.id, shiftHeld.current)}
               aria-label={`Select ${displayName}`}
               className={cn(CHECKBOX_CLS, 'mt-0.5')}
             />
@@ -379,6 +402,9 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
 
   // ── Select-all header state — operates on the VISIBLE (filtered) set ──────────
   const selectAllRef = useRef<HTMLInputElement>(null)
+  // A checkbox's `change` event doesn't carry modifier keys, but its `click` does — and click
+  // always fires first (even for keyboard/space toggles). Capture shift here, read it in onChange.
+  const shiftHeld = useRef(false)
   const allSelected = visible.length > 0 && visible.every((s) => selected.has(s.id))
   const someSelected = visible.some((s) => selected.has(s.id))
 

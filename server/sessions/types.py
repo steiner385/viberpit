@@ -37,6 +37,7 @@ class SessionRecord:
     model: str | None = None         # persisted model alias/id; None = account default
     account_pinned: bool = False      # user pinned the account (skips usage-ceiling rotation)
     active_goal: str | None = None    # active /goal condition; None = no goal
+    usage_unverified: bool = False    # transient: account picked without a usage read (optimistic)
     authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
 
     def to_dict(self) -> dict:
@@ -59,6 +60,7 @@ class SessionRecord:
             "model": self.model,
             "accountPinned": self.account_pinned,
             "activeGoal": self.active_goal,
+            "usageUnverified": self.usage_unverified,
             "authoredBranches": list(self.authored_branches),
         }
 
@@ -83,5 +85,6 @@ class SessionRecord:
             model=d.get("model"),
             account_pinned=d.get("accountPinned", False),
             active_goal=d.get("activeGoal"),
+            usage_unverified=d.get("usageUnverified", False),
             authored_branches=list(d.get("authoredBranches") or []),
         )

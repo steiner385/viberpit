@@ -1,11 +1,14 @@
 /**
  * ArchivedManager.test.tsx
  *
- * Tests for the ArchivedManager component in isolation (not via Dashboard):
+ * Tests for the ArchivedManager component in isolation (now the single archived
+ * list, used by both DesktopShell and the Dashboard archived tab):
  * - Controls strip (Group-by / Sort-by selects) renders when sessions exist
  * - Switching Group-by to "Account" shows account group headers
  * - Search filters the list (matchedIds from useSessionSearch)
  * - Empty-search state shows a "no match" message with a Clear button
+ * - select-all operates on the VISIBLE (filtered) set
+ * - shift-click range selection over the visible order (from #179)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
@@ -26,12 +29,14 @@ vi.mock('@/api/hooks', () => ({
   useBulkPermanentDeleteSessions: vi.fn(),
   QK: {
     archived: ['archived-sessions'],
+    sessions: ['sessions'],
     sessionSearch: (q: string, scope: string) => ['session-search', q, scope],
   },
 }))
 
 // useSessionSearch is called from within ArchivedManager; mock it at module level.
-// Individual tests can override searchState to simulate filtering.
+// Individual tests override searchState to simulate filtering; both describe blocks
+// reset it in beforeEach so a filtered state never leaks across tests.
 let searchState = { query: '', setQuery: vi.fn(), matchedIds: null as Set<string> | null, isFiltered: false }
 
 vi.mock('@/session/useSessionSearch', () => ({
@@ -69,11 +74,29 @@ function setupMocks(sessions: ArchivedSession[]) {
   vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
 }
 
+// Four sessions sharing the default archivedAt → the default 'archived' sort
+// tie-breaks by id, so the visible order is arc-1..arc-4 (Alpha, Beta, Gamma, Delta).
+function fourArchived() {
+  return [
+    makeArchived({ id: 'arc-1', name: 'Alpha' }),
+    makeArchived({ id: 'arc-2', name: 'Beta' }),
+    makeArchived({ id: 'arc-3', name: 'Gamma' }),
+    makeArchived({ id: 'arc-4', name: 'Delta' }),
+  ]
+}
+
+async function shiftClick(user: ReturnType<typeof userEvent.setup>, el: HTMLElement) {
+  await user.keyboard('{Shift>}')
+  await user.click(el)
+  await user.keyboard('{/Shift}')
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('ArchivedManager — controls strip', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    window.localStorage.clear()
     searchState = { query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }
   })
 
@@ -189,5 +212,54 @@ describe('ArchivedManager — controls strip', () => {
       expect(screen.getByRole('region', { name: /bulk actions/i })).toBeInTheDocument()
     })
     expect(screen.getByRole('region', { name: /bulk actions/i })).toHaveTextContent('1 selected')
+  })
+})
+
+describe('ArchivedManager — shift-click range selection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.localStorage.clear()
+    searchState = { query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }
+  })
+
+  it('shift-clicking a second row selects the whole range between the two clicks', async () => {
+    const user = userEvent.setup()
+    setupMocks(fourArchived())
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
+
+    await user.click(screen.getByRole('checkbox', { name: /select alpha/i }))
+    await shiftClick(user, screen.getByRole('checkbox', { name: /select gamma/i }))
+
+    expect(screen.getByRole('region', { name: /bulk actions/i })).toHaveTextContent(/3 selected/i)
+    expect(screen.getByRole('checkbox', { name: /select alpha/i })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /select beta/i })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /select gamma/i })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /select delta/i })).not.toBeChecked()
+  })
+
+  it('shift-click range works upward (anchor below the shift-clicked row)', async () => {
+    const user = userEvent.setup()
+    setupMocks(fourArchived())
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
+
+    await user.click(screen.getByRole('checkbox', { name: /select delta/i }))
+    await shiftClick(user, screen.getByRole('checkbox', { name: /select beta/i }))
+
+    expect(screen.getByRole('region', { name: /bulk actions/i })).toHaveTextContent(/3 selected/i)
+    expect(screen.getByRole('checkbox', { name: /select alpha/i })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /select beta/i })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /select gamma/i })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /select delta/i })).toBeChecked()
+  })
+
+  it('shift-clicking with no prior selection just selects the single row', async () => {
+    const user = userEvent.setup()
+    setupMocks(fourArchived())
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
+
+    await shiftClick(user, screen.getByRole('checkbox', { name: /select gamma/i }))
+
+    expect(screen.getByRole('region', { name: /bulk actions/i })).toHaveTextContent(/1 selected/i)
+    expect(screen.getByRole('checkbox', { name: /select gamma/i })).toBeChecked()
   })
 })

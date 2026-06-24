@@ -10,6 +10,8 @@ export interface SubAgent {
   type: string         // subagent_type, e.g. "Explore" (falls back to "agent")
   description: string  // the Task description (falls back to "")
   status: SubAgentStatus
+  startedAt?: number   // ms epoch the Task tool call was issued (the block's create-time ts)
+  endedAt?: number     // ms epoch its result arrived; only set once the agent finishes
 }
 
 const SUBAGENT_TOOL_NAMES = new Set(['Task', 'Agent'])
@@ -32,7 +34,7 @@ export function selectSubAgents(turns: Turn[]): SubAgent[] {
       const description = typeof input.description === 'string' ? input.description : ''
       const status: SubAgentStatus =
         b.result == null ? 'running' : b.result.ok ? 'done' : 'failed'
-      out.push({ toolId: b.toolId, type, description, status })
+      out.push({ toolId: b.toolId, type, description, status, startedAt: b.ts, endedAt: b.result?.ts })
     }
   }
   return out
