@@ -211,6 +211,8 @@ export function useReauthStatus(name: string, enabled: boolean) {
 export function useCancelReauth() {
   return useMutation<ReauthState, ApiRequestError, string>({
     mutationFn: (name) => api.post<ReauthState>(`/accounts/${encodeURIComponent(name)}/reauth/cancel`),
+    // fire-and-forget cancel: never toast on error (see queryClient global handler)
+    meta: { suppressErrorToast: true },
   })
 }
 
@@ -249,6 +251,8 @@ export function useAddAccountStatus(enabled: boolean) {
 export function useCancelAddAccount() {
   return useMutation<ReauthState, ApiRequestError, void>({
     mutationFn: () => api.post<ReauthState>('/accounts/add/cancel'),
+    // fire-and-forget cancel: never toast on error (see queryClient global handler)
+    meta: { suppressErrorToast: true },
   })
 }
 
