@@ -77,6 +77,8 @@ export interface Session {
   activeGoal?: string | null
   /** The PR opened from this session's branch, or null when there is none. */
   pr?: PullRequestInfo | null
+  /** True when the session was created without a verified usage read (optimistic pick). */
+  usageUnverified?: boolean
   /** Client-only: true while an optimistic create placeholder awaits the server. Never sent by the server. */
   pending?: boolean
 }
