@@ -56,6 +56,16 @@ class Translator:
                 model = data.get("model")
                 if model:
                     return [ev.SessionMeta(model=model, session_id=self.session_id or "")]
+            if msg.subtype == "api_error":
+                data = msg.data or {}
+                err = data.get("error") or {}
+                tid = self._turn_ids.get(None) or "turn"
+                return [ev.ApiRetry(
+                    turn_id=tid,
+                    status=err.get("status"),
+                    attempt=data.get("retryAttempt"),
+                    max_retries=data.get("maxRetries"),
+                )]
             if msg.subtype == "compact_boundary":
                 meta = (msg.data or {}).get("compact_metadata") or {}
                 return [ev.Condensing(active=False, trigger=meta.get("trigger"),
@@ -169,7 +179,11 @@ def _error_from_result(msg, turn_id: str):
     subtype = getattr(msg, "subtype", None) or ""
     if api_status is not None:
         code = f"api_{api_status}"
-        default = f"The model API returned an error (HTTP {api_status})."
+        if api_status in (500, 502, 503, 529):
+            default = (f"Anthropic is overloaded (HTTP {api_status}). The model API was "
+                       f"retried and is still overloaded — re-send when capacity recovers.")
+        else:
+            default = f"The model API returned an error (HTTP {api_status})."
     elif subtype == "error_max_turns":
         code = "max_turns"
         default = "The agent reached the maximum number of turns."
