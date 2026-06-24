@@ -31,6 +31,7 @@ from server.config import get_settings
 from server.db import get_db
 from server.sessions.orchestrator import BranchSwitchError
 from server.sessions.selection import AllAccountsBusy
+from server.time_iso import iso_utc
 
 if TYPE_CHECKING:
     from server.sessions.facade import InProcessOrchestratorAdapter
@@ -82,7 +83,7 @@ _UNSET = object()
 
 
 def _record_to_dict(
-    record, repo: Any = _UNSET, suggestions: list[str] | None = None, pr: Any = None
+    record, repo: Any = _UNSET, suggestions: list[str] | None = None, prs: list | None = None
 ) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict.
 
@@ -94,8 +95,8 @@ def _record_to_dict(
     session (from ``orch.latest_suggestions``). Defaults to [] when omitted
     (detached sessions or none yet generated).
 
-    ``pr`` is an optional PullRequestInfo (or None) representing the cached PR
-    status for the session's branch.  Serialised to a dict or None on the wire.
+    ``prs`` is the list of cached PullRequestInfo for the session's authored
+    branches (see :func:`_resolve_prs`).  Serialised to a list of dicts on the wire.
     """
     return {
         "id": record.id,
@@ -107,21 +108,19 @@ def _record_to_dict(
         "detached": record.detached,
         "adoptedInPlace": getattr(record, "adopted_in_place", False),
         "subAgents": getattr(record, "sub_agents", None) or [],
-        "createdAt": record.created_at.isoformat() if record.created_at else None,
+        "createdAt": iso_utc(record.created_at),
         # Last-turn-response time for the "active … ago" label (NOT record.updated_at,
         # which any row write bumps — that pinned every card to "0s ago"). Fall back to
         # the creation time so a session with no turn yet reads "active just now" rather
-        # than null (which the client would parse as epoch 0 → "20627d ago").
-        "updatedAt": (
-            (record.last_turn_at or record.created_at).isoformat()
-            if (record.last_turn_at or record.created_at)
-            else None
-        ),
+        # than null (which the client would parse as epoch 0 → "20627d ago"). iso_utc
+        # tags the naive UTC column with a +00:00 offset so the browser doesn't reparse
+        # it as local time (which lands it in the future → clamped back to "0s ago").
+        "updatedAt": iso_utc(record.last_turn_at or record.created_at),
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
         "latestSuggestions": list(suggestions or []),
         "activeGoal": getattr(record, "active_goal", None),
-        "pr": pr.to_dict() if pr is not None else None,
+        "prs": [p.to_dict() for p in (prs or [])],
     }
 
 
@@ -136,7 +135,7 @@ def _candidate_to_dict(c) -> dict[str, Any]:
         "mapped": c.mapped,
         "tracked": c.tracked,
         "skipReason": c.skip_reason,
-        "lastActivity": c.last_activity.isoformat() if c.last_activity else None,
+        "lastActivity": iso_utc(c.last_activity),
         "pidAlive": c.pid_alive,
     }
 
@@ -155,20 +154,19 @@ async def _resolve_repo(record) -> str | None:
     return await asyncio.to_thread(gitrepos.repo_at_path, cwd)
 
 
-async def _resolve_pr(orch, record):
-    """Resolve a record's PR via ``orch.pr_for``, tolerating both orchestrators.
+async def _resolve_prs(orch, record):
+    """Resolve a record's PR list via ``orch.prs_for``, sync (in-process) or async (remote).
 
-    The in-process orchestrator's ``pr_for`` is synchronous; the remote (daemon)
-    one awaits an RPC. Returns ``PullRequestInfo | None``; an orchestrator with no
-    ``pr_for`` at all (older shim) yields ``None`` rather than raising.
+    Returns ``list[PullRequestInfo]``; an orchestrator with no ``prs_for`` (older shim)
+    yields ``[]`` rather than raising.
     """
-    fn = getattr(orch, "pr_for", None)
+    fn = getattr(orch, "prs_for", None)
     if fn is None:
-        return None
-    res = fn(record.repo, getattr(record, "branch", None))
+        return []
+    res = fn(record.id)
     if inspect.isawaitable(res):
         res = await res
-    return res
+    return res or []
 
 
 def _get_orchestrator(request: Request) -> "InProcessOrchestratorAdapter":
@@ -189,13 +187,13 @@ async def list_sessions(
     orch = _get_orchestrator(request)
     records = await orch.list_sessions()
     # Read each session's repo (live, from its cwd), cached suggestions, and PR
-    # status in parallel.
+    # list in parallel.
     repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
     suggs = await asyncio.gather(*(orch.latest_suggestions(r.id) for r in records))
-    prs = await asyncio.gather(*(_resolve_pr(orch, r) for r in records))
+    prs = await asyncio.gather(*(_resolve_prs(orch, r) for r in records))
     return [
-        _record_to_dict(r, repo=repo, suggestions=s, pr=pr)
-        for r, repo, s, pr in zip(records, repos, suggs, prs)
+        _record_to_dict(r, repo=repo, suggestions=s, prs=pr_list)
+        for r, repo, s, pr_list in zip(records, repos, suggs, prs)
     ]
 
 
@@ -314,7 +312,7 @@ async def create_session(
         )
     except AllAccountsBusy as exc:
         earliest = exc.earliest_reset
-        reset_iso = earliest.isoformat() if earliest is not None else None
+        reset_iso = iso_utc(earliest)
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={

@@ -293,7 +293,7 @@ export function DispatchBar({
         <input
           ref={fileRef}
           type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp"
+          accept="image/*"
           multiple
           className="hidden"
           onChange={(e) => { if (e.target.files) void att.addFiles(e.target.files); e.target.value = '' }}

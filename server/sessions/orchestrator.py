@@ -34,6 +34,7 @@ from server.db.models import Session as DbSession
 from server.sessions import adopt as _adopt
 from server.sessions import attachments as _attachments
 from server.sessions import events as ev
+from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.driver import SessionDriver
@@ -49,7 +50,9 @@ from server.sessions.background_tasks import scan_open_background_tasks, build_r
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import SessionRecord
+from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
+from server.github.pr_status import PullRequestInfo
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +61,16 @@ log = logging.getLogger(__name__)
 # would lose in-flight work. All other statuses (idle / ready_review / done /
 # limited / ended / archived) are restart-safe: resume + transcript replay recover them.
 _ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "condensing"})
+
+# Top-tier "needs you" and "crashed/failed" statuses that warrant an outbound push alert.
+# Derived from the same vocabulary as server/sessions/status.py — not a parallel list.
+PUSH_STATUSES: frozenset[str] = frozenset(
+    {"waiting_input", "waiting_question", "ready_review", "needs_attention"}
+)
+
+
+def is_push_worthy(status: str) -> bool:
+    return status in PUSH_STATUSES
 
 
 class BranchSwitchError(Exception):
@@ -168,16 +181,24 @@ class SessionOrchestrator:
         from server.github.pr_poller import PrStatusPoller
         self._pr_poller: PrStatusPoller = PrStatusPoller()
         self._pr_poller.set_pairs_provider(self._pr_pairs)
+        self._pr_poller.set_on_change(self._on_pr_change)
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
         # Sessions whose background tasks have been re-armed this process (dedup the
         # auto pass against retry-on-attach). Cleared by a fresh process start.
         self._rearmed: set[str] = set()
+        # Session-ids currently in a push-worthy state (AUT-02 debounce): push fires once
+        # on entry; cleared when the session transitions out so re-entry fires again.
+        self._pushed: set[str] = set()
+        # (repo, branch) pairs whose PR is currently in a failing-CI state (M2b.2 debounce):
+        # push fires once on entry into failing; cleared on recovery so a re-break re-fires.
+        self._pushed_pr: set[tuple[str, str]] = set()
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
         self._stall_task: asyncio.Task | None = None
         self._token_refresh_task: asyncio.Task | None = None
+        self._pr_branch_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
         # Serialises the check-build-register critical section in ensure_driver
@@ -214,6 +235,9 @@ class SessionOrchestrator:
         """Start the usage poller, the rotation monitor and the titling sweep."""
         await self._poller.start()
         await self._pr_poller.start()
+        self._pr_branch_task = asyncio.create_task(
+            self._pr_branch_monitor(), name="pr-branch-monitor"
+        )
         self._rotation_task = asyncio.create_task(
             self._rotation_monitor(), name="rotation-monitor"
         )
@@ -262,6 +286,13 @@ class SessionOrchestrator:
 
     async def stop(self) -> None:
         """Stop the titling sweep, rotation monitor and usage poller."""
+        if self._pr_branch_task is not None:
+            self._pr_branch_task.cancel()
+            try:
+                await self._pr_branch_task
+            except asyncio.CancelledError:
+                pass
+            self._pr_branch_task = None
         for attr in ("_titling_task", "_rotation_task", "_stall_task", "_token_refresh_task"):
             task = getattr(self, attr)
             if task is not None:
@@ -557,8 +588,49 @@ class SessionOrchestrator:
         # WS bridge forwards lifecycle frames top-level so the client's status handler
         # (_patchSessionStatus) patches the cached session record.
         self._publish_event({"type": "status", "sessionId": session_id, "status": status})
+        await self._maybe_push(session_id, status)
         if completed_turn:
             await self._maybe_apply_auto_name(session_id)
+
+    async def _maybe_push(self, session_id: str, status: str) -> None:
+        """Fire an outbound push alert when a session enters a top-tier needs-you status.
+
+        Debounced: fires once per condition while it holds; cleared when the session
+        transitions to a non-push-worthy status so re-entry fires again (AUT-02).
+        Never raises — failures in push_mod.push are already swallowed by the sink.
+        """
+        if is_push_worthy(status):
+            if session_id not in self._pushed:
+                self._pushed.add(session_id)
+                rec = self._records.get(session_id)
+                name = rec.name if rec else session_id
+                await push_mod.push("ccswitch — needs you", f"{name}: {status}")
+        else:
+            self._pushed.discard(session_id)
+
+    async def _on_pr_change(
+        self, repo: str, branch: str, old_checks: str | None, new_checks: str
+    ) -> None:
+        """PR-poller transition callback: alert when a session's PR enters failing CI.
+
+        Routed to the owning session by (repo, live branch). Debounced via ``_pushed_pr``:
+        fires once on entry into ``failing``; cleared on recovery so a re-break re-fires
+        (M2b.2 / AUT-02). A transition for a (repo, branch) with no live session is a no-op.
+        """
+        key = (repo, branch)
+        if new_checks != "failing":
+            self._pushed_pr.discard(key)
+            return
+        if key in self._pushed_pr:
+            return
+        rec = next(
+            (r for r in self._records.values() if r.repo == repo and r.branch == branch),
+            None,
+        )
+        if rec is None:
+            return
+        self._pushed_pr.add(key)
+        await push_mod.push("ccswitch — PR broke", f"{rec.name}: {repo} CI failing")
 
     async def _condense_estimate(self) -> float:
         from server.sessions import compaction_stats
@@ -734,6 +806,7 @@ class SessionOrchestrator:
                 account_pinned=bool(getattr(row, "account_pinned", False)),
                 active_goal=getattr(row, "active_goal", None),
                 branch=branch,
+                authored_branches=list(getattr(row, "authored_branches", None) or []),
             )
             added += 1
         # Persist any derived branches so the next rehydrate reads them directly.
@@ -831,18 +904,92 @@ class SessionOrchestrator:
                 rec.branch = live
 
     async def _pr_pairs(self) -> list[tuple[str, str]]:
-        """Distinct (repo, live-branch) pairs for sessions that have both."""
+        """Distinct (repo, branch) pairs for every PR a session may have authored.
+
+        Unions two live-branch sources so neither PR-badge mechanism is lost:
+        ``authored_branches`` (the multi-PR set, derived from the worktree's
+        reflog + current HEAD) and the live-refreshed ``record.branch`` (the
+        single current PR head). A no-PR branch listed here is harmless — the
+        downstream PR query keeps only branches that actually resolve to a PR.
+        """
         await self._refresh_live_branches()
         seen: set[tuple[str, str]] = set()
         for r in self._records.values():
-            branch = getattr(r, "branch", None)
-            if r.repo and branch:
-                seen.add((r.repo, branch))
+            if not r.repo:
+                continue
+            for br in getattr(r, "authored_branches", None) or []:
+                seen.add((r.repo, br))
+            if r.branch:
+                seen.add((r.repo, r.branch))
         return list(seen)
 
     def pr_for(self, repo, branch):
-        """Cached PullRequestInfo for a session's (repo, branch), or None."""
+        """Cached PullRequestInfo for a (repo, branch), or None."""
         return self._pr_poller.cached(repo, branch)
+
+    def prs_for(self, session_id: str) -> list[PullRequestInfo]:
+        """Deduped, ordered PR list for a session's authored branches.
+
+        Open/draft first, then merged/closed, newest updatedAt first — matches the
+        single-PR ranking. Deduped by PR number (the same PR can surface via more
+        than one branch ref).
+        """
+        from server.github.pr_status import _STATE_RANK
+        rec = self._records.get(session_id)
+        if rec is None or not rec.repo:
+            return []
+        by_number: dict[int, PullRequestInfo] = {}
+        for br in getattr(rec, "authored_branches", None) or []:
+            info = self._pr_poller.cached(rec.repo, br)
+            if info is not None:
+                by_number.setdefault(info.number, info)
+        # PullRequestInfo carries no updatedAt (dropped when built from the poller),
+        # so -number is the newest-first tie-break within a state rank.
+        return sorted(
+            by_number.values(),
+            key=lambda p: (_STATE_RANK.get(p.state, 99), -p.number),
+        )
+
+    async def refresh_authored_branches(self) -> None:
+        """Union each live session's reflog+live branches into its record, persist changes.
+
+        Runs git off the event loop. Best-effort: a session whose cwd is gone or not a
+        git repo simply keeps its existing set. Persists only changed rows so the set
+        survives reflog GC and restarts.
+        """
+        changed: dict[str, list[str]] = {}
+        for rec in list(self._records.values()):
+            if not rec.cwd:
+                continue
+            try:
+                fresh = await asyncio.to_thread(
+                    worktrees.authored_branches, rec.cwd, getattr(rec, "branch", None)
+                )
+            except Exception:
+                log.debug("authored_branches.resolve_failed id=%s", rec.id, exc_info=True)
+                continue
+            if not fresh:
+                continue
+            merged = sorted(set(getattr(rec, "authored_branches", None) or []) | set(fresh))
+            if merged != (rec.authored_branches or []):
+                rec.authored_branches = merged
+                changed[rec.id] = merged
+        if changed:
+            from sqlalchemy import update as sa_update
+            async with db_session() as db:
+                for sid, brs in changed.items():
+                    await db.execute(
+                        sa_update(DbSession).where(DbSession.id == sid).values(authored_branches=brs)
+                    )
+
+    async def _pr_branch_monitor(self) -> None:
+        """Periodically refresh authored branches so new feature branches get badges."""
+        while True:
+            try:
+                await self.refresh_authored_branches()
+            except Exception:
+                log.warning("pr_branch_monitor.refresh_failed", exc_info=True)
+            await asyncio.sleep(60)
 
     def record(self, session_id: str) -> SessionRecord:
         """Return the in-memory SessionRecord for session_id (KeyError if missing)."""
@@ -1682,7 +1829,7 @@ class SessionOrchestrator:
         self._publish_event({
             "type": "paused", "sessionId": record.id, "account": record.account,
             "reason": reason,
-            "earliestReset": earliest_reset.isoformat() if earliest_reset else None,
+            "earliestReset": iso_utc(earliest_reset),
         })
         log.warning("recover.paused session=%s reason=%s", record.id, reason)
 
@@ -1903,8 +2050,8 @@ class SessionOrchestrator:
                 "cwd": row.cwd,
                 "claudeSessionId": row.claude_session_id,
                 "permissionMode": row.permission_mode,
-                "createdAt": row.created_at.isoformat() if row.created_at else None,
-                "archivedAt": row.updated_at.isoformat() if row.updated_at else None,
+                "createdAt": iso_utc(row.created_at),
+                "archivedAt": iso_utc(row.updated_at),
             }
             for row in rows
         ]
@@ -1975,10 +2122,15 @@ class SessionOrchestrator:
         return record
 
     async def permanent_delete(self, session_id: str) -> bool:
-        """Permanently delete an archived session: remove archive folder + DB row.
+        """Permanently delete a session: remove archive folder + DB row.
 
         Returns True if deleted, False if the session was not found in DB.
         Containment guard: only removes paths that are direct children of archive_dir().
+
+        A *live* session (still in _records/_drivers, or status != 'archived') is
+        archived first: archive_session stops the driver and moves the cwd into the
+        archive. Deleting a live session directly would otherwise leave a zombie
+        driver running and orphan the working directory outside archive_dir().
         """
         from ccswitch.paths import archive_dir
         from sqlalchemy import select as sa_select
@@ -1989,6 +2141,15 @@ class SessionOrchestrator:
             )).scalars().first()
         if row is None:
             return False
+
+        # Archive-then-delete: a live session must be torn down before its row and
+        # working dir are removed, or we leak a driver and orphan the cwd.
+        if (
+            session_id in self._records
+            or session_id in self._drivers
+            or row.status != "archived"
+        ):
+            await self.archive_session(session_id)
 
         # Containment guard: candidate must be a direct child of archive_dir().
         archive_base = archive_dir().resolve()

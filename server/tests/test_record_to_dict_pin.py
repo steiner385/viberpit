@@ -57,7 +57,9 @@ def test_record_to_dict_label_uses_last_turn_at():
     # updated_at is intentionally more recent — the label must ignore it.
     rec = _make_record(last_turn_at=turn, updated_at=_dt.datetime(2026, 6, 22, 12, 0, 0))
     d = _record_to_dict(rec)
-    assert d["updatedAt"] == turn.isoformat()
+    # Carries an explicit +00:00 offset: the naive UTC column must NOT reach the wire
+    # offset-less, or the browser reparses it as local time → future → clamped to "0s ago".
+    assert d["updatedAt"] == "2026-06-22T11:58:00+00:00"
 
 
 def test_record_to_dict_label_falls_back_to_created_at():
@@ -66,7 +68,7 @@ def test_record_to_dict_label_falls_back_to_created_at():
     created = _dt.datetime(2026, 6, 22, 11, 0, 0)
     rec = _make_record(created_at=created, last_turn_at=None)
     d = _record_to_dict(rec)
-    assert d["updatedAt"] == created.isoformat()
+    assert d["updatedAt"] == "2026-06-22T11:00:00+00:00"
 
 
 def test_record_to_dict_label_none_when_no_timestamps():

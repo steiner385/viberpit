@@ -5,8 +5,10 @@ usage, and WS layers can import this without pulling in SQLAlchemy.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+
+from server.time_iso import iso_utc
 
 
 @dataclass
@@ -35,6 +37,7 @@ class SessionRecord:
     model: str | None = None         # persisted model alias/id; None = account default
     account_pinned: bool = False      # user pinned the account (skips usage-ceiling rotation)
     active_goal: str | None = None    # active /goal condition; None = no goal
+    authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
 
     def to_dict(self) -> dict:
         # `updatedAt` is the "active … ago" / last-activity time, matching the HTTP
@@ -49,13 +52,14 @@ class SessionRecord:
             "cwd": self.cwd, "repo": self.repo, "branch": self.branch, "detached": self.detached,
             "status": self.status, "nameIsAuto": self.name_is_auto,
             "permissionMode": self.permission_mode,
-            "createdAt": self.created_at.isoformat() if self.created_at else None,
-            "updatedAt": active.isoformat() if active else None,
-            "lastTurnAt": self.last_turn_at.isoformat() if self.last_turn_at else None,
+            "createdAt": iso_utc(self.created_at),
+            "updatedAt": iso_utc(active),
+            "lastTurnAt": iso_utc(self.last_turn_at),
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
             "accountPinned": self.account_pinned,
             "activeGoal": self.active_goal,
+            "authoredBranches": list(self.authored_branches),
         }
 
     @classmethod
@@ -79,4 +83,5 @@ class SessionRecord:
             model=d.get("model"),
             account_pinned=d.get("accountPinned", False),
             active_goal=d.get("activeGoal"),
+            authored_branches=list(d.get("authoredBranches") or []),
         )

@@ -1,4 +1,5 @@
 """Anthropic OAuth: exact usage + independent token refresh (stdlib urllib)."""
+import importlib.metadata
 import json
 import random
 import time
@@ -7,6 +8,18 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+
+try:
+    _VERSION = importlib.metadata.version("ccswitch")
+except importlib.metadata.PackageNotFoundError:  # pragma: no cover — running from a non-installed tree
+    _VERSION = "0.0.0+unknown"
+
+# Identify ourselves on every outbound request. The token endpoint
+# (platform.claude.com) sits behind a Cloudflare bot rule that returns 403
+# `error code: 1010` to the default `Python-urllib/x.y` UA, so a header-less
+# refresh is blocked at the edge before Anthropic sees it — and that 403 was
+# being misread as a dead grant, mass-flipping every account to needs-reauth.
+USER_AGENT = f"ccswitch/{_VERSION}"
 
 # Backoff bounds for transient (429 / 5xx / network) retries.
 _BACKOFF_BASE = 0.5   # seconds — first retry waits up to this (with jitter)
@@ -42,8 +55,15 @@ class UsageError(Exception):
 
 
 def _is_transient_status(status: int) -> bool:
-    """True for statuses that mean 'back off and retry', not 'credential is dead'."""
-    return status == 429 or 500 <= status <= 599
+    """True for statuses that mean 'back off and retry', not 'credential is dead'.
+
+    403 is included because the OAuth endpoints sit behind Cloudflare, which returns
+    it (error 1010) when it blocks a request at the edge — the token never reached
+    Anthropic, so an intermittent block is worth retrying. A genuinely dead grant is
+    400 (invalid_grant) / 401, which stay terminal. refresh_access_token still treats
+    a 403 that survives retries as TransientError (only 400/401 flip needs-reauth).
+    """
+    return status in (403, 429) or 500 <= status <= 599
 
 
 @dataclass
@@ -103,17 +123,22 @@ def http_request(method: str, url: str, headers: dict | None = None,
                  sleep=time.sleep, rng=random.random, clock=time.monotonic) -> tuple[int, bytes]:
     """Issue an HTTP request, retrying transient failures with backoff.
 
-    Retries transient HTTP statuses (429 / 5xx) AND network errors (URLError /
+    Retries transient HTTP statuses (403 / 429 / 5xx) AND network errors (URLError /
     timeout). Retries are safe for our callers: such failures happen before the
     (single-use) refresh token is consumed server-side. Terminal statuses (4xx
-    other than 429) and 2xx return immediately; a persistent network failure
-    raises TransientError so callers leave the account status unchanged.
+    other than 403/429 — notably 400/401) and 2xx return immediately; a persistent
+    network failure raises TransientError so callers leave the account status unchanged.
 
     ``max_total_sec`` bounds total wall-clock across all attempts so a stalling
     endpoint can't turn max_retries x socket-timeout into minutes of blocking.
     ``sleep`` / ``rng`` / ``clock`` are injectable for deterministic tests.
     """
     start = clock()
+    # Single choke point for all outbound HTTP — stamp a real User-Agent here so
+    # refresh, usage and any future endpoint clear the Cloudflare bot rule. A
+    # caller-supplied UA wins (setdefault), e.g. for tests.
+    hdrs = dict(headers or {})
+    hdrs.setdefault("User-Agent", USER_AGENT)
 
     def _retry_sleep(headers, attempt: int) -> bool:
         # Sleep before the next attempt if the wall-clock budget allows. Returns
@@ -125,7 +150,7 @@ def http_request(method: str, url: str, headers: dict | None = None,
         return True
 
     for attempt in range(max_retries + 1):
-        req = urllib.request.Request(url, method=method, headers=headers or {}, data=data)
+        req = urllib.request.Request(url, method=method, headers=hdrs, data=data)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.status, r.read()
@@ -212,8 +237,18 @@ def refresh_access_token(refresh_token: str, prior: dict, *,
         # as transient so callers leave the account status untouched instead of
         # flipping it to needs-reauth.
         raise TransientError(f"token refresh rate-limited/unavailable: {status}")
-    if status != 200:
+    if status in (400, 401):
+        # The ONLY statuses that prove the grant itself is rejected (400
+        # invalid_grant / 401 unauthorized). These — and only these — flip the
+        # account to needs-reauth.
         raise AuthError(f"token refresh failed with {status}")
+    if status != 200:
+        # Any other non-2xx (notably 403 — a Cloudflare edge block, `error code:
+        # 1010`) is NOT proof the grant is dead. It's environmental and hits every
+        # account identically, so treating it as a dead token mass-flips all
+        # accounts to needs-reauth in one sweep. Surface as transient → status
+        # left unchanged. (Sibling of the 429/5xx carve-out above.)
+        raise TransientError(f"token refresh got unexpected status {status} (treated as transient)")
     resp = json.loads(body)
     now_ms = int(time.time() * 1000)
     blob = dict(prior)  # carry subscriptionType / rateLimitTier

@@ -6,7 +6,7 @@ import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { statusTier } from '@/session/statusTier'
 import { StatusPill, UsageBadge } from './UsageBadge'
-import { PrPill } from './PrPill'
+import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
 import type { Session, Account } from '@/api/types'
 
@@ -231,7 +231,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 <span className="truncate">Goal</span>
               </span>
             )}
-            {session.pr && <PrPill pr={session.pr} />}
+            <PrList prs={session.prs} />
           </div>
         </div>
 
@@ -242,7 +242,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             strip, so repeating it per card is just noise. The row renders only
             when there's something to show, but at least one is near-always
             present (every live session has an updatedAt). */}
-        {(account?.usage || isValidTimestamp(session.updatedAt)) && (
+        {(account?.usage || (!isBusy && isValidTimestamp(session.updatedAt))) && (
           <div data-testid="card-telemetry" className="flex items-center gap-2 min-w-0">
             {account?.usage && (
               <UsageBadge
@@ -254,8 +254,12 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             {/* Last activity — helps tell live sessions from stale ones at a
                 glance. Refreshes as React Query refetches the session list.
                 Guarded against a missing/invalid timestamp so we never show
-                "NaN" or the 1970 epoch. */}
-            {isValidTimestamp(session.updatedAt) && (
+                "NaN" or the 1970 epoch. Suppressed while busy: `last_turn_at`
+                (its source) freezes for the whole in-progress turn, so it would
+                read "active 10m ago" on a session that is actively streaming —
+                stale-looking next to its live "Working…" spinner, which already
+                conveys liveness. */}
+            {!isBusy && isValidTimestamp(session.updatedAt) && (
               <span
                 className="ml-auto flex-shrink-0 text-xs text-gray-400 dark:text-gray-500 tabular-nums"
                 title={`Last active ${new Date(session.updatedAt).toLocaleString()}`}

@@ -1,10 +1,8 @@
 from contextlib import asynccontextmanager
 import asyncio
-import functools
 import logging
 import os
 import signal
-import subprocess
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
@@ -21,6 +19,7 @@ from server.db import init_db
 from server.ipc.client import DaemonUnavailable, DaemonError
 from server.reauth import ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
+from server.version import running_git_sha
 
 # API routers (T036–T038)
 from server.api.sessions import router as sessions_router
@@ -33,41 +32,62 @@ from server.api.settings import router as settings_router
 from server.api import models as api_models
 
 
-def _daemon_compatible(socket_path: str) -> bool:
-    """True iff a protocol-compatible session daemon answers /info at socket_path.
-    Synchronous + short-timeout (create_app is sync); any failure → False (in-process fallback)."""
-    import httpx
-    from server.ipc.protocol import PROTOCOL_VERSION
+def _daemon_socket_present(socket_path: str) -> bool:
+    """True if a unix-domain socket file exists at socket_path — i.e. a daemon is
+    *expected* here, even if it isn't answering yet. Used to distinguish "no daemon on
+    this host" (→ in-process is correct) from "daemon present but not reachable yet"
+    (→ must NOT silently start a second in-process orchestrator over the shared DB)."""
+    import os
+    import stat
     try:
-        with httpx.Client(transport=httpx.HTTPTransport(uds=socket_path),
-                          base_url="http://daemon", timeout=1.0) as c:
-            info = c.get("/info").json()
-        return info.get("protocol") == PROTOCOL_VERSION
-    except Exception:  # noqa: BLE001 — unreachable / bad response → fall back to in-process
+        return stat.S_ISSOCK(os.stat(socket_path).st_mode)
+    except OSError:
         return False
 
 
-@functools.lru_cache(maxsize=1)
-def running_git_sha() -> str:
-    """Short git SHA of the running code, for deploy verification via /healthz.
+def _daemon_compatible(socket_path: str, *, attempts: int = 5, interval: float = 0.5) -> bool:
+    """True iff a protocol-compatible session daemon answers /info at socket_path.
 
-    Resolved once: ``CCSWITCH_GIT_SHA`` (the deployer can inject it) wins; else
-    ``git rev-parse --short HEAD`` against this checkout; else ``"unknown"`` (e.g.
-    a source tarball with no .git). Lets a deploy assert THIS commit is live, not
-    just that some process answered.
-    """
-    env_sha = os.environ.get("CCSWITCH_GIT_SHA")
-    if env_sha:
-        return env_sha.strip()
+    Synchronous (create_app is sync). Retries a few times because at edge startup the
+    daemon may be briefly busy (mid-rehydrate / spawning sessions) and a single 1s probe
+    would time out — which previously made the edge mistake a healthy daemon for absent
+    and fall back to in-process, causing a split-brain over the shared DB. Any failure
+    across all attempts → False."""
+    import time
+    import httpx
+    from server.ipc.protocol import PROTOCOL_VERSION
+    # Defense in depth: this probe does *synchronous*, blocking socket I/O. It must
+    # never run on a thread with a live asyncio loop — it would freeze the loop, and
+    # if the caller is the daemon probing its own socket, deadlock outright (the loop
+    # can't answer the request it just issued to itself). create_app() is sync and
+    # normally runs at import on a plain thread; if it is ever imported under a running
+    # loop, decline rather than hang. (The helper this used to drag into the daemon now
+    # lives in the side-effect-free server.version module, so this is a backstop.)
     try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=Path(__file__).resolve().parents[1],
-            capture_output=True, text=True, timeout=5, check=True,
-        )
-        return out.stdout.strip() or "unknown"
-    except (OSError, subprocess.SubprocessError):
-        return "unknown"
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # no running loop on this thread — safe to block on sync I/O
+    else:
+        logging.getLogger("server").warning(
+            "skipping synchronous daemon probe at %s: create_app() ran under a live "
+            "event loop where blocking I/O would freeze (or self-deadlock) it", socket_path)
+        return False
+    # No socket file → no daemon on this host; return immediately rather than burning
+    # the retry budget (keeps the in-process dev/CI path fast).
+    if not _daemon_socket_present(socket_path):
+        return False
+    for i in range(max(1, attempts)):
+        try:
+            with httpx.Client(transport=httpx.HTTPTransport(uds=socket_path),
+                              base_url="http://daemon", timeout=1.0) as c:
+                info = c.get("/info").json()
+            if info.get("protocol") == PROTOCOL_VERSION:
+                return True
+        except Exception:  # noqa: BLE001 — unreachable / bad response → retry, then give up
+            pass
+        if i < attempts - 1:
+            time.sleep(interval)
+    return False
 
 
 @asynccontextmanager
@@ -199,7 +219,6 @@ def create_app(
     app.state.daemon_protocol = None
     if orchestrator is None and not socket_path:
         # Remote by default: auto-detect a compatible daemon at the well-known path.
-        # No daemon (or a version-incompatible one) → in-process fallback (today's behavior).
         from server.ipc.paths import DEFAULT_SOCKET_PATH
         if _daemon_compatible(DEFAULT_SOCKET_PATH):
             socket_path = DEFAULT_SOCKET_PATH
@@ -207,6 +226,18 @@ def create_app(
             app.state.daemon_protocol = PROTOCOL_VERSION
             logging.getLogger("server").info(
                 "session daemon detected at %s — running in remote mode", DEFAULT_SOCKET_PATH)
+        elif _daemon_socket_present(DEFAULT_SOCKET_PATH):
+            # A daemon socket exists but no compatible daemon answered after retries.
+            # Refuse to start a SECOND in-process orchestrator over the shared DB — that
+            # double-owns every session and serves stale status (the 2026-06-23 "Ready
+            # while working" split-brain). Fail loud so the supervisor restarts and
+            # retries once the daemon is healthy. To intentionally run in-process,
+            # remove the socket or set CCSWITCH_SESSIOND_SOCKET explicitly.
+            raise RuntimeError(
+                f"session daemon socket {DEFAULT_SOCKET_PATH} exists but no compatible "
+                "daemon answered /info after retries; refusing in-process fallback to "
+                "avoid a split-brain over the shared database")
+        # else: no daemon socket on this host → in-process (dev/CI default).
 
     if orchestrator is None and socket_path:
         from server.ipc.client import DaemonClient
