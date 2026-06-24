@@ -5,15 +5,16 @@ import type { ReactNode } from 'react'
 import { useCloseSession, QK } from './hooks'
 import { api } from './client'
 import type { Session } from './types'
-import { getToasts, __resetToasts } from '@/lib/toast'
 
 vi.mock('./client', () => ({ api: { del: vi.fn(), post: vi.fn() }, ApiRequestError: class extends Error {} }))
+vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+import { toast } from 'sonner'
 
 const s: Session = { id: 'sess-1', name: 'Foo', accountName: 'a', status: 'idle', createdAt: 'x' }
 
 describe('useCloseSession — optimistic archive', () => {
   let qc: QueryClient
-  beforeEach(() => { vi.clearAllMocks(); __resetToasts(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
+  beforeEach(() => { vi.clearAllMocks(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 
   it('removes the session immediately and shows an Undo toast on success', async () => {
@@ -24,10 +25,10 @@ describe('useCloseSession — optimistic archive', () => {
     // optimistic removal is synchronous in onMutate
     await waitFor(() => expect(qc.getQueryData<Session[]>(QK.sessions)).toEqual([]))
     await waitFor(() => {
-      const t = getToasts()
-      expect(t).toHaveLength(1)
-      expect(t[0]).toMatchObject({ message: 'Archived Foo', variant: 'success' })
-      expect(t[0].action?.label).toBe('Undo')
+      expect(toast.success).toHaveBeenCalledWith(
+        'Archived Foo',
+        expect.objectContaining({ action: expect.objectContaining({ label: 'Undo' }) }),
+      )
     })
   })
 
@@ -38,7 +39,7 @@ describe('useCloseSession — optimistic archive', () => {
     result.current.mutate('sess-1')
     await waitFor(() => {
       expect(qc.getQueryData<Session[]>(QK.sessions)).toEqual([s])
-      expect(getToasts()[0]).toMatchObject({ message: "Couldn't archive Foo", variant: 'error' })
+      expect(toast.error).toHaveBeenCalledWith("Couldn't archive Foo")
     })
   })
 })
