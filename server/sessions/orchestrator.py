@@ -162,6 +162,12 @@ class SessionOrchestrator:
         # Populated lazily by _refresh_issue_proposal; TTL = _ISSUE_TTL_S.
         self._issue_proposals: dict[str, tuple[float, str | None]] = {}
         self._issue_inflight: set[str] = set()
+        # Collision-avoidance (US-8): top issue number per repo, and which live session
+        # currently "holds" each issue, so two idle/done sessions in the same repo are
+        # never pointed at the same backlog issue. Claims are refreshed each
+        # _dispatch_proposal call and pruned to current idle/done sessions.
+        self._issue_numbers: dict[str, int | None] = {}
+        self._proposed_issue: dict[str, int] = {}
         # Review-comment cache: (repo, pr_number) → (monotonic_ts, proposal_or_None).
         # Populated lazily by _refresh_review_proposal; TTL = _ISSUE_TTL_S.
         self._review_proposals: dict[tuple[str, int], tuple[float, str | None]] = {}
@@ -1601,14 +1607,30 @@ class SessionOrchestrator:
         # recovery timing elsewhere — mixing it with monotonic deltas would be wrong.)
         now = time.monotonic()
         cached = self._issue_proposals.get(repo)
-        if cached is not None and (now - cached[0]) < _ISSUE_TTL_S:
-            return cached[1]
-        # Cache miss or stale: schedule a background refresh if not already in-flight.
-        if repo not in self._issue_inflight:
-            self._issue_inflight.add(repo)
-            asyncio.create_task(self._refresh_issue_proposal(repo))
-        # Return stale value if available, else None.
-        return cached[1] if cached is not None else None
+        # Schedule a background refresh on cache miss/stale (return stale meanwhile).
+        if cached is None or (now - cached[0]) >= _ISSUE_TTL_S:
+            if repo not in self._issue_inflight:
+                self._issue_inflight.add(repo)
+                asyncio.create_task(self._refresh_issue_proposal(repo))
+        text = cached[1] if cached is not None else None
+        # Release this session's prior claim and prune claims for sessions that are no
+        # longer idle/done (so an issue frees up once its session moves on or is removed).
+        self._proposed_issue = {
+            sid: n for sid, n in self._proposed_issue.items()
+            if sid != rec.id
+            and sid in self._records
+            and self._records[sid].status in ("done", "idle")
+        }
+        if not text:
+            return None
+        # Collision-avoidance (US-8): if another live session already holds this repo's
+        # top issue, don't propose the same one — return nothing rather than double-book.
+        number = self._issue_numbers.get(repo)
+        if number is not None:
+            if number in self._proposed_issue.values():
+                return None
+            self._proposed_issue[rec.id] = number
+        return text
 
     async def _refresh_issue_proposal(self, repo: str) -> None:
         """Fetch open issues and cache the top-issue proposal for *repo*.
@@ -1621,9 +1643,11 @@ class SessionOrchestrator:
             top = dispatch.pick_top_issue(issues)
             text: str | None = dispatch.issue_proposal_text(top) if top else None
             self._issue_proposals[repo] = (time.monotonic(), text)
+            self._issue_numbers[repo] = top["number"] if top else None
         except Exception:
             log.warning("_refresh_issue_proposal failed repo=%s", repo, exc_info=True)
             self._issue_proposals[repo] = (time.monotonic(), None)
+            self._issue_numbers[repo] = None
         finally:
             self._issue_inflight.discard(repo)
 
