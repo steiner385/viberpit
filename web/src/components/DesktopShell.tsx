@@ -51,6 +51,7 @@ import {
   useSendPrompt,
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
+import { toast } from '@/lib/toast'
 import { useSessionOrdering } from '@/session/useSessionOrdering'
 import { useSessionSearch } from '@/session/useSessionSearch'
 
@@ -289,12 +290,19 @@ export function DesktopShell() {
       {
         onSuccess: (session) => {
           if (repo) setLastRepo(repo)
+          if (session.usageUnverified) {
+            toast({ message: "Couldn't verify account usage — started anyway.", variant: 'info' })
+          }
           focusSession(session.id, initialPrompt)
         },
         onError: (err) => {
           if (err.status === 409) {
             const body = err.body as { error?: { code?: string }; earliestReset?: string | null }
-            if (body?.error?.code !== 'branch_switch_failed') {
+            if (body?.error?.code === 'branch_switch_failed') {
+              // branch errors are handled elsewhere; ignore here
+            } else if (body?.error?.code === 'accounts_need_reauth') {
+              toast({ message: 'No usable accounts — check the Accounts tab to re-authenticate.', variant: 'error' })
+            } else {
               setAllLimitedReset(body.earliestReset ?? null)
             }
           }
@@ -306,6 +314,22 @@ export function DesktopShell() {
   const hasNeedsReauth = accounts.some(
     (a) => a.status === 'needs-reauth' || a.status === 'needs-relogin',
   )
+
+  // Auto-clear the all-limited banner once any account becomes selectable.
+  // Done at render time (not in an effect) — React 18 batches synchronous setState
+  // calls during render and re-renders synchronously when state changes.
+  if (allLimitedReset !== undefined && accounts.some((a) => a.rank !== null)) {
+    setAllLimitedReset(undefined)
+  }
+
+  // Auto-clear when the reset time passes (uses setTimeout to defer the setState
+  // call so that Date.now() is not called during render per react-hooks/purity,
+  // and setState is called from the timeout callback per react-hooks/set-state-in-effect).
+  useEffect(() => {
+    if (allLimitedReset === undefined || allLimitedReset === null) return
+    const id = setTimeout(() => setAllLimitedReset(undefined), Math.max(0, new Date(allLimitedReset).getTime() - Date.now()))
+    return () => clearTimeout(id)
+  }, [allLimitedReset])
 
   // ── Pieces shared between the provider and no-provider branches ──────────────
 
