@@ -12,7 +12,7 @@ import server.db as _db
 from server.db.models import Session as _SessionModel
 from server.spa import mount_spa
 
-from server.audit import install_redacting_filter
+from server.obs.jsonlog import configure_logging
 from server.auth.middleware import IdentityMiddleware, current_identity
 from server.bridge.ws import build_ws_router
 from server.db import init_db
@@ -100,7 +100,9 @@ _SHUTDOWN_SWEEP_TIMEOUT_S = 15.0
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """App startup/shutdown: init DB, install log filter, start orchestrator."""
-    install_redacting_filter()
+    # Structured JSON logging (stdout→journald + rotating file) with correlation
+    # ids and credential redaction. Idempotent; installs the redacting filter too.
+    configure_logging()
 
     # An app not built by create_app (e.g. tests constructing FastAPI(lifespan=_lifespan)
     # directly) never sets app.state.remote_mode — default it to in-process. The local

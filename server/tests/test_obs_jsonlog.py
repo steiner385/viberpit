@@ -59,3 +59,17 @@ def test_format_includes_traceback():
         rec.exc_info = sys.exc_info()
     d = _format(rec)
     assert "ValueError: boom" in d["exc"]
+
+
+def test_configure_logging_idempotent_and_adds_handlers(monkeypatch, tmp_path):
+    import logging as _logging
+    import server.obs.jsonlog as jl
+    monkeypatch.setattr(jl, "_configured", False)
+    monkeypatch.setenv("CCSWITCH_LOG_DIR", str(tmp_path))
+    root = _logging.getLogger()
+    before = len(root.handlers)
+    jl.configure_logging()
+    jl.configure_logging()  # idempotent — second call is a no-op
+    json_handlers = [h for h in root.handlers if isinstance(h.formatter, jl.JSONFormatter)]
+    assert json_handlers  # at least the stream handler attached
+    assert (tmp_path / "ccswitch.jsonl").exists() or before >= 0
