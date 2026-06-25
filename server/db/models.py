@@ -134,6 +134,19 @@ class AuditEvent(Base):
     detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
+class PushSubscription(Base):
+    """A browser Web Push subscription. endpoint is the natural unique key."""
+
+    __tablename__ = "push_subscriptions"
+
+    endpoint: Mapped[str] = mapped_column(String, primary_key=True)
+    p256dh: Mapped[str] = mapped_column(String, nullable=False)
+    auth: Mapped[str] = mapped_column(String, nullable=False)
+    # Nullable so init_db backfills existing rows without a migration.
+    identity: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class Attachment(Base):
     """An image uploaded by a user and attached to a prompt.
 
@@ -172,3 +185,6 @@ class AppSettings(Base):
     default_tool_detail: Mapped[str | None] = mapped_column(String, nullable=True)
     compaction_ewma_ms: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     compaction_samples: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # 'off' | 'propose' | 'auto' — how to react when a session's PR fails CI.
+    # Nullable: init_db backfills nullable columns; code defaults NULL → 'propose'.
+    pr_autofix_mode: Mapped[str | None] = mapped_column(String, nullable=True)

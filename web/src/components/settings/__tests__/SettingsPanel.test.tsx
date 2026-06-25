@@ -17,6 +17,7 @@ const SETTINGS = {
   thinkingCollapsed: false,
   repoRoot: '/home/user/repos',
   defaultToolDetail: 'auto',
+  prAutofixMode: 'propose',
 }
 
 const NOOP_MUTATION = {
@@ -175,6 +176,32 @@ describe('SettingsPanel', () => {
 
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ defaultToolDetail: 'all-closed' }),
+      expect.anything(),
+    )
+  })
+
+  it('renders the PR auto-fix select pre-filled with current value', () => {
+    render(<SettingsPanel onClose={vi.fn()} />, { wrapper })
+    const select = screen.getByLabelText(/PR auto-fix/i)
+    expect(select).toBeInTheDocument()
+    expect((select as HTMLSelectElement).value).toBe('propose')
+  })
+
+  it('saves prAutofixMode when changed', async () => {
+    const mutate = vi.fn()
+    vi.mocked(hooks.useUpdateSettings).mockReturnValue({
+      ...NOOP_MUTATION,
+      mutate,
+    } as unknown as ReturnType<typeof hooks.useUpdateSettings>)
+
+    const user = userEvent.setup()
+    render(<SettingsPanel onClose={vi.fn()} />, { wrapper })
+
+    await user.selectOptions(screen.getByLabelText(/PR auto-fix/i), 'off')
+    await user.click(screen.getByRole('button', { name: /save/i }))
+
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ prAutofixMode: 'off' }),
       expect.anything(),
     )
   })

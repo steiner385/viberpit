@@ -87,6 +87,21 @@ def test_query_raising_returns_none():
     assert _run(["x"], query_fn=qf) is None
 
 
+def test_salvages_title_when_query_raises_after_yielding():
+    # The claude binary can emit a result with is_error=True but subtype
+    # "success", which the SDK surfaces as
+    # "Claude Code returned an error result: success" *after* already yielding
+    # the assistant's title. Best-effort titling must keep the text we got.
+    def qf(*, prompt, options=None, **_):
+        async def gen():
+            yield _assistant("Fix the login bug")
+            raise RuntimeError("Claude Code returned an error result: success")
+
+        return gen()
+
+    assert _run(["x"], query_fn=qf) == "Fix the login bug"
+
+
 def test_passes_model_and_config_dir_through_options():
     capture: dict = {}
     qf = _fake_query([_assistant("Title")], capture=capture)

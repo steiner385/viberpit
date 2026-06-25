@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 import os
@@ -56,6 +57,7 @@ from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
 from server.github.pr_status import PullRequestInfo
+from server.sessions.pr_fix import build_pr_fix_prompt
 
 log = logging.getLogger(__name__)
 
@@ -216,6 +218,7 @@ class SessionOrchestrator:
                 return ccswitch_accounts.usage_for(
                     name,
                     allow_refresh=not self.has_live_session(name),
+                    path="poller-idle",
                 )
 
         self._poll_interval = poll_interval
@@ -238,6 +241,9 @@ class SessionOrchestrator:
         # (repo, branch) pairs whose PR is currently in a failing-CI state (M2b.2 debounce):
         # push fires once on entry into failing; cleared on recovery so a re-break re-fires.
         self._pushed_pr: set[tuple[str, str]] = set()
+        # Auto-fix loop guard: (repo, branch) we've already auto-attempted since
+        # the last recovery. Sibling of _pushed_pr; in-memory, resets on restart.
+        self._pr_fix_attempts: set[tuple[str, str]] = set()
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
@@ -675,7 +681,7 @@ class SessionOrchestrator:
                 self._pushed.add(session_id)
                 rec = self._records.get(session_id)
                 name = rec.name if rec else session_id
-                await push_mod.push("ccswitch — needs you", f"{name}: {status}")
+                await push_mod.notify("ccswitch — needs you", f"{name}: {status}", url=f"/session/{session_id}")
         else:
             self._pushed.discard(session_id)
 
@@ -691,8 +697,13 @@ class SessionOrchestrator:
         key = (repo, branch)
         if new_checks != "failing":
             self._pushed_pr.discard(key)
-            return
-        if key in self._pushed_pr:
+            # Re-arm the auto-fix guard ONLY on a genuine green, never on a
+            # transient ``pending``/``none``. CI normally cycles
+            # failing→pending→failing while a pushed fix re-runs; clearing on
+            # ``pending`` would let the next ``failing`` trigger a fresh auto-fix
+            # and loop forever on a PR the agent can't fix.
+            if new_checks == "passing":
+                self._pr_fix_attempts.discard(key)
             return
         rec = next(
             (r for r in self._records.values() if r.repo == repo and r.branch == branch),
@@ -700,8 +711,29 @@ class SessionOrchestrator:
         )
         if rec is None:
             return
+
+        mode = await self._pr_autofix_mode()
+        # Auto: one attempt per failure event, only if a live driver exists.
+        if mode == "auto" and key not in self._pr_fix_attempts:
+            info = self.pr_for(repo, branch)
+            if info is not None and rec.id in self._drivers:
+                # Mark before awaiting (re-entrancy guard), but only a real
+                # injection consumes the one attempt — a transient failure
+                # (draining / unresolved branch) re-arms so it can retry.
+                self._pr_fix_attempts.add(key)
+                result = await self.request_pr_fix(rec.id, info.number)
+                if result == "sent":
+                    return  # injected; skip the redundant break notification
+                self._pr_fix_attempts.discard(key)
+                # Could not inject (draining / not actionable) → fall through to notify.
+
+        # Notify (off, propose, or auto-fallback). Debounced like before.
+        if key in self._pushed_pr:
+            return
         self._pushed_pr.add(key)
-        await push_mod.push("ccswitch — PR broke", f"{rec.name}: {repo} CI failing")
+        await push_mod.notify(
+            "ccswitch — PR broke", f"{rec.name}: {repo} CI failing", url=f"/session/{rec.id}"
+        )
 
     async def _condense_estimate(self) -> float:
         from server.sessions import compaction_stats
@@ -1055,6 +1087,43 @@ class SessionOrchestrator:
             by_number.values(),
             key=lambda p: (_STATE_RANK.get(p.state, 99), -p.number),
         )
+
+    async def _pr_autofix_mode(self) -> str:
+        """Current pr_autofix_mode from AppSettings; NULL/unknown → 'propose'."""
+        from sqlalchemy import select
+        from server.db.models import AppSettings
+        async with db_session() as db:
+            row = (
+                await db.execute(select(AppSettings).where(AppSettings.id == "singleton"))
+            ).scalar_one_or_none()
+            mode = (row.pr_autofix_mode if row else None) or "propose"
+        from server.sessions.pr_fix import VALID_AUTOFIX_MODES
+        return mode if mode in VALID_AUTOFIX_MODES else "propose"
+
+    async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
+        """Inject a branch-aware fix prompt for the session's PR #pr_number.
+
+        Single source of truth for "restore this PR", shared by the auto path
+        (_on_pr_change) and the manual propose endpoint. Resolves the (repo,
+        branch) for the PR number from the session's authored branches, gates on
+        an actionable (open/draft) state, and injects via send_prompt. Returns a
+        status string; does not resume a driver and does not apply the loop guard.
+        """
+        rec = self._records.get(session_id)
+        if rec is None or not rec.repo:
+            return "no_session"
+        info = None
+        for br in getattr(rec, "authored_branches", None) or []:
+            cached = self._pr_poller.cached(rec.repo, br)
+            if cached is not None and cached.number == pr_number:
+                info = cached
+                break
+        if info is None:
+            return "no_pr"
+        if info.state not in ("open", "draft"):
+            return "not_actionable"
+        prompt = build_pr_fix_prompt(rec.repo, info)
+        return await self.send_prompt(session_id, prompt)
 
     async def refresh_authored_branches(self) -> None:
         """Union each live session's reflog+live branches into its record, persist changes.
@@ -2102,6 +2171,25 @@ class SessionOrchestrator:
                 ledger.set_status(led, account, "needs-reauth")
         except Exception:
             log.warning("recover.mark_needs_reauth failed account=%s", account, exc_info=True)
+        with contextlib.suppress(RuntimeError):  # no running loop in some sync callers/tests
+            asyncio.create_task(self._mark_needs_reauth_audit(account))
+
+    async def _mark_needs_reauth_audit(self, account: str) -> None:
+        """Write an account.needs_reauth audit row for the in-session 401 flip site."""
+        from ccswitch.accounts import AuthFailure
+        from server.audit import record_audit
+        from server.usage.auth_failure_audit import build_needs_reauth_detail
+        from server.db import db_session, _session_factory
+        if _session_factory is None:
+            return
+        f = AuthFailure(account=account, status=401, body=None,
+                        path="live-session", token_expires_at=None, attempts=1)
+        try:
+            async with db_session() as db:
+                await record_audit(db, "account.needs_reauth", "system", build_needs_reauth_detail(f))
+                await db.commit()
+        except Exception:
+            log.warning("mark_needs_reauth_audit failed account=%s", account, exc_info=True)
 
     async def switch_account_manual(self, session_id: str, new_account: str) -> None:
         """User-initiated account switch. Pins the session against usage-ceiling

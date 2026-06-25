@@ -37,6 +37,12 @@ RECONCILE_EXEMPT: set[str] = {
     "attachments.byte_size",   # required at upload; computed
     "attachments.sha256",      # required at upload; content hash
     "attachments.uploaded_by", # required at upload; uploader identity
+    # push_subscriptions: a NEW table (create_all builds it fully-formed on dev SQLite).
+    # These NOT NULL columns are part of the initial CREATE TABLE, never ALTER-added to a
+    # populated table, and each is mandatory at INSERT (set from the browser PushSubscription),
+    # so no synthesizable default. (endpoint is the PK → already reconcile-exempt.)
+    "push_subscriptions.p256dh",  # required at subscribe; browser-supplied key
+    "push_subscriptions.auth",    # required at subscribe; browser-supplied auth secret
 }
 
 

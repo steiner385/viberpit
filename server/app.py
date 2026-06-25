@@ -33,6 +33,7 @@ from server.api.settings import router as settings_router
 from server.api import models as api_models
 from server.api.deploy import router as deploy_router
 from server.api.client_logs import router as client_logs_router
+from server.api.push import router as push_router
 
 
 def _daemon_socket_present(socket_path: str) -> bool:
@@ -139,6 +140,12 @@ async def _lifespan(app: FastAPI):
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
 
+    from server.db import db_session as _db_session_factory
+    from server.usage.auth_failure_audit import AuthFailureAuditor
+    _auth_auditor = AuthFailureAuditor(identity="system", session_factory=_db_session_factory)
+    _auth_auditor.start()
+    app.state.auth_failure_auditor = _auth_auditor
+
     # Rehydrate persisted sessions (lazy — drivers are created on attach, not here).
     # In remote mode the daemon owns the orchestrator lifecycle, so skip it here.
     if not remote_mode:
@@ -205,6 +212,9 @@ async def _lifespan(app: FastAPI):
 
     yield
     # Shutdown
+    import contextlib
+    with contextlib.suppress(Exception):
+        app.state.auth_failure_auditor.stop()
     await app.state.reauth.shutdown()
     if remote_mode:
         # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
@@ -393,6 +403,7 @@ def create_app(
     app.include_router(api_models.router)
     app.include_router(deploy_router)
     app.include_router(client_logs_router)
+    app.include_router(push_router)
 
     # WebSocket bridge
     ws_router = build_ws_router(app.state.sessions)

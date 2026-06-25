@@ -114,8 +114,17 @@ async def generate_title(
         messages = []
         async for msg in query_fn(prompt=body, options=options):
             messages.append(msg)
-    except Exception:
-        log.warning("generate_title failed for config_dir=%s", config_dir, exc_info=True)
-        return None
+    except Exception as exc:
+        # The title reply is yielded as an assistant message *before* any
+        # trailing error. The claude binary routinely ends a one-shot query
+        # with a result flagged is_error=True yet subtype "success" (the SDK
+        # raises "Claude Code returned an error result: success"); salvage the
+        # text we already collected rather than discarding a perfectly good
+        # title. A single-line warning — titling is best-effort, so a full
+        # traceback per query is pure noise.
+        salvaged = _sanitize(_extract_text(messages))
+        if salvaged is None:
+            log.warning("generate_title failed for config_dir=%s: %s", config_dir, exc)
+        return salvaged
 
     return _sanitize(_extract_text(messages))

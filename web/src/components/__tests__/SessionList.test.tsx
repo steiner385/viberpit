@@ -605,6 +605,7 @@ describe('SessionList — no-matches state', () => {
         onClose={() => {}}
         onDelete={() => {}}
       />,
+      { wrapper },
     )
     expect(screen.getByText(/no sessions match/i)).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: /clear search/i }))
@@ -622,6 +623,7 @@ describe('SessionList — no-matches state', () => {
         onClose={() => {}}
         onDelete={() => {}}
       />,
+      { wrapper },
     )
     expect(screen.queryByText(/no sessions match/i)).toBeNull()
   })
