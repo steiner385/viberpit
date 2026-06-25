@@ -890,43 +890,50 @@ class SessionOrchestrator:
         """Relaunch background tasks snapshotted at the last drain. Called once after
         rehydrate() on daemon start; safe to call again (cleared snapshots + _rearmed
         make it idempotent). Returns the count of sessions re-armed."""
+        from sqlalchemy import or_
         from sqlalchemy import select as sa_select
         async with db_session() as db:
             rows = (await db.execute(sa_select(DbSession).where(
-                DbSession.pending_rearm.isnot(None)))).scalars().all()
-        pending = [(r.id, r.pending_rearm) for r in rows
-                   if r.pending_rearm and r.id not in self._rearmed]
+                or_(DbSession.pending_rearm.isnot(None),
+                    DbSession.pending_prompt.isnot(None))))).scalars().all()
+        pending = [(r.id, r.pending_rearm, r.pending_prompt) for r in rows
+                   if (r.pending_rearm or r.pending_prompt) and r.id not in self._rearmed]
         if not pending:
             return 0
         sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
 
-        async def _one(sid: str, snap: list) -> bool:
+        async def _one(sid: str, snap: list | None, prompt: str | None) -> bool:
             async with sem:
                 try:
-                    return await self._rearm_session(sid, snap)
+                    return await self._rearm_session(sid, snap, prompt)
                 except Exception:
                     log.warning("rearm: session %s failed; snapshot retained", sid,
                                 exc_info=True)
                     return False
 
-        results = await asyncio.gather(*(_one(sid, snap) for sid, snap in pending))
+        results = await asyncio.gather(
+            *(_one(sid, snap, prompt) for sid, snap, prompt in pending))
         n = sum(1 for ok in results if ok)
         log.info("rearm: re-armed %d/%d session(s)", n, len(pending))
         return n
 
-    async def _rearm_session(self, sid: str, snap: list) -> bool:
+    async def _rearm_session(self, sid: str, snap: list | None,
+                             prompt: str | None = None) -> bool:
         from sqlalchemy import update as sa_update
-        tasks = [OpenBgTask.from_dict(d) for d in snap if isinstance(d, dict)]
-        if not tasks:
+        tasks = [OpenBgTask.from_dict(d) for d in (snap or []) if isinstance(d, dict)]
+        if not tasks and not prompt:
             return False
         driver = await self.ensure_driver(sid)
         if driver is None:
             return False
-        await driver.send_prompt(build_rearm_prompt(tasks))
+        if tasks:
+            await driver.send_prompt(build_rearm_prompt(tasks))
+        if prompt:
+            await driver.send_prompt(prompt)
         self._rearmed.add(sid)
         async with db_session() as db:
             await db.execute(sa_update(DbSession).where(DbSession.id == sid)
-                             .values(pending_rearm=None))
+                             .values(pending_rearm=None, pending_prompt=None))
         return True
 
     async def _maybe_rearm_on_attach(self, session_id: str) -> None:
@@ -940,8 +947,9 @@ class SessionOrchestrator:
                 row = (await db.execute(sa_select(DbSession).where(
                     DbSession.id == session_id))).scalar_one_or_none()
             snap = row.pending_rearm if row else None
-            if snap:
-                await self._rearm_session(session_id, snap)
+            prompt = row.pending_prompt if row else None
+            if snap or prompt:
+                await self._rearm_session(session_id, snap, prompt)
         except Exception:
             log.warning("rearm-on-attach failed session=%s", session_id, exc_info=True)
 
@@ -1128,6 +1136,15 @@ class SessionOrchestrator:
                     await db.execute(sa_update(DbSession).where(DbSession.id == sid)
                                      .values(pending_rearm=snap))
                     n += len(snap)
+            # Parallel pass: snapshot each live session's in-flight foreground prompt
+            # iff its turn produced no durable output yet (driver gates this). Writing
+            # None for sessions with nothing resumable also clears any stale value.
+            for sid in session_ids:
+                drv = self._drivers.get(sid)
+                getter = getattr(drv, "pending_foreground_prompt", None)
+                prompt = getter() if callable(getter) else None
+                await db.execute(sa_update(DbSession).where(DbSession.id == sid)
+                                 .values(pending_prompt=prompt))
         if n:
             log.info("rearm snapshot: %d open task(s) across %d session(s)",
                      n, len(session_ids))

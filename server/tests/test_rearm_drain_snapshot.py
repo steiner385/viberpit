@@ -15,6 +15,34 @@ def _seed_transcript(tmp_path):
     return str(p)
 
 
+class _PromptDriver:
+    """Live-driver stand-in whose only relevant method is the snapshot accessor."""
+    def pending_foreground_prompt(self):
+        return "the prompt"
+
+
+def test_drain_snapshots_foreground_prompt(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'p.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(DbSession(id="s1", name="n", account_name="a", cwd=str(tmp_path)))
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+        await orch.rehydrate()
+        orch._drivers["s1"] = _PromptDriver()                 # live turn, no output yet
+        orch.transcript_path = lambda sid: None               # type: ignore  # no bg tasks
+
+        await orch.begin_drain(selfclear_sec=999)
+        async with db_session() as db:
+            row = (await db.execute(select(DbSession).where(DbSession.id == "s1"))).scalar_one()
+            assert row.pending_prompt == "the prompt"
+
+        orch.cancel_drain()
+
+    asyncio.run(run())
+
+
 def test_begin_drain_snapshots_open_tasks_then_cancel_clears(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'r.db'}"
 

@@ -17,6 +17,17 @@ def _driver(**kw):
 
 
 @pytest.mark.asyncio
+async def test_pending_foreground_prompt_only_before_output():
+    d, _ = _driver()
+    await d.start()
+    assert d.pending_foreground_prompt() is None      # no turn yet
+    await d._start_turn("do the thing")
+    assert d.pending_foreground_prompt() == "do the thing"   # live turn, no output yet
+    d._turn_produced_output = True
+    assert d.pending_foreground_prompt() is None       # produced output → unsafe to resend
+
+
+@pytest.mark.asyncio
 async def test_pre_compact_emits_estimate():
     async def est():
         return 8000.0

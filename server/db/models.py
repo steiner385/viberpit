@@ -71,6 +71,11 @@ class Session(Base):
     # would defeat the rearm query's `pending_rearm IS NOT NULL` filter.
     pending_rearm: Mapped[list | None] = mapped_column(
         JSON(none_as_null=True), nullable=True, default=None)
+    # The in-flight foreground prompt snapshotted at deploy drain, persisted ONLY when
+    # the turn had produced no durable output yet (so re-sending it after the restart
+    # cannot duplicate destructive work). NULL = nothing to re-send. Nullable so init_db
+    # backfills it on the dev SQLite DB without a migration.
+    pending_prompt: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Persisted model for this session (alias like "opus"/"sonnet" or a pinned id
     # like "claude-haiku-4-5"). NULL = account/binary default. Nullable so init_db
     # backfills on the dev SQLite DB without a migration.

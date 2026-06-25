@@ -91,6 +91,7 @@ class SessionDriver:
         self._suggester = suggester
         self._suggest_task: asyncio.Task | None = None
         self._last_user_text: str = ""
+        self._turn_produced_output: bool = False
         self._last_assistant_parts: list[str] = []
         self._last_turn_id: str = ""
         self._idle_seeded: bool = False
@@ -132,6 +133,14 @@ class SessionDriver:
     def current_status(self) -> str:
         """The rich derived status right now (no side effects). Used on WS attach."""
         return derive_status(self._dash_signals())
+
+    def pending_foreground_prompt(self) -> str | None:
+        """The active foreground prompt iff a turn is live and has produced no durable
+        output yet — safe to re-send after a deploy/crash kill without duplicating
+        work. Returns None once the turn has emitted text or run a tool."""
+        if self._turn_active and not self._turn_produced_output:
+            return self._last_user_text
+        return None
 
     async def _on_pre_compact(self, input=None, tool_use_id=None, ctx=None) -> dict:
         """SDK PreCompact hook: compaction is starting. Stamp the start, advertise the
@@ -387,6 +396,7 @@ class SessionDriver:
         self._cancel_suggest()
         self._last_user_text = text
         self._last_assistant_parts = []
+        self._turn_produced_output = False
         self._turn_active = True
         self._last_turn_outcome = "success"
         await self._emit_status()
@@ -476,6 +486,8 @@ class SessionDriver:
                         self._last_turn_id = e.turn_id
                     elif isinstance(e, ev.ErrorEvent):
                         await self._maybe_signal_recovery(e.code, e.raw_message or e.message)
+                    if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
+                        self._turn_produced_output = True
                     self._note_progress(e)
                     await self._out.put(e)
                 if self.claude_session_id is None and self._tr.session_id:
