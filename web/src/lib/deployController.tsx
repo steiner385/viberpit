@@ -73,6 +73,8 @@ export function DeployControllerProvider({ children }: { children: ReactNode }) 
 // eslint-disable-next-line react-refresh/only-export-components
 export function useDeployController(): DeployControllerValue {
   const v = useContext(Ctx)
-  if (!v) throw new Error('useDeployController must be used within DeployControllerProvider')
-  return v
+  // Deploy-aware components (DeployPanel) render in many shell unit tests without
+  // the provider; degrade to an inert controller rather than throwing. The real app
+  // always wraps the tree in DeployControllerProvider at the root (App.tsx).
+  return v ?? { intent: 'idle', visible: false, starting: false, startError: null, start: () => {}, dismiss: () => {} }
 }

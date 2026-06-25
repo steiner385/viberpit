@@ -6,6 +6,8 @@ import { SubSessionView } from './components/session/SubSessionView'
 import { ReviewView } from './components/ReviewView'
 import { GlobalUpdateBanner } from './components/GlobalUpdateBanner'
 import { useMediaQuery } from './lib/useMediaQuery'
+import { DeployControllerProvider } from './lib/deployController'
+import { DeployOverlay } from './components/DeployOverlay'
 
 // Routing is the source of truth for which view is shown:
 //   /sessions | /accounts | /archived  → dashboard with that tab active
@@ -90,7 +92,7 @@ function App() {
   // is unavailable (jsdom), so tests default to the mobile/routed branch.
   const isWide = useMediaQuery('(min-width: 1024px)')
   return (
-    <>
+    <DeployControllerProvider>
       <GlobalUpdateBanner />
       {isWide ? (
         <DesktopShell />
@@ -106,7 +108,8 @@ function App() {
           <Route path="*" element={<Navigate to="/sessions" replace />} />
         </Routes>
       )}
-    </>
+      <DeployOverlay />
+    </DeployControllerProvider>
   )
 }
 

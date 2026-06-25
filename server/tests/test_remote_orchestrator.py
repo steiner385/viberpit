@@ -82,6 +82,35 @@ async def test_prs_for_over_uds():
 
 
 @pytest.mark.asyncio
+async def test_request_pr_fix_over_uds():
+    """Manual 'Fix PR #N' tap routes through the daemon to the real orchestrator.
+
+    Regression: RemoteOrchestrator had no request_pr_fix proxy, so the deployed
+    (daemon-mode) /fix-pr endpoint 500'd with AttributeError.
+    """
+    from server.github.pr_status import PullRequestInfo
+    app, orch = _build_app()
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="S1", account="acct", claude_session_id="cs", cols=80, rows=24,
+        cwd="/tmp", repo="o/r", authored_branches=["feat/a"],
+    )
+    orch._pr_poller.cached = lambda repo, br: (
+        PullRequestInfo(7, "u7", "open", "passing", "T") if (repo, br) == ("o/r", "feat/a") else None
+    )
+    with mock.patch.object(orch, "send_prompt", new=mock.AsyncMock(return_value="sent")) as sp:
+        async with serve_daemon_uds(app) as sock:
+            ro = RemoteOrchestrator(DaemonClient(sock))
+            try:
+                sent = await ro.request_pr_fix("s1", 7)
+                no_pr = await ro.request_pr_fix("s1", 999)
+            finally:
+                await ro.aclose()
+    assert sent == "sent"
+    assert no_pr == "no_pr"
+    sp.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_list_get_create_send_over_uds():
     app, orch = _build_app()
     orch._records["s1"] = _rec("s1")
