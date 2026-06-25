@@ -278,7 +278,11 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
             rows={1}
             placeholder={ghost ? '' : (chatArmed ? 'Reply in chat…' : 'Send a message…')}
             className={cn(
-              'w-full resize-none rounded-md border border-gray-300 dark:border-gray-600',
+              // `block` removes the default inline-block baseline gap: as an inline element the
+              // textarea sits on its wrapper's text baseline, leaving ~6px of line-box descent
+              // below it, so `items-end` on the row aligned the wrapper (not the textarea) and the
+              // box rode high above the send/mic buttons.
+              'block w-full resize-none rounded-md border border-gray-300 dark:border-gray-600',
               'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',
               'px-3 py-2 text-sm',
               'placeholder:text-gray-400 dark:placeholder:text-gray-500',
