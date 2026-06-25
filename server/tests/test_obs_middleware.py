@@ -43,3 +43,16 @@ def test_emits_http_request_breadcrumb(caplog):
     evts = [r for r in caplog.records if getattr(r, "event", None) == "http.request"]
     assert evts and evts[-1].fields["status"] == 200
     assert evts[-1].fields["path"] == "/ping"
+
+
+def test_raising_route_resets_contextvar_and_logs_500(caplog):
+    client = TestClient(_app(), raise_server_exceptions=False)
+    with caplog.at_level(logging.INFO):
+        r = client.get("/boom")
+    assert r.status_code == 500
+    # contextvar must be reset even when the route raised
+    assert request_id_var.get() is None
+    # breadcrumb still emitted, with status 500
+    evts = [rec for rec in caplog.records if getattr(rec, "event", None) == "http.request"]
+    assert evts and evts[-1].fields["status"] == 500
+    assert evts[-1].fields["path"] == "/boom"

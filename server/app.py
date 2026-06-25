@@ -315,7 +315,8 @@ def create_app(
         reauth_manager = ReauthManager(timeout_s=get_settings().reauth_timeout_s)
     app.state.reauth = reauth_manager
 
-    # Identity middleware — wraps all routes
+    # Middleware stack (Starlette runs last-added outermost): RequestContextMiddleware
+    # wraps IdentityMiddleware wraps the routes, so request_id is set before identity.
     app.add_middleware(IdentityMiddleware)
     app.add_middleware(RequestContextMiddleware)
 
