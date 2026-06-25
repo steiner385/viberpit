@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import App from './App'
 import type { Session, Account } from './api/types'
+import { api } from './api/client'
 
 vi.mock('./ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./ws/client')>()
@@ -185,5 +186,25 @@ describe('App routing', () => {
       expect(screen.getByLabelText('New session')).toHaveAttribute('data-selected', 'true')
     })
     vi.unstubAllGlobals()
+  })
+})
+
+describe('App deploy overlay', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('mounts the overlay at the root while a deploy runs', async () => {
+    vi.mocked(api.get).mockImplementation((path: string) => {
+      if (path === '/deploy/status') return Promise.resolve({
+        pending: { behind: true, liveSha: 'x', targetSha: 'abcdef0', commits: [], ci: 'green' },
+        deploy: { running: true, phases: { update: 'running' }, error: null, warnings: [], targetSha: 'abcdef0' },
+      })
+      if (path === '/sessions') return Promise.resolve(MOCK_SESSIONS)
+      if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
+      return Promise.resolve([])
+    })
+    renderAt('/sessions')
+    expect(await screen.findByText(/upgrading ccswitch/i)).toBeInTheDocument()
   })
 })
