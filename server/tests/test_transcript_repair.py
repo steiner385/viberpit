@@ -168,3 +168,29 @@ def test_repair_resumed_transcript_finds_file_under_projects(tmp_path):
 def test_repair_resumed_transcript_unknown_session_is_safe(tmp_path):
     os.makedirs(os.path.join(tmp_path, "projects"))
     assert repair_resumed_transcript(str(tmp_path), "ghost") == 0
+
+
+def test_truncate_corrupt_tail_removes_partial_last_line(tmp_path):
+    from server.sessions.transcript_repair import truncate_corrupt_tail
+    p = tmp_path / "t.jsonl"
+    p.write_text(json.dumps({"type": "user", "uuid": "u1"}) + "\n" + '{"type": "assist')  # partial tail
+    removed = truncate_corrupt_tail(str(p))
+    assert removed == 1
+    lines = [ln for ln in p.read_text().splitlines() if ln.strip()]
+    assert len(lines) == 1 and json.loads(lines[0])["uuid"] == "u1"
+
+
+def test_truncate_corrupt_tail_noop_on_clean_file(tmp_path):
+    from server.sessions.transcript_repair import truncate_corrupt_tail
+    p = tmp_path / "t.jsonl"
+    p.write_text(json.dumps({"type": "user", "uuid": "u1"}) + "\n")
+    assert truncate_corrupt_tail(str(p)) == 0
+    assert json.loads(p.read_text().splitlines()[0])["uuid"] == "u1"
+
+
+def test_truncate_corrupt_tail_is_idempotent(tmp_path):
+    from server.sessions.transcript_repair import truncate_corrupt_tail
+    p = tmp_path / "t.jsonl"
+    p.write_text(json.dumps({"type": "user", "uuid": "u1"}) + "\n" + '{"oops')
+    assert truncate_corrupt_tail(str(p)) == 1
+    assert truncate_corrupt_tail(str(p)) == 0
