@@ -6,6 +6,11 @@ import { Toaster } from 'sonner'
 import './index.css'
 import App from './App.tsx'
 import { queryClient } from '@/api/queryClient'
+import { clientLogger } from '@/obs/logger'
+import { installGlobalErrorHandlers } from '@/obs/install'
+
+clientLogger.start()
+installGlobalErrorHandlers()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
