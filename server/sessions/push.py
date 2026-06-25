@@ -21,12 +21,25 @@ def _post(url: str, payload: dict, opener) -> None:
         pass
 
 
-async def push(title: str, body: str, *, url: str | None = None, opener=urllib.request.urlopen) -> bool:
+async def push(
+    title: str,
+    body: str,
+    *,
+    url: str | None = None,
+    link: str | None = None,
+    opener=None,
+) -> bool:
+    """POST {title, body, url?} to the webhook. ``url`` overrides the configured
+    target endpoint; ``link`` is the in-app deep-link carried in the payload."""
+    opener = opener or urllib.request.urlopen
     target = url if url is not None else config.PUSH_WEBHOOK_URL
     if not target:
         return False
+    payload = {"title": title, "body": body}
+    if link:
+        payload["url"] = link
     try:
-        await asyncio.to_thread(_post, target, {"title": title, "body": body}, opener)
+        await asyncio.to_thread(_post, target, payload, opener)
         return True
     except Exception:
         log.warning("push.failed", exc_info=True)
@@ -74,7 +87,9 @@ async def _webpush_sink(payload: dict, *, sender=webpush) -> None:
 async def notify(title: str, body: str, *, url: str | None = None) -> None:
     """Fan a notification out to all sinks (webhook + web-push). Fire-and-forget; never raises."""
     try:
-        await push(title, body, url=url)
+        # ``url`` is the in-app deep-link, not the webhook endpoint — pass it as
+        # the payload link so the webhook target stays config.PUSH_WEBHOOK_URL.
+        await push(title, body, link=url)
     except Exception:
         log.warning("notify.webhook_failed", exc_info=True)
     payload = {"title": title, "body": body}

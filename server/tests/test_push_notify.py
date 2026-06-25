@@ -55,11 +55,46 @@ async def test_webpush_sink_noop_without_vapid(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_notify_posts_to_configured_webhook_not_deep_link(monkeypatch):
+    # Regression: notify(url="/session/<id>") must treat the deep-link as
+    # notification metadata, NOT as the webhook endpoint. Previously the
+    # relative deep-link was forwarded as push()'s target and urlopen raised
+    # ValueError("unknown url type: '/session/<id>'") on every notification.
+    import json
+
+    from server.sessions import push as push_mod
+    import server.config as config
+
+    monkeypatch.setattr(config, "PUSH_WEBHOOK_URL", "https://hooks.example/notify")
+    monkeypatch.setattr(config, "VAPID_PRIVATE_KEY", None)  # silence webpush sink
+
+    posted: dict = {}
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=0):
+        posted["url"] = req.full_url
+        posted["body"] = json.loads(req.data.decode())
+        return _Resp()
+
+    monkeypatch.setattr(push_mod.urllib.request, "urlopen", fake_urlopen)
+
+    await push_mod.notify("Needs you", "session X", url="/session/abc")
+
+    # Posted to the configured webhook, not the relative deep-link.
+    assert posted["url"] == "https://hooks.example/notify"
+    # The deep-link rides along in the payload (consistent with the web-push sink).
+    assert posted["body"] == {"title": "Needs you", "body": "session X", "url": "/session/abc"}
+
+
+@pytest.mark.asyncio
 async def test_notify_fans_out_to_both_sinks(monkeypatch):
     from server.sessions import push as push_mod
     calls = {"webhook": 0, "webpush": 0}
 
-    async def fake_push(title, body, *, url=None, opener=None):
+    async def fake_push(title, body, *, link=None, url=None, opener=None):
         calls["webhook"] += 1
         return True
 
