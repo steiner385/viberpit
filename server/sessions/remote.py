@@ -111,6 +111,15 @@ class RemoteOrchestrator:
         r = await self._client.call("prs_for", session_id=session_id)
         return [PullRequestInfo.from_dict(d) for d in (r.get("prs") or [])]
 
+    async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
+        """Inject the branch-aware fix prompt for PR #pr_number via the daemon.
+
+        Proxies the local orchestrator's request_pr_fix so the manual 'Fix PR #N'
+        endpoint works in daemon mode. Returns the status string ("sent" /
+        "no_session" / "no_pr" / "not_actionable").
+        """
+        return await self._client.call("request_pr_fix", session_id=session_id, pr_number=pr_number)
+
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)
         return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None
