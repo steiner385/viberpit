@@ -45,6 +45,20 @@ async def test_refresh_idle_tokens_is_best_effort():
 
 
 @pytest.mark.asyncio
+async def test_mark_needs_reauth_writes_audit_event():
+    from sqlalchemy import select
+    from server.db import init_db, db_session
+    from server.db.models import AuditEvent
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+    orch = _orch()
+    await orch._mark_needs_reauth_audit("primary")
+    async with db_session() as db:
+        rows = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "account.needs_reauth"))).scalars().all()
+    assert len(rows) == 1 and rows[0].detail["path"] == "live-session" and rows[0].detail["account"] == "primary"
+
+
+@pytest.mark.asyncio
 async def test_start_launches_token_refresh_monitor_and_stop_cancels():
     orch = _orch()
     orch._refresh_idle_tokens_once = mock.AsyncMock()
@@ -65,3 +79,20 @@ async def test_start_launches_token_refresh_monitor_and_stop_cancels():
     await orch.stop()
     assert task.cancelled() or task.done()
     assert orch._token_refresh_task is None  # stop() nulls the handle
+
+
+def test_poller_usage_fn_tags_path_poller_idle(monkeypatch):
+    """The default _poller_usage_fn must pass path="poller-idle" to usage_for."""
+    import server.sessions.orchestrator as orch_mod
+    seen: dict = {}
+
+    def fake_usage_for(name, *, allow_refresh=True, path="unknown"):
+        seen["path"] = path
+        seen["name"] = name
+        return None
+
+    monkeypatch.setattr(orch_mod.ccswitch_accounts, "usage_for", fake_usage_for)
+    # Build WITHOUT a usage_fn so the real _poller_usage_fn wrapper is created.
+    orch = orch_mod.SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0)
+    orch._poller._usage_fn("primary")  # call the wired poller fn directly
+    assert seen == {"path": "poller-idle", "name": "primary"}

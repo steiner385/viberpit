@@ -145,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             # refresh live usage into the ledger so `list` reflects current numbers,
             # not just whatever a prior ccrun/ccmax happened to cache
             for a in accounts.list_accounts():
-                accounts.usage_for(a["name"])
+                accounts.usage_for(a["name"], path="cli")
         for a in accounts.list_accounts():
             u = a.get("usage") or {}
             print(f"{a['name']:<12} {a['status']:<12} "

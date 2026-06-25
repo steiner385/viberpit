@@ -5,7 +5,9 @@ import os
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Callable
 
 from . import ledger, oauth, paths
 from .config import Config, load_config
@@ -13,6 +15,40 @@ from .creds import merge_keep_later, read_credentials, read_json, split_credenti
 from .selector import Picked, select_picked
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class AuthFailure:
+    account: str
+    status: int | None
+    body: str | None
+    path: str
+    token_expires_at: int | None
+    attempts: int
+
+
+_auth_failure_sink: Callable[[AuthFailure], None] | None = None
+
+
+def set_auth_failure_sink(fn: "Callable[[AuthFailure], None] | None") -> None:
+    """Register (or clear) the sink that receives an AuthFailure at each needs-reauth flip.
+
+    The core stays DB-free: the server registers a queue-backed sink at startup. When
+    unset (CLI usage) emission is a no-op beyond the existing log line.
+    """
+    global _auth_failure_sink
+    _auth_failure_sink = fn
+
+
+def emit_auth_failure(f: AuthFailure) -> None:
+    sink = _auth_failure_sink
+    if sink is None:
+        return
+    try:
+        sink(f)
+    except Exception:  # never let instrumentation break the auth path
+        log.warning("emit_auth_failure: sink raised", exc_info=True)
+
 
 # Per-account refresh locks. Anthropic refresh tokens are single-use (rotate on
 # refresh), so two concurrent refreshers (e.g. the web server's usage poller AND
@@ -71,6 +107,13 @@ def _is_fresh(blob: dict, cfg: Config) -> bool:
     return blob.get("expiresAt", 0) - int(time.time() * 1000) > cfg.expiry_skew_sec * 1000
 
 
+def _slot_expires_at(name: str) -> int | None:
+    try:
+        return read_credentials(paths.slot_path(name)).get("expiresAt")
+    except Exception:
+        return None
+
+
 def ensure_valid_token(name: str) -> dict:
     """Return a non-expired claudeAiOauth blob, refreshing + persisting if needed.
 
@@ -94,7 +137,27 @@ def ensure_valid_token(name: str) -> dict:
         return new_blob
 
 
-def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
+def acquire_valid_token(name: str) -> dict:
+    """Like ensure_valid_token, but recover a lost rotation before giving up.
+
+    If our slot's refresh token is rejected (AuthError), the live `cfg/` dir may
+    hold a token the SDK rotated that the poller never captured. sync_back pulls it
+    into the slot; if that yields a fresh token we use it instead of flipping the
+    account to needs-reauth. Idle accounts with no fresher copy re-raise, so the
+    genuine-dead-token case still surfaces.
+    """
+    try:
+        return ensure_valid_token(name)
+    except oauth.AuthError:
+        sync_back(name)
+        cfg = load_config()
+        blob = read_credentials(paths.slot_path(name))
+        if _is_fresh(blob, cfg):
+            return blob
+        raise
+
+
+def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -> oauth.Usage | None:
     """Cached-or-fetched usage. Returns None and marks needs-reauth if auth fails.
 
     Args:
@@ -137,7 +200,7 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
     # Step 1: ensure the token is valid (may refresh if near-expiry).
     # If the refresh token is already dead, mark needs-reauth immediately — do not retry.
     try:
-        blob = ensure_valid_token(name)
+        blob = acquire_valid_token(name)
     except oauth.TransientError as e:
         # Token endpoint rate-limited (429) or unavailable (5xx). The refresh token
         # is presumed valid — leave status unchanged so a transient throttle can't
@@ -146,6 +209,9 @@ def usage_for(name: str, *, allow_refresh: bool = True) -> oauth.Usage | None:
         return None
     except oauth.AuthError as e:
         log.warning("usage_for(%s): refresh token dead (%s) — marking needs-reauth", name, e)
+        emit_auth_failure(AuthFailure(
+            account=name, status=getattr(e, "status", None), body=getattr(e, "body", None),
+            path=path, token_expires_at=_slot_expires_at(name), attempts=1))
         with ledger.locked_ledger() as led:
             ledger.set_status(led, name, "needs-reauth")
         return None

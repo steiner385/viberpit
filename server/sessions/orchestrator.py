@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 import os
@@ -217,6 +218,7 @@ class SessionOrchestrator:
                 return ccswitch_accounts.usage_for(
                     name,
                     allow_refresh=not self.has_live_session(name),
+                    path="poller-idle",
                 )
 
         self._poll_interval = poll_interval
@@ -2169,6 +2171,25 @@ class SessionOrchestrator:
                 ledger.set_status(led, account, "needs-reauth")
         except Exception:
             log.warning("recover.mark_needs_reauth failed account=%s", account, exc_info=True)
+        with contextlib.suppress(RuntimeError):  # no running loop in some sync callers/tests
+            asyncio.create_task(self._mark_needs_reauth_audit(account))
+
+    async def _mark_needs_reauth_audit(self, account: str) -> None:
+        """Write an account.needs_reauth audit row for the in-session 401 flip site."""
+        from ccswitch.accounts import AuthFailure
+        from server.audit import record_audit
+        from server.usage.auth_failure_audit import build_needs_reauth_detail
+        from server.db import db_session, _session_factory
+        if _session_factory is None:
+            return
+        f = AuthFailure(account=account, status=401, body=None,
+                        path="live-session", token_expires_at=None, attempts=1)
+        try:
+            async with db_session() as db:
+                await record_audit(db, "account.needs_reauth", "system", build_needs_reauth_detail(f))
+                await db.commit()
+        except Exception:
+            log.warning("mark_needs_reauth_audit failed account=%s", account, exc_info=True)
 
     async def switch_account_manual(self, session_id: str, new_account: str) -> None:
         """User-initiated account switch. Pins the session against usage-ceiling

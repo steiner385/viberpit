@@ -24,6 +24,7 @@ import { SessionList } from './SessionList'
 import { SessionListControls } from './SessionListControls'
 import { DispatchBar } from './DispatchBar'
 import { AllLimitedBanner } from './AllLimitedBanner'
+import { DeployPanel } from './DeployPanel'
 import { HelpDrawer } from './HelpDrawer'
 import { useGlobalHelpKey } from './useGlobalHelpKey'
 import { SettingsPanel } from './settings/SettingsPanel'
@@ -503,6 +504,13 @@ export function DesktopShell() {
           <AllLimitedBanner earliestReset={allLimitedReset} onDismiss={() => setAllLimitedReset(undefined)} />
         </div>
       )}
+
+      {/* Pending-deploy banner. DeployPanel self-returns null when up to date, so the
+          wrapper collapses (`:empty` → hidden) and adds no gap on the common idle path.
+          Mounted here as well as in the mobile Dashboard so wide screens see it too. */}
+      <div className="px-4 pt-2 flex-shrink-0 [&:empty]:hidden">
+        <DeployPanel />
+      </div>
 
       <div className="flex-1 flex min-h-0">
         {sidebar}

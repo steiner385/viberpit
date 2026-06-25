@@ -196,6 +196,65 @@ class TestAccounts(unittest.TestCase):
             self.assertEqual(json.loads(paths.shared_mcp_path().read_text()), {"sentry": {"t": 1}})
 
 
+def test_usage_for_emits_auth_failure_on_dead_token(monkeypatch, tmp_path):
+    from ccswitch import accounts, oauth
+    from tests.helpers import temp_env
+    captured = []
+    accounts.set_auth_failure_sink(captured.append)
+    try:
+        # Force acquire_valid_token (the Step-1 call in usage_for) to raise a
+        # dead-grant AuthError with a body — recovery already exhausted.
+        def boom(name):
+            raise oauth.AuthError("token refresh failed with 400", status=400,
+                                  body='{"error":"invalid_grant"}')
+        monkeypatch.setattr(accounts, "acquire_valid_token", boom)
+        with temp_env():
+            accounts.usage_for("primary", path="poller-idle")
+    finally:
+        accounts.set_auth_failure_sink(None)
+    assert len(captured) == 1
+    f = captured[0]
+    assert f.account == "primary" and f.status == 400 and f.path == "poller-idle"
+    assert "invalid_grant" in f.body
+
+def test_set_sink_none_is_noop(monkeypatch):
+    from ccswitch import accounts
+    accounts.set_auth_failure_sink(None)  # unset
+    # emit must not raise even with no sink:
+    accounts.emit_auth_failure(accounts.AuthFailure(
+        account="x", status=400, body="b", path="cli", token_expires_at=None, attempts=1))
+
+
+def test_acquire_valid_token_recovers_via_sync_back(monkeypatch):
+    from ccswitch import accounts, oauth
+    state = {"synced": False}
+    def boom(name):
+        raise oauth.AuthError("token refresh failed with 400", status=400, body="{}")
+    def fake_sync_back(name):
+        state["synced"] = True
+    fresh = {"accessToken": "new", "refreshToken": "newR", "expiresAt": 9_999_999_999_000}
+    def fake_read(path):
+        return fresh if state["synced"] else {"accessToken": "old", "expiresAt": 0}
+    monkeypatch.setattr(accounts, "ensure_valid_token", boom)
+    monkeypatch.setattr(accounts, "sync_back", fake_sync_back)
+    monkeypatch.setattr(accounts, "read_credentials", fake_read)
+    monkeypatch.setattr(accounts, "_is_fresh", lambda blob, cfg: blob.get("expiresAt", 0) > 1)
+    out = accounts.acquire_valid_token("primary")
+    assert out["accessToken"] == "new" and state["synced"] is True
+
+def test_acquire_valid_token_reraises_when_no_fresher_copy(monkeypatch):
+    from ccswitch import accounts, oauth
+    import pytest
+    def boom(name):
+        raise oauth.AuthError("token refresh failed with 400", status=400, body="{}")
+    monkeypatch.setattr(accounts, "ensure_valid_token", boom)
+    monkeypatch.setattr(accounts, "sync_back", lambda name: None)
+    monkeypatch.setattr(accounts, "read_credentials", lambda path: {"accessToken": "old", "expiresAt": 0})
+    monkeypatch.setattr(accounts, "_is_fresh", lambda blob, cfg: False)
+    with pytest.raises(oauth.AuthError):
+        accounts.acquire_valid_token("primary")
+
+
 class TestRefreshSerialization(unittest.TestCase):
     def test_concurrent_refresh_happens_once(self):
         import threading, time as _t
