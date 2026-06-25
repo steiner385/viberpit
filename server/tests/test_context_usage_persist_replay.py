@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -24,8 +25,8 @@ from server.sessions.orchestrator import SessionOrchestrator
 # ── serde round-trip (RPC daemon↔edge path) ─────────────────────────────────
 
 def _rec(**kw) -> SessionRecord:
-    base = dict(id="s1", name="S1", account="acct", claude_session_id="cs",
-                cols=80, rows=24, cwd="/tmp")
+    base: dict[str, Any] = dict(id="s1", name="S1", account="acct", claude_session_id="cs",
+                                cols=80, rows=24, cwd="/tmp")
     base.update(kw)
     return SessionRecord(**base)
 
