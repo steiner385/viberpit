@@ -9,7 +9,7 @@ from server.deploy import drain as _drain
 from server.deploy.types import DeployError, DeployStatus, Phase, PhaseState
 from server.obs.context import log_event, new_request_id
 
-log = logging.getLogger("server.deploy")
+log = logging.getLogger("server.deploy.controller")
 
 
 def default_daemon_factory(daemon_enabled: bool) -> "Callable[[], Any] | None":

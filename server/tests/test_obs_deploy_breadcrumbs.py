@@ -294,8 +294,7 @@ async def test_deploy_id_consistent_across_breadcrumbs(caplog):
         await dc.deploy_once()
 
     deploy_recs = [r for r in caplog.records
-                   if r.name == "server.deploy" and hasattr(r, "fields")
-                   and "deploy_id" in getattr(r, "fields", {})]
+                   if getattr(r, "event", "").startswith("deploy.") and getattr(r, "fields", None)]
     assert len(deploy_recs) >= 4  # drain.start, daemon.stop, daemon.start, edge.cutover, reattach
     ids = {r.fields["deploy_id"] for r in deploy_recs}
     assert len(ids) == 1, f"Expected one deploy_id across all breadcrumbs, got: {ids}"
