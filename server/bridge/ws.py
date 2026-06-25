@@ -35,6 +35,7 @@ from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
 from server.db import db_session
 from server.ipc.client import DaemonUnavailable
+from server.obs.context import bind_session
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.replay import replay_window
 
@@ -62,19 +63,20 @@ async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -
     an ``error`` frame and enqueue it so the client learns the live stream died
     instead of staring at a frozen transcript. Cancellation is normal (detach).
     """
-    try:
-        async for e in driver.events():
-            out_q.put_nowait(e.to_wire())
-    except asyncio.CancelledError:
-        pass
-    except Exception as exc:
-        log.exception("ws.live_stream session=%s", session_id)
-        detail = str(exc).strip() or "no detail"
-        out_q.put_nowait(ErrorEvent(
-            "live_stream_failed",
-            f"The live session stream stopped unexpectedly. {type(exc).__name__}: {detail[:500]}",
-            turn_id=None,
-        ).to_wire())
+    with bind_session(session_id):
+        try:
+            async for e in driver.events():
+                out_q.put_nowait(e.to_wire())
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            log.exception("ws.live_stream session=%s", session_id)
+            detail = str(exc).strip() or "no detail"
+            out_q.put_nowait(ErrorEvent(
+                "live_stream_failed",
+                f"The live session stream stopped unexpectedly. {type(exc).__name__}: {detail[:500]}",
+                turn_id=None,
+            ).to_wire())
 
 
 def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
