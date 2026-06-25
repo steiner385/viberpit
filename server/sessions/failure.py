@@ -18,7 +18,7 @@ from dataclasses import dataclass
 # Mirror oauth._RETRY_AFTER_CAP: never trust an absurd server-supplied delay.
 _RETRY_AFTER_CAP = 120.0
 
-_RECOVERABLE = frozenset({"rate_limit", "auth_401", "process_crash"})
+_RECOVERABLE = frozenset({"rate_limit", "auth_401", "process_crash", "turn_dropped"})
 
 _OVERLOAD_STATUSES = frozenset({500, 502, 503, 529})
 _OVERLOAD_CODES = frozenset(f"api_{s}" for s in _OVERLOAD_STATUSES)
@@ -26,7 +26,7 @@ _OVERLOAD_CODES = frozenset(f"api_{s}" for s in _OVERLOAD_STATUSES)
 
 @dataclass(frozen=True)
 class TurnFailure:
-    kind: str  # "rate_limit" | "auth_401" | "process_crash" | "overloaded" | "other"
+    kind: str  # "rate_limit" | "auth_401" | "process_crash" | "turn_dropped" | "overloaded" | "other"
     retry_after: float | None = None
 
     @property
@@ -84,6 +84,13 @@ def classify(code: str | None, message: str = "", *, retry_after: float | None =
         return TurnFailure(kind="auth_401")
     if code in _OVERLOAD_CODES:
         return TurnFailure(kind="overloaded")
+
+    # A turn that dropped before the model committed any continuation — the CLI tags it
+    # "[ede_diagnostic] ... stop_reason=null". Distinct from the orphaned-tool_use variant
+    # (stop_reason=tool_use), which transcript_repair heals on resume. Nothing was
+    # committed, so re-sending the same prompt is idempotent and safe.
+    if code == "execution_error" and "[ede_diagnostic]" in text and "stop_reason=null" in text:
+        return TurnFailure(kind="turn_dropped")
 
     # Check for process crash signatures before general content inference.
     if _is_process_crash(text):

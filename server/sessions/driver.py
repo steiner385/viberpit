@@ -475,7 +475,7 @@ class SessionDriver:
                         self._last_turn_outcome = e.outcome
                         self._last_turn_id = e.turn_id
                     elif isinstance(e, ev.ErrorEvent):
-                        await self._maybe_signal_recovery(e.code, e.message)
+                        await self._maybe_signal_recovery(e.code, e.raw_message or e.message)
                     self._note_progress(e)
                     await self._out.put(e)
                 if self.claude_session_id is None and self._tr.session_id:

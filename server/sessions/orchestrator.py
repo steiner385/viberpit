@@ -1940,6 +1940,15 @@ class SessionOrchestrator:
                                retry_after: float | None) -> None:
         """Apply the recovery policy for one recoverable turn failure."""
         now = self._clock()
+        if kind == "turn_dropped":
+            # The turn dropped before the model committed any continuation. Resend the last
+            # prompt on the same account (idempotent — nothing was committed), bounded so a
+            # persistent drop can't loop. Not an account fault → no rotation/quarantine/pause.
+            if self._recovery.resend_cap_reached(record.id, now=now):
+                return
+            self._recovery.record_resend(record.id, now=now)
+            await self._replay_same_account(record, 0.0)
+            return
         if self._recovery.rotation_cap_reached(record.id, now=now):
             await self._pause_session(record, reason="rotation_cap")
             return
