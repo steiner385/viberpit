@@ -13,6 +13,7 @@ from server.db.models import Session as _SessionModel
 from server.spa import mount_spa
 
 from server.obs.jsonlog import configure_logging
+from server.obs.middleware import RequestContextMiddleware
 from server.auth.middleware import IdentityMiddleware, current_identity
 from server.bridge.ws import build_ws_router
 from server.db import init_db
@@ -316,6 +317,7 @@ def create_app(
 
     # Identity middleware — wraps all routes
     app.add_middleware(IdentityMiddleware)
+    app.add_middleware(RequestContextMiddleware)
 
     # In remote mode an unreachable daemon surfaces as DaemonUnavailable from any
     # facade RPC; map it to 503 so clients see "try again", not a 500. Harmless
