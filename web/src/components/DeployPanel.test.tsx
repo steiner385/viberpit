@@ -70,4 +70,17 @@ describe('DeployPanel', () => {
     expect(screen.getByText(/preflight/i)).toBeInTheDocument()
   })
 
+  it('hides after a clean completed deploy (the checklist must not linger)', () => {
+    // Nothing pending, not running, every phase done, no error, no failed restores.
+    // The controller keeps this done-phase map in memory after a successful upgrade, so
+    // the panel must dismiss itself rather than show the stale checklist forever.
+    mockHooks({ behind: false, commits: [], ci: 'green' },
+              { running: false,
+                phases: { preflight: 'done', save: 'done', update: 'done',
+                          report: 'done', restart: 'done', resume: 'done' },
+                warnings: [], error: null, restore: { restored: ['s1'], failed: [] } })
+    const { container } = render(<DeployPanel />)
+    expect(container).toBeEmptyDOMElement()
+  })
+
 })

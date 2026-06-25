@@ -15,8 +15,15 @@ export function DeployPanel() {
 
   const behind = pending?.behind ?? false
   const running = deploy?.running ?? false
-  const hasPhases = deploy && Object.keys(deploy.phases ?? {}).length > 0
-  if (!behind && !running && !hasPhases) return null
+  // Reasons to keep the panel up AFTER a deploy finishes: it failed (surface the error)
+  // or some sessions didn't resume (surface the retry prompt). A clean, fully-successful
+  // deploy hides once nothing is pending — the checklist must NOT linger forever after a
+  // successful upgrade + refresh (the controller keeps the done-phase map in memory until
+  // the next deploy, so visibility must not key off "has any phases").
+  const needsAttention = deploy?.error != null
+    || Object.values(deploy?.phases ?? {}).includes('failed')
+    || (deploy?.restore?.failed?.length ?? 0) > 0
+  if (!behind && !running && !needsAttention) return null
 
   const count = pending?.commits.length ?? 0
   const ci = pending?.ci ?? 'unavailable'
@@ -51,7 +58,7 @@ export function DeployPanel() {
           ))}
         </ul>
       )}
-      {(running || hasPhases) && deploy && (
+      {(running || needsAttention) && deploy && (
         <div className="mt-2 border-t border-amber-200 pt-2">
           <ol className="space-y-0.5">
             {PHASES.map(p => {
