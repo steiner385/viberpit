@@ -45,6 +45,20 @@ async def test_refresh_idle_tokens_is_best_effort():
 
 
 @pytest.mark.asyncio
+async def test_mark_needs_reauth_writes_audit_event():
+    from sqlalchemy import select
+    from server.db import init_db, db_session
+    from server.db.models import AuditEvent
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+    orch = _orch()
+    await orch._mark_needs_reauth_audit("primary")
+    async with db_session() as db:
+        rows = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "account.needs_reauth"))).scalars().all()
+    assert len(rows) == 1 and rows[0].detail["path"] == "live-session" and rows[0].detail["account"] == "primary"
+
+
+@pytest.mark.asyncio
 async def test_start_launches_token_refresh_monitor_and_stop_cancels():
     orch = _orch()
     orch._refresh_idle_tokens_once = mock.AsyncMock()
