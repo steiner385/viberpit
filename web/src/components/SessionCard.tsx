@@ -220,18 +220,28 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
             <span className="truncate">{repoLabel.text}</span>
           </span>
+          {/* Status pill is the one context signal kept at every width; the Goal
+              badge and the PR badge are secondary, so they are gated to desktop
+              (`hidden lg:*`) — on a phone they bunched against the status pill and
+              forced the repo label to a few characters. They remain reachable in
+              the session detail view. */}
           <div className="flex flex-shrink-0 items-center gap-2">
             <StatusPill status={session.status} />
             {session.activeGoal && (
               <span
-                className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
+                data-testid="card-goal"
+                className="hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
                 title={`Goal: ${session.activeGoal}`}
               >
                 <Target size={12} aria-hidden="true" className="flex-shrink-0" />
                 <span className="truncate">Goal</span>
               </span>
             )}
-            <PrList prs={session.prs} />
+            {session.prs?.length > 0 && (
+              <span data-testid="card-prs" className="hidden lg:inline-flex items-center">
+                <PrList prs={session.prs} />
+              </span>
+            )}
           </div>
         </div>
 
@@ -242,8 +252,12 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             strip, so repeating it per card is just noise. The row renders only
             when there's something to show, but at least one is near-always
             present (every live session has an updatedAt). */}
+        {/* The whole telemetry row (usage % + "active … ago") is desktop-only:
+            `hidden lg:flex`. It's the least glanceable line on a phone and the
+            biggest source of vertical density; the usage figure also lives in the
+            Accounts tab and the in-session meta strip. */}
         {(account?.usage || (!isBusy && isValidTimestamp(session.updatedAt))) && (
-          <div data-testid="card-telemetry" className="flex items-center gap-2 min-w-0">
+          <div data-testid="card-telemetry" className="hidden lg:flex items-center gap-2 min-w-0">
             {account?.usage && (
               <UsageBadge
                 pct={account.usage.session.pct}
@@ -275,7 +289,9 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           On touch devices they stay visible at the 44px tap-target minimum. On
           hover-capable devices (desktop) they shrink to a denser 32px and stay
           hidden until the row is hovered, focused, or selected — so the meta row
-          gets the full card width instead of fighting three permanent buttons. */}
+          gets the full card width instead of fighting three permanent buttons.
+          On mobile (< lg) only Resume stays inline; the rest are `hidden lg:flex`
+          (see the secondary-actions group below) and live in the detail view. */}
       <div
         className={cn(
           'flex flex-shrink-0 items-center gap-0.5 transition-opacity',
@@ -298,6 +314,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             <Play size={16} aria-hidden="true" />
           </button>
         )}
+        {/* Secondary actions group — desktop-only. Suggestions/rename/archive/
+            delete each render a 44px tap target with no hover to retreat behind,
+            so on a phone they consumed most of the card width. Gating the group
+            to `lg:` leaves Resume as the single inline action on mobile. */}
+        <div data-testid="card-secondary-actions" className="hidden lg:flex items-center gap-0.5">
         {!isBusy && suggestions.length >= 2 && (
           <div className="relative flex items-center">
             <button
@@ -373,6 +394,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         >
           <Trash2 size={16} aria-hidden="true" />
         </button>
+        </div>
       </div>
      </div>
       {hasSubAgents && expanded && <SubAgentRows sessionId={session.id} subAgents={subAgents} />}

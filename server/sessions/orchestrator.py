@@ -451,6 +451,7 @@ class SessionOrchestrator:
             on_session_id=self._persist_claude_session_id,
             on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
             on_status=self._persist_status,
+            on_context_usage=self._persist_context_usage,
             on_record_condense_ms=self._record_condense_ms,
             get_condense_estimate=self._condense_estimate,
             on_recoverable_failure=self._handle_recoverable_failure,
@@ -642,6 +643,25 @@ class SessionOrchestrator:
         await self._maybe_push(session_id, status)
         if completed_turn:
             await self._maybe_apply_auto_name(session_id)
+
+    async def _persist_context_usage(self, session_id: str, used_tokens: int, max_tokens: int) -> None:
+        """Driver ``on_context_usage`` callback: persist the exact context-window occupancy.
+
+        Mirrors the in-memory record + DB row so the WS bridge can replay a ``contextUsage``
+        event on attach. Without this the live reading is lost on reload and the ctx% readout
+        falls back to the model-string approximation — which reads 0% for a 1M opus session.
+        Best-effort: a missing record/row never breaks the session loop.
+        """
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.context_used_tokens = used_tokens
+            rec.context_max_tokens = max_tokens
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(
+                    context_used_tokens=used_tokens, context_max_tokens=max_tokens)
+            )
 
     async def _maybe_push(self, session_id: str, status: str) -> None:
         """Fire an outbound push alert when a session enters a top-tier needs-you status.
@@ -860,6 +880,8 @@ class SessionOrchestrator:
                 active_goal=getattr(row, "active_goal", None),
                 branch=branch,
                 authored_branches=list(getattr(row, "authored_branches", None) or []),
+                context_used_tokens=getattr(row, "context_used_tokens", None),
+                context_max_tokens=getattr(row, "context_max_tokens", None),
             )
             added += 1
             log_event(log, logging.INFO, "session.reattach",
@@ -900,43 +922,50 @@ class SessionOrchestrator:
         """Relaunch background tasks snapshotted at the last drain. Called once after
         rehydrate() on daemon start; safe to call again (cleared snapshots + _rearmed
         make it idempotent). Returns the count of sessions re-armed."""
+        from sqlalchemy import or_
         from sqlalchemy import select as sa_select
         async with db_session() as db:
             rows = (await db.execute(sa_select(DbSession).where(
-                DbSession.pending_rearm.isnot(None)))).scalars().all()
-        pending = [(r.id, r.pending_rearm) for r in rows
-                   if r.pending_rearm and r.id not in self._rearmed]
+                or_(DbSession.pending_rearm.isnot(None),
+                    DbSession.pending_prompt.isnot(None))))).scalars().all()
+        pending = [(r.id, r.pending_rearm, r.pending_prompt) for r in rows
+                   if (r.pending_rearm or r.pending_prompt) and r.id not in self._rearmed]
         if not pending:
             return 0
         sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
 
-        async def _one(sid: str, snap: list) -> bool:
+        async def _one(sid: str, snap: list | None, prompt: str | None) -> bool:
             async with sem:
                 try:
-                    return await self._rearm_session(sid, snap)
+                    return await self._rearm_session(sid, snap, prompt)
                 except Exception:
                     log.warning("rearm: session %s failed; snapshot retained", sid,
                                 exc_info=True)
                     return False
 
-        results = await asyncio.gather(*(_one(sid, snap) for sid, snap in pending))
+        results = await asyncio.gather(
+            *(_one(sid, snap, prompt) for sid, snap, prompt in pending))
         n = sum(1 for ok in results if ok)
         log.info("rearm: re-armed %d/%d session(s)", n, len(pending))
         return n
 
-    async def _rearm_session(self, sid: str, snap: list) -> bool:
+    async def _rearm_session(self, sid: str, snap: list | None,
+                             prompt: str | None = None) -> bool:
         from sqlalchemy import update as sa_update
-        tasks = [OpenBgTask.from_dict(d) for d in snap if isinstance(d, dict)]
-        if not tasks:
+        tasks = [OpenBgTask.from_dict(d) for d in (snap or []) if isinstance(d, dict)]
+        if not tasks and not prompt:
             return False
         driver = await self.ensure_driver(sid)
         if driver is None:
             return False
-        await driver.send_prompt(build_rearm_prompt(tasks))
+        if tasks:
+            await driver.send_prompt(build_rearm_prompt(tasks))
+        if prompt:
+            await driver.send_prompt(prompt)
         self._rearmed.add(sid)
         async with db_session() as db:
             await db.execute(sa_update(DbSession).where(DbSession.id == sid)
-                             .values(pending_rearm=None))
+                             .values(pending_rearm=None, pending_prompt=None))
         return True
 
     async def _maybe_rearm_on_attach(self, session_id: str) -> None:
@@ -950,8 +979,9 @@ class SessionOrchestrator:
                 row = (await db.execute(sa_select(DbSession).where(
                     DbSession.id == session_id))).scalar_one_or_none()
             snap = row.pending_rearm if row else None
-            if snap:
-                await self._rearm_session(session_id, snap)
+            prompt = row.pending_prompt if row else None
+            if snap or prompt:
+                await self._rearm_session(session_id, snap, prompt)
         except Exception:
             log.warning("rearm-on-attach failed session=%s", session_id, exc_info=True)
 
@@ -1095,6 +1125,12 @@ class SessionOrchestrator:
         """Number of sessions currently mid-turn or awaiting input (restart-blocking)."""
         return sum(1 for r in self._records.values() if r.status in _ACTIVE_STATUSES)
 
+    def condensing_session_count(self) -> int:
+        """Number of sessions mid-compaction. A subset of active_session_count():
+        compaction is uninterruptible and loses data if killed mid-write, so the
+        deploy drain protects these past the ordinary turn cap (see deploy.drain)."""
+        return sum(1 for r in self._records.values() if r.status == "condensing")
+
     def restart_safe(self) -> bool:
         """True when a restart now would interrupt no in-flight work."""
         return self.active_session_count() == 0
@@ -1133,6 +1169,15 @@ class SessionOrchestrator:
                     await db.execute(sa_update(DbSession).where(DbSession.id == sid)
                                      .values(pending_rearm=snap))
                     n += len(snap)
+            # Parallel pass: snapshot each live session's in-flight foreground prompt
+            # iff its turn produced no durable output yet (driver gates this). Writing
+            # None for sessions with nothing resumable also clears any stale value.
+            for sid in session_ids:
+                drv = self._drivers.get(sid)
+                getter = getattr(drv, "pending_foreground_prompt", None)
+                prompt = getter() if callable(getter) else None
+                await db.execute(sa_update(DbSession).where(DbSession.id == sid)
+                                 .values(pending_prompt=prompt))
         if n:
             log.info("rearm snapshot: %d open task(s) across %d session(s)",
                      n, len(session_ids))
@@ -1140,7 +1185,7 @@ class SessionOrchestrator:
     async def _clear_rearm_snapshots(self) -> None:
         from sqlalchemy import update as sa_update
         async with db_session() as db:
-            await db.execute(sa_update(DbSession).values(pending_rearm=None))
+            await db.execute(sa_update(DbSession).values(pending_rearm=None, pending_prompt=None))
 
     def drain_status(self) -> dict:
         """Report drain state: 'idle' (not draining), 'draining' (turns still running),
@@ -1153,7 +1198,9 @@ class SessionOrchestrator:
         else:
             state = "draining"
         elapsed = (time.monotonic() - self._drain_started_at) if self._draining else 0.0
-        return {"state": state, "busySessions": active, "elapsed": round(elapsed, 1)}
+        return {"state": state, "busySessions": active,
+                "condensing": self.condensing_session_count(),
+                "elapsed": round(elapsed, 1)}
 
     async def begin_drain(self, selfclear_sec: float | None = None) -> dict:
         """Enter DRAINING: refuse new turns, tell the UI, and arm a self-clear timer so a
@@ -1336,6 +1383,7 @@ class SessionOrchestrator:
                     on_session_id=self._persist_claude_session_id,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
                     on_status=self._persist_status,
+                    on_context_usage=self._persist_context_usage,
                     on_record_condense_ms=self._record_condense_ms,
                     get_condense_estimate=self._condense_estimate,
                     on_recoverable_failure=self._handle_recoverable_failure,
@@ -1432,6 +1480,7 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, cand.account),
                 on_status=self._persist_status,
+                on_context_usage=self._persist_context_usage,
                 on_record_condense_ms=self._record_condense_ms,
                 get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
@@ -1951,6 +2000,15 @@ class SessionOrchestrator:
                                retry_after: float | None) -> None:
         """Apply the recovery policy for one recoverable turn failure."""
         now = self._clock()
+        if kind == "turn_dropped":
+            # The turn dropped before the model committed any continuation. Resend the last
+            # prompt on the same account (idempotent — nothing was committed), bounded so a
+            # persistent drop can't loop. Not an account fault → no rotation/quarantine/pause.
+            if self._recovery.resend_cap_reached(record.id, now=now):
+                return
+            self._recovery.record_resend(record.id, now=now)
+            await self._replay_same_account(record, 0.0)
+            return
         if self._recovery.rotation_cap_reached(record.id, now=now):
             await self._pause_session(record, reason="rotation_cap")
             return
@@ -2126,6 +2184,7 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
                 on_status=self._persist_status,
+                on_context_usage=self._persist_context_usage,
                 on_record_condense_ms=self._record_condense_ms,
                 get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,

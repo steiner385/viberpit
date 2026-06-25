@@ -257,6 +257,25 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 return None
             return driver
 
+        async def _emit_persisted_context_usage(rec) -> None:
+            """Re-emit the record's last exact context usage as a contextUsage frame.
+
+            No-op when there's no record or no persisted reading (a session that has
+            never finished a turn). Best-effort: never blocks the attach."""
+            used = getattr(rec, "context_used_tokens", None) if rec is not None else None
+            mx = getattr(rec, "context_max_tokens", None) if rec is not None else None
+            if not isinstance(used, int) or not isinstance(mx, int) or mx <= 0:
+                return
+            try:
+                from server.sessions import events as ev
+                await _send(redact_event(ev.ContextUsage(
+                    used_tokens=used, max_tokens=mx,
+                    percentage=round(used / mx * 100, 1),
+                    model=getattr(rec, "model", None),
+                ).to_wire()))
+            except Exception:
+                log.warning("ws.attach: context usage re-emit failed", exc_info=True)
+
         async def _emit_live_extras(session_id: str, driver, events: list) -> None:
             """Post-attach live wiring: suggestion seeding, command catalog, pending
             permission/question re-emit, live status, and the deferred initial prompt.
@@ -359,6 +378,14 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 log.warning("ws.attach: session daemon unavailable for %s", session_id)
                 await websocket.close(code=1013)
                 return
+
+            # Replay the last EXACT context usage so the ctx% readout is right immediately —
+            # the live ContextUsage event is never re-emitted, so without this a reloaded
+            # session falls back to the model-string approximation (0% for a 1M opus session
+            # whose API-stripped id lacks the `[1m]` marker). Emitted for live AND detached
+            # sessions; survives the following replayReset (which doesn't clear contextUsage).
+            await _emit_persisted_context_usage(rec)
+
             if rec is not None and getattr(rec, "detached", False):
                 await _replay_and_complete(session_id)
                 return

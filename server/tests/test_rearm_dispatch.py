@@ -42,6 +42,38 @@ def test_rearm_dispatches_one_turn_and_clears(tmp_path):
     asyncio.run(run())
 
 
+def test_rearm_resends_pending_prompt_only_and_clears(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'rp.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(DbSession(id="s1", name="n", account_name="a", cwd=str(tmp_path),
+                             pending_prompt="resume me"))   # only a prompt, no bg tasks
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+        await orch.rehydrate()
+
+        sent = []
+        class _D:
+            async def send_prompt(self, text, images=None): sent.append(text)
+        async def _ensure(sid, identity="system"):
+            orch._drivers[sid] = _D(); return orch._drivers[sid]
+        orch.ensure_driver = _ensure  # type: ignore
+
+        n = await orch.rearm_background_tasks()
+        assert n == 1
+        assert sent == ["resume me"]
+        assert "s1" in orch._rearmed
+        async with db_session() as db:
+            row = (await db.execute(select(DbSession).where(DbSession.id == "s1"))).scalar_one()
+            assert row.pending_prompt is None and row.pending_rearm is None
+
+        # idempotent: a second pass does nothing
+        assert await orch.rearm_background_tasks() == 0
+
+    asyncio.run(run())
+
+
 def test_rearm_failure_retains_snapshot(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'r2.db'}"
 

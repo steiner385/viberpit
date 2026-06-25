@@ -45,7 +45,7 @@ class SessionDriver:
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
-                 on_recoverable_failure=None, clock=None, suggester=None):
+                 on_recoverable_failure=None, on_context_usage=None, clock=None, suggester=None):
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -71,6 +71,11 @@ class SessionDriver:
         # rotation). ``clock`` is injected only for deterministic retry-after-from-reset
         # tests; production uses wall-clock time.
         self._on_recoverable_failure = on_recoverable_failure
+        # async callback ``on_context_usage(session_id, used_tokens, max_tokens)`` fired
+        # after each turn settles. Lets the orchestrator persist the exact reading on the
+        # SessionRecord so the WS bridge can replay it on attach (the live ContextUsage event
+        # is otherwise never re-emitted, leaving reloaded sessions on the 0%-pinning fallback).
+        self._on_context_usage = on_context_usage
         self._clock = clock or time.time
         self._last_progress_at: float = self._clock()
         self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
@@ -91,6 +96,7 @@ class SessionDriver:
         self._suggester = suggester
         self._suggest_task: asyncio.Task | None = None
         self._last_user_text: str = ""
+        self._turn_produced_output: bool = False
         self._last_assistant_parts: list[str] = []
         self._last_turn_id: str = ""
         self._idle_seeded: bool = False
@@ -132,6 +138,14 @@ class SessionDriver:
     def current_status(self) -> str:
         """The rich derived status right now (no side effects). Used on WS attach."""
         return derive_status(self._dash_signals())
+
+    def pending_foreground_prompt(self) -> str | None:
+        """The active foreground prompt iff a turn is live and has produced no durable
+        output yet — safe to re-send after a deploy/crash kill without duplicating
+        work. Returns None once the turn has emitted text or run a tool."""
+        if self._turn_active and not self._turn_produced_output:
+            return self._last_user_text
+        return None
 
     async def _on_pre_compact(self, input=None, tool_use_id=None, ctx=None) -> dict:
         """SDK PreCompact hook: compaction is starting. Stamp the start, advertise the
@@ -387,6 +401,7 @@ class SessionDriver:
         self._cancel_suggest()
         self._last_user_text = text
         self._last_assistant_parts = []
+        self._turn_produced_output = False
         self._turn_active = True
         self._last_turn_outcome = "success"
         await self._emit_status()
@@ -475,7 +490,9 @@ class SessionDriver:
                         self._last_turn_outcome = e.outcome
                         self._last_turn_id = e.turn_id
                     elif isinstance(e, ev.ErrorEvent):
-                        await self._maybe_signal_recovery(e.code, e.message)
+                        await self._maybe_signal_recovery(e.code, e.raw_message or e.message)
+                    if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
+                        self._turn_produced_output = True
                     self._note_progress(e)
                     await self._out.put(e)
                 if self.claude_session_id is None and self._tr.session_id:
@@ -647,6 +664,12 @@ class SessionDriver:
             used_tokens=used, max_tokens=mx,
             percentage=float(pct) if isinstance(pct, (int, float)) else round(used / mx * 100, 1),
             model=model if isinstance(model, str) else None))
+        # Persist the exact reading so a fresh attach can replay it (live-only otherwise).
+        if self._on_context_usage is not None:
+            try:
+                await self._on_context_usage(self.session_id, used, mx)
+            except Exception:
+                log.debug("on_context_usage persist failed session=%s", self.session_id, exc_info=True)
 
     async def reconnect(self) -> None:
         """Tear down the SDK client and start a FRESH session (resume=None).
