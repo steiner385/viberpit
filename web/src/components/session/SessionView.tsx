@@ -48,6 +48,9 @@ export function SessionView({ sessionId, onBack, onDone, onNavigateSession, init
   const { detach } = useSessionSocket()
   const rt = useSessionRuntime(sessionId, initialPrompt)
   const { prevId, nextId } = useSessionNeighbors(sessionId)
+  // Both chevrons render as a pair: useSessionNeighbors returns prevId/nextId
+  // both-null (single/unknown session) or both-set (wraparound), never one null.
+  const hasNeighbors = prevId !== null || nextId !== null
 
   // Keep modeRef current so the keydown handler reads the latest mode without
   // needing to re-register the listener on every mode change.
@@ -145,7 +148,7 @@ export function SessionView({ sessionId, onBack, onDone, onNavigateSession, init
           ← Back
         </button>
 
-        {(prevId !== null || nextId !== null) && (
+        {hasNeighbors && (
           <button
             type="button"
             onClick={() => prevId && onNavigateSession?.(prevId)}
@@ -163,7 +166,7 @@ export function SessionView({ sessionId, onBack, onDone, onNavigateSession, init
 
         <span className="flex-1 text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
 
-        {(prevId !== null || nextId !== null) && (
+        {hasNeighbors && (
           <button
             type="button"
             onClick={() => nextId && onNavigateSession?.(nextId)}
