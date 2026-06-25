@@ -60,6 +60,14 @@ def register_orchestrator_rpc(app, orch) -> None:
         infos = orch.prs_for(params.get("session_id"))
         return {"prs": [i.to_dict() for i in infos]}
 
+    import inspect
+
+    async def all_prs(params: dict) -> dict:
+        items = orch.all_prs()
+        if inspect.isawaitable(items):
+            items = await items
+        return {"prs": [p.to_dict() for p in items]}
+
     register_rpc(app, "ensure_driver", ensure_driver)
     register_rpc(app, "list_sessions", list_sessions)
     register_rpc(app, "get_session", get_session)
@@ -67,8 +75,7 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "send_prompt", send_prompt)
     register_rpc(app, "pr_for", pr_for)
     register_rpc(app, "prs_for", prs_for)
-
-    import inspect
+    register_rpc(app, "all_prs", all_prs)
 
     async def _maybe_await(r):
         return await r if inspect.isawaitable(r) else r
