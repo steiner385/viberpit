@@ -67,24 +67,36 @@ confirms durability; a live echo does not.**
 2. Live echo `user` event (`replaying === false`) → turn renders; buffer unchanged.
 3. Reconnect → `replayReset` wipes turns; buffer survives (separate state).
 4. Replay `user` events (`replaying === true`): each matching a buffered entry by
-   text means that prompt is on disk → remove it from the buffer (buffer hygiene).
-5. `replayComplete` → for each entry still in the buffer, append a synthetic user
-   turn **only if no existing user turn already carries that text** (FIFO match), so
-   it doesn't vanish but also never duplicates one that's already shown.
-6. Next reconnect: disk has caught up → step 4 removes the entry, and even if it
-   lingered, step 5's presence guard prevents a duplicate. Self-healed.
+   text means that prompt is on disk → remove it from the buffer. This consume step
+   is the **matching mechanism** — after a replay finishes, every entry left in the
+   buffer is provably not on disk.
+5. `replayComplete` → if this completion followed a `replayReset` (`hadReset`),
+   append a synthetic user turn for **every** entry still in the buffer. No per-turn
+   presence check is needed: the reset wiped `turns`, the replay rebuilt them from
+   disk only, and disk turns never carry a `pending:N` id, so an unconditional append
+   cannot duplicate.
+6. Next reconnect: disk has caught up → step 4 removes the entry → step 5 appends
+   nothing. Self-healed.
 
-### Why the presence guard in step 5 matters
+### Why the re-assert is gated on `hadReset` (as-built)
+
+> **Implementation note.** An earlier draft of this spec guarded step 5 on "text not
+> already present in `turns`". That guard is wrong: in the FIFO-duplicate case (two
+> identical prompts, one already on disk) the on-disk turn for the *consumed* entry
+> would falsely suppress re-assertion of the still-unconfirmed duplicate. The shipped
+> code uses a `hadReset` flag instead, described below. See `reducer.ts` (`replayReset`
+> / `replayComplete`).
 
 The server sends `replayReset` only when the transcript is non-empty
 (`bridge/ws.py:191`), but `replayComplete` **always** fires (`bridge/ws.py:205`). So
-an attach against a not-yet-written transcript produces a `replayComplete` with **no
-preceding wipe** — the live-echo turn is still present. Re-asserting unconditionally
-would duplicate it. Guarding on "text not already present in `turns`" makes
-re-assertion idempotent and safe in both the wiped and not-wiped cases. The step-4
-consume keeps the buffer honest (bounded to genuinely-unconfirmed prompts) but is not
-correctness-critical on its own — the presence guard is what guarantees correct
-display.
+an attach against a not-yet-written transcript (and every error path) produces a
+`replayComplete` with **no preceding wipe** — the live-echo turn is still present, and
+re-asserting would duplicate it. The reducer sets `hadReset = true` in the
+`replayReset` case and clears it in `replayComplete`; step 5 runs only when `hadReset`
+is set. A bare `replayComplete` (no reset) therefore never re-asserts. Because a real
+reset always wipes `turns` first and the consume step (4) already removed every
+disk-confirmed prompt from the buffer, the remaining entries are exactly the
+genuinely-unconfirmed ones — so step 5 appends them all, unconditionally and safely.
 
 ## Data structures
 
@@ -92,6 +104,7 @@ display.
 // added to TranscriptState
 pendingSent: { id: string; text: string }[]   // FIFO, sent-but-unconfirmed-on-disk
 pendingSentSeq: number                         // monotonic counter for stable ids
+hadReset: boolean                              // true after replayReset; gates re-assert on replayComplete
 ```
 
 - **Matching:** FIFO by text. A replay `user` event consumes the *first* buffered
@@ -105,20 +118,20 @@ pendingSentSeq: number                         // monotonic counter for stable i
 
 ## Changes
 
-**`web/src/session/reducer.ts`** (4 touch points)
-- New `TranscriptState` fields `pendingSent` / `pendingSentSeq` (init `[]` / `0`).
+**`web/src/session/reducer.ts`** (as-built)
+- New `TranscriptState` fields `pendingSent` / `pendingSentSeq` / `hadReset`
+  (init `[]` / `0` / `false`).
 - New local action `_trackSentPrompt {text}`: push `{id:'pending:'+seq, text}`, bump
   seq, enforce the cap.
 - `user` case: when `state.replaying`, remove the first `pendingSent` entry whose
-  text equals the event text.
-- `replayComplete` case: for each remaining `pendingSent` entry, append a synthetic
-  user turn after the replayed turns **only if no current user turn already carries
-  that text** (FIFO match so duplicate texts are counted, not collapsed).
-- `replayReset` case: leave `pendingSent` / `pendingSentSeq` untouched (it currently
-  resets turns/subAgents/etc.).
-
-**`web/src/session/events.ts`** (or wherever `LocalAction` is unioned)
-- Add `{ type: '_trackSentPrompt'; text: string }` to the local-action union.
+  text equals the event text (the durability-match / consume step).
+- `replayReset` case: set `hadReset: true`; leave `pendingSent` / `pendingSentSeq`
+  untouched (the wipe must not drop unconfirmed prompts).
+- `replayComplete` case: clear `hadReset: false`; if it *was* set, append a synthetic
+  user turn for **every** remaining `pendingSent` entry (no per-turn presence check —
+  see the `hadReset` rationale above).
+- `LocalAction` union (lives in `reducer.ts`, not `events.ts`): add
+  `{ type: '_trackSentPrompt'; text: string }`.
 
 **`web/src/session/useSessionRuntime.ts`**
 - In `onPrompt`, the normal-follow-up branch (the `prompt(...)` path), dispatch
