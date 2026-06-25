@@ -1,5 +1,12 @@
 # Plotroom Merge — Phase 0 Implementation Plan
 
+> **⚠️ Built & merged (#258), with the parity model reworked vs this plan.** Tasks 1–2
+> (extend `PullRequestInfo`) shipped as written. The harness (Tasks 3–6) shipped but the
+> live oracle forced a redesign: number-keyed candidate, intersection-based `ok`, coverage
+> narrowed to `{number,url,checks}`. See the superseded note in
+> `…/specs/2026-06-23-plotroom-merge-phase0-parity-foundation-design.md`. The engine port
+> beyond Phase 0 is decomposed in `2026-06-24-m5-phase1-engine-port.md` (+ `…-m5-1c-eta-engine.md`).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a parity harness that diffs ccswitch's GitHub PR/CI snapshot against a live Plotroom `GET /api/state`, and extend ccswitch's existing PR snapshot to carry the fields that harness compares — with zero user-visible change.
