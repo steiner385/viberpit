@@ -18,15 +18,19 @@ export function DeployPanel() {
   const phases = deploy?.phases ?? {}
   const failedResume = deploy?.restore?.failed?.length ?? 0
   const allDone = PHASES.every(p => phases[p] === 'done')
+  const count = pending?.commits.length ?? 0
+  const ci = pending?.ci ?? 'unavailable'
   // A deploy that finished cleanly leaves its phases populated in the controller
   // (kept for the /status API), but it must not pin a persistent banner. Only keep
   // the checklist up while running or when something is actionable (error / failed resume).
   const cleanlyDone = !running && allDone && !deploy?.error && failedResume === 0
-  const showPhases = (running || Object.keys(phases).length > 0) && !cleanlyDone
+  // A prior deploy that failed only at the preflight CI gate is stale once the live
+  // poller reports green: re-clicking Deploy now would now pass, so don't pin the frozen
+  // failure (it only updates when a new deploy starts). Fall back to the actionable row.
+  const preflightStale = !running && phases.preflight === 'failed' && ci === 'green'
+  const showPhases =
+    (running || Object.keys(phases).length > 0) && !cleanlyDone && !preflightStale
   if (!behind && !showPhases) return null
-
-  const count = pending?.commits.length ?? 0
-  const ci = pending?.ci ?? 'unavailable'
   const canDeploy = behind && !running && ci === 'green'
   const reason = running ? 'deploying…' : ci !== 'green' ? `CI ${ci}` : ''
 

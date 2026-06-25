@@ -73,12 +73,28 @@ describe('DeployPanel', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('shows preflight phase when it fails', () => {
-    mockHooks({ behind: true, commits: [], ci: 'green' },
+  it('shows preflight phase when it fails and live CI still agrees', () => {
+    mockHooks({ behind: true, commits: [], ci: 'red' },
               { running: false, phases: { preflight: 'failed' }, warnings: [],
                 error: 'CI verdict=red' })
     render(<DeployPanel />)
     expect(screen.getByText(/preflight/i)).toBeInTheDocument()
+    expect(screen.getByText(/CI verdict=red/i)).toBeInTheDocument()
+  })
+
+  it('auto-dismisses a stale preflight failure once live CI goes green', () => {
+    // The last deploy failed at the CI gate (verdict was pending/red at the time);
+    // the live poller now reports green, so the frozen failure is superseded.
+    mockHooks(
+      { behind: true, commits: [{ sha: 'a', subject: 's', author: 't', iso: 'i' }], ci: 'green' },
+      { running: false, phases: { preflight: 'failed' }, warnings: [], error: 'CI verdict=pending' })
+    render(<DeployPanel />)
+    // The frozen failure snapshot is gone…
+    expect(screen.queryByText(/CI verdict=pending/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('failed')).not.toBeInTheDocument()
+    // …and the banner falls back to a clean, actionable pending row.
+    expect(screen.getByText(/1 change.*pending/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /deploy now/i })).toBeEnabled()
   })
 
 })
