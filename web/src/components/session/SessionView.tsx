@@ -21,6 +21,8 @@ import { SessionComposer } from './SessionComposer'
 import { SessionBody } from './SessionBody'
 import { CommandResultOverlay } from './CommandResultOverlay'
 import { SessionActions } from '@/components/session/SessionActions'
+import { StatusPill } from '@/components/UsageBadge'
+import type { SessionStatus } from '@/api/types'
 
 /**
  * Cycle to the next permission mode in PERMISSION_MODES order.
@@ -134,6 +136,15 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
         </button>
 
         <span className="flex-1 text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
+
+        {/*
+          The same compact status pill the session card renders. Reads the live
+          runtime status (`rt.state.status.state`) and routes it through the shared
+          statusPresentation vocabulary, so label/icon/color stay identical to the
+          card. `flex-shrink-0` protects it from the greedy `flex-1` title — a long
+          title truncates rather than squeezing the status out of view.
+        */}
+        <StatusPill status={rt.state.status.state as SessionStatus} className="flex-shrink-0" />
 
         <SessionActions
           sessionId={sessionId}

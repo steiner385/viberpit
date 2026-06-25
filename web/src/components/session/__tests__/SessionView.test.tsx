@@ -352,6 +352,20 @@ describe('SessionView', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Ready')
   })
 
+  it('shows the card-style StatusPill in the top bar reflecting the live status', async () => {
+    // The same compact pill the session card renders (StatusPill from UsageBadge),
+    // distinguished from the StatusBar by its `aria-label="Status: <label>"`.
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    // Idle on open → "Ready".
+    expect(screen.getByLabelText('Status: Ready')).toBeInTheDocument()
+
+    // Live status flows from the runtime: a `status` event flips it to "Working…".
+    emitSessionEvent({ type: 'status', state: 'in_progress', count: 1 })
+    await waitFor(() => {
+      expect(screen.getByLabelText(/^Status: Working/)).toBeInTheDocument()
+    })
+  })
+
   it('calls onBack when Back button is clicked', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
