@@ -37,7 +37,20 @@ BETA_HEADER = "oauth-2025-04-20"
 
 
 class AuthError(Exception):
-    """Token genuinely rejected (400 invalid_grant / 401) — needs refresh or re-auth."""
+    """Token genuinely rejected (400 invalid_grant / 401) — needs refresh or re-auth.
+
+    Carries the HTTP status and a truncated response body so the failure can be
+    audited and (later) classified against the real error code instead of guessed.
+    """
+    def __init__(self, message: str, *, status: int | None = None, body: str | None = None):
+        super().__init__(message)
+        self.status = status
+        self.body = body
+
+
+def _truncate_body(body: bytes, limit: int = 2048) -> str:
+    """Decode a response body to text, lossless-ish, truncated to `limit` chars."""
+    return body[:limit].decode("latin-1", errors="replace")
 
 
 class TransientError(Exception):
@@ -239,9 +252,12 @@ def refresh_access_token(refresh_token: str, prior: dict, *,
         raise TransientError(f"token refresh rate-limited/unavailable: {status}")
     if status in (400, 401):
         # The ONLY statuses that prove the grant itself is rejected (400
-        # invalid_grant / 401 unauthorized). These — and only these — flip the
-        # account to needs-reauth.
-        raise AuthError(f"token refresh failed with {status}")
+        # invalid_grant / 401 unauthorized). Carry the body so the needs-reauth
+        # flip is auditable and a future classifier can read the real error code.
+        raise AuthError(
+            f"token refresh failed with {status}",
+            status=status, body=_truncate_body(body),
+        )
     if status != 200:
         # Any other non-2xx (notably 403 — a Cloudflare edge block, `error code:
         # 1010`) is NOT proof the grant is dead. It's environmental and hits every

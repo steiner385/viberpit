@@ -173,6 +173,27 @@ class TestOAuth(unittest.TestCase):
             blob = oauth.refresh_access_token("tok", {})
         self.assertEqual(blob["scopes"], [])
 
+    def test_refresh_400_autherror_carries_status_and_body(self):
+        from unittest import mock
+        import pytest
+        from ccswitch import oauth
+        body = b'{"error":"invalid_grant","error_description":"expired"}'
+        with mock.patch.object(oauth, "http_request", return_value=(400, body)):
+            with pytest.raises(oauth.AuthError) as ei:
+                oauth.refresh_access_token("oldR", {})
+        assert ei.value.status == 400
+        assert "invalid_grant" in ei.value.body
+
+    def test_refresh_400_body_is_truncated(self):
+        from unittest import mock
+        import pytest
+        from ccswitch import oauth
+        big = b'{"error":"' + b"x" * 5000 + b'"}'
+        with mock.patch.object(oauth, "http_request", return_value=(400, big)):
+            with pytest.raises(oauth.AuthError) as ei:
+                oauth.refresh_access_token("oldR", {})
+        assert len(ei.value.body) <= 2048
+
 
 class TestUserAgent(unittest.TestCase):
     def test_http_request_sends_ccswitch_user_agent(self):
