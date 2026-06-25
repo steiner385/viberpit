@@ -49,6 +49,7 @@ from server.sessions.recovery import (
 )
 from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
+from server.obs.context import log_event
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
@@ -505,6 +506,8 @@ class SessionOrchestrator:
             usage_unverified=usage_unverified,
         )
         self._records[session_id] = record
+        log_event(log, logging.INFO, "session.start",
+                  session_id=session_id, **{"from": None, "to": "idle", "reason": "create"})
         log.info("session.create id=%s account=%s", session_id, account)
         return record
 
@@ -859,6 +862,9 @@ class SessionOrchestrator:
                 authored_branches=list(getattr(row, "authored_branches", None) or []),
             )
             added += 1
+            log_event(log, logging.INFO, "session.reattach",
+                      session_id=row.id,
+                      **{"from": row.status, "to": status, "reason": "rehydrate"})
             # Self-heal a stuck `waiting_external`: that status is only ever an overlay
             # on a finished `done` turn (see _persist_status), so if the session is no
             # longer parked — e.g. its background pollers were killed by a deploy and are
@@ -870,6 +876,10 @@ class SessionOrchestrator:
                 if not await asyncio.to_thread(is_parked, path):
                     self._records[row.id].status = "done"
                     healed[row.id] = "done"
+                    log_event(log, logging.INFO, "session.unpark",
+                              session_id=row.id,
+                              **{"from": "waiting_external", "to": "done",
+                                 "reason": "bg_tasks_cleared"})
         # Persist any derived branches + healed statuses so the next rehydrate reads them directly.
         if backfilled or healed:
             from sqlalchemy import update as sa_update
@@ -2142,6 +2152,9 @@ class SessionOrchestrator:
                 "toAccount": new_account, "reason": reason,
                 "turnRestarted": bool(last),
             })
+            log_event(log, logging.INFO, "session.rotate",
+                      session_id=record.id,
+                      from_account=old, to_account=new_account, reason=reason)
         except Exception:
             log.exception("reassign.error session=%s", record.id)
 
@@ -2223,6 +2236,10 @@ class SessionOrchestrator:
                 .where(DbSession.id == session_id)
                 .values(status="archived")
             )
+        prev_status = record.status if record is not None else None
+        log_event(log, logging.INFO, "session.terminal",
+                  session_id=session_id,
+                  **{"from": prev_status, "to": "archived", "reason": "archive"})
         log.info("session.archive id=%s done", session_id)
 
     async def list_archived(self) -> list[dict]:
