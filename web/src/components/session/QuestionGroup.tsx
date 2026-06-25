@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { Block } from '@/session/reducer'
 import { cn } from '@/lib/utils'
 import { QuestionCard, type StagedAnswer } from './QuestionCard'
@@ -16,8 +16,18 @@ interface Props {
  * user can revisit and change any of them before committing; nothing is sent
  * until every question is answered and "Submit all answers" is pressed.
  */
+const navBtn = cn(
+  'flex h-7 w-7 items-center justify-center rounded text-base leading-none',
+  'text-gray-600 dark:text-gray-300',
+  'hover:bg-amber-100/70 dark:hover:bg-amber-900/30',
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+  'disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent',
+)
+
 export function QuestionGroup({ questions, onAnswer }: Props) {
   const [answers, setAnswers] = useState<Map<string, StagedAnswer>>(new Map())
+  const [active, setActive] = useState(0)
+  const trackRef = useRef<HTMLDivElement>(null)
 
   const stage = (questionId: string, answer: StagedAnswer) =>
     setAnswers((prev) => {
@@ -26,10 +36,33 @@ export function QuestionGroup({ questions, onAnswer }: Props) {
       return next
     })
 
-  const allAnswered = questions.every((q) => {
+  const isAnswered = (q: QuestionBlock) => {
     const a = answers.get(q.questionId)
     return a !== undefined && a.selected.length > 0
-  })
+  }
+  const allAnswered = questions.every(isAnswered)
+  const answeredCount = questions.filter(isAnswered).length
+  const lastIndex = questions.length - 1
+
+  // Drive the snap track to a given card. Scroll-snap handles swipe/drag on its
+  // own; this lets the arrows and dots jump there too (and is a no-op in jsdom,
+  // which doesn't implement scrollIntoView).
+  const goTo = (i: number) => {
+    const clamped = Math.max(0, Math.min(lastIndex, i))
+    setActive(clamped)
+    const card = trackRef.current?.children[clamped] as HTMLElement | undefined
+    if (card && typeof card.scrollIntoView === 'function') {
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
+    }
+  }
+
+  // Keep the indicator in sync when the user swipes/scrolls the track directly.
+  const onScroll = () => {
+    const track = trackRef.current
+    if (!track || track.clientWidth === 0) return
+    const i = Math.round(track.scrollLeft / track.clientWidth)
+    setActive(Math.max(0, Math.min(lastIndex, i)))
+  }
 
   const submitAll = () => {
     for (const q of questions) {
@@ -40,15 +73,77 @@ export function QuestionGroup({ questions, onAnswer }: Props) {
 
   return (
     <div className="space-y-2">
-      {questions.map((q) => (
-        <QuestionCard
-          key={q.questionId}
-          block={q}
-          onAnswer={onAnswer}
-          staged={answers.get(q.questionId) ?? null}
-          onStage={stage}
-        />
-      ))}
+      {/* Position + progress, with prev/next and clickable dots so the carousel
+          is discoverable and keyboard-navigable (not just swipe-only). */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs text-gray-600 dark:text-gray-400" aria-live="polite">
+          Question {active + 1} of {questions.length}
+          <span aria-hidden="true" className="mx-1.5 text-gray-400 dark:text-gray-600">·</span>
+          {answeredCount}/{questions.length} answered
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            className={navBtn}
+            aria-label="Previous question"
+            disabled={active === 0}
+            onClick={() => goTo(active - 1)}
+          >
+            ‹
+          </button>
+          {questions.map((q, i) => (
+            <button
+              key={q.questionId}
+              type="button"
+              aria-label={`Go to question ${i + 1}`}
+              aria-current={i === active ? 'true' : undefined}
+              onClick={() => goTo(i)}
+              className={cn(
+                'h-2 w-2 rounded-full transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+                i === active
+                  ? 'bg-blue-600'
+                  : isAnswered(q)
+                    ? 'bg-blue-300 dark:bg-blue-700'
+                    : 'bg-gray-300 dark:bg-gray-600',
+              )}
+            />
+          ))}
+          <button
+            type="button"
+            className={navBtn}
+            aria-label="Next question"
+            disabled={active === lastIndex}
+            onClick={() => goTo(active + 1)}
+          >
+            ›
+          </button>
+        </div>
+      </div>
+
+      {/* Horizontal scroll-snap track: one full-width card per snap point. */}
+      <div
+        ref={trackRef}
+        onScroll={onScroll}
+        data-testid="question-carousel"
+        className={cn(
+          'flex snap-x snap-mandatory overflow-x-auto scroll-smooth gap-3',
+          '-mx-1 px-1', // keep focus rings from clipping at the track edges
+          '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
+        )}
+      >
+        {questions.map((q) => (
+          <div key={q.questionId} className="w-full shrink-0 snap-center">
+            <QuestionCard
+              block={q}
+              onAnswer={onAnswer}
+              staged={answers.get(q.questionId) ?? null}
+              onStage={stage}
+            />
+          </div>
+        ))}
+      </div>
+
       <button
         type="button"
         disabled={!allAnswered}

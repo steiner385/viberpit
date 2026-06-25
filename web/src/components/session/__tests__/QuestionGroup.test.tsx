@@ -18,6 +18,32 @@ describe('QuestionGroup', () => {
     expect(screen.getByText('b?')).toBeInTheDocument()
   })
 
+  it('lays the questions out in a horizontal snap carousel, not a vertical stack', () => {
+    render(<QuestionGroup questions={[mk('a'), mk('b')]} onAnswer={vi.fn()} />)
+    const track = screen.getByTestId('question-carousel')
+    // horizontal scroll-snap track — the swipe-left/right behaviour
+    expect(track.className).toMatch(/overflow-x-auto/)
+    expect(track.className).toMatch(/snap-x/)
+    // each question is a full-width, non-shrinking snap target
+    for (const item of Array.from(track.children)) {
+      expect(item.className).toMatch(/snap-(center|start)/)
+      expect(item.className).toMatch(/w-full/)
+      expect(item.className).toMatch(/shrink-0/)
+    }
+  })
+
+  it('shows a position indicator and steps through with prev/next', async () => {
+    const user = userEvent.setup()
+    render(<QuestionGroup questions={[mk('a'), mk('b'), mk('c')]} onAnswer={vi.fn()} />)
+    expect(screen.getByText(/question 1 of 3/i)).toBeInTheDocument()
+    const next = screen.getByRole('button', { name: /next question/i })
+    const prev = screen.getByRole('button', { name: /previous question/i })
+    expect(prev).toBeDisabled()
+    await user.click(next)
+    expect(screen.getByText(/question 2 of 3/i)).toBeInTheDocument()
+    expect(prev).toBeEnabled()
+  })
+
   it('disables submit until all questions are answered', async () => {
     const user = userEvent.setup()
     render(<QuestionGroup questions={[mk('a'), mk('b')]} onAnswer={vi.fn()} />)
