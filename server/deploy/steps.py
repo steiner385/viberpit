@@ -63,14 +63,25 @@ def guard_working_tree(repo: str, run: Run = subprocess.run) -> bool:
 
 
 def fast_forward(repo: str, ref: str = "master", run: Run = subprocess.run) -> None:
-    """Pull with --ff-only from origin.
+    """Fast-forward the local branch to origin/<ref>.
 
-    Raises DeployError("update", ...) if pull fails (non-zero exit).
+    Deliberately fetches and then fast-forwards to the *tracking ref* (origin/<ref>)
+    rather than using `git pull` (which merges the shared FETCH_HEAD). The deploy
+    controller and the 30s DetectLoop both fetch this same worktree's FETCH_HEAD;
+    two concurrent `git fetch origin <ref>` duplicate the for-merge line, so a
+    `git pull --ff-only` intermittently dies with "Cannot fast-forward to multiple
+    branches". origin/<ref> is a single unambiguous ref, immune to that race.
+
+    Raises DeployError("update", ...) if the fetch or the fast-forward fails.
     """
-    r = run(["git", "-C", repo, "pull", "--ff-only", "origin", ref],
+    f = run(["git", "-C", repo, "fetch", "--quiet", "origin", ref],
             capture_output=True, text=True)
-    if r.returncode != 0:
-        raise DeployError("update", f"fast-forward pull failed: {r.stderr.strip()}")
+    if f.returncode != 0:
+        raise DeployError("update", f"fetch failed: {f.stderr.strip()}")
+    m = run(["git", "-C", repo, "merge", "--ff-only", f"origin/{ref}"],
+            capture_output=True, text=True)
+    if m.returncode != 0:
+        raise DeployError("update", f"fast-forward failed: {m.stderr.strip()}")
 
 
 def changed_paths(repo: str, a: str, b: str, paths: list[str], run: Run = subprocess.run) -> list[str]:
