@@ -137,6 +137,26 @@ def ensure_valid_token(name: str) -> dict:
         return new_blob
 
 
+def acquire_valid_token(name: str) -> dict:
+    """Like ensure_valid_token, but recover a lost rotation before giving up.
+
+    If our slot's refresh token is rejected (AuthError), the live `cfg/` dir may
+    hold a token the SDK rotated that the poller never captured. sync_back pulls it
+    into the slot; if that yields a fresh token we use it instead of flipping the
+    account to needs-reauth. Idle accounts with no fresher copy re-raise, so the
+    genuine-dead-token case still surfaces.
+    """
+    try:
+        return ensure_valid_token(name)
+    except oauth.AuthError:
+        sync_back(name)
+        cfg = load_config()
+        blob = read_credentials(paths.slot_path(name))
+        if _is_fresh(blob, cfg):
+            return blob
+        raise
+
+
 def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -> oauth.Usage | None:
     """Cached-or-fetched usage. Returns None and marks needs-reauth if auth fails.
 
@@ -180,7 +200,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
     # Step 1: ensure the token is valid (may refresh if near-expiry).
     # If the refresh token is already dead, mark needs-reauth immediately — do not retry.
     try:
-        blob = ensure_valid_token(name)
+        blob = acquire_valid_token(name)
     except oauth.TransientError as e:
         # Token endpoint rate-limited (429) or unavailable (5xx). The refresh token
         # is presumed valid — leave status unchanged so a transient throttle can't
