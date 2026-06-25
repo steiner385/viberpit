@@ -5,6 +5,9 @@ import { MainPaneSession } from '../DesktopShell'
 vi.mock('@/api/hooks', () => ({
   useCloseSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   usePermanentDeleteSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // SessionActions calls this unconditionally (rules of hooks); the desktop
+  // header doesn't surface Rename, but the hook still runs.
+  useRenameSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 // Provide a runtime via the context the pane reads from. DesktopShell imports both

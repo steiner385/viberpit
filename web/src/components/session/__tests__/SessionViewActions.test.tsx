@@ -31,16 +31,24 @@ vi.mock('../CommandResultOverlay', () => ({ CommandResultOverlay: () => null }))
 vi.mock('@/api/hooks', () => ({
   useCloseSession: vi.fn(),
   usePermanentDeleteSession: vi.fn(),
+  // Mobile-only Rename (added when rename was dropped from the mobile session
+  // card — the detail view is its new home so the action isn't stranded).
+  useRenameSession: vi.fn(),
 }))
 
 function successMutation() {
   return { mutate: vi.fn((_id: string, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.()), isPending: false }
 }
 
+function renameMutation() {
+  return { mutate: vi.fn((_args: { id: string; name: string }, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.()), isPending: false }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(hooks.useCloseSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.useCloseSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+  vi.mocked(hooks.useRenameSession).mockReturnValue(renameMutation() as unknown as ReturnType<typeof hooks.useRenameSession>)
 })
 
 describe('SessionView header — archive/delete', () => {
@@ -76,6 +84,46 @@ describe('SessionView header — archive/delete', () => {
     expect(screen.queryByRole('menuitem', { name: /delete permanently/i })).not.toBeInTheDocument()
     expect(onBack).not.toHaveBeenCalled()
     expect(detach).not.toHaveBeenCalled()
+  })
+
+  it('exposes Rename in the overflow menu (its only home on mobile)', async () => {
+    const user = userEvent.setup()
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />)
+
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    expect(screen.getByRole('menuitem', { name: /rename/i })).toBeInTheDocument()
+  })
+
+  it('clicking Rename opens the rename dialog (and does not exit the session)', async () => {
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} />)
+
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    await user.click(screen.getByRole('menuitem', { name: /rename/i }))
+
+    expect(screen.getByRole('dialog', { name: /rename session/i })).toBeInTheDocument()
+    expect(onBack).not.toHaveBeenCalled()
+    expect(detach).not.toHaveBeenCalled()
+  })
+
+  it('submitting the rename calls the rename mutation and closes the dialog', async () => {
+    const mutate = vi.fn((_args: { id: string; name: string }, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.())
+    vi.mocked(hooks.useRenameSession).mockReturnValue({ mutate, isPending: false } as unknown as ReturnType<typeof hooks.useRenameSession>)
+
+    const user = userEvent.setup()
+    render(<SessionView sessionId="s1" onBack={vi.fn()} />)
+
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    await user.click(screen.getByRole('menuitem', { name: /rename/i }))
+
+    const input = screen.getByLabelText(/session name/i)
+    await user.clear(input)
+    await user.type(input, 'Renamed session')
+    await user.keyboard('{Enter}')
+
+    expect(mutate).toHaveBeenCalledWith({ id: 's1', name: 'Renamed session' }, expect.anything())
+    expect(screen.queryByRole('dialog', { name: /rename session/i })).not.toBeInTheDocument()
   })
 
   it('Escape closes the delete confirm dialog without exiting the session', async () => {
