@@ -72,6 +72,7 @@ export interface TranscriptState {
   condense: { active: boolean; expectedMs: number } | null
   pendingSent: { id: string; text: string }[]  // sent-but-unconfirmed-on-disk prompts (FIFO); survives replayReset
   pendingSentSeq: number                        // monotonic counter for stable synthetic ids
+  hadReset: boolean                             // true after a replayReset; guards re-assert on replayComplete
 }
 
 export const initialTranscript: TranscriptState = {
@@ -94,6 +95,7 @@ export const initialTranscript: TranscriptState = {
   condense: null,
   pendingSent: [],
   pendingSentSeq: 0,
+  hadReset: false,
 }
 
 /** Coerce a possibly-missing numeric usage field to a finite number (0 when absent). */
@@ -297,6 +299,15 @@ export function transcriptReducer(
       const { turnId, text } = ev
       const blocks = userTurnBlocks(turnId, text, ev.images, ev.ts)
 
+      // A disk replay (replaying=true) re-emitting this prompt proves it is durably
+      // on disk → drop the first matching pending entry. A live echo (replaying=false)
+      // does NOT confirm durability, so it must not consume the buffer.
+      let pendingSent = state.pendingSent
+      if (state.replaying) {
+        const pi = pendingSent.findIndex((p) => p.text === text)
+        if (pi !== -1) pendingSent = [...pendingSent.slice(0, pi), ...pendingSent.slice(pi + 1)]
+      }
+
       // Adopt an optimistic seed turn if present: re-key it in place to the real
       // server turnId instead of appending a duplicate. Unconditional adoption is
       // safe because a brand-new session starts with an empty replay — the first
@@ -308,7 +319,7 @@ export function transcriptReducer(
           role: 'user' as const,
           blocks,
         }))
-        return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [] }
+        return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
       }
 
       const idx = findTurnIdx(state.turns, turnId)
@@ -320,7 +331,7 @@ export function transcriptReducer(
         // Upsert: rebuild the existing turn's blocks (text + any attachments)
         nextTurns = replaceTurn(state.turns, idx, (t) => ({ ...t, blocks }))
       }
-      return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [] }
+      return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
     }
 
     // ── turnStart ─────────────────────────────────────────────────────────────
@@ -552,15 +563,46 @@ export function transcriptReducer(
       // transcript-rebuildable state so the following replay events rebuild it
       // cleanly. Live-only state that the replay does NOT re-emit (rotations,
       // queue, banner) is preserved.
-      return { ...state, turns: [], openBlockId: null, subAgents: {}, replaying: true,
+      return { ...state, turns: [], openBlockId: null, subAgents: {}, replaying: true, hadReset: true,
                earliestTurn: 0, totalTurns: 0, loadingOlder: false }
     }
 
     // ── replayComplete ────────────────────────────────────────────────────────
     case 'replayComplete': {
-      return { ...state, replaying: false,
-               earliestTurn: ev.earliestTurn ?? state.earliestTurn,
-               totalTurns: ev.totalTurns ?? state.totalTurns }
+      // Re-assert any sent-but-not-yet-on-disk prompts the just-finished replay did
+      // not bring back, so a reconnect that raced the transcript-file write does not
+      // silently drop the user's prompt.
+      //
+      // Only fires after a replayReset (hadReset) — the initial attach must not
+      // re-assert before the live echo arrives.
+      //
+      // Buffer entries consumed during the replay (by the disk-replay user case) are
+      // already gone from pendingSent; anything remaining is genuinely absent from
+      // disk and needs re-asserting.
+      //
+      // Guard: skip any pending entry whose exact synthetic turn (same id AND text) is
+      // already visible — defensive against a re-asserted turn surviving a non-wiping
+      // cycle (not possible after replayReset, but safe to check). Uses firstText to
+      // read the text of an existing turn without coupling to block structure details.
+      let turns = state.turns
+      if (state.hadReset && state.pendingSent.length > 0) {
+        const toAppend: Turn[] = []
+        for (const p of state.pendingSent) {
+          const alreadyPresent = turns.some((t) => t.id === p.id && firstText(t) === p.text)
+          if (!alreadyPresent) {
+            toAppend.push({ id: p.id, role: 'user' as const, blocks: userTurnBlocks(p.id, p.text) })
+          }
+        }
+        if (toAppend.length) turns = [...turns, ...toAppend]
+      }
+      return {
+        ...state,
+        replaying: false,
+        hadReset: false,
+        turns,
+        earliestTurn: ev.earliestTurn ?? state.earliestTurn,
+        totalTurns: ev.totalTurns ?? state.totalTurns,
+      }
     }
 
     // ── _setLoadingOlder ──────────────────────────────────────────────────────
