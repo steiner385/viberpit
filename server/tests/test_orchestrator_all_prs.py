@@ -1,5 +1,4 @@
 """Tests for PipelinePr dataclass and SessionOrchestrator.all_prs()."""
-import pytest
 from unittest import mock
 
 from server.github.pr_status import PipelinePr, PullRequestInfo

@@ -21,7 +21,10 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from server.github.pr_status import PipelinePr
 
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, worktrees

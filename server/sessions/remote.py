@@ -6,7 +6,12 @@ the vertical-slice methods only.
 """
 import asyncio
 import logging
+from typing import TYPE_CHECKING
+
 from ccswitch.oauth import Usage
+
+if TYPE_CHECKING:
+    from server.github.pr_status import PipelinePr
 from server.github.pr_status import PullRequestInfo
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 
