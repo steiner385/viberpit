@@ -222,6 +222,9 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
         setArmedQuestionId(null)
         return
       }
+      // Track the sent prompt so a reconnect whose replayReset outruns the
+      // transcript-file write can re-assert it instead of dropping it silently.
+      dispatch({ type: '_trackSentPrompt', text })
       prompt(sessionId, text, attachmentIds)
     },
     [sessionId, prompt, answerQuestion, armedQuestionId],
