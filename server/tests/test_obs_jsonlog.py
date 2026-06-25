@@ -1,10 +1,8 @@
 import json
 import logging
 
-import pytest
-
 from server.audit import redact_text
-from server.obs.context import bind_session, log_event
+from server.obs.context import bind_session
 from server.obs.jsonlog import ContextFilter, JSONFormatter
 
 
