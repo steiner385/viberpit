@@ -70,7 +70,14 @@ function SessionRoute() {
   }
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <SessionView sessionId={sessionId} onBack={() => navigate('/sessions')} onDone={handleDone} initialPrompt={initialPrompt} />
+      <SessionView
+        key={sessionId}
+        sessionId={sessionId}
+        onBack={() => navigate('/sessions')}
+        onDone={handleDone}
+        onNavigateSession={(id) => navigate(`/session/${id}`)}
+        initialPrompt={initialPrompt}
+      />
     </div>
   )
 }

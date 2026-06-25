@@ -179,6 +179,25 @@ describe('App routing', () => {
     expect(screen.getByTestId('pathname')).toHaveTextContent('/accounts')
   })
 
+  it('navigates to the next session via the › chevron', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.get).mockImplementation((path: string) => {
+      if (path === '/sessions') return Promise.resolve([
+        { id: 'sess-1', name: 'One', accountName: 'alice', status: 'idle',
+          createdAt: '2026-06-19T10:00:00Z', updatedAt: '2026-06-19T10:00:00Z' },
+        { id: 'sess-2', name: 'Two', accountName: 'alice', status: 'idle',
+          createdAt: '2026-06-19T10:00:00Z', updatedAt: '2026-06-19T10:00:00Z' },
+      ])
+      if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
+      return Promise.resolve([])
+    })
+    renderAt('/session/sess-1')
+    // Wait for useSessions to populate so the chevrons appear.
+    const next = await screen.findByRole('button', { name: /next session/i })
+    await user.click(next)
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/session/sess-2')
+  })
+
   it('renders the DesktopShell side-by-side layout at lg and up', async () => {
     vi.stubGlobal('matchMedia', (q: string) => ({
       matches: true, media: q,
