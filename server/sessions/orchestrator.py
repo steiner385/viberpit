@@ -450,6 +450,7 @@ class SessionOrchestrator:
             on_session_id=self._persist_claude_session_id,
             on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
             on_status=self._persist_status,
+            on_context_usage=self._persist_context_usage,
             on_record_condense_ms=self._record_condense_ms,
             get_condense_estimate=self._condense_estimate,
             on_recoverable_failure=self._handle_recoverable_failure,
@@ -639,6 +640,25 @@ class SessionOrchestrator:
         await self._maybe_push(session_id, status)
         if completed_turn:
             await self._maybe_apply_auto_name(session_id)
+
+    async def _persist_context_usage(self, session_id: str, used_tokens: int, max_tokens: int) -> None:
+        """Driver ``on_context_usage`` callback: persist the exact context-window occupancy.
+
+        Mirrors the in-memory record + DB row so the WS bridge can replay a ``contextUsage``
+        event on attach. Without this the live reading is lost on reload and the ctx% readout
+        falls back to the model-string approximation — which reads 0% for a 1M opus session.
+        Best-effort: a missing record/row never breaks the session loop.
+        """
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.context_used_tokens = used_tokens
+            rec.context_max_tokens = max_tokens
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(
+                    context_used_tokens=used_tokens, context_max_tokens=max_tokens)
+            )
 
     async def _maybe_push(self, session_id: str, status: str) -> None:
         """Fire an outbound push alert when a session enters a top-tier needs-you status.
@@ -857,6 +877,8 @@ class SessionOrchestrator:
                 active_goal=getattr(row, "active_goal", None),
                 branch=branch,
                 authored_branches=list(getattr(row, "authored_branches", None) or []),
+                context_used_tokens=getattr(row, "context_used_tokens", None),
+                context_max_tokens=getattr(row, "context_max_tokens", None),
             )
             added += 1
             # Self-heal a stuck `waiting_external`: that status is only ever an overlay
@@ -1325,6 +1347,7 @@ class SessionOrchestrator:
                     on_session_id=self._persist_claude_session_id,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
                     on_status=self._persist_status,
+                    on_context_usage=self._persist_context_usage,
                     on_record_condense_ms=self._record_condense_ms,
                     get_condense_estimate=self._condense_estimate,
                     on_recoverable_failure=self._handle_recoverable_failure,
@@ -1421,6 +1444,7 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, cand.account),
                 on_status=self._persist_status,
+                on_context_usage=self._persist_context_usage,
                 on_record_condense_ms=self._record_condense_ms,
                 get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
@@ -1940,6 +1964,15 @@ class SessionOrchestrator:
                                retry_after: float | None) -> None:
         """Apply the recovery policy for one recoverable turn failure."""
         now = self._clock()
+        if kind == "turn_dropped":
+            # The turn dropped before the model committed any continuation. Resend the last
+            # prompt on the same account (idempotent — nothing was committed), bounded so a
+            # persistent drop can't loop. Not an account fault → no rotation/quarantine/pause.
+            if self._recovery.resend_cap_reached(record.id, now=now):
+                return
+            self._recovery.record_resend(record.id, now=now)
+            await self._replay_same_account(record, 0.0)
+            return
         if self._recovery.rotation_cap_reached(record.id, now=now):
             await self._pause_session(record, reason="rotation_cap")
             return
@@ -2115,6 +2148,7 @@ class SessionOrchestrator:
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
                 on_status=self._persist_status,
+                on_context_usage=self._persist_context_usage,
                 on_record_condense_ms=self._record_condense_ms,
                 get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,

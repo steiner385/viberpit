@@ -26,6 +26,8 @@ CRASH_WINDOW: float = 120.0       # window (seconds) for tracking session crashe
 STALL_CAP: int = 3                # stall-watchdog interrupts per session within STALL_WINDOW
 STALL_WINDOW: float = 120.0       # window (seconds) for tracking session stalls
 STALL_TIMEOUT: float = float(os.environ.get("CCSWITCH_STALL_TIMEOUT_SEC", "300"))
+RESEND_CAP: int = 3              # auto-resends of a dropped turn per session within RESEND_WINDOW
+RESEND_WINDOW: float = 120.0     # window (seconds) for tracking dropped-turn resends
 
 
 class RecoveryState:
@@ -40,6 +42,9 @@ class RecoveryState:
         self._stalls: dict[str, list[float]] = defaultdict(list)  # session_id -> stall timestamps
         self._stall_cap = STALL_CAP
         self._stall_window = STALL_WINDOW
+        self._resends: dict[str, list[float]] = defaultdict(list)  # session_id -> resend timestamps
+        self._resend_cap = RESEND_CAP
+        self._resend_window = RESEND_WINDOW
 
     # --- quarantine -----------------------------------------------------------
     def quarantine(self, account: str, *, until: float) -> None:
@@ -85,3 +90,15 @@ class RecoveryState:
         recent = [t for t in self._stalls.get(session_id, ()) if t > cutoff]
         self._stalls[session_id] = recent
         return len(recent) >= self._stall_cap
+
+    # --- per-session dropped-turn resend cap ----------------------------------
+    def record_resend(self, session_id: str, *, now: float) -> None:
+        self._resends[session_id].append(now)
+
+    def resend_cap_reached(self, session_id: str, *, now: float) -> bool:
+        """True if *session_id* has already auto-resent ``resend_cap`` dropped turns
+        within the window."""
+        cutoff = now - self._resend_window
+        recent = [t for t in self._resends.get(session_id, ()) if t > cutoff]
+        self._resends[session_id] = recent
+        return len(recent) >= self._resend_cap

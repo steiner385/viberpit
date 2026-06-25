@@ -82,3 +82,27 @@ def test_stall_and_crash_caps_are_independent():
         s.record_stall("sess", now=1000.0)
     assert s.stall_cap_reached("sess", now=1000.0)
     assert not s.crash_cap_reached("sess", now=1000.0)   # stalls don't debit crash budget
+
+
+def test_resend_cap_reached_after_max_within_window():
+    s = RecoveryState()
+    for t in (0.0, 1.0, 2.0):
+        assert not s.resend_cap_reached("sess", now=t)
+        s.record_resend("sess", now=t)
+    assert s.resend_cap_reached("sess", now=3.0)
+
+
+def test_resends_outside_window_do_not_count():
+    s = RecoveryState()
+    s.record_resend("sess", now=0.0)
+    s.record_resend("sess", now=10.0)
+    s.record_resend("sess", now=20.0)
+    assert s.resend_cap_reached("sess", now=30.0)
+    assert not s.resend_cap_reached("sess", now=200.0)
+
+
+def test_resend_does_not_consume_crash_budget():
+    s = RecoveryState()
+    for _ in range(3):
+        s.record_resend("sess", now=1000.0)
+    assert not s.crash_cap_reached("sess", now=1000.0)  # separate budgets
