@@ -17,17 +17,19 @@ export function installGlobalErrorHandlers(logger: ClientLogger = clientLogger):
     )
   }
   const onPageHide = () => logger.flushBeacon()
+  const onVisibility = () => {
+    if (document.visibilityState === 'hidden') logger.flushBeacon()
+  }
 
   window.addEventListener('error', onError)
   window.addEventListener('unhandledrejection', onRejection)
   window.addEventListener('pagehide', onPageHide)
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') logger.flushBeacon()
-  })
+  document.addEventListener('visibilitychange', onVisibility)
 
   return () => {
     window.removeEventListener('error', onError)
     window.removeEventListener('unhandledrejection', onRejection)
     window.removeEventListener('pagehide', onPageHide)
+    document.removeEventListener('visibilitychange', onVisibility)
   }
 }
