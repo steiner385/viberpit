@@ -54,6 +54,11 @@ def _redact(text: str) -> str:
     return text
 
 
+def redact_text(text: str) -> str:
+    """Public credential redactor for arbitrary text (e.g. serialized JSON logs)."""
+    return _redact(text)
+
+
 def _redact_value(value: Any) -> Any:
     """Redact a single value (str, dict, list, or passthrough for other types)."""
     if isinstance(value, str):
