@@ -70,6 +70,8 @@ export interface TranscriptState {
   subAgents: Record<string, SubThread>   // keyed by the spawning Task toolId
   latestSuggestions: string[]  // next-prompt chips for the current idle turn
   condense: { active: boolean; expectedMs: number } | null
+  pendingSent: { id: string; text: string }[]  // sent-but-unconfirmed-on-disk prompts (FIFO); survives replayReset
+  pendingSentSeq: number                        // monotonic counter for stable synthetic ids
 }
 
 export const initialTranscript: TranscriptState = {
@@ -90,6 +92,8 @@ export const initialTranscript: TranscriptState = {
   subAgents: {},
   latestSuggestions: [],
   condense: null,
+  pendingSent: [],
+  pendingSentSeq: 0,
 }
 
 /** Coerce a possibly-missing numeric usage field to a finite number (0 when absent). */
@@ -109,12 +113,19 @@ export type LocalAction =
   | { type: '_clear';  text: string }
   | { type: '_prependHistory'; events: SessionEvent[]; earliestTurn: number }
   | { type: '_setLoadingOlder'; value: boolean }
+  | { type: '_trackSentPrompt'; text: string }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Return the index of a turn by id, or -1 if not found. */
 function findTurnIdx(turns: Turn[], id: string): number {
   return turns.findIndex((t) => t.id === id)
+}
+
+/** First text-block text of a turn (a user turn's prompt text), or '' if none. */
+function firstText(turn: Turn): string {
+  const b = turn.blocks.find((bl) => bl.kind === 'text')
+  return b && b.kind === 'text' ? b.text : ''
 }
 
 /**
@@ -661,6 +672,14 @@ export function transcriptReducer(
         turns: [...state.turns, { id: OPTIMISTIC_USER_ID, role: 'user', blocks: [block] }],
         openBlockId: null,
       }
+    }
+
+    case '_trackSentPrompt': {
+      const MAX = 20
+      const entry = { id: `pending:${state.pendingSentSeq}`, text: ev.text }
+      const next = [...state.pendingSent, entry]
+      const capped = next.length > MAX ? next.slice(next.length - MAX) : next
+      return { ...state, pendingSent: capped, pendingSentSeq: state.pendingSentSeq + 1 }
     }
 
     case '_clear': {
