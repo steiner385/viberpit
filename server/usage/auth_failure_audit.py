@@ -8,7 +8,6 @@ thread-safe queue handles the sync-worker-thread → async-DB boundary cleanly.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import queue
 from typing import Any, Callable
