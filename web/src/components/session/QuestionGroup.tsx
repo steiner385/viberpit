@@ -30,6 +30,17 @@ export function QuestionGroup({ questions, onAnswer }: Props) {
   const [trackH, setTrackH] = useState<number | undefined>(undefined)
   const trackRef = useRef<HTMLDivElement>(null)
 
+  // Start on the first question. A `snap-mandatory` track has no guaranteed
+  // initial scroll offset — the browser can resolve the first snap to the *last*
+  // snap point during layout, leaving the visible card out of sync with the
+  // `active` indicator. Reset scrollLeft before paint (useLayoutEffect, mount
+  // only) so question 1 is always the one shown. We set scrollLeft directly
+  // rather than scrollIntoView, which would also scroll ancestor containers
+  // (the chat transcript) on mount.
+  useLayoutEffect(() => {
+    if (trackRef.current) trackRef.current.scrollLeft = 0
+  }, [])
+
   // Size the track to the *active* card so the panel grows/shrinks to the
   // question you're viewing — no dead space under short cards, no internal
   // scroll on tall ones. A ResizeObserver re-measures when a card expands

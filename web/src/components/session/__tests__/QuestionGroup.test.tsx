@@ -47,6 +47,14 @@ describe('QuestionGroup', () => {
     expect(prev).toBeEnabled()
   })
 
+  it('starts the carousel on the first question, not the last', () => {
+    render(<QuestionGroup questions={[mk('a'), mk('b'), mk('c')]} onAnswer={vi.fn()} />)
+    // indicator points at the first question…
+    expect(screen.getByText(/question 1 of 3/i)).toBeInTheDocument()
+    // …and the snap track is scrolled to the start, not snapped to the last card
+    expect(screen.getByTestId('question-carousel').scrollLeft).toBe(0)
+  })
+
   it('disables submit until all questions are answered', async () => {
     const user = userEvent.setup()
     render(<QuestionGroup questions={[mk('a'), mk('b')]} onAnswer={vi.fn()} />)
