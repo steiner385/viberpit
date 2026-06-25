@@ -3,7 +3,11 @@ from __future__ import annotations
 import asyncio, json, logging, urllib.request, base64
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from pywebpush import WebPushException, webpush
+
 from server import config
+from server.db import db_session
+from server.sessions import push_store
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +31,59 @@ async def push(title: str, body: str, *, url: str | None = None, opener=urllib.r
     except Exception:
         log.warning("push.failed", exc_info=True)
         return False
+
+
+def _send_one(subscription_info: dict, data: str, *, sender) -> int:
+    """Send one Web Push. Returns the HTTP status; raises WebPushException on failure."""
+    resp = sender(
+        subscription_info=subscription_info,
+        data=data,
+        vapid_private_key=config.VAPID_PRIVATE_KEY,
+        vapid_claims={"sub": config.VAPID_SUBJECT},
+        timeout=5,
+    )
+    return getattr(resp, "status_code", 0)
+
+
+async def _webpush_sink(payload: dict, *, sender=webpush) -> None:
+    """Send `payload` to every stored subscription. Prune 404/410. Never raises."""
+    if not config.VAPID_PRIVATE_KEY:
+        return
+    data = json.dumps(payload)
+    async with db_session() as db:
+        subs = await push_store.list_subscriptions(db)
+        dead: list[str] = []
+        for s in subs:
+            sub_info = {"endpoint": s.endpoint,
+                        "keys": {"p256dh": s.p256dh, "auth": s.auth}}
+            try:
+                await asyncio.to_thread(_send_one, sub_info, data, sender=sender)
+            except WebPushException as e:
+                if getattr(getattr(e, "response", None), "status_code", None) in (404, 410):
+                    dead.append(s.endpoint)
+                else:
+                    log.warning("webpush.send_failed", exc_info=True)
+            except Exception:
+                log.warning("webpush.send_failed", exc_info=True)
+        for endpoint in dead:
+            await push_store.delete_subscription(db, endpoint)
+        if dead:
+            await db.commit()
+
+
+async def notify(title: str, body: str, *, url: str | None = None) -> None:
+    """Fan a notification out to all sinks (webhook + web-push). Fire-and-forget; never raises."""
+    try:
+        await push(title, body, url=url)
+    except Exception:
+        log.warning("notify.webhook_failed", exc_info=True)
+    payload = {"title": title, "body": body}
+    if url:
+        payload["url"] = url
+    try:
+        await _webpush_sink(payload)
+    except Exception:
+        log.warning("notify.webpush_failed", exc_info=True)
 
 
 def generate_vapid_keys() -> tuple[str, str]:
