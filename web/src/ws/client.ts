@@ -58,6 +58,10 @@ export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'rec
 
 const BACKOFF_BASE_MS = 500
 const BACKOFF_MAX_MS  = 10_000
+// How long a socket must stay open before we treat it as healthy and reset the
+// reconnect backoff. Shorter than this and we assume it's a flapping connection
+// (e.g. a deploy restart accepting then dropping the socket) and let backoff grow.
+const CONNECTION_STABLE_MS = 3_000
 
 function jitter(ms: number): number {
   return ms * (0.8 + Math.random() * 0.4)
@@ -69,6 +73,7 @@ export class SessionSocket {
   private _activeSessionId: string | null = null
   private _reconnectAttempt = 0
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private _stableTimer: ReturnType<typeof setTimeout> | null = null
   private _destroyed = false
   private _listeners: { [K in keyof EventMap]?: Set<EventMap[K]> } = {}
   private _queryClient: QueryClient | null = null
@@ -102,8 +107,17 @@ export class SessionSocket {
     this.ws = ws
 
     ws.onopen = () => {
-      this._reconnectAttempt = 0
       this._setConnectionState('connected')
+      // Reset the backoff only once the connection proves STABLE. During a deploy
+      // restart the edge can accept the socket then immediately drop it (daemon not
+      // ready); resetting the attempt counter on every fleeting open defeats
+      // exponential backoff and produces a ~500ms connect/close storm that flickers
+      // the reconnecting banner. Arm a timer and reset only if the socket survives it.
+      this._clearStableTimer()
+      this._stableTimer = setTimeout(() => {
+        this._reconnectAttempt = 0
+        this._stableTimer = null
+      }, CONNECTION_STABLE_MS)
       // Re-attach active session so server replays session history
       if (this._activeSessionId) {
         this._send({ type: 'attach', sessionId: this._activeSessionId })
@@ -126,6 +140,7 @@ export class SessionSocket {
     }
 
     ws.onclose = (e: CloseEvent) => {
+      this._clearStableTimer()
       if (this._destroyed) return
       // 1000 = normal, 1001 = navigation; anything else is unexpected and worth logging.
       const expected = e.code === 1000 || e.code === 1001
@@ -146,8 +161,16 @@ export class SessionSocket {
       clearTimeout(this._reconnectTimer)
       this._reconnectTimer = null
     }
+    this._clearStableTimer()
     this.ws?.close()
     this.ws = null
+  }
+
+  private _clearStableTimer() {
+    if (this._stableTimer !== null) {
+      clearTimeout(this._stableTimer)
+      this._stableTimer = null
+    }
   }
 
   // ── Outbound messages ───────────────────────────────────────────────────────
