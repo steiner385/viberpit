@@ -124,12 +124,6 @@ function findTurnIdx(turns: Turn[], id: string): number {
   return turns.findIndex((t) => t.id === id)
 }
 
-/** First text-block text of a turn (a user turn's prompt text), or '' if none. */
-function firstText(turn: Turn): string {
-  const b = turn.blocks.find((bl) => bl.kind === 'text')
-  return b && b.kind === 'text' ? b.text : ''
-}
-
 /**
  * Return a new turns array with the turn at `idx` replaced by the result of
  * `fn`. Turns before and after are referentially identical (important for
@@ -576,24 +570,17 @@ export function transcriptReducer(
       // Only fires after a replayReset (hadReset) — the initial attach must not
       // re-assert before the live echo arrives.
       //
-      // Buffer entries consumed during the replay (by the disk-replay user case) are
-      // already gone from pendingSent; anything remaining is genuinely absent from
-      // disk and needs re-asserting.
-      //
-      // Guard: skip any pending entry whose exact synthetic turn (same id AND text) is
-      // already visible — defensive against a re-asserted turn surviving a non-wiping
-      // cycle (not possible after replayReset, but safe to check). Uses firstText to
-      // read the text of an existing turn without coupling to block structure details.
+      // After a replayReset, the buffer holds only unconfirmed prompts: disk-confirmed
+      // ones were already consumed in the `user` case during the replay (replaying=true
+      // path), so every remaining entry is genuinely absent from the just-finished
+      // replay and needs re-asserting. No per-turn presence check is needed — after a
+      // reset the turns array was wiped, so `pending:N` ids cannot already be present.
       let turns = state.turns
       if (state.hadReset && state.pendingSent.length > 0) {
-        const toAppend: Turn[] = []
-        for (const p of state.pendingSent) {
-          const alreadyPresent = turns.some((t) => t.id === p.id && firstText(t) === p.text)
-          if (!alreadyPresent) {
-            toAppend.push({ id: p.id, role: 'user' as const, blocks: userTurnBlocks(p.id, p.text) })
-          }
-        }
-        if (toAppend.length) turns = [...turns, ...toAppend]
+        const toAppend: Turn[] = state.pendingSent.map((p) => ({
+          id: p.id, role: 'user' as const, blocks: userTurnBlocks(p.id, p.text),
+        }))
+        turns = [...turns, ...toAppend]
       }
       return {
         ...state,

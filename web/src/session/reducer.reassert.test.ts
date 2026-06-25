@@ -110,4 +110,14 @@ describe('transcriptReducer — re-assert on replay', () => {
     expect(s.pendingSent).toEqual([{ id: 'pending:0', text: 'keep' }])
     expect(s.pendingSentSeq).toBe(1)
   })
+
+  it('initial replayComplete (no reset) does not re-assert even with a populated buffer', () => {
+    // A prompt is tracked but no replayReset has occurred (hadReset stays false);
+    // the initial/empty-transcript replayComplete must not synthesize a turn before
+    // the live echo arrives.
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'hello' })
+    s = transcriptReducer(s, DONE)        // initial replayComplete, hadReset=false
+    expect(userTexts(s)).toEqual([])      // nothing re-asserted
+    expect(s.pendingSent).toHaveLength(1) // still buffered
+  })
 })
