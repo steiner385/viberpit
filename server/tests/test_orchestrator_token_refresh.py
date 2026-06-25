@@ -79,3 +79,20 @@ async def test_start_launches_token_refresh_monitor_and_stop_cancels():
     await orch.stop()
     assert task.cancelled() or task.done()
     assert orch._token_refresh_task is None  # stop() nulls the handle
+
+
+def test_poller_usage_fn_tags_path_poller_idle(monkeypatch):
+    """The default _poller_usage_fn must pass path="poller-idle" to usage_for."""
+    import server.sessions.orchestrator as orch_mod
+    seen: dict = {}
+
+    def fake_usage_for(name, *, allow_refresh=True, path="unknown"):
+        seen["path"] = path
+        seen["name"] = name
+        return None
+
+    monkeypatch.setattr(orch_mod.ccswitch_accounts, "usage_for", fake_usage_for)
+    # Build WITHOUT a usage_fn so the real _poller_usage_fn wrapper is created.
+    orch = orch_mod.SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0)
+    orch._poller._usage_fn("primary")  # call the wired poller fn directly
+    assert seen == {"path": "poller-idle", "name": "primary"}

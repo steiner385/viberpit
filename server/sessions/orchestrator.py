@@ -217,6 +217,7 @@ class SessionOrchestrator:
                 return ccswitch_accounts.usage_for(
                     name,
                     allow_refresh=not self.has_live_session(name),
+                    path="poller-idle",
                 )
 
         self._poll_interval = poll_interval

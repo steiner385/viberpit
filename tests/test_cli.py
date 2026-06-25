@@ -29,7 +29,7 @@ class TestCli(unittest.TestCase):
             self._seed("alpha")
             with mock.patch.object(accounts, "usage_for", return_value=usage(session=12.0)) as uf:
                 self.assertEqual(cli.main(["list"]), 0)
-                uf.assert_called_once_with("alpha")
+                uf.assert_called_once_with("alpha", path="cli")
 
     def test_list_no_refresh_skips_fetch(self):
         with temp_env():
