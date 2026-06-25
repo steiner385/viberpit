@@ -99,6 +99,13 @@ class Session(Base):
     # incidental row writes — so it stays meaningful. Nullable so init_db backfills on the
     # dev SQLite DB without a migration; NULL = no turn yet → label falls back to created_at.
     last_turn_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    # Last EXACT context-window occupancy from the SDK (the `/context` data), refreshed
+    # each turn. Replayed on attach so a reloaded/idle session shows real remaining context
+    # rather than the per-call approximation (which guesses the window from the model id and
+    # reads 0% for a 1M opus session whose API-stripped id lacks the `[1m]` marker). NULL =
+    # no turn has reported usage yet. Nullable so init_db backfills on dev SQLite without a migration.
+    context_used_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    context_max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
 
 
 class AppSession(Base):

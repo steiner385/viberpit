@@ -48,6 +48,13 @@ class SessionRecord:
     active_goal: str | None = None    # active /goal condition; None = no goal
     usage_unverified: bool = False    # transient: account picked without a usage read (optimistic)
     authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
+    # Last EXACT context-window occupancy from the SDK (the `/context` data), refreshed
+    # each turn. Persisted + replayed on attach so a reloaded/idle session shows real
+    # remaining context instead of the per-call approximation — which divides by a window
+    # guessed from the model string and reads 0% for a 1M session whose API-stripped model
+    # id ("claude-opus-4-8", no `[1m]`) looks like a 200k window. None until a turn reports it.
+    context_used_tokens: int | None = None
+    context_max_tokens: int | None = None
 
     def to_dict(self) -> dict:
         # `updatedAt` is the "active … ago" / last-activity time, matching the HTTP
@@ -71,6 +78,8 @@ class SessionRecord:
             "activeGoal": self.active_goal,
             "usageUnverified": self.usage_unverified,
             "authoredBranches": list(self.authored_branches),
+            "contextUsedTokens": self.context_used_tokens,
+            "contextMaxTokens": self.context_max_tokens,
         }
 
     @classmethod
@@ -96,4 +105,6 @@ class SessionRecord:
             active_goal=d.get("activeGoal"),
             usage_unverified=d.get("usageUnverified", False),
             authored_branches=list(d.get("authoredBranches") or []),
+            context_used_tokens=d.get("contextUsedTokens"),
+            context_max_tokens=d.get("contextMaxTokens"),
         )

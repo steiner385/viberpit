@@ -521,10 +521,12 @@ export function transcriptReducer(
     // ── contextUsage ──────────────────────────────────────────────────────────
     case 'contextUsage': {
       // Exact context-window occupancy from the SDK (same data as `/context`),
-      // emitted after each live turn settles. Preferred over the `usage`-based
-      // approximation for the ctx% readout — see useSessionRuntime. Live-only:
-      // replay never re-emits it, so it is intentionally preserved across
-      // replayReset (like rotations/queue) rather than cleared.
+      // emitted after each live turn settles AND re-emitted from the persisted record
+      // on attach (server/bridge/ws.py) so a reloaded/idle session shows real remaining
+      // context instead of the model-string approximation. Preferred over the `usage`-based
+      // approximation for the ctx% readout — see useSessionRuntime. The transcript replay
+      // itself never carries it, so it is intentionally preserved across replayReset (like
+      // rotations/queue) rather than cleared.
       const maxTokens = num(ev.maxTokens)
       if (!(maxTokens > 0)) return state
       return { ...state, contextUsage: { usedTokens: num(ev.usedTokens), maxTokens } }
