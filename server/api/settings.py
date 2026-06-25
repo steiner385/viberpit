@@ -13,6 +13,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 _VALID_MODES = {"interactive", "auto", "allowlist", "full-auto"}
 _VALID_TOOL_DETAIL = {"auto", "all-closed", "all-open"}
+_VALID_AUTOFIX = {"off", "propose", "auto"}
 
 
 class SettingsBody(BaseModel):
@@ -20,6 +21,7 @@ class SettingsBody(BaseModel):
     thinkingCollapsed: bool | None = None
     repoRoot: str | None = None
     defaultToolDetail: str | None = None
+    prAutofixMode: str | None = None
 
 
 async def _get_or_create(db) -> AppSettings:
@@ -37,6 +39,7 @@ def _to_dict(s: AppSettings) -> dict:
         "thinkingCollapsed": s.thinking_collapsed,
         "repoRoot": s.repo_root,
         "defaultToolDetail": s.default_tool_detail or "auto",
+        "prAutofixMode": s.pr_autofix_mode or "propose",
     }
 
 
@@ -56,5 +59,7 @@ async def put_settings_row(body: SettingsBody, _identity: str = Depends(current_
         row.repo_root = body.repoRoot
     if body.defaultToolDetail is not None and body.defaultToolDetail in _VALID_TOOL_DETAIL:
         row.default_tool_detail = body.defaultToolDetail
+    if body.prAutofixMode is not None and body.prAutofixMode in _VALID_AUTOFIX:
+        row.pr_autofix_mode = body.prAutofixMode
     await db.flush()
     return _to_dict(row)

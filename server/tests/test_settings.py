@@ -149,3 +149,62 @@ def test_put_rejects_invalid_tool_detail():
                 )
                 assert put_resp.status_code == 200
                 assert put_resp.json()["defaultToolDetail"] == "auto"
+
+
+# ---------------------------------------------------------------------------
+# prAutofixMode
+# ---------------------------------------------------------------------------
+
+
+def test_pr_autofix_mode_defaults_to_propose():
+    """GET /api/settings returns prAutofixMode 'propose' by default (NULL row)."""
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            _, client = _make_app_and_client()
+            with client:
+                resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    assert resp.json()["prAutofixMode"] == "propose"
+
+
+def test_pr_autofix_mode_roundtrip():
+    """PUT {prAutofixMode: 'auto'} then GET → 'auto'."""
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            _, client = _make_app_and_client()
+            with client:
+                put_resp = client.put(
+                    "/api/settings",
+                    json={"prAutofixMode": "auto"},
+                    headers=IDENTITY_HEADERS,
+                )
+                assert put_resp.status_code == 200
+                assert put_resp.json()["prAutofixMode"] == "auto"
+
+                get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+                assert get_resp.status_code == 200
+                assert get_resp.json()["prAutofixMode"] == "auto"
+
+
+def test_pr_autofix_mode_rejects_invalid():
+    """PUT {prAutofixMode: 'bogus'} → value silently stays at prior good value."""
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            _, client = _make_app_and_client()
+            with client:
+                # First set a valid value.
+                client.put(
+                    "/api/settings",
+                    json={"prAutofixMode": "auto"},
+                    headers=IDENTITY_HEADERS,
+                )
+                # Then try to set an invalid value.
+                put_resp = client.put(
+                    "/api/settings",
+                    json={"prAutofixMode": "bogus"},
+                    headers=IDENTITY_HEADERS,
+                )
+                assert put_resp.status_code == 200
+                # Invalid value silently ignored — prior good value preserved.
+                assert put_resp.json()["prAutofixMode"] == "auto"
