@@ -5,6 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ccswitch
 User=tony
 WorkingDirectory=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
 # Runtime secrets/config (DB url, signing keys, tailnet allowlist) + PATH/HOME so
