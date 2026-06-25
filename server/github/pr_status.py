@@ -42,6 +42,7 @@ class PullRequestInfo:
     updated_at: str = ""
     checks_detail: tuple[CheckDetail, ...] = ()
     stage: str = ""  # open-stage classifier output: 'ci' | 'ready' | 'parked' | ''
+    repo: str = ""  # nameWithOwner, e.g. "owner/name"; populated by the population poller
 
     def to_dict(self) -> dict:
         return {
@@ -57,6 +58,7 @@ class PullRequestInfo:
             "updated_at": self.updated_at,
             "checks_detail": [c.to_dict() for c in self.checks_detail],
             "stage": self.stage,
+            "repo": self.repo,
         }
 
     @classmethod
@@ -75,11 +77,26 @@ class PullRequestInfo:
             updated_at=d.get("updated_at", ""),
             checks_detail=tuple(CheckDetail.from_dict(c) for c in d.get("checks_detail", [])),
             stage=d.get("stage", ""),
+            repo=d.get("repo", ""),
         )
 
 
 def _alias(i: int) -> str:
     return f"r{i}"
+
+
+# Shared PR-node selection so build_pr_query (per-branch) and the population
+# query (per-repo) can never drift in which fields they fetch.
+_PR_NODE_FIELDS = (
+    "number url title state isDraft updatedAt mergedAt headRefOid mergeStateStatus\n"
+    "      commits(last: 1) { nodes { commit { statusCheckRollup { state\n"
+    "        contexts(first: 100) { nodes {\n"
+    "          __typename\n"
+    "          ... on CheckRun { name conclusion }\n"
+    "          ... on StatusContext { context state }\n"
+    "        } }\n"
+    "      } } } }"
+)
 
 
 def build_pr_query(pairs: list[tuple[str, str]]) -> str:
@@ -97,15 +114,7 @@ def build_pr_query(pairs: list[tuple[str, str]]) -> str:
             f"{_alias(i)}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
             f"  pullRequests(headRefName: {json.dumps(branch)}, first: 5, "
             f"orderBy: {{field: UPDATED_AT, direction: DESC}}) {{\n"
-            f"    nodes {{ number url title state isDraft updatedAt mergedAt headRefOid mergeStateStatus\n"
-            f"      commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state\n"
-            f"        contexts(first: 100) {{ nodes {{\n"
-            f"          __typename\n"
-            f"          ... on CheckRun {{ name conclusion }}\n"
-            f"          ... on StatusContext {{ context state }}\n"
-            f"        }} }}\n"
-            f"      }} }} }} }}\n"
-            f"    }}\n"
+            f"    nodes {{ {_PR_NODE_FIELDS} }}\n"
             f"  }}\n"
             f"  deployments(environments: [{json.dumps(PRODUCTION_ENVIRONMENT)}], "
             f"orderBy: {{field: CREATED_AT, direction: DESC}}, first: 5) {{\n"

@@ -308,3 +308,19 @@ def test_pull_request_info_parity_fields_roundtrip():
         {"number": 1, "url": "u", "state": "open", "checks": "none", "title": "t"}
     )
     assert legacy.head_sha == "" and legacy.checks_detail == ()
+
+
+def test_pull_request_info_repo_round_trips():
+    info = PullRequestInfo(
+        number=7, url="https://github.com/o/n/pull/7", state="open",
+        checks="passing", title="t", repo="o/n",
+    )
+    d = info.to_dict()
+    assert d["repo"] == "o/n"
+    assert PullRequestInfo.from_dict(d).repo == "o/n"
+
+
+def test_pull_request_info_repo_defaults_empty_for_old_payload():
+    # An old daemon payload has no "repo" key — from_dict must tolerate it.
+    d = {"number": 1, "url": "u", "state": "open", "checks": "none"}
+    assert PullRequestInfo.from_dict(d).repo == ""
