@@ -62,6 +62,17 @@ describe('DeployPanel', () => {
     render(<DeployPanel />)
     expect(screen.getByText(/2 session.*failed to resume/i)).toBeInTheDocument()
   })
+  it('renders nothing after a clean successful deploy (all phases done, no error/failures)', () => {
+    mockHooks(
+      { behind: false, commits: [], ci: 'green' },
+      { running: false,
+        phases: { preflight: 'done', save: 'done', update: 'done', report: 'done', restart: 'done', resume: 'done' },
+        warnings: ['drain cap — restarting anyway'],
+        restore: { restored: ['s1', 's2'], failed: [] } })
+    const { container } = render(<DeployPanel />)
+    expect(container).toBeEmptyDOMElement()
+  })
+
   it('shows preflight phase when it fails', () => {
     mockHooks({ behind: true, commits: [], ci: 'green' },
               { running: false, phases: { preflight: 'failed' }, warnings: [],

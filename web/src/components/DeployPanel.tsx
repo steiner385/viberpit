@@ -15,8 +15,15 @@ export function DeployPanel() {
 
   const behind = pending?.behind ?? false
   const running = deploy?.running ?? false
-  const hasPhases = deploy && Object.keys(deploy.phases ?? {}).length > 0
-  if (!behind && !running && !hasPhases) return null
+  const phases = deploy?.phases ?? {}
+  const failedResume = deploy?.restore?.failed?.length ?? 0
+  const allDone = PHASES.every(p => phases[p] === 'done')
+  // A deploy that finished cleanly leaves its phases populated in the controller
+  // (kept for the /status API), but it must not pin a persistent banner. Only keep
+  // the checklist up while running or when something is actionable (error / failed resume).
+  const cleanlyDone = !running && allDone && !deploy?.error && failedResume === 0
+  const showPhases = (running || Object.keys(phases).length > 0) && !cleanlyDone
+  if (!behind && !showPhases) return null
 
   const count = pending?.commits.length ?? 0
   const ci = pending?.ci ?? 'unavailable'
@@ -51,7 +58,7 @@ export function DeployPanel() {
           ))}
         </ul>
       )}
-      {(running || hasPhases) && deploy && (
+      {showPhases && deploy && (
         <div className="mt-2 border-t border-amber-200 pt-2">
           <ol className="space-y-0.5">
             {PHASES.map(p => {
