@@ -39,6 +39,10 @@ def test_drain_snapshots_foreground_prompt(tmp_path):
             assert row.pending_prompt == "the prompt"
 
         orch.cancel_drain()
+        await asyncio.sleep(0.05)                            # let the clear task run (async DB needs >1 yield)
+        async with db_session() as db:
+            row = (await db.execute(select(DbSession).where(DbSession.id == "s1"))).scalar_one()
+            assert row.pending_prompt is None
 
     asyncio.run(run())
 

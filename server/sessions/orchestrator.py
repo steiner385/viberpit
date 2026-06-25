@@ -1152,7 +1152,7 @@ class SessionOrchestrator:
     async def _clear_rearm_snapshots(self) -> None:
         from sqlalchemy import update as sa_update
         async with db_session() as db:
-            await db.execute(sa_update(DbSession).values(pending_rearm=None))
+            await db.execute(sa_update(DbSession).values(pending_rearm=None, pending_prompt=None))
 
     def drain_status(self) -> dict:
         """Report drain state: 'idle' (not draining), 'draining' (turns still running),
