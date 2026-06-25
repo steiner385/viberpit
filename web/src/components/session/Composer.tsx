@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
-import { Paperclip, X, Play, ChevronUp } from 'lucide-react'
+import { Paperclip, X, Sparkles, ChevronUp } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { QUICK_REPLIES } from '@/lib/quickReplies'
 import { useImageAttachments } from './useImageAttachments'
 import { useSessionDraft, type DraftAttachment } from './useSessionDraft'
 import { AttachmentChips } from './AttachmentChips'
@@ -144,7 +145,7 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
     }
   }, [])
 
-  const showPlay = !isWorking && text === ''
+  const showResume = !isWorking && text === ''
 
   const play = useCallback(() => {
     // Existing suggestion (shown as ghost text) → send it immediately. Otherwise
@@ -343,7 +344,7 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
           <Paperclip size={16} aria-hidden="true" />
         </button>
 
-        {showPlay && (
+        {showResume && (
           <div className="relative flex items-center">
             <button
               type="button"
@@ -356,25 +357,23 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400',
               )}
             >
-              <Play size={16} aria-hidden="true" />
+              <Sparkles size={16} aria-hidden="true" />
             </button>
-            {suggestions && suggestions.length >= 2 && (
-              <button
-                type="button"
-                aria-label="More suggestions"
-                aria-haspopup="menu"
-                aria-expanded={menuOpen}
-                onClick={() => setMenuOpen((o) => !o)}
-                className={cn(
-                  'flex-shrink-0 rounded-md px-1 py-2 min-h-[44px] text-emerald-700 dark:text-emerald-400',
-                  'hover:bg-emerald-50 dark:hover:bg-emerald-900/20',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400',
-                )}
-              >
-                <ChevronUp size={16} aria-hidden="true" />
-              </button>
-            )}
-            {menuOpen && suggestions && suggestions.length >= 2 && (
+            <button
+              type="button"
+              aria-label="Quick replies"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((o) => !o)}
+              className={cn(
+                'flex-shrink-0 rounded-md px-1 py-2 min-h-[44px] text-emerald-700 dark:text-emerald-400',
+                'hover:bg-emerald-50 dark:hover:bg-emerald-900/20',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400',
+              )}
+            >
+              <ChevronUp size={16} aria-hidden="true" />
+            </button>
+            {menuOpen && (
               <div
                 role="menu"
                 className={cn(
@@ -383,9 +382,11 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
                   'bg-white dark:bg-gray-800 shadow-lg py-1',
                 )}
               >
-                {suggestions.slice(1).map((s, i) => (
+                {/* Dynamic section: backend context suggestions the sparkle didn't
+                    already send (slice(1)). Empty for most sessions. */}
+                {(suggestions ?? []).slice(1).map((s, i) => (
                   <button
-                    key={i}
+                    key={`suggestion-${i}`}
                     type="button"
                     role="menuitem"
                     onClick={() => { setMenuOpen(false); onPrompt(s, []) }}
@@ -395,6 +396,24 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
                     )}
                   >
                     {s}
+                  </button>
+                ))}
+                {(suggestions?.length ?? 0) > 1 && (
+                  <div role="separator" className="my-1 border-t border-gray-200 dark:border-gray-700" />
+                )}
+                {/* Canned section: hard-coded one-tap replies, always available. */}
+                {QUICK_REPLIES.map((reply) => (
+                  <button
+                    key={reply}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setMenuOpen(false); onPrompt(reply, []) }}
+                    className={cn(
+                      'block w-full truncate px-3 py-2 text-left text-sm',
+                      'hover:bg-gray-100 dark:hover:bg-gray-700',
+                    )}
+                  >
+                    {reply}
                   </button>
                 ))}
               </div>

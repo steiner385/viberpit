@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { Composer } from './Composer'
+import { QUICK_REPLIES } from '@/lib/quickReplies'
 
 function defaultProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}): Parameters<typeof Composer>[0] {
   return {
@@ -88,12 +89,19 @@ describe('Composer ghost-text suggestion', () => {
   })
 })
 
-describe('Composer play button', () => {
-  it('shows the play button only when idle and the box is empty', () => {
+describe('Composer sparkle button', () => {
+  it('shows the sparkle button only when idle and the box is empty', () => {
     const { rerender } = renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['Run the tests'] })
     expect(screen.getByRole('button', { name: /resume/i })).toBeInTheDocument()
     rerender(<Composer {...defaultProps({ status: { state: 'in_progress', count: 0 }, suggestions: ['x'] })} />)
     expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument()
+  })
+
+  it('renders the AI sparkle glyph (not the old play triangle)', () => {
+    renderComposer({ status: { state: 'done', count: 0 }, suggestions: [] })
+    const resume = screen.getByRole('button', { name: /resume/i })
+    expect(resume.querySelector('.lucide-sparkles')).toBeInTheDocument()
+    expect(resume.querySelector('.lucide-play')).not.toBeInTheDocument()
   })
 
   it('existing suggestion: play sends it immediately', () => {
@@ -114,11 +122,36 @@ describe('Composer play button', () => {
     expect(document.activeElement).toBe(textarea)
   })
 
-  it('caret menu appears with >=2 suggestions and picking sends that item', () => {
+  it('dropdown surfaces leftover dynamic suggestions and picking sends that item', () => {
     const onPrompt = vi.fn()
     renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['First', 'Second'], onPrompt })
-    fireEvent.click(screen.getByRole('button', { name: /more suggestions/i }))
+    fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Second' }))
     expect(onPrompt).toHaveBeenCalledWith('Second', [])
+  })
+
+  it('quick-replies dropdown is available with no backend suggestions', () => {
+    renderComposer({ status: { state: 'done', count: 0 }, suggestions: [] })
+    fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
+    for (const reply of QUICK_REPLIES) {
+      expect(screen.getByRole('menuitem', { name: reply })).toBeInTheDocument()
+    }
+  })
+
+  it('clicking a canned quick reply sends its literal text immediately', () => {
+    const onPrompt = vi.fn()
+    renderComposer({ status: { state: 'done', count: 0 }, suggestions: [], onPrompt })
+    fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'proceed' }))
+    expect(onPrompt).toHaveBeenCalledWith('proceed', [])
+  })
+
+  it('lists dynamic suggestions above the canned list, separated by a divider', () => {
+    renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['First', 'Second'] })
+    fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
+    expect(screen.getByRole('menuitem', { name: 'Second' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'First' })).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'continue' })).toBeInTheDocument()
+    expect(screen.getByRole('separator')).toBeInTheDocument()
   })
 })
