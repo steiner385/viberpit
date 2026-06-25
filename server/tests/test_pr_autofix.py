@@ -64,9 +64,9 @@ def _build_orch(pr: PullRequestInfo, *, has_driver: bool = True):
     orch._records = {"sess1": _make_record()}
     orch._pushed_pr = set()
     orch._pr_fix_attempts = set()
-    orch._pr_poller = _StubPoller(pr)
+    orch._pr_poller = _StubPoller(pr)  # type: ignore[assignment]  # stub stands in for PrStatusPoller
     # Sentinel driver object — only presence in the dict matters.
-    orch._drivers = {"sess1": object()} if has_driver else {}
+    orch._drivers = {"sess1": object()} if has_driver else {}  # type: ignore[dict-item]
     return orch
 
 
