@@ -30,6 +30,9 @@ describe('QuestionGroup', () => {
       expect(item.className).toMatch(/w-full/)
       expect(item.className).toMatch(/shrink-0/)
     }
+    // panel height follows the active card (animated), cards sized naturally
+    expect(track.className).toMatch(/items-start/)
+    expect(track.className).toMatch(/transition-\[height\]/)
   })
 
   it('shows a position indicator and steps through with prev/next', async () => {

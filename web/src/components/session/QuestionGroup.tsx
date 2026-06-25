@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import type { Block } from '@/session/reducer'
 import { cn } from '@/lib/utils'
 import { QuestionCard, type StagedAnswer } from './QuestionCard'
@@ -27,7 +27,24 @@ const navBtn = cn(
 export function QuestionGroup({ questions, onAnswer }: Props) {
   const [answers, setAnswers] = useState<Map<string, StagedAnswer>>(new Map())
   const [active, setActive] = useState(0)
+  const [trackH, setTrackH] = useState<number | undefined>(undefined)
   const trackRef = useRef<HTMLDivElement>(null)
+
+  // Size the track to the *active* card so the panel grows/shrinks to the
+  // question you're viewing — no dead space under short cards, no internal
+  // scroll on tall ones. A ResizeObserver re-measures when a card expands
+  // (e.g. "Write a response" opens). jsdom has no ResizeObserver / layout, so
+  // offsetHeight is 0 and no height style is applied — leaving tests unaffected.
+  useLayoutEffect(() => {
+    const card = trackRef.current?.children[active] as HTMLElement | undefined
+    if (!card) return
+    const measure = () => setTrackH(card.offsetHeight || undefined)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(card)
+    return () => ro.disconnect()
+  }, [active, questions, answers])
 
   const stage = (questionId: string, answer: StagedAnswer) =>
     setAnswers((prev) => {
@@ -126,8 +143,10 @@ export function QuestionGroup({ questions, onAnswer }: Props) {
         ref={trackRef}
         onScroll={onScroll}
         data-testid="question-carousel"
+        style={trackH ? { height: `${trackH}px` } : undefined}
         className={cn(
-          'flex snap-x snap-mandatory overflow-x-auto scroll-smooth gap-3',
+          'flex items-start snap-x snap-mandatory overflow-x-auto overflow-y-hidden scroll-smooth gap-3',
+          'transition-[height] duration-200', // panel grows/shrinks to the active card
           '-mx-1 px-1', // keep focus rings from clipping at the track edges
           '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
         )}
