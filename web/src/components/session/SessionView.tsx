@@ -140,6 +140,7 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
           sessionName={rt.title}
           onDone={handleBack}
           variant="dark"
+          canRename
         />
       </div>
 
