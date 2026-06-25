@@ -28,6 +28,14 @@ describe('Composer', () => {
     expect(textarea).toHaveFocus()
   })
 
+  it('renders the textarea as a block element so it aligns with the button row', () => {
+    // Contract: a default inline-block textarea sits on its wrapper's text baseline, leaving a
+    // ~6px line-box descent below it. With `items-end` on the row that gap pushes the box above
+    // the send/mic buttons. `block` removes it. jsdom has no layout, so we assert the class.
+    render(<Composer {...defaults} />)
+    expect(screen.getByRole('textbox', { name: /message/i })).toHaveClass('block')
+  })
+
   it('shows Send button in idle state', () => {
     render(<Composer {...defaults} />)
     expect(screen.getByRole('button', { name: /send message/i })).toBeInTheDocument()
