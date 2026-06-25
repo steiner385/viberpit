@@ -38,7 +38,7 @@ def test_subscribe_then_unsubscribe(monkeypatch):
         assert c.post("/api/push/subscribe", json=sub, headers=IDENTITY).status_code == 200
         # idempotent re-subscribe
         assert c.post("/api/push/subscribe", json=sub, headers=IDENTITY).status_code == 200
-        r = c.request("DELETE", "/api/push/subscribe", json={"endpoint": "https://push/1"}, headers=IDENTITY)
+        r = c.delete("/api/push/subscribe?endpoint=https://push/1", headers=IDENTITY)
         assert r.status_code == 200
         # unauthenticated is rejected
         assert c.get("/api/push/config").status_code == 401

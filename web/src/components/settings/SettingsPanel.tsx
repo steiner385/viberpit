@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useSettings, useUpdateSettings, type AppSettings } from '@/api/hooks'
 import { PERMISSION_MODES } from '@/session/permissionModes'
+import { NotificationsToggle } from './NotificationsToggle'
 
 interface SettingsPanelProps {
   onClose: () => void
@@ -198,6 +199,14 @@ function SettingsForm({ settings, onClose }: SettingsFormProps) {
               placeholder="/home/user/repos"
               className={inputClass}
             />
+          </div>
+
+          {/* Notifications */}
+          <div className="space-y-3 border-t border-gray-200 dark:border-gray-700 pt-4">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              Notifications
+            </h3>
+            <NotificationsToggle />
           </div>
         </div>
 

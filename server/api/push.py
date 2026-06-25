@@ -22,10 +22,6 @@ class SubscribeBody(BaseModel):
     keys: SubscriptionKeys
 
 
-class UnsubscribeBody(BaseModel):
-    endpoint: str
-
-
 @router.get("/config")
 async def push_config(identity: str = Depends(current_identity)) -> dict:
     return {"vapidPublicKey": config.VAPID_PUBLIC_KEY, "enabled": bool(config.VAPID_PRIVATE_KEY)}
@@ -40,7 +36,7 @@ async def subscribe(body: SubscribeBody, identity: str = Depends(current_identit
 
 
 @router.delete("/subscribe")
-async def unsubscribe(body: UnsubscribeBody, identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
-    await push_store.delete_subscription(db, body.endpoint)
+async def unsubscribe(endpoint: str, identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
+    await push_store.delete_subscription(db, endpoint)
     await db.commit()
     return {"ok": True}
