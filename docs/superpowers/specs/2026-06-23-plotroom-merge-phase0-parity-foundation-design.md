@@ -1,5 +1,15 @@
 # Plotroom Merge — Phase 0: Parity Harness + Data Foundation
 
+> **⚠️ Parity model superseded (2026-06-24), as built in PR #258.** A live run revealed
+> this spec's assumptions about Plotroom's `/api/state` were wrong: it exposes **no
+> branch/`head_sha`/PR `state`** (only a pipeline `stage`), and it tracks *all* PRs while
+> ccswitch's per-session poller doesn't. So the as-built harness is **number-keyed** (not
+> branch-keyed), **intersection-based** (`ok` = no field mismatches on shared PRs;
+> oracle-only/candidate-only are informational, not failures), and Phase-0 coverage is
+> `{number,url,checks}`. Finding + evidence: `docs/superpowers/evidence/2026-06-24-parity-phase0-finding.json`
+> and `…-parity-merged-stage-OK.json`. The data-foundation half (extending `PullRequestInfo`)
+> shipped as specced. Sequencing is value-first — see the roadmap.
+
 **Date:** 2026-06-23
 **Status:** Approved (design)
 **Program:** See `2026-06-23-ccswitch-plotroom-merge-overview-design.md` for the full
