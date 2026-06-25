@@ -196,6 +196,36 @@ class TestAccounts(unittest.TestCase):
             self.assertEqual(json.loads(paths.shared_mcp_path().read_text()), {"sentry": {"t": 1}})
 
 
+def test_usage_for_emits_auth_failure_on_dead_token(monkeypatch, tmp_path):
+    from ccswitch import accounts, oauth
+    from tests.helpers import temp_env
+    captured = []
+    accounts.set_auth_failure_sink(captured.append)
+    try:
+        # Force the refresh path to raise a dead-grant AuthError with a body.
+        def boom(name):
+            raise oauth.AuthError("token refresh failed with 400", status=400,
+                                  body='{"error":"invalid_grant"}')
+        monkeypatch.setattr(accounts, "ensure_valid_token", boom)
+        # No live cfg dir for recovery → flip proceeds (Task 4 adds recovery; here it
+        # is absent so the flip path runs).
+        with temp_env():
+            accounts.usage_for("primary", path="poller-idle")
+    finally:
+        accounts.set_auth_failure_sink(None)
+    assert len(captured) == 1
+    f = captured[0]
+    assert f.account == "primary" and f.status == 400 and f.path == "poller-idle"
+    assert "invalid_grant" in f.body
+
+def test_set_sink_none_is_noop(monkeypatch):
+    from ccswitch import accounts, oauth
+    accounts.set_auth_failure_sink(None)  # unset
+    # emit must not raise even with no sink:
+    accounts.emit_auth_failure(accounts.AuthFailure(
+        account="x", status=400, body="b", path="cli", token_expires_at=None, attempts=1))
+
+
 class TestRefreshSerialization(unittest.TestCase):
     def test_concurrent_refresh_happens_once(self):
         import threading, time as _t
