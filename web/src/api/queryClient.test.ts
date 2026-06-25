@@ -6,6 +6,7 @@ import {
   handleMutationError,
   MUTATION_ERROR_FALLBACK,
 } from './queryClient'
+import { clientLogger } from '@/obs/logger'
 
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 import { toast } from 'sonner'
@@ -52,5 +53,14 @@ describe('handleMutationError', () => {
     const err = new ApiRequestError(404, { detail: { code: 'not_found', message: 'Session not found' } })
     handleMutationError(err, fakeMutation({ suppressErrorToast: true }))
     expect(toast.error).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleMutationError forwarding', () => {
+  it('forwards the error to the client logger', () => {
+    const spy = vi.spyOn(clientLogger, 'error')
+    const err = new ApiRequestError(500, { detail: { message: 'server fail' } })
+    handleMutationError(err, { options: {} } as never)
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('server fail'), expect.objectContaining({ stack: expect.any(String) }))
   })
 })

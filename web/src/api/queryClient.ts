@@ -9,6 +9,7 @@
 import { QueryClient, MutationCache, type Mutation } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/api/client'
+import { clientLogger } from '@/obs/logger'
 
 export const MUTATION_ERROR_FALLBACK = 'Something went wrong. Please try again.'
 
@@ -26,13 +27,17 @@ export function extractMutationErrorMessage(error: unknown): string {
   return MUTATION_ERROR_FALLBACK
 }
 
-/** Global MutationCache.onError handler: toast unless the mutation opts out. */
+/** Global MutationCache.onError handler: log to clientLogger, then toast unless the mutation opts out. */
 export function handleMutationError(
   error: unknown,
   mutation: Mutation<unknown, unknown, unknown>,
 ): void {
+  const message = extractMutationErrorMessage(error)
+  clientLogger.error(`mutation: ${message}`, {
+    stack: error instanceof Error ? (error.stack ?? String(error)) : String(error),
+  })
   if (mutation.options.meta?.suppressErrorToast) return
-  toast.error(extractMutationErrorMessage(error))
+  toast.error(message)
 }
 
 export const queryClient = new QueryClient({
