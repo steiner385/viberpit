@@ -108,6 +108,7 @@ export interface AppSettings {
   thinkingCollapsed: boolean
   repoRoot: string | null
   defaultToolDetail: ToolDetailMode
+  prAutofixMode: string
 }
 
 export function useSettings() {
