@@ -358,6 +358,64 @@ class TestHttpRequestRetry(unittest.TestCase):
         self.assertEqual(Config().retry_max_total_sec, oauth._DEFAULT_MAX_TOTAL_SEC)
 
 
+class TestNonIdempotentRetry(unittest.TestCase):
+    def test_http_request_non_idempotent_does_not_retry_5xx(self):
+        from unittest import mock
+        from ccswitch import oauth
+        calls = {"n": 0}
+        def fake_urlopen(req, timeout=None):
+            calls["n"] += 1
+            raise oauth.urllib.error.HTTPError("https://x", 503, "err", {}, __import__("io").BytesIO(b"down"))
+        with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=fake_urlopen):
+            status, body = oauth.http_request("POST", "https://x", data=b"f", idempotent=False,
+                                              max_retries=3, sleep=lambda *_: None)
+        assert status == 503
+        assert calls["n"] == 1   # NOT resent — would risk consuming a rotated token
+
+    def test_http_request_non_idempotent_still_retries_429(self):
+        from unittest import mock
+        from ccswitch import oauth
+        seq = [(429, b"slow"), (200, b"{}")]
+        calls = {"n": 0}
+        def fake_urlopen(req, timeout=None):
+            i = calls["n"]; calls["n"] += 1
+            st, bd = seq[min(i, len(seq) - 1)]
+            if st != 200:
+                raise oauth.urllib.error.HTTPError("https://x", st, "err", {}, __import__("io").BytesIO(bd))
+            class R:
+                status = 200
+                def read(self): return b"{}"
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            return R()
+        with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=fake_urlopen):
+            status, _ = oauth.http_request("POST", "https://x", data=b"f", idempotent=False,
+                                           max_retries=3, sleep=lambda *_: None)
+        assert status == 200
+        assert calls["n"] == 2   # 429 is an edge reject → safe to retry
+
+    def test_http_request_non_idempotent_network_error_raises_without_retry(self):
+        from unittest import mock
+        import pytest
+        from ccswitch import oauth
+        calls = {"n": 0}
+        def fake_urlopen(req, timeout=None):
+            calls["n"] += 1
+            raise TimeoutError("read timed out")
+        with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=fake_urlopen):
+            with pytest.raises(oauth.TransientError):
+                oauth.http_request("POST", "https://x", data=b"f", idempotent=False,
+                                   max_retries=3, sleep=lambda *_: None)
+        assert calls["n"] == 1
+
+    def test_refresh_passes_idempotent_false(self):
+        from unittest import mock
+        from ccswitch import oauth
+        with mock.patch.object(oauth, "http_request", return_value=(200, b'{"access_token":"a","expires_in":1}')) as hr:
+            oauth.refresh_access_token("oldR", {})
+        assert hr.call_args.kwargs.get("idempotent") is False
+
+
 class TestUsageNullReset(unittest.TestCase):
     def test_zero_usage_null_resets_at_does_not_crash(self):
         from ccswitch.oauth import parse_usage

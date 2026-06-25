@@ -133,14 +133,21 @@ def http_request(method: str, url: str, headers: dict | None = None,
                  data: bytes | None = None, timeout: int = 15, *,
                  max_retries: int = _DEFAULT_MAX_RETRIES,
                  max_total_sec: float = _DEFAULT_MAX_TOTAL_SEC,
+                 idempotent: bool = True,
                  sleep=time.sleep, rng=random.random, clock=time.monotonic) -> tuple[int, bytes]:
     """Issue an HTTP request, retrying transient failures with backoff.
 
-    Retries transient HTTP statuses (403 / 429 / 5xx) AND network errors (URLError /
-    timeout). Retries are safe for our callers: such failures happen before the
-    (single-use) refresh token is consumed server-side. Terminal statuses (4xx
-    other than 403/429 — notably 400/401) and 2xx return immediately; a persistent
-    network failure raises TransientError so callers leave the account status unchanged.
+    When ``idempotent=True`` (default): retries transient HTTP statuses (403 / 429 /
+    5xx) AND network errors (URLError / timeout). Safe for GET/idempotent requests.
+
+    When ``idempotent=False``: retries ONLY edge-reject statuses {403, 429} (the
+    request never reached the origin). Does NOT retry 5xx (the origin may have already
+    processed and rotated a single-use token). Raises TransientError immediately on a
+    network error without resending (ambiguous whether the request was processed).
+
+    Terminal statuses (4xx other than 403/429 — notably 400/401) and 2xx return
+    immediately in both modes; a persistent transient failure raises TransientError so
+    callers leave the account status unchanged.
 
     ``max_total_sec`` bounds total wall-clock across all attempts so a stalling
     endpoint can't turn max_retries x socket-timeout into minutes of blocking.
@@ -169,11 +176,19 @@ def http_request(method: str, url: str, headers: dict | None = None,
                 return r.status, r.read()
         except urllib.error.HTTPError as e:
             status, body = e.code, e.read()
-            if attempt < max_retries and _is_transient_status(status) and _retry_sleep(e.headers, attempt):
+            # Non-idempotent (single-use token POST): only retry edge rejects that
+            # never reached the origin (403 Cloudflare 1010 / 429). A 5xx may mean
+            # the origin already processed + rotated the token, so resending would
+            # consume the rotation we never captured — do not retry it.
+            retryable = (status in (403, 429)) if not idempotent else _is_transient_status(status)
+            if attempt < max_retries and retryable and _retry_sleep(e.headers, attempt):
                 continue
             return status, body
         except (urllib.error.URLError, TimeoutError) as e:
-            if attempt < max_retries and _retry_sleep(None, attempt):
+            # A network failure on a non-idempotent send is ambiguous (the request
+            # may have been processed). Never resend — surface as transient so the
+            # caller leaves account status unchanged, without consuming the token twice.
+            if idempotent and attempt < max_retries and _retry_sleep(None, attempt):
                 continue
             raise TransientError(
                 f"network error after {attempt + 1} attempt(s): {e}") from e
@@ -243,7 +258,7 @@ def refresh_access_token(refresh_token: str, prior: dict, *,
         "POST", TOKEN_URL,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         data=form.encode("utf-8"),
-        max_retries=max_retries, max_total_sec=max_total_sec,
+        max_retries=max_retries, max_total_sec=max_total_sec, idempotent=False,
     )
     if _is_transient_status(status):
         # Rate-limit / server error: the refresh token is presumed valid. Surface
