@@ -331,6 +331,14 @@ def create_app(
     async def _daemon_error_handler(_request, _exc):  # noqa: ANN001
         return JSONResponse(status_code=409, content={"detail": _exc.message})
 
+    @app.exception_handler(Exception)
+    async def _unhandled_handler(_request, _exc):  # noqa: ANN001
+        # Last-resort: log full traceback (auto-stamped with request_id) then
+        # return a generic 500 so internals never leak to the client. FastAPI
+        # tries specific handlers first, so domain mappings above still win.
+        logging.getLogger("server").exception("unhandled exception: %s", _exc)
+        return JSONResponse(status_code=500, content={"detail": "internal server error"})
+
     @app.get("/api/health")
     async def health(_identity: str = Depends(current_identity)) -> dict:
         return {"ok": True, "version": "0.1.0"}
