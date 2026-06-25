@@ -13,6 +13,7 @@ import App from './App'
 import type { Session, Account } from './api/types'
 import { api } from './api/client'
 
+
 vi.mock('./ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./ws/client')>()
   return {
@@ -42,6 +43,14 @@ const MOCK_SESSIONS: Session[] = [
     status: 'idle',
     createdAt: '2026-06-19T10:00:00Z',
     updatedAt: '2026-06-19T10:00:00Z',
+  },
+  {
+    id: 'sess-2',
+    name: 'Research',
+    accountName: 'alice',
+    status: 'idle',
+    createdAt: '2026-06-19T11:00:00Z',
+    updatedAt: '2026-06-19T11:00:00Z',
   },
 ]
 
@@ -73,7 +82,7 @@ vi.mock('./api/client', () => ({
     }),
     post: vi.fn(),
     patch: vi.fn(),
-    del: vi.fn(),
+    del: vi.fn().mockResolvedValue(undefined),
   },
 }))
 
@@ -206,5 +215,54 @@ describe('App deploy overlay', () => {
     })
     renderAt('/sessions')
     expect(await screen.findByText(/upgrading ccswitch/i)).toBeInTheDocument()
+  })
+})
+
+describe('App mobile session advance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(api.del).mockResolvedValue(undefined)
+  })
+
+  it('mobile: archiving the open session advances to the neighbor route', async () => {
+    const user = userEvent.setup()
+    const seen: string[] = []
+    function LocationSpy() {
+      const loc = useLocation()
+      seen.push(loc.pathname)
+      return null
+    }
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={['/session/sess-1']}>
+          <App />
+          <LocationSpy />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(screen.getByRole('button', { name: /archive session/i })).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /archive session/i }))
+    await waitFor(() => expect(seen).toContain('/session/sess-2'))
+  })
+
+  it('mobile: the Back button still returns to the list (no advance)', async () => {
+    const user = userEvent.setup()
+    const seen: string[] = []
+    function LocationSpy() {
+      const loc = useLocation()
+      seen.push(loc.pathname)
+      return null
+    }
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={['/session/sess-1']}>
+          <App />
+          <LocationSpy />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(screen.getByRole('button', { name: /back to session list/i })).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /back to session list/i }))
+    await waitFor(() => expect(seen).toContain('/sessions'))
   })
 })
