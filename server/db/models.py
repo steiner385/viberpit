@@ -185,3 +185,6 @@ class AppSettings(Base):
     default_tool_detail: Mapped[str | None] = mapped_column(String, nullable=True)
     compaction_ewma_ms: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     compaction_samples: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # 'off' | 'propose' | 'auto' — how to react when a session's PR fails CI.
+    # Nullable: init_db backfills nullable columns; code defaults NULL → 'propose'.
+    pr_autofix_mode: Mapped[str | None] = mapped_column(String, nullable=True)

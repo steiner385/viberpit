@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils'
+import { useSettings, useFixPr } from '@/api/hooks'
 import { SessionCard } from './SessionCard'
 import { GroupedList } from './GroupedList'
 import { EmptyState } from './EmptyState'
@@ -75,6 +76,9 @@ export function SessionList({
   onNavigate,
   onExit,
 }: SessionListProps) {
+  const { data: appSettings } = useSettings()
+  const fixPr = useFixPr()
+
   if (isLoading) {
     return (
       <div className="space-y-2" role="status" aria-label="Loading sessions" aria-busy="true">
@@ -130,6 +134,8 @@ export function SessionList({
       onQuickResume={onQuickResume}
       onNavigate={onNavigate}
       onExit={onExit}
+      prAutofixMode={appSettings?.prAutofixMode}
+      onFixPr={(id, number) => fixPr.mutate({ id, number })}
     />
   )
 

@@ -79,6 +79,10 @@ class SendPromptRequest(BaseModel):
     text: str
 
 
+class FixPrRequest(BaseModel):
+    number: int
+
+
 _UNSET = object()
 
 
@@ -649,6 +653,45 @@ async def send_session_prompt(
         )
     await orch.send_prompt(session_id, body.text)
     await record_audit(db, "session.prompt", identity, {"sessionId": session_id})
+    updated = await orch.get_session(session_id) or record
+    return _record_to_dict(updated, repo=await _resolve_repo(updated))
+
+
+@router.post("/{session_id}/fix-pr")
+async def fix_session_pr(
+    session_id: str,
+    body: FixPrRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Manual 'Fix PR #N' tap (propose mode): resume the owning session if
+    detached and inject the same branch-aware fix prompt the auto path uses.
+
+    Routes through orch.request_pr_fix so the manual and autonomous fixes are
+    one implementation. The auto-mode loop guard does NOT apply here — a human
+    tap is always allowed."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    driver = await orch.ensure_driver(session_id, identity)
+    if driver is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "resume_failed", "message": "Session could not be resumed."},
+        )
+    result = await orch.request_pr_fix(session_id, body.number)
+    if result != "sent":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": result, "message": f"Cannot fix PR #{body.number}: {result}"},
+        )
+    await record_audit(db, "session.fix_pr", identity,
+                       {"sessionId": session_id, "number": body.number})
     updated = await orch.get_session(session_id) or record
     return _record_to_dict(updated, repo=await _resolve_repo(updated))
 

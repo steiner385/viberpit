@@ -39,6 +39,9 @@ function SettingsForm({ settings, onClose }: SettingsFormProps) {
   const [toolDetail, setToolDetail] = useState<AppSettings['defaultToolDetail']>(
     settings?.defaultToolDetail ?? 'auto',
   )
+  const [prAutofixMode, setPrAutofixMode] = useState(
+    settings?.prAutofixMode ?? 'propose',
+  )
 
   // Escape to close
   useEffect(() => {
@@ -72,6 +75,7 @@ function SettingsForm({ settings, onClose }: SettingsFormProps) {
       thinkingCollapsed,
       repoRoot: repoRoot.trim() || null,
       defaultToolDetail: toolDetail,
+      prAutofixMode,
     }, {
       onSuccess: () => onClose(),
     })
@@ -137,6 +141,26 @@ function SettingsForm({ settings, onClose }: SettingsFormProps) {
                 ⚠ Full auto lets sessions run shell/edits without prompting. Anyone who can reach this server can run code as you.
               </p>
             )}
+          </div>
+
+          {/* PR auto-fix */}
+          <div className="space-y-1">
+            <label
+              htmlFor="settings-pr-autofix"
+              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              PR auto-fix
+            </label>
+            <select
+              id="settings-pr-autofix"
+              value={prAutofixMode}
+              onChange={(e) => setPrAutofixMode(e.target.value)}
+              className={inputClass}
+            >
+              <option value="off">Off — notify only</option>
+              <option value="propose">Propose — show a one-tap fix action</option>
+              <option value="auto">Auto — fix failing PRs automatically</option>
+            </select>
           </div>
 
           {/* Transcript display */}

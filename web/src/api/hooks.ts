@@ -108,6 +108,7 @@ export interface AppSettings {
   thinkingCollapsed: boolean
   repoRoot: string | null
   defaultToolDetail: ToolDetailMode
+  prAutofixMode: string
 }
 
 export function useSettings() {
@@ -180,6 +181,14 @@ export function useSendPrompt() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, { id: string; text: string }>({
     mutationFn: ({ id, text }) => api.post<Session>(`/sessions/${id}/prompt`, { text }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
+export function useFixPr() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string; number: number }>({
+    mutationFn: ({ id, number }) => api.post<Session>(`/sessions/${id}/fix-pr`, { number }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
   })
 }
