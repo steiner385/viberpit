@@ -139,6 +139,12 @@ async def _lifespan(app: FastAPI):
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
 
+    from server.db import db_session as _db_session_factory
+    from server.usage.auth_failure_audit import AuthFailureAuditor
+    _auth_auditor = AuthFailureAuditor(identity="system", session_factory=_db_session_factory)
+    _auth_auditor.start()
+    app.state.auth_failure_auditor = _auth_auditor
+
     # Rehydrate persisted sessions (lazy — drivers are created on attach, not here).
     # In remote mode the daemon owns the orchestrator lifecycle, so skip it here.
     if not remote_mode:
@@ -205,6 +211,9 @@ async def _lifespan(app: FastAPI):
 
     yield
     # Shutdown
+    import contextlib
+    with contextlib.suppress(Exception):
+        app.state.auth_failure_auditor.stop()
     await app.state.reauth.shutdown()
     if remote_mode:
         # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
