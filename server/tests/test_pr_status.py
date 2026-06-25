@@ -1,3 +1,5 @@
+from datetime import datetime, timezone, timedelta
+
 from server.github.pr_status import (
     PRODUCTION_ENVIRONMENT, CheckDetail, PullRequestInfo, build_pr_query, parse_pr_response,
 )
@@ -63,6 +65,7 @@ def test_parse_open_passing():
     assert info == PullRequestInfo(
         7, "https://github.com/o/r/pull/7", "open", "passing", "PR 7",
         updated_at="2026-06-22T10:00:00Z",
+        stage="ready",
     )
 
 
@@ -209,6 +212,84 @@ def test_parse_populates_parity_fields():
     assert out.updated_at == "2026-06-22T10:00:00Z"
     assert CheckDetail(name="ci", conclusion="success") in out.checks_detail
     assert CheckDetail(name="deploy", conclusion="pending") in out.checks_detail
+
+
+def _pr_with_merge_state(number, state, *, draft=False, rollup="SUCCESS",
+                          merge_state_status=None, merged_at=None,
+                          updated="2026-06-22T10:00:00Z"):
+    """Build a PR node with optional mergeStateStatus and mergedAt."""
+    commit = {"commit": {"statusCheckRollup": {"state": rollup} if rollup else None}}
+    node = {
+        "number": number, "url": f"https://github.com/o/r/pull/{number}",
+        "title": f"PR {number}", "state": state, "isDraft": draft,
+        "updatedAt": updated, "commits": {"nodes": [commit]},
+    }
+    if merge_state_status is not None:
+        node["mergeStateStatus"] = merge_state_status
+    if merged_at is not None:
+        node["mergedAt"] = merged_at
+    return node
+
+
+def test_stage_computed_for_open_prs():
+    """parse_pr_response sets stage correctly for open PRs in all three stage buckets."""
+    pairs = [("o/r", "br")]
+
+    # passing + clean → ready
+    out = parse_pr_response(_resp({"r0": [
+        _pr_with_merge_state(1, "OPEN", rollup="SUCCESS", merge_state_status="CLEAN")
+    ]}), pairs)
+    assert out[("o/r", "br")].stage == "ready"
+
+    # pending → ci
+    out = parse_pr_response(_resp({"r0": [
+        _pr_with_merge_state(2, "OPEN", rollup="PENDING")
+    ]}), pairs)
+    assert out[("o/r", "br")].stage == "ci"
+
+    # failing → parked
+    out = parse_pr_response(_resp({"r0": [
+        _pr_with_merge_state(3, "OPEN", rollup="FAILURE")
+    ]}), pairs)
+    assert out[("o/r", "br")].stage == "parked"
+
+    # draft → parked
+    out = parse_pr_response(_resp({"r0": [
+        _pr_with_merge_state(4, "OPEN", draft=True, rollup="SUCCESS")
+    ]}), pairs)
+    assert out[("o/r", "br")].stage == "parked"
+
+    # passing + DIRTY → parked
+    out = parse_pr_response(_resp({"r0": [
+        _pr_with_merge_state(5, "OPEN", rollup="SUCCESS", merge_state_status="DIRTY")
+    ]}), pairs)
+    assert out[("o/r", "br")].stage == "parked"
+
+
+def test_stage_computed_for_merged_pr():
+    """parse_pr_response sets stage='merged' for a recently merged PR."""
+    pairs = [("o/r", "br")]
+    # Merged 2 days ago — within 7-day retention window → 'merged'
+    recent_merged_at = (
+        datetime.now(timezone.utc) - timedelta(days=2)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out = parse_pr_response(_resp({"r0": [
+        _pr_with_merge_state(6, "MERGED", merged_at=recent_merged_at)
+    ]}), pairs)
+    assert out[("o/r", "br")].stage == "merged"
+
+
+def test_stage_empty_for_old_merged_pr():
+    """parse_pr_response sets stage='' for a merged PR outside the retention window."""
+    pairs = [("o/r", "br")]
+    # Merged 10 days ago — outside 7-day retention window → ''
+    old_merged_at = (
+        datetime.now(timezone.utc) - timedelta(days=10)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out = parse_pr_response(_resp({"r0": [
+        _pr_with_merge_state(7, "MERGED", merged_at=old_merged_at)
+    ]}), pairs)
+    assert out[("o/r", "br")].stage == ""
 
 
 def test_pull_request_info_parity_fields_roundtrip():

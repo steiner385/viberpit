@@ -49,3 +49,8 @@ Read `poller.ts`'s rawStage + parked-substate derivation, port `derive_open_stag
 
 ## Honest scope note
 This is a multi-week program even with subagent parallelism — the value is stall/ship signals + the unified Pipeline view, incremental over the automations (M1–M3) already shipped. Each slice lands independently and parity-gated, so it can be paused at any slice boundary with a working app.
+
+## Must-port invariants (mid-migration fixes the port must NOT regress)
+Improvements made to live Plotroom *after* the reference worktree (`…/plotroom/557e6b2f`) was taken — the port must carry these forward, or it silently regresses behavior the parity harness won't catch (the harness only diffs the fields it covers, not sweep completeness).
+
+- **Downtime-resilient merged sweep** (`plotroom` commit `5166b52`, `poller.ts`/`backend.ts`): on EVERY boot the first sweep widens its merged window to the full retention period and the merged search paginates on `hasNextPage` (not just on a fresh-DB deep sweep). Without it, merges that land while the process is down advance `lastSweep` past themselves and are lost from history forever. **This matters acutely in ccswitch:** deploy-on-merge restarts the daemon (and a co-located engine) on every master merge, so the catch-up window is the common case, not the exception. The Python full-population sweep (the data-foundation poller, which ccswitch has NOT yet built — its current poller is per-session, not a full sweep) must reproduce this boot-time wide-window + paginate-on-`hasNextPage` behavior. Reference worktree `557e6b2f` predates this fix — read `origin/main` for the current `poller.ts`.

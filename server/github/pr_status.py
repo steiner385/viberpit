@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from server.pipeline.stage import derive_merged_stage, derive_open_stage
 
 PRODUCTION_ENVIRONMENT = "production"
 
@@ -94,7 +97,7 @@ def build_pr_query(pairs: list[tuple[str, str]]) -> str:
             f"{_alias(i)}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
             f"  pullRequests(headRefName: {json.dumps(branch)}, first: 5, "
             f"orderBy: {{field: UPDATED_AT, direction: DESC}}) {{\n"
-            f"    nodes {{ number url title state isDraft updatedAt mergedAt headRefOid\n"
+            f"    nodes {{ number url title state isDraft updatedAt mergedAt headRefOid mergeStateStatus\n"
             f"      commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state\n"
             f"        contexts(first: 100) {{ nodes {{\n"
             f"          __typename\n"
@@ -188,11 +191,17 @@ def _is_deployed(pr: dict, state: str, active_date: str | None) -> bool:
 
 def _to_info(pr: dict, active_date: str | None) -> PullRequestInfo:
     state = _classify_state(pr.get("state", ""), bool(pr.get("isDraft")))
+    checks = _classify_checks(_rollup_state(pr))
+    merged_at = pr.get("mergedAt")
+    if merged_at:
+        stage = derive_merged_stage(merged_at, datetime.now(timezone.utc)) or ""
+    else:
+        stage = derive_open_stage(checks, pr.get("mergeStateStatus"), bool(pr.get("isDraft")))
     return PullRequestInfo(
         number=pr["number"],
         url=pr["url"],
         state=state,
-        checks=_classify_checks(_rollup_state(pr)),
+        checks=checks,
         title=pr.get("title", ""),
         deployed=_is_deployed(pr, state, active_date),
         head_sha=pr.get("headRefOid", ""),
@@ -200,6 +209,7 @@ def _to_info(pr: dict, active_date: str | None) -> PullRequestInfo:
         merged=(state == "merged"),
         updated_at=pr.get("updatedAt", ""),
         checks_detail=_checks_detail(pr),
+        stage=stage,
     )
 
 

@@ -69,4 +69,37 @@ describe('PrPill', () => {
     render(<PrPill pr={{ ...base, state: 'merged', deployed: false }} />)
     expect(screen.getByRole('link')).not.toHaveAttribute('data-deployed', 'true')
   })
+
+  describe('stage badge', () => {
+    it('shows stage badge text and data-stage for ci, ready, parked', () => {
+      for (const stage of ['ci', 'ready', 'parked'] as const) {
+        const { unmount } = render(<PrPill pr={{ ...base, stage }} />)
+        const link = screen.getByRole('link')
+        expect(link).toHaveAttribute('data-stage', stage)
+        expect(link.textContent).toContain(stage)
+        expect(link.getAttribute('aria-label')).toMatch(new RegExp(stage))
+        unmount()
+      }
+    })
+
+    it('does not render a stage badge for merged stage (state color conveys it)', () => {
+      render(<PrPill pr={{ ...base, state: 'merged', stage: 'merged' }} />)
+      const link = screen.getByRole('link')
+      expect(link).not.toHaveAttribute('data-stage')
+      // text content should not contain the word "merged" as a badge (only in aria/title via state)
+      // but the link text itself (#42 + icon) should not include "merged" as badge text
+      const textNodes = Array.from(link.querySelectorAll('span')).map((s) => s.textContent)
+      expect(textNodes).not.toContain('merged')
+    })
+
+    it('does not render a stage badge for empty stage', () => {
+      render(<PrPill pr={{ ...base, stage: '' }} />)
+      expect(screen.getByRole('link')).not.toHaveAttribute('data-stage')
+    })
+
+    it('does not render a stage badge when stage is absent', () => {
+      render(<PrPill pr={{ ...base }} />)
+      expect(screen.getByRole('link')).not.toHaveAttribute('data-stage')
+    })
+  })
 })
