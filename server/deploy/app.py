@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Coroutine, Protocol, runtime_checkable
 
@@ -14,6 +15,14 @@ from server.deploy.types import DeployStatus
 log = logging.getLogger("server.deploy.app")
 
 
+def _poll_interval() -> float:
+    """Detect-loop poll cadence in seconds — CCSWITCH_DEPLOY_POLL_INTERVAL or 30s."""
+    try:
+        return float(os.environ.get("CCSWITCH_DEPLOY_POLL_INTERVAL", "30"))
+    except ValueError:
+        return 30.0
+
+
 @runtime_checkable
 class _ControllerLike(Protocol):
     status: DeployStatus
@@ -24,7 +33,7 @@ class _ControllerLike(Protocol):
 def build_controller_app(*, repo: str, health_url: str, venv_pip: str, daemon_enabled: bool,
                          detect_loop: DetectLoop | None = None,
                          controller: _ControllerLike | None = None):
-    loop = detect_loop or DetectLoop(repo)
+    loop = detect_loop or DetectLoop(repo, interval_s=_poll_interval())
     ctrl = controller or DeployController(repo, health_url=health_url, venv_pip=venv_pip,
                                           daemon_enabled=daemon_enabled,
                                           daemon_client_factory=default_daemon_factory(daemon_enabled))

@@ -33,3 +33,8 @@ async def test_detect_loop_tick_updates_state():
                              compute=lambda repo: detect.compute_pending(repo, git_mod=g, ci_fn=lambda s: "green"))
     await loop.tick()
     assert loop.state.behind is True and loop.state.to_dict()["commits"][0]["sha"] == "1"
+
+
+def test_detect_loop_default_interval_is_30s():
+    # Snappy banner: the notify-only poll defaults to 30s (was 120s).
+    assert detect.DetectLoop("/r").interval_s == 30.0
