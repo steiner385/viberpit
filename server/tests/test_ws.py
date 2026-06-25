@@ -18,6 +18,7 @@ import contextlib
 import json
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -76,11 +77,24 @@ def _factory(msgs, client_cls=None):
     return make
 
 
-def _drain_events(ws, *, until_type: str, timeout: float = 8.0) -> list[dict]:
+def _drain_events(
+    ws,
+    *,
+    until_type: str | None = None,
+    until: Callable[[dict], bool] | None = None,
+    timeout: float = 8.0,
+) -> list[dict]:
     """Receive frames and flatten batch frames into a list of event dicts.
 
-    Stops once an event of *until_type* is seen (or timeout).
+    Stops once a frame of *until_type* is seen, or *until(frame)* returns True
+    (or timeout). Pass *until* to disambiguate frames that share a ``type`` but
+    differ in shape — notably the live ``StatusEvent`` (``{type:status, state}``,
+    sent in a batch) vs the orchestrator's session-list ``status`` broadcast
+    (``{type:status, status}``, sent top-level). Stopping on whichever ``status``
+    frame happened to arrive first made ``test_attach_emits_live_status`` flake
+    with ``KeyError: 'state'`` under load (issue #285).
     """
+    match = until if until is not None else (lambda e: e.get("type") == until_type)
     events: list[dict] = []
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -93,9 +107,45 @@ def _drain_events(ws, *, until_type: str, timeout: float = 8.0) -> list[dict]:
             events.extend(msg.get("events", []))
         else:
             events.append(msg)
-        if any(e.get("type") == until_type for e in events):
+        if any(match(e) for e in events):
             return events
     return events
+
+
+def test_drain_events_until_predicate_waits_past_mismatched_status_frame():
+    """Regression #285: two frames share type 'status' — the session-list broadcast
+    {sessionId,status} (no 'state') and the live StatusEvent {state,count}. Stopping on
+    whichever arrived first made the reattach assertion flake with KeyError: 'state'.
+    The `until` predicate must skip the broadcast and wait for the state-bearing frame.
+    """
+    frames = [
+        # session-list broadcast first — has 'status', NOT 'state'
+        json.dumps({"type": "status", "sessionId": "s1", "status": "working"}),
+        # live StatusEvent arrives second, inside a batch
+        json.dumps({"type": "batch", "events": [
+            {"type": "status", "state": "waiting_question", "count": 0}]}),
+    ]
+
+    class _ScriptedWS:
+        def __init__(self, f: list[str]) -> None:
+            self._f = list(f)
+
+        def receive_text(self) -> str:
+            if not self._f:
+                raise RuntimeError("drained")
+            return self._f.pop(0)
+
+    events = _drain_events(
+        _ScriptedWS(frames),
+        until=lambda e: e.get("type") == "status" and "state" in e,
+        timeout=2.0,
+    )
+    state_frames = [e for e in events if e.get("type") == "status" and "state" in e]
+    assert state_frames and state_frames[-1]["state"] == "waiting_question"
+    # The broadcast frame (no 'state') was collected but did NOT end the drain.
+    assert any(
+        e.get("type") == "status" and "state" not in e for e in events
+    ), "the mismatched status broadcast should still be in the drained list"
 
 
 def _make_orch(msgs, *, client_cls=None) -> SessionOrchestrator:
@@ -724,9 +774,17 @@ def test_attach_emits_live_status(ws_env):
     # Reattach — a status frame must now be emitted, carrying the blocked state.
     with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
         ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
-        events = _drain_events(ws, until_type="status", timeout=6.0)
-        status_evs = [e for e in events if e.get("type") == "status"]
-        assert status_evs, f"no status frame on attach — {[e.get('type') for e in events]}"
+        # Wait for the live StatusEvent specifically — the frame carrying `state` —
+        # not the session-list `status` broadcast ({type:status, status}) that may
+        # interleave ahead of it. Keying on `state` is what makes this deterministic
+        # rather than racing on whichever `status` frame lands first (issue #285).
+        events = _drain_events(
+            ws,
+            until=lambda e: e.get("type") == "status" and "state" in e,
+            timeout=6.0,
+        )
+        status_evs = [e for e in events if e.get("type") == "status" and "state" in e]
+        assert status_evs, f"no live status frame on attach — {[e.get('type') for e in events]}"
         assert status_evs[-1]["state"] in ("waiting_question", "waiting_input"), (
             f"expected a needs-you state, got {status_evs[-1]['state']}"
         )
