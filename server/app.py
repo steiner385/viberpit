@@ -32,6 +32,7 @@ from server.api.repos import router as github_router
 from server.api.settings import router as settings_router
 from server.api import models as api_models
 from server.api.deploy import router as deploy_router
+from server.api.client_logs import router as client_logs_router
 
 
 def _daemon_socket_present(socket_path: str) -> bool:
@@ -391,6 +392,7 @@ def create_app(
     app.include_router(settings_router)
     app.include_router(api_models.router)
     app.include_router(deploy_router)
+    app.include_router(client_logs_router)
 
     # WebSocket bridge
     ws_router = build_ws_router(app.state.sessions)
