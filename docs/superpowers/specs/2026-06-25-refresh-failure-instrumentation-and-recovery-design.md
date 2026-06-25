@@ -82,8 +82,9 @@ persistence. The core surfaces structured failure data; the server persists it.
 
 ### Component 3 — Server: durable failure event (`server/`)
 - New audit type `account.needs_reauth`. Detail (run through existing `server/audit.py`
-  redaction): `{account, status, body, path, token_expiresAt, attempts, recent_usage_429s}` where
-  `path` ∈ {`poller-idle`, `live-session`, `cli`, `dashboard`}.
+  redaction): `{account, status, body, path, token_expiresAt, attempts}` where
+  `path` ∈ {`poller-idle`, `live-session`, `cli`, `dashboard`}. (`recent_usage_429s` deferred to
+  the circuit-breaker follow-up, which owns throttle tracking.)
 - **Seam:** core exposes `accounts.set_auth_failure_sink(fn)`; the server registers a
   `record_audit`-backed sink at startup. The core calls the sink at **both** flip sites
   (`usage_for` and `orchestrator._mark_needs_reauth`) so emission has one source of truth. An
@@ -117,9 +118,15 @@ persistence. The core surfaces structured failure data; the server persists it.
   happy path.
 
 ## Deferred follow-ups (out of scope, tracked separately)
-1. **Poller 429 circuit breaker** — back off per-account when usage 429s streak, so a throttling
+1. **Body-based 400 classification** — flip `needs-reauth` on a 400 ONLY when the body is a
+   definitive `invalid_grant` (vs. a Cloudflare HTML 400 or a rate-limit 400, which should be
+   transient). Deliberately deferred until Component 1 captures a **real** failing-400 body:
+   writing the classifier against an assumed body format would violate constitution III (verify
+   against the real binary/API, not assumptions). This is the highest-value *next* fix and the
+   instrumentation here is precisely what unblocks it.
+2. **Poller 429 circuit breaker** — back off per-account when usage 429s streak, so a throttling
    storm can't run for 13 hours and manufacture the dangerous refresh window. Precondition, not
-   the auth defect; independently testable.
+   the auth defect; independently testable. Owns the `recent_usage_429s` throttle tracking.
 2. **`merge_keep_later` guard** (`creds.py:70`) — it keys on `expiresAt`, assuming "later
    access-token expiry = newer refresh token." With two refreshers on one grant that proxy can
    keep a stale slot blob and discard the truly-current refresh token. Latent on the live-handoff
