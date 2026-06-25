@@ -225,6 +225,36 @@ async def test_auto_mode_injects_once_per_failure_event(orch_with_failing_pr, mo
 
 
 @pytest.mark.asyncio
+async def test_auto_mode_pending_interloper_does_not_re_arm(orch_with_failing_pr, monkeypatch):
+    """A transient failing→pending→failing CI cycle (the real path while a pushed
+    fix re-runs) must NOT re-arm the guard — only a genuine ``passing`` does.
+    Otherwise a PR the agent can't fix loops on every CI run."""
+    import server.sessions.orchestrator as orch_mod
+
+    orch, sent = orch_with_failing_pr
+
+    async def _mode_auto(self_):
+        return "auto"
+
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_pr_autofix_mode", _mode_auto, raising=True)
+
+    # First failure → one auto-attempt.
+    await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
+    assert len(sent) == 1
+
+    # Pushed fix re-runs CI: failing → pending → failing. The ``pending`` hop
+    # must NOT clear the guard, so the second ``failing`` does NOT re-attempt.
+    await orch._on_pr_change("o/r", "feat/x", "failing", "pending")
+    await orch._on_pr_change("o/r", "feat/x", "pending", "failing")
+    assert len(sent) == 1
+
+    # Only a real green re-arms.
+    await orch._on_pr_change("o/r", "feat/x", "failing", "passing")
+    await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
+    assert len(sent) == 2
+
+
+@pytest.mark.asyncio
 async def test_off_mode_never_injects(orch_with_failing_pr, monkeypatch):
     import server.sessions.orchestrator as orch_mod
 

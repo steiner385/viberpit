@@ -695,7 +695,13 @@ class SessionOrchestrator:
         key = (repo, branch)
         if new_checks != "failing":
             self._pushed_pr.discard(key)
-            self._pr_fix_attempts.discard(key)  # recovery re-arms a future auto-fix
+            # Re-arm the auto-fix guard ONLY on a genuine green, never on a
+            # transient ``pending``/``none``. CI normally cycles
+            # failing→pending→failing while a pushed fix re-runs; clearing on
+            # ``pending`` would let the next ``failing`` trigger a fresh auto-fix
+            # and loop forever on a PR the agent can't fix.
+            if new_checks == "passing":
+                self._pr_fix_attempts.discard(key)
             return
         rec = next(
             (r for r in self._records.values() if r.repo == repo and r.branch == branch),
@@ -709,10 +715,14 @@ class SessionOrchestrator:
         if mode == "auto" and key not in self._pr_fix_attempts:
             info = self.pr_for(repo, branch)
             if info is not None and rec.id in self._drivers:
+                # Mark before awaiting (re-entrancy guard), but only a real
+                # injection consumes the one attempt — a transient failure
+                # (draining / unresolved branch) re-arms so it can retry.
                 self._pr_fix_attempts.add(key)
                 result = await self.request_pr_fix(rec.id, info.number)
                 if result == "sent":
                     return  # injected; skip the redundant break notification
+                self._pr_fix_attempts.discard(key)
                 # Could not inject (draining / not actionable) → fall through to notify.
 
         # Notify (off, propose, or auto-fallback). Debounced like before.
@@ -1085,7 +1095,8 @@ class SessionOrchestrator:
                 await db.execute(select(AppSettings).where(AppSettings.id == "singleton"))
             ).scalar_one_or_none()
             mode = (row.pr_autofix_mode if row else None) or "propose"
-        return mode if mode in ("off", "propose", "auto") else "propose"
+        from server.sessions.pr_fix import VALID_AUTOFIX_MODES
+        return mode if mode in VALID_AUTOFIX_MODES else "propose"
 
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
         """Inject a branch-aware fix prompt for the session's PR #pr_number.

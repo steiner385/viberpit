@@ -8,12 +8,12 @@ from sqlalchemy import select
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import AppSettings
+from server.sessions.pr_fix import VALID_AUTOFIX_MODES as _VALID_AUTOFIX
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 _VALID_MODES = {"interactive", "auto", "allowlist", "full-auto"}
 _VALID_TOOL_DETAIL = {"auto", "all-closed", "all-open"}
-_VALID_AUTOFIX = {"off", "propose", "auto"}
 
 
 class SettingsBody(BaseModel):
