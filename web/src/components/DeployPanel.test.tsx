@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { DeployPanel } from './DeployPanel'
 import * as hooks from '@/api/hooks'
+import * as controller from '@/lib/deployController'
 import type { PendingDeploy, DeployProgress } from '@/api/types'
 
 function mockHooks(
@@ -16,6 +17,10 @@ function mockHooks(
     { data: deploy } as unknown as ReturnType<typeof hooks.useDeployStatus>)
   vi.spyOn(hooks, 'useStartDeploy').mockReturnValue(
     { mutate, isPending: false } as unknown as ReturnType<typeof hooks.useStartDeploy>)
+  vi.spyOn(controller, 'useDeployController').mockReturnValue({
+    intent: 'idle', visible: false, starting: false, startError: null,
+    start: mutate, dismiss: vi.fn(),
+  })
 }
 
 describe('DeployPanel', () => {
@@ -37,7 +42,7 @@ describe('DeployPanel', () => {
     const btn = screen.getByRole('button', { name: /deploy now/i })
     expect(btn).toBeEnabled()
     fireEvent.click(btn)
-    expect(mutate).toHaveBeenCalled()
+    expect(mutate).toHaveBeenCalled()   // mutate is wired as controller.start in mockHooks
   })
 
   it('disables Deploy with reason when CI not green', () => {
@@ -48,11 +53,11 @@ describe('DeployPanel', () => {
     expect(screen.getByText(/CI pending/i)).toBeInTheDocument()
   })
 
-  it('renders the phase checklist while running', () => {
+  it('does not render the inline phase checklist (overlay owns it)', () => {
     mockHooks({ behind: true, commits: [], ci: 'green' },
               { running: true, phases: { save: 'done', update: 'running' }, warnings: [] })
     render(<DeployPanel />)
-    expect(screen.getByText(/update/i)).toBeInTheDocument()
+    expect(screen.queryByText('update')).not.toBeInTheDocument()
   })
 
   it('flags sessions that failed to resume', () => {
@@ -73,12 +78,10 @@ describe('DeployPanel', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('shows preflight phase when it fails and live CI still agrees', () => {
+  it('shows a compact error for a past failed deploy', () => {
     mockHooks({ behind: true, commits: [], ci: 'red' },
-              { running: false, phases: { preflight: 'failed' }, warnings: [],
-                error: 'CI verdict=red' })
+              { running: false, phases: { preflight: 'failed' }, warnings: [], error: 'CI verdict=red' })
     render(<DeployPanel />)
-    expect(screen.getByText(/preflight/i)).toBeInTheDocument()
     expect(screen.getByText(/CI verdict=red/i)).toBeInTheDocument()
   })
 
