@@ -6,12 +6,20 @@ import { Toaster } from 'sonner'
 import './index.css'
 import App from './App.tsx'
 import { queryClient } from '@/api/queryClient'
+import { clientLogger } from '@/obs/logger'
+import { installGlobalErrorHandlers } from '@/obs/install'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
+
+clientLogger.start()
+installGlobalErrorHandlers()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <App />
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>
         <Toaster richColors position="top-center" theme="system" />
       </BrowserRouter>
     </QueryClientProvider>

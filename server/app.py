@@ -12,7 +12,8 @@ import server.db as _db
 from server.db.models import Session as _SessionModel
 from server.spa import mount_spa
 
-from server.audit import install_redacting_filter
+from server.obs.jsonlog import configure_logging
+from server.obs.middleware import RequestContextMiddleware
 from server.auth.middleware import IdentityMiddleware, current_identity
 from server.bridge.ws import build_ws_router
 from server.db import init_db
@@ -31,6 +32,7 @@ from server.api.repos import router as github_router
 from server.api.settings import router as settings_router
 from server.api import models as api_models
 from server.api.deploy import router as deploy_router
+from server.api.client_logs import router as client_logs_router
 
 
 def _daemon_socket_present(socket_path: str) -> bool:
@@ -100,7 +102,9 @@ _SHUTDOWN_SWEEP_TIMEOUT_S = 15.0
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """App startup/shutdown: init DB, install log filter, start orchestrator."""
-    install_redacting_filter()
+    # Structured JSON logging (stdout→journald + rotating file) with correlation
+    # ids and credential redaction. Idempotent; installs the redacting filter too.
+    configure_logging()
 
     # An app not built by create_app (e.g. tests constructing FastAPI(lifespan=_lifespan)
     # directly) never sets app.state.remote_mode — default it to in-process. The local
@@ -312,8 +316,10 @@ def create_app(
         reauth_manager = ReauthManager(timeout_s=get_settings().reauth_timeout_s)
     app.state.reauth = reauth_manager
 
-    # Identity middleware — wraps all routes
+    # Middleware stack (Starlette runs last-added outermost): RequestContextMiddleware
+    # wraps IdentityMiddleware wraps the routes, so request_id is set before identity.
     app.add_middleware(IdentityMiddleware)
+    app.add_middleware(RequestContextMiddleware)
 
     # In remote mode an unreachable daemon surfaces as DaemonUnavailable from any
     # facade RPC; map it to 503 so clients see "try again", not a 500. Harmless
@@ -325,6 +331,14 @@ def create_app(
     @app.exception_handler(DaemonError)
     async def _daemon_error_handler(_request, _exc):  # noqa: ANN001
         return JSONResponse(status_code=409, content={"detail": _exc.message})
+
+    @app.exception_handler(Exception)
+    async def _unhandled_handler(_request, _exc):  # noqa: ANN001
+        # Last-resort: log full traceback (auto-stamped with request_id) then
+        # return a generic 500 so internals never leak to the client. FastAPI
+        # tries specific handlers first, so domain mappings above still win.
+        logging.getLogger("server").exception("unhandled exception: %s", _exc)
+        return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
     @app.get("/api/health")
     async def health(_identity: str = Depends(current_identity)) -> dict:
@@ -378,6 +392,7 @@ def create_app(
     app.include_router(settings_router)
     app.include_router(api_models.router)
     app.include_router(deploy_router)
+    app.include_router(client_logs_router)
 
     # WebSocket bridge
     ws_router = build_ws_router(app.state.sessions)

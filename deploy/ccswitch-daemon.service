@@ -5,6 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ccswitch-daemon
 User=tony
 RuntimeDirectory=ccswitch
 RuntimeDirectoryPreserve=yes

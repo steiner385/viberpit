@@ -44,6 +44,14 @@ try:
         vnc_port_base: int = Field(default=6100, alias="CCSWITCH_VNC_PORT_BASE")
         xvfb_resolution: str = Field(default="1280x800x24", alias="CCSWITCH_XVFB_RESOLUTION")
         vnc_idle_timeout_s: float = Field(default=1800.0, alias="CCSWITCH_VNC_IDLE_TIMEOUT_S")
+        log_level: str = Field(default="INFO", alias="CCSWITCH_LOG_LEVEL")
+        log_dir: str = Field(
+            default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR")
+            or ("/var/log/ccswitch" if os.access("/var/log", os.W_OK)
+                else str(Path.home() / ".claude-accounts" / "logs")),
+            alias="CCSWITCH_LOG_DIR",
+        )
+        client_log_level: str = Field(default="warn", alias="CCSWITCH_CLIENT_LOG_LEVEL")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -119,6 +127,17 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         vnc_idle_timeout_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("CCSWITCH_VNC_IDLE_TIMEOUT_S", "1800"))
+        )
+        log_level: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_LOG_LEVEL", "INFO")
+        )
+        log_dir: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR")
+            or ("/var/log/ccswitch" if os.access("/var/log", os.W_OK)
+                else str(Path.home() / ".claude-accounts" / "logs"))
+        )
+        client_log_level: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CLIENT_LOG_LEVEL", "warn")
         )
 
         @property
