@@ -128,6 +128,36 @@ def _read_entries(path: str) -> list[dict]:
     return out
 
 
+def truncate_corrupt_tail(path: str) -> int:
+    """Remove a single provably-corrupt TRAILING line (a kill mid-write leaves a
+    partial JSONL line). Only the last non-empty physical line is checked; mid-file
+    corruption is left alone (it's skipped on read, not a resume-blocker). Returns 1
+    if a line was removed, else 0. Idempotent."""
+    if not os.path.isfile(path):
+        return 0
+    try:
+        with open(path, errors="ignore") as f:
+            lines = f.readlines()
+    except OSError:
+        return 0
+    last = None
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip():
+            last = i
+            break
+    if last is None:
+        return 0
+    try:
+        json.loads(lines[last].strip())
+        return 0   # tail parses → nothing to do
+    except json.JSONDecodeError:
+        pass
+    with open(path, "w") as f:
+        f.writelines(lines[:last])
+    log.info("transcript_repair: truncated corrupt trailing line in %s", path)
+    return 1
+
+
 def repair_transcript(path: str, *, now_iso: str | None = None) -> int:
     """Append synthetic tool_results to heal a trailing orphaned tool_use.
 
@@ -136,6 +166,7 @@ def repair_transcript(path: str, *, now_iso: str | None = None) -> int:
     """
     if not os.path.isfile(path):
         return 0
+    truncate_corrupt_tail(path)
     entries = _read_entries(path)
     if now_iso is None:
         from datetime import datetime, timezone
