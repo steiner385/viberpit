@@ -7,8 +7,9 @@ from server.deploy import git as _git
 from server.deploy import steps as _steps
 from server.deploy import drain as _drain
 from server.deploy.types import DeployError, DeployStatus, Phase, PhaseState
+from server.obs.context import log_event, new_request_id
 
-log = logging.getLogger("server.deploy.controller")
+log = logging.getLogger("server.deploy")
 
 
 def default_daemon_factory(daemon_enabled: bool) -> "Callable[[], Any] | None":
@@ -55,6 +56,7 @@ class DeployController:
             raise RuntimeError("deploy already in progress")
         self._lock_acquired = True
         self.status = DeployStatus(target_sha="", running=True)
+        self._deploy_id = new_request_id()
         local = ""
         daemon_changed = False
         try:
@@ -100,17 +102,23 @@ class DeployController:
             self._set(Phase.RESTART, PhaseState.RUNNING)
             if daemon_changed and self._client_factory is not None:
                 client = self._client_factory()
+                log_event(log, logging.INFO, "deploy.drain.start", deploy_id=self._deploy_id)
                 result = await self._drain.drain_and_wait(client)
                 if result != "ready":
                     self.status.warnings.append(f"drain {result} — restarting anyway")
+            if daemon_changed and self.daemon_enabled:
+                log_event(log, logging.INFO, "deploy.daemon.stop", deploy_id=self._deploy_id)
             try:
                 self._steps.restart_units(daemon_changed=daemon_changed,
                                           daemon_enabled=self.daemon_enabled)
             except Exception as e:
                 raise DeployError("restart", str(e)) from e
+            if daemon_changed and self.daemon_enabled:
+                log_event(log, logging.INFO, "deploy.daemon.start", deploy_id=self._deploy_id)
             short = self._git.short_sha(self.repo, remote)
             if not self._steps.wait_healthy(short, url=self.health_url):
                 raise DeployError("restart", "health gate failed")
+            log_event(log, logging.INFO, "deploy.edge.cutover", deploy_id=self._deploy_id)
             self._set(Phase.RESTART, PhaseState.DONE)
 
             # --- resume (eager re-launch; only when the daemon actually restarted) ---
@@ -119,6 +127,10 @@ class DeployController:
                 try:
                     self.status.restore = await self._client_factory().call("restore_deploy")
                     failed = self.status.restore.get("failed", [])
+                    recovered = len(self.status.restore.get("restored", []))
+                    lost = len(failed)
+                    log_event(log, logging.INFO, "deploy.sessions.reattach",
+                              deploy_id=self._deploy_id, recovered=recovered, lost=lost)
                     if failed:
                         self.status.warnings.append(f"resume failed for {len(failed)} session(s): {', '.join(failed)}")
                 except Exception:

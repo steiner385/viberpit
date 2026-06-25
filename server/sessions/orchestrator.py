@@ -1117,6 +1117,7 @@ class SessionOrchestrator:
             if not path:
                 return sid, []
             tasks = await asyncio.to_thread(scan_open_background_tasks, path)
+            log_event(log, logging.INFO, "bg_task_rescan", session_id=sid, open=len(tasks))
             return sid, [t.to_dict() for t in tasks]
 
         results = await asyncio.gather(*(_scan(s) for s in session_ids),
