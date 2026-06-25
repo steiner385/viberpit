@@ -132,6 +132,8 @@ export interface PullRequestInfo {
   checks: 'passing' | 'failing' | 'pending' | 'none'
   title: string
   deployed: boolean
+  /** Open-stage classifier output: 'ci' | 'ready' | 'parked' | 'merged' | '' */
+  stage?: string
 }
 
 export interface ModelOption { id: string; label: string }
