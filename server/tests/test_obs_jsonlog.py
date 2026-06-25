@@ -67,9 +67,19 @@ def test_configure_logging_idempotent_and_adds_handlers(monkeypatch, tmp_path):
     monkeypatch.setattr(jl, "_configured", False)
     monkeypatch.setenv("CCSWITCH_LOG_DIR", str(tmp_path))
     root = _logging.getLogger()
-    before = len(root.handlers)
-    jl.configure_logging()
-    jl.configure_logging()  # idempotent — second call is a no-op
-    json_handlers = [h for h in root.handlers if isinstance(h.formatter, jl.JSONFormatter)]
-    assert json_handlers  # at least the stream handler attached
-    assert (tmp_path / "ccswitch.jsonl").exists() or before >= 0
+    saved = root.handlers[:]
+    saved_level = root.level
+    try:
+        jl.configure_logging()
+        jl.configure_logging()  # idempotent — second call is a no-op
+        json_handlers = [h for h in root.handlers if isinstance(h.formatter, jl.JSONFormatter)]
+        assert json_handlers  # at least the stream handler attached
+        assert (tmp_path / "ccswitch.jsonl").exists()
+    finally:
+        # configure_logging mutates the root logger; restore it so other tests see a clean root.
+        for h in root.handlers[:]:
+            if h not in saved:
+                h.close()
+                root.removeHandler(h)
+        root.handlers[:] = saved
+        root.setLevel(saved_level)
