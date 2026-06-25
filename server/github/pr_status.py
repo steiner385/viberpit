@@ -7,7 +7,7 @@ fully unit-testable without touching the network or the ``gh`` CLI.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from server.pipeline.stage import derive_merged_stage, derive_open_stage
@@ -123,6 +123,54 @@ def build_pr_query(pairs: list[tuple[str, str]]) -> str:
             f"}}"
         )
     return "query {\n" + "\n".join(blocks) + "\n}"
+
+
+def build_population_query(repo: str, merged_since: str) -> str:
+    """One GraphQL doc: all OPEN PRs (incl. drafts) + production deployments for
+    ``repo``, plus a search() for PRs merged on/after ``merged_since`` (ISO date).
+
+    Strings are JSON-encoded so a repo/owner/name can't break the literal.
+    """
+    owner, _, name = repo.partition("/")
+    merged_q = f"repo:{repo} is:pr is:merged merged:>={merged_since}"
+    return (
+        "query {\n"
+        f"  repo: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
+        f"    deployments(environments: [{json.dumps(PRODUCTION_ENVIRONMENT)}], "
+        f"orderBy: {{field: CREATED_AT, direction: DESC}}, first: 5) {{\n"
+        f"      nodes {{ commitOid latestStatus {{ state }} commit {{ committedDate }} }}\n"
+        f"    }}\n"
+        f"    pullRequests(states: OPEN, first: 100, "
+        f"orderBy: {{field: UPDATED_AT, direction: DESC}}) {{\n"
+        f"      nodes {{ {_PR_NODE_FIELDS} }}\n"
+        f"    }}\n"
+        f"  }}\n"
+        f"  merged: search(query: {json.dumps(merged_q)}, type: ISSUE, first: 50) {{\n"
+        f"    nodes {{ ... on PullRequest {{ {_PR_NODE_FIELDS} }} }}\n"
+        f"  }}\n"
+        "}"
+    )
+
+
+def parse_population_response(response: dict, repo: str) -> tuple[PullRequestInfo, ...]:
+    """Open + recently-merged PRs for one repo, each with ``repo`` set.
+
+    Deduped by PR number; the OPEN listing wins over the merged search (a PR
+    can't be both, but a search index lag could surface a stale duplicate).
+    Reuses ``_to_info`` so stage/checks/state come from the single classifier.
+    """
+    data = (response or {}).get("data") or {}
+    repo_node = data.get("repo") or {}
+    active_date = _active_deploy_date(repo_node)
+    open_prs = ((repo_node.get("pullRequests") or {}).get("nodes")) or []
+    merged_prs = ((data.get("merged") or {}).get("nodes")) or []
+    by_number: dict[int, PullRequestInfo] = {}
+    for raw in (*open_prs, *merged_prs):
+        if not raw:  # search() can return null union members
+            continue
+        info = replace(_to_info(raw, active_date), repo=repo)
+        by_number.setdefault(info.number, info)
+    return tuple(by_number.values())
 
 
 def _classify_state(gql_state: str, is_draft: bool) -> str:
