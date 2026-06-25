@@ -25,6 +25,7 @@ server = [
     "cryptography",
     "webauthn",
     "httpx",
+    "pywebpush",
     "pytest",
     "pytest-asyncio",
   "pytest-cov",

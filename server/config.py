@@ -151,3 +151,7 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
 # File-only config: the webhook URL for outbound push notifications (ntfy / generic).
 # Never web-writable; never logged in full.
 PUSH_WEBHOOK_URL: str | None = (os.environ.get("CCSWITCH_PUSH_WEBHOOK_URL") or "").strip() or None
+
+VAPID_PRIVATE_KEY: str | None = (os.environ.get("CCSWITCH_VAPID_PRIVATE_KEY") or "").strip() or None
+VAPID_PUBLIC_KEY: str | None = (os.environ.get("CCSWITCH_VAPID_PUBLIC_KEY") or "").strip() or None
+VAPID_SUBJECT: str = (os.environ.get("CCSWITCH_VAPID_SUBJECT") or "").strip() or "mailto:ccswitch@localhost"
