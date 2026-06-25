@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from 'react'
-import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Play, Target, Wrench } from 'lucide-react'
+import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Target, Wrench } from 'lucide-react'
 import { matchListShortcut } from '@/lib/shortcuts'
+import { QUICK_REPLIES } from '@/lib/quickReplies'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
@@ -333,7 +334,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             title={suggestions.length > 0 ? 'Resume — send the suggested next step' : 'Resume — send “continue”'}
             onClick={() => onQuickResume(session.id, resumeText)}
           >
-            <Play size={16} aria-hidden="true" />
+            <Sparkles size={16} aria-hidden="true" />
           </button>
         )}
         {/* Secondary actions group — desktop-only. Suggestions/rename/archive/
@@ -341,11 +342,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             so on a phone they consumed most of the card width. Gating the group
             to `lg:` leaves Resume as the single inline action on mobile. */}
         <div data-testid="card-secondary-actions" className="hidden lg:flex items-center gap-0.5">
-        {!isBusy && suggestions.length >= 2 && (
+        {!isBusy && (
           <div className="relative flex items-center">
             <button
               type="button"
-              aria-label={`More suggestions for ${session.name}`}
+              aria-label={`Quick replies for ${session.name}`}
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
@@ -367,9 +368,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                   'bg-white dark:bg-gray-800 shadow-lg py-1',
                 )}
               >
+                {/* Dynamic section: the backend's context suggestions the sparkle
+                    didn't already send (slice(1)). Empty for most sessions. */}
                 {suggestions.slice(1).map((s, i) => (
                   <button
-                    key={i}
+                    key={`suggestion-${i}`}
                     type="button"
                     role="menuitem"
                     onClick={() => { setMenuOpen(false); onQuickResume(session.id, s) }}
@@ -377,6 +380,22 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                       'hover:bg-gray-100 dark:hover:bg-gray-700')}
                   >
                     {s}
+                  </button>
+                ))}
+                {suggestions.length > 1 && (
+                  <div role="separator" className="my-1 border-t border-gray-200 dark:border-gray-700" />
+                )}
+                {/* Canned section: hard-coded one-tap replies, always available. */}
+                {QUICK_REPLIES.map((reply) => (
+                  <button
+                    key={reply}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setMenuOpen(false); onQuickResume(session.id, reply) }}
+                    className={cn('block w-full truncate px-3 py-2 text-left text-sm',
+                      'hover:bg-gray-100 dark:hover:bg-gray-700')}
+                  >
+                    {reply}
                   </button>
                 ))}
               </div>
