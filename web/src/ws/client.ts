@@ -11,6 +11,7 @@ import type { Session } from '@/api/types'
 import { QK } from '@/api/hooks'
 import type { SessionEvent } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
+import { clientLogger } from '@/obs/logger'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
@@ -120,11 +121,20 @@ export class SessionSocket {
     }
 
     ws.onerror = () => {
+      clientLogger.warn('ws error', { sessionId: this._activeSessionId ?? undefined })
       // onclose will fire right after; let it drive reconnect
     }
 
-    ws.onclose = () => {
+    ws.onclose = (e: CloseEvent) => {
       if (this._destroyed) return
+      // 1000 = normal, 1001 = navigation; anything else is unexpected and worth logging.
+      const expected = e.code === 1000 || e.code === 1001
+      if (!expected) {
+        clientLogger.warn(`ws closed code=${e.code}`, {
+          sessionId: this._activeSessionId ?? undefined,
+          stack: e.reason || undefined,
+        })
+      }
       this._setConnectionState('disconnected')
       this._scheduleReconnect()
     }
