@@ -53,7 +53,12 @@ class AuthFailureAuditor:
     async def _drain(self) -> None:
         while True:
             try:
-                f = await asyncio.to_thread(self._q.get)
+                f = await asyncio.to_thread(self._q.get, True, 1.0)  # block=True, timeout=1.0s
+            except queue.Empty:
+                continue
+            except asyncio.CancelledError:
+                raise
+            try:
                 await self._write(f)
             except asyncio.CancelledError:
                 raise
