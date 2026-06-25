@@ -35,6 +35,7 @@ function renderCard(session: Session) {
         onRename={noop}
         onClose={noop}
         onDelete={noop}
+        onQuickResume={noop}
       />
     </MemoryRouter>,
   )
@@ -73,5 +74,63 @@ describe('SessionCard deterministic skeleton', () => {
     renderCard(base)
     const telemetry = screen.getByTestId('card-telemetry')
     expect(within(telemetry).getByText(/^active \d+[smhd] ago$/)).toBeInTheDocument()
+  })
+})
+
+// Mobile declutter contract (PR: mobile session-card declutter).
+// On a phone the card crammed title + account + repo + status + Goal + PRs +
+// usage% + "active … ago" + five 44px action icons into ~360px. Per-element
+// truncation can shrink things but can't *drop* one when space runs out, so the
+// secondary signals are gated to desktop via Tailwind `lg:` (min-width 1024px —
+// the exact viewport where App.tsx switches from the mobile routed views to the
+// resizable desktop shell). Below `lg`, only the at-a-glance essentials (title,
+// account chip, status pill) and a single resume action survive; everything else
+// is `hidden lg:*`. These assertions lock that contract so a refactor can't
+// silently un-hide the demoted elements (or hide an essential) on mobile.
+describe('SessionCard mobile declutter contract', () => {
+  const rich: Session = {
+    ...base,
+    activeGoal: 'ship the thing',
+    latestSuggestions: ['run the tests', 'open the PR'],
+    prs: [
+      { number: 1, url: 'u1', state: 'open', checks: 'passing', title: 'A', deployed: true },
+      { number: 2, url: 'u2', state: 'open', checks: 'passing', title: 'B', deployed: false },
+    ],
+  }
+
+  it('gates the telemetry row to desktop (hidden on mobile)', () => {
+    renderCard(rich)
+    expect(screen.getByTestId('card-telemetry')).toHaveClass('hidden', 'lg:flex')
+  })
+
+  it('gates the Goal badge to desktop', () => {
+    renderCard(rich)
+    expect(screen.getByTestId('card-goal')).toHaveClass('hidden', 'lg:inline-flex')
+  })
+
+  it('gates the PR badge to desktop', () => {
+    renderCard(rich)
+    expect(screen.getByTestId('card-prs')).toHaveClass('hidden', 'lg:inline-flex')
+  })
+
+  it('gates rename/archive/delete to desktop but keeps resume on mobile', () => {
+    renderCard(rich)
+    const secondary = screen.getByTestId('card-secondary-actions')
+    expect(secondary).toHaveClass('hidden', 'lg:flex')
+    expect(within(secondary).getByRole('button', { name: /rename session/i })).toBeInTheDocument()
+    expect(within(secondary).getByRole('button', { name: /archive session/i })).toBeInTheDocument()
+    expect(within(secondary).getByRole('button', { name: /delete session/i })).toBeInTheDocument()
+    // Resume is the one action kept inline on mobile — it must NOT live in the
+    // desktop-only group.
+    const resume = screen.getByRole('button', { name: /resume session/i })
+    expect(secondary).not.toContainElement(resume)
+    expect(resume).not.toHaveClass('hidden')
+  })
+
+  it('keeps the essentials (title + account chip) visible on mobile', () => {
+    renderCard(rich)
+    const identity = screen.getByTestId('card-identity')
+    expect(within(identity).getByText('Fix login bug')).not.toHaveClass('hidden')
+    expect(within(identity).getByText('work')).not.toHaveClass('hidden')
   })
 })

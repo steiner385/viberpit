@@ -1,5 +1,14 @@
 # ccswitch ⨉ Plotroom Merge — Program Overview
 
+> **⚠️ Superseded in part (2026-06-24).** The *foundation-first* phase order below was
+> changed to **value-first (Option A)** — automations (M1–M3) shipped first on current PR
+> data; the engine port follows. Authoritative sequencing is in
+> `2026-06-23-combined-app-roadmap.md` / `…-combined-app-requirements.md` §0. The
+> engine-port specifics (the parity model) were also reworked — see
+> `2026-06-23-plotroom-merge-phase0-parity-foundation-design.md`'s superseded note and
+> `docs/superpowers/evidence/2026-06-24-parity-phase0-finding.json`. This doc remains the
+> historical program rationale.
+
 **Date:** 2026-06-23
 **Status:** Approved (overview); Phase 0 specced separately
 **Scope:** This is a **migration program**, not a single feature. It is decomposed into
