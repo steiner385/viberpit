@@ -36,6 +36,25 @@ function Harness() {
   )
 }
 
+describe('SessionListControls injected options', () => {
+  it('renders injected archived options', () => {
+    render(
+      <SessionListControls
+        groupBy="account"
+        sortBy="archived"
+        onGroupByChange={() => {}}
+        onSortByChange={() => {}}
+        searchQuery=""
+        onSearchChange={() => {}}
+        groupOptions={[{ value: 'account', label: 'Account' }, { value: 'repo', label: 'Repo' }]}
+        sortOptions={[{ value: 'archived', label: 'Archived date' }]}
+      />,
+    )
+    expect(screen.getByRole('option', { name: 'Account' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Archived date' })).toBeInTheDocument()
+  })
+})
+
 describe('SessionListControls search', () => {
   it('types into the search box and clears it', async () => {
     render(<Harness />)

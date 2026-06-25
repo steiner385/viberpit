@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils'
 import { SessionCard } from './SessionCard'
-import { GroupHeader } from './GroupHeader'
+import { GroupedList } from './GroupedList'
 import { EmptyState } from './EmptyState'
 import type { Session, Account } from '@/api/types'
 import type { SessionGroup } from '@/session/ordering'
@@ -148,42 +148,22 @@ export function SessionList({
       }
       className="space-y-2"
     >
-      {groups
-        ? groups.map((group) => {
-            const collapsed = collapsedKeys?.has(group.key) ?? false
-            const panelId = `group-panel-${group.key}`
-            return (
-              <div key={group.key} className="space-y-2">
-                {group.label !== null && (
-                  <GroupHeader
-                    groupKey={group.key}
-                    label={group.label}
-                    count={group.count}
-                    collapsed={collapsed}
-                    selected={group.key === selectedGroupKey}
-                    listMode={listMode}
-                    onToggle={(k) => onToggleCollapse?.(k)}
-                    onExpand={onExpand}
-                    onCollapse={onCollapse}
-                    onNavigate={onNavigate}
-                    onExit={onExit}
-                  />
-                )}
-                {!collapsed && (
-                  <div
-                    id={panelId}
-                    className="space-y-2"
-                    {...(group.label !== null
-                      ? { role: 'group', 'aria-labelledby': `group-header-${group.key}` }
-                      : {})}
-                  >
-                    {group.sessions.map(renderCard)}
-                  </div>
-                )}
-              </div>
-            )
-          })
-        : sessions.map(renderCard)}
+      {groups ? (
+        <GroupedList
+          groups={groups}
+          renderRow={renderCard}
+          collapsedKeys={collapsedKeys}
+          onToggleCollapse={onToggleCollapse}
+          selectedGroupKey={selectedGroupKey}
+          onExpand={onExpand}
+          onCollapse={onCollapse}
+          listMode={listMode}
+          onNavigate={onNavigate}
+          onExit={onExit}
+        />
+      ) : (
+        sessions.map(renderCard)
+      )}
     </div>
   )
 }

@@ -77,6 +77,8 @@ export interface Session {
   activeGoal?: string | null
   /** The PRs authored from this session's branches. */
   prs: PullRequestInfo[]
+  /** True when the session was created without a verified usage read (optimistic pick). */
+  usageUnverified?: boolean
   /** Client-only: true while an optimistic create placeholder awaits the server. Never sent by the server. */
   pending?: boolean
 }
@@ -130,9 +132,33 @@ export interface PullRequestInfo {
   checks: 'passing' | 'failing' | 'pending' | 'none'
   title: string
   deployed: boolean
+  /** Open-stage classifier output: 'ci' | 'ready' | 'parked' | 'merged' | '' */
+  stage?: string
 }
 
 export interface ModelOption { id: string; label: string }
+
+export interface PendingDeploy {
+  behind: boolean
+  liveSha: string
+  targetSha: string
+  commits: { sha: string; subject: string; author: string; iso: string }[]
+  ci: string
+}
+
+export interface DeployProgress {
+  running: boolean
+  phases: Record<string, string>
+  error: string | null
+  warnings: string[]
+  targetSha: string
+  restore?: { restored: string[]; failed: string[] }
+}
+
+export interface DeployStatusResponse {
+  pending: PendingDeploy
+  deploy: DeployProgress
+}
 
 export interface ApiError {
   status: number

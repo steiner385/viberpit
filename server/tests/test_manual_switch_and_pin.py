@@ -1,6 +1,7 @@
 # server/tests/test_manual_switch_and_pin.py
 import pytest
 from ccswitch.account_names import InvalidAccountName
+from ccswitch.selector import Picked
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import SessionRecord
 import server.sessions.orchestrator as orch_mod
@@ -90,7 +91,7 @@ async def test_rotate_away_clears_pin(monkeypatch):
     monkeypatch.setattr(SessionOrchestrator, "_persist_pin", _persist_pin)
     # select_account gained a load-aware `load=` kwarg (master #137); accept it.
     monkeypatch.setattr("server.sessions.orchestrator.select_account",
-                        lambda exclude=frozenset(), load=None: "b")
+                        lambda exclude=frozenset(), load=None: Picked("b"))
 
     await orch._rotate_away(rec, reason="auth_401")
     assert rec.account_pinned is False  # hard-failure recovery overrides the pin

@@ -7,6 +7,12 @@ Wants=network-online.target
 Type=simple
 User=tony
 RuntimeDirectory=ccswitch
+RuntimeDirectoryPreserve=yes
+# Persistent state dir owned by User= (creates /var/lib/ccswitch). The deploy
+# snapshot/restore (issue: user-controlled deploy) writes the live-session snapshot
+# under here; without it the non-root daemon can't create /var/lib/ccswitch and
+# snapshot_deploy fails with PermissionError.
+StateDirectory=ccswitch
 WorkingDirectory=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
 EnvironmentFile=/etc/ccswitch/ccswitch.env
 ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m server.ipc

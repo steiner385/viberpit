@@ -280,3 +280,70 @@ def test_select_best_still_raises_all_busy():
     with pytest.raises(AllAccountsBusy) as ei:
         select_best(usages, set(), _cfg(), NOW)
     assert ei.value.earliest_reset == reset
+
+
+# --- optimistic fallback + kind (new) ---
+
+def test_select_picked_readable_is_not_optimistic():
+    from ccswitch.selector import select_picked, Picked
+    usages = {"a": Usage(10.0, SOON, 5.0, SOON, False)}
+    assert select_picked(usages, set(), _cfg(), NOW) == Picked(name="a", optimistic=False)
+
+
+def test_optimistic_fallback_off_excludes_none_usage():
+    # Legacy behavior: with the flag off, an all-None set has no candidates.
+    from ccswitch.selector import rank_accounts
+    ranked, earliest = rank_accounts({"a": None, "b": None}, set(), _cfg(), NOW)
+    assert ranked == []
+    assert earliest is None
+
+
+def test_optimistic_fallback_picks_least_load_when_all_unreadable():
+    from ccswitch.selector import select_picked, Picked
+    picked = select_picked({"a": None, "b": None}, set(), _cfg(), NOW,
+                           load={"a": 2.0, "b": 0.0}, optimistic_fallback=True)
+    assert picked == Picked(name="b", optimistic=True)
+
+
+def test_optimistic_fallback_skips_unhealthy():
+    from ccswitch.selector import select_picked, AllAccountsBusy
+    import pytest
+    with pytest.raises(AllAccountsBusy) as ei:
+        select_picked({"a": None}, set(), _cfg(), NOW,
+                      unhealthy=frozenset({"a"}), optimistic_fallback=True)
+    assert ei.value.kind == "no_usable_accounts"
+    assert ei.value.earliest_reset is None
+
+
+def test_readable_outranks_optimistic():
+    from ccswitch.selector import select_picked, Picked
+    picked = select_picked({"a": Usage(10.0, SOON, 5.0, SOON, False), "b": None},
+                           set(), _cfg(), NOW, optimistic_fallback=True)
+    assert picked == Picked(name="a", optimistic=False)
+
+
+def test_mixed_ceiling_plus_unreadable_picks_optimistic():
+    from ccswitch.selector import select_picked, Picked
+    reset = NOW + timedelta(hours=2)
+    picked = select_picked({"a": Usage(100.0, reset, 0.0, None, False), "b": None},
+                           set(), _cfg(), NOW, optimistic_fallback=True)
+    assert picked == Picked(name="b", optimistic=True)
+
+
+def test_all_at_ceiling_raises_at_ceiling_kind():
+    from ccswitch.selector import select_picked, AllAccountsBusy
+    import pytest
+    reset = NOW + timedelta(hours=1)
+    with pytest.raises(AllAccountsBusy) as ei:
+        select_picked({"x": Usage(100.0, reset, 0.0, None, False)}, set(), _cfg(), NOW,
+                      optimistic_fallback=True)
+    assert ei.value.kind == "at_ceiling"
+    assert ei.value.earliest_reset == reset
+
+
+def test_optimistic_ranked_after_readable_in_list():
+    from ccswitch.selector import rank_accounts
+    ranked, _ = rank_accounts({"a": Usage(10.0, SOON, 5.0, SOON, False), "b": None},
+                              set(), _cfg(), NOW, optimistic_fallback=True)
+    assert [r.name for r in ranked] == ["a", "b"]
+    assert ranked[0].optimistic is False and ranked[1].optimistic is True

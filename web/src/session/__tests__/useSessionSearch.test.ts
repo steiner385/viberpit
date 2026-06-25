@@ -12,7 +12,10 @@ function wrapper({ children }: { children: ReactNode }) {
 
 describe('useSessionSearch', () => {
   beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }))
-  afterEach(() => vi.useRealTimers())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
 
   it('returns null matchedIds and never fetches for an empty query', () => {
     const spy = vi.spyOn(api, 'get')
@@ -33,8 +36,23 @@ describe('useSessionSearch', () => {
     await act(async () => { vi.advanceTimersByTime(300) })
     await waitFor(() => expect(result.current.matchedIds).not.toBeNull())
 
-    expect(spy).toHaveBeenCalledWith('/sessions/search?q=auth')
+    expect(spy).toHaveBeenCalledWith('/sessions/search?q=auth&scope=live')
     expect([...(result.current.matchedIds ?? [])].sort()).toEqual(['s1', 's2'])
+    expect(result.current.isFiltered).toBe(true)
+  })
+
+  it('targets the archived scope when asked', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValue({ ids: ['a1', 'a2'] })
+    const { result } = renderHook(() => useSessionSearch('archived'), { wrapper })
+
+    act(() => result.current.setQuery('auth'))
+    expect(spy).not.toHaveBeenCalled()
+
+    await act(async () => { vi.advanceTimersByTime(300) })
+    await waitFor(() => expect(result.current.matchedIds).not.toBeNull())
+
+    expect(spy).toHaveBeenCalledWith('/sessions/search?q=auth&scope=archived')
+    expect([...(result.current.matchedIds ?? [])].sort()).toEqual(['a1', 'a2'])
     expect(result.current.isFiltered).toBe(true)
   })
 

@@ -3,7 +3,9 @@ import { useMemo, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
+  DeployStatusResponse, PendingDeploy, DeployProgress,
 } from './types'
+import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
@@ -20,7 +22,7 @@ export const QK = {
   githubRepos: ['github-repos'] as const,
   githubBranches: (repo?: string) => ['github-branches', repo] as const,
   settings: ['settings'] as const,
-  sessionSearch: (q: string) => ['session-search', q] as const,
+  sessionSearch: (q: string, scope: string = 'live') => ['session-search', scope, q] as const,
 }
 
 export function useModels() {
@@ -461,5 +463,31 @@ export function useSessionTranscript(id: string, enabled: boolean) {
     queryFn: () => api.get<SessionTranscript>(`/sessions/${id}/transcript`),
     enabled,
     staleTime: Infinity,
+  })
+}
+
+function useDeployStatusResponse() {
+  return useQuery<DeployStatusResponse>({
+    queryKey: ['deploy', 'status'],
+    queryFn: fetchDeployStatus,
+    refetchInterval: 5_000,
+  })
+}
+
+export function usePendingDeploy() {
+  const q = useDeployStatusResponse()
+  return { ...q, data: q.data?.pending as PendingDeploy | undefined }
+}
+
+export function useDeployStatus() {
+  const q = useDeployStatusResponse()
+  return { ...q, data: q.data?.deploy as DeployProgress | undefined }
+}
+
+export function useStartDeploy() {
+  const qc = useQueryClient()
+  return useMutation<{ started: boolean; reason?: string }, ApiRequestError, void>({
+    mutationFn: () => startDeploy(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['deploy', 'status'] }),
   })
 }

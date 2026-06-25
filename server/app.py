@@ -30,6 +30,7 @@ from server.api.config import router as config_router
 from server.api.repos import router as github_router
 from server.api.settings import router as settings_router
 from server.api import models as api_models
+from server.api.deploy import router as deploy_router
 
 
 def _daemon_socket_present(socket_path: str) -> bool:
@@ -165,7 +166,8 @@ async def _lifespan(app: FastAPI):
     if not remote_mode:
         await app.state.orchestrator.start()
 
-    # Sweep stale X lock/socket files from crashed previous runs
+    # Sweep stale X lock/socket files AND reap orphaned Xvfb/x11vnc/chrome left by a
+    # prior SIGKILLed shutdown (issue #206 — the self-healing startup half).
     if getattr(app.state, "x11", None) is not None:
         try:
             n = app.state.x11.sweep_stale()
@@ -173,6 +175,14 @@ async def _lifespan(app: FastAPI):
                 _logging.getLogger("server").info("startup: swept %d stale X lock/socket(s)", n)
         except Exception:
             _logging.getLogger("server").warning("startup: X sweep failed", exc_info=True)
+        try:
+            k = app.state.x11.sweep_orphan_processes()
+            if k:
+                _logging.getLogger("server").info(
+                    "startup: reaped %d orphaned X display process(es)", k
+                )
+        except Exception:
+            _logging.getLogger("server").warning("startup: X orphan reap failed", exc_info=True)
 
     # Sweep stale unbound attachments (uploaded but never sent) from prior runs.
     from server.db import db_session as _db_session
@@ -367,6 +377,7 @@ def create_app(
     app.include_router(github_router)
     app.include_router(settings_router)
     app.include_router(api_models.router)
+    app.include_router(deploy_router)
 
     # WebSocket bridge
     ws_router = build_ws_router(app.state.sessions)

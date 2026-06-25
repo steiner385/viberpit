@@ -8,7 +8,7 @@ import asyncio
 import logging
 from ccswitch.oauth import Usage
 from server.github.pr_status import PullRequestInfo
-from server.sessions.types import SessionRecord
+from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +41,18 @@ class RemoteDriver:
 
     def queued(self) -> list:
         return self._queued
+
+    def queue_wire(self) -> list[dict]:
+        """Structured queue snapshot, mirroring local SessionDriver.queue_wire so
+        ws.py can re-emit queued-prompt chips on reattach in remote mode too.
+
+        Without this, ws.py's `driver.queue_wire()` raised AttributeError on every
+        remote attach (caught, but it meant queued prompts were invisible — a prompt
+        typed while a turn was busy vanished with no feedback). The remote
+        ensure_driver snapshot carries queued prompt *text* only (driver.queued()),
+        not image refs, so images are omitted here; the live QueueUpdate events that
+        stream over .events() carry the full wire shape with images."""
+        return [{"text": t, "images": []} for t in self._queued]
 
     def seed_idle_suggestions(self, user_text: str, assistant_text: str) -> None:
         """Seed idle-session suggestions on the daemon-side driver (best-effort).
@@ -111,7 +123,7 @@ class RemoteOrchestrator:
         r = await self._client.call("send_prompt", session_id=session_id, text=text, images=images)
         return (r or {}).get("status")
 
-    async def ensure_driver(self, session_id: str, identity: str = "system") -> "RemoteDriver | None":
+    async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> "RemoteDriver | None":
         r = await self._client.call("ensure_driver", session_id=session_id, identity=identity)
         if not r["found"]:
             return None

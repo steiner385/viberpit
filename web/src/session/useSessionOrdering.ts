@@ -1,17 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Session } from '@/api/types'
-import { orderSessions, buildNavItems, type GroupBy, type SortBy, type SessionGroup, type NavItem } from './ordering'
-import { loadSessionOrder, saveSessionOrder } from '@/lib/sessionOrder'
-import { loadGroupCollapse, saveGroupCollapse } from '@/lib/groupCollapse'
+import {
+  orderItems, buildNavItems, LIVE_ORDERING,
+  type GroupBy, type SortBy, type SessionGroup, type NavItem, type OrderingConfig,
+} from './ordering'
+import { loadOrderPref, saveOrderPref } from '@/lib/sessionOrder'
+import { loadGroupCollapseNs, saveGroupCollapseNs } from '@/lib/groupCollapse'
 
-export interface SessionOrdering {
-  groupBy: GroupBy
-  sortBy: SortBy
-  setGroupBy: (g: GroupBy) => void
-  setSortBy: (s: SortBy) => void
-  groups: SessionGroup[]
-  orderedSessions: Session[]
-  navItems: NavItem[]
+export interface OrderingSpec<G extends string, S extends string, T> {
+  namespace: string
+  config: OrderingConfig<T>
+  groupByValues: readonly G[]
+  sortByValues: readonly S[]
+  defaultPref: { groupBy: G; sortBy: S }
+}
+
+export interface OrderingHandle<G extends string, S extends string, T> {
+  groupBy: G
+  sortBy: S
+  setGroupBy: (g: G) => void
+  setSortBy: (s: S) => void
+  groups: SessionGroup<T>[]
+  orderedSessions: T[]
+  navItems: NavItem<T>[]
   collapsedKeys: Set<string>
   toggleCollapse: (key: string) => void
   expandGroup: (key: string) => void
@@ -19,30 +30,29 @@ export interface SessionOrdering {
 }
 
 /**
- * Shared group/sort state for the session list, used by both layouts
- * (DesktopShell ≥1024px and Dashboard <1024px) so ordering stays consistent and
- * the logic lives in one place. State is restored from / persisted to
- * localStorage.
- *
- * @param matchedIds - When non-null, only sessions whose id is in the set are
- *   included in groups and orderedSessions. Pass null (or omit) for no filter.
+ * Generic group/sort/collapse state for a list, persisted under spec.namespace.
+ * `matchedIds` (when non-null) filters to those item ids (search integration).
  */
-export function useSessionOrdering(
-  sessions: readonly Session[],
+export function useItemOrdering<G extends string, S extends string, T>(
+  items: readonly T[],
+  spec: OrderingSpec<G, S, T>,
   matchedIds: Set<string> | null = null,
-): SessionOrdering {
-  const [groupBy, setGroupBy] = useState<GroupBy>(() => loadSessionOrder().groupBy)
-  const [sortBy, setSortBy] = useState<SortBy>(() => loadSessionOrder().sortBy)
-
+): OrderingHandle<G, S, T> {
+  const { namespace, config, groupByValues, sortByValues, defaultPref } = spec
+  const [groupBy, setGroupBy] = useState<G>(
+    () => loadOrderPref(namespace, groupByValues, sortByValues, defaultPref).groupBy,
+  )
+  const [sortBy, setSortBy] = useState<S>(
+    () => loadOrderPref(namespace, groupByValues, sortByValues, defaultPref).sortBy,
+  )
   useEffect(() => {
-    saveSessionOrder({ groupBy, sortBy })
-  }, [groupBy, sortBy])
+    saveOrderPref(namespace, { groupBy, sortBy })
+  }, [namespace, groupBy, sortBy])
 
-  const [collapsedKeys, setCollapsedKeys] = useState<Set<string>>(loadGroupCollapse)
-
+  const [collapsedKeys, setCollapsedKeys] = useState<Set<string>>(() => loadGroupCollapseNs(namespace))
   useEffect(() => {
-    saveGroupCollapse(collapsedKeys)
-  }, [collapsedKeys])
+    saveGroupCollapseNs(namespace, collapsedKeys)
+  }, [namespace, collapsedKeys])
 
   const toggleCollapse = useCallback((key: string) => {
     setCollapsedKeys((prev) => {
@@ -52,7 +62,6 @@ export function useSessionOrdering(
       return next
     })
   }, [])
-
   const expandGroup = useCallback((key: string) => {
     setCollapsedKeys((prev) => {
       if (!prev.has(key)) return prev
@@ -61,7 +70,6 @@ export function useSessionOrdering(
       return next
     })
   }, [])
-
   const collapseGroup = useCallback((key: string) => {
     setCollapsedKeys((prev) => {
       if (prev.has(key)) return prev
@@ -72,17 +80,39 @@ export function useSessionOrdering(
   }, [])
 
   const filtered = useMemo(
-    () => (matchedIds ? sessions.filter((s) => matchedIds.has(s.id)) : sessions),
-    [sessions, matchedIds],
+    () => (matchedIds ? items.filter((it) => matchedIds.has(config.idOf(it))) : items),
+    [items, matchedIds, config],
   )
-
-  const groups = useMemo(() => orderSessions(filtered, groupBy, sortBy), [filtered, groupBy, sortBy])
+  const groups = useMemo(
+    () => orderItems(filtered, groupBy, sortBy, config),
+    [filtered, groupBy, sortBy, config],
+  )
   const orderedSessions = useMemo(
     () => groups.filter((g) => !collapsedKeys.has(g.key)).flatMap((g) => g.sessions),
     [groups, collapsedKeys],
   )
-
   const navItems = useMemo(() => buildNavItems(groups, collapsedKeys), [groups, collapsedKeys])
 
-  return { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, navItems, collapsedKeys, toggleCollapse, expandGroup, collapseGroup }
+  return {
+    groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, navItems,
+    collapsedKeys, toggleCollapse, expandGroup, collapseGroup,
+  }
+}
+
+// ── Live wrapper (unchanged public API) ──────────────────────────────────────
+export type SessionOrdering = OrderingHandle<GroupBy, SortBy, Session>
+
+export const LIVE_SPEC: OrderingSpec<GroupBy, SortBy, Session> = {
+  namespace: 'live',
+  config: LIVE_ORDERING,
+  groupByValues: ['none', 'repo', 'status'],
+  sortByValues: ['status', 'lastActive', 'age', 'name'],
+  defaultPref: { groupBy: 'none', sortBy: 'status' },
+}
+
+export function useSessionOrdering(
+  sessions: readonly Session[],
+  matchedIds: Set<string> | null = null,
+): SessionOrdering {
+  return useItemOrdering(sessions, LIVE_SPEC, matchedIds)
 }
