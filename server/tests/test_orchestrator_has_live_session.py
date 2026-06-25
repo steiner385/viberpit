@@ -99,7 +99,7 @@ def test_poller_closure_passes_allow_refresh_false_when_live_session():
 
     allow_refresh_calls: list[bool] = []
 
-    def fake_usage_for(name: str, *, allow_refresh: bool = True):
+    def fake_usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown"):
         allow_refresh_calls.append(allow_refresh)
         return None
 
@@ -129,7 +129,7 @@ def test_poller_closure_passes_allow_refresh_true_when_no_live_session():
 
     allow_refresh_calls: list[bool] = []
 
-    def fake_usage_for(name: str, *, allow_refresh: bool = True):
+    def fake_usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown"):
         allow_refresh_calls.append(allow_refresh)
         return None
 
