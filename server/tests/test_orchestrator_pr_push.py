@@ -40,11 +40,10 @@ async def test_pr_push_fires_once_on_transition_into_failing(monkeypatch):
     import server.sessions.orchestrator as orch_mod
     calls = []
 
-    async def fake_push(title, body, *, url=None, opener=None):
+    async def fake_notify(title, body, *, url=None):
         calls.append((title, body))
-        return True
 
-    monkeypatch.setattr(orch_mod.push_mod, "push", fake_push)
+    monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
 
     orch = _make_orch()
     _add_record(orch, "s1", name="my-session", repo="o/r", branch="feat/x")
@@ -65,11 +64,10 @@ async def test_pr_push_re_fires_after_recovery(monkeypatch):
     import server.sessions.orchestrator as orch_mod
     calls = []
 
-    async def fake_push(title, body, *, url=None, opener=None):
+    async def fake_notify(title, body, *, url=None):
         calls.append((title, body))
-        return True
 
-    monkeypatch.setattr(orch_mod.push_mod, "push", fake_push)
+    monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
 
     orch = _make_orch()
     _add_record(orch, "s1", name="my-session", repo="o/r", branch="feat/x")
@@ -93,11 +91,10 @@ async def test_pr_push_no_match_no_crash(monkeypatch):
     import server.sessions.orchestrator as orch_mod
     calls = []
 
-    async def fake_push(title, body, *, url=None, opener=None):
+    async def fake_notify(title, body, *, url=None):
         calls.append((title, body))
-        return True
 
-    monkeypatch.setattr(orch_mod.push_mod, "push", fake_push)
+    monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
 
     orch = _make_orch()
     # No records registered
