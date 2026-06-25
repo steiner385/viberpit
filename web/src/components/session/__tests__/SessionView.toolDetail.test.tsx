@@ -25,13 +25,13 @@ describe('SessionView tool-detail control removed from the top bar', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('renders no tool-detail toggle button in the session top bar', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     expect(screen.queryByRole('button', { name: /tool calls/i })).not.toBeInTheDocument()
   })
 
   it('pressing "c" does not produce a tool-detail toggle button', async () => {
     const user = userEvent.setup()
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     await user.keyboard('c')
     expect(screen.queryByRole('button', { name: /tool calls/i })).not.toBeInTheDocument()
   })

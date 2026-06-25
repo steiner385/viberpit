@@ -63,7 +63,7 @@ describe('SessionView status strip', () => {
   })
 
   it('shows the session name (AI title) as the header title', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     // The same generated title shown on the dashboard session card appears in
     // the terminal header — not the raw sessionId prefix.
     expect(screen.getByText('Fix OAuth login bug')).toBeInTheDocument()
@@ -71,7 +71,7 @@ describe('SessionView status strip', () => {
   })
 
   it('shows the account from useSessions and quota from useAccounts', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     expect(screen.getByLabelText(/switch account/i)).toHaveValue('work-max')
     const quota = screen.getByLabelText(/account quota/i)
     expect(quota).toHaveTextContent('42%')
@@ -79,7 +79,7 @@ describe('SessionView status strip', () => {
   })
 
   it('shows the model after a sessionMeta event', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     emitSessionEvent({ type: 'sessionMeta', model: 'claude-sonnet-4-5', sessionId: 's1' })
     await waitFor(() => {
       expect(screen.getByLabelText(/select model/i)).toHaveValue('claude-sonnet-4-5')
@@ -87,7 +87,7 @@ describe('SessionView status strip', () => {
   })
 
   it('shows remaining context after a turnEnd with usage', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     emitSessionEvent({ type: 'sessionMeta', model: 'claude-sonnet-4-5', sessionId: 's1' })
     // 50k of 200k used → 75% remaining
     emitSessionEvent({
@@ -101,7 +101,7 @@ describe('SessionView status strip', () => {
   })
 
   it('overrides the account with the latest rotation target', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     emitRotated({ type: 'rotated', sessionId: 's1', fromAccount: 'work-max', toAccount: 'backup-max' })
     await waitFor(() => {
       expect(screen.getByLabelText(/switch account/i)).toHaveValue('backup-max')

@@ -77,7 +77,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
   it('Escape calls onBack when focus is NOT in the composer textarea', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
     // Focus something other than the composer (the Back button)
     screen.getByRole('button', { name: /back to session list/i }).focus()
     await user.keyboard('{Escape}')
@@ -87,7 +87,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
   it('Escape calls onBack when the composer textarea is empty', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
     // Click the textarea (leaving it empty) then press Escape
     await user.click(screen.getByRole('textbox', { name: /message/i }))
     await user.keyboard('{Escape}')
@@ -97,7 +97,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
   it('Escape does NOT call onBack when the composer textarea has text (mid-draft guard)', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
     const box = screen.getByRole('textbox', { name: /message/i })
     await user.click(box)
     await user.type(box, 'wip')
@@ -107,7 +107,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
 
   it('Shift+Tab cycles the permission mode: interactive → auto', async () => {
     const user = userEvent.setup()
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     await user.keyboard('{Shift>}{Tab}{/Shift}')
     // Initial mode is 'interactive'; cycling once should call setPermissionMode with 'auto'
     expect(mockSetPermissionMode).toHaveBeenCalledWith('s1', 'auto')
@@ -115,7 +115,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
 
   it('Shift+Tab cycles through all modes in order', async () => {
     const user = userEvent.setup()
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     // interactive → auto → allowlist → full-auto → interactive
     await user.keyboard('{Shift>}{Tab}{/Shift}')
     expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'auto')
@@ -131,7 +131,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
     const { act } = await import('@testing-library/react')
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
     // Simulate a permissionRequest arriving so hasOpenAction becomes true
     await act(async () => {
       capturedHandlers['sessionEvent']?.forEach((cb) =>
@@ -160,7 +160,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
   it('ArrowLeft on an empty composer calls onBack', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('textbox', { name: /message/i }))
     await user.keyboard('{ArrowLeft}')
     expect(onBack).toHaveBeenCalledOnce()
@@ -169,7 +169,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
   it('ArrowLeft does NOT call onBack when the composer has text and the caret is mid-prompt', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
     const box = screen.getByRole('textbox', { name: /message/i })
     await user.click(box)
     await user.type(box, 'wip') // caret left at the end (position 3)
@@ -180,7 +180,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
   it('ArrowLeft calls onBack when the composer has text but the caret is at the start', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
     const box = screen.getByRole('textbox', { name: /message/i }) as HTMLTextAreaElement
     await user.click(box)
     await user.type(box, 'wip')
@@ -192,7 +192,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
   it('ArrowLeft does NOT call onBack when text is selected from the start (collapsing the selection)', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
     const box = screen.getByRole('textbox', { name: /message/i }) as HTMLTextAreaElement
     await user.click(box)
     await user.type(box, 'wip')
@@ -205,7 +205,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
     const { act } = await import('@testing-library/react')
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
     await act(async () => {
       capturedHandlers['sessionEvent']?.forEach((cb) => cb({ type: 'turnStart', turnId: 't1' }))
       capturedHandlers['sessionEvent']?.forEach((cb) =>
@@ -228,7 +228,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
     const { act } = await import('@testing-library/react')
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
     await act(async () => {
       capturedHandlers['sessionEvent']?.forEach((cb) => cb({ type: 'turnStart', turnId: 't1' }))
       capturedHandlers['sessionEvent']?.forEach((cb) =>
@@ -250,7 +250,7 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
   it('Ctrl+Z does NOT detach when the composer has text (undo preserved)', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
     const box = screen.getByRole('textbox', { name: /message/i })
     await user.click(box)
     await user.type(box, 'wip')

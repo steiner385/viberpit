@@ -37,10 +37,12 @@ function nextPermissionMode(current: string): string {
 interface Props {
   sessionId: string
   onBack: () => void
+  /** Called after archive/delete — host advances to the neighbor (distinct from onBack). */
+  onDone: () => void
   initialPrompt?: string
 }
 
-export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
+export function SessionView({ sessionId, onBack, onDone, initialPrompt }: Props) {
   const { detach } = useSessionSocket()
   const rt = useSessionRuntime(sessionId, initialPrompt)
 
@@ -55,6 +57,11 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
     detach(sessionId)
     onBack()
   }, [sessionId, onBack, detach])
+
+  const handleDone = useCallback(() => {
+    detach(sessionId)
+    onDone()
+  }, [sessionId, onDone, detach])
 
   // In-session keyboard shortcuts:
   //   Esc  → back to session list (guard: skip if composer textarea has text mid-draft,
@@ -149,7 +156,7 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
         <SessionActions
           sessionId={sessionId}
           sessionName={rt.title}
-          onDone={handleBack}
+          onDone={handleDone}
           variant="dark"
           canRename
         />
