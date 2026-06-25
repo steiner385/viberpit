@@ -13,7 +13,6 @@ import App from './App'
 import type { Session, Account } from './api/types'
 import { api } from './api/client'
 
-
 vi.mock('./ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./ws/client')>()
   return {
