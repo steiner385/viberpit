@@ -1,10 +1,11 @@
 import { useRef, useEffect, useState } from 'react'
-import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Play, Target } from 'lucide-react'
+import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Play, Target, Wrench } from 'lucide-react'
 import { matchListShortcut } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { statusTier } from '@/session/statusTier'
+import { anyChecksFailing, isActionablePrState } from '@/session/prStatus'
 import { StatusPill, UsageBadge } from './UsageBadge'
 import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
@@ -41,9 +42,13 @@ interface SessionCardProps {
   onNavigate?: (dir: 'up' | 'down') => void
   /** Leave list mode and return focus to the prompt. */
   onExit?: () => void
+  /** PR autofix mode from app settings: 'propose' | 'auto' | 'off' */
+  prAutofixMode?: string
+  /** Called when the user taps "Fix PR #N" — parent owns the mutation. */
+  onFixPr?: (id: string, number: number) => void
 }
 
-export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onNavigate, onExit }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onNavigate, onExit, prAutofixMode, onFixPr }: SessionCardProps) {
   const articleRef = useRef<HTMLElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const subAgents = session.subAgents ?? []
@@ -57,6 +62,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   // on idle/"Ready" sessions too. Hidden while the session is actively working.
   const resumeText = suggestions[0] ?? 'continue'
   const isBusy = statusTier(session.status) === 'busy'
+
+  const failingPr = (session.prs ?? [])
+    .filter((p) => anyChecksFailing([p]) && isActionablePrState(p.state))
+    .sort((a, b) => a.number - b.number)[0]
+  const showFix = prAutofixMode === 'propose' && !!failingPr
 
   // Scroll selected row into view when selection changes (jsdom doesn't implement scrollIntoView)
   useEffect(() => {
@@ -241,6 +251,18 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               <span data-testid="card-prs" className="hidden lg:inline-flex items-center">
                 <PrList prs={session.prs} />
               </span>
+            )}
+            {showFix && failingPr && (
+              <button
+                type="button"
+                data-testid="card-fix-pr"
+                onClick={(e) => { e.stopPropagation(); onFixPr?.(session.id, failingPr.number) }}
+                aria-label={`Fix PR #${failingPr.number}`}
+                className="hidden lg:inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              >
+                <Wrench size={11} aria-hidden />
+                <span>Fix PR #{failingPr.number}</span>
+              </button>
             )}
           </div>
         </div>

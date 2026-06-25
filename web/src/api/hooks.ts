@@ -185,6 +185,14 @@ export function useSendPrompt() {
   })
 }
 
+export function useFixPr() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string; number: number }>({
+    mutationFn: ({ id, number }) => api.post<Session>(`/sessions/${id}/fix-pr`, { number }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
 export function useCloseSession() {
   const qc = useQueryClient()
   return useMutation<void, ApiRequestError, string, { prev?: Session[]; removed?: Session }>({
