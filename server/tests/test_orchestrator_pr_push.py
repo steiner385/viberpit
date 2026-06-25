@@ -11,6 +11,8 @@ def _make_orch():
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
     orch._records = {}
     orch._pushed_pr = set()
+    orch._pr_fix_attempts = set()
+    orch._drivers = {}
     return orch
 
 
@@ -45,6 +47,12 @@ async def test_pr_push_fires_once_on_transition_into_failing(monkeypatch):
 
     monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
 
+    # Mode "propose" skips the auto path so the notify-only path is exercised.
+    async def _mode_off(self):
+        return "propose"
+
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_pr_autofix_mode", _mode_off, raising=True)
+
     orch = _make_orch()
     _add_record(orch, "s1", name="my-session", repo="o/r", branch="feat/x")
 
@@ -69,6 +77,12 @@ async def test_pr_push_re_fires_after_recovery(monkeypatch):
         calls.append((title, body))
 
     monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
+
+    # Mode "propose" skips the auto path so the notify-only path is exercised.
+    async def _mode_off(self):
+        return "propose"
+
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_pr_autofix_mode", _mode_off, raising=True)
 
     orch = _make_orch()
     _add_record(orch, "s1", name="my-session", repo="o/r", branch="feat/x")
@@ -96,6 +110,12 @@ async def test_pr_push_no_match_no_crash(monkeypatch):
         calls.append((title, body))
 
     monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
+
+    # Mode "propose" skips the auto path so the notify-only path is exercised.
+    async def _mode_off(self):
+        return "propose"
+
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_pr_autofix_mode", _mode_off, raising=True)
 
     orch = _make_orch()
     # No records registered

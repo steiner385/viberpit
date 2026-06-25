@@ -56,6 +56,7 @@ from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
 from server.github.pr_status import PullRequestInfo
+from server.sessions.pr_fix import build_pr_fix_prompt
 
 log = logging.getLogger(__name__)
 
@@ -238,6 +239,9 @@ class SessionOrchestrator:
         # (repo, branch) pairs whose PR is currently in a failing-CI state (M2b.2 debounce):
         # push fires once on entry into failing; cleared on recovery so a re-break re-fires.
         self._pushed_pr: set[tuple[str, str]] = set()
+        # Auto-fix loop guard: (repo, branch) we've already auto-attempted since
+        # the last recovery. Sibling of _pushed_pr; in-memory, resets on restart.
+        self._pr_fix_attempts: set[tuple[str, str]] = set()
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
@@ -691,8 +695,7 @@ class SessionOrchestrator:
         key = (repo, branch)
         if new_checks != "failing":
             self._pushed_pr.discard(key)
-            return
-        if key in self._pushed_pr:
+            self._pr_fix_attempts.discard(key)  # recovery re-arms a future auto-fix
             return
         rec = next(
             (r for r in self._records.values() if r.repo == repo and r.branch == branch),
@@ -700,8 +703,25 @@ class SessionOrchestrator:
         )
         if rec is None:
             return
+
+        mode = await self._pr_autofix_mode()
+        # Auto: one attempt per failure event, only if a live driver exists.
+        if mode == "auto" and key not in self._pr_fix_attempts:
+            info = self.pr_for(repo, branch)
+            if info is not None and rec.id in self._drivers:
+                self._pr_fix_attempts.add(key)
+                result = await self.request_pr_fix(rec.id, info.number)
+                if result == "sent":
+                    return  # injected; skip the redundant break notification
+                # Could not inject (draining / not actionable) → fall through to notify.
+
+        # Notify (off, propose, or auto-fallback). Debounced like before.
+        if key in self._pushed_pr:
+            return
         self._pushed_pr.add(key)
-        await push_mod.notify("ccswitch — PR broke", f"{rec.name}: {repo} CI failing", url=f"/session/{rec.id}")
+        await push_mod.notify(
+            "ccswitch — PR broke", f"{rec.name}: {repo} CI failing", url=f"/session/{rec.id}"
+        )
 
     async def _condense_estimate(self) -> float:
         from server.sessions import compaction_stats
@@ -1055,6 +1075,42 @@ class SessionOrchestrator:
             by_number.values(),
             key=lambda p: (_STATE_RANK.get(p.state, 99), -p.number),
         )
+
+    async def _pr_autofix_mode(self) -> str:
+        """Current pr_autofix_mode from AppSettings; NULL/unknown → 'propose'."""
+        from sqlalchemy import select
+        from server.db.models import AppSettings
+        async with db_session() as db:
+            row = (
+                await db.execute(select(AppSettings).where(AppSettings.id == "singleton"))
+            ).scalar_one_or_none()
+            mode = (row.pr_autofix_mode if row else None) or "propose"
+        return mode if mode in ("off", "propose", "auto") else "propose"
+
+    async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
+        """Inject a branch-aware fix prompt for the session's PR #pr_number.
+
+        Single source of truth for "restore this PR", shared by the auto path
+        (_on_pr_change) and the manual propose endpoint. Resolves the (repo,
+        branch) for the PR number from the session's authored branches, gates on
+        an actionable (open/draft) state, and injects via send_prompt. Returns a
+        status string; does not resume a driver and does not apply the loop guard.
+        """
+        rec = self._records.get(session_id)
+        if rec is None or not rec.repo:
+            return "no_session"
+        info = None
+        for br in getattr(rec, "authored_branches", None) or []:
+            cached = self._pr_poller.cached(rec.repo, br)
+            if cached is not None and cached.number == pr_number:
+                info = cached
+                break
+        if info is None:
+            return "no_pr"
+        if info.state not in ("open", "draft"):
+            return "not_actionable"
+        prompt = build_pr_fix_prompt(rec.repo, info)
+        return await self.send_prompt(session_id, prompt)
 
     async def refresh_authored_branches(self) -> None:
         """Union each live session's reflog+live branches into its record, persist changes.
