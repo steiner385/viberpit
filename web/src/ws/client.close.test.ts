@@ -17,8 +17,7 @@ describe('SessionSocket close logging', () => {
     const sock = new SessionSocket('ws://localhost/ws')
     sock.connect()
     // Directly invoke the installed onclose handler with an unexpected code
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ws = (sock as any).ws as WebSocket
+    const ws = (sock as unknown as { ws: WebSocket | null }).ws as WebSocket
     ws.onclose?.({ code: 1006, reason: '' } as CloseEvent)
     expect(spy).toHaveBeenCalledWith(
       expect.stringContaining('1006'),
@@ -32,8 +31,7 @@ describe('SessionSocket close logging', () => {
     const { SessionSocket } = await import('@/ws/client')
     const sock = new SessionSocket('ws://localhost/ws')
     sock.connect()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ws = (sock as any).ws as WebSocket
+    const ws = (sock as unknown as { ws: WebSocket | null }).ws as WebSocket
     ws.onclose?.({ code: 1000, reason: '' } as CloseEvent)
     expect(spy).not.toHaveBeenCalledWith(
       expect.stringContaining('code='),
@@ -47,8 +45,7 @@ describe('SessionSocket close logging', () => {
     const { SessionSocket } = await import('@/ws/client')
     const sock = new SessionSocket('ws://localhost/ws')
     sock.connect()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ws = (sock as any).ws as WebSocket
+    const ws = (sock as unknown as { ws: WebSocket | null }).ws as WebSocket
     ws.onclose?.({ code: 1001, reason: '' } as CloseEvent)
     expect(spy).not.toHaveBeenCalledWith(
       expect.stringContaining('code='),
@@ -62,8 +59,7 @@ describe('SessionSocket close logging', () => {
     const { SessionSocket } = await import('@/ws/client')
     const sock = new SessionSocket('ws://localhost/ws')
     sock.connect()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ws = (sock as any).ws as WebSocket
+    const ws = (sock as unknown as { ws: WebSocket | null }).ws as WebSocket
     ws.onerror?.({} as Event)
     expect(spy).toHaveBeenCalledWith('ws error', expect.any(Object))
     sock.destroy()
