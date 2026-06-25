@@ -33,11 +33,10 @@ async def test_push_fires_once_on_entry_into_waiting_input(monkeypatch):
     import server.sessions.orchestrator as orch_mod
     calls = []
 
-    async def fake_push(title, body, *, url=None, opener=None):
-        calls.append((title, body))
-        return True
+    async def fake_notify(title, body, *, url=None):
+        calls.append((title, body, url))
 
-    monkeypatch.setattr(orch_mod.push_mod, "push", fake_push)
+    monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
 
     orch = _make_orch()
     _add_record(orch, "s1", name="my-session", status="idle")
@@ -46,6 +45,7 @@ async def test_push_fires_once_on_entry_into_waiting_input(monkeypatch):
     assert len(calls) == 1
     assert "my-session" in calls[0][1]
     assert "waiting_input" in calls[0][1]
+    assert calls[0][2] == "/session/s1"
 
     # Second call with same push-worthy status — should NOT fire again (debounce)
     await orch._maybe_push("s1", "waiting_input")
@@ -58,11 +58,10 @@ async def test_push_re_fires_after_non_push_status_clears_debounce(monkeypatch):
     import server.sessions.orchestrator as orch_mod
     calls = []
 
-    async def fake_push(title, body, *, url=None, opener=None):
+    async def fake_notify(title, body, *, url=None):
         calls.append((title, body))
-        return True
 
-    monkeypatch.setattr(orch_mod.push_mod, "push", fake_push)
+    monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
 
     orch = _make_orch()
     _add_record(orch, "s1", name="my-session", status="idle")
@@ -86,11 +85,10 @@ async def test_push_does_not_fire_on_done(monkeypatch):
     import server.sessions.orchestrator as orch_mod
     calls = []
 
-    async def fake_push(title, body, *, url=None, opener=None):
+    async def fake_notify(title, body, *, url=None):
         calls.append((title, body))
-        return True
 
-    monkeypatch.setattr(orch_mod.push_mod, "push", fake_push)
+    monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
 
     orch = _make_orch()
     _add_record(orch, "s1", name="my-session", status="in_progress")
@@ -105,11 +103,10 @@ async def test_push_fires_on_needs_attention(monkeypatch):
     import server.sessions.orchestrator as orch_mod
     calls = []
 
-    async def fake_push(title, body, *, url=None, opener=None):
+    async def fake_notify(title, body, *, url=None):
         calls.append((title, body))
-        return True
 
-    monkeypatch.setattr(orch_mod.push_mod, "push", fake_push)
+    monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
 
     orch = _make_orch()
     _add_record(orch, "s1", name="crashed-session", status="in_progress")
