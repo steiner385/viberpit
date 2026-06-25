@@ -81,6 +81,31 @@ class PullRequestInfo:
         )
 
 
+@dataclass(frozen=True)
+class PipelinePr:
+    """A population PR plus the ccswitch session that authored it (if any)."""
+    pr: PullRequestInfo
+    session_id: str | None = None
+    session_name: str | None = None
+
+    def to_dict(self) -> dict:
+        d = self.pr.to_dict()
+        d["session"] = (
+            {"id": self.session_id, "name": self.session_name}
+            if self.session_id else None
+        )
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PipelinePr":
+        sess = d.get("session") or {}
+        return cls(
+            pr=PullRequestInfo.from_dict(d),
+            session_id=sess.get("id"),
+            session_name=sess.get("name"),
+        )
+
+
 def _alias(i: int) -> str:
     return f"r{i}"
 
