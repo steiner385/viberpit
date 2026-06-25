@@ -1085,6 +1085,12 @@ class SessionOrchestrator:
         """Number of sessions currently mid-turn or awaiting input (restart-blocking)."""
         return sum(1 for r in self._records.values() if r.status in _ACTIVE_STATUSES)
 
+    def condensing_session_count(self) -> int:
+        """Number of sessions mid-compaction. A subset of active_session_count():
+        compaction is uninterruptible and loses data if killed mid-write, so the
+        deploy drain protects these past the ordinary turn cap (see deploy.drain)."""
+        return sum(1 for r in self._records.values() if r.status == "condensing")
+
     def restart_safe(self) -> bool:
         """True when a restart now would interrupt no in-flight work."""
         return self.active_session_count() == 0
@@ -1142,7 +1148,9 @@ class SessionOrchestrator:
         else:
             state = "draining"
         elapsed = (time.monotonic() - self._drain_started_at) if self._draining else 0.0
-        return {"state": state, "busySessions": active, "elapsed": round(elapsed, 1)}
+        return {"state": state, "busySessions": active,
+                "condensing": self.condensing_session_count(),
+                "elapsed": round(elapsed, 1)}
 
     async def begin_drain(self, selfclear_sec: float | None = None) -> dict:
         """Enter DRAINING: refuse new turns, tell the UI, and arm a self-clear timer so a

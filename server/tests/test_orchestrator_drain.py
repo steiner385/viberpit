@@ -99,3 +99,15 @@ async def test_send_prompt_returns_draining_status():
 async def test_send_prompt_returns_no_driver_when_idle_and_unknown():
     o = _orch()
     assert await o.send_prompt("unknown-session", "hello") == "no_driver"
+
+
+@pytest.mark.asyncio
+async def test_drain_status_reports_condensing_count():
+    o = _orch()
+    o._records["a"] = _rec("a", "condensing")
+    o._records["b"] = _rec("b", "in_progress")
+    st = await o.begin_drain(selfclear_sec=999)
+    assert st["state"] == "draining"
+    assert st["busySessions"] == 2   # condensing is still "active"
+    assert st["condensing"] == 1     # but separately countable
+    o.cancel_drain()
