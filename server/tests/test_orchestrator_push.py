@@ -34,7 +34,7 @@ async def test_push_fires_once_on_entry_into_waiting_input(monkeypatch):
     calls = []
 
     async def fake_notify(title, body, *, url=None):
-        calls.append((title, body))
+        calls.append((title, body, url))
 
     monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
 
@@ -45,6 +45,7 @@ async def test_push_fires_once_on_entry_into_waiting_input(monkeypatch):
     assert len(calls) == 1
     assert "my-session" in calls[0][1]
     assert "waiting_input" in calls[0][1]
+    assert calls[0][2] == "/session/s1"
 
     # Second call with same push-worthy status — should NOT fire again (debounce)
     await orch._maybe_push("s1", "waiting_input")

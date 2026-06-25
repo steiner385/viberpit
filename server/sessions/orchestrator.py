@@ -675,7 +675,7 @@ class SessionOrchestrator:
                 self._pushed.add(session_id)
                 rec = self._records.get(session_id)
                 name = rec.name if rec else session_id
-                await push_mod.notify("ccswitch — needs you", f"{name}: {status}")
+                await push_mod.notify("ccswitch — needs you", f"{name}: {status}", url=f"/session/{session_id}")
         else:
             self._pushed.discard(session_id)
 
@@ -701,7 +701,7 @@ class SessionOrchestrator:
         if rec is None:
             return
         self._pushed_pr.add(key)
-        await push_mod.notify("ccswitch — PR broke", f"{rec.name}: {repo} CI failing")
+        await push_mod.notify("ccswitch — PR broke", f"{rec.name}: {repo} CI failing", url=f"/session/{rec.id}")
 
     async def _condense_estimate(self) -> float:
         from server.sessions import compaction_stats

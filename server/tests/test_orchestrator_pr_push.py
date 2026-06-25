@@ -41,7 +41,7 @@ async def test_pr_push_fires_once_on_transition_into_failing(monkeypatch):
     calls = []
 
     async def fake_notify(title, body, *, url=None):
-        calls.append((title, body))
+        calls.append((title, body, url))
 
     monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
 
@@ -52,6 +52,7 @@ async def test_pr_push_fires_once_on_transition_into_failing(monkeypatch):
     assert len(calls) == 1
     assert "my-session" in calls[0][1]
     assert "o/r" in calls[0][1]
+    assert calls[0][2] == "/session/s1"
 
     # Debounce: second call with same condition must NOT re-fire
     await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
