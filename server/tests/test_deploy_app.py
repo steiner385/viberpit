@@ -76,3 +76,12 @@ def test_build_controller_app_wires_daemon_factory_when_enabled():
     _, _, ctrl_disabled = deploy_app.build_controller_app(
         repo="/r", health_url="http://h", venv_pip="/v", daemon_enabled=False)
     assert ctrl_disabled._client_factory is None
+
+
+def test_poll_interval_default_and_env(monkeypatch):
+    monkeypatch.delenv("CCSWITCH_DEPLOY_POLL_INTERVAL", raising=False)
+    assert deploy_app._poll_interval() == 30.0
+    monkeypatch.setenv("CCSWITCH_DEPLOY_POLL_INTERVAL", "45")
+    assert deploy_app._poll_interval() == 45.0
+    monkeypatch.setenv("CCSWITCH_DEPLOY_POLL_INTERVAL", "not-a-number")
+    assert deploy_app._poll_interval() == 30.0   # bad value falls back to default

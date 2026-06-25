@@ -84,6 +84,11 @@ the block a complete no-op on hosts where the unit is not yet enabled.
 Long-lived service that polls `origin/master` (notify-only) and runs user-triggered deploys.
 Serves a UDS at `/run/ccswitch/deploy.sock`; the edge proxies `/api/deploy/*` to it.
 
+Poll cadence defaults to **30s** (how quickly the "changes pending" banner appears after a
+merge). Tune it with `CCSWITCH_DEPLOY_POLL_INTERVAL=<seconds>` in `ccswitch.env`, then
+`sudo systemctl restart ccswitch-deploy-controller.service`. Each tick is one `git fetch` +
+one `gh api` CI check, so even small values stay well under the GitHub rate limit.
+
 **Cutover from the old auto-deploy (one-time).** The merge that ships this controller also
 deletes `scripts/auto-deploy.sh`, so the old `ccswitch-deploy.timer` keeps firing against a
 now-missing script (`203/EXEC`) until you disable it. The new controller is a separate systemd
