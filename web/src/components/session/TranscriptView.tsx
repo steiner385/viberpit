@@ -1,4 +1,4 @@
-import { useRef, useEffect, Fragment } from 'react'
+import { useRef, useEffect, useCallback, Fragment } from 'react'
 import type { Turn as TurnType, RotationMarker, SubThread } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { Turn } from './Turn'
@@ -52,11 +52,30 @@ export function TranscriptView({ turns, rotations = [], toolDetailMode, thinking
   // Snapshot of scrollHeight taken just before onLoadOlder() is called, used to
   // restore the scroll anchor after older turns are prepended.
   const prevScrollHeightRef = useRef<number | null>(null)
+  // True while a scroll we initiated (pin-to-bottom or prepend anchor) is in
+  // flight. The browser delivers the resulting scroll event asynchronously, so
+  // we must ignore it: only a real user gesture should change isNearBottom.
+  const programmaticScrollRef = useRef(false)
+
+  // Move scrollTop ourselves without the resulting scroll event being mistaken
+  // for a user scroll. Cleared on the next frame (not on the scroll event) so it
+  // still self-clears when the assignment is a no-op and fires no scroll event.
+  const scrollProgrammatically = useCallback((el: HTMLElement, top: number) => {
+    programmaticScrollRef.current = true
+    el.scrollTop = top
+    requestAnimationFrame(() => { programmaticScrollRef.current = false })
+  }, [])
 
   // Update isNearBottom on scroll; trigger paging when near the top.
   function handleScroll() {
     const el = containerRef.current
     if (!el) return
+    // Skip scrolls we caused ourselves. During entry the whole transcript
+    // replays and then keeps growing as markdown/fonts/images lay out late; each
+    // pin sets scrollTop to the *then* bottom, but its scroll event arrives after
+    // more growth, so without this guard it reads as "user scrolled up" and the
+    // auto-pin latches off above the true bottom.
+    if (programmaticScrollRef.current) return
     const threshold = 80 // px from bottom counts as "near bottom"
     isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
     if (el.scrollTop <= TOP_THRESHOLD && (earliestTurn ?? 0) > 0 && !loadingOlder && onLoadOlder) {
@@ -72,10 +91,10 @@ export function TranscriptView({ turns, rotations = [], toolDetailMode, thinking
     const el = containerRef.current
     if (!el) return
     if (prevScrollHeightRef.current != null) {
-      el.scrollTop += el.scrollHeight - prevScrollHeightRef.current
+      scrollProgrammatically(el, el.scrollTop + el.scrollHeight - prevScrollHeightRef.current)
       prevScrollHeightRef.current = null
     }
-  }, [turns])
+  }, [turns, scrollProgrammatically])
 
   // Pin to the true bottom whenever the content height changes — not just when
   // turns/rotations change. Entering an active session replays the whole
@@ -91,11 +110,11 @@ export function TranscriptView({ turns, rotations = [], toolDetailMode, thinking
     const ro = new ResizeObserver(() => {
       if (!isNearBottomRef.current) return
       const el = containerRef.current
-      if (el) el.scrollTop = el.scrollHeight
+      if (el) scrollProgrammatically(el, el.scrollHeight)
     })
     ro.observe(content)
     return () => ro.disconnect()
-  }, [])
+  }, [scrollProgrammatically])
 
   const { byTurn, top } = groupRotationsByAnchor(rotations)
   // Defensive: rotations anchored to a turn that isn't present (shouldn't happen
