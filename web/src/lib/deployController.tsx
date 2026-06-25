@@ -1,0 +1,78 @@
+// web/src/lib/deployController.tsx
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import { useDeployStatus, useStartDeploy } from '@/api/hooks'
+import { deployOutcome } from './deployPhases'
+
+export type DeployIntent = 'idle' | 'starting' | 'held-success' | 'held-failure'
+
+export interface DeployControllerValue {
+  intent: DeployIntent
+  visible: boolean
+  starting: boolean
+  startError: string | null
+  start: () => void
+  dismiss: () => void
+}
+
+const Ctx = createContext<DeployControllerValue | null>(null)
+
+export function DeployControllerProvider({ children }: { children: ReactNode }) {
+  const { data: deploy } = useDeployStatus()
+  const start = useStartDeploy()
+  const [intent, setIntent] = useState<DeployIntent>('idle')
+  const running = deploy?.running ?? false
+  const prevRunning = useRef(false)
+
+  // Classify terminal outcome on the running true→false edge.
+  // While running is true, we derive idle from the value below (no setState in effect body).
+  useEffect(() => {
+    const was = prevRunning.current
+    prevRunning.current = running
+    if (was && !running) {
+      setIntent(deployOutcome(deploy) === 'success' ? 'held-success' : 'held-failure')
+    }
+  }, [running, deploy])
+
+  // While the server reports running, any stale pre-run intent is superseded.
+  // Reset it so the post-run edge starts from a clean state.
+  useEffect(() => {
+    if (running && intent !== 'idle') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale pre-run intent in sync with running flag
+      setIntent('idle')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running])
+
+  // Auto-dismiss a clean success after a brief confirmation window.
+  useEffect(() => {
+    if (intent !== 'held-success') return
+    const t = setTimeout(() => setIntent('idle'), 2000)
+    return () => clearTimeout(t)
+  }, [intent])
+
+  const doStart = useCallback(() => {
+    setIntent('starting')
+    start.mutate(undefined, { onError: () => setIntent('held-failure') })
+  }, [start])
+
+  const dismiss = useCallback(() => setIntent('idle'), [])
+
+  const value: DeployControllerValue = {
+    intent,
+    visible: intent === 'starting' || running
+      || intent === 'held-success' || intent === 'held-failure',
+    starting: start.isPending,
+    startError: start.isError ? (start.error?.message ?? 'Could not start deploy') : null,
+    start: doStart,
+    dismiss,
+  }
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function useDeployController(): DeployControllerValue {
+  const v = useContext(Ctx)
+  if (!v) throw new Error('useDeployController must be used within DeployControllerProvider')
+  return v
+}
