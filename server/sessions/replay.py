@@ -89,6 +89,10 @@ def _build_events(path: str) -> tuple[list, object | None]:
                 # long sessions — the status strip needs the model after re-attach.
                 meta_event = ev.SessionMeta(model=model, session_id=o.get("sessionId") or "")
             out.append(ev.TurnStart(turn_id=uuid, src_uuid=uuid))
+            # Per-turn model, mirroring the live translator, so replayed/historical
+            # sessions show the model-switch divider when the model changes mid-session.
+            if model:
+                out.append(ev.TurnModel(turn_id=uuid, model=model))
             for b in content:
                 t = b.get("type")
                 if t == "text":
