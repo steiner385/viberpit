@@ -36,10 +36,15 @@ def test_status_proxies_controller():
     assert body["pending"]["behind"] is True
 
 
-def test_status_soft_degrades_when_unavailable():
+def test_status_unavailable_is_503_not_a_deploy_error():
+    """A transient controller-unreachable must surface as 503 (like /start), NOT a 200 whose
+    deploy.error='controller unavailable' — the frontend reads any deploy.error as a terminal
+    'Upgrade failed', so a mid-deploy blip would flash a spurious failure. 503 keeps react-query
+    on last-good data + isError, routing it through the existing 'reconnecting' path instead."""
     c = make_app(FakeClient(unavailable=True))
     r = c.get("/api/deploy/status")
-    assert r.status_code == 200 and r.json()["deploy"]["error"] == "controller unavailable"
+    assert r.status_code == 503
+    assert r.json().get("deploy", {}).get("error") != "controller unavailable"
 
 
 def test_start_proxies_status_code():

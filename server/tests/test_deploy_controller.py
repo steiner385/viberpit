@@ -1,4 +1,5 @@
 import pytest
+import threading
 from types import SimpleNamespace
 from server.deploy.controller import DeployController
 from server.deploy.types import PhaseState
@@ -140,6 +141,62 @@ async def test_edge_only_skips_restore_but_snapshots():
     assert "snapshot_deploy" in rpc_calls
     assert "restore_deploy" not in rpc_calls
     assert st.error is None
+
+@pytest.mark.asyncio
+async def test_blocking_steps_run_off_the_event_loop():
+    """Every synchronous deploy step (git/build/dep-sync/restart/health-wait/publish) must
+    run via a worker thread, not inline on the controller's asyncio loop — otherwise a long
+    step (npm build ~15-30s, wait_healthy ~30s) freezes the loop and starves /status, so the
+    edge synthesises a spurious 'controller unavailable' mid-deploy."""
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def rec(name, fn):
+        def wrapped(*a, **k):
+            seen[name] = threading.get_ident()
+            return fn(*a, **k)
+        return wrapped
+
+    g = FakeGit("a", "b", [])
+    for m in ("fetch", "current_sha", "remote_sha", "short_sha"):
+        setattr(g, m, rec(f"git.{m}", getattr(g, m)))
+    s, _ = make_steps(healthy=True)
+    for m in ("ci_verdict", "guard_working_tree", "fast_forward", "sync_deps_if_changed",
+              "build_frontend", "restart_units", "wait_healthy", "publish_deployment"):
+        setattr(s, m, rec(m, getattr(s, m)))
+
+    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s, daemon_enabled=True,
+                         changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
+    st = await c.deploy_once()
+    assert st.error is None
+    # The blocking steps actually executed...
+    assert "build_frontend" in seen and "wait_healthy" in seen and "git.fetch" in seen
+    # ...and none of them ran on the event-loop thread.
+    on_loop = {name for name, tid in seen.items() if tid == loop_thread}
+    assert not on_loop, f"blocking steps ran on the event loop: {sorted(on_loop)}"
+
+
+@pytest.mark.asyncio
+async def test_rollback_runs_off_the_event_loop():
+    """The rollback path (git reset + rebuild + restart) is just as blocking as the forward
+    path and must also be offloaded so /status survives a failed deploy's rollback."""
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+    g = FakeGit("a", "b", [])
+    s, _ = make_steps(healthy=False)   # health gate fails -> rollback
+    s.classify_change = lambda files: "daemon_changed"
+
+    def rollback(repo, sha, *, daemon_changed, daemon_enabled, run=None):
+        seen["rollback_to"] = threading.get_ident()
+    s.rollback_to = rollback
+
+    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s, daemon_enabled=True,
+                         changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
+    await c.deploy_once()
+    assert seen.get("rollback_to") not in (None, loop_thread)
+
 
 @pytest.mark.asyncio
 async def test_restart_units_exception_triggers_rollback():

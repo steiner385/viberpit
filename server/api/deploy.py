@@ -23,20 +23,16 @@ def get_deploy_client(request: Request) -> DeployControllerClient:
 async def deploy_status(
     _identity: str = Depends(current_identity),
     client: DeployControllerClient = Depends(get_deploy_client),
-) -> dict:
+) -> JSONResponse:
     try:
-        return await client.get_status()
+        return JSONResponse(await client.get_status())
     except DeployControllerUnavailable:
-        return {
-            "pending": {"behind": False, "commits": [], "ci": "unavailable"},
-            "deploy": {
-                "running": False,
-                "phases": {},
-                "error": "controller unavailable",
-                "warnings": [],
-                "targetSha": "",
-            },
-        }
+        # 503, not a 200 carrying deploy.error="controller unavailable". The frontend reads any
+        # deploy.error as a terminal "Upgrade failed", so a transient blip (controller event loop
+        # briefly busy, or its socket momentarily unreachable mid-deploy) would flash a spurious
+        # failure. A 503 keeps react-query on its last-good data + sets isError, routing the blip
+        # through the existing "reconnecting…" path instead of misclassifying the deploy.
+        return JSONResponse({"reason": "controller unavailable"}, status_code=503)
 
 
 @router.post("/start")
