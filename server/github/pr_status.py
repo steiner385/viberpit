@@ -177,6 +177,79 @@ def build_population_query(repo: str, merged_since: str) -> str:
     )
 
 
+def build_eta_checks_query(prs: list[tuple[str, int]]) -> str:
+    """One GraphQL doc aliasing a repository(owner,name).pullRequest block per PR.
+
+    Embeds the PR number as a literal in both ``pullRequest(number: N)`` and
+    ``isRequired(pullRequestNumber: N)`` so GitHub resolves required-check status
+    relative to that exact PR.  Returns "" for an empty list.
+    """
+    if not prs:
+        return ""
+    blocks = []
+    for i, (name_with_owner, number) in enumerate(prs):
+        owner, _, name = name_with_owner.partition("/")
+        blocks.append(
+            f"{_alias(i)}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
+            f"  pullRequest(number: {int(number)}) {{\n"
+            f"    commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{\n"
+            f"      contexts(first: 100) {{ nodes {{\n"
+            f"        __typename\n"
+            f"        ... on CheckRun {{ name status conclusion startedAt completedAt "
+            f"isRequired(pullRequestNumber: {int(number)}) "
+            f"checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}\n"
+            f"        ... on StatusContext {{ context state }}\n"
+            f"      }} }}\n"
+            f"    }} }} }} }}\n"
+            f"  }}\n"
+            f"}}"
+        )
+    return "query {\n" + "\n".join(blocks) + "\n}"
+
+
+def parse_eta_checks_response(
+    response: dict, prs: list[tuple[str, int]]
+) -> dict[tuple[str, int], list[dict]]:
+    """Parse a GitHub GraphQL response from ``build_eta_checks_query``.
+
+    Returns a mapping from (nameWithOwner, number) to a list of check dicts:
+    ``{name, status, conclusion, started_at, completed_at, isRequired, workflowName, event}``.
+    GraphQL ``status`` values (``COMPLETED``/``IN_PROGRESS``/``QUEUED``/``PENDING``/etc.)
+    are passed through unchanged.  StatusContext (legacy) nodes are treated as
+    ``COMPLETED`` with ``started_at`` and ``completed_at`` set to ``None``.
+    """
+    data = (response or {}).get("data") or {}
+    out: dict[tuple[str, int], list[dict]] = {}
+    for i, key in enumerate(prs):
+        node = data.get(_alias(i)) or {}
+        pr = node.get("pullRequest") or {}
+        commits = ((pr.get("commits") or {}).get("nodes")) or []
+        contexts: list[dict] = []
+        if commits:
+            rollup = (commits[0].get("commit") or {}).get("statusCheckRollup") or {}
+            contexts = ((rollup.get("contexts") or {}).get("nodes")) or []
+        checks: list[dict] = []
+        for c in contexts:
+            if c.get("__typename") == "CheckRun":
+                wf = (((c.get("checkSuite") or {}).get("workflowRun") or {}).get("workflow") or {})
+                checks.append({
+                    "name": c.get("name", ""), "status": c.get("status", ""),
+                    "conclusion": c.get("conclusion"), "started_at": c.get("startedAt"),
+                    "completed_at": c.get("completedAt"),
+                    "isRequired": bool(c.get("isRequired")), "workflowName": wf.get("name"),
+                    "event": "pull_request",
+                })
+            else:  # StatusContext — legacy, treated as completed
+                checks.append({
+                    "name": c.get("context", ""), "status": "COMPLETED",
+                    "conclusion": c.get("state"), "started_at": None,
+                    "completed_at": None,
+                    "isRequired": False, "workflowName": None, "event": "pull_request",
+                })
+        out[key] = checks
+    return out
+
+
 def parse_population_response(response: dict, repo: str) -> tuple[PullRequestInfo, ...]:
     """Open + recently-merged PRs for one repo, each with ``repo`` set.
 
