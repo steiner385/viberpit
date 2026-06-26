@@ -126,7 +126,12 @@ export function TranscriptView({ turns, rotations = [], toolDetailMode, thinking
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="flex-1 overflow-y-auto"
+      // overflow-x-hidden is the backstop: an overflow-y-auto box makes
+      // overflow-x compute to auto, so any descendant wider than the pane (a
+      // stray wide image/embed) would scroll the WHOLE pane sideways. Wrappable
+      // content (inline code, links) wraps and code/tables self-scroll via CSS;
+      // this clips anything else to the pane instead of scrolling it.
+      className="flex-1 overflow-y-auto overflow-x-hidden"
     >
       {/* Inner wrapper so the ResizeObserver above measures content height; the
           scroll container itself has a fixed flex height and never reports growth. */}

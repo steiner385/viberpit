@@ -73,6 +73,12 @@ body {
     border-radius: 4px;
     background: var(--code-bg);
     color: var(--text-h);
+    /* Long unbreakable inline tokens (minified classNames, base64 blobs, IDs)
+       must wrap, not force their box wide — otherwise they leak a horizontal
+       scrollbar onto the whole transcript pane (its overflow-y-auto makes
+       overflow-x compute to auto). Fenced code keeps its own scroll (see
+       `.markdown pre`); only inline code wraps. */
+    overflow-wrap: anywhere;
   }
 }
 
@@ -105,6 +111,9 @@ body {
   .markdown a {
     color: #2563eb;
     text-decoration: underline;
+    /* A long bare URL is one unbreakable token; let it wrap so it can't leak a
+       horizontal scrollbar onto the pane (same reasoning as inline code). */
+    overflow-wrap: anywhere;
   }
   .markdown blockquote {
     border-left: 3px solid var(--border);
@@ -124,7 +133,12 @@ body {
     font-size: inherit;
   }
   .markdown table {
-    width: 100%;
+    /* `display: block` turns the table into its own scroll container so a wide
+       table scrolls horizontally *within itself* (like `pre`) instead of
+       dragging the whole transcript pane sideways. */
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
     border-collapse: collapse;
     font-size: 0.8125rem;
   }

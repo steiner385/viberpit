@@ -84,6 +84,17 @@ describe('TranscriptView scrollback', () => {
     expect(onLoadOlder).not.toHaveBeenCalled()
   })
 
+  it('clips the pane horizontally so wide content cannot scroll it sideways', () => {
+    // The scroll container is overflow-y-auto, which makes overflow-x compute to
+    // auto — so without an explicit clip, any descendant wider than the pane (a
+    // long unbreakable token, a wide image) drags the whole transcript sideways.
+    // overflow-x-hidden is the backstop; wrappable content wraps via CSS.
+    const { container } = render(<TranscriptView {...base} />)
+    const scroller = container.firstChild as HTMLElement
+    expect(scroller.className).toContain('overflow-x-hidden')
+    expect(scroller.className).toContain('overflow-y-auto')
+  })
+
   it('shows the beginning-of-session marker at the start', () => {
     const { getByText } = render(<TranscriptView {...base} earliestTurn={0} />)
     expect(getByText(/beginning of session/i)).toBeTruthy()
