@@ -9,9 +9,9 @@ const allDone = {
   preflight: 'done', save: 'done', update: 'done', report: 'done', restart: 'done', resume: 'done',
 }
 
-function setStatus(deploy: Partial<DeployProgress>) {
+function setStatus(deploy: Partial<DeployProgress>, over: { isError?: boolean; failureCount?: number } = {}) {
   vi.spyOn(hooks, 'useDeployStatus').mockReturnValue(
-    { data: deploy, isError: false, failureCount: 0 } as unknown as ReturnType<typeof hooks.useDeployStatus>)
+    { data: deploy, isError: over.isError ?? false, failureCount: over.failureCount ?? 0 } as unknown as ReturnType<typeof hooks.useDeployStatus>)
 }
 function setStart(mutate = vi.fn(), over: Record<string, unknown> = {}) {
   vi.spyOn(hooks, 'useStartDeploy').mockReturnValue(
@@ -69,6 +69,20 @@ describe('deployController', () => {
     expect(['held-success', 'idle']).toContain(screen.getByTestId('intent').textContent)
     act(() => { vi.advanceTimersByTime(2000) })
     expect(screen.getByTestId('intent').textContent).toBe('idle')
+  })
+
+  it('a transient status-poll error mid-run does NOT classify as held-failure', () => {
+    // The edge returns 503 for a transient "controller unavailable"; react-query then keeps the
+    // last-good data (running:true) and sets isError. The controller must NOT read that as a
+    // finished deploy — otherwise an upgrade flashes a spurious "Upgrade failed" then self-heals.
+    setStart()
+    setStatus({ running: true, phases: { update: 'running' } })
+    const rerender = renderProbe()
+    // Poll fails while the deploy is still running — data stays running:true, isError flips on.
+    setStatus({ running: true, phases: { update: 'running' } }, { isError: true, failureCount: 2 })
+    act(() => { rerender.rerender(<DeployControllerProvider><Probe /></DeployControllerProvider>) })
+    expect(screen.getByTestId('intent').textContent).not.toBe('held-failure')
+    expect(screen.getByTestId('visible').textContent).toBe('true')
   })
 
   it('mutation error sends intent to held-failure', () => {

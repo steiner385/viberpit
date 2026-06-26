@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import logging
 import subprocess
 from typing import Any, Callable
@@ -61,16 +62,20 @@ class DeployController:
         daemon_changed = False
         try:
             # --- preflight ---
+            # Every synchronous step below runs via asyncio.to_thread so the controller's
+            # event loop stays free to serve /status and /healthz. Inline, a long step
+            # (npm build, wait_healthy's 30s poll) freezes the loop; the edge's 10s client
+            # then times out and synthesises a spurious "controller unavailable" mid-deploy.
             self._set(Phase.PREFLIGHT, PhaseState.RUNNING)
-            self._git.fetch(self.repo)
-            local = self._git.current_sha(self.repo)
-            remote = self._git.remote_sha(self.repo)
+            await asyncio.to_thread(self._git.fetch, self.repo)
+            local = await asyncio.to_thread(self._git.current_sha, self.repo)
+            remote = await asyncio.to_thread(self._git.remote_sha, self.repo)
             self.status.target_sha = remote
             if local == remote:
                 for p in Phase:
                     self._set(p, PhaseState.DONE)
                 return self.status
-            verdict = self._steps.ci_verdict(remote)
+            verdict = await asyncio.to_thread(self._steps.ci_verdict, remote)
             if verdict != "green":
                 raise DeployError("preflight", f"CI verdict={verdict}")
             self._set(Phase.PREFLIGHT, PhaseState.DONE)
@@ -86,15 +91,16 @@ class DeployController:
 
             # --- update ---
             self._set(Phase.UPDATE, PhaseState.RUNNING)
-            self._steps.guard_working_tree(self.repo)
-            self._steps.fast_forward(self.repo)
-            self._steps.sync_deps_if_changed(self.repo, local, remote, venv_pip=self.venv_pip)
-            self._steps.build_frontend(self.repo)
+            await asyncio.to_thread(self._steps.guard_working_tree, self.repo)
+            await asyncio.to_thread(self._steps.fast_forward, self.repo)
+            await asyncio.to_thread(self._steps.sync_deps_if_changed, self.repo, local, remote,
+                                    venv_pip=self.venv_pip)
+            await asyncio.to_thread(self._steps.build_frontend, self.repo)
             self._set(Phase.UPDATE, PhaseState.DONE)
 
             # --- report ---
             self._set(Phase.REPORT, PhaseState.RUNNING)
-            changed = self._changed_files(self.repo, local, remote)
+            changed = await asyncio.to_thread(self._changed_files, self.repo, local, remote)
             daemon_changed = self._steps.classify_change(changed) == "daemon_changed"
             self._set(Phase.REPORT, PhaseState.DONE)
 
@@ -109,14 +115,15 @@ class DeployController:
             if daemon_changed and self.daemon_enabled:
                 log_event(log, logging.INFO, "deploy.daemon.stop", deploy_id=self._deploy_id)
             try:
-                self._steps.restart_units(daemon_changed=daemon_changed,
-                                          daemon_enabled=self.daemon_enabled)
+                await asyncio.to_thread(self._steps.restart_units,
+                                        daemon_changed=daemon_changed,
+                                        daemon_enabled=self.daemon_enabled)
             except Exception as e:
                 raise DeployError("restart", str(e)) from e
             if daemon_changed and self.daemon_enabled:
                 log_event(log, logging.INFO, "deploy.daemon.start", deploy_id=self._deploy_id)
-            short = self._git.short_sha(self.repo, remote)
-            if not self._steps.wait_healthy(short, url=self.health_url):
+            short = await asyncio.to_thread(self._git.short_sha, self.repo, remote)
+            if not await asyncio.to_thread(self._steps.wait_healthy, short, url=self.health_url):
                 raise DeployError("restart", "health gate failed")
             log_event(log, logging.INFO, "deploy.edge.cutover", deploy_id=self._deploy_id)
             self._set(Phase.RESTART, PhaseState.DONE)
@@ -138,7 +145,7 @@ class DeployController:
                 self._set(Phase.RESUME, PhaseState.DONE)
 
             # --- publish (best-effort) ---
-            if not self._steps.publish_deployment(remote):
+            if not await asyncio.to_thread(self._steps.publish_deployment, remote):
                 self.status.warnings.append("could not publish GitHub deployment")
             return self.status
         except DeployError as e:
@@ -146,7 +153,8 @@ class DeployController:
             self.status.error = str(e)
             # Roll back only if we already fast-forwarded (preflight failures changed nothing).
             if e.phase != "preflight" and local:
-                self._steps.rollback_to(self.repo, local, daemon_changed=daemon_changed,
+                await asyncio.to_thread(self._steps.rollback_to, self.repo, local,
+                                        daemon_changed=daemon_changed,
                                         daemon_enabled=self.daemon_enabled)
             return self.status
         finally:
