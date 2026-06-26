@@ -10,6 +10,8 @@ import { anyChecksFailing, isActionablePrState } from '@/session/prStatus'
 import { StatusPill, UsageBadge } from './UsageBadge'
 import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
+import { useMediaQuery } from '@/lib/useMediaQuery'
+import { useSwipeAction } from '@/lib/useSwipeAction'
 import type { Session, Account } from '@/api/types'
 
 // Shared sizing for the per-session icon buttons: 44px tap target on touch,
@@ -84,6 +86,24 @@ export function SessionCard({ session, account, selected = false, listMode = fal
 
   const repoLabel = formatRepoLabel(session.repo)
 
+  // Touch-only swipe actions. lg = the app's desktop breakpoint (App.tsx); jsdom
+  // reports false → mobile, so tests exercise this branch by default.
+  const isWide = useMediaQuery('(min-width: 1024px)')
+  const reduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
+  const swipeEnabled = !isWide && !session.pending
+  const swipe = useSwipeAction({
+    enabled: swipeEnabled,
+    // Swipe left → Delete (destructive, confirmed by onDelete's dialog).
+    // Swipe right → Archive (reversible).
+    onCommit: (side) => (side === 'left' ? onDelete(session.id) : onClose(session.id)),
+  })
+  // Resting offset: follow the finger while dragging, else rest open at the panel
+  // width (negative = left/delete revealed), else closed.
+  const PANEL_PX = 88
+  const restX = swipe.dragging
+    ? swipe.dx
+    : swipe.openSide === 'left' ? -PANEL_PX : swipe.openSide === 'right' ? PANEL_PX : 0
+
   function handleKeyDown(e: React.KeyboardEvent) {
     // Single-key shortcuts are only live in list-focus mode. Outside it the row can
     // still hold native focus (tabIndex 0 when selected), so guard against stray
@@ -142,8 +162,56 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         'bg-white dark:bg-gray-800 px-3 py-2 min-h-[44px]',
         'focus-within:ring-2 focus-within:ring-blue-500',
         selected && 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-950/30',
+        !isWide && 'relative overflow-hidden', // clip the edge panels; mobile only so the desktop quick-reply menu is never clipped
       )}
     >
+      {!isWide && (
+        <>
+          {/* Archive panel — left edge, revealed by swiping right (openSide==='right'). */}
+          <button
+            type="button"
+            aria-label={`Archive ${session.name}`}
+            // Hidden from assistive tech (not just tab order) until revealed, so a
+            // screen reader doesn't announce a phantom action behind every card.
+            aria-hidden={swipe.openSide !== 'right'}
+            tabIndex={swipe.openSide === 'right' ? 0 : -1}
+            onClick={() => { swipe.reset(); onClose(session.id) }}
+            className={cn(
+              'absolute inset-y-0 left-0 flex w-[88px] items-center justify-center',
+              'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200',
+              swipe.openSide === 'right' ? 'pointer-events-auto' : 'pointer-events-none',
+            )}
+          >
+            <Archive size={20} aria-hidden="true" />
+          </button>
+          {/* Delete panel — right edge, revealed by swiping left (openSide==='left'). */}
+          <button
+            type="button"
+            aria-label={`Delete ${session.name}`}
+            aria-hidden={swipe.openSide !== 'left'}
+            tabIndex={swipe.openSide === 'left' ? 0 : -1}
+            onClick={() => { swipe.reset(); onDelete(session.id) }}
+            className={cn(
+              'absolute inset-y-0 right-0 flex w-[88px] items-center justify-center',
+              'bg-red-600 text-white',
+              swipe.openSide === 'left' ? 'pointer-events-auto' : 'pointer-events-none',
+            )}
+          >
+            <Trash2 size={20} aria-hidden="true" />
+          </button>
+        </>
+      )}
+
+      {/* Foreground — the existing card body. On mobile it translates over the
+          panels; on desktop it is a plain wrapper with no gesture handlers. */}
+      <div
+        {...(!isWide ? { 'data-testid': 'card-swipe-fg', onPointerDown: swipe.onPointerDown } : {})}
+        style={!isWide ? { transform: `translateX(${restX}px)` } : undefined}
+        className={cn(
+          !isWide && 'relative bg-white dark:bg-gray-800 touch-pan-y',
+          !isWide && !swipe.dragging && !reduceMotion && 'transition-transform duration-200',
+        )}
+      >
      <div className="flex items-center gap-2">
       {hasSubAgents && (
         <button
@@ -177,7 +245,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           'flex-1 min-w-0 text-left min-h-[44px] flex flex-col justify-center gap-1',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
         )}
-        onClick={() => onOpen(session.id)}
+        onClick={() => {
+          if (swipe.openSide) { swipe.reset(); return }   // tap closes a revealed card
+          if (swipe.consumeDrag()) return                  // swallow the click that ends a drag
+          onOpen(session.id)
+        }}
         onKeyDown={handleKeyDown}
         aria-label={`Open session ${session.name}`}
       >
@@ -450,6 +522,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
       </div>
      </div>
       {hasSubAgents && expanded && <SubAgentRows sessionId={session.id} subAgents={subAgents} />}
+      </div>
     </article>
   )
 }
