@@ -165,11 +165,16 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         !isWide && 'relative overflow-hidden', // clip the edge panels; mobile only so the desktop quick-reply menu is never clipped
       )}
     >
-      {!isWide && (
+      {/* Edge panels mount only while a swipe is in flight or held open. The
+          foreground sits inside the article's px-3/py-2 padding, so panels
+          pinned to the border box (inset-0) would otherwise peek out around it
+          at rest — a permanent red/grey band on every card. */}
+      {!isWide && (swipe.dragging || swipe.openSide !== null) && (
         <>
           {/* Archive panel — left edge, revealed by swiping right (openSide==='right'). */}
           <button
             type="button"
+            data-testid="swipe-panel-archive"
             aria-label={`Archive ${session.name}`}
             // Hidden from assistive tech (not just tab order) until revealed, so a
             // screen reader doesn't announce a phantom action behind every card.
@@ -187,6 +192,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           {/* Delete panel — right edge, revealed by swiping left (openSide==='left'). */}
           <button
             type="button"
+            data-testid="swipe-panel-delete"
             aria-label={`Delete ${session.name}`}
             aria-hidden={swipe.openSide !== 'left'}
             tabIndex={swipe.openSide === 'left' ? 0 : -1}
