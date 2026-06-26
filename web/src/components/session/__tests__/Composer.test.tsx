@@ -36,6 +36,16 @@ describe('Composer', () => {
     expect(screen.getByRole('textbox', { name: /message/i })).toHaveClass('block')
   })
 
+  it('pads its bottom by the safe-area inset so the input clears the mobile gesture bar', () => {
+    // Regression guard (#327 header rework + h-dvh): on edge-to-edge mobile browsers
+    // `100dvh` extends behind the home/gesture bar, so without a safe-area inset the
+    // composer's last row is painted under the system bar and looks cut off. jsdom has
+    // no layout, so we assert the inline style carries the env() inset.
+    const { container } = render(<Composer {...defaults} />)
+    const root = container.firstChild as HTMLElement
+    expect(root.style.paddingBottom).toContain('env(safe-area-inset-bottom)')
+  })
+
   it('shows Send button in idle state', () => {
     render(<Composer {...defaults} />)
     expect(screen.getByRole('button', { name: /send message/i })).toBeInTheDocument()
