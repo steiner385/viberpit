@@ -7,6 +7,16 @@ import { useAllPrs, useFixPr } from '@/api/hooks'
 import { isActionablePrState } from '@/session/prStatus'
 import type { PipelinePr } from '@/api/types'
 
+/** Format a positive seconds value as a human-readable ETA string: ~45s, ~12m, ~1h5m. */
+function formatEta(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  const m = Math.floor(seconds / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  const rem = m % 60
+  return rem === 0 ? `${h}h` : `${h}h${rem}m`
+}
+
 // Stage sections in urgency order; '' / unknown stages are dropped.
 const STAGE_SECTIONS: { key: string; label: string }[] = [
   { key: 'parked', label: 'Parked' },
@@ -72,6 +82,13 @@ export function PipelineBoard({
                           {p.repo}
                         </span>
                         <span className="truncate text-sm">{p.title}</span>
+                        {p.stage === 'ci' && (
+                          p.eta_overdue
+                            ? <span className="ml-1 shrink-0 text-xs text-destructive">overdue</span>
+                            : p.eta_seconds != null
+                              ? <span className="ml-1 shrink-0 text-xs text-muted-foreground">~{formatEta(p.eta_seconds)}</span>
+                              : null
+                        )}
                         {p.session && (
                           <span
                             data-testid={`pipeline-session-${p.number}`}

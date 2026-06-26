@@ -138,6 +138,12 @@ export interface PullRequestInfo {
   stage?: string
   /** nameWithOwner of the PR's repo (populated for population/pipeline PRs). */
   repo?: string
+  /** Estimated seconds until CI completes (snake_case to match backend to_dict). */
+  eta_seconds?: number | null
+  /** Estimated completion percent (snake_case to match backend to_dict). */
+  eta_percent?: number | null
+  /** True when the CI run has exceeded its expected duration. */
+  eta_overdue?: boolean
 }
 
 export interface PipelinePr extends PullRequestInfo {

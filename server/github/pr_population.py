@@ -8,6 +8,7 @@ classifier (parse_population_response → _to_info); this module adds no PR logi
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import json
 import logging
@@ -18,7 +19,13 @@ from typing import Awaitable, Callable, Union
 
 from ccswitch import gitrepos
 
-from .pr_status import PullRequestInfo, build_population_query, parse_population_response
+from .pr_status import (
+    PullRequestInfo,
+    build_eta_checks_query,
+    build_population_query,
+    parse_eta_checks_response,
+    parse_population_response,
+)
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +43,28 @@ def _default_query(repo: str, retention_days: int) -> dict:
     return json.loads(proc.stdout or "{}")
 
 
+def _default_eta_query(prs: list[tuple[str, int]]) -> dict:
+    """Run build_eta_checks_query via gh and return the parsed JSON response."""
+    if not prs:
+        return {}
+    query = build_eta_checks_query(prs)
+    proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"])
+    if proc.returncode != 0:
+        raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql (eta) failed")
+    return json.loads(proc.stdout or "{}")
+
+
+def _try_load_store(db_path: str | None):  # type: ignore[return]
+    """Return a HistoryStore for db_path, or None if unavailable (file absent/error)."""
+    if db_path is None:
+        return None
+    try:
+        from server.pipeline.history import HistoryStore
+        return HistoryStore(db_path)
+    except Exception:
+        return None
+
+
 class PrPopulationPoller:
     def __init__(
         self,
@@ -48,6 +77,11 @@ class PrPopulationPoller:
         clock: Callable[[], float] = time.monotonic,
         backoff_base: float | None = None,
         backoff_cap: float = 900.0,
+        # ETA enrichment — injectable for tests; None = use defaults
+        eta_query_fn: Callable[[list[tuple[str, int]]], dict] | None = None,
+        history_store=None,          # HistoryStore | None (pre-built; beats db_path)
+        history_db_path: str | None = None,  # fallback: open from this path lazily
+        now_fn: Callable[[], datetime] | None = None,
     ) -> None:
         self._poll_interval = poll_interval
         self._retention_days = retention_days
@@ -64,6 +98,12 @@ class PrPopulationPoller:
             Callable[[], list[str]] | Callable[[], Awaitable[list[str]]] | None
         ) = None
         self._task: asyncio.Task | None = None
+        # ETA
+        self._eta_query_fn = eta_query_fn or _default_eta_query
+        self._history_store = history_store  # may be None
+        self._history_db_path = history_db_path
+        self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
+        self._store_init_attempted = history_store is not None or history_db_path is None
 
     def set_repos_provider(
         self, fn: Union[Callable[[], list[str]], Callable[[], Awaitable[list[str]]]]
@@ -86,19 +126,107 @@ class PrPopulationPoller:
     def all(self) -> dict[str, tuple[PullRequestInfo, ...]]:
         return dict(self._cache)
 
+    def _store(self):
+        """Lazy-initialize the HistoryStore (once only).  Returns None if unavailable."""
+        if self._store_init_attempted:
+            return self._history_store
+        self._store_init_attempted = True
+        if self._history_db_path is not None:
+            self._history_store = _try_load_store(self._history_db_path)
+        else:
+            # Use the operational default destination; skip silently when absent.
+            try:
+                from server.pipeline.history_migrate import default_dest
+                self._history_store = _try_load_store(default_dest())
+            except Exception:
+                self._history_store = None
+        return self._history_store
+
+    async def _enrich_with_eta(
+        self, prs_by_repo: dict[str, tuple[PullRequestInfo, ...]]
+    ) -> dict[str, tuple[PullRequestInfo, ...]]:
+        """Batch-fetch ETA check timing for all open PRs and replace() the fields.
+
+        Returns prs_by_repo unchanged (same objects) on any error so the board
+        always shows data (just without ETA).  The SQLite HistoryStore is used
+        on the event-loop thread; only the network call is offloaded to a thread.
+        """
+        store = self._store()
+        if store is None:
+            return prs_by_repo
+
+        # Collect (repo, number) pairs for open PRs only.
+        open_keys: list[tuple[str, int]] = []
+        for repo, prs in prs_by_repo.items():
+            for pr in prs:
+                if pr.state in ("open", "draft"):
+                    open_keys.append((repo, pr.number))
+
+        if not open_keys:
+            return prs_by_repo
+
+        try:
+            # eta_query_fn is a blocking network call — run it in a thread.
+            response = await asyncio.to_thread(self._eta_query_fn, open_keys)
+            checks_by_pr = parse_eta_checks_response(response, open_keys)
+        except Exception:
+            log.warning("pr_population.eta_fetch_failed", exc_info=True)
+            return prs_by_repo
+
+        now = self._now_fn()
+
+        try:
+            from server.pipeline.eta import compute_pr_eta
+        except Exception:
+            log.warning("pr_population.eta_import_failed", exc_info=True)
+            return prs_by_repo
+
+        # SQLite reads + compute run on the event-loop thread (store is not thread-safe).
+        result: dict[str, tuple[PullRequestInfo, ...]] = {}
+        for repo, prs in prs_by_repo.items():
+            enriched = []
+            for pr in prs:
+                if pr.state in ("open", "draft"):
+                    key = (repo, pr.number)
+                    checks = checks_by_pr.get(key, [])
+                    try:
+                        eta_s, eta_pct, eta_over = compute_pr_eta(store, repo, checks, now)
+                        pr = dataclasses.replace(
+                            pr,
+                            eta_seconds=eta_s,
+                            eta_percent=eta_pct,
+                            eta_overdue=eta_over,
+                        )
+                    except Exception:
+                        log.debug(
+                            "pr_population.eta_compute_failed repo=%s pr=%s",
+                            repo, pr.number, exc_info=True,
+                        )
+                enriched.append(pr)
+            result[repo] = tuple(enriched)
+        return result
+
     async def refresh_once(self, repos: list[str]) -> bool:
         if not repos:
             return True
         any_ok = False
         any_fail = False
+        new_cache: dict[str, tuple[PullRequestInfo, ...]] = {}
         for repo in repos:
             try:
                 response = await asyncio.to_thread(self._query_fn, repo)
-                self._cache[repo] = parse_population_response(response, repo)
+                new_cache[repo] = parse_population_response(response, repo)
                 any_ok = True
             except Exception:
                 log.warning("pr_population.refresh_failed repo=%s", repo, exc_info=True)
                 any_fail = True
+        # Enrich open PRs with ETA (best-effort; never propagates failures).
+        if new_cache:
+            try:
+                new_cache = await self._enrich_with_eta(new_cache)
+            except Exception:
+                log.warning("pr_population.eta_enrich_failed", exc_info=True)
+        self._cache.update(new_cache)
         if any_fail and not any_ok:
             self._fail_count += 1
             self._cooldown_until = self._clock() + min(

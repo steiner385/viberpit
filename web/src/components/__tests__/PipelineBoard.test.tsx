@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { PipelineBoard } from '../PipelineView'
 import type { PipelinePr } from '@/api/types'
 
-function pr(over: Partial<PipelinePr>): PipelinePr {
+function pr(over: Partial<PipelinePr> & { eta_seconds?: number | null; eta_overdue?: boolean }): PipelinePr {
   return {
     number: 1, url: 'u', state: 'open', checks: 'none', title: 't',
     deployed: false, repo: 'o/n', stage: 'ready', session: null, ...over,
@@ -61,5 +61,15 @@ describe('PipelineBoard', () => {
     expect(label).toHaveAttribute('title', 'Session: My session')
     // A decorative session glyph precedes the name.
     expect(label.querySelector('svg')).not.toBeNull()
+  })
+
+  it('shows an ETA on a ci-stage PR that has one', () => {
+    render(<PipelineBoard prs={[pr({ number: 7, stage: 'ci', eta_seconds: 720 })]} />)
+    expect(screen.getByText(/~12m/)).toBeInTheDocument()
+  })
+
+  it('shows overdue when eta_overdue', () => {
+    render(<PipelineBoard prs={[pr({ number: 8, stage: 'ci', eta_overdue: true })]} />)
+    expect(screen.getByText(/overdue/i)).toBeInTheDocument()
   })
 })
