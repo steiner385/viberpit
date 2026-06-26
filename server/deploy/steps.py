@@ -62,6 +62,31 @@ def guard_working_tree(repo: str, run: Run = subprocess.run) -> bool:
     return dirty
 
 
+def _clear_incoming_untracked_collisions(repo: str, ref: str, run: Run = subprocess.run) -> list[str]:
+    """Remove untracked working-tree files that collide with paths tracked in origin/<ref>.
+
+    A file created out-of-band on the deploy host (untracked) but later committed upstream
+    blocks `git merge --ff-only` ("untracked working tree files would be overwritten by
+    merge"). Such a file is safe to drop: origin/<ref> carries the canonical tracked version
+    that the merge is about to install. Only paths that exist in origin/<ref> are removed —
+    unrelated untracked state (SQLite DB, .venv, web/dist) is left untouched.
+
+    Returns the list of removed paths.
+    """
+    others = run(["git", "-C", repo, "ls-files", "--others", "--exclude-standard", "-z"],
+                 capture_output=True, text=True)
+    removed: list[str] = []
+    for path in (p for p in others.stdout.split("\0") if p):
+        # Only delete if the path is tracked in the incoming ref (i.e. will be replaced).
+        present = run(["git", "-C", repo, "cat-file", "-e", f"origin/{ref}:{path}"],
+                      capture_output=True, text=True)
+        if present.returncode == 0:
+            run(["git", "-C", repo, "clean", "-f", "-q", "--", path],
+                check=True, capture_output=True)
+            removed.append(path)
+    return removed
+
+
 def fast_forward(repo: str, ref: str = "master", run: Run = subprocess.run) -> None:
     """Fast-forward the local branch to origin/<ref>.
 
@@ -72,6 +97,11 @@ def fast_forward(repo: str, ref: str = "master", run: Run = subprocess.run) -> N
     `git pull --ff-only` intermittently dies with "Cannot fast-forward to multiple
     branches". origin/<ref> is a single unambiguous ref, immune to that race.
 
+    If an untracked file collides with a path newly tracked in origin/<ref>, the
+    ff-merge aborts ("untracked working tree files would be overwritten by merge");
+    that file is removed and the merge retried once (#320: a health-check script was
+    placed out-of-band before its commit landed, wedging every deploy permanently).
+
     Raises DeployError("update", ...) if the fetch or the fast-forward fails.
     """
     f = run(["git", "-C", repo, "fetch", "--quiet", "origin", ref],
@@ -80,6 +110,10 @@ def fast_forward(repo: str, ref: str = "master", run: Run = subprocess.run) -> N
         raise DeployError("update", f"fetch failed: {f.stderr.strip()}")
     m = run(["git", "-C", repo, "merge", "--ff-only", f"origin/{ref}"],
             capture_output=True, text=True)
+    if m.returncode != 0 and "untracked working tree files would be overwritten" in m.stderr:
+        if _clear_incoming_untracked_collisions(repo, ref, run):
+            m = run(["git", "-C", repo, "merge", "--ff-only", f"origin/{ref}"],
+                    capture_output=True, text=True)
     if m.returncode != 0:
         raise DeployError("update", f"fast-forward failed: {m.stderr.strip()}")
 

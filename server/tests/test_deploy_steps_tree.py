@@ -75,3 +75,60 @@ def test_fast_forward_advances_repo_behind_origin(tmp_path):
     local_head = subprocess.run(["git", "-C", str(local), "rev-parse", "HEAD"],
                                 check=True, capture_output=True, text=True, env=_ENV).stdout.strip()
     assert local_head == origin_tip
+
+
+def _origin_and_clone(tmp_path):
+    """Build an origin repo (c1) and a clone of it; return (origin, local, go)."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+
+    def go(*a):
+        subprocess.run(["git", "-C", str(origin), *a], check=True, capture_output=True, env=_ENV)
+
+    go("init", "-q", "-b", "master")
+    (origin / "a.txt").write_text("1"); go("add", "."); go("commit", "-qm", "c1")
+    local = tmp_path / "local"
+    subprocess.run(["git", "clone", "-q", str(origin), str(local)], check=True,
+                   capture_output=True, env=_ENV)
+    return origin, local, go
+
+
+def test_fast_forward_clears_untracked_file_colliding_with_incoming_tracked_path(tmp_path):
+    """Regression (#320 deploy stuck): an untracked working-tree file sharing a path with a
+    file newly *tracked* in origin/<ref> aborts `git merge --ff-only`
+    ('untracked working tree files would be overwritten by merge'). The deploy host had
+    scripts/ccswitch-health-check.sh placed out-of-band before the commit landed → every
+    deploy failed identically. The colliding untracked file is safe to drop (origin provides
+    the canonical version); fast_forward removes exactly it and retries."""
+    origin, local, go = _origin_and_clone(tmp_path)
+    # origin commits the script as a TRACKED file.
+    (origin / "script.sh").write_text("CANONICAL\n"); go("add", "."); go("commit", "-qm", "c2")
+    origin_tip = subprocess.run(["git", "-C", str(origin), "rev-parse", "HEAD"],
+                                check=True, capture_output=True, text=True, env=_ENV).stdout.strip()
+    # local has the same path sitting UNTRACKED with stale content.
+    (local / "script.sh").write_text("STALE OUT-OF-BAND\n")
+
+    steps.fast_forward(str(local))
+
+    local_head = subprocess.run(["git", "-C", str(local), "rev-parse", "HEAD"],
+                                check=True, capture_output=True, text=True, env=_ENV).stdout.strip()
+    assert local_head == origin_tip
+    # The canonical tracked version replaced the stale out-of-band file.
+    assert (local / "script.sh").read_text() == "CANONICAL\n"
+
+
+def test_fast_forward_preserves_unrelated_untracked_files(tmp_path):
+    """Safety: resolving a collision must NOT touch untracked files that aren't part of the
+    incoming commit (the worktree holds precious untracked state: SQLite DB, .venv, web/dist).
+    Only the colliding path is removed."""
+    origin, local, go = _origin_and_clone(tmp_path)
+    (origin / "script.sh").write_text("CANONICAL\n"); go("add", "."); go("commit", "-qm", "c2")
+    # local: the colliding untracked file AND an unrelated precious untracked file.
+    (local / "script.sh").write_text("STALE\n")
+    (local / "ccswitch.db").write_text("PRECIOUS LOCAL STATE\n")
+
+    steps.fast_forward(str(local))
+
+    assert (local / "script.sh").read_text() == "CANONICAL\n"
+    # The unrelated untracked file survives untouched.
+    assert (local / "ccswitch.db").read_text() == "PRECIOUS LOCAL STATE\n"
