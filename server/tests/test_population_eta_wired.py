@@ -157,3 +157,43 @@ def test_eta_fetch_error_leaves_defaults(tmp_path):
     assert len(prs) == 1
     assert prs[0].eta_seconds is None
     assert prs[0].eta_overdue is False
+
+
+def test_default_dest_path_loaded_when_no_kwargs(tmp_path, monkeypatch):
+    """Regression: PrPopulationPoller() with no history kwargs must load from default_dest().
+
+    Before the fix, _store_init_attempted was True when both history_store and
+    history_db_path were None, causing _store() to return None immediately and
+    silently skip ETA enrichment in production.  After the fix the flag is only
+    True when history_store is pre-supplied, so the default_dest() branch runs.
+    """
+    db_path = tmp_path / "pipeline_history.db"
+    _build_db(db_path)  # seed real data so compute_pr_eta returns a value
+
+    # Patch default_dest inside the history_migrate module (where _store() imports it from).
+    import server.pipeline.history_migrate as hm
+    monkeypatch.setattr(hm, "default_dest", lambda: str(db_path))
+
+    eta_calls: list = []
+
+    def eta_qfn(prs: list[tuple[str, int]]) -> dict:
+        eta_calls.append(list(prs))
+        return _eta_checks_resp_empty(prs)
+
+    # No history_store, no history_db_path — the production construction.
+    p = PrPopulationPoller(
+        query_fn=lambda repo: _pop_resp(55),
+        eta_query_fn=eta_qfn,
+        now_fn=lambda: NOW,
+    )
+    asyncio.run(p.refresh_once([REPO]))
+
+    prs = p.cached(REPO)
+    assert len(prs) == 1
+    pr = prs[0]
+    # The eta-checks query must have been called (proves _store() didn't short-circuit).
+    assert eta_calls == [[(REPO, 55)]], f"eta_qfn not called; got {eta_calls}"
+    # And with history data present, the PR should get a non-None eta_seconds.
+    assert pr.eta_seconds is not None, (
+        f"expected eta_seconds from default_dest() path; got {pr.eta_seconds}"
+    )

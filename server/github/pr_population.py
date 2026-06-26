@@ -103,7 +103,7 @@ class PrPopulationPoller:
         self._history_store = history_store  # may be None
         self._history_db_path = history_db_path
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
-        self._store_init_attempted = history_store is not None or history_db_path is None
+        self._store_init_attempted = history_store is not None
 
     def set_repos_provider(
         self, fn: Union[Callable[[], list[str]], Callable[[], Awaitable[list[str]]]]
