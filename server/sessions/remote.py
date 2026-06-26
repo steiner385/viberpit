@@ -197,6 +197,10 @@ class RemoteOrchestrator:
         r = await self._client.call("latest_suggestions", session_id=session_id)
         return r if isinstance(r, list) else []
 
+    async def latest_summary(self, session_id: str, *, viewing: bool = False) -> str:
+        r = await self._client.call("latest_summary", session_id=session_id, viewing=viewing)
+        return r if isinstance(r, str) else ""
+
     async def list_archived(self):
         return await self._client.call("list_archived")
 

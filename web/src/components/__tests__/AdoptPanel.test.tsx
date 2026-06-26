@@ -8,6 +8,7 @@ import type { AdoptionCandidate } from '@/api/types'
 vi.mock('@/api/hooks', () => ({
   useAdoptable: vi.fn(),
   useAdoptSession: vi.fn(),
+  useSessionsViewing: vi.fn(),
 }))
 
 function cand(overrides: Partial<AdoptionCandidate> = {}): AdoptionCandidate {

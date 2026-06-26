@@ -8,6 +8,7 @@ vi.mock('@/api/hooks', () => ({
   // SessionActions calls this unconditionally (rules of hooks); the desktop
   // header doesn't surface Rename, but the hook still runs.
   useRenameSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSessionsViewing: vi.fn(),
 }))
 
 // Provide a runtime via the context the pane reads from. DesktopShell imports both

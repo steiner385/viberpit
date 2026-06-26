@@ -10,6 +10,7 @@ vi.mock('@/api/hooks', () => ({
   // SessionActions calls this unconditionally; these tests never open Rename
   // (no canRename), so a stub return is enough.
   useRenameSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSessionsViewing: vi.fn(),
 }))
 
 // mutate(id, opts) helpers that synchronously invoke the success/error callbacks,

@@ -45,9 +45,10 @@ from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
-from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory
+from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
 from server.sessions.replay import replay_events
 from server.sessions.suggestions import SuggestionService, last_turn_context
+from server.sessions.summaries import SummaryService, should_regenerate
 from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
 )
@@ -141,6 +142,7 @@ class SessionOrchestrator:
         titling_interval: float = 15.0,
         x11=None,
         title_fn: Callable | None = None,
+        summary_factory=None,
     ) -> None:
         # work_dir param is accepted for back-compat (used in tests to keep
         # the orchestrator anchored to the repo root), but is no longer stored
@@ -163,6 +165,10 @@ class SessionOrchestrator:
             self._suggester = None
         else:
             self._suggester = SuggestionService(suggestion_factory or real_suggestion_factory)
+        if os.environ.get("CCSWITCH_SUMMARIES", "1") == "0":
+            self._summarizer = None
+        else:
+            self._summarizer = SummaryService(summary_factory or real_summary_factory)
         # Cadence (seconds) of the background titling sweep that adopts Claude's
         # own transcript title into still-auto-named sessions. Constructor arg so
         # tests can drive it fast.
@@ -180,6 +186,11 @@ class SessionOrchestrator:
         # the same transcript state is not re-generated on every /sessions poll.
         self._detached_suggestions: dict[str, tuple[float, list[str]]] = {}
         self._suggest_inflight: set[str] = set()
+        # Session status summaries: session_id -> (transcript mtime, generated_at_monotonic, text).
+        # Generated lazily from the transcript, only while a viewer is present and at most
+        # once / 60s (see latest_summary / should_regenerate). Ephemeral — never persisted.
+        self._summaries: dict[str, tuple[float, float, str]] = {}
+        self._summary_inflight: set[str] = set()
         # Issue-proposal cache: repo → (monotonic_ts, proposal_or_None).
         # Populated lazily by _refresh_issue_proposal; TTL = _ISSUE_TTL_S.
         self._issue_proposals: dict[str, tuple[float, str | None]] = {}
@@ -1775,6 +1786,56 @@ class SessionOrchestrator:
             self._detached_suggestions[session_id] = (signature, [])
         finally:
             self._suggest_inflight.discard(session_id)
+
+    async def latest_summary(self, session_id: str, *, viewing: bool) -> str:
+        """Latest cached one-line status summary for a session.
+
+        Mirrors latest_suggestions: lazy, mtime-keyed, non-blocking. Schedules a
+        background regeneration only when should_regenerate() allows (viewer present,
+        active status, transcript changed, >=60s since last gen). Returns the cached
+        text (or "") immediately — never blocks the /sessions GET. Never raises.
+        """
+        rec = self._records.get(session_id)
+        if rec is None:
+            return ""
+        cached = self._summaries.get(session_id)
+        try:
+            path = await self._resolve_transcript_path(session_id)
+            signature = os.path.getmtime(path) if path else 0.0
+        except Exception:
+            return cached[2] if cached else ""
+        now = time.monotonic()
+        if (
+            path
+            and self._summarizer is not None
+            and session_id not in self._summary_inflight
+            and should_regenerate(viewing, cached, signature, now, rec.status)
+        ):
+            self._summary_inflight.add(session_id)
+            asyncio.create_task(self._generate_summary(session_id, rec, path, signature))
+        return cached[2] if cached else ""
+
+    async def _generate_summary(self, session_id, rec, path, signature) -> None:
+        """Generate a summary from the session's transcript (best-effort).
+
+        Caches (signature, generated_at, text) even when text is "", so the same
+        transcript state isn't re-generated until it changes AND 60s passes. Always
+        clears the in-flight flag.
+        """
+        try:
+            if self._summarizer is None:
+                self._summaries[session_id] = (signature, time.monotonic(), "")
+                return
+            events = await replay_events(path)
+            user_text, assistant_text = last_turn_context(events)
+            context = f"User: {user_text}\n\nAssistant: {assistant_text}"
+            text = await self._summarizer.generate(rec.cwd, str(compose(rec.account)), context)
+            self._summaries[session_id] = (signature, time.monotonic(), text or "")
+        except Exception:
+            log.warning("summary generation failed id=%s", session_id, exc_info=True)
+            self._summaries[session_id] = (signature, time.monotonic(), "")
+        finally:
+            self._summary_inflight.discard(session_id)
 
     def _dispatch_proposal(self, rec: SessionRecord) -> str | None:
         """Return the cached issue-proposal string for *rec*'s repo (or None).

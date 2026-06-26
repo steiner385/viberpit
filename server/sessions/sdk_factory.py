@@ -63,3 +63,21 @@ def real_suggestion_factory(cwd, config_dir):
         max_turns=1, system_prompt=SUGGEST_SYSTEM_PROMPT, model=model, resume=None,
     )
     return ClaudeSDKClient(options=opts)
+
+
+def real_summary_factory(cwd, config_dir):
+    """One-shot, resume-less client for generating a session status summary.
+
+    Bound to the session's own account config dir (Max subscription only). Tools denied;
+    model defaults to Haiku, overridable via CCSWITCH_SUMMARY_MODEL.
+    """
+    from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+    from .summaries import SUMMARY_SYSTEM_PROMPT
+    env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
+    model = os.environ.get("CCSWITCH_SUMMARY_MODEL", "claude-haiku-4-5") or None
+    opts = ClaudeAgentOptions(
+        cwd=cwd, env=env, can_use_tool=_deny_all_tools,
+        permission_mode="default", include_partial_messages=True,
+        max_turns=1, system_prompt=SUMMARY_SYSTEM_PROMPT, model=model, resume=None,
+    )
+    return ClaudeSDKClient(options=opts)

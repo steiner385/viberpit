@@ -20,6 +20,7 @@ vi.mock('@/api/hooks', () => ({
   useSessions: () => ({ data: [] }),
   useAccounts: () => ({ data: [] }),
   useSettings: () => ({ data: { defaultToolDetail: 'auto', thinkingCollapsed: true } }),
+  useSessionsViewing: vi.fn(),
   QK: {},
 }))
 

@@ -18,6 +18,7 @@ vi.mock('@/api/hooks', () => ({
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessionTranscript: vi.fn(),
+  useSessionsViewing: vi.fn(),
 }))
 
 function wrapper({ children }: { children: React.ReactNode }) {

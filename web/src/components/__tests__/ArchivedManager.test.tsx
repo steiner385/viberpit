@@ -27,6 +27,7 @@ vi.mock('@/api/hooks', () => ({
   usePermanentDeleteSession: vi.fn(),
   useBulkUnarchiveSessions: vi.fn(),
   useBulkPermanentDeleteSessions: vi.fn(),
+  useSessionsViewing: vi.fn(),
   QK: {
     archived: ['archived-sessions'],
     sessions: ['sessions'],
