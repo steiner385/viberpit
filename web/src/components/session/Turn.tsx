@@ -20,11 +20,13 @@ interface Props {
   streamingBlockId?: string | null
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
   subAgents?: Record<string, SubThread>
+  /** The session's current model — threaded down to badge subagents on a different model. */
+  sessionModel?: string | null
 }
 
 export const Turn = memo(function Turn({
   turn, isLastTurn, toolDetailMode, thinkingCollapsed, streamingBlockId = null,
-  onAnswer, subAgents,
+  onAnswer, subAgents, sessionModel,
 }: Props) {
   const isUser = turn.role === 'user'
   // Suppress live questions and open permissions inline — they are rendered by the
@@ -57,6 +59,7 @@ export const Turn = memo(function Turn({
                 toolDetailMode={toolDetailMode}
                 thinkingCollapsed={thinkingCollapsed}
                 subAgents={subAgents}
+                sessionModel={sessionModel}
               />
             </BlockRow>
           )
@@ -74,7 +77,7 @@ export const Turn = memo(function Turn({
             return <BlockRow key={block.id} ts={rowTs}><ThinkingBlock text={block.text} defaultCollapsed={thinkingCollapsed} /></BlockRow>
           case 'tool':
             // Unreachable: tool blocks are coalesced into toolGroup items above.
-            return <BlockRow key={block.id} ts={rowTs}><ToolCallCard block={block} density="line" thinkingCollapsed={thinkingCollapsed} subThread={subAgents?.[block.toolId]} /></BlockRow>
+            return <BlockRow key={block.id} ts={rowTs}><ToolCallCard block={block} density="line" thinkingCollapsed={thinkingCollapsed} subThread={subAgents?.[block.toolId]} sessionModel={sessionModel} /></BlockRow>
           case 'question':
             // A LIVE open question is rendered by the pinned PendingQuestionPanel
             // above the composer — omit it inline to avoid a duplicate. Historical

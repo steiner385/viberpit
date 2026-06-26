@@ -11,6 +11,8 @@ interface ToolGroupProps {
   thinkingCollapsed?: boolean
   /** Sub-agent threads keyed by the spawning Task toolId (for nested rendering). */
   subAgents?: Record<string, SubThread>
+  /** The session's current model — threaded to badge subagents on a different model. */
+  sessionModel?: string | null
 }
 
 /**
@@ -20,7 +22,7 @@ interface ToolGroupProps {
  * global `toolDetailMode` force-opens/closes every result panel; in 'auto' only
  * the live tail's most recent tool auto-opens its output.
  */
-export function ToolGroup({ tools, isLiveTail, toolDetailMode, thinkingCollapsed, subAgents }: ToolGroupProps) {
+export function ToolGroup({ tools, isLiveTail, toolDetailMode, thinkingCollapsed, subAgents, sessionModel }: ToolGroupProps) {
   return (
     <div className="my-0.5">
       {tools.map((t, i) => (
@@ -32,6 +34,7 @@ export function ToolGroup({ tools, isLiveTail, toolDetailMode, thinkingCollapsed
           thinkingCollapsed={thinkingCollapsed}
           defaultResultOpen={isLiveTail && i === tools.length - 1}
           subThread={subAgents?.[t.toolId]}
+          sessionModel={sessionModel}
         />
       ))}
     </div>

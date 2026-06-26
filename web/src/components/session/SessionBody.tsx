@@ -162,6 +162,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
               <TranscriptView
                 turns={rt.state.turns}
                 rotations={rt.state.rotations}
+                model={rt.state.model}
                 toolDetailMode={rt.toolDetailMode}
                 thinkingCollapsed={rt.thinkingCollapsed}
                 // Only the live-open block streams as plain text; during replay the open

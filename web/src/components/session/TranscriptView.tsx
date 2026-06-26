@@ -11,6 +11,8 @@ const TOP_THRESHOLD = 64
 interface Props {
   turns: TurnType[]
   rotations?: RotationMarker[]
+  /** The session's current model — threaded to badge subagents on a different model. */
+  model?: string | null
   toolDetailMode: ToolDetailMode
   thinkingCollapsed: boolean
   /** Id of the live-streaming block (null when idle/replaying). */
@@ -46,7 +48,7 @@ function groupRotationsByAnchor(rotations: RotationMarker[]) {
   return { byTurn, top }
 }
 
-export function TranscriptView({ turns, rotations = [], toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder }: Props) {
+export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
@@ -174,6 +176,7 @@ export function TranscriptView({ turns, rotations = [], toolDetailMode, thinking
               streamingBlockId={idx === turns.length - 1 ? streamingBlockId : null}
               onAnswer={onAnswer}
               subAgents={subAgents}
+              sessionModel={model}
             />
             {(byTurn.get(turn.id) ?? []).map((r, i) => (
               <RotationDivider key={`rot-${turn.id}-${i}`} from={r.from} to={r.to} reason={r.reason} />

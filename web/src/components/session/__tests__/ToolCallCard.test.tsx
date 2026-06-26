@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ToolCallCard } from '../ToolCallCard'
 import type { Block } from '@/session/reducer'
+import { modelName } from '@/session/modelName'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -245,6 +246,26 @@ describe('ToolCallCard', () => {
       rerender(<ToolCallCard block={bashBlock} density="line" />)
       // Running (no result) → prominent name color
       expect(screen.getByText('Bash').className).toMatch(/text-gray-(900|100)/)
+    })
+  })
+
+  describe('subagent model badge', () => {
+    const taskBlock: ToolBlock = {
+      kind: 'tool', id: 'task1', toolId: 'task1', name: 'Task',
+      toolKind: 'task', input: { description: 'go' },
+    }
+    const subTurn = { id: 's1', role: 'assistant' as const, blocks: [{ kind: 'text' as const, id: 's1:t', text: 'hi' }] }
+
+    it('shows the subagent model when it differs from the session model', () => {
+      const subThread = { turns: [subTurn], openBlockId: null, model: 'claude-haiku-4-5' }
+      render(<ToolCallCard block={taskBlock} subThread={subThread} sessionModel="claude-opus-4-8" />)
+      expect(screen.getByText(modelName('claude-haiku-4-5'))).toBeInTheDocument()
+    })
+
+    it('shows no badge when the subagent model matches the session model', () => {
+      const subThread = { turns: [subTurn], openBlockId: null, model: 'claude-opus-4-8' }
+      render(<ToolCallCard block={taskBlock} subThread={subThread} sessionModel="claude-opus-4-8" />)
+      expect(screen.queryByText(modelName('claude-opus-4-8'))).not.toBeInTheDocument()
     })
   })
 })
