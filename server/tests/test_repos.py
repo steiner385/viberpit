@@ -76,7 +76,7 @@ def test_list_github_repos_annotates_cloned(tmp_path):
 
 
 def test_list_github_repos_gh_error_502(tmp_path):
-    """GhError from gitrepos surfaces as HTTP 502."""
+    """GhError with no cached list (cold) surfaces as HTTP 502."""
     from ccswitch.gitrepos import GhError
     with temp_env():
         with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
@@ -85,6 +85,28 @@ def test_list_github_repos_gh_error_502(tmp_path):
                 with client:
                     resp = client.get("/api/github/repos", headers=IDENTITY_HEADERS)
     assert resp.status_code == 502
+
+
+def test_list_github_repos_serves_cached_on_gh_error(tmp_path):
+    """A GitHub failure (e.g. rate limit) after a prior success serves the last-good
+    list as 200 (stale) instead of a 502 — so the browser doesn't enter a retry storm.
+    Regression for the GraphQL-rate-limit "UI freaking out" incident."""
+    from ccswitch.gitrepos import GhError
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            _, client = _make_app_and_client()
+            with client:
+                # 1. prime the per-app cache with a good response
+                with patch("ccswitch.gitrepos.list_accessible_repos",
+                           return_value=[dict(r) for r in _REPOS]):
+                    ok = client.get("/api/github/repos", headers=IDENTITY_HEADERS)
+                assert ok.status_code == 200
+                # 2. GitHub now fails — must serve the cached list, not 502
+                with patch("ccswitch.gitrepos.list_accessible_repos",
+                           side_effect=GhError("API rate limit exceeded")):
+                    stale = client.get("/api/github/repos", headers=IDENTITY_HEADERS)
+    assert stale.status_code == 200
+    assert [r["nameWithOwner"] for r in stale.json()] == ["cairnea/KinDash", "acme/widget"]
 
 
 # ---------------------------------------------------------------------------
