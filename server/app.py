@@ -272,10 +272,11 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="ccswitch", version="0.1.0", lifespan=_lifespan)
 
-    # Attach the session facade. CCSWITCH_SESSIOND_SOCKET selects remote mode:
-    # the edge drives an orchestrator living in the session daemon over a Unix
-    # socket. An explicitly injected orchestrator always wins (in-process), so
-    # tests that pass one are unaffected.
+    # Attach the session facade. CCSWITCH_SESSIOND_ENDPOINT (https/unix URL) or the
+    # legacy CCSWITCH_SESSIOND_SOCKET selects remote mode: the edge drives an
+    # orchestrator living in the session daemon over TCP+mTLS or a Unix socket.
+    # An explicitly injected orchestrator always wins (in-process), so tests that
+    # pass one are unaffected.
     from server.sessions.facade import InProcessOrchestratorAdapter
 
     from server.ipc.paths import DEFAULT_SOCKET_PATH, Endpoint, sessiond_endpoint

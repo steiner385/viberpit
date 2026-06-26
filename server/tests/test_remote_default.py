@@ -10,7 +10,8 @@ from server.tests.ipc_harness import serve_daemon_uds
 
 
 def _clean_env():
-    e = {k: v for k, v in os.environ.items() if k != "CCSWITCH_SESSIOND_SOCKET"}
+    e = {k: v for k, v in os.environ.items()
+         if k not in ("CCSWITCH_SESSIOND_SOCKET", "CCSWITCH_SESSIOND_ENDPOINT")}
     return e
 
 
