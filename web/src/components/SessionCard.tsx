@@ -213,6 +213,17 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             {account?.nickname || session.accountName}
           </span>
         </div>
+        {/* Summary — one muted truncated line of "what's happening now", below the
+            name. Hidden when absent so dormant cards keep their compact height. */}
+        {session.summary && (
+          <div
+            data-testid="card-summary"
+            className="truncate text-xs text-gray-500 dark:text-gray-400"
+            title={session.summary}
+          >
+            {session.summary}
+          </div>
+        )}
         {/* Row 2 — context: repo gives way (truncates) so the status pill and
             goal/PR markers stay visible. Repo anchors the left and absorbs slack
             (flex-1 min-w-0 → truncates under pressure); the state chips form a
