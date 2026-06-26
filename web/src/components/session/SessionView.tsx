@@ -128,76 +128,88 @@ export function SessionView({ sessionId, onBack, onDone, onNavigateSession, init
         commands={rt.commands}
         onClose={rt.dismissCommandResult}
       />
-      {/* Top bar */}
+      {/*
+        Top bar — two rows. Row 1 carries only the low-width navigation chrome
+        (Back, prev/next chevrons) plus the title, so the greedy `flex-1` title
+        actually has room to expand instead of collapsing to an ellipsis on a
+        narrow phone. Row 2 holds the status pill and the archive/⋮ actions,
+        moved down out of the title's way and right-aligned so they stay one
+        glance from the title.
+      */}
       <div className={cn(
-        'flex items-center gap-3 px-3 py-2',
+        'flex flex-col gap-2 px-3 py-2',
         'bg-gray-900 border-b border-gray-700',
         'flex-shrink-0',
       )}>
-        <button
-          type="button"
-          onClick={handleBack}
-          aria-label="Back to session list"
-          className={cn(
-            'flex items-center gap-1.5 px-3 py-2 rounded-md min-h-[44px]',
-            'text-sm font-medium text-gray-200',
-            'hover:bg-gray-700 active:bg-gray-600',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+        {/* Row 1: navigation + title */}
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleBack}
+            aria-label="Back to session list"
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-2 rounded-md min-h-[44px]',
+              'text-sm font-medium text-gray-200',
+              'hover:bg-gray-700 active:bg-gray-600',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            )}
+          >
+            ← Back
+          </button>
+
+          {hasNeighbors && (
+            <button
+              type="button"
+              onClick={() => prevId && onNavigateSession?.(prevId)}
+              aria-label="Previous session"
+              className={cn(
+                'flex items-center justify-center px-2 py-2 rounded-md min-h-[44px] min-w-[44px]',
+                'text-lg leading-none font-medium text-gray-200',
+                'hover:bg-gray-700 active:bg-gray-600',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              )}
+            >
+              ‹
+            </button>
           )}
-        >
-          ← Back
-        </button>
 
-        {hasNeighbors && (
-          <button
-            type="button"
-            onClick={() => prevId && onNavigateSession?.(prevId)}
-            aria-label="Previous session"
-            className={cn(
-              'flex items-center justify-center px-2 py-2 rounded-md min-h-[44px] min-w-[44px]',
-              'text-lg leading-none font-medium text-gray-200',
-              'hover:bg-gray-700 active:bg-gray-600',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-            )}
-          >
-            ‹
-          </button>
-        )}
+          <span className="flex-1 text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
 
-        <span className="flex-1 text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
+          {hasNeighbors && (
+            <button
+              type="button"
+              onClick={() => nextId && onNavigateSession?.(nextId)}
+              aria-label="Next session"
+              className={cn(
+                'flex items-center justify-center px-2 py-2 rounded-md min-h-[44px] min-w-[44px]',
+                'text-lg leading-none font-medium text-gray-200',
+                'hover:bg-gray-700 active:bg-gray-600',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              )}
+            >
+              ›
+            </button>
+          )}
+        </div>
 
-        {hasNeighbors && (
-          <button
-            type="button"
-            onClick={() => nextId && onNavigateSession?.(nextId)}
-            aria-label="Next session"
-            className={cn(
-              'flex items-center justify-center px-2 py-2 rounded-md min-h-[44px] min-w-[44px]',
-              'text-lg leading-none font-medium text-gray-200',
-              'hover:bg-gray-700 active:bg-gray-600',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-            )}
-          >
-            ›
-          </button>
-        )}
+        {/* Row 2: status + actions, moved off the title row */}
+        <div className="flex items-center justify-end gap-3">
+          {/*
+            The same compact status pill the session card renders. Reads the live
+            runtime status (`rt.state.status.state`) and routes it through the shared
+            statusPresentation vocabulary, so label/icon/color stay identical to the
+            card.
+          */}
+          <StatusPill status={rt.state.status.state as SessionStatus} className="flex-shrink-0" />
 
-        {/*
-          The same compact status pill the session card renders. Reads the live
-          runtime status (`rt.state.status.state`) and routes it through the shared
-          statusPresentation vocabulary, so label/icon/color stay identical to the
-          card. `flex-shrink-0` protects it from the greedy `flex-1` title — a long
-          title truncates rather than squeezing the status out of view.
-        */}
-        <StatusPill status={rt.state.status.state as SessionStatus} className="flex-shrink-0" />
-
-        <SessionActions
-          sessionId={sessionId}
-          sessionName={rt.title}
-          onDone={handleDone}
-          variant="dark"
-          canRename
-        />
+          <SessionActions
+            sessionId={sessionId}
+            sessionName={rt.title}
+            onDone={handleDone}
+            variant="dark"
+            canRename
+          />
+        </div>
       </div>
 
       {/* Transcript + status strip + banners + pinned live-question panel
