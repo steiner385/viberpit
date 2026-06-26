@@ -5,6 +5,7 @@ import logging
 
 from fastapi import APIRouter, Depends, WebSocket
 from server.auth.middleware import require_ws_identity
+from server.ipc.client import daemon_ws_connect
 
 log = logging.getLogger("server.vnc")
 
@@ -101,12 +102,16 @@ class _WSAdapter:
             pass
 
 
-def build_vnc_ws_router(get_x11, get_daemon_sock=lambda: None) -> APIRouter:
+def build_vnc_ws_router(
+    get_x11,
+    get_daemon_endpoint=lambda: None,
+    get_daemon_ssl=lambda: None,
+) -> APIRouter:
     """Return an APIRouter with /ws/vnc.
 
-    Remote mode (get_daemon_sock() truthy): proxy the browser WS to the daemon's
-    /vnc over the IPC socket, propagating a 4xxx daemon close code. In-process mode
-    (default): relay straight to the local x11vnc."""
+    Remote mode (get_daemon_endpoint() truthy): proxy the browser WS to the daemon's
+    /vnc via daemon_ws_connect (unix or wss), propagating a 4xxx daemon close code.
+    In-process mode (default): relay straight to the local x11vnc."""
     router = APIRouter()
 
     @router.websocket("/ws/vnc")
@@ -115,15 +120,14 @@ def build_vnc_ws_router(get_x11, get_daemon_sock=lambda: None) -> APIRouter:
         identity: str = Depends(require_ws_identity),
     ) -> None:
         session_id = websocket.query_params.get("session", "")
-        sock = get_daemon_sock()
-        if sock:
-            import websockets
+        endpoint = get_daemon_endpoint()
+        if endpoint:
             from websockets.exceptions import ConnectionClosed
             await websocket.accept()
             close_code = 1000
             try:
-                uri = f"ws://daemon/vnc?session={session_id}"
-                async with websockets.unix_connect(sock, uri) as dws:
+                path = f"/vnc?session={session_id}"
+                async with daemon_ws_connect(endpoint, path, get_daemon_ssl()) as dws:
                     await _relay(websocket, _WSAdapter(dws))
                     # 4404 (no display) and other daemon close codes reach us here via the
                     # closed daemon connection; _WSAdapter.read swallowed the ConnectionClosed.
