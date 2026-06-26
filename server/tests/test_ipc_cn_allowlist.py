@@ -55,6 +55,7 @@ from unittest import mock as _mock
 
 import httpx
 import pytest
+import websockets
 
 from server.ipc.paths import Endpoint
 from server.ipc.serve import build_daemon, uvicorn_run_kwargs
@@ -116,3 +117,32 @@ async def test_unset_allowlist_is_permissive(mtls_certs):
         ctx = _client_ctx(mtls_certs, mtls_certs.client_other_cert, mtls_certs.client_other_key)
         async with httpx.AsyncClient(base_url=f"https://{ep.host}:{ep.port}", verify=ctx, timeout=5.0) as c:
             assert (await c.get("/info")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_events_ws_rejected_for_non_allowlisted_client(mtls_certs):
+    app, _ = build_daemon(orchestrator=_orch())
+    async with _serve(app, mtls_certs, frozenset({"edge"})) as ep:
+        ctx = _client_ctx(mtls_certs, mtls_certs.client_other_cert, mtls_certs.client_other_key)
+        with pytest.raises((ssl.SSLError, OSError, websockets.exceptions.WebSocketException)):
+            async with websockets.connect(f"wss://{ep.host}:{ep.port}/events", ssl=ctx) as ws:
+                await ws.send("{}")
+                await ws.recv()
+
+
+@pytest.mark.asyncio
+async def test_events_ws_ok_for_allowlisted_client(mtls_certs):
+    app, _ = build_daemon(orchestrator=_orch())
+    async with _serve(app, mtls_certs, frozenset({"edge"})) as ep:
+        ctx = _client_ctx(mtls_certs, mtls_certs.client_cert, mtls_certs.client_key)
+        # Entering the context manager == the TLS+WS handshake completed (no exception),
+        # which is the proof the allowlisted client was accepted. (websockets 16 has no
+        # reliable `.open`; a subscribe round-trip would also work but isn't needed here.)
+        async with websockets.connect(f"wss://{ep.host}:{ep.port}/events", ssl=ctx):
+            pass
+
+
+def test_unix_endpoint_ignores_allowlist():
+    # A unix endpoint never carries ssl kwargs, even with an allowlist set.
+    kw = uvicorn_run_kwargs(Endpoint("unix", path="/tmp/x.sock"), allowlist=frozenset({"edge"}))
+    assert kw == {"uds": "/tmp/x.sock"}
