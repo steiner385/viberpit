@@ -20,6 +20,7 @@ def test_record_to_dict_includes_prs_when_given():
         "state": "open", "checks": "passing", "title": "t", "deployed": False,
         "head_sha": "", "is_draft": False, "merged": False, "updated_at": "",
         "checks_detail": [], "stage": "", "repo": "",
+        "eta_seconds": None, "eta_percent": None, "eta_overdue": False,
     }]
     assert "pr" not in d
 

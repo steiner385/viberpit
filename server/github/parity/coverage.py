@@ -15,6 +15,7 @@ from __future__ import annotations
 PHASE_FIELDS: dict[int, frozenset[str]] = {
     0: frozenset({"number", "url", "checks"}),
     1: frozenset({"number", "url", "checks"}) | frozenset({"stage"}),
+    2: frozenset({"number", "url", "checks", "stage", "eta_seconds"}),
 }
 
 
