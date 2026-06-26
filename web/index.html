@@ -3,7 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!--
+      interactive-widget=resizes-content: when the Android soft keyboard opens, shrink the
+      *layout* viewport (so `dvh`/`vh` track the area above the keyboard) instead of the default
+      `resizes-visual` (keyboard overlays, dvh stays full-height → the h-dvh column's top bar gets
+      scrolled off-screen to keep the focused composer in view). Lets the SessionView flex column
+      reflow: header pinned top, composer pinned just above the keyboard. Ignored where unsupported.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <title>web</title>
   </head>
   <body>
