@@ -24,6 +24,11 @@ RestartSec=3
 TimeoutStopSec=90
 KillMode=control-group
 MemoryMax=12G
+# Soft limit below MemoryMax: at 10G the kernel applies reclaim pressure and throttles
+# the cgroup instead of hard-stopping it (OOMPolicy=stop) at 12G. Gives a restart-storm
+# of relaunched session+MCP fleets a chance to bleed off rather than killing the daemon
+# outright. The health watchdog (ccswitch-health.timer) alerts before this is reached.
+MemoryHigh=10G
 # No pids ceiling: this daemon owns every live claude session, and each spawns a
 # Claude CLI + its MCP-server fleet + Xvfb + thread pools. TasksMax counts threads
 # too, so a low cap is hit fast (512 throttled ~900x in prod → fork/thread EAGAIN,

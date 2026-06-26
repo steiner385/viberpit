@@ -105,3 +105,30 @@ unit, so it must be installed by hand — a deploy can't install its own success
 Until the controller runs, `/api/deploy/status` soft-degrades to "controller unavailable" and
 the dashboard's deploy panel stays inert. Replaces the retired `ccswitch-deploy.timer`/`.service`
 (no more auto-deploy).
+
+## Health watchdog (`ccswitch-health.timer`)
+
+A 60s oneshot (`scripts/ccswitch-health-check.sh`) that does two things the rest of the
+stack cannot:
+
+1. **Control-plane watchdog.** Probes the daemon's Unix socket `/healthz`. A daemon whose
+   process is alive but whose uvicorn accept-loop has wedged is invisible to
+   `Restart=on-failure` (the process never exits) — this restarts it. Guarded by a 60s
+   startup grace (won't fight a booting/deploying daemon) and a 300s cooldown (a genuine
+   crash-loop is left to `Restart=on-failure`).
+2. **Early warning.** Alerts on disk `>=85%`, any account `status=needs-reauth`, or daemon
+   memory near the 12G `MemoryMax`. Alerts go to the journal; set `CCSWITCH_ALERT_WEBHOOK`
+   (e.g. an ntfy topic URL) in `/etc/ccswitch/ccswitch.env` to also get push notifications.
+
+Install (rewrite `ExecStart` to this host's deploy checkout first, like the daemon unit):
+
+    sudo install -m644 deploy/ccswitch-health.service /etc/systemd/system/
+    sudo install -m644 deploy/ccswitch-health.timer   /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now ccswitch-health.timer
+
+The daemon unit also gains `MemoryHigh=10G` (soft reclaim pressure below the 12G hard
+`MemoryMax`/`OOMPolicy=stop`) so a restart-storm of relaunched session+MCP fleets degrades
+instead of being OOM-killed. On an already-running host apply it live without a restart:
+
+    sudo systemctl set-property --runtime ccswitch-daemon.service MemoryHigh=10G
