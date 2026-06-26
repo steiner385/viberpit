@@ -19,6 +19,69 @@ tailscale serve https / http://127.0.0.1:8000          # expose to the tailnet o
 ```
 Open the tailnet URL on the phone.
 
+## Cross-host daemon (mTLS)
+
+For multi-host deployments (P4, public hosting), the edge process and session daemon communicate over
+mTLS. This section covers certificate generation and configuration.
+
+### Overview
+
+- The daemon (server) binds to an HTTPS endpoint and presents a server certificate to clients.
+- The edge (client) presents a client certificate and verifies the daemon's certificate against a CA.
+- Both sides verify peer certificates against the same root CA.
+- **Hostname verification footgun:** The server cert's SAN (Subject Alternate Name) **MUST match the
+  hostname or IP that the edge uses to reach the daemon** — a mismatch will fail verification with
+  "certificate does not match the server name." Use the reachable FQDN or IP in the SAN, not the
+  daemon's internal hostname.
+- An `https://` endpoint with missing TLS files fails loud at startup; env vars are optional (unset
+  them to use the default Unix socket on the same host).
+- **v2 (deferred):** CN-based allowlist, certificate rotation, and expiry management.
+
+### Generate certificates
+
+Use this OpenSSL recipe to generate a CA and certificates for your deployment:
+
+```bash
+# CA (valid 10 years)
+openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem \
+  -subj "/CN=ccswitch-ca" -days 3650
+
+# Server cert (SAN MUST match how the edge reaches the daemon)
+openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=sessiond"
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out server.pem \
+  -days 825 -extfile <(printf "subjectAltName=DNS:daemon.example.ts.net,IP:100.x.y.z")
+
+# Client cert
+openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj "/CN=edge"
+openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out client.pem -days 825
+```
+
+Replace `daemon.example.ts.net` and `100.x.y.z` with the daemon's reachable hostname and/or IP.
+The server cert's `subjectAltName` must match exactly what the edge will use in the endpoint URL.
+
+### Configuration
+
+Set environment variables on each host:
+
+**Daemon (server) host:**
+```bash
+CCSWITCH_SESSIOND_ENDPOINT=https://daemon.example.ts.net:9443
+CCSWITCH_SESSIOND_TLS_CERT=/etc/ccswitch/tls/server.pem
+CCSWITCH_SESSIOND_TLS_KEY=/etc/ccswitch/tls/server.key
+CCSWITCH_SESSIOND_TLS_CA=/etc/ccswitch/tls/ca.pem
+```
+
+**Edge (client) host:**
+```bash
+CCSWITCH_SESSIOND_ENDPOINT=https://daemon.example.ts.net:9443
+CCSWITCH_SESSIOND_CLIENT_CERT=/etc/ccswitch/tls/client.pem
+CCSWITCH_SESSIOND_CLIENT_KEY=/etc/ccswitch/tls/client.key
+CCSWITCH_SESSIOND_CLIENT_CA=/etc/ccswitch/tls/ca.pem
+```
+
+Distribute the CA cert to both hosts; distribute the server cert + key to the daemon host, and the
+client cert + key to the edge host. Copy `.env.example` to `.env` and fill in the paths.
+
 ## Validation scenarios (map to Success Criteria)
 
 1. **Dashboard + usage (SC-001, FR-006/016)** — open the URL; confirm each account shows live
