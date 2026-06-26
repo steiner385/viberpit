@@ -1,4 +1,5 @@
 import asyncio
+import types
 from unittest import mock
 import pytest
 from server.ipc.client import DaemonClient, DaemonUnavailable
@@ -160,3 +161,14 @@ async def test_daemon_unavailable_propagates():
     with pytest.raises(DaemonUnavailable):
         await ro.list_sessions()
     await ro.aclose()
+
+
+def test_remote_orchestrator_latest_summary_proxies_with_viewing():
+    from unittest.mock import AsyncMock
+    from server.sessions.remote import RemoteOrchestrator
+
+    ro = RemoteOrchestrator.__new__(RemoteOrchestrator)
+    ro._client = types.SimpleNamespace(call=AsyncMock(return_value="Doing X"))
+    out = asyncio.run(ro.latest_summary("s1", viewing=True))
+    assert out == "Doing X"
+    ro._client.call.assert_awaited_once_with("latest_summary", session_id="s1", viewing=True)
