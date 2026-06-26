@@ -1,5 +1,9 @@
+import ast
+from pathlib import Path
 from unittest import mock
+
 import pytest
+import server
 from server.ipc.client import DaemonClient
 from server.ipc.daemon import create_daemon_app
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
@@ -8,6 +12,57 @@ from server.sessions.remote import RemoteOrchestrator
 from server.sessions.replay import ReplayWindow
 from server.sessions.types import SessionRecord
 from server.tests.ipc_harness import serve_daemon_uds
+
+
+# Request-handling layers that run in the web (edge) process. In daemon mode the
+# `orch` they call is a RemoteOrchestrator RPC proxy, NOT the real SessionOrchestrator,
+# so every method they invoke must be explicitly proxied or it raises AttributeError
+# -> 500 in prod (the #295 `request_pr_fix` incident, 2026-06-25).
+_REQUEST_LAYER_DIRS = ("api", "bridge", "auth")
+
+# Names bound to an orchestrator at these call sites, by convention.
+_ORCH_VARS = {"orch", "orchestrator"}
+
+# Attribute accesses that are intentionally NOT on RemoteOrchestrator (e.g. a path
+# guarded to local mode only). Keep empty unless a deliberate exclusion is documented
+# here — a bare AttributeError in daemon mode is a 500, not a graceful fallback.
+_LOCAL_ONLY: set[str] = set()
+
+
+def _orch_attr_accesses() -> set[str]:
+    """AST-scan the request-handling layers for `orch.<x>` / `orchestrator.<x>` access."""
+    root = Path(server.__file__).parent
+    names: set[str] = set()
+    for sub in _REQUEST_LAYER_DIRS:
+        for path in (root / sub).rglob("*.py"):
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in _ORCH_VARS
+                    and not node.attr.startswith("_")
+                ):
+                    names.add(node.attr)
+    return names
+
+
+def test_remote_orchestrator_covers_every_request_layer_call():
+    """Regression guard for #295: a method the API calls on `orch` but the RemoteOrchestrator
+    proxy lacks AttributeErrors -> 500 in daemon mode, invisible to tsc/mypy (duck-typed).
+
+    Scans the real source of the request-handling layers so a NEW call site is auto-covered;
+    forces the author to either proxy the method or document a _LOCAL_ONLY exclusion."""
+    called = _orch_attr_accesses() - _LOCAL_ONLY
+    assert called, "scan found no orch.* call sites — selector likely broke"
+    missing = sorted(
+        name for name in called if not callable(getattr(RemoteOrchestrator, name, None))
+    )
+    assert not missing, (
+        f"RemoteOrchestrator is missing {missing} — the request layer calls these on `orch`, "
+        f"but daemon mode would AttributeError -> 500. Add a proxy method in server/sessions/remote.py "
+        f"(or add to _LOCAL_ONLY if truly local-only)."
+    )
 
 
 def _rec(sid="s1"):

@@ -8,6 +8,9 @@ import { GlobalUpdateBanner } from './components/GlobalUpdateBanner'
 import { useMediaQuery } from './lib/useMediaQuery'
 import { DeployControllerProvider } from './lib/deployController'
 import { DeployOverlay } from './components/DeployOverlay'
+import { useSessions } from './api/hooks'
+import { useSessionOrdering } from './session/useSessionOrdering'
+import { nextVisibleSessionId } from './session/nextAfterArchive'
 
 // Routing is the source of truth for which view is shown:
 //   /sessions | /accounts | /archived  → dashboard with that tab active
@@ -52,14 +55,22 @@ function SessionRoute() {
   const { sessionId } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
+  const { data: sessions = [] } = useSessions()
+  // Persisted sort/group order (no search filter — the search box isn't reachable
+  // from inside a full-screen session). Same order the list showed.
+  const { orderedSessions } = useSessionOrdering(sessions)
   // Carried via navigation state when a session is opened straight from create,
   // so the user's prompt shows immediately (seeded into the transcript). Absent
   // on a normal open / refresh / deep-link, in which case nothing is seeded.
   const initialPrompt = (location.state as { initialPrompt?: string } | null)?.initialPrompt
   if (!sessionId) return <Navigate to="/sessions" replace />
+  const handleDone = () => {
+    const next = nextVisibleSessionId(orderedSessions.map((s) => s.id), sessionId)
+    navigate(next ? `/session/${next}` : '/sessions')
+  }
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <SessionView sessionId={sessionId} onBack={() => navigate('/sessions')} initialPrompt={initialPrompt} />
+      <SessionView sessionId={sessionId} onBack={() => navigate('/sessions')} onDone={handleDone} initialPrompt={initialPrompt} />
     </div>
   )
 }
@@ -102,6 +113,7 @@ function App() {
           <Route path="/sessions" element={<DashboardRoute tab="sessions" />} />
           <Route path="/accounts" element={<DashboardRoute tab="accounts" />} />
           <Route path="/archived" element={<DashboardRoute tab="archived" />} />
+          <Route path="/pipeline" element={<DashboardRoute tab="pipeline" />} />
           <Route path="/session/:sessionId" element={<SessionRoute />} />
           <Route path="/session/:sessionId/subagent/:agentId" element={<SubSessionRoute />} />
           <Route path="/review/:sessionId" element={<ReviewRoute />} />

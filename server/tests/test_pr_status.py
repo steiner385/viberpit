@@ -308,3 +308,58 @@ def test_pull_request_info_parity_fields_roundtrip():
         {"number": 1, "url": "u", "state": "open", "checks": "none", "title": "t"}
     )
     assert legacy.head_sha == "" and legacy.checks_detail == ()
+
+
+def test_pull_request_info_repo_round_trips():
+    info = PullRequestInfo(
+        number=7, url="https://github.com/o/n/pull/7", state="open",
+        checks="passing", title="t", repo="o/n",
+    )
+    d = info.to_dict()
+    assert d["repo"] == "o/n"
+    assert PullRequestInfo.from_dict(d).repo == "o/n"
+
+
+def test_pull_request_info_repo_defaults_empty_for_old_payload():
+    # An old daemon payload has no "repo" key — from_dict must tolerate it.
+    d = {"number": 1, "url": "u", "state": "open", "checks": "none"}
+    assert PullRequestInfo.from_dict(d).repo == ""
+
+
+from server.github.pr_status import build_population_query, parse_population_response
+
+
+def test_build_population_query_scopes_to_repo_and_date():
+    q = build_population_query("steiner385/cc-account-switcher", "2026-06-18")
+    assert 'repository(owner: "steiner385", name: "cc-account-switcher")' in q
+    assert "pullRequests(states: OPEN" in q
+    assert 'is:pr is:merged merged:>=2026-06-18' in q
+    assert "statusCheckRollup" in q  # shared node fields are present
+
+
+def test_parse_population_response_sets_repo_and_buckets_open_and_merged():
+    response = {"data": {
+        "repo": {
+            "deployments": {"nodes": []},
+            "pullRequests": {"nodes": [
+                {"number": 10, "url": "u10", "title": "open one", "state": "OPEN",
+                 "isDraft": False, "updatedAt": "2026-06-25T00:00:00Z", "mergedAt": None,
+                 "headRefOid": "abc", "mergeStateStatus": "CLEAN",
+                 "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS",
+                   "contexts": {"nodes": []}}}}]}},
+            ]},
+        },
+        "merged": {"nodes": [
+            {"number": 9, "url": "u9", "title": "merged one", "state": "MERGED",
+             "isDraft": False, "updatedAt": "2026-06-24T00:00:00Z",
+             "mergedAt": "2026-06-24T00:00:00Z", "headRefOid": "def",
+             "mergeStateStatus": None, "commits": {"nodes": []}},
+        ]},
+    }}
+    prs = parse_population_response(response, "o/n")
+    by_num = {p.number: p for p in prs}
+    assert by_num[10].repo == "o/n"
+    assert by_num[10].stage == "ready"          # open, passing, clean → ready
+    assert by_num[10].state == "open"
+    assert by_num[9].state == "merged"
+    assert by_num[9].stage == "merged"          # merged within retention

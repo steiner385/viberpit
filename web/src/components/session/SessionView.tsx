@@ -21,6 +21,8 @@ import { SessionComposer } from './SessionComposer'
 import { SessionBody } from './SessionBody'
 import { CommandResultOverlay } from './CommandResultOverlay'
 import { SessionActions } from '@/components/session/SessionActions'
+import { StatusPill } from '@/components/UsageBadge'
+import type { SessionStatus } from '@/api/types'
 
 /**
  * Cycle to the next permission mode in PERMISSION_MODES order.
@@ -35,10 +37,12 @@ function nextPermissionMode(current: string): string {
 interface Props {
   sessionId: string
   onBack: () => void
+  /** Called after archive/delete — host advances to the neighbor (distinct from onBack). */
+  onDone: () => void
   initialPrompt?: string
 }
 
-export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
+export function SessionView({ sessionId, onBack, onDone, initialPrompt }: Props) {
   const { detach } = useSessionSocket()
   const rt = useSessionRuntime(sessionId, initialPrompt)
 
@@ -53,6 +57,11 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
     detach(sessionId)
     onBack()
   }, [sessionId, onBack, detach])
+
+  const handleDone = useCallback(() => {
+    detach(sessionId)
+    onDone()
+  }, [sessionId, onDone, detach])
 
   // In-session keyboard shortcuts:
   //   Esc  → back to session list (guard: skip if composer textarea has text mid-draft,
@@ -135,10 +144,19 @@ export function SessionView({ sessionId, onBack, initialPrompt }: Props) {
 
         <span className="flex-1 text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
 
+        {/*
+          The same compact status pill the session card renders. Reads the live
+          runtime status (`rt.state.status.state`) and routes it through the shared
+          statusPresentation vocabulary, so label/icon/color stay identical to the
+          card. `flex-shrink-0` protects it from the greedy `flex-1` title — a long
+          title truncates rather than squeezing the status out of view.
+        */}
+        <StatusPill status={rt.state.status.state as SessionStatus} className="flex-shrink-0" />
+
         <SessionActions
           sessionId={sessionId}
           sessionName={rt.title}
-          onDone={handleBack}
+          onDone={handleDone}
           variant="dark"
           canRename
         />

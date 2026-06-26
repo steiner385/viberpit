@@ -134,6 +134,13 @@ export interface PullRequestInfo {
   deployed: boolean
   /** Open-stage classifier output: 'ci' | 'ready' | 'parked' | 'merged' | '' */
   stage?: string
+  /** nameWithOwner of the PR's repo (populated for population/pipeline PRs). */
+  repo?: string
+}
+
+export interface PipelinePr extends PullRequestInfo {
+  /** The ccswitch session that authored this PR's branch, or null. */
+  session: { id: string; name: string } | null
 }
 
 export interface ModelOption { id: string; label: string }

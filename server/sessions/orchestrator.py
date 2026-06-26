@@ -21,7 +21,10 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from server.github.pr_status import PipelinePr
 
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, worktrees
@@ -230,6 +233,9 @@ class SessionOrchestrator:
         self._pr_poller: PrStatusPoller = PrStatusPoller()
         self._pr_poller.set_pairs_provider(self._pr_pairs)
         self._pr_poller.set_on_change(self._on_pr_change)
+        from server.github.pr_population import PrPopulationPoller
+        self._pr_population: PrPopulationPoller = PrPopulationPoller()
+        self._pr_population.set_repos_provider(self._pr_repos)
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
         # Sessions whose background tasks have been re-armed this process (dedup the
@@ -286,6 +292,7 @@ class SessionOrchestrator:
         """Start the usage poller, the rotation monitor and the titling sweep."""
         await self._poller.start()
         await self._pr_poller.start()
+        await self._pr_population.start()
         self._pr_branch_task = asyncio.create_task(
             self._pr_branch_monitor(), name="pr-branch-monitor"
         )
@@ -355,6 +362,7 @@ class SessionOrchestrator:
                 setattr(self, attr, None)
         await self._poller.stop()
         await self._pr_poller.stop()
+        await self._pr_population.stop()
 
     # ------------------------------------------------------------------
     # Session CRUD
@@ -1087,6 +1095,33 @@ class SessionOrchestrator:
             by_number.values(),
             key=lambda p: (_STATE_RANK.get(p.state, 99), -p.number),
         )
+
+    def _pr_repos(self) -> list[str]:
+        """Sorted distinct repos across all live sessions — the population to watch."""
+        return sorted({r.repo for r in self._records.values() if r.repo})
+
+    def all_prs(self) -> "list[PipelinePr]":
+        """Full PR population (all watched repos) joined to authoring sessions.
+
+        Session join reuses ``prs_for`` (the session-branch poller's knowledge),
+        so a PR is linked iff some session authored its branch. Sorted by stage
+        urgency (parked→ci→ready→queue→merged), then PR number ascending.
+        """
+        from server.github.pr_status import PipelinePr
+        sess_by_pr: dict[tuple[str, int], tuple[str, str]] = {}
+        for rec in self._records.values():
+            if not rec.repo:
+                continue
+            for info in self.prs_for(rec.id):
+                sess_by_pr.setdefault((rec.repo, info.number), (rec.id, rec.name))
+        order = {"parked": 0, "ci": 1, "ready": 2, "queue": 3, "merged": 4}
+        out: list[PipelinePr] = []
+        for repo, prs in self._pr_population.all().items():
+            for info in prs:
+                sid, sname = sess_by_pr.get((repo, info.number), (None, None))
+                out.append(PipelinePr(pr=info, session_id=sid, session_name=sname))
+        out.sort(key=lambda p: (order.get(p.pr.stage, 99), p.pr.number))
+        return out
 
     async def _pr_autofix_mode(self) -> str:
         """Current pr_autofix_mode from AppSettings; NULL/unknown → 'propose'."""

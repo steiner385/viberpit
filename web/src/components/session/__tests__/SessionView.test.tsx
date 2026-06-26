@@ -109,7 +109,7 @@ describe('SessionView', () => {
   })
 
   it('renders the Back button with the correct aria-label', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     expect(screen.getByRole('button', { name: /back to session list/i })).toBeInTheDocument()
   })
 
@@ -119,25 +119,25 @@ describe('SessionView', () => {
     // whole document scrolls — dragging the "static" top bar off-screen. `h-dvh`
     // tracks the currently-visible viewport, keeping top/bottom pinned and only the
     // transcript scrollable.
-    const { container } = render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    const { container } = render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     const root = container.firstChild as HTMLElement
     expect(root.className).toContain('h-dvh')
     expect(root.className).not.toContain('h-screen')
   })
 
   it('shows the sessionId prefix as title when no title event received', () => {
-    render(<SessionView sessionId="abcd1234efgh" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="abcd1234efgh" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     // Title should be the first 8 chars of the sessionId
     expect(screen.getByText('abcd1234')).toBeInTheDocument()
   })
 
   it('seeds the initialPrompt as a user message immediately on open', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} initialPrompt="fix the bug" />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} initialPrompt="fix the bug" />, { wrapper })
     expect(screen.getByText('fix the bug')).toBeInTheDocument()
   })
 
   it('does not duplicate the seeded prompt when the SDK echoes it back', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} initialPrompt="fix the bug" />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} initialPrompt="fix the bug" />, { wrapper })
     // The real user event arrives with the server turnId; the reducer adopts the
     // optimistic seed in place rather than appending a duplicate.
     emitSessionEvent({ type: 'user', turnId: 'real-1', text: 'fix the bug' })
@@ -145,7 +145,7 @@ describe('SessionView', () => {
   })
 
   it('renders assistant text after turnStart + textDelta + turnEnd events', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
 
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
     emitSessionEvent({ type: 'textDelta', turnId: 't1', text: 'Hello from assistant' })
@@ -157,7 +157,7 @@ describe('SessionView', () => {
   })
 
   it('renders a PermissionCard when permissionRequest event arrives', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
 
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
     emitSessionEvent({
@@ -177,7 +177,7 @@ describe('SessionView', () => {
   })
 
   it('pins an actionable permission panel above the composer when an open permission exists', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
 
     emitSessionEvent({ type: 'replayComplete' })
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
@@ -203,7 +203,7 @@ describe('SessionView', () => {
 
   it('calls permissionResponse and dispatches _resolvePermission when Yes clicked', async () => {
     const user = userEvent.setup()
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
 
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
     emitSessionEvent({
@@ -231,7 +231,7 @@ describe('SessionView', () => {
   })
 
   it('live question is not rendered inline — it shows the "action needed" banner instead', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
 
     // replayComplete marks replaying=false so subsequent questions are live (live: true).
     emitSessionEvent({ type: 'replayComplete' })
@@ -260,7 +260,7 @@ describe('SessionView', () => {
   })
 
   it('shows title when title event fires', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
 
     emitSessionEvent({ type: 'title', title: 'My Session Title', source: 'claude' })
 
@@ -270,7 +270,7 @@ describe('SessionView', () => {
   })
 
   it('shows error banner when error sessionEvent fires', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
 
     emitSessionEvent({ type: 'error', code: 'RATE_LIMITED', message: 'Too many requests' })
 
@@ -280,7 +280,7 @@ describe('SessionView', () => {
   })
 
   it('I3: shows error banner when direct WS error frame fires (SESSION_NOT_FOUND etc.)', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
 
     // This is a direct 'error' WS message, NOT wrapped in a sessionEvent batch.
     emitErrorEvent({ type: 'error', code: 'SESSION_NOT_FOUND', message: 'Session not found' })
@@ -291,7 +291,7 @@ describe('SessionView', () => {
   })
 
   it('I5: rotation divider shows reason when WsRotatedMsg includes reason', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
 
     emitRotatedEvent({
       type: 'rotated',
@@ -307,7 +307,7 @@ describe('SessionView', () => {
   })
 
   it('interleaves the rotation divider inline between the turns it occurred between', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
 
     // Turn 1, then a rotation, then turn 2.
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
@@ -329,7 +329,7 @@ describe('SessionView', () => {
   })
 
   it('aria-live region announces "History loaded" once replay completes', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     const live = screen.getByLabelText('Session output')
     // Suppressed while replaying (initial state).
     expect(live).toHaveTextContent('')
@@ -338,7 +338,7 @@ describe('SessionView', () => {
   })
 
   it('aria-live region mirrors the latest assistant text after replay completes', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     const live = screen.getByLabelText('Session output')
     emitSessionEvent({ type: 'replayComplete' })
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
@@ -348,14 +348,28 @@ describe('SessionView', () => {
   })
 
   it('renders StatusBar with Ready for idle state', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     expect(screen.getByRole('status')).toHaveTextContent('Ready')
+  })
+
+  it('shows the card-style StatusPill in the top bar reflecting the live status', async () => {
+    // The same compact pill the session card renders (StatusPill from UsageBadge),
+    // distinguished from the StatusBar by its `aria-label="Status: <label>"`.
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    // Idle on open → "Ready".
+    expect(screen.getByLabelText('Status: Ready')).toBeInTheDocument()
+
+    // Live status flows from the runtime: a `status` event flips it to "Working…".
+    emitSessionEvent({ type: 'status', state: 'in_progress', count: 1 })
+    await waitFor(() => {
+      expect(screen.getByLabelText(/^Status: Working/)).toBeInTheDocument()
+    })
   })
 
   it('calls onBack when Back button is clicked', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />, { wrapper })
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /back to session list/i }))
     expect(onBack).toHaveBeenCalledOnce()
   })
@@ -380,7 +394,7 @@ describe('SessionView question escape hatches', () => {
   })
 
   function renderAndAskQuestion() {
-    const utils = render(<SessionView sessionId="s1" onBack={vi.fn()} />, { wrapper })
+    const utils = render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     // replayComplete marks replaying=false so the question is emitted as live (live: true).
     emitSessionEvent({ type: 'replayComplete' })
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
