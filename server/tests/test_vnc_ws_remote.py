@@ -6,6 +6,7 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from server.ipc.daemon import create_daemon_app
+from server.ipc.paths import Endpoint
 from server.ipc.x11_rpc import register_x11
 from server.tests.test_x11_rpc import _FakeX11  # reuse the fake
 
@@ -56,7 +57,11 @@ def _edge_router(get_sock):
     from server.auth.middleware import require_ws_identity
     app = FastAPI()
     app.dependency_overrides[require_ws_identity] = lambda: "test@example.com"
-    app.include_router(build_vnc_ws_router(lambda: None, get_sock))
+    app.include_router(build_vnc_ws_router(
+        lambda: None,
+        get_daemon_endpoint=lambda: Endpoint("unix", path=get_sock()),
+        get_daemon_ssl=lambda: None,
+    ))
     return app
 
 
