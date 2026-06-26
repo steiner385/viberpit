@@ -20,7 +20,7 @@ def test_flag_unset_is_in_process():
     # test is deterministic regardless of whether a real daemon happens to run here.
     env = {k: v for k, v in os.environ.items() if k != "CCSWITCH_SESSIOND_SOCKET"}
     with mock.patch.dict(os.environ, env, clear=True), \
-         mock.patch("server.app._daemon_socket_present", return_value=False):
+         mock.patch("server.app._daemon_present", return_value=False):
         app = create_app()
     assert app.state.remote_mode is False
     assert app.state.orchestrator is not None

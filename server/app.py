@@ -37,58 +37,64 @@ from server.api.push import router as push_router
 from server.api.pipeline import router as pipeline_router
 
 
-def _daemon_socket_present(socket_path: str) -> bool:
-    """True if a unix-domain socket file exists at socket_path — i.e. a daemon is
-    *expected* here, even if it isn't answering yet. Used to distinguish "no daemon on
-    this host" (→ in-process is correct) from "daemon present but not reachable yet"
-    (→ must NOT silently start a second in-process orchestrator over the shared DB)."""
-    import os
-    import stat
+def _daemon_present(endpoint) -> bool:
+    """True if something is listening at the endpoint (socket file exists / TCP connects)."""
+    if isinstance(endpoint, str):
+        from server.ipc.paths import parse_endpoint
+        endpoint = parse_endpoint(endpoint if "://" in endpoint else f"unix://{endpoint}")
+    if endpoint.is_unix:
+        import os
+        import stat
+        try:
+            return stat.S_ISSOCK(os.stat(endpoint.path).st_mode)
+        except OSError:
+            return False
+    import socket
     try:
-        return stat.S_ISSOCK(os.stat(socket_path).st_mode)
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=1.0):
+            return True
     except OSError:
         return False
 
 
-def _daemon_compatible(socket_path: str, *, attempts: int = 5, interval: float = 0.5) -> bool:
-    """True iff a protocol-compatible session daemon answers /info at socket_path.
-
-    Synchronous (create_app is sync). Retries a few times because at edge startup the
-    daemon may be briefly busy (mid-rehydrate / spawning sessions) and a single 1s probe
-    would time out — which previously made the edge mistake a healthy daemon for absent
-    and fall back to in-process, causing a split-brain over the shared DB. Any failure
-    across all attempts → False."""
+def _daemon_compatible(endpoint, *, attempts: int = 5, interval: float = 0.5) -> bool:
+    """True iff a protocol-compatible daemon answers /info at the endpoint. Synchronous."""
+    if isinstance(endpoint, str):
+        from server.ipc.paths import parse_endpoint
+        endpoint = parse_endpoint(endpoint if "://" in endpoint else f"unix://{endpoint}")
     import time
+
     import httpx
+
     from server.ipc.protocol import PROTOCOL_VERSION
-    # Defense in depth: this probe does *synchronous*, blocking socket I/O. It must
-    # never run on a thread with a live asyncio loop — it would freeze the loop, and
-    # if the caller is the daemon probing its own socket, deadlock outright (the loop
-    # can't answer the request it just issued to itself). create_app() is sync and
-    # normally runs at import on a plain thread; if it is ever imported under a running
-    # loop, decline rather than hang. (The helper this used to drag into the daemon now
-    # lives in the side-effect-free server.version module, so this is a backstop.)
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        pass  # no running loop on this thread — safe to block on sync I/O
+        pass
     else:
         logging.getLogger("server").warning(
             "skipping synchronous daemon probe at %s: create_app() ran under a live "
-            "event loop where blocking I/O would freeze (or self-deadlock) it", socket_path)
+            "event loop where blocking I/O would freeze (or self-deadlock) it", endpoint)
         return False
-    # No socket file → no daemon on this host; return immediately rather than burning
-    # the retry budget (keeps the in-process dev/CI path fast).
-    if not _daemon_socket_present(socket_path):
+    if not _daemon_present(endpoint):
         return False
+
+    def _client() -> httpx.Client:
+        if endpoint.is_unix:
+            return httpx.Client(transport=httpx.HTTPTransport(uds=endpoint.path),
+                                base_url="http://daemon", timeout=1.0)
+        from server.ipc.tls import client_ssl_context, client_tls_files
+        ctx = client_ssl_context(client_tls_files())
+        return httpx.Client(base_url=f"https://{endpoint.host}:{endpoint.port}",
+                            verify=ctx, timeout=1.0)
+
     for i in range(max(1, attempts)):
         try:
-            with httpx.Client(transport=httpx.HTTPTransport(uds=socket_path),
-                              base_url="http://daemon", timeout=1.0) as c:
+            with _client() as c:
                 info = c.get("/info").json()
             if info.get("protocol") == PROTOCOL_VERSION:
                 return True
-        except Exception:  # noqa: BLE001 — unreachable / bad response → retry, then give up
+        except Exception:  # noqa: BLE001 — unreachable / bad response → retry
             pass
         if i < attempts - 1:
             time.sleep(interval)
@@ -272,42 +278,50 @@ def create_app(
     # tests that pass one are unaffected.
     from server.sessions.facade import InProcessOrchestratorAdapter
 
-    socket_path = os.environ.get("CCSWITCH_SESSIOND_SOCKET")
-    app.state.daemon_protocol = None
-    if orchestrator is None and not socket_path:
-        # Remote by default: auto-detect a compatible daemon at the well-known path.
-        from server.ipc.paths import DEFAULT_SOCKET_PATH
-        if _daemon_compatible(DEFAULT_SOCKET_PATH):
-            socket_path = DEFAULT_SOCKET_PATH
-            from server.ipc.protocol import PROTOCOL_VERSION
-            app.state.daemon_protocol = PROTOCOL_VERSION
-            logging.getLogger("server").info(
-                "session daemon detected at %s — running in remote mode", DEFAULT_SOCKET_PATH)
-        elif _daemon_socket_present(DEFAULT_SOCKET_PATH):
-            # A daemon socket exists but no compatible daemon answered after retries.
-            # Refuse to start a SECOND in-process orchestrator over the shared DB — that
-            # double-owns every session and serves stale status (the 2026-06-23 "Ready
-            # while working" split-brain). Fail loud so the supervisor restarts and
-            # retries once the daemon is healthy. To intentionally run in-process,
-            # remove the socket or set CCSWITCH_SESSIOND_SOCKET explicitly.
-            raise RuntimeError(
-                f"session daemon socket {DEFAULT_SOCKET_PATH} exists but no compatible "
-                "daemon answered /info after retries; refusing in-process fallback to "
-                "avoid a split-brain over the shared database")
-        # else: no daemon socket on this host → in-process (dev/CI default).
+    from server.ipc.paths import DEFAULT_SOCKET_PATH, Endpoint, sessiond_endpoint
 
-    if orchestrator is None and socket_path:
+    explicit = bool(os.environ.get("CCSWITCH_SESSIOND_ENDPOINT")
+                    or os.environ.get("CCSWITCH_SESSIOND_SOCKET"))
+    endpoint = None
+    app.state.daemon_protocol = None
+    if orchestrator is None:
+        if explicit:
+            endpoint = sessiond_endpoint()
+        else:
+            default_ep = Endpoint("unix", path=DEFAULT_SOCKET_PATH)
+            if _daemon_compatible(default_ep):
+                endpoint = default_ep
+                from server.ipc.protocol import PROTOCOL_VERSION
+                app.state.daemon_protocol = PROTOCOL_VERSION
+                logging.getLogger("server").info(
+                    "session daemon detected at %s — running in remote mode", DEFAULT_SOCKET_PATH)
+            elif _daemon_present(default_ep):
+                raise RuntimeError(
+                    f"session daemon socket {DEFAULT_SOCKET_PATH} exists but no compatible "
+                    "daemon answered /info after retries; refusing in-process fallback to "
+                    "avoid a split-brain over the shared database")
+            # else: no daemon on this host → in-process (dev/CI default).
+
+    if orchestrator is None and endpoint is not None:
         from server.ipc.client import DaemonClient
         from server.sessions.remote import RemoteOrchestrator
+        client_ssl = None
+        if endpoint.is_tcp:
+            from server.ipc.tls import client_ssl_context, client_tls_files
+            client_ssl = client_ssl_context(client_tls_files())
         app.state.remote_mode = True
-        app.state.daemon_socket = socket_path
+        app.state.daemon_endpoint = endpoint
+        app.state.daemon_socket = endpoint.path if endpoint.is_unix else None
+        app.state.daemon_client_ssl = client_ssl
         app.state.orchestrator = None
-        app.state.sessions = RemoteOrchestrator(DaemonClient(socket_path))
+        app.state.sessions = RemoteOrchestrator(DaemonClient(endpoint))
     else:
         if orchestrator is None:
             orchestrator = SessionOrchestrator()
         app.state.remote_mode = False
+        app.state.daemon_endpoint = None
         app.state.daemon_socket = None
+        app.state.daemon_client_ssl = None
         app.state.orchestrator = orchestrator
         app.state.sessions = InProcessOrchestratorAdapter(orchestrator)
 
@@ -415,7 +429,8 @@ def create_app(
     from server.bridge.vnc_ws import build_vnc_ws_router
     app.include_router(build_vnc_ws_router(
         lambda: getattr(app.state, "x11", None),
-        lambda: getattr(app.state, "daemon_socket", None),
+        lambda: getattr(app.state, "daemon_endpoint", None),
+        lambda: getattr(app.state, "daemon_client_ssl", None),
     ))
 
     @app.get("/api/x11/metrics")

@@ -17,7 +17,7 @@ def _clean_env():
 def test_default_in_process_when_no_daemon():
     # No daemon socket on this host → in-process fallback (byte-identical to today).
     with mock.patch.dict(os.environ, _clean_env(), clear=True), \
-         mock.patch("server.app._daemon_socket_present", return_value=False), \
+         mock.patch("server.app._daemon_present", return_value=False), \
          mock.patch("server.app._daemon_compatible", return_value=False):
         app = create_app()
     assert app.state.remote_mode is False
@@ -28,7 +28,7 @@ def test_refuses_in_process_when_socket_present_but_probe_fails():
     # A daemon socket EXISTS but no compatible daemon answered after retries: refuse to
     # start a second in-process orchestrator over the shared DB (the 2026-06-23 split-brain).
     with mock.patch.dict(os.environ, _clean_env(), clear=True), \
-         mock.patch("server.app._daemon_socket_present", return_value=True), \
+         mock.patch("server.app._daemon_present", return_value=True), \
          mock.patch("server.app._daemon_compatible", return_value=False):
         with pytest.raises(RuntimeError, match="split-brain|daemon"):
             create_app()

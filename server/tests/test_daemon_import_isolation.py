@@ -73,7 +73,7 @@ async def test_daemon_compatible_does_not_block_a_running_loop(monkeypatch):
     monkeypatch.setenv("CCSWITCH_SESSIOND_SOCKET", "/tmp/ccswitch-test-no-daemon.sock")
     from server import app as app_module
 
-    monkeypatch.setattr(app_module, "_daemon_socket_present", lambda _p: True)
+    monkeypatch.setattr(app_module, "_daemon_present", lambda _p: True)
 
     def _boom_sleep(*_a, **_k):
         raise AssertionError("time.sleep ran — the blocking retry loop executed under a live loop")
