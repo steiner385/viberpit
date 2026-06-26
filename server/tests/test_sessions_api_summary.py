@@ -1,7 +1,14 @@
+import asyncio
+import os
 import types
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+
+from fastapi.testclient import TestClient
 
 from server.api.sessions import _record_to_dict, _resolve_summary
+from server.app import create_app
+from server.sessions.orchestrator import SessionOrchestrator
+from server.tests.fakes.fake_factory import fake_sdk_factory
 
 
 def test_record_to_dict_includes_summary():
@@ -26,7 +33,6 @@ def test_record_to_dict_summary_defaults_empty():
 
 
 def test_resolve_summary_passes_viewing_and_tolerates_missing_method():
-    import asyncio
     orch = types.SimpleNamespace(latest_summary=AsyncMock(return_value="Doing X"))
     rec = types.SimpleNamespace(id="s1")
     assert asyncio.run(_resolve_summary(orch, rec, True)) == "Doing X"
@@ -34,3 +40,84 @@ def test_resolve_summary_passes_viewing_and_tolerates_missing_method():
     # Older shim without the method → "" (never raises)
     bare = types.SimpleNamespace()
     assert asyncio.run(_resolve_summary(bare, rec, True)) == ""
+
+
+# ---------------------------------------------------------------------------
+# Integration: wire contract — GET /api/sessions exercises the HTTP path
+# through _record_to_dict, asserting "summary" appears in the real response.
+# ---------------------------------------------------------------------------
+
+_H = {"Tailscale-User-Login": "testuser@example.com"}
+_ENV = {
+    "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+    "CCSWITCH_DEV": "1",
+    "CCSWITCH_TAILNET_ALLOWLIST": "",
+}
+
+
+def _make_fake_record():
+    """Minimal record SimpleNamespace that satisfies _record_to_dict and _resolve_repo."""
+    return types.SimpleNamespace(
+        id="s1", name="Test Session", account="acct1", repo=None,
+        status="idle", name_is_auto=True, detached=False, adopted_in_place=False,
+        sub_agents=None, created_at=None, last_turn_at=None, account_pinned=False,
+        model=None, active_goal=None, usage_unverified=False,
+        # cwd=None so _resolve_repo short-circuits to record.repo (None → "Scratch")
+        cwd=None,
+    )
+
+
+class _FakeSessions:
+    """Minimal facade for GET /api/sessions; exposes latest_summary as an AsyncMock."""
+
+    def __init__(self, record, summary_return: str = ""):
+        self._record = record
+        self.latest_summary = AsyncMock(return_value=summary_return)
+
+    async def list_sessions(self):
+        return [self._record]
+
+    async def latest_suggestions(self, sid):
+        return []
+
+    async def prs_for(self, sid):
+        return []
+
+
+def _build_client(summary_return: str = "Writing tests"):
+    """Build app with a real orchestrator (for lifespan) then inject a fake facade."""
+    with patch.dict(os.environ, _ENV):
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0,
+                                   usage_fn=lambda name: None)
+        app = create_app(orchestrator=orch)
+    fake = _FakeSessions(_make_fake_record(), summary_return=summary_return)
+    app.state.sessions = fake
+    return TestClient(app, raise_server_exceptions=False), fake
+
+
+def test_get_sessions_wire_includes_summary():
+    """GET /api/sessions?viewing=1 — response JSON contains 'summary' key with the expected value."""
+    client, fake = _build_client(summary_return="Writing tests")
+    with patch.dict(os.environ, _ENV), client:
+        resp = client.get("/api/sessions?viewing=1", headers=_H)
+    assert resp.status_code == 200, resp.text
+    sessions = resp.json()
+    assert len(sessions) == 1
+    assert sessions[0]["summary"] == "Writing tests"
+
+
+def test_get_sessions_viewing_flag_threaded():
+    """?viewing=1 calls latest_summary(viewing=True); no param calls with viewing=False."""
+    # viewing=True
+    client_t, fake_t = _build_client(summary_return="Summary A")
+    with patch.dict(os.environ, _ENV), client_t:
+        resp = client_t.get("/api/sessions?viewing=1", headers=_H)
+    assert resp.status_code == 200, resp.text
+    fake_t.latest_summary.assert_awaited_once_with("s1", viewing=True)
+
+    # viewing=False (no query param)
+    client_f, fake_f = _build_client(summary_return="Summary B")
+    with patch.dict(os.environ, _ENV), client_f:
+        resp = client_f.get("/api/sessions", headers=_H)
+    assert resp.status_code == 200, resp.text
+    fake_f.latest_summary.assert_awaited_once_with("s1", viewing=False)
