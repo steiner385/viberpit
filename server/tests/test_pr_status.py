@@ -363,3 +363,20 @@ def test_parse_population_response_sets_repo_and_buckets_open_and_merged():
     assert by_num[10].state == "open"
     assert by_num[9].state == "merged"
     assert by_num[9].stage == "merged"          # merged within retention
+
+
+def test_pull_request_info_eta_round_trips():
+    from server.github.pr_status import PullRequestInfo
+    info = PullRequestInfo(number=1, url="u", state="open", checks="pending", title="t",
+                           eta_seconds=120, eta_percent=46, eta_overdue=False)
+    d = info.to_dict()
+    assert d["eta_seconds"] == 120 and d["eta_percent"] == 46 and d["eta_overdue"] is False
+    back = PullRequestInfo.from_dict(d)
+    assert back.eta_seconds == 120 and back.eta_percent == 46 and back.eta_overdue is False
+
+
+def test_pull_request_info_eta_defaults_for_old_payload():
+    from server.github.pr_status import PullRequestInfo
+    d = {"number": 1, "url": "u", "state": "open", "checks": "none"}
+    info = PullRequestInfo.from_dict(d)
+    assert info.eta_seconds is None and info.eta_percent is None and info.eta_overdue is False

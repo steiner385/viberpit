@@ -43,6 +43,9 @@ class PullRequestInfo:
     checks_detail: tuple[CheckDetail, ...] = ()
     stage: str = ""  # open-stage classifier output: 'ci' | 'ready' | 'parked' | ''
     repo: str = ""  # nameWithOwner, e.g. "owner/name"; populated by the population poller
+    eta_seconds: int | None = None
+    eta_percent: int | None = None
+    eta_overdue: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -59,6 +62,9 @@ class PullRequestInfo:
             "checks_detail": [c.to_dict() for c in self.checks_detail],
             "stage": self.stage,
             "repo": self.repo,
+            "eta_seconds": self.eta_seconds,
+            "eta_percent": self.eta_percent,
+            "eta_overdue": self.eta_overdue,
         }
 
     @classmethod
@@ -78,6 +84,9 @@ class PullRequestInfo:
             checks_detail=tuple(CheckDetail.from_dict(c) for c in d.get("checks_detail", [])),
             stage=d.get("stage", ""),
             repo=d.get("repo", ""),
+            eta_seconds=d.get("eta_seconds"),
+            eta_percent=d.get("eta_percent"),
+            eta_overdue=d.get("eta_overdue", False),
         )
 
 
