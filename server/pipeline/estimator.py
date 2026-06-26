@@ -14,7 +14,6 @@ from server.pipeline.history import Expected, median, percentile
 RUNNING_CAP = 0.97
 OVERDUE_FACTOR = 1.5
 DEFAULT_DURATION = 60.0
-_FAILED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"}
 
 
 @dataclass(frozen=True)
