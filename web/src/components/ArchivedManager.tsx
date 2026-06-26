@@ -323,8 +323,9 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
   // and bare <li> elements inside a <div> are invalid HTML.
   function renderArchivedRow(s: ArchivedSession) {
     const displayName = displayNameOf(s)
-    const archivedDate = new Date(s.archivedAt).toLocaleDateString(undefined, {
+    const archivedDate = new Date(s.archivedAt).toLocaleString(undefined, {
       year: 'numeric', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit',
     })
     return (
       <div
