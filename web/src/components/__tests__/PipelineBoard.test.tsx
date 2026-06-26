@@ -50,4 +50,16 @@ describe('PipelineBoard', () => {
     // Unlinked PR #6 has no Fix button.
     expect(screen.queryByTestId('pipeline-fix-6')).toBeNull()
   })
+
+  it('marks the far-right label as the corresponding session (icon + tooltip)', () => {
+    render(<PipelineBoard prs={[
+      pr({ number: 7, stage: 'ready', session: { id: 's7', name: 'My session' } }),
+    ]} />)
+    const label = screen.getByTestId('pipeline-session-7')
+    expect(label).toHaveTextContent('My session')
+    // Tooltip names it a session, so it can't be misread as the PR title.
+    expect(label).toHaveAttribute('title', 'Session: My session')
+    // A decorative session glyph precedes the name.
+    expect(label.querySelector('svg')).not.toBeNull()
+  })
 })
