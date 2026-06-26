@@ -54,7 +54,7 @@ def _pop_resp(number: int, state: str = "OPEN") -> dict:
 def _eta_checks_resp_empty(prs: list[tuple[str, int]]) -> dict:
     """Stub: returns a response where every PR has no check contexts (all queued)."""
     # build_eta_checks_query aliases each PR as r0, r1, …
-    data = {}
+    data: dict[str, dict] = {}
     for i, (_repo, number) in enumerate(prs):
         data[f"r{i}"] = {
             "pullRequest": {

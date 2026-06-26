@@ -59,7 +59,7 @@ def compute_progress(
         status = c.get("status") if c else None
         if status == "COMPLETED":
             progress, rem50, rem90 = 1.0, 0.0, 0.0
-        elif status == "IN_PROGRESS" and c.get("started_at"):
+        elif status == "IN_PROGRESS" and c and c.get("started_at"):
             raw_elapsed = now_s - _parse_epoch_s(c["started_at"])
             if raw_elapsed != raw_elapsed:  # NaN
                 progress, rem50, rem90 = 0.0, p50, p90
