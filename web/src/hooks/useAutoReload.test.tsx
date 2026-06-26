@@ -24,6 +24,7 @@ function renderWith(updateAvailable: boolean) {
 const reload = vi.fn()
 beforeEach(() => {
   reload.mockReset()
+  try { sessionStorage.clear() } catch { /* no-op */ }
   vi.stubGlobal('location', { reload })
   vi.spyOn(wsClient, 'getSessionSocket').mockReturnValue(
     { activeSessionId: 's1', updatePendingState: { active: false, count: 0 } } as unknown as ReturnType<typeof wsClient.getSessionSocket>,
@@ -57,6 +58,22 @@ describe('useAutoReload', () => {
     vi.spyOn(hooks, 'useSessions').mockReturnValue({ data: [{ id: 's1', status: 'idle' }] } as ReturnType<typeof hooks.useSessions>)
     vi.spyOn(updatePending, 'useUpdatePending').mockReturnValue({ active: false, count: 0 })
     renderWith(false)
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('reloads at most once per bundle — a still-outdated reload does NOT loop', () => {
+    // Regression: a deploy left the edge reporting a sha the served bundle never matches,
+    // so updateAvailable stayed true across reloads and useAutoReload reloaded forever.
+    vi.spyOn(hooks, 'useSessions').mockReturnValue({ data: [{ id: 's1', status: 'idle' }] } as ReturnType<typeof hooks.useSessions>)
+    vi.spyOn(updatePending, 'useUpdatePending').mockReturnValue({ active: false, count: 0 })
+
+    // First load: still outdated + safe → reloads once, records the marker.
+    renderWith(true).unmount()
+    expect(reload).toHaveBeenCalledOnce()
+
+    // The page comes back on the SAME bundle, still outdated. It must NOT reload again.
+    reload.mockReset()
+    renderWith(true)
     expect(reload).not.toHaveBeenCalled()
   })
 })
