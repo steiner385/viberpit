@@ -1,7 +1,7 @@
 """Migrate Plotroom's history.db (read-only) into a ccswitch-owned pipeline_history.db.
 
 ADR-1: a SEPARATE sqlite file from the main app DB; stdlib sqlite3, not SQLAlchemy.
-Only the two tables the CI-ETA estimator consumes are copied. The source is WAL and
+Only the tables the CI-ETA estimator consumes are copied. The source is WAL and
 live-written — opened immutable/read-only, never written.
 """
 from __future__ import annotations
@@ -41,6 +41,11 @@ def migrate_history(source_path: str = SOURCE_DEFAULT, dest_path: str | None = N
             placeholders = ",".join("?" for _ in cols)
             dest.executemany(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})", rows)
             counts[table] = len(rows)
+        # Migrate the meta table's ciGraph entries so effective_prefixes() can read
+        # the oracle's derived required-check prefixes (BFS closure of the rollup
+        # job's needs in ci.yml).  Only ciGraph:* keys are needed; other meta keys
+        # (lastSweep, backfilled, …) are operational and not consumed by ccswitch.
+        _migrate_meta(src, dest)
         # Indexes mirroring history.ts (speed the read helpers).
         dest.execute("CREATE INDEX IF NOT EXISTS idx_check_durations "
                      "ON check_durations(repo, check_name, event, completed_at)")
@@ -50,3 +55,18 @@ def migrate_history(source_path: str = SOURCE_DEFAULT, dest_path: str | None = N
     finally:
         src.close(); dest.close()
     return counts
+
+
+def _migrate_meta(src: sqlite3.Connection, dest: sqlite3.Connection) -> None:
+    """Copy ciGraph:* rows from the source meta table (if it exists) into dest."""
+    has_meta = src.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'"
+    ).fetchone()
+    if not has_meta:
+        return
+    dest.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    rows = src.execute(
+        "SELECT key, value FROM meta WHERE key LIKE 'ciGraph:%'"
+    ).fetchall()
+    dest.execute("DELETE FROM meta WHERE key LIKE 'ciGraph:%'")
+    dest.executemany("INSERT INTO meta (key, value) VALUES (?, ?)", rows)

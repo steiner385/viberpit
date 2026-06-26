@@ -4,6 +4,7 @@ Pure SQL + the same recency/percentile semantics. No writes (migration owns that
 """
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from dataclasses import dataclass
@@ -86,3 +87,20 @@ class HistoryStore:
         ).fetchall()
         vals = [float(r["wait_secs"]) for r in rows]
         return median(vals) if vals else None
+
+    def ci_graph(self, repo: str) -> dict | None:
+        """Return the stored ciGraph for a repo (from the migrated meta table), or None.
+
+        The ci-graph is the Plotroom-derived BFS closure of the rollup job's
+        ``needs:`` in ci.yml — it contains ``prefixes`` (required-check name
+        prefixes) and ``workflowName`` (the rollup workflow's display name).
+        Returns None when the meta table is absent or has no entry for this repo.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key=?",
+                (f"ciGraph:{repo}",),
+            ).fetchone()
+        except Exception:
+            return None
+        return json.loads(row["value"]) if row else None

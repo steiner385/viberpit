@@ -1,12 +1,23 @@
 """Port of Plotroom's required-checks + expectedSet glue (classify.ts + poller.ts).
 
-ccswitch has no per-repo config (Plotroom config.json repos:{}), so prefixes are
-always [] and rollup_wf None — but the logic is ported faithfully so a future
-config can switch it on.
+When a HistoryStore is passed to effective_prefixes() / rollup_workflow_for(),
+those functions read the Plotroom-derived ciGraph (BFS closure of the rollup
+job's ``needs:`` in ci.yml) from the migrated meta table.  Without it, repos
+that gate merges on a single rollup job (``ci``) would produce a collapsed
+expected-set containing only the rollup itself — matching zero history names
+and yielding eta=0 even when sub-checks are still running.
+
+Repos without a ciGraph entry fall back to the no-config path (prefixes=[],
+rollup_wf=None) — valid for repos that mark individual checks isRequired in
+GitHub branch protection rather than using a rollup job.
 """
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from server.pipeline.history import HistoryStore
 
 EXPECTED_SET_STALE_MS = 10 * 60_000
 
@@ -37,11 +48,29 @@ def required_checks(checks: list[dict], prefixes=None, rollup_wf: str | None = N
     return [] if (prefixes and len(prefixes)) else pr_event
 
 
-def effective_prefixes(repo: str) -> list[str]:
+def effective_prefixes(repo: str, store: "HistoryStore | None" = None) -> list[str]:
+    """Required-check name prefixes for a repo.
+
+    Reads the Plotroom-derived ciGraph from the migrated history store when
+    available; falls back to [] for repos with no ciGraph entry.
+    """
+    if store is not None:
+        graph = store.ci_graph(repo)
+        if graph:
+            return graph.get("prefixes") or []
     return []
 
 
-def rollup_workflow_for(repo: str) -> str | None:
+def rollup_workflow_for(repo: str, store: "HistoryStore | None" = None) -> str | None:
+    """Rollup workflow display name for a repo (e.g. ``'CI'``), or None.
+
+    Reads the Plotroom-derived ciGraph from the migrated history store when
+    available; falls back to None for repos with no ciGraph entry.
+    """
+    if store is not None:
+        graph = store.ci_graph(repo)
+        if graph:
+            return graph.get("workflowName") or None
     return None
 
 
