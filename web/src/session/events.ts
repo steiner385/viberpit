@@ -14,6 +14,7 @@ export interface EvToolResult    { type: 'toolResult';    toolId: string; ok: bo
 export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; ts?: number }
 export interface EvQuestion      { type: 'question';      questionId: string; turnId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; ts?: number }
 export interface EvSessionMeta   { type: 'sessionMeta';   model: string; sessionId: string }
+export interface EvTurnModel     { type: 'turnModel';     turnId: string; model: string; parentToolUseId?: string | null }
 export interface EvTitle         { type: 'title';         title: string; source: string }
 export interface EvStatus        { type: 'status';        state: string; count: number }
 export interface EvReplayReset   { type: 'replayReset' }
@@ -30,7 +31,7 @@ export interface EvContextUsage  { type: 'contextUsage';  usedTokens: number; ma
 export type SessionEvent =
   | EvUser | EvTurnStart | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvQuestion
-  | EvSessionMeta | EvTitle | EvStatus | EvReplayReset | EvReplayComplete | EvError | EvQueueUpdate
+  | EvSessionMeta | EvTurnModel | EvTitle | EvStatus | EvReplayReset | EvReplayComplete | EvError | EvQueueUpdate
   | EvSuggestions | EvCondensing | EvContextUsage
 
 export interface Command {
@@ -43,6 +44,6 @@ export interface Command {
 // The set of `type` strings that are session events (used by the WS fan-out).
 export const SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   'user','turnStart','turnEnd','textDelta','thinkingDelta','toolCall','toolResult',
-  'permissionRequest','question','sessionMeta','title','status','replayReset','replayComplete','error','queueUpdate',
+  'permissionRequest','question','sessionMeta','turnModel','title','status','replayReset','replayComplete','error','queueUpdate',
   'suggestions','condensing','contextUsage',
 ])

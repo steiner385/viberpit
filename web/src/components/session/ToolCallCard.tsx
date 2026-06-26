@@ -8,6 +8,7 @@ import { StructuredView } from './StructuredView'
 import { sizeHint } from '@/lib/toolContent'
 import { cn } from '@/lib/utils'
 import { Turn } from './Turn'
+import { modelName } from '@/session/modelName'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -23,6 +24,8 @@ interface Props {
   thinkingCollapsed?: boolean
   /** When this is a Task tool, the spawned sub-agent's own thread (rendered nested). */
   subThread?: SubThread
+  /** The session's current model — used to badge a subagent running on a different model. */
+  sessionModel?: string | null
 }
 
 function kindIcon(kind: ToolKind) {
@@ -50,7 +53,7 @@ function keyArg(kind: ToolKind, input: Record<string, unknown>): string {
   return ''
 }
 
-export function ToolCallCard({ block, density = 'card', defaultResultOpen = false, toolDetailMode, thinkingCollapsed = true, subThread }: Props) {
+export function ToolCallCard({ block, density = 'card', defaultResultOpen = false, toolDetailMode, thinkingCollapsed = true, subThread, sessionModel }: Props) {
   const [argsOpen, setArgsOpen] = useState(false)
   // The global toggle force-overrides the per-row default; 'auto' (or no mode)
   // falls back to defaultResultOpen so only the live tail's latest tool opens.
@@ -193,6 +196,11 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
           >
             <span className="text-xs font-medium">Sub-agent activity</span>
             <span className="text-xs opacity-60">{subThread.turns.length} turn{subThread.turns.length === 1 ? '' : 's'}</span>
+            {subThread.model && subThread.model !== sessionModel && (
+              <span className="text-xs rounded bg-indigo-100 dark:bg-indigo-900/40 px-1.5 py-0.5 text-indigo-700 dark:text-indigo-300">
+                {modelName(subThread.model)}
+              </span>
+            )}
             <span className="ml-auto shrink-0 text-gray-400 dark:text-gray-500">
               {subOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </span>

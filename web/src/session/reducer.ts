@@ -20,10 +20,10 @@ export type Block =
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
-export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[] }
+export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null }
 
 /** A self-contained conversation thread (the main transcript, or one sub-agent). */
-export interface SubThread { turns: Turn[]; openBlockId: string | null }
+export interface SubThread { turns: Turn[]; openBlockId: string | null; model?: string | null }
 
 // ── Rotation marker ────────────────────────────────────────────────────────────
 
@@ -506,6 +506,23 @@ export function transcriptReducer(
     // ── sessionMeta ───────────────────────────────────────────────────────────
     case 'sessionMeta': {
       return { ...state, model: ev.model }
+    }
+
+    // ── turnModel ─────────────────────────────────────────────────────────────
+    // The actual producing model for a turn (from AssistantMessage.model). A pid
+    // routes it to the spawning Task's sub-thread; otherwise it stamps the
+    // main-thread turn. Display ("only when changed") is decided at render time.
+    case 'turnModel': {
+      const pid = ev.parentToolUseId
+      if (pid) {
+        const cur = state.subAgents[pid] ?? { turns: [], openBlockId: null }
+        if (cur.model === ev.model) return state
+        return { ...state, subAgents: { ...state.subAgents, [pid]: { ...cur, model: ev.model } } }
+      }
+      const idx = findTurnIdx(state.turns, ev.turnId)
+      if (idx === -1) return state
+      if (state.turns[idx].model === ev.model) return state
+      return { ...state, turns: replaceTurn(state.turns, idx, (t) => ({ ...t, model: ev.model })) }
     }
 
     // ── title ─────────────────────────────────────────────────────────────────
