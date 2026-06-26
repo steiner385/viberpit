@@ -38,6 +38,7 @@ vi.mock('@/api/hooks', () => ({
   useCloseSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   usePermanentDeleteSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useRenameSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSessionsViewing: vi.fn(),
 }))
 
 function emitSessionEvent(event: SessionEvent) {

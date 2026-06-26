@@ -10,6 +10,7 @@ vi.mock('@/api/hooks', () => ({
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
+  useSessionsViewing: vi.fn(),
 }))
 
 const SETTINGS = {

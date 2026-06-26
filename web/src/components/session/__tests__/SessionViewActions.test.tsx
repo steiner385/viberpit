@@ -34,6 +34,7 @@ vi.mock('@/api/hooks', () => ({
   // Mobile-only Rename (added when rename was dropped from the mobile session
   // card — the detail view is its new home so the action isn't stranded).
   useRenameSession: vi.fn(),
+  useSessionsViewing: vi.fn(),
 }))
 
 function successMutation() {

@@ -10,6 +10,7 @@ vi.mock('@/api/hooks', () => ({
   useModels: () => ({ data: [] }),
   useAccounts: () => ({ data: [] }),
   useSessions: () => ({ data: [] }),
+  useSessionsViewing: vi.fn(),
 }))
 
 // Regression: the desktop master-detail shell renders SessionBody but previously

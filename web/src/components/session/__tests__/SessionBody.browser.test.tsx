@@ -33,6 +33,7 @@ vi.mock('@/api/hooks', () => ({
   useModels: () => ({ data: [] }),
   useAccounts: () => ({ data: [] }),
   useSessions: () => ({ data: [] }),
+  useSessionsViewing: vi.fn(),
 }))
 
 function makeRuntime(): SessionRuntime {

@@ -31,6 +31,7 @@ vi.mock('@/api/hooks', async (importOriginal) => {
     usePermanentDeleteSession: () => ({ mutate: (_id: string, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.(), isPending: false }),
     useSendPrompt: () => ({ mutate: vi.fn() }),
     useCloseSession: () => ({ mutate: (_id: string, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.(), isPending: false }),
+    useSessionsViewing: vi.fn(),
   }
 })
 
