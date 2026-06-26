@@ -101,6 +101,10 @@ export function useGithubRepos() {
     queryKey: QK.githubRepos,
     queryFn: () => api.get<GithubRepo[]>('/github/repos'),
     staleTime: 30_000,
+    // The edge serves a last-good cached list on GitHub failure, so this rarely errors;
+    // bound retries anyway (default is 3) so a genuine error can't compound across
+    // refetch-on-focus and multiple tabs into a request storm.
+    retry: 1,
   })
 }
 
