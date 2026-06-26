@@ -1,4 +1,4 @@
-"""Edge-side client for the session daemon over a Unix socket."""
+"""Edge-side client for the session daemon over a Unix socket or mTLS TCP."""
 import asyncio
 import json
 import logging
@@ -8,6 +8,7 @@ import httpx
 import websockets
 
 from server.ipc import protocol as proto
+from server.ipc.paths import Endpoint, parse_endpoint
 
 log = logging.getLogger("server.ipc.client")
 
@@ -31,14 +32,39 @@ class DaemonError(Exception):
         self.message = message
 
 
+def daemon_ws_connect(endpoint: Endpoint, path: str, ssl_ctx=None):
+    """Return a websockets connect context manager for a daemon WS path.
+
+    Single source of truth for opening edge→daemon WebSockets (events + vnc).
+    `path` is like "/events" or "/vnc?session=abc".
+    """
+    if endpoint.is_unix:
+        return websockets.unix_connect(endpoint.path, f"ws://daemon{path}")
+    return websockets.connect(f"wss://{endpoint.host}:{endpoint.port}{path}", ssl=ssl_ctx)
+
+
 class DaemonClient:
-    def __init__(self, socket_path: str):
-        self._sock = socket_path
-        self._http = httpx.AsyncClient(
-            transport=httpx.AsyncHTTPTransport(uds=socket_path),
-            base_url="http://daemon",
-            timeout=30.0,
-        )
+    def __init__(self, endpoint, *, client_tls=None):
+        if isinstance(endpoint, str):
+            endpoint = parse_endpoint(endpoint if "://" in endpoint else f"unix://{endpoint}")
+        self.endpoint = endpoint
+        if endpoint.is_unix:
+            self._sock = endpoint.path
+            self._ssl = None
+            self._http = httpx.AsyncClient(
+                transport=httpx.AsyncHTTPTransport(uds=endpoint.path),
+                base_url="http://daemon",
+                timeout=30.0,
+            )
+        else:
+            from server.ipc.tls import client_ssl_context, client_tls_files
+            self._ssl = client_ssl_context(client_tls or client_tls_files())
+            self._sock = None
+            self._http = httpx.AsyncClient(
+                base_url=f"https://{endpoint.host}:{endpoint.port}",
+                verify=self._ssl,
+                timeout=30.0,
+            )
         self._ws: Any = None
         self._reader_task: asyncio.Task | None = None
         self._queues: dict[str, asyncio.Queue] = {}      # stream -> event queue
@@ -120,11 +146,10 @@ class DaemonClient:
         q.put_nowait(event)
 
     async def _reader(self) -> None:
-        uri = "ws://daemon/events"
         backoff = 0.05
         while True:
             try:
-                async with websockets.unix_connect(self._sock, uri) as ws:
+                async with daemon_ws_connect(self.endpoint, "/events", self._ssl) as ws:
                     self._ws = ws
                     backoff = 0.05
                     for stream in list(self._desired):
