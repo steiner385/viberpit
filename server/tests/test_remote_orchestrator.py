@@ -165,7 +165,6 @@ async def test_daemon_unavailable_propagates():
 
 def test_remote_orchestrator_latest_summary_proxies_with_viewing():
     from unittest.mock import AsyncMock
-    from server.sessions.remote import RemoteOrchestrator
 
     ro = RemoteOrchestrator.__new__(RemoteOrchestrator)
     ro._client = types.SimpleNamespace(call=AsyncMock(return_value="Doing X"))

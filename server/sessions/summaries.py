@@ -7,9 +7,10 @@ from . import events as ev
 log = logging.getLogger(__name__)
 
 # Terminal states whose transcript won't meaningfully change again — never spend a
-# summary call on them. (Dormant active sessions are already filtered by the
-# mtime-signature check, so this set is intentionally tiny.)
-_SUMMARY_TERMINAL_STATUSES = {"ended", "archived"}
+# summary call on them. `limited` is included because its account is quota-exhausted,
+# so a Haiku call is guaranteed-wasted. (Dormant active sessions are already filtered
+# by the mtime-signature check, so this set is intentionally tiny.)
+_SUMMARY_TERMINAL_STATUSES = {"ended", "archived", "limited"}
 # Minimum seconds between regenerations for one session — the "once a minute" cap.
 _SUMMARY_MIN_INTERVAL_S = 60.0
 

@@ -6,6 +6,8 @@ from server.sessions.summaries import (
     should_regenerate,
     SummaryService,
 )
+from server.tests.fakes.fake_sdk import FakeSDKClient
+from server.tests.fakes import fake_sdk as f
 
 
 def test_clamp_summary_collapses_whitespace_and_strips_wrappers():
@@ -25,6 +27,10 @@ def test_should_regenerate_requires_viewer():
 
 def test_should_regenerate_skips_terminal_status():
     assert should_regenerate(True, None, 10.0, 1000.0, "ended") is False
+
+
+def test_should_regenerate_skips_limited_status():
+    assert should_regenerate(True, None, 10.0, 1000.0, "limited") is False
 
 
 def test_should_regenerate_first_time_when_viewed_and_active():
@@ -56,3 +62,12 @@ def test_summary_service_failure_returns_empty():
         raise RuntimeError("no sdk")
     svc = SummaryService(sdk_factory=boom)
     assert asyncio.run(svc.generate("/x", "/c", "User: hi\n\nAssistant: hey")) == ""
+
+
+def test_generate_parses_streamed_text():
+    msgs = [f.stream_start(uuid="t1"),
+            f.stream_text("Refactoring the auth middleware", uuid="t1"),
+            f.result(uuid="t1")]
+    svc = SummaryService(lambda cwd, cfg: FakeSDKClient(msgs))
+    out = asyncio.run(svc.generate("/tmp/r", "/tmp/cfg", "User: hi\n\nAssistant: done"))
+    assert out == "Refactoring the auth middleware"
