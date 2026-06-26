@@ -3,6 +3,8 @@ import type { Turn as TurnType, RotationMarker, SubThread } from '@/session/redu
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { Turn } from './Turn'
 import { RotationDivider } from './RotationDivider'
+import { ModelSwitchDivider } from './ModelSwitchDivider'
+import { modelName } from '@/session/modelName'
 
 const TOP_THRESHOLD = 64
 
@@ -150,8 +152,18 @@ export function TranscriptView({ turns, rotations = [], toolDetailMode, thinking
           <RotationDivider key={`rot-top-${i}`} from={r.from} to={r.to} reason={r.reason} />
         ))}
 
-        {turns.map((turn, idx) => (
+        {turns.map((turn, idx) => {
+          // Show a switch divider when this turn's model differs from the previous
+          // turn that had a known model. Only assistant turns carry a model; the
+          // first model-bearing turn shows no divider (nothing to differ from).
+          let prevModel: string | null = null
+          for (let i = idx - 1; i >= 0; i--) {
+            if (turns[i].model) { prevModel = turns[i].model ?? null; break }
+          }
+          const showSwitch = !!turn.model && !!prevModel && turn.model !== prevModel
+          return (
           <Fragment key={turn.id}>
+            {showSwitch && <ModelSwitchDivider to={modelName(turn.model)} />}
             <Turn
               turn={turn}
               isLastTurn={idx === turns.length - 1}
@@ -167,7 +179,8 @@ export function TranscriptView({ turns, rotations = [], toolDetailMode, thinking
               <RotationDivider key={`rot-${turn.id}-${i}`} from={r.from} to={r.to} reason={r.reason} />
             ))}
           </Fragment>
-        ))}
+          )
+        })}
 
         {orphans.map((r, i) => (
           <RotationDivider key={`rot-orphan-${i}`} from={r.from} to={r.to} reason={r.reason} />
