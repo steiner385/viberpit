@@ -1,5 +1,7 @@
+import ssl
 from unittest import mock
 
+import httpx
 import pytest
 
 from server.ipc.client import DaemonClient, DaemonUnavailable
@@ -51,7 +53,7 @@ async def test_rpc_rejected_without_client_cert(mtls_certs):
                              key=mtls_certs.rogue_client_key, ca=mtls_certs.ca)
         client = DaemonClient(ep, client_tls=bad)
         try:
-            with pytest.raises((DaemonUnavailable, Exception)):
+            with pytest.raises((DaemonUnavailable, ssl.SSLError, httpx.ConnectError, httpx.ReadError, OSError)):
                 await client.info()
         finally:
             await client.aclose()

@@ -3,7 +3,6 @@ import asyncio
 import contextlib
 import os
 import socket as _socket
-import ssl  # noqa: F401  (kept for parity / future use)
 import tempfile
 
 import uvicorn

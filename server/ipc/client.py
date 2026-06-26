@@ -49,7 +49,6 @@ class DaemonClient:
             endpoint = parse_endpoint(endpoint if "://" in endpoint else f"unix://{endpoint}")
         self.endpoint = endpoint
         if endpoint.is_unix:
-            self._sock = endpoint.path
             self._ssl = None
             self._http = httpx.AsyncClient(
                 transport=httpx.AsyncHTTPTransport(uds=endpoint.path),
@@ -59,7 +58,6 @@ class DaemonClient:
         else:
             from server.ipc.tls import client_ssl_context, client_tls_files
             self._ssl = client_ssl_context(client_tls or client_tls_files())
-            self._sock = None
             self._http = httpx.AsyncClient(
                 base_url=f"https://{endpoint.host}:{endpoint.port}",
                 verify=self._ssl,
