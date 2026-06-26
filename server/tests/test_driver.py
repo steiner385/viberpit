@@ -72,8 +72,10 @@ def test_driver_streams_turn_and_sets_session_id():
     assert names[0] == "Title"
     assert names[1] == "Status"  # working
     # The user's prompt is echoed as a UserMessage before the assistant turn.
+    # The assistant message emits a TurnModel event (its producing model) between
+    # the streamed text deltas and TurnEnd.
     assert [n for n in names if n not in ("Status", "Title")] == [
-        "UserMessage", "TurnStart", "TextDelta", "TextDelta", "TurnEnd"]
+        "UserMessage", "TurnStart", "TextDelta", "TextDelta", "TurnModel", "TurnEnd"]
     user_ev = next(e for e in seen if isinstance(e, UserMessage))
     assert user_ev.text == "hi"
     assert sid == "sess-1"
