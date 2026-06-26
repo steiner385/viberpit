@@ -82,6 +82,21 @@ CCSWITCH_SESSIOND_CLIENT_CA=/etc/ccswitch/tls/ca.pem
 Distribute the CA cert to both hosts; distribute the server cert + key to the daemon host, and the
 client cert + key to the edge host. Copy `.env.example` to `.env` and fill in the paths.
 
+### Restricting which client certs are accepted (optional)
+
+By default any client cert signed by `CCSWITCH_SESSIOND_TLS_CA` is accepted. To restrict to
+specific client identities, set on the **daemon**:
+
+    CCSWITCH_SESSIOND_CLIENT_ALLOWLIST=edge.internal,edge2.internal
+
+Values are matched **exactly** against the client cert's Common Name (CN) and Subject
+Alternative Names (SAN). Modern certs carry identity in the SAN — issue client certs whose
+SAN matches a listed value.
+
+Troubleshooting: a rejected client sees only a generic TLS handshake error on the **edge**
+side. The authoritative diagnostic is the **daemon** log line
+`daemon mTLS: rejected client identities [...] (not in allowlist)`.
+
 ## Validation scenarios (map to Success Criteria)
 
 1. **Dashboard + usage (SC-001, FR-006/016)** — open the URL; confirm each account shows live

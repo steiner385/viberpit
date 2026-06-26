@@ -201,6 +201,8 @@ class MTLSCerts:
     server_key: str
     client_cert: str
     client_key: str
+    client_other_cert: str
+    client_other_key: str
     rogue_ca: str
     rogue_client_cert: str
     rogue_client_key: str
@@ -219,6 +221,9 @@ def mtls_certs(tmp_path) -> MTLSCerts:
     c_key, c_cert = make_leaf(ca_key, ca_cert, "edge")
     write_pem_cert(d / "client.pem", c_cert)
     write_pem_key(d / "client.key", c_key)
+    co_key, co_cert = make_leaf(ca_key, ca_cert, "edge-other")   # SAME CA, different identity
+    write_pem_cert(d / "client_other.pem", co_cert)
+    write_pem_key(d / "client_other.key", co_key)
     rca_key, rca_cert = make_ca()
     write_pem_cert(d / "rogue_ca.pem", rca_cert)
     rc_key, rc_cert = make_leaf(rca_key, rca_cert, "rogue")
@@ -228,6 +233,8 @@ def mtls_certs(tmp_path) -> MTLSCerts:
         ca=str(d / "ca.pem"),
         server_cert=str(d / "server.pem"), server_key=str(d / "server.key"),
         client_cert=str(d / "client.pem"), client_key=str(d / "client.key"),
+        client_other_cert=str(d / "client_other.pem"),
+        client_other_key=str(d / "client_other.key"),
         rogue_ca=str(d / "rogue_ca.pem"),
         rogue_client_cert=str(d / "rogue_client.pem"),
         rogue_client_key=str(d / "rogue_client.key"),

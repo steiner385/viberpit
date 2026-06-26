@@ -14,7 +14,7 @@ from server.ipc.daemon import create_daemon_app
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.ipc.x11_rpc import register_x11
 from server.ipc.paths import Endpoint, sessiond_endpoint
-from server.ipc.tls import DaemonTLSFiles, daemon_tls_files
+from server.ipc.tls import DaemonTLSFiles, daemon_tls_files, daemon_ssl_context_factory, client_allowlist
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.x11manager import build_x11_manager
 
@@ -25,17 +25,19 @@ log = logging.getLogger("server.ipc.serve")
 _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S = 15.0
 
 
-def uvicorn_run_kwargs(endpoint: Endpoint, *, daemon_tls: DaemonTLSFiles | None = None) -> dict:
+def uvicorn_run_kwargs(endpoint: Endpoint, *, daemon_tls: DaemonTLSFiles | None = None,
+                       allowlist: frozenset[str] | None = None) -> dict:
     """Build uvicorn bind kwargs for a daemon endpoint.
 
     unix  -> {uds}.
     https -> {host, port, ssl_*}. ssl_cert_reqs=CERT_REQUIRED makes it MUTUAL TLS:
              a client without a CA-signed cert fails the handshake.
+    When allowlist is truthy, adds ssl_context_factory to enforce CN/SAN identity checks.
     """
     if endpoint.is_unix:
         return {"uds": endpoint.path}
     files = daemon_tls or daemon_tls_files()
-    return {
+    kwargs = {
         "host": endpoint.host,
         "port": endpoint.port,
         "ssl_certfile": files.cert,
@@ -43,6 +45,9 @@ def uvicorn_run_kwargs(endpoint: Endpoint, *, daemon_tls: DaemonTLSFiles | None 
         "ssl_ca_certs": files.ca,
         "ssl_cert_reqs": ssl.CERT_REQUIRED,
     }
+    if allowlist:
+        kwargs["ssl_context_factory"] = daemon_ssl_context_factory(allowlist)
+    return kwargs
 
 
 def build_daemon(orchestrator=None):
@@ -115,4 +120,4 @@ def serve(socket_path: str | None = None) -> None:
     app.router.lifespan_context = lambda _app: daemon_lifespan(_app, orchestrator)
     where = endpoint.path if endpoint.is_unix else f"{endpoint.host}:{endpoint.port} (mTLS)"
     log.info("session daemon serving on %s", where)
-    uvicorn.run(app, log_level="info", **uvicorn_run_kwargs(endpoint))
+    uvicorn.run(app, log_level="info", **uvicorn_run_kwargs(endpoint, allowlist=client_allowlist()))

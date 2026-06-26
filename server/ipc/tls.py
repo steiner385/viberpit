@@ -5,9 +5,37 @@ boundary is the socket file's permissions and none of this is used.
 """
 from __future__ import annotations
 
+import logging
 import os
 import ssl
 from dataclasses import dataclass
+
+log = logging.getLogger("server.ipc.tls")
+
+
+def peer_identities(cert: dict) -> set[str]:
+    """CN + SAN values from a getpeercert() dict (the candidate client identities)."""
+    ids: set[str] = set()
+    for rdn in cert.get("subject", ()):          # rdn: tuple of (key, value) pairs
+        for key, val in rdn:
+            if key == "commonName":
+                ids.add(val)
+    for _typ, val in cert.get("subjectAltName", ()):
+        ids.add(val)
+    return ids
+
+
+def client_allowlist() -> frozenset[str] | None:
+    """Parse CCSWITCH_SESSIOND_CLIENT_ALLOWLIST. None when unset/blank (permissive)."""
+    raw = os.environ.get("CCSWITCH_SESSIOND_CLIENT_ALLOWLIST")
+    if not raw:
+        return None
+    items = {p.strip() for p in raw.split(",") if p.strip()}
+    return frozenset(items) or None
+
+
+def allowed(cert: dict, allow: frozenset[str]) -> bool:
+    return bool(peer_identities(cert) & allow)
 
 
 class TLSConfigError(RuntimeError):
@@ -50,6 +78,34 @@ def client_tls_files() -> ClientTLSFiles:
         key=_require(os.environ.get("CCSWITCH_SESSIOND_CLIENT_KEY"), "CCSWITCH_SESSIOND_CLIENT_KEY"),
         ca=_require(os.environ.get("CCSWITCH_SESSIOND_CLIENT_CA"), "CCSWITCH_SESSIOND_CLIENT_CA"),
     )
+
+
+def _bind(base: type, allow: frozenset[str]) -> type:
+    # Per-context subclass: wrap_bio()._create() gives no opening to pass an instance
+    # attribute, so the allowlist rides on the class. A fresh subclass per context keeps
+    # allowlists from bleeding across contexts.
+    return type("_AllowlistSSLObject", (base,), {"_allow": allow})
+
+
+class _AllowlistSSLObject(ssl.SSLObject):
+    _allow: frozenset[str] = frozenset()
+
+    def do_handshake(self, *args, **kwargs):
+        super().do_handshake(*args, **kwargs)        # chain + CERT_REQUIRED already enforced
+        cert = self.getpeercert() or {}
+        if not allowed(cert, self._allow):
+            ids = sorted(peer_identities(cert))
+            log.warning("daemon mTLS: rejected client identities %s (not in allowlist)", ids)
+            raise ssl.SSLCertVerificationError("client certificate identity not in allowlist")
+
+
+def daemon_ssl_context_factory(allow: frozenset[str]):
+    """uvicorn ssl_context_factory that enforces a client CN/SAN allowlist at the handshake."""
+    def factory(config, default_factory):
+        ctx = default_factory()                       # loads cert/key/CA + CERT_REQUIRED
+        ctx.sslobject_class = _bind(_AllowlistSSLObject, allow)
+        return ctx
+    return factory
 
 
 def client_ssl_context(files: ClientTLSFiles) -> ssl.SSLContext:
