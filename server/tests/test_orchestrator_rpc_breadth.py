@@ -117,3 +117,23 @@ def test_live_session_counts_registered_as_rpc():
         r = c.post("/rpc/live_session_counts", json={}).json()
     assert isinstance(r["result"], dict)
     orch.live_session_counts.assert_called_once_with()
+
+
+def test_all_prs_rpc_registered_and_round_trips():
+    """all_prs must be a registered RPC returning a JSON-safe {'prs': [...]}."""
+    from server.github.pr_status import PipelinePr, PullRequestInfo
+    app, orch = _app()
+    pr = PipelinePr(
+        pr=PullRequestInfo(number=42, url="https://github.com/o/r/pull/42",
+                           state="open", checks="passing", title="T"),
+        session_id="s1",
+        session_name="S",
+    )
+    orch.all_prs = mock.MagicMock(return_value=[pr])
+    with TestClient(app) as c:
+        r = c.post("/rpc/all_prs", json={}).json()
+    prs = r["result"]["prs"]
+    assert len(prs) == 1
+    assert prs[0]["number"] == 42
+    assert prs[0]["session"] == {"id": "s1", "name": "S"}
+    orch.all_prs.assert_called_once_with()

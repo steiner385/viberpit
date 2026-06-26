@@ -6,7 +6,12 @@ the vertical-slice methods only.
 """
 import asyncio
 import logging
+from typing import TYPE_CHECKING
+
 from ccswitch.oauth import Usage
+
+if TYPE_CHECKING:
+    from server.github.pr_status import PipelinePr
 from server.github.pr_status import PullRequestInfo
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 
@@ -110,6 +115,12 @@ class RemoteOrchestrator:
         """Resolve a session's full PR list via the daemon (empty if none)."""
         r = await self._client.call("prs_for", session_id=session_id)
         return [PullRequestInfo.from_dict(d) for d in (r.get("prs") or [])]
+
+    async def all_prs(self) -> "list[PipelinePr]":
+        """Resolve the full PR population (joined to sessions) via the daemon."""
+        from server.github.pr_status import PipelinePr
+        r = await self._client.call("all_prs")
+        return [PipelinePr.from_dict(d) for d in (r.get("prs") or [])]
 
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
         """Inject the branch-aware fix prompt for PR #pr_number via the daemon.
