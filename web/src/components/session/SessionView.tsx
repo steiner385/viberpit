@@ -16,6 +16,7 @@ import { useEffect, useCallback, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { useSessionSocket } from '@/ws/client'
 import { useSessionRuntime } from '@/session/useSessionRuntime'
+import { useSessionNeighbors } from '@/session/useSessionNeighbors'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { SessionComposer } from './SessionComposer'
 import { SessionBody } from './SessionBody'
@@ -39,12 +40,17 @@ interface Props {
   onBack: () => void
   /** Called after archive/delete — host advances to the neighbor (distinct from onBack). */
   onDone: () => void
+  onNavigateSession?: (id: string) => void
   initialPrompt?: string
 }
 
-export function SessionView({ sessionId, onBack, onDone, initialPrompt }: Props) {
+export function SessionView({ sessionId, onBack, onDone, onNavigateSession, initialPrompt }: Props) {
   const { detach } = useSessionSocket()
   const rt = useSessionRuntime(sessionId, initialPrompt)
+  const { prevId, nextId } = useSessionNeighbors(sessionId)
+  // Both chevrons render as a pair: useSessionNeighbors returns prevId/nextId
+  // both-null (single/unknown session) or both-set (wraparound), never one null.
+  const hasNeighbors = prevId !== null || nextId !== null
 
   // Keep modeRef current so the keydown handler reads the latest mode without
   // needing to re-register the listener on every mode change.
@@ -142,7 +148,39 @@ export function SessionView({ sessionId, onBack, onDone, initialPrompt }: Props)
           ← Back
         </button>
 
+        {hasNeighbors && (
+          <button
+            type="button"
+            onClick={() => prevId && onNavigateSession?.(prevId)}
+            aria-label="Previous session"
+            className={cn(
+              'flex items-center justify-center px-2 py-2 rounded-md min-h-[44px] min-w-[44px]',
+              'text-lg leading-none font-medium text-gray-200',
+              'hover:bg-gray-700 active:bg-gray-600',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            )}
+          >
+            ‹
+          </button>
+        )}
+
         <span className="flex-1 text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
+
+        {hasNeighbors && (
+          <button
+            type="button"
+            onClick={() => nextId && onNavigateSession?.(nextId)}
+            aria-label="Next session"
+            className={cn(
+              'flex items-center justify-center px-2 py-2 rounded-md min-h-[44px] min-w-[44px]',
+              'text-lg leading-none font-medium text-gray-200',
+              'hover:bg-gray-700 active:bg-gray-600',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            )}
+          >
+            ›
+          </button>
+        )}
 
         {/*
           The same compact status pill the session card renders. Reads the live

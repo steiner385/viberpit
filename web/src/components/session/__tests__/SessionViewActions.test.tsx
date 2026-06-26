@@ -35,6 +35,9 @@ vi.mock('@/api/hooks', () => ({
   // card — the detail view is its new home so the action isn't stranded).
   useRenameSession: vi.fn(),
   useSessionsViewing: vi.fn(),
+  // useSessionNeighbors (added in mobile nav feature) calls useSessions internally.
+  // Return an empty list so the chevrons stay hidden in these header-focused tests.
+  useSessions: vi.fn(() => ({ data: [], isLoading: false })),
 }))
 
 function successMutation() {
