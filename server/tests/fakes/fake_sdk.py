@@ -31,8 +31,8 @@ def stream_thinking(text: str, uuid: str = "u1", sid: str = "sess-1", pid: str |
                               "delta": {"type": "thinking_delta", "thinking": text}},
                        parent_tool_use_id=pid)
 
-def assistant(*blocks, uuid: str = "u1", parent_tool_use_id=None) -> AssistantMessage:
-    return AssistantMessage(content=list(blocks), model="claude", uuid=uuid,
+def assistant(*blocks, uuid: str = "u1", parent_tool_use_id=None, model: str = "claude") -> AssistantMessage:
+    return AssistantMessage(content=list(blocks), model=model, uuid=uuid,
                             parent_tool_use_id=parent_tool_use_id)
 
 def tool_use(tool_id: str, name: str, inp: dict, uuid: str = "u1", pid: str | None = None) -> AssistantMessage:

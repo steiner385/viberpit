@@ -27,6 +27,7 @@ class Translator:
         self._turn_id: str = ""                       # mirror of main turn id (driver._turn compat)
         self._seen_tools: set[str] = set()
         self._turn_text: str = ""
+        self._turn_model: dict[str, str] = {}   # turn id -> last-emitted model (dedupe)
 
     def _ensure_turn(self, uuid, pid=None) -> list:
         if pid in self._open:
@@ -47,6 +48,7 @@ class Translator:
         self._turn_id = ""
         self._seen_tools = set()
         self._turn_text = ""
+        self._turn_model = {}
 
     def feed(self, msg) -> list:
         if isinstance(msg, SystemMessage):
@@ -94,6 +96,10 @@ class Translator:
             pid = getattr(msg, "parent_tool_use_id", None)
             out = self._ensure_turn(getattr(msg, "uuid", None), pid)
             tid = self._turn(pid)
+            model = getattr(msg, "model", None)
+            if model and self._turn_model.get(tid) != model:
+                self._turn_model[tid] = model
+                out.append(ev.TurnModel(tid, model, parent_tool_use_id=pid))
             # Text/thinking blocks are intentionally NOT re-emitted here — they stream live
             # via StreamEvent content_block_delta (driver always sets include_partial_messages=True).
             # Only tool calls (not streamed as deltas) are emitted from the consolidated message.

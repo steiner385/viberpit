@@ -33,6 +33,12 @@ class TurnStart:
                                "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id}
 
 @dataclass
+class TurnModel:
+    turn_id: str; model: str; parent_tool_use_id: str | None = None
+    def to_wire(self): return {"type": "turnModel", "turnId": self.turn_id,
+                               "model": self.model, "parentToolUseId": self.parent_tool_use_id}
+
+@dataclass
 class SessionMeta:
     model: str; session_id: str
     def to_wire(self): return {"type": "sessionMeta", "model": self.model,
