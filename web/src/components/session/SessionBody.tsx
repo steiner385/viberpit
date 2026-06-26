@@ -6,7 +6,7 @@
  * top bar or composer.
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SessionMeta } from './SessionMeta'
@@ -24,7 +24,7 @@ import { BrowserTab } from '../BrowserTab'
 import { useModels, useAccounts, useSessions } from '@/api/hooks'
 import { ExportMenu } from './ExportMenu'
 
-export function SessionBody({ rt }: { rt: SessionRuntime }) {
+export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSlot?: ReactNode }) {
   const runningSubAgents = selectRunningSubAgentCount(rt.state.turns)
   const { data: models = [] } = useModels()
   const { data: accounts = [] } = useAccounts()
@@ -70,6 +70,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           subAgents={rt.subAgents}
           statusSlot={<StatusBar status={rt.state.status} connectionState={rt.connectionState} subAgentCount={runningSubAgents} />}
           exportSlot={<ExportMenu sessionId={rt.sessionId} />}
+          actionsSlot={actionsSlot}
           models={models}
           accounts={accounts.map((a) => ({ name: a.name, nickname: a.nickname }))}
           accountPinned={pinned}

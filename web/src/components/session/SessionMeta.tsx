@@ -41,6 +41,11 @@ interface Props {
   /** Optional export control (e.g. ExportMenu) rendered in the right cluster.
    *  SessionMeta stays free of @/api imports — the caller provides the node. */
   exportSlot?: React.ReactNode
+  /** Optional session actions (archive / ⋮ menu) rendered at the end of the right
+   *  cluster. Mobile (SessionView) passes its SessionActions here so they share
+   *  this strip's status line instead of needing a row of their own; desktop omits
+   *  it and keeps the actions in its own header. */
+  actionsSlot?: React.ReactNode
   models: { id: string; label: string }[]
   accounts: { name: string; nickname?: string | null }[]
   accountPinned: boolean
@@ -64,7 +69,7 @@ const DOT_CLASS: Record<SubAgentStatus, string> = {
   failed: 'bg-red-500',
 }
 
-export function SessionMeta({ account, model, mode, contextPct, quota, subAgents, statusSlot, exportSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode }: Props) {
+export function SessionMeta({ account, model, mode, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode }: Props) {
   const [open, setOpen] = useState(false)
   const agentCount = subAgents.length
 
@@ -171,11 +176,13 @@ export function SessionMeta({ account, model, mode, contextPct, quota, subAgents
           plan
         </button>
 
-        {/* Right cluster: live status (folded-in StatusBar) + export + sub-agents toggle */}
-        {(statusSlot || exportSlot || agentCount > 0) && (
+        {/* Right cluster: live status (folded-in StatusBar) + export + session
+            actions (archive/⋮) + sub-agents toggle */}
+        {(statusSlot || exportSlot || actionsSlot || agentCount > 0) && (
           <div className="ml-auto flex items-center gap-2">
             {statusSlot}
             {exportSlot}
+            {actionsSlot}
             {agentCount > 0 && (
               <button
                 type="button"
