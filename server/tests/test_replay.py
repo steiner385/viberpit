@@ -121,3 +121,31 @@ def test_replay_skips_sidechain_entries(tmp_path):
     texts = [getattr(e, "text", None) for e in out]
     assert "main-line" in texts
     assert "subagent-secret" not in texts
+
+
+def test_replay_emits_turn_model_per_assistant_turn(tmp_path):
+    """Replay reconstructs the per-turn model (mirroring the live translator) so the
+    model-switch divider shows on historical/replayed sessions, not just live ones."""
+    from server.sessions.events import TurnModel
+    p = tmp_path / "tm.jsonl"
+    p.write_text(
+        '{"type":"assistant","uuid":"a1","message":{"role":"assistant","model":"claude-opus-4-8",'
+        '"content":[{"type":"text","text":"one"}]}}\n'
+        '{"type":"assistant","uuid":"a2","message":{"role":"assistant","model":"claude-haiku-4-5",'
+        '"content":[{"type":"text","text":"two"}]}}\n'
+    )
+    out = _parse(str(p), 20)
+    tms = [e for e in out if isinstance(e, TurnModel)]
+    assert [(e.turn_id, e.model) for e in tms] == [
+        ("a1", "claude-opus-4-8"), ("a2", "claude-haiku-4-5")]
+
+
+def test_replay_assistant_without_model_emits_no_turn_model(tmp_path):
+    from server.sessions.events import TurnModel
+    p = tmp_path / "nm.jsonl"
+    p.write_text(
+        '{"type":"assistant","uuid":"a1","message":{"role":"assistant",'
+        '"content":[{"type":"text","text":"hi"}]}}\n'
+    )
+    out = _parse(str(p), 20)
+    assert not any(isinstance(e, TurnModel) for e in out)
