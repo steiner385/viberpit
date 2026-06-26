@@ -76,6 +76,20 @@ describe('SessionCard — mobile swipe', () => {
     expect(onOpen).not.toHaveBeenCalled()
   })
 
+  it('does not render the edge panels at rest (only on an active swipe)', () => {
+    render(<SessionCard {...props()} />)
+    // At rest the foreground covers the card and no panel is mounted behind it,
+    // so no permanent red/grey band leaks around the padding.
+    expect(screen.queryByTestId('swipe-panel-delete')).toBeNull()
+    expect(screen.queryByTestId('swipe-panel-archive')).toBeNull()
+    // A short left-swipe reveals the delete panel.
+    const el = fg()
+    fireEvent.pointerDown(el, { clientX: 250, clientY: 40 })
+    fireEvent.pointerMove(window, { clientX: 170, clientY: 42 }) // dx -80: reveal
+    fireEvent.pointerUp(window, { clientX: 170, clientY: 42 })
+    expect(screen.getByTestId('swipe-panel-delete')).toBeInTheDocument()
+  })
+
   it('does not render the swipe layer at desktop (lg) width', () => {
     window.matchMedia = vi.fn().mockImplementation((q: string) => ({
       matches: q.includes('min-width: 1024px'), media: q,
