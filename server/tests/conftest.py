@@ -182,3 +182,53 @@ def _install_durable_inmemory_db():
 
 
 _install_durable_inmemory_db()
+
+
+# --------------------------------------------------------------------------- #
+# mTLS cert fixture for testing mutual TLS scenarios                         #
+# --------------------------------------------------------------------------- #
+import dataclasses
+
+import pytest
+
+from server.tests.tls_certs import make_ca, make_leaf, write_pem_cert, write_pem_key
+
+
+@dataclasses.dataclass(frozen=True)
+class MTLSCerts:
+    ca: str
+    server_cert: str
+    server_key: str
+    client_cert: str
+    client_key: str
+    rogue_ca: str
+    rogue_client_cert: str
+    rogue_client_key: str
+
+
+@pytest.fixture
+def mtls_certs(tmp_path) -> MTLSCerts:
+    d = tmp_path / "tls"
+    d.mkdir()
+    ca_key, ca_cert = make_ca()
+    write_pem_cert(d / "ca.pem", ca_cert)
+    s_key, s_cert = make_leaf(ca_key, ca_cert, "sessiond",
+                              san_dns=["localhost"], san_ip=["127.0.0.1"])
+    write_pem_cert(d / "server.pem", s_cert)
+    write_pem_key(d / "server.key", s_key)
+    c_key, c_cert = make_leaf(ca_key, ca_cert, "edge")
+    write_pem_cert(d / "client.pem", c_cert)
+    write_pem_key(d / "client.key", c_key)
+    rca_key, rca_cert = make_ca()
+    write_pem_cert(d / "rogue_ca.pem", rca_cert)
+    rc_key, rc_cert = make_leaf(rca_key, rca_cert, "rogue")
+    write_pem_cert(d / "rogue_client.pem", rc_cert)
+    write_pem_key(d / "rogue_client.key", rc_key)
+    return MTLSCerts(
+        ca=str(d / "ca.pem"),
+        server_cert=str(d / "server.pem"), server_key=str(d / "server.key"),
+        client_cert=str(d / "client.pem"), client_key=str(d / "client.key"),
+        rogue_ca=str(d / "rogue_ca.pem"),
+        rogue_client_cert=str(d / "rogue_client.pem"),
+        rogue_client_key=str(d / "rogue_client.key"),
+    )
