@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from server.auth.middleware import current_identity
+from server.api.ratelimit import client_logs_rate_limit
 from server.config import get_settings
 from server.obs.context import bind_session, log_event
 
@@ -40,7 +41,7 @@ class ClientLogBatch(BaseModel):
     entries: list[ClientLogEntry] = Field(default_factory=list)
 
 
-@router.post("", status_code=202)
+@router.post("", status_code=202, dependencies=[Depends(client_logs_rate_limit)])
 async def ingest(batch: ClientLogBatch, identity: str = Depends(current_identity)) -> dict:
     if len(batch.entries) > _MAX_ENTRIES:
         raise HTTPException(status_code=413, detail="too many log entries")
