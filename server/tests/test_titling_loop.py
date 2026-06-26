@@ -69,7 +69,9 @@ def test_titling_sweep_generates_title_when_no_ai_title(tmp_path):
         return "Fix the nightly build"
 
     async def run():
-        orch = await _build_orch(tmp_path, title_fn=stub_title_fn)
+        # cwd must exist: the fallback generator runs a query in it and now skips a
+        # vanished cwd (test_titling_sweep_skips_when_cwd_missing).
+        orch = await _build_orch(tmp_path, title_fn=stub_title_fn, cwd=str(tmp_path))
         orch.transcript_path = lambda sid: str(transcript)
         await orch._titling_sweep()
         return orch.record("s1").name
@@ -108,3 +110,31 @@ def test_titling_interval_defaults_to_15s(tmp_path):
         orch = await _build_orch(tmp_path)
         return orch._titling_interval
     assert asyncio.run(run()) == 15.0
+
+
+def test_titling_sweep_skips_when_cwd_missing(tmp_path):
+    """A session whose worktree vanished (removed/archived out from under a still-active
+    record) must NOT run the cwd-bound fallback title query — it errors every sweep,
+    producing the 'Working directory does not exist' spam. Skip it quietly."""
+    transcript = tmp_path / "claude-s1.jsonl"
+    transcript.write_text(
+        '{"type":"user","message":{"role":"user","content":"do the thing"}}\n'
+    )
+
+    called = {"n": 0}
+
+    async def stub_title_fn(prompts, *, account, cwd):
+        called["n"] += 1
+        return "should never be applied"
+
+    async def run():
+        orch = await _build_orch(
+            tmp_path, title_fn=stub_title_fn, cwd=str(tmp_path / "gone-worktree")
+        )
+        orch.transcript_path = lambda sid: str(transcript)
+        await orch._titling_sweep()  # must not raise
+        return called["n"], orch.record("s1").name
+
+    n_calls, name = asyncio.run(run())
+    assert n_calls == 0  # the cwd-bound generator is never invoked
+    assert name == "New Session"  # name left unchanged
