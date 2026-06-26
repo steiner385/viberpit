@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Wrench } from 'lucide-react'
+import { Wrench, SquareTerminal } from 'lucide-react'
 import { GroupHeader } from './GroupHeader'
 import { PrPill } from './PrPill'
 import { useAllPrs, useFixPr } from '@/api/hooks'
@@ -73,8 +73,13 @@ export function PipelineBoard({
                         </span>
                         <span className="truncate text-sm">{p.title}</span>
                         {p.session && (
-                          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-                            {p.session.name}
+                          <span
+                            data-testid={`pipeline-session-${p.number}`}
+                            title={`Session: ${p.session.name}`}
+                            className="ml-auto flex shrink-0 items-center gap-1 text-xs text-muted-foreground"
+                          >
+                            <SquareTerminal size={12} aria-hidden="true" className="flex-shrink-0" />
+                            <span>{p.session.name}</span>
                           </span>
                         )}
                         {canFix && p.session && (
