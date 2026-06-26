@@ -117,6 +117,29 @@ describe('ArchivedManager — controls strip', () => {
     expect(screen.getByLabelText('Sort by')).toBeInTheDocument()
   })
 
+  it('row metadata shows the archive date AND time, not just the date', () => {
+    const archivedAt = '2026-06-10T14:37:00Z'
+    setupMocks([makeArchived({ id: '1', name: 'Alpha', archivedAt })])
+    render(<ArchivedManager onReviewSession={() => {}} />, { wrapper })
+
+    // Compute the expectation with the same formatter the component uses, so the
+    // assertion is timezone-agnostic (toLocaleString renders in the runner's TZ).
+    const expected = new Date(archivedAt).toLocaleString(undefined, {
+      year: 'numeric', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit',
+    })
+    // A time component (HH:MM) must be present — guards against a regression to a
+    // date-only format (toLocaleDateString silently drops hour/minute options).
+    expect(expected).toMatch(/\d{1,2}:\d{2}/)
+    // Match the metadata <p> itself (ancestor <div>s also contain the substring
+    // via textContent, so restrict by tagName to keep the query unambiguous).
+    expect(
+      screen.getByText(
+        (_, el) => el?.tagName === 'P' && (el.textContent?.includes(`Archived ${expected}`) ?? false),
+      ),
+    ).toBeInTheDocument()
+  })
+
   it('switching Group-by to "Account" shows account group headers', async () => {
     const user = userEvent.setup()
     setupMocks([
