@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useMemo, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
@@ -9,6 +9,7 @@ import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
+import { isSessionsViewing, setSessionsViewing } from './sessionsViewing'
 import { toast } from 'sonner'
 
 // Query keys
@@ -47,7 +48,7 @@ export function useSessions() {
   const pending = useSyncExternalStore(subscribePending, getPendingSessions, getPendingSessions)
   const query = useQuery<Session[]>({
     queryKey: QK.sessions,
-    queryFn: () => api.get<Session[]>('/sessions'),
+    queryFn: () => api.get<Session[]>(isSessionsViewing() ? '/sessions?viewing=1' : '/sessions'),
     staleTime: 3_000,
     refetchInterval: 5_000,
   })
@@ -56,6 +57,14 @@ export function useSessions() {
     return [...(query.data ?? []), ...pending]
   }, [query.data, pending])
   return { ...query, data }
+}
+
+/** Tell the server to (re)generate summaries only while the sessions list is on-screen. */
+export function useSessionsViewing(active: boolean): void {
+  useEffect(() => {
+    setSessionsViewing(active)
+    return () => setSessionsViewing(false)
+  }, [active])
 }
 
 export interface GithubRepo {

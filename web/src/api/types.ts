@@ -73,6 +73,8 @@ export interface Session {
   model?: string | null
   /** Cached next-prompt suggestions for a live session (empty when none/detached). */
   latestSuggestions?: string[]
+  /** One-line LLM status summary of what the session is doing now (empty when none). */
+  summary?: string
   /** Active /goal condition for this session; null/absent = no goal. */
   activeGoal?: string | null
   /** The PRs authored from this session's branches. */

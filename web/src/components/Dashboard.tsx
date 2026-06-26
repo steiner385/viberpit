@@ -20,6 +20,7 @@ import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import {
   useAccounts,
   useSessions,
+  useSessionsViewing,
   useCreateSession,
   useRenameSession,
   useCloseSession,
@@ -32,6 +33,7 @@ import {
   useSendPrompt,
   type CreateSessionInput,
 } from '@/api/hooks'
+import { usePageVisible } from '@/hooks/usePageVisible'
 import type { Account } from '@/api/types'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { toast } from 'sonner'
@@ -451,6 +453,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   const [internalTab, setInternalTab] = useState<TabId>(activeTabProp ?? initialTab ?? 'sessions')
   const activeTab = activeTabProp ?? internalTab
+  const pageVisible = usePageVisible()
+  useSessionsViewing(activeTab === 'sessions' && pageVisible)
   const setActiveTab = (tab: TabId) => {
     if (onTabChange) onTabChange(tab)
     else setInternalTab(tab)
