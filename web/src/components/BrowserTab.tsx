@@ -2,10 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { VncClient, type VncState } from '../vnc/vncClient'
 import { useZoom } from '../vnc/useZoom'
+import { statusTier } from '../session/statusTier'
 
 const COPY = {
   disabled: "Browser sharing isn't enabled on this server.",
-  nodisplay: 'No display was allocated for this session.',
+  // A session only lacks a display when it has no live process. The common case is
+  // an idle/detached session (its virtual display is allocated lazily when it next
+  // runs), so point the user at the action that fixes it rather than at the raw
+  // internal state. The 'busy' fallback covers the rare pool-exhausted case, where
+  // "send a prompt" would be wrong advice.
+  nodisplayIdle: "This session isn't running. Send it a prompt to start it, and the virtual browser will appear here.",
+  nodisplayBusy: 'No virtual display is available for this session right now.',
   empty: "The agent hasn't opened a browser yet. When it does, you'll see it here.",
   reconnecting: 'Reconnecting…',
   disconnected: 'Disconnected — tap to reconnect.',
@@ -24,6 +31,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
   const [state, setState] = useState<VncState>(initialState ?? 'connecting')
   const [focused, setFocused] = useState(false)
   const [emptyDismissed, setEmptyDismissed] = useState(false)
+  const [openError, setOpenError] = useState<string | null>(null)
   const clientRef = useRef<VncClient | null>(null)
   const { zoom, zoomIn, zoomOut, setZoom, resetFit, zoomed, label } = useZoom()
 
@@ -65,7 +73,22 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
   }, [])
 
   async function openBrowser() {
-    await fetch(`/api/sessions/${sessionId}/browser/open`, { method: 'POST' })
+    setOpenError(null)
+    try {
+      const r = await fetch(`/api/sessions/${sessionId}/browser/open`, { method: 'POST' })
+      if (!r.ok) {
+        // The endpoint returns 409 for both "no display" and "browser cap reached";
+        // distinguish so the user gets actionable copy instead of a silent no-op.
+        const body = await r.json().catch(() => ({}))
+        setOpenError(
+          body?.detail === 'browser cap reached'
+            ? 'Too many browser windows are already open for this session.'
+            : "Couldn't open a browser for this session.",
+        )
+      }
+    } catch {
+      setOpenError("Couldn't reach the server to open a browser.")
+    }
   }
 
   const agentDriving = statusState === 'working'
@@ -89,7 +112,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
           : state === 'disabled'
             ? { copy: COPY.disabled }
             : state === 'nodisplay'
-              ? { copy: COPY.nodisplay }
+              ? { copy: statusTier(statusState) === 'busy' ? COPY.nodisplayBusy : COPY.nodisplayIdle }
               : null
 
   return (
@@ -245,7 +268,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
       {showEmpty && (
         <div className="pointer-events-none absolute inset-x-0 bottom-8 flex flex-col items-center gap-2">
           <p className="text-xs text-muted-foreground drop-shadow">
-            {COPY.empty}
+            {openError ?? COPY.empty}
           </p>
           <div className="pointer-events-auto flex items-center gap-2">
             <button

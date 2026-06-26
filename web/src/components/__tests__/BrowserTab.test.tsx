@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { BrowserTab } from '../BrowserTab'
 
@@ -150,6 +150,38 @@ describe('BrowserTab', () => {
     render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
     expect(screen.queryByText(/hasn.t opened a browser yet/i)).toBeNull()
+  })
+
+  it('on no-display for an idle session, tells the user to send a prompt (not the raw "no display")', () => {
+    render(<BrowserTab sessionId="S" statusState="idle" initialState="nodisplay" />)
+    expect(screen.getByText(/send it a prompt/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no display was allocated/i)).toBeNull()
+  })
+
+  it('on no-display while the agent is actively working, shows the generic display fallback', () => {
+    // A busy session with no display is the rare pool-exhausted case, not an idle
+    // session — "send a prompt" would be wrong advice, so keep a neutral message.
+    render(<BrowserTab sessionId="S" statusState="working" initialState="nodisplay" />)
+    expect(screen.getByText(/no virtual display is available/i)).toBeInTheDocument()
+    expect(screen.queryByText(/send it a prompt/i)).toBeNull()
+  })
+
+  it('surfaces a failed "Open a browser" POST instead of swallowing it', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      json: () => Promise.resolve({ detail: 'browser cap reached' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      render(<BrowserTab sessionId="S" statusState="idle" initialState="connected" />)
+      fireEvent.click(screen.getByRole('button', { name: /open a browser/i }))
+      expect(fetchMock).toHaveBeenCalledWith('/api/sessions/S/browser/open', { method: 'POST' })
+      await waitFor(() =>
+        expect(screen.getByText(/too many browser windows/i)).toBeInTheDocument(),
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   afterEach(() => {
