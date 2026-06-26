@@ -70,7 +70,7 @@ class HistoryStore:
         return self.recent_durations(repo, name, event)
 
     def expected_set(self, repo: str, event: str, now: datetime, window_days: int = 14) -> list[str]:
-        cutoff = (now - timedelta(days=window_days)).isoformat()
+        cutoff = (now - timedelta(days=window_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
         rows = self._conn.execute(
             "SELECT DISTINCT check_name FROM check_durations "
             "WHERE repo=? AND event=? AND conclusion='SUCCESS' AND completed_at >= ?",
