@@ -352,17 +352,21 @@ describe('SessionView', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Ready')
   })
 
-  it('shows the card-style StatusPill in the top bar reflecting the live status', async () => {
-    // The same compact pill the session card renders (StatusPill from UsageBadge),
-    // distinguished from the StatusBar by its `aria-label="Status: <label>"`.
+  it('single-sources live status in the meta-strip StatusBar — no duplicate pill in the top bar', async () => {
+    // Status is shown once, by the StatusBar folded into the meta strip. The top
+    // bar deliberately carries NO card-style StatusPill (it duplicated this exact
+    // state one line down), so the title gets the full width of the nav row.
     render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
-    // Idle on open → "Ready".
-    expect(screen.getByLabelText('Status: Ready')).toBeInTheDocument()
+    // No card-style pill anywhere in the header.
+    expect(screen.queryByLabelText(/^Status: /)).not.toBeInTheDocument()
+    // Idle on open → the StatusBar reads "Ready".
+    expect(screen.getByRole('status')).toHaveTextContent('Ready')
 
-    // Live status flows from the runtime: a `status` event flips it to "Working…".
+    // Live status flows from the runtime: a `status` event flips the StatusBar to
+    // its working state (the sr-only label reads "Working…").
     emitSessionEvent({ type: 'status', state: 'in_progress', count: 1 })
     await waitFor(() => {
-      expect(screen.getByLabelText(/^Status: Working/)).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent(/Working/)
     })
   })
 

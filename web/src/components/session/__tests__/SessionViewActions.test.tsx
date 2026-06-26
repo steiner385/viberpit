@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { ReactNode } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { SessionView } from '../SessionView'
@@ -24,7 +25,14 @@ vi.mock('@/session/useSessionRuntime', () => ({
 }))
 
 // SessionBody / SessionComposer are heavy; stub them so we test only the header wiring.
-vi.mock('../SessionBody', () => ({ SessionBody: () => <div data-testid="body" /> }))
+// The stub renders `actionsSlot` because the archive/⋮ actions now live in the meta
+// strip's right cluster (SessionBody → SessionMeta), handed down by SessionView — so
+// this is exactly the wiring these tests exercise.
+vi.mock('../SessionBody', () => ({
+  SessionBody: ({ actionsSlot }: { actionsSlot?: ReactNode }) => (
+    <div data-testid="body">{actionsSlot}</div>
+  ),
+}))
 vi.mock('../SessionComposer', () => ({ SessionComposer: () => <div data-testid="composer" /> }))
 vi.mock('../CommandResultOverlay', () => ({ CommandResultOverlay: () => null }))
 
