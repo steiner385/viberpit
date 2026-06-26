@@ -53,26 +53,28 @@ beforeEach(() => {
 
 describe('SessionView header — archive/delete', () => {
   it('renders the in-session Archive control', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />)
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />)
     expect(screen.getByRole('button', { name: /archive session my session/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /more session actions/i })).toBeInTheDocument()
   })
 
-  it('archiving detaches the socket and navigates back', async () => {
+  it('archiving detaches the socket and calls onDone (not onBack)', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />)
+    const onDone = vi.fn()
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={onDone} />)
 
     await user.click(screen.getByRole('button', { name: /archive session my session/i }))
 
     expect(detach).toHaveBeenCalledWith('s1')
-    expect(onBack).toHaveBeenCalledTimes(1)
+    expect(onDone).toHaveBeenCalledTimes(1)
+    expect(onBack).not.toHaveBeenCalled()
   })
 
   it('Escape closes the overflow menu without exiting the session', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />)
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />)
 
     // Open the overflow menu.
     await user.click(screen.getByRole('button', { name: /more session actions/i }))
@@ -88,7 +90,7 @@ describe('SessionView header — archive/delete', () => {
 
   it('exposes Rename in the overflow menu (its only home on mobile)', async () => {
     const user = userEvent.setup()
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />)
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />)
 
     await user.click(screen.getByRole('button', { name: /more session actions/i }))
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeInTheDocument()
@@ -97,7 +99,7 @@ describe('SessionView header — archive/delete', () => {
   it('clicking Rename opens the rename dialog (and does not exit the session)', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />)
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />)
 
     await user.click(screen.getByRole('button', { name: /more session actions/i }))
     await user.click(screen.getByRole('menuitem', { name: /rename/i }))
@@ -112,7 +114,7 @@ describe('SessionView header — archive/delete', () => {
     vi.mocked(hooks.useRenameSession).mockReturnValue({ mutate, isPending: false } as unknown as ReturnType<typeof hooks.useRenameSession>)
 
     const user = userEvent.setup()
-    render(<SessionView sessionId="s1" onBack={vi.fn()} />)
+    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />)
 
     await user.click(screen.getByRole('button', { name: /more session actions/i }))
     await user.click(screen.getByRole('menuitem', { name: /rename/i }))
@@ -129,7 +131,7 @@ describe('SessionView header — archive/delete', () => {
   it('Escape closes the delete confirm dialog without exiting the session', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} />)
+    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />)
 
     // Open the overflow menu, then click Delete permanently to open the confirm dialog.
     await user.click(screen.getByRole('button', { name: /more session actions/i }))

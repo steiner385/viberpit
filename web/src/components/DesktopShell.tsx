@@ -57,6 +57,7 @@ import { toast } from 'sonner'
 import { useSessionOrdering } from '@/session/useSessionOrdering'
 import { useSessionSearch } from '@/session/useSessionSearch'
 import { useListNavigation } from '@/session/useListNavigation'
+import { nextVisibleSessionId } from '@/session/nextAfterArchive'
 
 type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
@@ -161,6 +162,14 @@ export function DesktopShell() {
     setSelection({ type: 'session', id, initialPrompt })
   }, [])
 
+  // Map a session that just left the live list to the next detail target: the
+  // neighbor that takes its place, else the New Session slot. orderedSessions is
+  // read at call time (pre-archive, since callers run synchronously on click).
+  const advanceFrom = useCallback((removedId: string): Target => {
+    const next = nextVisibleSessionId(orderedSessions.map((s) => s.id), removedId)
+    return next ? { type: 'session', id: next } : { type: 'new' }
+  }, [orderedSessions])
+
   function focusNew() {
     setTab('sessions')
     setSelection({ type: 'new' })
@@ -211,8 +220,8 @@ export function DesktopShell() {
 
   const handleClose = useCallback((id: string) => {
     closeSession.mutate(id)
-    setSelection((cur) => (cur.type === 'session' && cur.id === id ? { type: 'new' } : cur))
-  }, [closeSession])
+    setSelection((cur) => (cur.type === 'session' && cur.id === id ? advanceFrom(id) : cur))
+  }, [closeSession, advanceFrom])
 
   const sendPrompt = useSendPrompt()
   const handleQuickResume = useCallback((id: string, text?: string) => {
@@ -242,8 +251,8 @@ export function DesktopShell() {
     permanentDeleteSession.mutate(id, {
       onSuccess: () => {
         setSessionDeleteTarget(null)
-        // If the deleted session was selected, fall back to the new-session slot.
-        setSelection((cur) => (cur.type === 'session' && cur.id === id ? { type: 'new' } : cur))
+        // If the deleted session was open, advance to its neighbor.
+        setSelection((cur) => (cur.type === 'session' && cur.id === id ? advanceFrom(id) : cur))
       },
       onError: () => setSessionDeleteTarget(null),
     })
@@ -437,7 +446,7 @@ export function DesktopShell() {
     mainPane = <div className="p-4 overflow-y-auto h-full"><PipelineView /></div>
   } else {
     mainPane = selection.type === 'session'
-      ? <MainPaneSession sessionId={selection.id} onClosed={() => setSelection({ type: 'new' })} />
+      ? <MainPaneSession sessionId={selection.id} onClosed={() => setSelection(advanceFrom(selection.id))} />
       : <WelcomePane />
   }
 
