@@ -80,6 +80,34 @@ def client_tls_files() -> ClientTLSFiles:
     )
 
 
+def _bind(base: type, allow: frozenset[str]) -> type:
+    # Per-context subclass: wrap_bio()._create() gives no opening to pass an instance
+    # attribute, so the allowlist rides on the class. A fresh subclass per context keeps
+    # allowlists from bleeding across contexts.
+    return type("_AllowlistSSLObject", (base,), {"_allow": allow})
+
+
+class _AllowlistSSLObject(ssl.SSLObject):
+    _allow: frozenset[str] = frozenset()
+
+    def do_handshake(self, *args, **kwargs):
+        super().do_handshake(*args, **kwargs)        # chain + CERT_REQUIRED already enforced
+        cert = self.getpeercert() or {}
+        if not allowed(cert, self._allow):
+            ids = sorted(peer_identities(cert))
+            log.warning("daemon mTLS: rejected client identities %s (not in allowlist)", ids)
+            raise ssl.SSLCertVerificationError("client certificate identity not in allowlist")
+
+
+def daemon_ssl_context_factory(allow: frozenset[str]):
+    """uvicorn ssl_context_factory that enforces a client CN/SAN allowlist at the handshake."""
+    def factory(config, default_factory):
+        ctx = default_factory()                       # loads cert/key/CA + CERT_REQUIRED
+        ctx.sslobject_class = _bind(_AllowlistSSLObject, allow)
+        return ctx
+    return factory
+
+
 def client_ssl_context(files: ClientTLSFiles) -> ssl.SSLContext:
     """SSL context the edge uses for httpx (verify=) AND websockets (ssl=).
 

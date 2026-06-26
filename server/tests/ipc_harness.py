@@ -40,11 +40,11 @@ def _free_port() -> int:
 
 
 @contextlib.asynccontextmanager
-async def serve_daemon_tls(app, certs):
+async def serve_daemon_tls(app, certs, allowlist=None):
     """Serve `app` over mTLS on an ephemeral 127.0.0.1 port; yield its Endpoint."""
     endpoint = Endpoint("https", host="127.0.0.1", port=_free_port())
     tls = DaemonTLSFiles(cert=certs.server_cert, key=certs.server_key, ca=certs.ca)
-    kwargs = uvicorn_run_kwargs(endpoint, daemon_tls=tls)
+    kwargs = uvicorn_run_kwargs(endpoint, daemon_tls=tls, allowlist=allowlist)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="off", **kwargs))
     task = asyncio.create_task(server.serve())
     try:
