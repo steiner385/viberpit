@@ -87,7 +87,8 @@ _UNSET = object()
 
 
 def _record_to_dict(
-    record, repo: Any = _UNSET, suggestions: list[str] | None = None, prs: list | None = None
+    record, repo: Any = _UNSET, suggestions: list[str] | None = None,
+    prs: list | None = None, summary: str = "",
 ) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict.
 
@@ -101,6 +102,9 @@ def _record_to_dict(
 
     ``prs`` is the list of cached PullRequestInfo for the session's authored
     branches (see :func:`_resolve_prs`).  Serialised to a list of dicts on the wire.
+
+    ``summary`` is the one-line status summary for the session (from
+    ``orch.latest_summary``). Defaults to "" when omitted or unavailable.
     """
     return {
         "id": record.id,
@@ -126,6 +130,7 @@ def _record_to_dict(
         "activeGoal": getattr(record, "active_goal", None),
         "prs": [p.to_dict() for p in (prs or [])],
         "usageUnverified": getattr(record, "usage_unverified", False),
+        "summary": summary or "",
     }
 
 
@@ -174,6 +179,21 @@ async def _resolve_prs(orch, record):
     return res or []
 
 
+async def _resolve_summary(orch, record, viewing: bool) -> str:
+    """Resolve a record's one-line status summary via ``orch.latest_summary``.
+
+    Returns "" for an orchestrator shim without ``latest_summary`` (never raises),
+    mirroring the defensiveness of :func:`_resolve_prs`.
+    """
+    fn = getattr(orch, "latest_summary", None)
+    if fn is None:
+        return ""
+    res = fn(record.id, viewing=viewing)
+    if inspect.isawaitable(res):
+        res = await res
+    return res or ""
+
+
 def _get_orchestrator(request: Request) -> "InProcessOrchestratorAdapter":
     return request.app.state.sessions
 
@@ -191,14 +211,16 @@ async def list_sessions(
     """Return all in-memory session records."""
     orch = _get_orchestrator(request)
     records = await orch.list_sessions()
-    # Read each session's repo (live, from its cwd), cached suggestions, and PR
-    # list in parallel.
+    viewing = request.query_params.get("viewing") in ("1", "true", "yes")
+    # Read each session's repo (live, from its cwd), cached suggestions, PR list, and
+    # status summary in parallel.
     repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
     suggs = await asyncio.gather(*(orch.latest_suggestions(r.id) for r in records))
     prs = await asyncio.gather(*(_resolve_prs(orch, r) for r in records))
+    summaries = await asyncio.gather(*(_resolve_summary(orch, r, viewing) for r in records))
     return [
-        _record_to_dict(r, repo=repo, suggestions=s, prs=pr_list)
-        for r, repo, s, pr_list in zip(records, repos, suggs, prs)
+        _record_to_dict(r, repo=repo, suggestions=s, prs=pr_list, summary=summary)
+        for r, repo, s, pr_list, summary in zip(records, repos, suggs, prs, summaries)
     ]
 
 
