@@ -49,6 +49,12 @@ export function useSwipeAction({
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLElement>) => {
     if (!enabled) return
     const s = g.current
+    // Ignore a re-entrant pointerdown while a gesture is already in flight (a
+    // second finger, or a synthetic re-trigger): re-arming here would register a
+    // second window-listener triplet whose cleanup reference is lost, leaking the
+    // first set for the life of the page. The active gesture owns the pointer
+    // until its own pointerup/pointercancel/vertical-abort runs cleanup.
+    if (s.active) return
     s.startX = e.clientX
     s.startY = e.clientY
     s.width = e.currentTarget.offsetWidth

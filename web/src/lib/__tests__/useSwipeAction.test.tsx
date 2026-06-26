@@ -69,6 +69,21 @@ describe('useSwipeAction', () => {
     expect(onCommit).toHaveBeenCalledWith('right') // flag cleared; second click acts
   })
 
+  it('ignores a re-entrant pointerdown mid-gesture (no start-point reset, no leak)', () => {
+    const onCommit = vi.fn()
+    render(<Probe onCommit={onCommit} />)
+    const fg = screen.getByTestId('fg'); widthed(fg, 300)
+    fireEvent.pointerDown(fg, { clientX: 200, clientY: 50 })
+    // A second pointerdown while the gesture is active must be ignored. Were it
+    // honored, the start point would jump to 50 and the move below would read as
+    // dx +10 (no commit). With the guard, start stays 200 → dx -140 → commit left.
+    fireEvent.pointerDown(fg, { clientX: 50, clientY: 50 })
+    fireEvent.pointerMove(window, { clientX: 60, clientY: 55 })
+    fireEvent.pointerUp(window, { clientX: 60, clientY: 55 })
+    expect(onCommit).toHaveBeenCalledTimes(1)
+    expect(onCommit).toHaveBeenCalledWith('left')
+  })
+
   it('does nothing when disabled', () => {
     const onCommit = vi.fn()
     render(<Probe onCommit={onCommit} enabled={false} />)

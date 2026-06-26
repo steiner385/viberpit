@@ -171,6 +171,9 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           <button
             type="button"
             aria-label={`Archive ${session.name}`}
+            // Hidden from assistive tech (not just tab order) until revealed, so a
+            // screen reader doesn't announce a phantom action behind every card.
+            aria-hidden={swipe.openSide !== 'right'}
             tabIndex={swipe.openSide === 'right' ? 0 : -1}
             onClick={() => { swipe.reset(); onClose(session.id) }}
             className={cn(
@@ -185,6 +188,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           <button
             type="button"
             aria-label={`Delete ${session.name}`}
+            aria-hidden={swipe.openSide !== 'left'}
             tabIndex={swipe.openSide === 'left' ? 0 : -1}
             onClick={() => { swipe.reset(); onDelete(session.id) }}
             className={cn(
