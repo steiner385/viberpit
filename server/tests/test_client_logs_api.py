@@ -54,3 +54,24 @@ def test_requires_auth():
     app.include_router(router)  # no dependency override → real auth
     r = TestClient(app).post("/api/client-logs", json={"entries": []})
     assert r.status_code in (401, 403)
+
+
+def test_rate_limit_returns_429_with_retry_after(client):
+    # Drain the bucket: capacity is 60, so the 61st request in a burst is limited.
+    from server.api.ratelimit import _client_logs_limiter
+    _client_logs_limiter._buckets.clear()  # isolate from other tests
+    body = {"entries": [{"level": "error", "msg": "x"}]}
+    last = None
+    for _ in range(61):
+        last = client.post("/api/client-logs", json=body)
+    assert last.status_code == 429
+    assert int(last.headers["Retry-After"]) >= 1
+    _client_logs_limiter._buckets.clear()  # leave clean state for other tests
+
+
+def test_within_limit_still_accepted(client):
+    from server.api.ratelimit import _client_logs_limiter
+    _client_logs_limiter._buckets.clear()
+    r = client.post("/api/client-logs", json={"entries": [{"level": "error", "msg": "x"}]})
+    assert r.status_code == 202
+    _client_logs_limiter._buckets.clear()
