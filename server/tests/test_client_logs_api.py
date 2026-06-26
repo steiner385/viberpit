@@ -10,6 +10,10 @@ from server.api.client_logs import router
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("CCSWITCH_DEV", "1")
+    # Reset the shared per-identity rate-limiter so each test starts with a full
+    # bucket — isolation is structural, not dependent on intra-file test ordering.
+    from server.api.ratelimit import _client_logs_limiter
+    _client_logs_limiter._buckets.clear()
     app = FastAPI()
     # Override auth dependency to a fixed identity for the test.
     from server.auth.middleware import current_identity
@@ -57,21 +61,16 @@ def test_requires_auth():
 
 
 def test_rate_limit_returns_429_with_retry_after(client):
-    # Drain the bucket: capacity is 60, so the 61st request in a burst is limited.
-    from server.api.ratelimit import _client_logs_limiter
-    _client_logs_limiter._buckets.clear()  # isolate from other tests
+    # The `client` fixture starts with a fresh bucket (capacity 60), so the 61st
+    # request in a burst is the first to be limited.
     body = {"entries": [{"level": "error", "msg": "x"}]}
     last = None
     for _ in range(61):
         last = client.post("/api/client-logs", json=body)
     assert last.status_code == 429
     assert int(last.headers["Retry-After"]) >= 1
-    _client_logs_limiter._buckets.clear()  # leave clean state for other tests
 
 
 def test_within_limit_still_accepted(client):
-    from server.api.ratelimit import _client_logs_limiter
-    _client_logs_limiter._buckets.clear()
     r = client.post("/api/client-logs", json={"entries": [{"level": "error", "msg": "x"}]})
     assert r.status_code == 202
-    _client_logs_limiter._buckets.clear()
