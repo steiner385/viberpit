@@ -46,6 +46,7 @@ vi.mock('@/api/hooks', () => ({
   usePendingDeploy: () => ({ data: { behind: false, commits: [], ci: 'green' } }),
   useDeployStatus: () => ({ data: { running: false, phases: {} } }),
   useStartDeploy: () => ({ mutate: vi.fn(), isPending: false }),
+  useAllPrs: vi.fn(() => ({ data: [] })),
   QK: {
     accounts: ['accounts'],
     sessions: ['sessions'],
@@ -156,14 +157,14 @@ describe('Dashboard — Archived tab', () => {
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: /accounts/i }))
   })
 
-  it('ArrowRight from Accounts moves focus to Archived', async () => {
+  it('ArrowRight from Accounts moves focus to Pipeline', async () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
 
     screen.getByRole('tab', { name: /accounts/i }).focus()
     await user.keyboard('{ArrowRight}')
 
-    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /archived/i }))
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /pipeline/i }))
   })
 
   it('ArrowRight from Archived wraps back to Sessions', async () => {

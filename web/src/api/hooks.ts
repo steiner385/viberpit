@@ -3,7 +3,7 @@ import { useMemo, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
-  DeployStatusResponse, PendingDeploy, DeployProgress,
+  DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
@@ -23,6 +23,7 @@ export const QK = {
   githubBranches: (repo?: string) => ['github-branches', repo] as const,
   settings: ['settings'] as const,
   sessionSearch: (q: string, scope: string = 'live') => ['session-search', scope, q] as const,
+  prs: ['prs'] as const,
 }
 
 export function useModels() {
@@ -498,5 +499,14 @@ export function useStartDeploy() {
   return useMutation<{ started: boolean; reason?: string }, ApiRequestError, void>({
     mutationFn: () => startDeploy(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['deploy', 'status'] }),
+  })
+}
+
+export function useAllPrs() {
+  return useQuery<PipelinePr[]>({
+    queryKey: QK.prs,
+    queryFn: () => api.get<PipelinePr[]>('/prs'),
+    staleTime: 5_000,
+    refetchInterval: 10_000,
   })
 }
