@@ -15,10 +15,11 @@ def _run(msgs):
 def test_simple_turn():
     msgs = [f.sys_init("s1"), f.stream_start(uuid="t1"),
             f.stream_text("Hello ", uuid="t1"), f.stream_text("there", uuid="t1"),
-            f.assistant(TextBlock(text="Hello there"), uuid="t1"), f.result(session_id="s1", uuid="t1")]
+            f.assistant(TextBlock(text="Hello there"), uuid="t1", model="claude-opus-4-8"),
+            f.result(session_id="s1", uuid="t1")]
     tr, out = _run(msgs)
     assert tr.session_id == "s1"
-    assert [type(e).__name__ for e in out] == ["TurnStart", "TextDelta", "TextDelta", "TurnEnd"]
+    assert [type(e).__name__ for e in out] == ["TurnStart", "TextDelta", "TextDelta", "TurnModel", "TurnEnd"]
     assert out[1].text == "Hello " and out[1].turn_id == out[0].turn_id == "t1"
 
 def test_init_emits_session_meta_with_model():
@@ -329,3 +330,38 @@ def test_ede_dropped_turn_gets_auto_resend_message_and_keeps_raw():
     assert "[ede_diagnostic]" in err.raw_message and "stop_reason=null" in err.raw_message
     # raw text is internal — never serialized to the wire
     assert "raw" not in err.to_wire()
+
+
+def test_assistant_emits_turn_model_main_thread():
+    msgs = [f.sys_init("s1", model="claude-opus-4-8"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text="hi"), uuid="t1", model="claude-opus-4-8"),
+            f.result(session_id="s1", uuid="t1")]
+    _, out = _run(msgs)
+    tms = [e for e in out if isinstance(e, ev.TurnModel)]
+    assert len(tms) == 1
+    assert tms[0].model == "claude-opus-4-8"
+    assert tms[0].turn_id == "t1"
+    assert tms[0].parent_tool_use_id is None
+
+def test_assistant_emits_turn_model_for_subagent():
+    msgs = [f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text="sub"), uuid="st1",
+                        parent_tool_use_id="task1", model="claude-haiku-4-5")]
+    _, out = _run(msgs)
+    tms = [e for e in out if isinstance(e, ev.TurnModel)]
+    assert len(tms) == 1
+    assert tms[0].model == "claude-haiku-4-5"
+    assert tms[0].parent_tool_use_id == "task1"
+
+def test_turn_model_deduped_within_turn():
+    msgs = [f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text="a"), uuid="t1", model="claude-opus-4-8"),
+            f.assistant(TextBlock(text="b"), uuid="t1", model="claude-opus-4-8"),
+            f.result(uuid="t1")]
+    _, out = _run(msgs)
+    assert len([e for e in out if isinstance(e, ev.TurnModel)]) == 1
+
+def test_turn_model_wire_shape():
+    e = ev.TurnModel("t1", "claude-opus-4-8", parent_tool_use_id="p1")
+    assert e.to_wire() == {"type": "turnModel", "turnId": "t1",
+                           "model": "claude-opus-4-8", "parentToolUseId": "p1"}
