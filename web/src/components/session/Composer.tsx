@@ -210,6 +210,10 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
         'border-t border-gray-200 dark:border-gray-700',
         'bg-white dark:bg-gray-900',
       )}
+      // Clear the mobile gesture/home bar: `h-dvh` extends behind it on
+      // edge-to-edge browsers, so without this the composer's last row is
+      // painted under the system bar and looks cut off. env() is 0 on desktop.
+      style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
     >
