@@ -1485,6 +1485,18 @@ class SessionOrchestrator:
             Path(rec.cwd).mkdir(parents=True, exist_ok=True)
             configdir.trust_project(rec.account, rec.cwd)
 
+            # Allocate a virtual X11 display for this session (if X11Manager wired
+            # in). Without this, a resumed/rehydrated session — the common path
+            # after a daemon restart detaches every live session — builds its driver
+            # with the display-injecting factory but x11.env_for() returns {}, so the
+            # claude subprocess launches with no DISPLAY and X rendering escapes the
+            # virtual viewport. start_display is idempotent (no-op if already leased).
+            if self._x11 is not None:
+                try:
+                    await self._x11.start_display(session_id)
+                except Exception:
+                    log.exception("session.display_start_failed id=%s", session_id)
+
             def _build(resume_arg):
                 return SessionDriver(
                     session_id,
