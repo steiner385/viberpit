@@ -37,6 +37,7 @@ from server.db import db_session
 from server.db.models import Session as DbSession
 from server.sessions import adopt as _adopt
 from server.sessions import deploy_snapshot as _deploy_snapshot
+from server.sessions.archive_move import move_into_archive
 from server.sessions import attachments as _attachments
 from server.sessions import dispatch
 from server.sessions import events as ev
@@ -2442,11 +2443,18 @@ class SessionOrchestrator:
 
         if cwd_path and cwd_path.exists():
             try:
-                await asyncio.to_thread(shutil.move, str(cwd_path), str(dest))
-                log.info(
-                    "session.archive id=%s moved cwd=%s to archive=%s",
-                    session_id, cwd_path, dest,
-                )
+                outcome = await asyncio.to_thread(move_into_archive, cwd_path, dest)
+                if outcome == "skipped:nospace":
+                    log.warning(
+                        "session.archive_move_skipped id=%s src=%s dest=%s — "
+                        "insufficient free space on archive disk; worktree left in place",
+                        session_id, cwd_path, dest,
+                    )
+                else:
+                    log.info(
+                        "session.archive id=%s moved cwd=%s to archive=%s (%s)",
+                        session_id, cwd_path, dest, outcome,
+                    )
             except Exception:
                 log.exception(
                     "session.archive_move_failed id=%s src=%s dest=%s",
@@ -2531,7 +2539,9 @@ class SessionOrchestrator:
         def _restore() -> None:
             if archive_path.exists():
                 original_cwd.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(archive_path), str(original_cwd))
+                # Same cross-device safety as archiving, but keep the whole tree
+                # (prune=()): unarchiving restores the worktree, it does not shed deps.
+                move_into_archive(archive_path, original_cwd, prune=())
             else:
                 # Archive folder missing — recreate an empty cwd so SDK can start.
                 original_cwd.mkdir(parents=True, exist_ok=True)
