@@ -1126,10 +1126,10 @@ class SessionOrchestrator:
         """Sorted distinct repos across all live sessions — the population to watch."""
         return sorted({r.repo for r in self._records.values() if r.repo})
 
-    def all_repos_stage_models(self) -> "dict[str, StageModel]":
+    def all_repos_stage_models(self) -> dict:
         """Per-repo StageModel for every watched repo (derived from CI/CD facts)."""
-        from server.pipeline.track import build_stage_model, StageModel  # noqa: F401
-        models: dict[str, StageModel] = {}
+        from server.pipeline.track import build_stage_model
+        models: dict = {}
         pop = self._pr_population.all()
         history = self._pr_population._store()
         for repo in list(pop.keys()):
