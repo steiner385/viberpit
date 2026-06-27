@@ -39,7 +39,7 @@ class PullRequestInfo:
     state: str   # 'open' | 'draft' | 'merged' | 'closed'
     checks: str  # 'passing' | 'failing' | 'pending' | 'none'
     title: str
-    deployed: bool = False  # merged AND live in the active production deployment
+    deployed: bool = False  # merged AND live in production (= "production" in deployed_envs)
     head_sha: str = ""
     is_draft: bool = False
     merged: bool = False
@@ -50,6 +50,7 @@ class PullRequestInfo:
     eta_seconds: int | None = None
     eta_percent: int | None = None
     eta_overdue: bool = False
+    deployed_envs: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +70,7 @@ class PullRequestInfo:
             "eta_seconds": self.eta_seconds,
             "eta_percent": self.eta_percent,
             "eta_overdue": self.eta_overdue,
+            "deployed_envs": list(self.deployed_envs),
         }
 
     @classmethod
@@ -91,6 +93,7 @@ class PullRequestInfo:
             eta_seconds=d.get("eta_seconds"),
             eta_percent=d.get("eta_percent"),
             eta_overdue=d.get("eta_overdue", False),
+            deployed_envs=tuple(d.get("deployed_envs", [])),
         )
 
 
@@ -158,9 +161,8 @@ def build_pr_query(pairs: list[tuple[str, str]]) -> str:
             f"orderBy: {{field: UPDATED_AT, direction: DESC}}) {{\n"
             f"    nodes {{ {_PR_NODE_FIELDS} }}\n"
             f"  }}\n"
-            f"  deployments(environments: [{json.dumps(PRODUCTION_ENVIRONMENT)}], "
-            f"orderBy: {{field: CREATED_AT, direction: DESC}}, first: 5) {{\n"
-            f"    nodes {{ commitOid latestStatus {{ state }} commit {{ committedDate }} }}\n"
+            f"  deployments(orderBy: {{field: CREATED_AT, direction: DESC}}, first: 30) {{\n"
+            f"    nodes {{ latestEnvironment commitOid latestStatus {{ state }} commit {{ committedDate }} }}\n"
             f"  }}\n"
             f"}}"
         )
@@ -178,9 +180,8 @@ def build_population_query(repo: str, merged_since: str) -> str:
     return (
         "query {\n"
         f"  repo: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
-        f"    deployments(environments: [{json.dumps(PRODUCTION_ENVIRONMENT)}], "
-        f"orderBy: {{field: CREATED_AT, direction: DESC}}, first: 5) {{\n"
-        f"      nodes {{ commitOid latestStatus {{ state }} commit {{ committedDate }} }}\n"
+        f"    deployments(orderBy: {{field: CREATED_AT, direction: DESC}}, first: 30) {{\n"
+        f"      nodes {{ latestEnvironment commitOid latestStatus {{ state }} commit {{ committedDate }} }}\n"
         f"    }}\n"
         f"    pullRequests(states: OPEN, first: 100, "
         f"orderBy: {{field: UPDATED_AT, direction: DESC}}) {{\n"
@@ -276,14 +277,14 @@ def parse_population_response(response: dict, repo: str) -> tuple[PullRequestInf
     """
     data = (response or {}).get("data") or {}
     repo_node = data.get("repo") or {}
-    active_date = _active_deploy_date(repo_node)
+    active_dates = _active_deploy_dates(repo_node)
     open_prs = ((repo_node.get("pullRequests") or {}).get("nodes")) or []
     merged_prs = ((data.get("merged") or {}).get("nodes")) or []
     by_number: dict[int, PullRequestInfo] = {}
     for raw in (*open_prs, *merged_prs):
         if not raw:  # search() can return null union members
             continue
-        info = replace(_to_info(raw, active_date), repo=repo)
+        info = replace(_to_info(raw, active_dates), repo=repo)
         by_number.setdefault(info.number, info)
     return tuple(by_number.values())
 
@@ -346,22 +347,30 @@ def _rollup_state(pr: dict) -> str | None:
     return rollup.get("state") if rollup else None
 
 
-def _active_deploy_date(node: dict) -> str | None:
-    """committedDate of the newest production deployment whose latest status is SUCCESS."""
+def _active_deploy_dates(node: dict) -> dict[str, str]:
+    """Map env name → committedDate of that env's newest SUCCESS deployment."""
     nodes = ((node.get("deployments") or {}).get("nodes")) or []
-    for dep in nodes:  # already ordered newest-first by the query
-        status = (dep.get("latestStatus") or {}).get("state")
-        if status == "SUCCESS":
-            return (dep.get("commit") or {}).get("committedDate")
-    return None
+    out: dict[str, str] = {}
+    for dep in nodes:  # newest-first
+        env = dep.get("latestEnvironment")
+        if not env or env in out:
+            continue
+        if (dep.get("latestStatus") or {}).get("state") != "SUCCESS":
+            continue
+        committed = (dep.get("commit") or {}).get("committedDate")
+        if committed:
+            out[env] = committed
+    return out
 
 
-def _is_deployed(pr: dict, state: str, active_date: str | None) -> bool:
+def _is_deployed_envs(pr: dict, state: str, active_dates: dict[str, str]) -> tuple[str, ...]:
     merged_at = pr.get("mergedAt")
-    return bool(state == "merged" and merged_at and active_date and merged_at <= active_date)
+    if state != "merged" or not merged_at:
+        return ()
+    return tuple(env for env, date in active_dates.items() if date and merged_at <= date)
 
 
-def _to_info(pr: dict, active_date: str | None) -> PullRequestInfo:
+def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
     state = _classify_state(pr.get("state", ""), bool(pr.get("isDraft")))
     checks = _classify_checks(_rollup_state(pr))
     merged_at = pr.get("mergedAt")
@@ -369,19 +378,21 @@ def _to_info(pr: dict, active_date: str | None) -> PullRequestInfo:
         stage = derive_merged_stage(merged_at, datetime.now(timezone.utc)) or ""
     else:
         stage = derive_open_stage(checks, pr.get("mergeStateStatus"), bool(pr.get("isDraft")))
+    deployed_envs = _is_deployed_envs(pr, state, active_dates)
     return PullRequestInfo(
         number=pr["number"],
         url=pr["url"],
         state=state,
         checks=checks,
         title=pr.get("title", ""),
-        deployed=_is_deployed(pr, state, active_date),
+        deployed=("production" in deployed_envs),
         head_sha=pr.get("headRefOid", ""),
         is_draft=bool(pr.get("isDraft")),
         merged=(state == "merged"),
         updated_at=pr.get("updatedAt", ""),
         checks_detail=_checks_detail(pr),
         stage=stage,
+        deployed_envs=deployed_envs,
     )
 
 
@@ -394,12 +405,12 @@ def parse_pr_response(
         node = data.get(_alias(i))
         if not node:
             continue
-        active_date = _active_deploy_date(node)
+        active_dates = _active_deploy_dates(node)
         prs = ((node.get("pullRequests") or {}).get("nodes")) or []
         best: PullRequestInfo | None = None
         best_sort: tuple | None = None
         for raw in prs:
-            info = _to_info(raw, active_date)
+            info = _to_info(raw, active_dates)
             # Rank ascending, then newest updatedAt first (negate via reverse compare).
             sort_key = (_STATE_RANK.get(info.state, 99), _neg_iso(raw.get("updatedAt", "")))
             if best_sort is None or sort_key < best_sort:
