@@ -7,6 +7,7 @@ output as a cursor — it never re-derives stages (constitution VI).
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -56,6 +57,29 @@ class NodeStatus:
     @classmethod
     def from_dict(cls, d: dict) -> "NodeStatus":
         return cls(id=d["id"], state=d["state"])
+
+
+# Conventional deploy-environment ordering. Lower rank = earlier in the pipeline.
+_ENV_RANK = [
+    (("dev", "development"), 0),
+    (("test", "qa", "integration"), 1),
+    (("stage", "staging", "preprod", "uat", "sandbox"), 2),
+    (("prod", "production", "live", "release"), 3),
+]
+
+
+def _env_rank(env: str) -> int:
+    low = env.lower()
+    for keywords, rank in _ENV_RANK:
+        if any(k in low for k in keywords):
+            return rank
+    return 2  # unknown envs cluster with staging-tier, alphabetical tie-break
+
+
+def order_deploy_envs(envs: Iterable[str]) -> list[str]:
+    """Deterministic conventional ordering: dev/qa → staging/unknown → prod, alpha tie-break."""
+    uniq = sorted(set(envs))
+    return sorted(uniq, key=lambda e: (_env_rank(e), e))
 
 
 def build_stage_model(
