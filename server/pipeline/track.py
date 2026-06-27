@@ -90,20 +90,30 @@ _STAGE_TO_NODE = {"": "ci", "parked": "ci", "ci": "ci", "ready": "ready",
 def place_pr_on_track(pr: "PullRequestInfo", model: StageModel) -> list["NodeStatus"]:
     ids = [n.id for n in model.nodes]
     order_by_id = {n.id: n.order for n in model.nodes}
-    kind_by_id = {n.id: n.kind for n in model.nodes}
+    sentinel = len(model.nodes)  # one past the last node — everything is "done"
 
     target = _STAGE_TO_NODE.get(pr.stage, "ci")
     # Clamp to the nearest existing earlier node if the target node isn't in this model.
     if target not in order_by_id:
         target = "ci" if "ci" in order_by_id else ids[0]
     cursor = order_by_id[target]
-    # A merged+deployed PR has cleared the deploy node too.
-    if pr.stage == "merged" and pr.deployed and "merged" in order_by_id:
-        cursor = order_by_id["merged"]
+
+    # For merged PRs, placement depends on the deploy node presence and deployed flag.
+    if pr.stage == "merged":
+        if pr.deployed:
+            # PR is live in production — all nodes are done, including merged.
+            cursor = sentinel
+        elif "deploy:production" in order_by_id:
+            # Merged but awaiting deploy — cursor sits at the deploy node.
+            cursor = order_by_id["deploy:production"]
+        # else: no deploy node — cursor stays at "merged" (merged is active)
 
     out: list[NodeStatus] = []
     for n in model.nodes:
         if n.order < cursor:
+            state = "done"
+        elif cursor == sentinel:
+            # sentinel: all nodes are done (handled above, but guard just in case)
             state = "done"
         elif n.order == cursor:
             failing = pr.checks == "failing" and n.kind in ("ci", "queue")
