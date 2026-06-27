@@ -155,8 +155,18 @@ class DaemonClient:
                         self._ready[stream].set()
                     async for raw in ws:
                         frame = json.loads(raw)
-                        if frame.get("type") == proto.EVENT:
+                        ftype = frame.get("type")
+                        if ftype == proto.EVENT:
                             self._deliver(frame["stream"], frame["event"], frame.get("seq"))
+                        elif ftype == proto.GAP:
+                            # The daemon's in-memory replay couldn't cover our resume anchor
+                            # (issue #185): `lost` events were evicted before we reconnected.
+                            # Surface it loudly — the in-session view for this stream is now
+                            # behind durable storage and should be resynced from the transcript.
+                            log.warning(
+                                "ipc: replay gap on %s — %s event(s) lost before seq %s; "
+                                "in-memory view is incomplete (resync from disk)",
+                                frame.get("stream"), frame.get("lost"), frame.get("oldest"))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — drop/connect failures → retry

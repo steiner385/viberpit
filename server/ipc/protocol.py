@@ -6,6 +6,7 @@ PROTOCOL_VERSION = 1
 EVENT = "event"
 SUBSCRIBE = "subscribe"
 UNSUBSCRIBE = "unsubscribe"
+GAP = "gap"
 
 
 def rpc_response_ok(req_id: str, result: dict) -> dict:
@@ -22,6 +23,15 @@ def event_frame(stream: str, event: dict, seq: int) -> dict:
 
 def subscribe_frame(stream: str, since: int | None = None) -> dict:
     return {"type": SUBSCRIBE, "stream": stream, "since": since}
+
+
+def gap_frame(stream: str, *, lost: int, oldest: int) -> dict:
+    """Control frame: the subscriber's ``since`` anchor predates the oldest event
+    still in the daemon's replay buffer, so ``lost`` events (seq since+1 .. oldest-1)
+    were evicted and can't be replayed from memory. The edge should resync that
+    stream from durable storage (transcript) rather than trust the in-memory replay.
+    """
+    return {"type": GAP, "stream": stream, "lost": lost, "oldest": oldest}
 
 
 def unsubscribe_frame(stream: str) -> dict:
