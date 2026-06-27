@@ -49,15 +49,15 @@ describe('PipelineBoard', () => {
       <PipelineBoard
         prs={[
           pr({ number: 1, repo: 'aaa/good', stage: 'ready', checks: 'passing' }),
-          pr({ number: 2, repo: 'bbb/broken', stage: 'ci', checks: 'failing' }),
+          pr({ number: 2, repo: 'zzz/broken', stage: 'ci', checks: 'failing' }),
         ]}
-        stageModels={{ 'aaa/good': ciModel, 'bbb/broken': ciModel }}
+        stageModels={{ 'aaa/good': ciModel, 'zzz/broken': ciModel }}
       />,
     )
     const headers = screen.getAllByRole('button')
     const names = headers.map((h) => h.textContent ?? '')
     const goodIdx = names.findIndex((n) => n.includes('aaa/good'))
-    const brokenIdx = names.findIndex((n) => n.includes('bbb/broken'))
+    const brokenIdx = names.findIndex((n) => n.includes('zzz/broken'))
     expect(brokenIdx).toBeLessThan(goodIdx)
   })
 

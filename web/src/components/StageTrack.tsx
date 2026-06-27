@@ -47,15 +47,15 @@ export function StageTrack({ model, states, etaSeconds, etaOverdue }: StageTrack
   }
 
   // Determine the nodes to render.
-  const nodes: { id: string; label: string }[] = model ? model.nodes : SKELETON_NODES
+  const nodes: { id: string; label: string; kind?: string }[] = model ? model.nodes : SKELETON_NODES
 
   return (
-    <div className="flex items-center gap-0" aria-label="Stage track">
+    <div className="flex items-center gap-0" role="img" aria-label="Stage track">
       {nodes.map((node, idx) => {
         const state: NodeState = stateById[node.id] ?? 'pending'
         const isFirst = idx === 0
         const prev = idx > 0 ? (stateById[nodes[idx - 1].id] ?? 'pending') : 'pending'
-        const isCiNode = node.id === 'ci'
+        const isCiNode = node.kind === 'ci'
         const showEta = isCiNode && state === 'active' && (etaSeconds != null || etaOverdue)
 
         return (
