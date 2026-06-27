@@ -7,6 +7,11 @@ import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
 import type { ReauthState } from '@/api/types'
 
+vi.mock('../ReauthBrowserPanel', () => ({
+  ReauthBrowserPanel: ({ vncSession }: { vncSession: string }) =>
+    <div data-testid="reauth-vnc">{vncSession}</div>,
+}))
+
 vi.mock('@/api/hooks', () => ({
   useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
@@ -184,21 +189,40 @@ describe('AccountRow — Re-authenticate button', () => {
     expect(reauthMutate).toHaveBeenCalledWith('kindash', expect.anything())
   })
 
-  it('shows "on the host machine" in the status line when running', async () => {
+  it('shows "on the host screen" fallback when running without a vncSession', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
     vi.mocked(hooks.useReauthStatus).mockReturnValue({
-      data: makeReauthState({ state: 'running' }),
+      data: makeReauthState({ state: 'running', vncSession: null }),
       isLoading: false,
     } as ReturnType<typeof hooks.useReauthStatus>)
 
     render(<Dashboard />, { wrapper })
     await switchToAccountsTab(user)
 
-    expect(screen.getByText(/on the host machine/i)).toBeInTheDocument()
+    expect(screen.getByText(/on the host screen/i)).toBeInTheDocument()
+    expect(screen.queryByTestId('reauth-vnc')).not.toBeInTheDocument()
+  })
+
+  it('shows the VNC panel and in-page copy when running with a vncSession', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useAccounts).mockReturnValue({
+      data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useReauthStatus).mockReturnValue({
+      data: makeReauthState({ state: 'running', vncSession: '__reauth__' }),
+      isLoading: false,
+    } as ReturnType<typeof hooks.useReauthStatus>)
+
+    render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
+
+    expect(await screen.findByTestId('reauth-vnc')).toHaveTextContent('__reauth__')
+    expect(screen.getByText(/sign in to claude in the window below/i)).toBeInTheDocument()
   })
 
   it('shows Cancel button while running', async () => {
@@ -238,7 +262,7 @@ describe('AccountRow — Re-authenticate button', () => {
 
     // Optimistically: the status line should vanish (back to idle locally)
     await waitFor(() => {
-      expect(screen.queryByText(/on the host machine/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/on the host screen/i)).not.toBeInTheDocument()
     })
   })
 

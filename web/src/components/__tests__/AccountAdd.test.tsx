@@ -164,7 +164,7 @@ describe('AccountsManager — Add account', () => {
     await user.type(screen.getByLabelText(/account name/i), 'work')
     await user.click(screen.getByRole('button', { name: /^add$/i }))
 
-    expect(screen.getByText(/on the host machine/i)).toBeInTheDocument()
+    expect(screen.getByText(/on the host screen/i)).toBeInTheDocument()
   })
 
   it('clicking Cancel during a running add calls the cancel mutation', async () => {
