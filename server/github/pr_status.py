@@ -168,10 +168,14 @@ def build_pr_query(pairs: list[tuple[str, str]]) -> str:
 
 
 def build_population_query(repo: str, merged_since: str) -> str:
-    """One GraphQL doc: all OPEN PRs (incl. drafts) + production deployments for
-    ``repo``, plus a search() for PRs merged on/after ``merged_since`` (ISO date).
+    """One GraphQL doc: all OPEN PRs (incl. drafts) + recent deployments across
+    all environments for ``repo``, plus a search() for PRs merged on/after
+    ``merged_since`` (ISO date).
 
     Strings are JSON-encoded so a repo/owner/name can't break the literal.
+    NOTE: deployments are capped at first:30 across ALL environments — on a very
+    busy repo, one env's active deploy can be pushed out of the window by churn
+    in another (an accepted Option-A bound; full env enumeration is deferred).
     """
     owner, _, name = repo.partition("/")
     merged_q = f"repo:{repo} is:pr is:merged merged:>={merged_since}"
