@@ -3,35 +3,19 @@ import { useNavigate } from 'react-router-dom'
 import { Wrench, SquareTerminal } from 'lucide-react'
 import { GroupHeader } from './GroupHeader'
 import { PrPill } from './PrPill'
-import { useAllPrs, useFixPr } from '@/api/hooks'
+import { StageTrack } from './StageTrack'
+import { useAllPrs, useFixPr, useStageModels } from '@/api/hooks'
 import { isActionablePrState } from '@/session/prStatus'
-import type { PipelinePr } from '@/api/types'
-
-/** Format a positive seconds value as a human-readable ETA string: ~45s, ~12m, ~1h5m. */
-export function formatEta(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)}s`
-  const m = Math.floor(seconds / 60)
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  const rem = m % 60
-  return rem === 0 ? `${h}h` : `${h}h${rem}m`
-}
-
-// Stage sections in urgency order; '' / unknown stages are dropped.
-const STAGE_SECTIONS: { key: string; label: string }[] = [
-  { key: 'parked', label: 'Parked' },
-  { key: 'ci', label: 'In CI' },
-  { key: 'ready', label: 'Ready' },
-  { key: 'queue', label: 'Queue' },
-  { key: 'merged', label: 'Merged' },
-]
+import type { PipelinePr, StageModel } from '@/api/types'
 
 export function PipelineBoard({
   prs,
+  stageModels,
   onOpenSession,
   onFixPr,
 }: {
   prs: PipelinePr[]
+  stageModels: Record<string, StageModel>
   onOpenSession?: (sessionId: string) => void
   onFixPr?: (sessionId: string, number: number) => void
 }) {
@@ -46,21 +30,37 @@ export function PipelineBoard({
     )
   }
 
+  // Group PRs by repo.
+  const byRepo: Record<string, PipelinePr[]> = {}
+  for (const p of prs) {
+    const repo = p.repo ?? ''
+    if (!byRepo[repo]) byRepo[repo] = []
+    byRepo[repo].push(p)
+  }
+
+  // Sort repos: failing-PR repos first, then alphabetically.
+  const repos = Object.keys(byRepo).sort((a, b) => {
+    const aFailing = byRepo[a].some((p) => p.checks === 'failing')
+    const bFailing = byRepo[b].some((p) => p.checks === 'failing')
+    if (aFailing !== bFailing) return bFailing ? 1 : -1
+    return a.localeCompare(b)
+  })
+
   return (
     <div className="space-y-3">
-      {STAGE_SECTIONS.map(({ key, label }) => {
-        const rows = prs.filter((p) => (p.stage ?? '') === key)
-        if (rows.length === 0) return null
+      {repos.map((repo) => {
+        const rows = byRepo[repo]
+        const model = stageModels[repo]
         return (
-          <section key={key}>
+          <section key={repo}>
             <GroupHeader
-              groupKey={`stage-${key}`}
-              label={label}
+              groupKey={`repo-${repo}`}
+              label={repo}
               count={rows.length}
-              collapsed={!!collapsed[key]}
-              onToggle={() => toggle(key)}
+              collapsed={!!collapsed[repo]}
+              onToggle={() => toggle(repo)}
             />
-            {!collapsed[key] && (
+            {!collapsed[repo] && (
               <ul className="mt-1 space-y-1">
                 {rows.map((p) => {
                   const canFix =
@@ -78,17 +78,13 @@ export function PipelineBoard({
                         className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-muted/60 cursor-pointer"
                       >
                         <PrPill pr={p} />
-                        <span className="text-xs text-muted-foreground tabular-nums">
-                          {p.repo}
-                        </span>
                         <span className="truncate text-sm">{p.title}</span>
-                        {p.stage === 'ci' && (
-                          p.eta_overdue
-                            ? <span className="ml-1 shrink-0 text-xs text-destructive">overdue</span>
-                            : p.eta_seconds != null
-                              ? <span className="ml-1 shrink-0 text-xs text-muted-foreground">~{formatEta(p.eta_seconds)}</span>
-                              : null
-                        )}
+                        <StageTrack
+                          model={model}
+                          states={p.node_states}
+                          etaSeconds={p.eta_seconds}
+                          etaOverdue={p.eta_overdue}
+                        />
                         {p.session && (
                           <span
                             data-testid={`pipeline-session-${p.number}`}
@@ -130,10 +126,12 @@ export function PipelineBoard({
 export function PipelineView() {
   const navigate = useNavigate()
   const { data: prs = [] } = useAllPrs()
+  const { data: stageModels = {} } = useStageModels()
   const fixPr = useFixPr()
   return (
     <PipelineBoard
       prs={prs}
+      stageModels={stageModels}
       onOpenSession={(id) => navigate(`/session/${id}`)}
       onFixPr={(id, number) => fixPr.mutate({ id, number })}
     />

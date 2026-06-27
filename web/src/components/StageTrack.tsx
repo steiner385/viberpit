@@ -1,7 +1,7 @@
 import { Check, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { StageModel, NodeState } from '@/api/types'
-import { formatEta } from './PipelineView'
+import { formatEta } from '@/lib/formatEta'
 
 // Fallback skeleton shown when no model is available yet.
 const SKELETON_NODES = [
