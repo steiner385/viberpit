@@ -68,6 +68,12 @@ def register_orchestrator_rpc(app, orch) -> None:
             items = await items
         return {"prs": [p.to_dict() for p in items]}
 
+    async def all_repos_stage_models(params: dict) -> dict:
+        models = orch.all_repos_stage_models()
+        if inspect.isawaitable(models):
+            models = await models
+        return {"models": {k: v.to_dict() for k, v in models.items()}}
+
     register_rpc(app, "ensure_driver", ensure_driver)
     register_rpc(app, "list_sessions", list_sessions)
     register_rpc(app, "get_session", get_session)
@@ -76,6 +82,7 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "pr_for", pr_for)
     register_rpc(app, "prs_for", prs_for)
     register_rpc(app, "all_prs", all_prs)
+    register_rpc(app, "all_repos_stage_models", all_repos_stage_models)
 
     async def _maybe_await(r):
         return await r if inspect.isawaitable(r) else r

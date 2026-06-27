@@ -122,6 +122,12 @@ class RemoteOrchestrator:
         r = await self._client.call("all_prs")
         return [PipelinePr.from_dict(d) for d in (r.get("prs") or [])]
 
+    async def all_repos_stage_models(self) -> "dict":
+        """Resolve per-repo StageModels from the daemon."""
+        from server.pipeline.track import StageModel
+        r = await self._client.call("all_repos_stage_models")
+        return {k: StageModel.from_dict(v) for k, v in (r.get("models") or {}).items()}
+
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
         """Inject the branch-aware fix prompt for PR #pr_number via the daemon.
 
