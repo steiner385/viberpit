@@ -112,9 +112,6 @@ def place_pr_on_track(pr: "PullRequestInfo", model: StageModel) -> list["NodeSta
     for n in model.nodes:
         if n.order < cursor:
             state = "done"
-        elif cursor == sentinel:
-            # sentinel: all nodes are done (handled above, but guard just in case)
-            state = "done"
         elif n.order == cursor:
             failing = pr.checks == "failing" and n.kind in ("ci", "queue")
             state = "failed" if failing else "active"

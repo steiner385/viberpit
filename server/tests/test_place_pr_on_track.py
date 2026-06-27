@@ -41,3 +41,21 @@ def test_merged_not_deployed_leaves_deploy_active():
     st = _states(_pr(stage="merged", state="merged", merged=True, deployed=False), m)
     assert st["deploy:production"] == "active"
     assert st["merged"] == "pending"
+
+
+def test_queue_pr_active_on_queue_node():
+    m = build_stage_model("o/r", ci_graph=None, has_queue=True, has_deploy=False)
+    st = _states(_pr(stage="queue", checks="passing"), m)
+    assert st == {"ci": "done", "ready": "done", "queue": "active", "merged": "pending"}
+
+
+def test_queue_pr_failing_lights_queue_failed():
+    m = build_stage_model("o/r", ci_graph=None, has_queue=True, has_deploy=False)
+    st = _states(_pr(stage="queue", checks="failing"), m)
+    assert st["queue"] == "failed"
+
+
+def test_merged_pr_no_deploy_node_merged_active():
+    m = build_stage_model("o/r", ci_graph=None, has_queue=False, has_deploy=False)
+    st = _states(_pr(stage="merged", state="merged", merged=True, deployed=False), m)
+    assert st == {"ci": "done", "ready": "done", "merged": "active"}
