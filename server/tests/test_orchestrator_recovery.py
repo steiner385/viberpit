@@ -232,6 +232,56 @@ def test_stall_does_not_consume_crash_respawn_budget():
     assert ("reassign", "s1", "kindash", "process_crash") in o.calls
 
 
+def test_check_stalls_extends_timeout_for_throttled_turn():
+    """A turn whose SDK stream is silent because the API is throttling it (driver
+    reports in_api_backoff) is alive, not wedged — the watchdog must give it the
+    extended throttle timeout, not interrupt at the base STALL_TIMEOUT. Issue #185."""
+    o = _make_orch()
+    interrupted = []
+    class _StubDriver:
+        _turn_active = True
+        last_progress_at = 0.0
+        in_api_backoff = True
+        async def interrupt(self): interrupted.append(True)
+    o._drivers["s1"] = _StubDriver()
+    # Silence just past the base timeout but within the extended throttle window.
+    asyncio.run(o._check_stalls(now=R.STALL_TIMEOUT + 1.0))
+    assert interrupted == []
+
+
+def test_check_stalls_interrupts_throttled_turn_past_extended_timeout():
+    """Throttling buys grace, not immunity: once silence exceeds even the extended
+    throttle timeout, a genuinely-hung turn is still interrupted."""
+    o = _make_orch()
+    interrupted = []
+    class _StubDriver:
+        _turn_active = True
+        last_progress_at = 0.0
+        in_api_backoff = True
+        async def interrupt(self): interrupted.append(True)
+    o._drivers["s1"] = _StubDriver()
+    asyncio.run(o._check_stalls(now=R.STALL_TIMEOUT_THROTTLED + 1.0))
+    assert interrupted == [True]
+
+
+def test_check_stalls_extends_timeout_for_quarantined_account():
+    """A turn on an account in recovery quarantine (recently 429'd) is presumed to be
+    waiting on the throttled account, not wedged — extend the timeout even if the
+    driver itself hasn't flipped in_api_backoff yet."""
+    o = _make_orch()
+    interrupted = []
+    class _StubDriver:
+        _turn_active = True
+        last_progress_at = 0.0
+        account = "kindash"
+        async def interrupt(self): interrupted.append(True)
+    o._drivers["s1"] = _StubDriver()
+    now = R.STALL_TIMEOUT + 1.0
+    o._recovery.quarantine("kindash", until=now + R.STALL_TIMEOUT)  # still in cooldown at `now`
+    asyncio.run(o._check_stalls(now=now))
+    assert interrupted == []
+
+
 def test_turn_dropped_replays_same_account_immediately():
     o = _make_orch(); rec = _rec(o)
     asyncio.run(o._recover_session(rec, "turn_dropped", None))

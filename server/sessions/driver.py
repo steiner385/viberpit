@@ -122,6 +122,23 @@ class SessionDriver:
         return bool(self._reg.pending(self.session_id)) or bool(
             self._qreg.pending(self.session_id))
 
+    @property
+    def in_api_backoff(self) -> bool:
+        """True when the current turn is waiting on API rate-limit/backoff rather than
+        genuinely wedged. The SDK can go silent during a 429/529 backoff without
+        emitting a per-wait ApiRetry, so its progress clock freezes even though the turn
+        is alive. The stall watchdog reads this to extend its timeout (issue #185).
+
+        Two signals: the retrying flag (an ApiRetry was seen and no real event has
+        resumed the turn yet) and an unexpired rate-limit reset stashed from a
+        RateLimit event.
+        """
+        if self._retrying:
+            return True
+        if self._last_rate_reset is not None and self._clock() < self._last_rate_reset:
+            return True
+        return False
+
     def _note_progress(self, e) -> None:
         """Advance _last_progress_at only when e carries real content.
 

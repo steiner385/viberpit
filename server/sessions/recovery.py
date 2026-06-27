@@ -26,6 +26,13 @@ CRASH_WINDOW: float = 120.0       # window (seconds) for tracking session crashe
 STALL_CAP: int = 3                # stall-watchdog interrupts per session within STALL_WINDOW
 STALL_WINDOW: float = 120.0       # window (seconds) for tracking session stalls
 STALL_TIMEOUT: float = float(os.environ.get("CCSWITCH_STALL_TIMEOUT_SEC", "300"))
+# Extended stall timeout for a turn whose silence is attributable to API throttling
+# (the driver is backing off, or its account is in recovery quarantine). The SDK can
+# go silent during a 429/529 backoff without surfacing a per-wait progress event, so a
+# throttled-but-alive turn must not be interrupted at the base timeout. It still gets
+# interrupted past this longer window so a genuine hang is eventually caught. Issue #185.
+STALL_TIMEOUT_THROTTLED: float = float(
+    os.environ.get("CCSWITCH_STALL_TIMEOUT_THROTTLED_SEC", "900"))
 RESEND_CAP: int = 3              # auto-resends of a dropped turn per session within RESEND_WINDOW
 RESEND_WINDOW: float = 120.0     # window (seconds) for tracking dropped-turn resends
 
