@@ -1126,6 +1126,22 @@ class SessionOrchestrator:
         """Sorted distinct repos across all live sessions — the population to watch."""
         return sorted({r.repo for r in self._records.values() if r.repo})
 
+    def all_repos_stage_models(self) -> "dict[str, StageModel]":
+        """Per-repo StageModel for every watched repo (derived from CI/CD facts)."""
+        from server.pipeline.track import build_stage_model, StageModel  # noqa: F401
+        models: dict[str, StageModel] = {}
+        pop = self._pr_population.all()
+        history = self._pr_population._store()
+        for repo in list(pop.keys()):
+            prs = pop.get(repo, ())
+            has_queue = any(p.stage == "queue" for p in prs)
+            has_deploy = any(p.deployed for p in prs)
+            ci_graph = history.ci_graph(repo) if history is not None else None
+            models[repo] = build_stage_model(
+                repo, ci_graph=ci_graph, has_queue=has_queue, has_deploy=has_deploy
+            )
+        return models
+
     def all_prs(self) -> "list[PipelinePr]":
         """Full PR population (all watched repos) joined to authoring sessions.
 
@@ -1134,6 +1150,7 @@ class SessionOrchestrator:
         urgency (parked→ci→ready→queue→merged), then PR number ascending.
         """
         from server.github.pr_status import PipelinePr
+        from server.pipeline.track import place_pr_on_track
         sess_by_pr: dict[tuple[str, int], tuple[str, str]] = {}
         for rec in self._records.values():
             if not rec.repo:
@@ -1141,11 +1158,14 @@ class SessionOrchestrator:
             for info in self.prs_for(rec.id):
                 sess_by_pr.setdefault((rec.repo, info.number), (rec.id, rec.name))
         order = {"parked": 0, "ci": 1, "ready": 2, "queue": 3, "merged": 4}
+        models = self.all_repos_stage_models()
         out: list[PipelinePr] = []
         for repo, prs in self._pr_population.all().items():
+            model = models.get(repo)
             for info in prs:
                 sid, sname = sess_by_pr.get((repo, info.number), (None, None))
-                out.append(PipelinePr(pr=info, session_id=sid, session_name=sname))
+                states = tuple(place_pr_on_track(info, model)) if model else ()
+                out.append(PipelinePr(pr=info, session_id=sid, session_name=sname, node_states=states))
         out.sort(key=lambda p: (order.get(p.pr.stage, 99), p.pr.number))
         return out
 
