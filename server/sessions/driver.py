@@ -589,6 +589,29 @@ class SessionDriver:
             self._last_suggestions = items
             await self._out.put(ev.Suggestions(self.session_id, turn_id, items))
 
+    async def generate_suggestions_now(self) -> list[str]:
+        """Generate next-prompt suggestions on demand (synchronously awaited).
+
+        Unlike _maybe_start_suggestions (fire-and-forget at turn boundary), this is
+        the sparkle's on-demand path: it ALWAYS asks the LLM fresh from the current
+        in-memory turn context and returns the items to the caller. Best-effort —
+        returns [] when no suggester is configured or generation yields nothing.
+        Caches the result into _last_suggestions and broadcasts a Suggestions event
+        so any attached viewers' dropdowns refresh too.
+        """
+        if self._suggester is None:
+            return []
+        user = self._last_user_text[:500]
+        assistant = "".join(self._last_assistant_parts)[-1500:]
+        context = f"User: {user}\n\nAssistant: {assistant}"
+        items = await self._suggester.generate(self.cwd, self.config_dir, context)
+        if items:
+            self._last_suggestions = items
+            await self._out.put(
+                ev.Suggestions(self.session_id, self._last_turn_id or "on-demand", items)
+            )
+        return list(items or [])
+
     def seed_idle_suggestions(self, user_text: str, assistant_text: str) -> None:
         """Generate suggestions for a session resumed into an idle state.
 

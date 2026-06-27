@@ -21,6 +21,7 @@ vi.mock('@/ws/client', async (importOriginal) => {
 })
 
 vi.mock('@/api/hooks', () => ({
+  useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useAccounts: vi.fn(), useSessions: vi.fn(), useCreateSession: vi.fn(),
   useRenameSession: vi.fn(), useCloseSession: vi.fn(), useRefreshAccount: vi.fn(),
   useUpdateAccountNickname: vi.fn(), useDeleteAccount: vi.fn(), useGithubRepos: vi.fn(),

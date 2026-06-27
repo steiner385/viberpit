@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import { useSettings, useFixPr } from '@/api/hooks'
+import { useSettings, useFixPr, useGenerateSuggestions } from '@/api/hooks'
 import { SessionCard } from './SessionCard'
 import { GroupedList } from './GroupedList'
 import { EmptyState } from './EmptyState'
@@ -78,6 +78,7 @@ export function SessionList({
 }: SessionListProps) {
   const { data: appSettings } = useSettings()
   const fixPr = useFixPr()
+  const genSuggestions = useGenerateSuggestions()
 
   if (isLoading) {
     return (
@@ -132,6 +133,7 @@ export function SessionList({
       onClose={onClose}
       onDelete={onDelete}
       onQuickResume={onQuickResume}
+      onGenerateSuggestion={(id) => genSuggestions.mutateAsync({ id })}
       onNavigate={onNavigate}
       onExit={onExit}
       prAutofixMode={appSettings?.prAutofixMode}

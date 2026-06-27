@@ -40,6 +40,7 @@ class InProcessOrchestratorAdapter:
     async def list_sessions(self, *a, **k): return await _maybe_await(self._orch.list_sessions(*a, **k))
     async def get_session(self, *a, **k): return await _maybe_await(self._orch.get_session(*a, **k))
     async def latest_suggestions(self, *a, **k): return await _maybe_await(self._orch.latest_suggestions(*a, **k))
+    async def generate_suggestions_now(self, *a, **k): return await _maybe_await(self._orch.generate_suggestions_now(*a, **k))
     async def latest_summary(self, *a, **k): return await _maybe_await(self._orch.latest_summary(*a, **k))
     async def transcript_path(self, *a, **k): return await _maybe_await(self._orch.transcript_path(*a, **k))
     async def _resolve_transcript_path(self, *a, **k): return await _maybe_await(self._orch._resolve_transcript_path(*a, **k))

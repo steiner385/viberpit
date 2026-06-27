@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { Composer } from './Composer'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
 
@@ -104,30 +104,33 @@ describe('Composer sparkle button', () => {
     expect(resume.querySelector('.lucide-play')).not.toBeInTheDocument()
   })
 
-  it('existing suggestion: play sends it immediately', () => {
+  it('sparkle ALWAYS asks the LLM and sends the top freshly-generated suggestion', async () => {
     const onPrompt = vi.fn()
-    renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['Run the tests', 'Commit it'], onPrompt })
+    const onRequestSuggestions = vi.fn().mockResolvedValue(['Generated next step', 'Another'])
+    // A stale cached suggestion must be ignored — the sparkle generates fresh.
+    renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['stale cached'], onPrompt, onRequestSuggestions })
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
-    expect(onPrompt).toHaveBeenCalledWith('Run the tests', [])
+    await waitFor(() => expect(onRequestSuggestions).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(onPrompt).toHaveBeenCalledWith('Generated next step', []))
   })
 
-  it('no suggestion: play prefills "continue" (focused), does not send', () => {
+  it('empty generation: sparkle sends nothing and never falls back to "continue"', async () => {
     const onPrompt = vi.fn()
-    renderComposer({ status: { state: 'done', count: 0 }, suggestions: [], onPrompt })
+    const onRequestSuggestions = vi.fn().mockResolvedValue([])
+    renderComposer({ status: { state: 'done', count: 0 }, suggestions: [], onPrompt, onRequestSuggestions })
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
+    await waitFor(() => expect(onRequestSuggestions).toHaveBeenCalled())
     const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
-    expect(textarea.value).toBe('continue')
     expect(onPrompt).not.toHaveBeenCalled()
-    // prefill focuses the box so the user can immediately edit / press Enter
-    expect(document.activeElement).toBe(textarea)
+    expect(textarea.value).toBe('') // no hard-coded "continue" prefill
   })
 
-  it('dropdown surfaces leftover dynamic suggestions and picking sends that item', () => {
+  it('dropdown surfaces all cached dynamic suggestions and picking sends that item', () => {
     const onPrompt = vi.fn()
     renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['First', 'Second'], onPrompt })
     fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Second' }))
-    expect(onPrompt).toHaveBeenCalledWith('Second', [])
+    fireEvent.click(screen.getByRole('menuitem', { name: 'First' }))
+    expect(onPrompt).toHaveBeenCalledWith('First', [])
   })
 
   it('quick-replies dropdown is available with no backend suggestions', () => {
@@ -149,8 +152,8 @@ describe('Composer sparkle button', () => {
   it('lists dynamic suggestions above the canned list, separated by a divider', () => {
     renderComposer({ status: { state: 'done', count: 0 }, suggestions: ['First', 'Second'] })
     fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
+    expect(screen.getByRole('menuitem', { name: 'First' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Second' })).toBeInTheDocument()
-    expect(screen.queryByRole('menuitem', { name: 'First' })).not.toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'continue' })).toBeInTheDocument()
     expect(screen.getByRole('separator')).toBeInTheDocument()
   })

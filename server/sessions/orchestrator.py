@@ -1838,6 +1838,55 @@ class SessionOrchestrator:
         finally:
             self._suggest_inflight.discard(session_id)
 
+    async def generate_suggestions_now(self, session_id: str) -> list[str]:
+        """Generate next-prompt suggestions on demand and return them.
+
+        Backs the sparkle's "always generate a new response via LLM" action. A live
+        (attached) session generates from the driver's in-memory turn context; a
+        detached idle/done session generates from its on-disk transcript (the same
+        throwaway resume-less query the passive path uses, so no session is resumed
+        merely to suggest). Best-effort: returns [] when no suggester is configured,
+        the session is unknown/not idle, or generation yields nothing — the caller
+        must never silently fall back to a hard-coded prompt.
+        """
+        if self._suggester is None:
+            return []
+
+        d = self._drivers.get(session_id)
+        if d is not None:
+            gen = getattr(d, "generate_suggestions_now", None)
+            if gen is None:
+                return list(getattr(d, "_last_suggestions", []) or [])
+            try:
+                return list(await gen() or [])
+            except Exception:
+                log.warning("on-demand suggestion generation failed id=%s", session_id,
+                            exc_info=True)
+                return []
+
+        rec = self._records.get(session_id)
+        if rec is None or rec.status not in ("done", "idle"):
+            return []
+        try:
+            path = await self._resolve_transcript_path(session_id)
+            if not path:
+                return []
+            events = await replay_events(path)
+            user_text, assistant_text = last_turn_context(events)
+            context = f"User: {user_text}\n\nAssistant: {assistant_text}"
+            items = await self._suggester.generate(rec.cwd, str(compose(rec.account)), context)
+            items = list(items or [])
+            # Refresh the mtime-keyed cache too so the next passive poll agrees.
+            try:
+                self._detached_suggestions[session_id] = (os.path.getmtime(path), items)
+            except Exception:
+                pass
+            return items
+        except Exception:
+            log.warning("on-demand detached suggestion generation failed id=%s", session_id,
+                        exc_info=True)
+            return []
+
     async def latest_summary(self, session_id: str, *, viewing: bool) -> str:
         """Latest cached one-line status summary for a session.
 
