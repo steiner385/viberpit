@@ -212,14 +212,16 @@ async def test_end_to_end_gap_closed_and_anchored():
 
 
 @pytest.mark.asyncio
-async def test_publish_warns_on_buffer_overflow(monkeypatch, caplog):
+async def test_publish_counts_overflow_without_per_event_warning(monkeypatch, caplog):
+    # Issue #185: benign ring eviction is COUNTED, not warned per event (log-flood guard).
     monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "2")
     app = create_daemon_app()
     async with serve_daemon_uds(app):
         with caplog.at_level(_logging.WARNING):
-            for i in range(4):
+            for i in range(4):  # seq 0..3; 2 oldest evicted
                 await app.state.publish("s1", {"type": str(i)})
-    assert any("buffer" in r.message.lower() and "s1" in r.message for r in caplog.records)
+    assert app.state.buffer_stats()["s1"]["dropped"] == 2
+    assert not any("dropping oldest" in r.message.lower() for r in caplog.records)
 
 
 @pytest.mark.asyncio

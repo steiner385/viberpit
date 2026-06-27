@@ -26,6 +26,24 @@ def create_daemon_app() -> FastAPI:
     _maxlen = int(os.environ.get("CCSWITCH_IPC_REPLAY_BUFFER", "256"))
     app.state.buffers = {}   # stream -> deque[(seq, event)]
     app.state.seqs = {}      # stream -> last assigned seq (int)
+    # Per-stream observability (issue #185): the ring buffer drops its oldest entry on
+    # every event past the cap — that's NORMAL for live delivery, so it must NOT log per
+    # event. We count instead. `dropped` only matters as a precursor to a RECONNECT GAP
+    # (a subscriber resuming from a seq older than the oldest retained entry), which IS
+    # signalled explicitly on subscribe.
+    app.state.stats = {}     # stream -> {"published", "dropped", "high_water"}
+
+    def _stat(stream: str) -> dict:
+        s = app.state.stats.get(stream)
+        if s is None:
+            s = app.state.stats[stream] = {"published": 0, "dropped": 0, "high_water": 0}
+        return s
+
+    def buffer_stats() -> dict:
+        # Snapshot copy so callers can't mutate internal counters.
+        return {k: dict(v) for k, v in app.state.stats.items()}
+
+    app.state.buffer_stats = buffer_stats
 
     def head_seq(stream: str) -> int:
         return app.state.seqs.get(stream, -1)
@@ -35,6 +53,7 @@ def create_daemon_app() -> FastAPI:
     def evict(stream: str) -> None:
         app.state.buffers.pop(stream, None)
         app.state.seqs.pop(stream, None)
+        app.state.stats.pop(stream, None)
 
     app.state.evict = evict
 
@@ -44,9 +63,14 @@ def create_daemon_app() -> FastAPI:
         buf = app.state.buffers.get(stream)
         if buf is None:
             buf = app.state.buffers[stream] = deque(maxlen=_maxlen)
+        st = _stat(stream)
+        st["published"] += 1
         if len(buf) == buf.maxlen:
-            log.warning("ipc: replay buffer for %s full — dropping oldest event", stream)
+            # Benign ring eviction — count it, don't flood the log (issue #185).
+            st["dropped"] += 1
         buf.append((seq, event))
+        if len(buf) > st["high_water"]:
+            st["high_water"] = len(buf)
         frame = proto.event_frame(stream, event, seq)
         for ws in list(app.state.subscribers.get(stream, ())):
             try:
@@ -84,6 +108,22 @@ def create_daemon_app() -> FastAPI:
                     since = frame.get("since")
                     buf = app.state.buffers.get(stream)
                     if buf:
+                        # Reconnect-gap detection (issue #185): a resume anchor (since >= 0)
+                        # that predates the oldest retained event means the in-between events
+                        # were evicted from the ring and CANNOT be replayed from memory. That
+                        # was previously silent — the edge would resume mid-stream and look
+                        # wedged/desynced. Signal it explicitly so the edge resyncs from disk.
+                        oldest_seq = buf[0][0]
+                        if since is not None and since >= 0 and since + 1 < oldest_seq:
+                            lost = oldest_seq - (since + 1)
+                            log.warning(
+                                "ipc: replay gap stream=%s since=%d oldest=%d lost=%d "
+                                "— edge must resync from disk", stream, since, oldest_seq, lost)
+                            try:
+                                await ws.send_text(_dumps(
+                                    proto.gap_frame(stream, lost=lost, oldest=oldest_seq)))
+                            except Exception:  # noqa: BLE001 — peer gone before replay
+                                continue
                         for seq, event in list(buf):
                             if since is None or seq > since:
                                 try:
@@ -107,7 +147,10 @@ def create_daemon_app() -> FastAPI:
     @app.get("/healthz")
     async def healthz() -> dict:
         from server.version import running_git_sha
-        return {"status": "ok", "sha": running_git_sha()}
+        # Include per-stream replay-buffer stats (issue #185) so operators can spot the
+        # streams that flood the ring (high dropped count) — the population that risks a
+        # reconnect gap — without grepping logs.
+        return {"status": "ok", "sha": running_git_sha(), "buffers": app.state.buffer_stats()}
 
     register_rpc(app, "ping", _ping)
     register_rpc(app, "start_demo", _make_start_demo(app))

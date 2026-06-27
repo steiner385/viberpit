@@ -2116,6 +2116,11 @@ class SessionOrchestrator:
     # ------------------------------------------------------------------
 
     async def _check_stalls(self, now: float) -> None:
+        # Wedge detection is DRIVER-SIDE: `last_progress_at` advances only when the SDK
+        # stream yields a meaningful event (driver._note_progress), and the driver's output
+        # queue is unbounded — so edge/IPC delivery (the replay-buffer overflow in #185) can
+        # NEVER stall a turn or trip this watchdog. A trip here means the turn itself produced
+        # no SDK progress for STALL_TIMEOUT; do not chase IPC drops for that symptom.
         for sid, driver in list(self._drivers.items()):
             if not getattr(driver, "_turn_active", False):
                 continue
