@@ -53,6 +53,7 @@ from server.sessions.suggestions import SuggestionService, last_turn_context
 from server.sessions.summaries import SummaryService, should_regenerate
 from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
+    STALL_TIMEOUT_THROTTLED,
 )
 from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
@@ -2173,10 +2174,19 @@ class SessionOrchestrator:
         # queue is unbounded — so edge/IPC delivery (the replay-buffer overflow in #185) can
         # NEVER stall a turn or trip this watchdog. A trip here means the turn itself produced
         # no SDK progress for STALL_TIMEOUT; do not chase IPC drops for that symptom.
+        quarantined = self._recovery.quarantined(now=now)
         for sid, driver in list(self._drivers.items()):
             if not getattr(driver, "_turn_active", False):
                 continue
-            if now - driver.last_progress_at <= STALL_TIMEOUT:
+            # A turn whose silence is attributable to API throttling — the driver is
+            # backing off, or its account is in recovery quarantine (recently 429'd) —
+            # is alive, not wedged. Give it the extended timeout before treating the
+            # gap as a hang; past that longer window a genuine hang is still caught.
+            # Issue #185: throttled turns were interrupted as "Turn failed" under load.
+            throttled = getattr(driver, "in_api_backoff", False) or \
+                getattr(driver, "account", None) in quarantined
+            timeout = STALL_TIMEOUT_THROTTLED if throttled else STALL_TIMEOUT
+            if now - driver.last_progress_at <= timeout:
                 continue
             if getattr(driver, "awaiting_user_input", False):
                 # Blocked on a permission / plan / question — waiting on the human,
