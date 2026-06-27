@@ -96,6 +96,7 @@ class PipelinePr:
     pr: PullRequestInfo
     session_id: str | None = None
     session_name: str | None = None
+    node_states: tuple = ()  # tuple[NodeStatus, ...]; per-repo track placement
 
     def to_dict(self) -> dict:
         d = self.pr.to_dict()
@@ -103,15 +104,18 @@ class PipelinePr:
             {"id": self.session_id, "name": self.session_name}
             if self.session_id else None
         )
+        d["node_states"] = [s.to_dict() for s in self.node_states]
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "PipelinePr":
+        from server.pipeline.track import NodeStatus
         sess = d.get("session") or {}
         return cls(
             pr=PullRequestInfo.from_dict(d),
             session_id=sess.get("id"),
             session_name=sess.get("name"),
+            node_states=tuple(NodeStatus.from_dict(s) for s in d.get("node_states", [])),
         )
 
 
