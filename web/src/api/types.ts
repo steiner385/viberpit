@@ -147,9 +147,26 @@ export interface PullRequestInfo {
   eta_overdue?: boolean
 }
 
+export type NodeState = 'done' | 'active' | 'failed' | 'pending'
+
+export interface StageNode {
+  id: string
+  label: string
+  kind: 'ci' | 'gate' | 'queue' | 'deploy' | 'merged'
+  order: number
+  source: 'derived' | 'override'
+}
+
+export interface StageModel {
+  repo: string
+  nodes: StageNode[]
+}
+
 export interface PipelinePr extends PullRequestInfo {
   /** The ccswitch session that authored this PR's branch, or null. */
   session: { id: string; name: string } | null
+  /** Per-node placement states for this PR's position on its repo's stage track. */
+  node_states?: { id: string; state: NodeState }[]
 }
 
 export interface ModelOption { id: string; label: string }

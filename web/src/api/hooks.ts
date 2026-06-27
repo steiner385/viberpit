@@ -3,7 +3,7 @@ import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
-  DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr,
+  DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
@@ -25,6 +25,7 @@ export const QK = {
   settings: ['settings'] as const,
   sessionSearch: (q: string, scope: string = 'live') => ['session-search', scope, q] as const,
   prs: ['prs'] as const,
+  pipelineRepos: ['pipeline-repos'] as const,
 }
 
 export function useModels() {
@@ -521,5 +522,14 @@ export function useAllPrs() {
     queryFn: () => api.get<PipelinePr[]>('/prs'),
     staleTime: 5_000,
     refetchInterval: 10_000,
+  })
+}
+
+export function useStageModels() {
+  return useQuery<Record<string, StageModel>>({
+    queryKey: QK.pipelineRepos,
+    queryFn: () => api.get<Record<string, StageModel>>('/pipeline/repos'),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
   })
 }
