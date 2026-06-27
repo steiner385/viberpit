@@ -38,6 +38,9 @@ export function AddAccountDialog({ onClose }: AddAccountDialogProps) {
   const isRunning = status?.state === 'running' || status?.state === 'cancelling'
   const isSuccess = status?.state === 'success'
   const isError = status?.state === 'error' || status?.state === 'timeout'
+  // While the in-page reauth browser is showing, widen the dialog so the 1280×800
+  // virtual display isn't crushed into the narrow add-account form width.
+  const showVnc = isRunning && !!status?.vncSession
 
   React.useEffect(() => {
     inputRef.current?.focus()
@@ -102,7 +105,8 @@ export function AddAccountDialog({ onClose }: AddAccountDialogProps) {
       <div
         ref={dialogRef}
         className={cn(
-          'w-full max-w-sm rounded-xl',
+          'w-full rounded-xl transition-[max-width] motion-reduce:transition-none',
+          showVnc ? 'max-w-5xl' : 'max-w-sm',
           'bg-white dark:bg-gray-800',
           'border border-gray-200 dark:border-gray-600',
           'shadow-xl p-6 space-y-4',

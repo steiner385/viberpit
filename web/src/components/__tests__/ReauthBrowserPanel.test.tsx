@@ -13,4 +13,12 @@ describe('ReauthBrowserPanel', () => {
     render(<ReauthBrowserPanel vncSession="__reauth__" />)
     expect(screen.getByTestId('browser-tab')).toHaveTextContent('__reauth__')
   })
+
+  it('wraps the viewer in a large, user-resizable container so the login is usable', () => {
+    render(<ReauthBrowserPanel vncSession="__reauth__" />)
+    // The viewer must be resizable (drag handle) and tall by default, not a thumbnail.
+    const box = screen.getByTestId('browser-tab').parentElement as HTMLElement
+    expect(box.className).toContain('resize')
+    expect(box.className).toMatch(/h-\[\d+vh\]/)
+  })
 })
