@@ -83,3 +83,27 @@ def test_get_prs_returns_population():
     assert body[0]["repo"] == "o/n" and body[0]["stage"] == "parked"
     assert body[0]["session"] == {"id": "s1", "name": "Fix it"}
     assert body[1]["session"] is None
+
+
+def test_get_prs_carries_node_states():
+    """Real GET /api/prs — response rows must include node_states (spec §7)."""
+    from server.github.pr_status import PipelinePr, PullRequestInfo
+    from server.pipeline.track import NodeStatus
+
+    client, fake = _make_client()
+    fake.all_prs_result = [
+        PipelinePr(
+            pr=PullRequestInfo(
+                number=7, url="u7", state="open", checks="pending",
+                title="feat", repo="o/r", stage="ci",
+            ),
+            session_id="s2", session_name="Track me",
+            node_states=(NodeStatus("ci", "active"),),
+        ),
+    ]
+    with patch.dict(os.environ, _ENV), client:
+        resp = client.get("/api/prs", headers=_H)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["node_states"] == [{"id": "ci", "state": "active"}]

@@ -9,8 +9,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from server.pipeline.stage import derive_merged_stage, derive_open_stage
+
+if TYPE_CHECKING:
+    from server.pipeline.track import NodeStatus
 
 PRODUCTION_ENVIRONMENT = "production"
 
@@ -96,7 +100,7 @@ class PipelinePr:
     pr: PullRequestInfo
     session_id: str | None = None
     session_name: str | None = None
-    node_states: tuple = ()  # tuple[NodeStatus, ...]; per-repo track placement
+    node_states: "tuple[NodeStatus, ...]" = ()  # per-repo track placement
 
     def to_dict(self) -> dict:
         d = self.pr.to_dict()

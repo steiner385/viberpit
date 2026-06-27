@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
+    from server.pipeline.track import StageModel
 
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, worktrees
@@ -1126,7 +1127,7 @@ class SessionOrchestrator:
         """Sorted distinct repos across all live sessions — the population to watch."""
         return sorted({r.repo for r in self._records.values() if r.repo})
 
-    def all_repos_stage_models(self) -> dict:
+    def all_repos_stage_models(self) -> "dict[str, StageModel]":
         """Per-repo StageModel for every watched repo (derived from CI/CD facts)."""
         from server.pipeline.track import build_stage_model
         models: dict = {}
