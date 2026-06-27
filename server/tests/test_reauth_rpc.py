@@ -35,3 +35,12 @@ async def test_register_reauth_dispatches():
 
     c = await cancel({"name": "primary"})
     assert c["state"] == "idle" and c["message"] == "cancelled"
+
+
+def test_build_daemon_registers_reauth():
+    from server.ipc.serve import build_daemon
+    app, _orch = build_daemon()
+    assert "reauth_start" in app.state.rpc
+    assert "reauth_status" in app.state.rpc
+    assert "reauth_cancel" in app.state.rpc
+    assert app.state.reauth is not None
