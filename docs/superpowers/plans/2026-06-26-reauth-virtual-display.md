@@ -18,7 +18,7 @@
 - **Reauth is one-at-a-time** (`ReauthManager` lock; add-account + reauth share one manager). One reserved key only.
 - **Frontend gating is backend-driven:** the UI shows the VNC panel iff `reauthStatus.vncSession` is truthy and connects `BrowserTab` to *that* key — never hardcode `__reauth__` in the frontend.
 - **Real gates:** backend = `ruff` + `mypy` + `pytest`; web (in `web/`) = `tsc -b` (NOT `tsc --noEmit`, which checks nothing here) + `eslint --max-warnings 0` + `vitest run` (CI runs the FULL vitest suite).
-- **Worktree test env:** run backend tests against the main checkout's prebuilt venv with `PYTHONPATH=<worktree>/src`; for web tests `rm -f web/node_modules && npm ci` in `web/`.
+- **Worktree test env:** run backend tests against the main checkout's prebuilt venv with `PYTHONPATH=/mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084/src`; for web tests `rm -f web/node_modules && npm ci` in `web/`.
 - **Commits:** end every commit message with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`. Stay on branch `feat/reauth-virtual-display`; do NOT run the PR/merge workflow per-task (the controller owns integration).
 
 ---
@@ -36,7 +36,8 @@
 - `web/src/components/ReauthBrowserPanel.tsx` — CREATE: VNC panel wrapper.
 - `web/src/components/AccountsManager.tsx` — MODIFY: render panel + copy fix in `AccountRow`.
 - `web/src/components/AddAccountDialog.tsx` — MODIFY: render panel + copy fix.
-- Tests: `server/tests/test_reauth.py` (extend), `server/tests/test_reauth_rpc.py` (new), `server/tests/test_reauth_remote.py` (new), `web/src/components/__tests__/AccountReauth.test.tsx` (extend), `web/src/components/__tests__/ReauthBrowserPanel.test.tsx` (new).
+- Tests: `server/tests/test_reauth_manager.py` (extend — existing reauth-manager tests), `server/tests/test_config_xvfb.py` (extend — uses an `importlib.reload(config)`+`get_settings()` `_fresh()` helper), `server/tests/test_reauth_rpc.py` (new), `server/tests/test_reauth_remote.py` (new), `server/tests/test_reauth_api.py` (extend — existing reauth API tests, has identity-header fixtures), `web/src/components/__tests__/AccountReauth.test.tsx` (extend), `web/src/components/__tests__/ReauthBrowserPanel.test.tsx` (new).
+- **Paths:** `/mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084` = `/mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084`; `/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/` = `/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/` (python, pytest, ruff, mypy live there). `web/node_modules` is absent → run `npm ci` in `web/` first for web tasks.
 
 ---
 
@@ -44,13 +45,13 @@
 
 **Files:**
 - Modify: `server/reauth.py`
-- Test: `server/tests/test_reauth.py`
+- Test: `server/tests/test_reauth_manager.py`
 
 **Interfaces:**
 - Produces: module constant `REAUTH_DISPLAY_KEY = "__reauth__"`; `ReauthManager(__init__)` gains keyword param `x11: Callable[[], "X11Manager | None"] | None = None` stored as `self._x11`; `ReauthState.vnc_session: str | None = None`; `ReauthState.to_dict()` includes `"vncSession"`.
 - Consumes: `X11Manager.start_display(key) -> DisplaySpec | None`, `.stop_display(key)`, `DisplaySpec.lease.display: int`, `DisplaySpec.xauthority: str` (from `server/sessions/x11manager.py`).
 
-- [ ] **Step 1: Write failing tests** in `server/tests/test_reauth.py`
+- [ ] **Step 1: Write failing tests** in `server/tests/test_reauth_manager.py`
 
 ```python
 import asyncio
@@ -133,7 +134,7 @@ async def test_runner_falls_back_to_host_display_without_x11(monkeypatch):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/test_reauth.py -k "vnc_session or virtual_display or host_display" -v`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/test_reauth_manager.py -k "vnc_session or virtual_display or host_display" -v`
 Expected: FAIL — `ImportError: cannot import name 'REAUTH_DISPLAY_KEY'` / `TypeError: ... unexpected keyword 'x11'`.
 
 - [ ] **Step 3: Implement in `server/reauth.py`**
@@ -213,18 +214,18 @@ In `_make_default_runner`'s `_production_runner`, replace the `env_extra` block 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/test_reauth.py -v`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/test_reauth_manager.py -v`
 Expected: PASS (including the pre-existing reauth tests).
 
 - [ ] **Step 5: Lint**
 
-Run: `cd <worktree> && <main-checkout>/.venv/bin/ruff check server/reauth.py && <main-checkout>/.venv/bin/mypy server/reauth.py`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/ruff check server/reauth.py && /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/mypy server/reauth.py`
 Expected: clean (mypy may skip untyped bodies — no new errors).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/reauth.py server/tests/test_reauth.py
+git add server/reauth.py server/tests/test_reauth_manager.py
 git commit -m "feat(reauth): lease a virtual X display for the reauth browser
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
@@ -236,29 +237,31 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `server/config.py`
-- Test: `server/tests/test_config.py` (extend; create if absent)
+- Test: `server/tests/test_config_xvfb.py` (extend; create if absent)
 
 **Interfaces:**
 - Produces: `settings.reauth_virtual_display: bool` (default `True`, env alias `CCSWITCH_REAUTH_VIRTUAL_DISPLAY`).
 
-- [ ] **Step 1: Write failing test** in `server/tests/test_config.py`
+- [ ] **Step 1: Write failing test** in `server/tests/test_config_xvfb.py`
+
+This file already has a module-level `_fresh()` helper (`importlib.reload(config); return config.get_settings()`) used by the existing xvfb tests — reuse it; do NOT import `Settings` directly.
 
 ```python
 def test_reauth_virtual_display_defaults_true(monkeypatch):
     monkeypatch.delenv("CCSWITCH_REAUTH_VIRTUAL_DISPLAY", raising=False)
-    from server.config import Settings
-    assert Settings().reauth_virtual_display is True
+    s = _fresh()
+    assert s.reauth_virtual_display is True
 
 
 def test_reauth_virtual_display_env_override(monkeypatch):
     monkeypatch.setenv("CCSWITCH_REAUTH_VIRTUAL_DISPLAY", "false")
-    from server.config import Settings
-    assert Settings().reauth_virtual_display is False
+    s = _fresh()
+    assert s.reauth_virtual_display is False
 ```
 
 - [ ] **Step 2: Run to verify fail**
 
-Run: `cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/test_config.py -k reauth_virtual_display -v`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/test_config_xvfb.py -k reauth_virtual_display -v`
 Expected: FAIL — `AttributeError: ... 'reauth_virtual_display'`.
 
 - [ ] **Step 3: Implement — add to BOTH definitions in `server/config.py`**
@@ -269,25 +272,23 @@ In the pydantic block (next to `reauth_display`, ~line 30):
         reauth_virtual_display: bool = Field(default=True, alias="CCSWITCH_REAUTH_VIRTUAL_DISPLAY")
 ```
 
-In the dataclass fallback (next to the `reauth_display` field, ~line 98):
+In the dataclass fallback (next to the `reauth_display` field, ~line 98). There is NO `_env_bool` helper — the neighboring `enable_xvfb` field uses an inline truthy check; mirror it exactly, but default to TRUE:
 
 ```python
         reauth_virtual_display: bool = dataclasses.field(
-            default_factory=lambda: _env_bool("CCSWITCH_REAUTH_VIRTUAL_DISPLAY", True)
+            default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_VIRTUAL_DISPLAY", "true").lower() in ("1", "true", "yes", "on")
         )
 ```
 
-(Match the exact helper the neighboring `enable_xvfb` dataclass field uses — read lines ~98-110 first and mirror its `_env_bool`/`default_factory` form.)
-
 - [ ] **Step 4: Run to verify pass**
 
-Run: `cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/test_config.py -k reauth_virtual_display -v`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/test_config_xvfb.py -k reauth_virtual_display -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add server/config.py server/tests/test_config.py
+git add server/config.py server/tests/test_config_xvfb.py
 git commit -m "feat(config): add CCSWITCH_REAUTH_VIRTUAL_DISPLAY toggle
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
@@ -349,7 +350,7 @@ async def test_register_reauth_dispatches():
 
 - [ ] **Step 2: Run to verify fail**
 
-Run: `cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/test_reauth_rpc.py -v`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/test_reauth_rpc.py -v`
 Expected: FAIL — `ModuleNotFoundError: server.ipc.reauth_rpc`.
 
 - [ ] **Step 3: Implement `server/ipc/reauth_rpc.py`**
@@ -383,13 +384,13 @@ def register_reauth(app: FastAPI, reauth) -> None:
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/test_reauth_rpc.py -v`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/test_reauth_rpc.py -v`
 Expected: PASS.
 
 - [ ] **Step 5: Lint + Commit**
 
 ```bash
-cd <worktree> && <main-checkout>/.venv/bin/ruff check server/ipc/reauth_rpc.py && <main-checkout>/.venv/bin/mypy server/ipc/reauth_rpc.py
+cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/ruff check server/ipc/reauth_rpc.py && /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/mypy server/ipc/reauth_rpc.py
 git add server/ipc/reauth_rpc.py server/tests/test_reauth_rpc.py
 git commit -m "feat(ipc): daemon reauth RPC handlers
 
@@ -468,7 +469,7 @@ async def test_inprocess_adapter_wraps_sync_status():
 
 - [ ] **Step 2: Run to verify fail**
 
-Run: `cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/test_reauth_remote.py -v`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/test_reauth_remote.py -v`
 Expected: FAIL — `ModuleNotFoundError: server.reauth_remote`.
 
 - [ ] **Step 3: Add `ReauthState.from_dict` to `server/reauth.py`**
@@ -499,7 +500,7 @@ _ERROR_TYPES = {"ReauthBusy": ReauthBusy, "ReauthNoKey": ReauthNoKey}
 
 
 def _reraise(exc: DaemonError):
-    cls = _ERROR_TYPES.get(exc.type)
+    cls = _ERROR_TYPES.get(exc.err_type)   # DaemonError exposes .err_type (not .type)
     if cls is ReauthBusy:
         raise ReauthBusy(None, None) from exc
     if cls is ReauthNoKey:
@@ -554,13 +555,13 @@ class InProcessReauthAdapter:
 
 - [ ] **Step 5: Run to verify pass**
 
-Run: `cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/test_reauth_remote.py server/tests/test_reauth.py -v`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/test_reauth_remote.py server/tests/test_reauth_manager.py -v`
 Expected: PASS.
 
 - [ ] **Step 6: Lint + Commit**
 
 ```bash
-cd <worktree> && <main-checkout>/.venv/bin/ruff check server/reauth_remote.py server/reauth.py && <main-checkout>/.venv/bin/mypy server/reauth_remote.py
+cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/ruff check server/reauth_remote.py server/reauth.py && /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/mypy server/reauth_remote.py
 git add server/reauth_remote.py server/reauth.py server/tests/test_reauth_remote.py
 git commit -m "feat(reauth): RemoteReauthManager proxy + InProcessReauthAdapter
 
@@ -593,7 +594,7 @@ def test_build_daemon_registers_reauth():
 
 - [ ] **Step 2: Run to verify fail**
 
-Run: `cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/test_reauth_rpc.py::test_build_daemon_registers_reauth -v`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/test_reauth_rpc.py::test_build_daemon_registers_reauth -v`
 Expected: FAIL — `KeyError: 'reauth_start'` / `AttributeError: reauth`.
 
 - [ ] **Step 3: Implement in `server/ipc/serve.py`**
@@ -637,13 +638,13 @@ In the `finally` block, after `x11.stop_all(...)` and before `await orchestrator
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/test_reauth_rpc.py -v`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/test_reauth_rpc.py -v`
 Expected: PASS.
 
 - [ ] **Step 5: Lint + Commit**
 
 ```bash
-cd <worktree> && <main-checkout>/.venv/bin/ruff check server/ipc/serve.py && <main-checkout>/.venv/bin/mypy server/ipc/serve.py
+cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/ruff check server/ipc/serve.py && /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/mypy server/ipc/serve.py
 git add server/ipc/serve.py server/tests/test_reauth_rpc.py
 git commit -m "feat(ipc): construct + sweep the daemon reauth manager
 
@@ -655,44 +656,41 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ## Task 6: Edge wiring + `await status` in API
 
 **Files:**
-- Modify: `server/app.py` (`:329-343` region), `server/api/accounts.py` (`:329`, `:341`)
-- Test: `server/tests/test_accounts_reauth_api.py` (new) or extend existing reauth-API test
+- Modify: `server/app.py` (the reauth-attach block, currently ~`:339-343`), `server/api/accounts.py` (FOUR `reauth.status(...)` sites: lines 330, 341, 417, 435)
+- Modify: `server/tests/test_reauth_api.py` — its `FakeReauthManager` is injected raw onto `app.state.reauth` (bypassing the adapter), so its `status` must become `async` and must copy `vnc_session`.
 
 **Interfaces:**
-- Consumes: `RemoteReauthManager`, `InProcessReauthAdapter` (Task 4); `DaemonClient` (already imported in app.py remote branch).
-- Produces: `app.state.reauth` is async-facade in both modes; `GET/POST` reauth endpoints await status.
+- Consumes: `RemoteReauthManager`, `InProcessReauthAdapter` (Task 4).
+- Produces: `app.state.reauth` is the async facade in both modes; all reauth endpoints await `status`.
 
-- [ ] **Step 1: Write failing test** in `server/tests/test_accounts_reauth_api.py`
+**CRITICAL CONTEXT (verified):**
+- `server/api/accounts.py` has FOUR non-awaited `reauth.status(...)` calls — lines **330** (`return reauth.status("").to_dict()`), **341** (`pre_cancel_state = reauth.status("")`), **417** (`state = reauth.status(name)`), **435** (`pre_cancel_state = reauth.status(name)`). The `reauth.start`/`reauth.cancel` calls (293, 342, 378, 436) are ALREADY awaited — leave them.
+- `test_reauth_api.py` defines `FakeReauthManager` (async `start`/`cancel`, **sync** `status`) and injects it via `_make_client(fake_rm)` which does `app.state.reauth = fake_rm` AFTER `create_app` — so the adapter does NOT wrap it. Once endpoints await `status`, this fake's `status` must be `async def`. Also its `status()` rebuilds a `ReauthState` WITHOUT `vnc_session` — add `vnc_session=s.vnc_session` to that copy so the new test can assert it.
+- `test_security_hardening.py` sets `app.state.reauth = ReauthManager()` but only drives `_lifespan` (boot gate) — it calls `sweep_stale()`/`shutdown()` (both exist on the raw manager), never the status endpoint. No change needed there.
+
+- [ ] **Step 1: Make `FakeReauthManager.status` async + vnc_session-aware, then add the failing test** in `server/tests/test_reauth_api.py`
+
+Change `def status` → `async def status` and add `vnc_session=s.vnc_session` to the `ReauthState(...)` it returns. Then add (reusing the file's existing `_make_client`, `temp_env`, `_seed_slot`, `IDENTITY_HEADERS` helpers):
 
 ```python
-import pytest
-from httpx import AsyncClient, ASGITransport
-from server.app import create_app
-from server.reauth import ReauthManager
-
-
-@pytest.mark.asyncio
-async def test_reauth_status_endpoint_returns_vnc_session(monkeypatch):
-    monkeypatch.setenv("CCSWITCH_TAILNET_ALLOWLIST", "me@example.com")
-    # in-process app with an injected manager whose status reports a vnc session
-    mgr = ReauthManager(key_available=lambda: True)
-    mgr._state.state = "running"
-    mgr._state.vnc_session = "__reauth__"
-    app = create_app(reauth_manager=mgr)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://t") as ac:
-        r = await ac.get("/api/accounts/primary/reauth",
-                         headers={"X-Tailnet-Identity": "me@example.com"})
-    assert r.status_code == 200
-    assert r.json()["vncSession"] == "__reauth__"
+def test_reauth_status_returns_vnc_session():
+    """GET reauth status surfaces the vncSession key when a virtual display is live."""
+    fake_rm = FakeReauthManager()
+    fake_rm._state = ReauthState(state="running", vnc_session="__reauth__")
+    with temp_env():
+        _seed_slot("primary")
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client(fake_rm)
+        with client:
+            resp = client.get("/api/accounts/primary/reauth", headers=IDENTITY_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["vncSession"] == "__reauth__"
 ```
-
-(If the repo already has a reauth-API test module + identity-header helper, mirror its fixtures instead — read `server/tests/` first. The allowlist pin matches CLAUDE.md's API-auth note.)
 
 - [ ] **Step 2: Run to verify fail**
 
-Run: `cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/test_accounts_reauth_api.py -v`
-Expected: FAIL — `vncSession` missing OR a coroutine-not-awaited error from the sync `status` call once the adapter is in place. (If it passes pre-change because status is sync, the assertion on `vncSession` still drives Task 1's field; the await change is verified by the full suite in Step 6.)
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/test_reauth_api.py::test_reauth_status_returns_vnc_session -v`
+Expected: FAIL — `vncSession` is `None` (the endpoint still calls sync `status` and the field isn't surfaced), or a coroutine error once the fake's status is async but the endpoint isn't awaiting yet.
 
 - [ ] **Step 3: Implement edge wiring in `server/app.py`**
 
@@ -716,35 +714,27 @@ Replace the ReauthManager attach block (`:339-343`) with:
 
 (Confirm `DaemonClient(endpoint)` ctor signature matches the existing `RemoteOrchestrator` wiring at `:307-318`; reuse `app.state.daemon_endpoint`.)
 
-- [ ] **Step 4: Update `server/api/accounts.py`**
+- [ ] **Step 4: Update `server/api/accounts.py` — await all FOUR `status` sites**
 
-At `:329` and `:341` (and any other `reauth.status(...)` / direct `reauth.cancel(...)` non-awaited call), change to await. Example:
+Grep to confirm: `grep -n "reauth\.status\|reauth\.cancel\|reauth\.start" server/api/accounts.py`. Convert each `reauth.status(...)` call to `await reauth.status(...)`:
+- Line 330: `return reauth.status("").to_dict()` → `return (await reauth.status("")).to_dict()`
+- Line 341: `pre_cancel_state = reauth.status("")` → `pre_cancel_state = await reauth.status("")`
+- Line 417: `state = reauth.status(name)` → `state = await reauth.status(name)`
+- Line 435: `pre_cancel_state = reauth.status(name)` → `pre_cancel_state = await reauth.status(name)`
 
-```python
-    reauth = _get_reauth(request)
-    return (await reauth.status("")).to_dict()
-```
-
-and in the cancel endpoint:
-
-```python
-    pre_cancel_state = await reauth.status("")
-    state = await reauth.cancel("")
-```
-
-Grep first: `grep -n "reauth.status\|reauth.cancel\|reauth.start" server/api/accounts.py` and await every call (the start endpoints already await).
+Do NOT touch the already-awaited `reauth.start(...)` (293, 378) or `reauth.cancel(...)` (342, 436). These are all inside `async def` endpoint handlers, so `await` is valid.
 
 - [ ] **Step 5: Run to verify pass + regression**
 
-Run: `cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/ -k "reauth or accounts" -v`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/ -k "reauth or accounts" -v`
 Expected: PASS (watch for any test that injected a bare `ReauthManager` and called sync `.status` on `app.state.reauth` — those now get the adapter; update them to await).
 
 - [ ] **Step 6: Full backend suite + lint + Commit**
 
 ```bash
-cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/ -q
-<main-checkout>/.venv/bin/ruff check server/app.py server/api/accounts.py && <main-checkout>/.venv/bin/mypy server/app.py server/api/accounts.py
-git add server/app.py server/api/accounts.py server/tests/test_accounts_reauth_api.py
+cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/ -q
+/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/ruff check server/app.py server/api/accounts.py && /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/mypy server/app.py server/api/accounts.py
+git add server/app.py server/api/accounts.py server/tests/test_reauth_api.py
 git commit -m "feat(reauth): edge facade wiring + await status in the API
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
@@ -765,7 +755,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Prep web env**
 
-Run: `cd <worktree>/web && rm -f node_modules && npm ci`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084/web && rm -f node_modules && npm ci`
 Expected: completes (~seconds), lockfile committed.
 
 - [ ] **Step 2: Write failing test** in `web/src/components/__tests__/ReauthBrowserPanel.test.tsx`
@@ -791,7 +781,7 @@ describe('ReauthBrowserPanel', () => {
 
 - [ ] **Step 3: Run to verify fail**
 
-Run: `cd <worktree>/web && npx vitest run src/components/__tests__/ReauthBrowserPanel.test.tsx`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084/web && npx vitest run src/components/__tests__/ReauthBrowserPanel.test.tsx`
 Expected: FAIL — cannot find `../ReauthBrowserPanel`.
 
 - [ ] **Step 4: Add the type field** in `web/src/api/types.ts`
@@ -822,13 +812,13 @@ export function ReauthBrowserPanel({ vncSession }: { vncSession: string }) {
 
 - [ ] **Step 6: Run to verify pass**
 
-Run: `cd <worktree>/web && npx vitest run src/components/__tests__/ReauthBrowserPanel.test.tsx`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084/web && npx vitest run src/components/__tests__/ReauthBrowserPanel.test.tsx`
 Expected: PASS.
 
 - [ ] **Step 7: Types + Commit**
 
 ```bash
-cd <worktree>/web && npx tsc -b
+cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084/web && npx tsc -b
 git add web/src/api/types.ts web/src/components/ReauthBrowserPanel.tsx web/src/components/__tests__/ReauthBrowserPanel.test.tsx
 git commit -m "feat(web): ReauthBrowserPanel + ReauthState.vncSession
 
@@ -865,7 +855,7 @@ Also UPDATE the existing assertion that checks for the old "host machine's scree
 
 - [ ] **Step 2: Run to verify fail**
 
-Run: `cd <worktree>/web && npx vitest run src/components/__tests__/AccountReauth.test.tsx`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084/web && npx vitest run src/components/__tests__/AccountReauth.test.tsx`
 Expected: FAIL — no `reauth-vnc` testid / copy mismatch.
 
 - [ ] **Step 3: Implement in `AccountsManager.tsx`**
@@ -897,12 +887,12 @@ Find its running-state status block (uses the add-account status query, same `Re
 
 - [ ] **Step 5: Run to verify pass**
 
-Run: `cd <worktree>/web && npx vitest run src/components/__tests__/AccountReauth.test.tsx`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084/web && npx vitest run src/components/__tests__/AccountReauth.test.tsx`
 Expected: PASS.
 
 - [ ] **Step 6: Full web gates**
 
-Run: `cd <worktree>/web && npx tsc -b && npx eslint src --max-warnings 0 && npx vitest run`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084/web && npx tsc -b && npx eslint src --max-warnings 0 && npx vitest run`
 Expected: all PASS (full vitest, per CI).
 
 - [ ] **Step 7: Commit**
@@ -924,14 +914,14 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 Run:
 ```bash
-cd <worktree> && PYTHONPATH=$PWD/src <main-checkout>/.venv/bin/python -m pytest server/tests/ -q
-<main-checkout>/.venv/bin/ruff check server && <main-checkout>/.venv/bin/mypy server
+cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084 && PYTHONPATH=$PWD/src /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m pytest server/tests/ -q
+/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/ruff check server && /mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/mypy server
 ```
 Expected: PASS / clean (env-only failures noted in CLAUDE.md — x11/remote_mode_wiring — are acceptable; nothing reauth-related red).
 
 - [ ] **Step 2: Web full gates**
 
-Run: `cd <worktree>/web && npx tsc -b && npx eslint src --max-warnings 0 && npx vitest run`
+Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/cc-account-switcher/9cd74084/web && npx tsc -b && npx eslint src --max-warnings 0 && npx vitest run`
 Expected: PASS.
 
 - [ ] **Step 3: Confirm no stale `:0`-only path left behind**
