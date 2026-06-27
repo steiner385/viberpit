@@ -59,3 +59,35 @@ def test_merged_pr_no_deploy_node_merged_active():
     m = build_stage_model("o/r", ci_graph=None, has_queue=False, deploy_envs=[])
     st = _states(_pr(stage="merged", state="merged", merged=True, deployed=False), m)
     assert st == {"ci": "done", "ready": "done", "merged": "active"}
+
+
+def _pr_envs(**kw):
+    # helper: merged PR with deployed_envs; falls back to _pr() builder
+    return _pr(**kw)
+
+
+def test_merged_live_in_first_env_only():
+    m = build_stage_model("o/r", ci_graph=None, has_queue=False,
+                          deploy_envs=["qa", "staging", "production"])
+    pr = _pr(stage="merged", state="merged", merged=True, deployed_envs=("qa",))
+    st = _states(pr, m)
+    assert st == {"ci": "done", "ready": "done", "deploy:qa": "done",
+                  "deploy:staging": "active", "deploy:production": "pending", "merged": "pending"}
+
+
+def test_merged_live_in_all_envs_merged_done():
+    m = build_stage_model("o/r", ci_graph=None, has_queue=False,
+                          deploy_envs=["qa", "production"])
+    pr = _pr(stage="merged", state="merged", merged=True, deployed_envs=("qa", "production"))
+    st = _states(pr, m)
+    assert st == {"ci": "done", "ready": "done", "deploy:qa": "done",
+                  "deploy:production": "done", "merged": "done"}
+
+
+def test_merged_live_in_none_first_deploy_active():
+    m = build_stage_model("o/r", ci_graph=None, has_queue=False, deploy_envs=["qa", "production"])
+    pr = _pr(stage="merged", state="merged", merged=True, deployed_envs=())
+    st = _states(pr, m)
+    assert st["deploy:qa"] == "active"
+    assert st["deploy:production"] == "pending"
+    assert st["merged"] == "pending"

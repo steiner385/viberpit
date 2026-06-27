@@ -114,25 +114,41 @@ _STAGE_TO_NODE = {"": "ci", "parked": "ci", "ci": "ci", "ready": "ready",
 def place_pr_on_track(pr: "PullRequestInfo", model: StageModel) -> list["NodeStatus"]:
     ids = [n.id for n in model.nodes]
     order_by_id = {n.id: n.order for n in model.nodes}
-    sentinel = len(model.nodes)  # one past the last node — everything is "done"
+    has_deploy_nodes = any(n.kind == "deploy" for n in model.nodes)
 
+    if pr.stage == "merged":
+        # Back-compat bridge: M-Track-1 tests set deployed=True without deployed_envs.
+        deployed = set(getattr(pr, "deployed_envs", ()) or ())
+        if pr.deployed:
+            deployed.add("production")
+        out: list[NodeStatus] = []
+        frontier_used = False
+        for n in model.nodes:
+            if n.kind == "deploy":
+                env = n.id.split("deploy:", 1)[1]
+                if env in deployed:
+                    state = "done"
+                elif not frontier_used:
+                    state = "active"
+                    frontier_used = True
+                else:
+                    state = "pending"
+            elif n.kind == "merged":
+                if has_deploy_nodes:
+                    state = "pending" if frontier_used else "done"
+                else:
+                    state = "active"  # M-Track-1: no deploy tracking → merged is the active terminal
+            else:  # ci / ready / queue cleared by a merged PR
+                state = "done"
+            out.append(NodeStatus(id=n.id, state=state))
+        return out
+
+    # Non-merged PRs: single forward cursor by stage (unchanged from M-Track-1).
     target = _STAGE_TO_NODE.get(pr.stage, "ci")
-    # Clamp to the nearest existing earlier node if the target node isn't in this model.
     if target not in order_by_id:
         target = "ci" if "ci" in order_by_id else ids[0]
     cursor = order_by_id[target]
-
-    # For merged PRs, placement depends on the deploy node presence and deployed flag.
-    if pr.stage == "merged":
-        if pr.deployed:
-            # PR is live in production — all nodes are done, including merged.
-            cursor = sentinel
-        elif "deploy:production" in order_by_id:
-            # Merged but awaiting deploy — cursor sits at the deploy node.
-            cursor = order_by_id["deploy:production"]
-        # else: no deploy node — cursor stays at "merged" (merged is active)
-
-    out: list[NodeStatus] = []
+    out = []
     for n in model.nodes:
         if n.order < cursor:
             state = "done"
