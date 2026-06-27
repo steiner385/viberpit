@@ -71,6 +71,16 @@ class ReauthState:
             "vncSession": self.vnc_session,
         }
 
+    @staticmethod
+    def from_dict(d: dict) -> "ReauthState":
+        return ReauthState(
+            state=d.get("state", "idle"),
+            message=d.get("message"),
+            identity=d.get("identity"),
+            started_at=d.get("startedAt"),
+            vnc_session=d.get("vncSession"),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Production default runner (defined as a manager method so the runner
