@@ -25,7 +25,9 @@ def test_rpc_handler_serializes_models():
         mod.register_rpc = orig
 
     handler = captured["all_repos_stage_models"]
-    out = asyncio.get_event_loop().run_until_complete(handler({}))
+    # asyncio.run() spins a fresh loop — robust to full-suite event-loop
+    # contamination (get_event_loop() raises "no current event loop" in some orderings).
+    out = asyncio.run(handler({}))
     assert out["models"]["o/r"]["nodes"][0]["id"] == "ci"
     # Edge side rebuilds:
     assert StageModel.from_dict(out["models"]["o/r"]).repo == "o/r"
