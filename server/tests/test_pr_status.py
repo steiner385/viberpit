@@ -1,7 +1,7 @@
 from datetime import datetime, timezone, timedelta
 
 from server.github.pr_status import (
-    PRODUCTION_ENVIRONMENT, CheckDetail, PullRequestInfo, build_pr_query, parse_pr_response,
+    CheckDetail, PullRequestInfo, build_pr_query, parse_pr_response,
 )
 
 
@@ -122,8 +122,9 @@ def _merged_pr(number, *, merged_at):
     return pr
 
 
-def _deploy(commit_date, *, status="SUCCESS"):
+def _deploy(commit_date, *, status="SUCCESS", env="production"):
     return {
+        "latestEnvironment": env,
         "commitOid": "deadbeef",
         "latestStatus": {"state": status} if status else None,
         "commit": {"committedDate": commit_date},
@@ -132,8 +133,10 @@ def _deploy(commit_date, *, status="SUCCESS"):
 
 def test_build_query_includes_deployments_and_merged_at():
     q = build_pr_query([("o/r", "br")])
-    assert "deployments(environments:" in q
-    assert PRODUCTION_ENVIRONMENT in q
+    # Query now fetches all envs (no environment filter) and includes latestEnvironment
+    assert "deployments(" in q
+    assert "latestEnvironment" in q
+    assert 'environments: ["production"]' not in q
     assert "mergedAt" in q
 
 

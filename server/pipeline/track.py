@@ -7,6 +7,7 @@ output as a cursor — it never re-derives stages (constitution VI).
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -58,12 +59,35 @@ class NodeStatus:
         return cls(id=d["id"], state=d["state"])
 
 
+# Conventional deploy-environment ordering. Lower rank = earlier in the pipeline.
+_ENV_RANK = [
+    (("dev", "development"), 0),
+    (("test", "qa", "integration"), 1),
+    (("stage", "staging", "preprod", "uat", "sandbox"), 2),
+    (("prod", "production", "live", "release"), 3),
+]
+
+
+def _env_rank(env: str) -> int:
+    low = env.lower()
+    for keywords, rank in _ENV_RANK:
+        if any(k in low for k in keywords):
+            return rank
+    return 2  # unknown envs cluster with staging-tier, alphabetical tie-break
+
+
+def order_deploy_envs(envs: Iterable[str]) -> list[str]:
+    """Deterministic conventional ordering: dev/qa → staging/unknown → prod, alpha tie-break."""
+    uniq = sorted(set(envs))
+    return sorted(uniq, key=lambda e: (_env_rank(e), e))
+
+
 def build_stage_model(
     repo: str,
     *,
     ci_graph: dict | None,
     has_queue: bool,
-    has_deploy: bool,
+    deploy_envs: list[str],
 ) -> StageModel:
     """Assemble the ordered StageModel for a repo from its real CI/CD facts."""
     specs: list[tuple[str, str, str]] = []  # (id, label, kind)
@@ -72,8 +96,8 @@ def build_stage_model(
     specs.append(("ready", "Ready", "gate"))
     if has_queue:
         specs.append(("queue", "Queue", "queue"))
-    if has_deploy:
-        specs.append(("deploy:production", "Deploy", "deploy"))
+    for env in deploy_envs:
+        specs.append((f"deploy:{env}", env, "deploy"))
     specs.append(("merged", "Merged", "merged"))
     nodes = tuple(
         StageNode(id=sid, label=label, kind=kind, order=i)
@@ -90,25 +114,58 @@ _STAGE_TO_NODE = {"": "ci", "parked": "ci", "ci": "ci", "ready": "ready",
 def place_pr_on_track(pr: "PullRequestInfo", model: StageModel) -> list["NodeStatus"]:
     ids = [n.id for n in model.nodes]
     order_by_id = {n.id: n.order for n in model.nodes}
-    sentinel = len(model.nodes)  # one past the last node — everything is "done"
+    has_deploy_nodes = any(n.kind == "deploy" for n in model.nodes)
 
+    if pr.stage == "merged":
+        # Back-compat bridge: M-Track-1 tests set deployed=True without deployed_envs.
+        deployed = set(getattr(pr, "deployed_envs", ()) or ())
+        if pr.deployed:
+            deployed.add("production")
+
+        # Compute furthest-deployed order so we never mark a node "active" if a
+        # later node is already "done" (the skipped/out-of-order case).
+        deploy_nodes = [n for n in model.nodes if n.kind == "deploy"]
+        last_deployed_order = max(
+            (n.order for n in deploy_nodes if n.id.split("deploy:", 1)[1] in deployed),
+            default=-1,
+        )
+        # Frontier = first non-deployed deploy node strictly after the furthest deployed one.
+        frontier_id: str | None = None
+        for n in deploy_nodes:
+            env = n.id.split("deploy:", 1)[1]
+            if env not in deployed and n.order > last_deployed_order:
+                frontier_id = n.id
+                break
+
+        out: list[NodeStatus] = []
+        for n in model.nodes:
+            if n.kind == "deploy":
+                env = n.id.split("deploy:", 1)[1]
+                if env in deployed:
+                    state = "done"
+                elif n.id == frontier_id:
+                    state = "active"
+                else:
+                    state = "pending"
+            elif n.kind == "merged":
+                if has_deploy_nodes:
+                    # Done only when every deploy node is done (no frontier).
+                    state = "done" if frontier_id is None and all(
+                        dn.id.split("deploy:", 1)[1] in deployed for dn in deploy_nodes
+                    ) else "pending"
+                else:
+                    state = "active"  # M-Track-1: no deploy tracking → merged is the active terminal
+            else:  # ci / ready / queue cleared by a merged PR
+                state = "done"
+            out.append(NodeStatus(id=n.id, state=state))
+        return out
+
+    # Non-merged PRs: single forward cursor by stage (unchanged from M-Track-1).
     target = _STAGE_TO_NODE.get(pr.stage, "ci")
-    # Clamp to the nearest existing earlier node if the target node isn't in this model.
     if target not in order_by_id:
         target = "ci" if "ci" in order_by_id else ids[0]
     cursor = order_by_id[target]
-
-    # For merged PRs, placement depends on the deploy node presence and deployed flag.
-    if pr.stage == "merged":
-        if pr.deployed:
-            # PR is live in production — all nodes are done, including merged.
-            cursor = sentinel
-        elif "deploy:production" in order_by_id:
-            # Merged but awaiting deploy — cursor sits at the deploy node.
-            cursor = order_by_id["deploy:production"]
-        # else: no deploy node — cursor stays at "merged" (merged is active)
-
-    out: list[NodeStatus] = []
+    out = []
     for n in model.nodes:
         if n.order < cursor:
             state = "done"

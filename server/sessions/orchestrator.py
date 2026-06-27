@@ -1129,17 +1129,20 @@ class SessionOrchestrator:
 
     def all_repos_stage_models(self) -> "dict[str, StageModel]":
         """Per-repo StageModel for every watched repo (derived from CI/CD facts)."""
-        from server.pipeline.track import build_stage_model
+        from server.pipeline.track import build_stage_model, order_deploy_envs
         models: dict = {}
         pop = self._pr_population.all()
         history = self._pr_population.history_store()
         for repo in list(pop.keys()):
             prs = pop.get(repo, ())
             has_queue = any(p.stage == "queue" for p in prs)
-            has_deploy = any(p.deployed for p in prs)
+            repo_envs: set[str] = set()
+            for p in prs:
+                repo_envs.update(getattr(p, "deployed_envs", ()) or ())
             ci_graph = history.ci_graph(repo) if history is not None else None
             models[repo] = build_stage_model(
-                repo, ci_graph=ci_graph, has_queue=has_queue, has_deploy=has_deploy
+                repo, ci_graph=ci_graph, has_queue=has_queue,
+                deploy_envs=order_deploy_envs(repo_envs),
             )
         return models
 
