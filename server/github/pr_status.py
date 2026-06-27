@@ -16,8 +16,6 @@ from server.pipeline.stage import derive_merged_stage, derive_open_stage
 if TYPE_CHECKING:
     from server.pipeline.track import NodeStatus
 
-PRODUCTION_ENVIRONMENT = "production"
-
 
 @dataclass(frozen=True)
 class CheckDetail:

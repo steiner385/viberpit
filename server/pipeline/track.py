@@ -121,21 +121,38 @@ def place_pr_on_track(pr: "PullRequestInfo", model: StageModel) -> list["NodeSta
         deployed = set(getattr(pr, "deployed_envs", ()) or ())
         if pr.deployed:
             deployed.add("production")
+
+        # Compute furthest-deployed order so we never mark a node "active" if a
+        # later node is already "done" (the skipped/out-of-order case).
+        deploy_nodes = [n for n in model.nodes if n.kind == "deploy"]
+        last_deployed_order = max(
+            (n.order for n in deploy_nodes if n.id.split("deploy:", 1)[1] in deployed),
+            default=-1,
+        )
+        # Frontier = first non-deployed deploy node strictly after the furthest deployed one.
+        frontier_id: str | None = None
+        for n in deploy_nodes:
+            env = n.id.split("deploy:", 1)[1]
+            if env not in deployed and n.order > last_deployed_order:
+                frontier_id = n.id
+                break
+
         out: list[NodeStatus] = []
-        frontier_used = False
         for n in model.nodes:
             if n.kind == "deploy":
                 env = n.id.split("deploy:", 1)[1]
                 if env in deployed:
                     state = "done"
-                elif not frontier_used:
+                elif n.id == frontier_id:
                     state = "active"
-                    frontier_used = True
                 else:
                     state = "pending"
             elif n.kind == "merged":
                 if has_deploy_nodes:
-                    state = "pending" if frontier_used else "done"
+                    # Done only when every deploy node is done (no frontier).
+                    state = "done" if frontier_id is None and all(
+                        dn.id.split("deploy:", 1)[1] in deployed for dn in deploy_nodes
+                    ) else "pending"
                 else:
                     state = "active"  # M-Track-1: no deploy tracking → merged is the active terminal
             else:  # ci / ready / queue cleared by a merged PR

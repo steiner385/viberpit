@@ -61,11 +61,6 @@ def test_merged_pr_no_deploy_node_merged_active():
     assert st == {"ci": "done", "ready": "done", "merged": "active"}
 
 
-def _pr_envs(**kw):
-    # helper: merged PR with deployed_envs; falls back to _pr() builder
-    return _pr(**kw)
-
-
 def test_merged_live_in_first_env_only():
     m = build_stage_model("o/r", ci_graph=None, has_queue=False,
                           deploy_envs=["qa", "staging", "production"])
@@ -91,3 +86,13 @@ def test_merged_live_in_none_first_deploy_active():
     assert st["deploy:qa"] == "active"
     assert st["deploy:production"] == "pending"
     assert st["merged"] == "pending"
+
+
+def test_merged_skipped_env_no_active_behind_done():
+    m = build_stage_model("o/r", ci_graph=None, has_queue=False,
+                          deploy_envs=["qa", "staging", "production"])
+    pr = _pr(stage="merged", state="merged", merged=True, deployed_envs=("production",))
+    st = _states(pr, m)
+    # production is the furthest-deployed (and last) → no frontier after it; nothing "active" behind it
+    assert st == {"ci": "done", "ready": "done", "deploy:qa": "pending",
+                  "deploy:staging": "pending", "deploy:production": "done", "merged": "pending"}

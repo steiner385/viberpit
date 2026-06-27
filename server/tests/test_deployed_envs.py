@@ -31,10 +31,13 @@ def test_is_deployed_envs_empty_for_open():
 
 def test_pullrequestinfo_deployed_bool_tracks_production_env():
     pr = PullRequestInfo(number=1, url="u", state="merged", checks="passing", title="t",
-                         deployed_envs=("qa", "production"))
+                         deployed=True, deployed_envs=("qa", "production"))
     d = pr.to_dict()
     assert d["deployed_envs"] == ["qa", "production"]
-    assert PullRequestInfo.from_dict(d).deployed_envs == ("qa", "production")
+    assert d["deployed"] is True
+    back = PullRequestInfo.from_dict(d)
+    assert back.deployed_envs == ("qa", "production")
+    assert back.deployed is True
 
 
 def test_population_query_unfiltered_deployments_with_latest_environment():

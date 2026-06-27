@@ -1,7 +1,7 @@
 from datetime import datetime, timezone, timedelta
 
 from server.github.pr_status import (
-    PRODUCTION_ENVIRONMENT, CheckDetail, PullRequestInfo, build_pr_query, parse_pr_response,
+    CheckDetail, PullRequestInfo, build_pr_query, parse_pr_response,
 )
 
 
