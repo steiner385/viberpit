@@ -28,6 +28,7 @@ try:
             alias="CCSWITCH_REPO_ROOT",
         )
         reauth_display: str = Field(default=":0", alias="CCSWITCH_REAUTH_DISPLAY")
+        reauth_virtual_display: bool = Field(default=True, alias="CCSWITCH_REAUTH_VIRTUAL_DISPLAY")
         chrome_profile: str = Field(
             default_factory=lambda: str(Path.home() / ".config" / "google-chrome" / "Default"),
             alias="CCSWITCH_CHROME_PROFILE",
@@ -97,6 +98,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         reauth_display: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_DISPLAY", ":0")
+        )
+        reauth_virtual_display: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_VIRTUAL_DISPLAY", "true").lower() in ("1", "true", "yes", "on")
         )
         chrome_profile: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_CHROME_PROFILE") or str(Path.home() / ".config" / "google-chrome" / "Default")
