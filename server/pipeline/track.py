@@ -87,7 +87,7 @@ def build_stage_model(
     *,
     ci_graph: dict | None,
     has_queue: bool,
-    has_deploy: bool,
+    deploy_envs: list[str],
 ) -> StageModel:
     """Assemble the ordered StageModel for a repo from its real CI/CD facts."""
     specs: list[tuple[str, str, str]] = []  # (id, label, kind)
@@ -96,8 +96,8 @@ def build_stage_model(
     specs.append(("ready", "Ready", "gate"))
     if has_queue:
         specs.append(("queue", "Queue", "queue"))
-    if has_deploy:
-        specs.append(("deploy:production", "Deploy", "deploy"))
+    for env in deploy_envs:
+        specs.append((f"deploy:{env}", env, "deploy"))
     specs.append(("merged", "Merged", "merged"))
     nodes = tuple(
         StageNode(id=sid, label=label, kind=kind, order=i)
