@@ -1131,7 +1131,7 @@ class SessionOrchestrator:
         from server.pipeline.track import build_stage_model
         models: dict = {}
         pop = self._pr_population.all()
-        history = self._pr_population._store()
+        history = self._pr_population.history_store()
         for repo in list(pop.keys()):
             prs = pop.get(repo, ())
             has_queue = any(p.stage == "queue" for p in prs)

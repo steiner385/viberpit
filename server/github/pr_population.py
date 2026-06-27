@@ -142,6 +142,16 @@ class PrPopulationPoller:
                 self._history_store = None
         return self._history_store
 
+    def history_store(self):
+        """Public accessor for the lazily-initialised HistoryStore.
+
+        Returns the HistoryStore instance, or None when the history DB is absent
+        or unavailable (e.g. the optional pipeline dependency is not installed).
+        Delegates to the internal ``_store()`` method; callers outside this module
+        should use this accessor instead of reaching into the protected method.
+        """
+        return self._store()
+
     async def _enrich_with_eta(
         self, prs_by_repo: dict[str, tuple[PullRequestInfo, ...]]
     ) -> dict[str, tuple[PullRequestInfo, ...]]:

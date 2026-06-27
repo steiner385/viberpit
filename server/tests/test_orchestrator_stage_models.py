@@ -16,7 +16,7 @@ class _FakePop:
     def all(self):
         return self._d
 
-    def _store(self):
+    def history_store(self):
         return _FakeStore()
 
 
