@@ -8,7 +8,7 @@ import { isActionablePrState } from '@/session/prStatus'
 import type { PipelinePr } from '@/api/types'
 
 /** Format a positive seconds value as a human-readable ETA string: ~45s, ~12m, ~1h5m. */
-function formatEta(seconds: number): string {
+export function formatEta(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`
   const m = Math.floor(seconds / 60)
   if (m < 60) return `${m}m`
