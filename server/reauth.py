@@ -226,6 +226,7 @@ class ReauthManager:
             message=s.message,
             identity=s.identity,
             started_at=s.started_at,
+            vnc_session=s.vnc_session,
         )
 
     async def cancel(self, name: str) -> ReauthState:

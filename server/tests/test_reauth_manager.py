@@ -52,6 +52,15 @@ def test_reauth_state_vnc_session_defaults_none():
     assert ReauthState().to_dict()["vncSession"] is None
 
 
+def test_status_snapshot_surfaces_vnc_session():
+    """The REAL ReauthManager.status() must copy vnc_session — the API/proxy read it via
+    status(), so dropping it here ships the in-page VNC panel dark (regression guard: the
+    test fakes re-add this field, so only a real-manager assertion catches the omission)."""
+    mgr = ReauthManager(key_available=lambda: True)
+    mgr._state.vnc_session = REAUTH_DISPLAY_KEY
+    assert mgr.status("primary").to_dict()["vncSession"] == REAUTH_DISPLAY_KEY
+
+
 @pytest.mark.asyncio
 async def test_runner_allocates_virtual_display_and_releases(monkeypatch):
     # Capture the env_extra the runner passes to capture_login.
