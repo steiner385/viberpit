@@ -1,5 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
-import { Paperclip, X, Sparkles, ChevronUp } from 'lucide-react'
+import { Paperclip, X, Sparkles, Loader2, ChevronUp } from 'lucide-react'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
 import { useImageAttachments } from './useImageAttachments'
@@ -24,14 +25,18 @@ interface Props {
   /** Auto-focus the textarea when this changes / on mount (mirrors DispatchBar). */
   autoFocusKey?: unknown
   suggestions?: string[]
+  /** Sparkle (✨): generate a fresh next-prompt via the LLM. Resolves to the
+   *  suggestion strings; the Composer sends the top one. */
+  onRequestSuggestions?: () => Promise<string[]>
   history?: string[]
   sessionId?: string
 }
 
-export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, history = [], sessionId }: Props) {
+export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId }: Props) {
   const draft = useSessionDraft(sessionId)
   const [text, setText] = useState(draft.initial.text)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [generating, setGenerating] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const paletteRef = useRef<CommandPaletteHandle>(null)
@@ -147,17 +152,27 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
 
   const showResume = !isWorking && text === ''
 
-  const play = useCallback(() => {
-    // Existing suggestion (shown as ghost text) → send it immediately. Otherwise
-    // prefill "continue", focused + editable, for the user to confirm — instant and
-    // reliable on any session (a detached/idle session has no live driver to
-    // generate against, so on-demand generation can't work there).
-    if (suggestions && suggestions.length > 0) {
-      onPrompt(suggestions[0], [])
-      return
+  const play = useCallback(async () => {
+    // Sparkle (✨) ALWAYS asks the LLM for a fresh next-prompt and sends the top
+    // result — never a cached value or a hard-coded fallback (those live only in
+    // the dropdown). The backend generates from the live driver, or from the
+    // transcript for a detached/idle session. When the model returns nothing we
+    // hint at the dropdown rather than silently sending "continue".
+    if (!onRequestSuggestions || generating) return
+    setGenerating(true)
+    try {
+      const items = await onRequestSuggestions()
+      if (items.length > 0) {
+        onPrompt(items[0], [])
+      } else {
+        toast.info('No suggestion right now — pick a quick reply from the menu.')
+      }
+    } catch {
+      toast.error('Could not generate a suggestion.')
+    } finally {
+      setGenerating(false)
     }
-    prefill('continue')
-  }, [suggestions, onPrompt, prefill])
+  }, [onRequestSuggestions, generating, onPrompt])
 
   function handlePaste(e: React.ClipboardEvent) {
     const files = Array.from(e.clipboardData?.files || [])
@@ -356,16 +371,20 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
           <div className="relative flex items-center">
             <button
               type="button"
-              aria-label="Resume (send suggested next step)"
-              title={suggestions && suggestions.length > 0 ? 'Resume — send the suggested next step' : 'Resume — prefill “continue”'}
-              onClick={play}
+              aria-label="Resume (generate the next step with AI)"
+              aria-busy={generating}
+              disabled={generating}
+              title="Resume — generate the next step with AI"
+              onClick={() => void play()}
               className={cn(
                 'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-[44px]',
-                'bg-emerald-600 text-white hover:bg-emerald-700',
+                'bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-70',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400',
               )}
             >
-              <Sparkles size={16} aria-hidden="true" />
+              {generating
+                ? <Loader2 size={16} aria-hidden="true" className="animate-spin" />
+                : <Sparkles size={16} aria-hidden="true" />}
             </button>
             <button
               type="button"
@@ -390,9 +409,10 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
                   'bg-white dark:bg-gray-800 shadow-lg py-1',
                 )}
               >
-                {/* Dynamic section: backend context suggestions the sparkle didn't
-                    already send (slice(1)). Empty for most sessions. */}
-                {(suggestions ?? []).slice(1).map((s, i) => (
+                {/* Dynamic section: the backend's cached context suggestions. The
+                    sparkle generates fresh on tap, so none is "already sent" — show
+                    them all here. Empty for most sessions. */}
+                {(suggestions ?? []).map((s, i) => (
                   <button
                     key={`suggestion-${i}`}
                     type="button"
@@ -406,7 +426,7 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
                     {s}
                   </button>
                 ))}
-                {(suggestions?.length ?? 0) > 1 && (
+                {(suggestions?.length ?? 0) > 0 && (
                   <div role="separator" className="my-1 border-t border-gray-200 dark:border-gray-700" />
                 )}
                 {/* Canned section: hard-coded one-tap replies, always available. */}

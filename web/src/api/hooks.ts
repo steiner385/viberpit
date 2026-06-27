@@ -208,6 +208,19 @@ export function useFixPr() {
   })
 }
 
+// Sparkle (✨) on-demand generation: ALWAYS asks the backend LLM for fresh
+// next-prompt suggestions (never a cached value or a hard-coded fallback — those
+// live only in the dropdown). Resolves to the suggestion strings; [] when the
+// model yields nothing.
+export function useGenerateSuggestions() {
+  return useMutation<string[], ApiRequestError, { id: string }>({
+    mutationFn: async ({ id }) => {
+      const r = await api.post<{ suggestions: string[] }>(`/sessions/${id}/suggest`, {})
+      return r.suggestions ?? []
+    },
+  })
+}
+
 export function useCloseSession() {
   const qc = useQueryClient()
   return useMutation<void, ApiRequestError, string, { prev?: Session[]; removed?: Session }>({

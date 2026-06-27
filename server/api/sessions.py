@@ -679,6 +679,30 @@ async def send_session_prompt(
     return _record_to_dict(updated, repo=await _resolve_repo(updated))
 
 
+@router.post("/{session_id}/suggest")
+async def generate_session_suggestions(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> dict:
+    """Generate fresh next-prompt suggestions for a session via the LLM, on demand.
+
+    Backs the sparkle (✨) action: tapping it ALWAYS asks the model for a new
+    suggestion rather than replaying a cached value or a hard-coded fallback (those
+    live only in the dropdown). Resume-less and best-effort — never resumes the
+    session merely to suggest, and returns an empty list rather than erroring when
+    the model yields nothing. 404 only when the session itself is unknown."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    suggestions = await orch.generate_suggestions_now(session_id)
+    return {"suggestions": list(suggestions or [])}
+
+
 @router.post("/{session_id}/fix-pr")
 async def fix_session_pr(
     session_id: str,

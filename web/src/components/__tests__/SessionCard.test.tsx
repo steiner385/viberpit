@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { SessionCard } from '../SessionCard'
 import type { Session } from '@/api/types'
@@ -21,10 +21,12 @@ async function press(key: string) {
 }
 
 describe('SessionCard — list-mode keys', () => {
-  it('c continues (resume), r renames, a archives, d deletes', async () => {
+  it('c continues (generates via LLM, then resumes), r renames, a archives, d deletes', async () => {
     const onQuickResume = vi.fn(), onRename = vi.fn(), onClose = vi.fn(), onDelete = vi.fn()
-    render(<SessionCard {...props({ onQuickResume, onRename, onClose, onDelete })} />)
-    await press('c'); expect(onQuickResume).toHaveBeenCalledWith('s1', 'continue')
+    // 'c' now triggers the sparkle: generate a fresh suggestion, then resume with it.
+    const onGenerateSuggestion = vi.fn().mockResolvedValue(['Keep going'])
+    render(<SessionCard {...props({ onQuickResume, onRename, onClose, onDelete, onGenerateSuggestion })} />)
+    await press('c'); await waitFor(() => expect(onQuickResume).toHaveBeenCalledWith('s1', 'Keep going'))
     await press('r'); expect(onRename).toHaveBeenCalledWith('s1')
     await press('a'); expect(onClose).toHaveBeenCalledWith('s1')
     await press('{Backspace}'); expect(onClose).toHaveBeenCalledTimes(2)

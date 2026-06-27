@@ -18,6 +18,7 @@ import type { Session } from '@/api/types'
 const sendPromptMutate = vi.fn()
 
 vi.mock('@/api/hooks', () => ({
+  useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -248,13 +249,17 @@ describe('Task 4 — row actions on highlighted session', () => {
     expect(mutate).toHaveBeenCalledWith('s1')
   })
 
-  it('Tab then c sends "continue"', async () => {
+  it('Tab then c generates a fresh suggestion via the LLM, then resumes with it', async () => {
     const mutate = vi.fn()
     vi.mocked(hooks.useSendPrompt).mockReturnValue({ ...NOOP_MUTATION, mutate } as unknown as ReturnType<typeof hooks.useSendPrompt>)
+    // The sparkle now ALWAYS asks the LLM (never a hard-coded "continue").
+    vi.mocked(hooks.useGenerateSuggestions).mockReturnValue({
+      ...NOOP_MUTATION, mutateAsync: vi.fn(() => Promise.resolve(['Keep going'])),
+    } as unknown as ReturnType<typeof hooks.useGenerateSuggestions>)
     const user = userEvent.setup()
     renderDashboard()
     await user.keyboard('{ArrowDown}{Tab}c')
-    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ text: 'continue' }))
+    await waitFor(() => expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ text: 'Keep going' })))
   })
 
   it('Tab then d opens the permanent-delete dialog', async () => {

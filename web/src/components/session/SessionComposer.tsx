@@ -9,10 +9,12 @@
 import { useMemo } from 'react'
 import { Composer } from './Composer'
 import { deriveHistory } from '@/session/history'
+import { useGenerateSuggestions } from '@/api/hooks'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 
 export function SessionComposer({ rt }: { rt: SessionRuntime }) {
   const history = useMemo(() => deriveHistory(rt.state.turns), [rt.state.turns])
+  const genSuggestions = useGenerateSuggestions()
   return (
     <Composer
       status={rt.state.status}
@@ -25,6 +27,7 @@ export function SessionComposer({ rt }: { rt: SessionRuntime }) {
       onCommand={rt.onCommand}
       autoFocusKey={rt.sessionId}
       suggestions={rt.state.latestSuggestions}
+      onRequestSuggestions={() => genSuggestions.mutateAsync({ id: rt.sessionId })}
       history={history}
       sessionId={rt.sessionId}
     />

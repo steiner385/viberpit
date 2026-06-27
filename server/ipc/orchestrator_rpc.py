@@ -87,13 +87,13 @@ def register_orchestrator_rpc(app, orch) -> None:
     async def _maybe_await(r):
         return await r if inspect.isawaitable(r) else r
 
-    # 23 methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
+    # 24 methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
     _SIMPLE = [
         "archive_session", "rename_session", "interrupt",
         "set_permission_mode", "cancel_queued", "resolve_permission", "answer_question",
         "transcript_path", "pending_questions", "pop_pending_initial_prompt",
         "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
-        "latest_suggestions", "seed_idle_suggestions", "latest_summary",
+        "latest_suggestions", "generate_suggestions_now", "seed_idle_suggestions", "latest_summary",
         "begin_drain", "drain_status",
         "live_session_load", "live_session_counts",
         "snapshot_deploy", "restore_deploy",

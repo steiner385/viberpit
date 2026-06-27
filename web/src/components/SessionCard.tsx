@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState } from 'react'
-import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Target, Wrench } from 'lucide-react'
+import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench } from 'lucide-react'
+import { toast } from 'sonner'
 import { matchListShortcut } from '@/lib/shortcuts'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
 import { cn } from '@/lib/utils'
@@ -39,6 +40,9 @@ interface SessionCardProps {
   onDelete: (id: string) => void
   /** Quick-resume: text present → fire that suggestion in place; undefined → caller opens the session. */
   onQuickResume: (id: string, text?: string) => void
+  /** Sparkle (✨): generate a fresh next-prompt via the LLM. Resolves to the suggestion
+   *  strings; the card sends the top one. Hard-coded replies stay in the dropdown only. */
+  onGenerateSuggestion?: (id: string) => Promise<string[]>
   /** When true, the highlighted row takes real DOM focus (list-focus mode). */
   listMode?: boolean
   /** Move the highlight to the previous/next row (list mode). */
@@ -51,20 +55,39 @@ interface SessionCardProps {
   onFixPr?: (id: string, number: number) => void
 }
 
-export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onNavigate, onExit, prAutofixMode, onFixPr }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr }: SessionCardProps) {
   const articleRef = useRef<HTMLElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const subAgents = session.subAgents ?? []
   const hasSubAgents = subAgents.length > 0
   const [expanded, setExpanded] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [generating, setGenerating] = useState(false)
 
   const suggestions = session.latestSuggestions ?? []
-  // One-tap resume sends the cached top suggestion if there is one, else "continue".
-  // The backend lazily resumes a detached session before delivering, so this works
-  // on idle/"Ready" sessions too. Hidden while the session is actively working.
-  const resumeText = suggestions[0] ?? 'continue'
   const isBusy = statusTier(session.status) === 'busy'
+
+  // Sparkle (✨) tap ALWAYS asks the LLM for a fresh next-prompt, then sends the
+  // top result — never a cached value or a hard-coded fallback (those live only in
+  // the dropdown). The backend lazily resumes a detached session before delivering.
+  // When the model returns nothing we surface a hint instead of silently sending
+  // "continue"; the dropdown's canned replies are the manual escape hatch.
+  async function handleSparkle() {
+    if (!onGenerateSuggestion || generating) return
+    setGenerating(true)
+    try {
+      const items = await onGenerateSuggestion(session.id)
+      if (items.length > 0) {
+        onQuickResume(session.id, items[0])
+      } else {
+        toast.info('No suggestion right now — pick a quick reply from the menu.')
+      }
+    } catch {
+      toast.error('Could not generate a suggestion.')
+    } finally {
+      setGenerating(false)
+    }
+  }
 
   const failingPr = (session.prs ?? [])
     .filter((p) => anyChecksFailing([p]) && isActionablePrState(p.state))
@@ -120,7 +143,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
     e.preventDefault()
     switch (action.type) {
       case 'open': onOpen(session.id); break
-      case 'continue': onQuickResume(session.id, resumeText); break
+      case 'continue': void handleSparkle(); break
       case 'rename': onRename(session.id); break
       case 'archive': onClose(session.id); break
       case 'permanent-delete': onDelete(session.id); break
@@ -418,12 +441,17 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             type="button"
             className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
               'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500',
-              'active:bg-emerald-100 dark:active:bg-emerald-900/40')}
+              'active:bg-emerald-100 dark:active:bg-emerald-900/40',
+              'disabled:opacity-60')}
             aria-label={`Resume session ${session.name}`}
-            title={suggestions.length > 0 ? 'Resume — send the suggested next step' : 'Resume — send “continue”'}
-            onClick={() => onQuickResume(session.id, resumeText)}
+            aria-busy={generating}
+            disabled={generating}
+            title="Resume — generate the next step with AI"
+            onClick={() => void handleSparkle()}
           >
-            <Sparkles size={16} aria-hidden="true" />
+            {generating
+              ? <Loader2 size={16} aria-hidden="true" className="animate-spin" />
+              : <Sparkles size={16} aria-hidden="true" />}
           </button>
         )}
         {/* Secondary actions group — desktop-only. Suggestions/rename/archive/
@@ -457,9 +485,10 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                   'bg-white dark:bg-gray-800 shadow-lg py-1',
                 )}
               >
-                {/* Dynamic section: the backend's context suggestions the sparkle
-                    didn't already send (slice(1)). Empty for most sessions. */}
-                {suggestions.slice(1).map((s, i) => (
+                {/* Dynamic section: the backend's cached context suggestions. The
+                    sparkle generates fresh on tap, so none is "already sent" — show
+                    them all here. Empty for most sessions. */}
+                {suggestions.map((s, i) => (
                   <button
                     key={`suggestion-${i}`}
                     type="button"
@@ -471,7 +500,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                     {s}
                   </button>
                 ))}
-                {suggestions.length > 1 && (
+                {suggestions.length > 0 && (
                   <div role="separator" className="my-1 border-t border-gray-200 dark:border-gray-700" />
                 )}
                 {/* Canned section: hard-coded one-tap replies, always available. */}

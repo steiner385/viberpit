@@ -1,7 +1,17 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionComposer } from './SessionComposer'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
+
+// SessionComposer now owns the on-demand suggestion mutation (useGenerateSuggestions),
+// so it needs a QueryClient in context.
+function renderComposer(rt: SessionRuntime) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={qc}><SessionComposer rt={rt} /></QueryClientProvider>,
+  )
+}
 
 // Minimal runtime stub — only the fields SessionComposer reads. The point of this
 // test is to lock the suggestions wiring so neither call site (mobile SessionView /
@@ -32,12 +42,12 @@ describe('SessionComposer (shared mobile/desktop wiring)', () => {
     const rt = fakeRuntime({
       state: { status: { state: 'idle', count: 0 }, queued: [], turns: [], latestSuggestions: ['Run the tests'] },
     } as unknown as Partial<SessionRuntime>)
-    render(<SessionComposer rt={rt} />)
+    renderComposer(rt)
     expect(screen.getByTestId('ghost-suggestion')).toHaveTextContent('Run the tests')
   })
 
   it('renders no ghost when there are no suggestions', () => {
-    render(<SessionComposer rt={fakeRuntime()} />)
+    renderComposer(fakeRuntime())
     expect(screen.queryByTestId('ghost-suggestion')).toBeNull()
   })
 })

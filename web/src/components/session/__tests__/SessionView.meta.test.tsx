@@ -29,6 +29,7 @@ vi.mock('@/ws/client', async (importOriginal) => {
 })
 
 vi.mock('@/api/hooks', () => ({
+  useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessions: () => ({ data: [{ id: 's1', name: 'Fix OAuth login bug', accountName: 'work-max', status: 'idle', createdAt: '', updatedAt: '' }] }),

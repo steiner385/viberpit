@@ -1,10 +1,12 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import { SessionCard } from '../SessionCard'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
 import type { Session } from '@/api/types'
 
 const noop = () => {}
+// Default sparkle generator: resolves to one fresh suggestion.
+const genOne = () => Promise.resolve(['Run the tests'])
 
 function mkSession(overrides: Partial<Session> = {}): Session {
   return {
@@ -21,6 +23,7 @@ function mkSession(overrides: Partial<Session> = {}): Session {
 function renderCard(props: {
   session: Session
   onQuickResume: (id: string, text?: string) => void
+  onGenerateSuggestion?: (id: string) => Promise<string[]>
 }) {
   return render(
     <SessionCard
@@ -31,30 +34,37 @@ function renderCard(props: {
       onClose={noop}
       onDelete={noop}
       onQuickResume={props.onQuickResume}
+      onGenerateSuggestion={props.onGenerateSuggestion ?? genOne}
     />,
   )
 }
 
 describe('SessionCard — quick-resume sparkle button', () => {
-  it('with a suggestion: sparkle fires in place with the first suggestion', () => {
+  it('sparkle ALWAYS asks the LLM and resumes with the top freshly-generated suggestion', async () => {
     const onQuickResume = vi.fn()
-    renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: ['Run the tests'] }), onQuickResume })
+    // A stale cached suggestion must be ignored — the sparkle generates fresh.
+    const onGenerateSuggestion = vi.fn().mockResolvedValue(['Generated next step', 'Another'])
+    renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: ['stale cached'] }), onQuickResume, onGenerateSuggestion })
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
-    expect(onQuickResume).toHaveBeenCalledWith('s1', 'Run the tests')
+    await waitFor(() => expect(onGenerateSuggestion).toHaveBeenCalledWith('s1'))
+    await waitFor(() => expect(onQuickResume).toHaveBeenCalledWith('s1', 'Generated next step'))
   })
 
-  it('no suggestion: sparkle sends "continue"', () => {
+  it('empty generation: sparkle resumes with nothing — never a hard-coded "continue"', async () => {
     const onQuickResume = vi.fn()
-    renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: [] }), onQuickResume })
+    const onGenerateSuggestion = vi.fn().mockResolvedValue([])
+    renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: [] }), onQuickResume, onGenerateSuggestion })
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
-    expect(onQuickResume).toHaveBeenCalledWith('s1', 'continue')
+    await waitFor(() => expect(onGenerateSuggestion).toHaveBeenCalled())
+    expect(onQuickResume).not.toHaveBeenCalled()
   })
 
-  it('detached "Ready" session with no suggestion: sparkle still sends "continue" (backend resumes it)', () => {
+  it('detached "Ready" session: sparkle still generates (backend resumes from transcript)', async () => {
     const onQuickResume = vi.fn()
-    renderCard({ session: mkSession({ status: 'idle', detached: true, latestSuggestions: [] }), onQuickResume })
+    const onGenerateSuggestion = vi.fn().mockResolvedValue(['Pick up where you left off'])
+    renderCard({ session: mkSession({ status: 'idle', detached: true, latestSuggestions: [] }), onQuickResume, onGenerateSuggestion })
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
-    expect(onQuickResume).toHaveBeenCalledWith('s1', 'continue')
+    await waitFor(() => expect(onQuickResume).toHaveBeenCalledWith('s1', 'Pick up where you left off'))
   })
 
   it('actively-working session: no resume button', () => {
@@ -88,20 +98,20 @@ describe('SessionCard — quick-resume sparkle button', () => {
     expect(onQuickResume).toHaveBeenCalledWith('s1', 'try again')
   })
 
-  it('dropdown lists leftover dynamic suggestions above the canned list, separated by a divider', () => {
+  it('dropdown lists all cached dynamic suggestions above the canned list, separated by a divider', () => {
     renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: ['First step', 'Second step'] }), onQuickResume: noop })
     fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
-    // The sparkle already sends 'First step'; the dropdown surfaces the rest.
+    // The sparkle generates fresh, so the dropdown surfaces ALL cached suggestions.
+    expect(screen.getByRole('menuitem', { name: 'First step' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Second step' })).toBeInTheDocument()
-    expect(screen.queryByRole('menuitem', { name: 'First step' })).not.toBeInTheDocument()
     // Canned list still present below.
     expect(screen.getByRole('menuitem', { name: 'continue' })).toBeInTheDocument()
     // A divider separates the dynamic section from the canned section.
     expect(screen.getByRole('separator')).toBeInTheDocument()
   })
 
-  it('no divider when there are no leftover dynamic suggestions', () => {
-    renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: ['Only one'] }), onQuickResume: noop })
+  it('no divider when there are no cached dynamic suggestions', () => {
+    renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: [] }), onQuickResume: noop })
     fireEvent.click(screen.getByRole('button', { name: /quick replies/i }))
     expect(screen.queryByRole('separator')).not.toBeInTheDocument()
   })
