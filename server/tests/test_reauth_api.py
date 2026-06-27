@@ -55,18 +55,19 @@ class FakeReauthManager:
             started_at=self._state.started_at,
         )
 
-    def status(self, name: str) -> ReauthState:
+    async def status(self, name: str) -> ReauthState:
         s = self._state
         return ReauthState(
             state=s.state,
             identity=s.identity,
             started_at=s.started_at,
             message=s.message,
+            vnc_session=s.vnc_session,
         )
 
     async def cancel(self, name: str) -> ReauthState:
         self._state = ReauthState(state="idle", message="cancelled")
-        return self.status(name)
+        return await self.status(name)
 
     def sweep_stale(self) -> None:
         pass
@@ -409,3 +410,17 @@ def test_reauth_requires_auth():
             resp = client.post("/api/accounts/primary/reauth")
 
     assert resp.status_code == 401
+
+
+def test_reauth_status_returns_vnc_session():
+    """GET reauth status surfaces the vncSession key when a virtual display is live."""
+    fake_rm = FakeReauthManager()
+    fake_rm._state = ReauthState(state="running", vnc_session="__reauth__")
+    with temp_env():
+        _seed_slot("primary")
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client(fake_rm)
+        with client:
+            resp = client.get("/api/accounts/primary/reauth", headers=IDENTITY_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["vncSession"] == "__reauth__"

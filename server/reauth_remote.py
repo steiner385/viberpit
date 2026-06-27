@@ -38,6 +38,15 @@ class RemoteReauthManager:
         d = await self._client.call("reauth_cancel", name=name)
         return ReauthState.from_dict(d)
 
+    # The daemon owns the reauth lifecycle in remote mode (it runs the runner, the
+    # reauth-tmp sweep, and shutdown in its own lifespan). The edge calls these in its
+    # lifespan against app.state.reauth, so the proxy must accept them as no-ops.
+    def sweep_stale(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
 
 class InProcessReauthAdapter:
     """Wraps a real ReauthManager behind the same async facade (sync status -> awaitable)."""

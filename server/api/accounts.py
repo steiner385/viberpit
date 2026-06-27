@@ -327,7 +327,7 @@ async def add_account_status(
     (one login at a time). Does not require a slot to exist.
     """
     reauth = _get_reauth(request)
-    return reauth.status("").to_dict()
+    return (await reauth.status("")).to_dict()
 
 
 @router.post("/add/cancel")
@@ -338,7 +338,7 @@ async def add_account_cancel(
 ) -> dict:
     """Cancel a running add. Returns the resulting state dict."""
     reauth = _get_reauth(request)
-    pre_cancel_state = reauth.status("")
+    pre_cancel_state = await reauth.status("")
     state = await reauth.cancel("")
 
     if pre_cancel_state.state != "idle":
@@ -414,7 +414,7 @@ async def reauth_status(
     _check_name_and_slot(name)
 
     reauth = _get_reauth(request)
-    state = reauth.status(name)
+    state = await reauth.status(name)
     return state.to_dict()
 
 
@@ -432,7 +432,7 @@ async def reauth_cancel(
     _check_name_and_slot(name)
 
     reauth = _get_reauth(request)
-    pre_cancel_state = reauth.status(name)
+    pre_cancel_state = await reauth.status(name)
     state = await reauth.cancel(name)
 
     if pre_cancel_state.state != "idle":
