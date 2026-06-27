@@ -4,6 +4,7 @@ export interface ReauthState {
   state: 'idle' | 'running' | 'cancelling' | 'success' | 'error' | 'timeout'
   message?: string | null
   startedAt?: number | null
+  vncSession?: string | null
 }
 
 export interface UsageWindow {

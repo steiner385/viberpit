@@ -24,6 +24,7 @@ import {
   QK,
 } from '@/api/hooks'
 import { AddAccountDialog } from './AddAccountDialog'
+import { ReauthBrowserPanel } from './ReauthBrowserPanel'
 import type { Account, LiveSessionCounts, Session } from '@/api/types'
 
 // ── Sessions + Rank Badges ───────────────────────────────────────────────────
@@ -427,9 +428,18 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
 
       {/* Reauth status line */}
       {!editing && isReauthRunning && (
-        <p className="text-xs text-amber-600 dark:text-amber-400">
-          Opening a fresh Chrome on the host machine&rsquo;s screen — sign in there…
-        </p>
+        reauthStatus?.vncSession ? (
+          <>
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              Sign in to Claude in the window below…
+            </p>
+            <ReauthBrowserPanel vncSession={reauthStatus.vncSession} />
+          </>
+        ) : (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            Opening Chrome on the host screen — sign in there…
+          </p>
+        )
       )}
       {!editing && isReauthSuccess && (
         <p className="text-xs text-green-600 dark:text-green-400">

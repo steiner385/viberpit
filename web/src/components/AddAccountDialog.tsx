@@ -14,6 +14,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useAddAccount, useAddAccountStatus, useCancelAddAccount, QK } from '@/api/hooks'
+import { ReauthBrowserPanel } from './ReauthBrowserPanel'
 
 interface AddAccountDialogProps {
   onClose: () => void
@@ -146,9 +147,18 @@ export function AddAccountDialog({ onClose }: AddAccountDialogProps) {
         </div>
 
         {isRunning && (
-          <p className="text-xs text-amber-600 dark:text-amber-400">
-            Opening a fresh Chrome on the host machine&rsquo;s screen — sign in there…
-          </p>
+          status?.vncSession ? (
+            <>
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                Sign in to Claude in the window below…
+              </p>
+              <ReauthBrowserPanel vncSession={status.vncSession} />
+            </>
+          ) : (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              Opening Chrome on the host screen — sign in there…
+            </p>
+          )
         )}
         {isSuccess && (
           <p className="text-xs text-green-600 dark:text-green-400">

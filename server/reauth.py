@@ -21,9 +21,11 @@ import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 log = logging.getLogger(__name__)
+
+REAUTH_DISPLAY_KEY = "__reauth__"   # reserved pseudo-session key for the reauth virtual display
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +59,7 @@ class ReauthState:
     _task: asyncio.Task | None = field(default=None, repr=False, compare=False)
     _launcher_pid: int | None = field(default=None, repr=False, compare=False)
     _temp_profile: str | None = field(default=None, repr=False, compare=False)
+    vnc_session: str | None = None   # reserved key while a virtual display is live; None on :0 fallback
 
     def to_dict(self) -> dict:
         """Return a camelCase dict safe for JSON serialisation."""
@@ -65,7 +68,18 @@ class ReauthState:
             "message": self.message,
             "identity": self.identity,
             "startedAt": self.started_at,
+            "vncSession": self.vnc_session,
         }
+
+    @staticmethod
+    def from_dict(d: dict) -> "ReauthState":
+        return ReauthState(
+            state=d.get("state", "idle"),
+            message=d.get("message"),
+            identity=d.get("identity"),
+            started_at=d.get("startedAt"),
+            vnc_session=d.get("vncSession"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +101,7 @@ class ReauthManager:
         runner: Callable[[str], Awaitable[bool]] | None = None,
         key_available: Callable[[], bool] | None = None,
         timeout_s: float = 900.0,
+        x11: "Callable[[], Any] | None" = None,
     ) -> None:
         if key_available is None:
             from ccswitch.crypto import key_available as _ka
@@ -94,6 +109,7 @@ class ReauthManager:
 
         self._key_available = key_available
         self._timeout_s = timeout_s
+        self._x11 = x11
         self._state = ReauthState()
         self._lock = asyncio.Lock()
 
@@ -136,12 +152,21 @@ class ReauthManager:
             temp = auth_login.prepare_reauth_profile(chrome_profile)
             # Record immediately so _kill_launcher can find <temp>/launcher.pid
             manager._state._temp_profile = temp
+            x11 = manager._x11() if manager._x11 else None
+            spec = None
+            if x11 is not None and getattr(settings, "reauth_virtual_display", True):
+                spec = await x11.start_display(REAUTH_DISPLAY_KEY)
             try:
                 env_extra = {
                     "BROWSER": launcher_real,
-                    "DISPLAY": reauth_display,
                     "CCSWITCH_REAUTH_PROFILE": temp,
                 }
+                if spec is not None:
+                    env_extra["DISPLAY"] = f":{spec.lease.display}"
+                    env_extra["XAUTHORITY"] = spec.xauthority
+                    manager._state.vnc_session = REAUTH_DISPLAY_KEY
+                else:
+                    env_extra["DISPLAY"] = reauth_display
                 ok = await asyncio.to_thread(
                     auth_login.capture_login, name, env_extra=env_extra
                 )
@@ -155,6 +180,8 @@ class ReauthManager:
             finally:
                 manager._state._temp_profile = None
                 auth_login.cleanup_reauth_profile(temp)
+                if spec is not None and x11 is not None:
+                    await x11.stop_display(REAUTH_DISPLAY_KEY)
 
         return _production_runner
 
@@ -199,6 +226,7 @@ class ReauthManager:
             message=s.message,
             identity=s.identity,
             started_at=s.started_at,
+            vnc_session=s.vnc_session,
         )
 
     async def cancel(self, name: str) -> ReauthState:

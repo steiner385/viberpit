@@ -12,7 +12,9 @@ from server.config import get_settings
 from server.db import init_db
 from server.ipc.daemon import create_daemon_app
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
+from server.ipc.reauth_rpc import register_reauth
 from server.ipc.x11_rpc import register_x11
+from server.reauth import ReauthManager
 from server.ipc.paths import Endpoint, sessiond_endpoint
 from server.ipc.tls import DaemonTLSFiles, daemon_tls_files, daemon_ssl_context_factory, client_allowlist
 from server.sessions.orchestrator import SessionOrchestrator
@@ -60,6 +62,11 @@ def build_daemon(orchestrator=None):
     register_orchestrator_rpc(app, orchestrator)
     app.state.x11 = orchestrator._x11
     register_x11(app, app.state.x11)
+    app.state.reauth = ReauthManager(
+        timeout_s=get_settings().reauth_timeout_s,
+        x11=lambda: app.state.x11,
+    )
+    register_reauth(app, app.state.reauth)
     return app, orchestrator
 
 
@@ -97,6 +104,10 @@ async def daemon_lifespan(app, orchestrator):
         except Exception:
             log.warning("daemon startup: X orphan reap failed", exc_info=True)
     try:
+        app.state.reauth.sweep_stale()
+    except Exception:
+        log.warning("daemon startup: reauth sweep_stale failed", exc_info=True)
+    try:
         yield
     finally:
         # Tear down every virtual display before stopping (issue #206, daemon half).
@@ -110,6 +121,10 @@ async def daemon_lifespan(app, orchestrator):
                 await asyncio.wait_for(x11.stop_all(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
             except Exception:
                 log.warning("daemon shutdown: x11 teardown failed", exc_info=True)
+        try:
+            await app.state.reauth.shutdown()
+        except Exception:
+            log.warning("daemon shutdown: reauth shutdown failed", exc_info=True)
         await orchestrator.stop()
 
 

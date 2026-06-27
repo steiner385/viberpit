@@ -11,7 +11,95 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from server.reauth import ReauthManager, ReauthBusy, ReauthNoKey
+from server.reauth import ReauthManager, ReauthBusy, ReauthNoKey, REAUTH_DISPLAY_KEY
+
+
+# ---------------------------------------------------------------------------
+# Task 1: x11 accessor, reserved key, vnc_session
+# ---------------------------------------------------------------------------
+
+class _FakeLease:
+    def __init__(self, display): self.display = display
+
+
+class _FakeSpec:
+    def __init__(self, display, xauth):
+        self.lease = _FakeLease(display)
+        self.xauthority = xauth
+
+
+class _FakeX11:
+    """Records start/stop and hands back a fixed display spec."""
+    def __init__(self, spec=_FakeSpec(105, "/tmp/ccswitch-__reauth__.Xauthority")):
+        self.spec = spec
+        self.started = []
+        self.stopped = []
+    async def start_display(self, key):
+        self.started.append(key)
+        return self.spec
+    async def stop_display(self, key):
+        self.stopped.append(key)
+
+
+def test_reauth_state_to_dict_includes_vnc_session():
+    from server.reauth import ReauthState
+    s = ReauthState(state="running", vnc_session="__reauth__")
+    assert s.to_dict()["vncSession"] == "__reauth__"
+
+
+def test_reauth_state_vnc_session_defaults_none():
+    from server.reauth import ReauthState
+    assert ReauthState().to_dict()["vncSession"] is None
+
+
+def test_status_snapshot_surfaces_vnc_session():
+    """The REAL ReauthManager.status() must copy vnc_session — the API/proxy read it via
+    status(), so dropping it here ships the in-page VNC panel dark (regression guard: the
+    test fakes re-add this field, so only a real-manager assertion catches the omission)."""
+    mgr = ReauthManager(key_available=lambda: True)
+    mgr._state.vnc_session = REAUTH_DISPLAY_KEY
+    assert mgr.status("primary").to_dict()["vncSession"] == REAUTH_DISPLAY_KEY
+
+
+@pytest.mark.asyncio
+async def test_runner_allocates_virtual_display_and_releases(monkeypatch):
+    # Capture the env_extra the runner passes to capture_login.
+    captured = {}
+
+    def fake_capture_login(name, env_extra=None):
+        captured.update(env_extra or {})
+        return True
+
+    monkeypatch.setattr("ccswitch.auth_login.capture_login", fake_capture_login)
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-x")
+    monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
+
+    fake = _FakeX11()
+    mgr = ReauthManager(x11=lambda: fake, key_available=lambda: True, timeout_s=30)
+    await mgr.start("primary", "me@example.com")
+    # wait for the background task to finish
+    await asyncio.sleep(0.05)
+    assert fake.started == [REAUTH_DISPLAY_KEY]
+    assert fake.stopped == [REAUTH_DISPLAY_KEY]      # released in finally
+    assert captured["DISPLAY"] == ":105"
+    assert captured["XAUTHORITY"] == "/tmp/ccswitch-__reauth__.Xauthority"
+
+
+@pytest.mark.asyncio
+async def test_runner_falls_back_to_host_display_without_x11(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("ccswitch.auth_login.capture_login",
+                        lambda name, env_extra=None: captured.update(env_extra or {}) or True)
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-y")
+    monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
+
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)   # no x11
+    await mgr.start("primary", "me@example.com")
+    await asyncio.sleep(0.05)
+    assert captured["DISPLAY"] == ":0"          # settings.reauth_display default
+    assert "XAUTHORITY" not in captured         # untouched fallback env
 
 
 # ---------------------------------------------------------------------------

@@ -336,11 +336,19 @@ def create_app(
         if orchestrator is not None:
             orchestrator._x11 = app.state.x11
 
-    # Attach the ReauthManager (allows tests to inject a fake)
-    if reauth_manager is None:
+    # Attach the reauth facade. Remote mode proxies to the daemon's manager (which owns
+    # the X11 displays); in-process wraps a real manager behind the same async facade.
+    from server.reauth_remote import InProcessReauthAdapter, RemoteReauthManager
+    if getattr(app.state, "remote_mode", False):
+        from server.ipc.client import DaemonClient
+        app.state.reauth = RemoteReauthManager(DaemonClient(app.state.daemon_endpoint))
+    else:
         from server.config import get_settings
-        reauth_manager = ReauthManager(timeout_s=get_settings().reauth_timeout_s)
-    app.state.reauth = reauth_manager
+        mgr = reauth_manager or ReauthManager(
+            timeout_s=get_settings().reauth_timeout_s,
+            x11=lambda: app.state.x11,
+        )
+        app.state.reauth = InProcessReauthAdapter(mgr)
 
     # Middleware stack (Starlette runs last-added outermost): RequestContextMiddleware
     # wraps IdentityMiddleware wraps the routes, so request_id is set before identity.

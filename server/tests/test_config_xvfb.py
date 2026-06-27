@@ -25,3 +25,14 @@ def test_xvfb_env_override(monkeypatch):
     s = _fresh()
     assert s.enable_xvfb is True
     assert s.display_count == 4
+
+def test_reauth_virtual_display_defaults_true(monkeypatch):
+    monkeypatch.delenv("CCSWITCH_REAUTH_VIRTUAL_DISPLAY", raising=False)
+    s = _fresh()
+    assert s.reauth_virtual_display is True
+
+
+def test_reauth_virtual_display_env_override(monkeypatch):
+    monkeypatch.setenv("CCSWITCH_REAUTH_VIRTUAL_DISPLAY", "false")
+    s = _fresh()
+    assert s.reauth_virtual_display is False
