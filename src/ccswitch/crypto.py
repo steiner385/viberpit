@@ -183,11 +183,14 @@ def store_oauth_token(account: str, token: str) -> None:
 
 
 def read_oauth_token(account: str) -> str | None:
-    """Return the stored setup-token for *account*, or None if absent."""
-    proc = subprocess.run(
-        ["secret-tool", "lookup", "service", "ccswitch", "username", f"oat-{account}"],
-        text=True, capture_output=True,
-    )
+    """Return the stored setup-token for *account*, or None if absent/unreadable."""
+    try:
+        proc = subprocess.run(
+            ["secret-tool", "lookup", "service", "ccswitch", "username", f"oat-{account}"],
+            text=True, capture_output=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
     if proc.returncode != 0:
         return None
     return proc.stdout.strip() or None

@@ -221,6 +221,11 @@ class TestCryptoModule(unittest.TestCase):
         with mock.patch("ccswitch.crypto.subprocess.run", return_value=R()):
             self.assertIsNone(crypto.read_oauth_token("ghost"))
 
+    def test_read_oauth_token_secret_tool_absent_returns_none(self):
+        from ccswitch import crypto
+        with mock.patch("ccswitch.crypto.subprocess.run", side_effect=FileNotFoundError()):
+            assert crypto.read_oauth_token("primary") is None
+
 
 class TestReadWriteCredentials(unittest.TestCase):
     """Tests for creds.read_credentials / write_credentials."""
