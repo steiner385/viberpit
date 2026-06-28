@@ -129,9 +129,29 @@ def test_session_factory_injects_oauth_token_env(monkeypatch):
     orch = SessionOrchestrator(sdk_factory=base, poll_interval=9999.0, usage_fn=lambda n: None)
     orch._x11 = None
     orch._records["s1"] = SessionRecord(id="s1", name="n", account="primary",
-                                        claude_session_id=None, cols=80, rows=24, cwd="/tmp/x")
+                                        claude_session_id="", cols=80, rows=24, cwd="/tmp/x")
     monkeypatch.setattr(orch_mod, "crypto", mock.MagicMock())
     orch_mod.crypto.read_oauth_token = lambda acct: "sk-ant-oat01-TOK" if acct == "primary" else None
     factory = orch._session_factory("s1")
     factory("/tmp/x", "/cfg", None, "default", None)
     assert captured["extra_env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-TOK"
+
+
+def test_session_factory_no_token_leaves_env_unchanged(monkeypatch):
+    """When no setup-token exists for the account, factory must NOT inject
+    CLAUDE_CODE_OAUTH_TOKEN and (with no X11) must call the base factory WITHOUT extra_env."""
+    from server.sessions import orchestrator as orch_mod
+    captured = {}
+    def base(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, on_pre_compact=None):
+        captured["extra_env"] = extra_env
+        return object()
+    orch = SessionOrchestrator(sdk_factory=base, poll_interval=9999.0, usage_fn=lambda n: None)
+    orch._x11 = None
+    orch._records["s1"] = SessionRecord(id="s1", name="n", account="primary",
+                                        claude_session_id="", cols=80, rows=24, cwd="/tmp/x")
+    monkeypatch.setattr(orch_mod, "crypto", mock.MagicMock())
+    orch_mod.crypto.read_oauth_token = lambda acct: None
+    factory = orch._session_factory("s1")
+    factory("/tmp/x", "/cfg", None, "default", None)
+    # no token + no x11 → base called with extra_env=None (unchanged old path)
+    assert captured["extra_env"] is None
