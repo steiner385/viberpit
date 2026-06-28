@@ -2336,8 +2336,15 @@ class SessionOrchestrator:
             await driver.send_prompt(last)
 
     async def _recompose_same_account(self, record: SessionRecord) -> None:
-        """Heal a clobbered live .credentials.json: recompose from the store and relaunch
-        the same account in place (a running claude holds the bad creds in memory)."""
+        """Heal a clobbered live .credentials.json. Force a token refresh FIRST so the
+        relaunch picks up a fresh access token (the dominant in-session 401 cause — a stale
+        stored token would otherwise 401 again immediately and falsely flip needs-reauth),
+        then recompose from the store and relaunch the same account in place."""
+        try:
+            await asyncio.to_thread(ccswitch_accounts.ensure_valid_token, record.account)
+        except Exception:
+            log.warning("recompose.ensure_valid_token failed account=%s",
+                        record.account, exc_info=True)
         await self._reassign(record, record.account, reason="recompose")
 
     async def _rotate_away(self, record: SessionRecord, *, reason: str) -> None:
