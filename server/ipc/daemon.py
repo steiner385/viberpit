@@ -3,6 +3,8 @@
 Served by uvicorn bound to a Unix socket. No TCP. No app-level auth — the socket's
 filesystem permissions are the trust boundary.
 """
+import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -57,6 +59,46 @@ def create_daemon_app() -> FastAPI:
 
     app.state.evict = evict
 
+    # Per-subscriber send decoupling (issue #185). Sending inline with `await
+    # ws.send_text` let one slow edge consumer block `publish` → the per-session pump
+    # stopped draining the unbounded driver._out → memory growth + ring-buffer floods.
+    # Each connection now has a bounded send queue drained by its own writer task;
+    # `publish` enqueues non-blocking and drops a subscriber whose queue overflows (it
+    # reconnects and replays from `since`). Source events are never dropped.
+    _sendq_max = int(os.environ.get("CCSWITCH_IPC_SEND_QUEUE", "1024"))
+    app.state.sendq = {}     # ws -> bounded asyncio.Queue[str] (per-connection buffer)
+    app.state.writers = {}   # ws -> writer Task draining sendq to ws.send_text
+
+    def _detach(ws):
+        """Remove a connection from every stream's subscriber set and its send queue.
+        Idempotent; returns its writer task (if any) without cancelling it."""
+        for subs in app.state.subscribers.values():
+            subs.discard(ws)
+        app.state.sendq.pop(ws, None)
+        return app.state.writers.pop(ws, None)
+
+    def drop_subscriber(ws) -> None:
+        """Detach a too-slow / dead connection and stop its writer. The writer's
+        finally closes the socket; the edge reconnects and replays from `since`."""
+        t = _detach(ws)
+        if t is not None and not t.done():
+            t.cancel()
+
+    app.state.drop_subscriber = drop_subscriber
+
+    def _enqueue(ws, text: str) -> bool:
+        """Non-blocking hand-off to a subscriber's writer. Returns False (and drops the
+        subscriber) when its bounded queue is full — i.e. it can't keep up."""
+        q = app.state.sendq.get(ws)
+        if q is None:
+            return False
+        try:
+            q.put_nowait(text)
+            return True
+        except asyncio.QueueFull:
+            drop_subscriber(ws)
+            return False
+
     async def publish(stream: str, event: dict) -> None:
         seq = app.state.seqs.get(stream, -1) + 1
         app.state.seqs[stream] = seq
@@ -71,12 +113,12 @@ def create_daemon_app() -> FastAPI:
         buf.append((seq, event))
         if len(buf) > st["high_water"]:
             st["high_water"] = len(buf)
-        frame = proto.event_frame(stream, event, seq)
+        frame_text = _dumps(proto.event_frame(stream, event, seq))
         for ws in list(app.state.subscribers.get(stream, ())):
-            try:
-                await ws.send_text(_dumps(frame))
-            except Exception:  # noqa: BLE001 — drop a dead/slow connection, keep publishing
-                app.state.subscribers.get(stream, set()).discard(ws)
+            if not _enqueue(ws, frame_text):
+                # Slow/dead subscriber — count the drop so operators can spot a
+                # consumer that can't keep up (issue #185).
+                st["dropped_subscribers"] = st.get("dropped_subscribers", 0) + 1
 
     app.state.publish = publish
 
@@ -98,6 +140,26 @@ def create_daemon_app() -> FastAPI:
     async def events(ws: WebSocket) -> None:
         await ws.accept()
         mine: set[str] = set()
+        # One bounded queue + writer task per connection. The writer is the sole caller
+        # of ws.send_text, so replay and live frames never race a concurrent send.
+        sendq: asyncio.Queue = asyncio.Queue(maxsize=_sendq_max)
+        app.state.sendq[ws] = sendq
+
+        async def _writer() -> None:
+            try:
+                while True:
+                    text = await sendq.get()
+                    await ws.send_text(text)
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 — peer gone / send failed → tear down
+                pass
+            finally:
+                _detach(ws)
+                with contextlib.suppress(Exception):
+                    await ws.close()
+
+        app.state.writers[ws] = asyncio.create_task(_writer())
         try:
             while True:
                 frame = _loads(await ws.receive_text())
@@ -119,17 +181,11 @@ def create_daemon_app() -> FastAPI:
                             log.warning(
                                 "ipc: replay gap stream=%s since=%d oldest=%d lost=%d "
                                 "— edge must resync from disk", stream, since, oldest_seq, lost)
-                            try:
-                                await ws.send_text(_dumps(
-                                    proto.gap_frame(stream, lost=lost, oldest=oldest_seq)))
-                            except Exception:  # noqa: BLE001 — peer gone before replay
-                                continue
+                            _enqueue(ws, _dumps(
+                                proto.gap_frame(stream, lost=lost, oldest=oldest_seq)))
                         for seq, event in list(buf):
                             if since is None or seq > since:
-                                try:
-                                    await ws.send_text(_dumps(proto.event_frame(stream, event, seq)))
-                                except Exception:  # noqa: BLE001 — peer gone mid-replay
-                                    break
+                                _enqueue(ws, _dumps(proto.event_frame(stream, event, seq)))
                 elif frame.get("type") == proto.UNSUBSCRIBE and stream:
                     app.state.subscribers.get(stream, set()).discard(ws)
                     mine.discard(stream)
@@ -138,6 +194,7 @@ def create_daemon_app() -> FastAPI:
         finally:
             for stream in mine:
                 app.state.subscribers.get(stream, set()).discard(ws)
+            drop_subscriber(ws)
 
     @app.get("/info")
     async def info() -> dict:
