@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from server.pipeline.track import StageModel
 
 from ccswitch import accounts as ccswitch_accounts
-from ccswitch import configdir, worktrees
+from ccswitch import configdir, crypto, worktrees
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
@@ -285,6 +285,14 @@ class SessionOrchestrator:
         self._drain_started_at: float = 0.0
         self._drain_timer: asyncio.Task | None = None
 
+    def _oat_env(self, session_id: str) -> dict:
+        """Return {CLAUDE_CODE_OAUTH_TOKEN: <token>} for the session's account, or {}."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return {}
+        tok = crypto.read_oauth_token(rec.account)
+        return {"CLAUDE_CODE_OAUTH_TOKEN": tok} if tok else {}
+
     def _session_factory(self, session_id: str):
         """Return a factory closure injecting this session's DISPLAY and PreCompact hook.
 
@@ -294,7 +302,7 @@ class SessionOrchestrator:
         base = self._sdk_factory
         x11 = self._x11
         def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
-            extra = x11.env_for(session_id) if x11 else {}
+            extra = {**(x11.env_for(session_id) if x11 else {}), **self._oat_env(session_id)}
             if extra:
                 return base(cwd, config_dir, can_use_tool, mode, resume,
                             extra_env=extra, on_pre_compact=on_pre_compact)

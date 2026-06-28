@@ -196,6 +196,36 @@ class TestCryptoModule(unittest.TestCase):
             from ccswitch.crypto import master_key
             self.assertIsNone(master_key())
 
+    # ------------------------------------------------------------------
+    # store_oauth_token / read_oauth_token
+    # ------------------------------------------------------------------
+
+    def test_store_and_read_oauth_token_roundtrip(self):
+        from ccswitch import crypto
+        calls = []
+        def fake_run(argv, **kw):
+            calls.append((argv, kw.get("input")))
+            class R: returncode = 0; stdout = "sk-ant-oat01-XYZ\n"; stderr = ""
+            return R()
+        with mock.patch("ccswitch.crypto.subprocess.run", side_effect=fake_run):
+            crypto.store_oauth_token("primary", "sk-ant-oat01-XYZ")
+            val = crypto.read_oauth_token("primary")
+        store_argv, store_input = calls[0]
+        self.assertIn("oat-primary", store_argv)
+        self.assertEqual(store_input, "sk-ant-oat01-XYZ")
+        self.assertEqual(val, "sk-ant-oat01-XYZ")
+
+    def test_read_oauth_token_missing_returns_none(self):
+        from ccswitch import crypto
+        class R: returncode = 1; stdout = ""; stderr = ""
+        with mock.patch("ccswitch.crypto.subprocess.run", return_value=R()):
+            self.assertIsNone(crypto.read_oauth_token("ghost"))
+
+    def test_read_oauth_token_secret_tool_absent_returns_none(self):
+        from ccswitch import crypto
+        with mock.patch("ccswitch.crypto.subprocess.run", side_effect=FileNotFoundError()):
+            assert crypto.read_oauth_token("primary") is None
+
 
 class TestReadWriteCredentials(unittest.TestCase):
     """Tests for creds.read_credentials / write_credentials."""

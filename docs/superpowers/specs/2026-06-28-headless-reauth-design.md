@@ -1,8 +1,60 @@
 # Headless Account Reauth — Design
 
-**Status:** Draft (design approved; pending spec review → writing-plans)
+**Status:** REVISED 2026-06-28 (post-spikes) — primary approach changed to `claude setup-token`.
+The host-resident-passkey design below is **superseded** by the revision and kept only as a
+documented fallback. See "REVISION: setup-token architecture" immediately below.
 **Date:** 2026-06-28
 **Feature area:** account auth / reauth (`server/reauth.py`, `src/ccswitch/auth_login.py`, `server/sessions/orchestrator.py`)
+
+---
+
+## REVISION: setup-token architecture (supersedes the passkey approach)
+
+Spike D verified `claude setup-token` directly against the real binary (Claude Code 2.1.195,
+real Max account) — finding: `docs/superpowers/specs/spikes/2026-spike-setup-token.md`:
+
+- **1-year** opaque bearer token (`sk-ant-oat01-…`), **non-rotating**.
+- Consumed via `CLAUDE_CODE_OAUTH_TOKEN` env var with **no stored `.credentials.json`**.
+- **Concurrency-safe**: 6 parallel sessions sharing one token, zero 401s, token still valid after.
+
+This eliminates the root of the diagnosed in-session 401s (single-use refresh-token rotation /
+self-collision) because the token does not rotate. It is simpler and more constitution-aligned
+(the binary's own sanctioned headless mechanism) than the passkey/CDP scheme, which is therefore
+dropped to a fallback.
+
+### Revised architecture
+
+1. **Generation** — per account, run `claude setup-token` (interactive code-paste OAuth, ~yearly)
+   through the existing virtual-browser/VNC reauth surface. No loopback port needed.
+2. **Storage** — the `sk-ant-oat01` token stored in the **GNOME keyring** via the existing
+   `crypto.py` / `secret-tool` pattern (service `ccswitch`, username `oat-<account>`), the same
+   mechanism as the master key. No new secrets subsystem; no plaintext at rest.
+3. **Injection** — orchestrator sets `CLAUDE_CODE_OAUTH_TOKEN` in each session's SDK subprocess
+   env (per-process isolation preserved alongside `CLAUDE_CONFIG_DIR`).
+4. **Detection / regen** — a 401 on the token marks the account `needs-reauth` (reusing the
+   existing ledger + audit path); the user regenerates via the dashboard ~yearly.
+
+### Kept / dropped
+
+- **Kept:** Phase 1 (in-session-401 force-refresh, already shipped #340), audit instrumentation,
+  the keyring/crypto secret path.
+- **Dropped:** the host-resident-passkey pipeline, CDP virtual authenticator, `op` password
+  fallback (Spike A/B findings retained as a documented fallback only).
+
+### Open design decisions (for approval before planning)
+
+1. **Replace vs. coexist** — DECIDED: **hard replace.** The grant-harvest/refresh path is removed;
+   every account requires a setup-token. Risk accepted (big-bang, no fallback). Removes Phase 1's
+   in-session-401 refresh (#340) and the Cloudflare-1010 / idempotent-POST hardening as dead code.
+   **Mandatory safeguard:** a pre-cutover gate must verify EVERY active account has a working
+   `oat-<account>` token (a live auth probe) before the old path is deleted — never cut over into
+   a broken state.
+2. **Generation surface** — recommend: add a "Generate long-lived token" action to the existing
+   add/reauth dashboard flow (reuses the virtual browser), capturing the code-paste step; this
+   augments, then replaces, `capture_login`.
+3. **Quota/ToS confirmation** — confirm multi-session usage under a setup-token behaves like
+   today's `claude` usage on Max (verify-in-implementation).
+4. **Revocation path** — map how to revoke/rotate an `oat` token (needed operationally).
 
 ## Problem
 
