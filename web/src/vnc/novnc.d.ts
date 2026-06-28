@@ -8,6 +8,7 @@ declare module '@novnc/novnc' {
     ): void
     focus(): void
     blur(): void
+    sendKey(keysym: number, code: string | null, down?: boolean): void
     disconnect(): void
   }
   const RFB: {

@@ -37,5 +37,10 @@ export class VncClient {
   }
   focus() { this.rfb?.focus() }
   blur() { this.rfb?.blur() }
+  /** Inject a key into the live session. With `down` omitted, noVNC sends a
+   *  press+release pair. No-ops when no RFB is connected (e.g. reconnecting). */
+  sendKey(keysym: number, code: string | null, down?: boolean) {
+    this.rfb?.sendKey(keysym, code, down)
+  }
   disconnect() { this.rfb?.disconnect(); this.rfb = null }
 }
