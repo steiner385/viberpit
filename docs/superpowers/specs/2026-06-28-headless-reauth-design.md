@@ -43,9 +43,12 @@ dropped to a fallback.
 
 ### Open design decisions (for approval before planning)
 
-1. **Replace vs. coexist** — recommend: setup-token becomes the primary auth for a session when
-   an `oat-<account>` secret exists; the current grant-harvest/refresh path stays as fallback
-   until setup-token is proven in prod, then is removed (no half-dead code — tracked for deletion).
+1. **Replace vs. coexist** — DECIDED: **hard replace.** The grant-harvest/refresh path is removed;
+   every account requires a setup-token. Risk accepted (big-bang, no fallback). Removes Phase 1's
+   in-session-401 refresh (#340) and the Cloudflare-1010 / idempotent-POST hardening as dead code.
+   **Mandatory safeguard:** a pre-cutover gate must verify EVERY active account has a working
+   `oat-<account>` token (a live auth probe) before the old path is deleted — never cut over into
+   a broken state.
 2. **Generation surface** — recommend: add a "Generate long-lived token" action to the existing
    add/reauth dashboard flow (reuses the virtual browser), capturing the code-paste step; this
    augments, then replaces, `capture_login`.
