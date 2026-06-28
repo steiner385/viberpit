@@ -37,3 +37,20 @@ describe('VncClient fit', () => {
     expect(lastRfb.scaleViewport).toBe(true)
   })
 })
+
+describe('VncClient.sendKey', () => {
+  it('no-ops when no RFB is connected', () => {
+    const c = new VncClient('ws://x/ws/vnc?session=s')
+    // Never called connect(): rfb is null. Must not throw.
+    expect(() => c.sendKey(0x41, null)).not.toThrow()
+  })
+
+  it('forwards keysym/code/down to the underlying rfb', () => {
+    const c = new VncClient('ws://x/ws/vnc?session=s')
+    const fake = { sendKey: vi.fn() }
+    // Inject a fake RFB without opening a real socket.
+    ;(c as unknown as { rfb: unknown }).rfb = fake
+    c.sendKey(0xff0d, 'Enter', true)
+    expect(fake.sendKey).toHaveBeenCalledWith(0xff0d, 'Enter', true)
+  })
+})

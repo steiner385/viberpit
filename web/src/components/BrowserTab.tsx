@@ -3,6 +3,8 @@ import { cn } from '@/lib/utils'
 import { VncClient, type VncState } from '../vnc/vncClient'
 import { useZoom } from '../vnc/useZoom'
 import { statusTier } from '../session/statusTier'
+import { useMediaQuery } from '@/lib/useMediaQuery'
+import { relayInput, relayKeydown } from '../vnc/keyRelay'
 
 const COPY = {
   disabled: "Browser sharing isn't enabled on this server.",
@@ -33,6 +35,20 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
   const [emptyDismissed, setEmptyDismissed] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
   const clientRef = useRef<VncClient | null>(null)
+  const isTouch = useMediaQuery('(pointer: coarse)')
+  const [keyboardOpen, setKeyboardOpen] = useState(false)
+  const hiddenInputRef = useRef<HTMLInputElement>(null)
+
+  // Push a key into the live session; no-ops when not connected.
+  const send = (keysym: number, code: string | null, down?: boolean) =>
+    clientRef.current?.sendKey(keysym, code, down)
+
+  function toggleKeyboard() {
+    const next = !keyboardOpen
+    setKeyboardOpen(next)
+    if (next) hiddenInputRef.current?.focus()
+    else hiddenInputRef.current?.blur()
+  }
   const { zoom, zoomIn, zoomOut, setZoom, resetFit, zoomed, label } = useZoom()
 
   // Active pointers for two-finger pinch-to-zoom on the pan container.
@@ -117,6 +133,27 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
 
   return (
     <div className="relative h-full w-full overflow-hidden">
+      {/* Hidden editable proxy: focusing it summons the OS soft keyboard on touch
+          devices (a <canvas> never does). Keystrokes relay into noVNC. Kept empty
+          so it never enters an IME composition state. */}
+      <input
+        ref={hiddenInputRef}
+        aria-label="Keyboard input"
+        className="absolute h-px w-px opacity-0"
+        style={{ left: -9999, top: 0 }}
+        autoCapitalize="none"
+        autoCorrect="off"
+        autoComplete="off"
+        spellCheck={false}
+        onInput={(e) => {
+          relayInput(e.currentTarget.value, send)
+          e.currentTarget.value = ''
+        }}
+        onKeyDown={(e) => {
+          if (relayKeydown(e, send)) e.preventDefault()
+        }}
+        onBlur={() => setKeyboardOpen(false)}
+      />
       {/* Pan container — produces real scrollbars to pan the zoomed canvas. */}
       <div
         ref={panRef}
@@ -204,6 +241,20 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
 
       {/* Top-right zoom cluster — one group, ≥44px targets */}
       <div className="absolute right-2 top-2 flex items-center gap-1">
+        {isTouch && (
+          <button
+            aria-label={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}
+            aria-pressed={keyboardOpen}
+            className={cn(
+              'min-h-[44px] min-w-[44px]',
+              'rounded border border-border bg-background/80 px-2 text-base leading-none',
+              keyboardOpen && 'bg-primary text-primary-foreground',
+            )}
+            onClick={toggleKeyboard}
+          >
+            ⌨
+          </button>
+        )}
         <button
           aria-label="Zoom out"
           className={cn(
