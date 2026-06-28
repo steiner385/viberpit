@@ -63,6 +63,7 @@ class DisplaySpec:
     x11vnc: object | None = None
     browsers: list = field(default_factory=list)   # managed Chromium procs
     vnc_clients: int = 0
+    debug_port: int | None = None
 
 
 async def _terminate(proc, timeout: float = 5.0) -> None:
@@ -236,12 +237,26 @@ class X11Manager:
             await _terminate(spec.x11vnc)
             spec.x11vnc = None
 
-    async def launch_browser(self, session_id: str, url: str | None) -> bool:
+    async def launch_browser(
+        self,
+        session_id: str,
+        url: str | None,
+        *,
+        debug_port: bool = False,
+        profile_dir: str | None = None,
+    ) -> bool:
         spec = self._specs.get(session_id)
         if spec is None or len(spec.browsers) >= self._max_browsers:
             return False
         argv = ["chromium",
                 "--disable-dev-shm-usage", "--no-first-run", "--start-maximized"]
+        if debug_port:
+            port = spec.lease.rfbport + 1000
+            argv.append(f"--remote-debugging-port={port}")
+            argv.append("--remote-allow-origins=*")
+            spec.debug_port = port
+        if profile_dir is not None:
+            argv.append(f"--user-data-dir={profile_dir}")
         if url:
             argv.append(url)
         env = dict(os.environ, DISPLAY=f":{spec.lease.display}", XAUTHORITY=spec.xauthority)
@@ -254,6 +269,10 @@ class X11Manager:
             return False
         spec.browsers.append(proc)
         return True
+
+    def debug_port_for(self, session_id: str) -> int | None:
+        spec = self._specs.get(session_id)
+        return spec.debug_port if spec is not None else None
 
     def metrics(self) -> dict:
         specs = list(self._specs.values())

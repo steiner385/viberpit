@@ -197,3 +197,60 @@ def test_sweep_orphan_counts_only_signalled(tmp_path):
     n = mgr.sweep_orphan_processes(lister=lambda: procs,
                                    killer=lambda pid: pid == 20)
     assert n == 1
+
+
+# --- CDP debug port + persistent profile (headless-reauth passkey flow) -----------
+
+@pytest.mark.asyncio
+async def test_launch_browser_no_debug_port_by_default(tmp_path):
+    """Default call (no kwargs) must NOT include --remote-debugging-port; debug_port_for returns None."""
+    spawned = []
+    async def fake_spawn(*argv, **kw):
+        spawned.append(argv)
+        return FakeProc()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn,
+                     ready_check=lambda d: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    result = await mgr.launch_browser("S", "http://x")
+    assert result is True
+    chromium_argv = next(a for a in spawned if a[0] == "chromium")
+    assert not any(arg.startswith("--remote-debugging-port") for arg in chromium_argv)
+    assert mgr.debug_port_for("S") is None
+
+
+@pytest.mark.asyncio
+async def test_launch_browser_opt_in_debug_port(tmp_path):
+    """debug_port=True: argv gets --remote-debugging-port=rfbport+1000 and --remote-allow-origins=*."""
+    spawned = []
+    async def fake_spawn(*argv, **kw):
+        spawned.append(argv)
+        return FakeProc()
+    # DisplayAllocator(100, 2, 6100) → first display=100, rfbport=6100
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn,
+                     ready_check=lambda d: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    result = await mgr.launch_browser("S", "http://x", debug_port=True)
+    assert result is True
+    chromium_argv = next(a for a in spawned if a[0] == "chromium")
+    assert "--remote-debugging-port=7100" in chromium_argv
+    assert "--remote-allow-origins=*" in chromium_argv
+    assert mgr.debug_port_for("S") == 7100
+
+
+@pytest.mark.asyncio
+async def test_launch_browser_persistent_profile(tmp_path):
+    """profile_dir not None: argv contains --user-data-dir={profile_dir}."""
+    spawned = []
+    async def fake_spawn(*argv, **kw):
+        spawned.append(argv)
+        return FakeProc()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn,
+                     ready_check=lambda d: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    result = await mgr.launch_browser("S", "http://x", profile_dir="/tmp/p")
+    assert result is True
+    chromium_argv = next(a for a in spawned if a[0] == "chromium")
+    assert "--user-data-dir=/tmp/p" in chromium_argv
