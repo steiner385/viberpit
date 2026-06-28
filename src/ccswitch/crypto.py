@@ -171,6 +171,28 @@ def store_key_in_keyring(b64key: str) -> None:
         )
 
 
+def store_oauth_token(account: str, token: str) -> None:
+    """Store a long-lived setup-token (sk-ant-oat01-…) in the GNOME keyring."""
+    proc = subprocess.run(
+        ["secret-tool", "store", "--label", f"ccswitch oauth token {account}",
+         "service", "ccswitch", "username", f"oat-{account}"],
+        input=token, text=True, capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"secret-tool store failed (exit {proc.returncode}): {proc.stderr.strip()}")
+
+
+def read_oauth_token(account: str) -> str | None:
+    """Return the stored setup-token for *account*, or None if absent."""
+    proc = subprocess.run(
+        ["secret-tool", "lookup", "service", "ccswitch", "username", f"oat-{account}"],
+        text=True, capture_output=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
 def _warn_no_key_once() -> None:
     """Emit a one-time stderr warning that encryption is disabled."""
     global _warned_no_key
