@@ -61,10 +61,16 @@ sequencing), so it is isolated as a pure module — independently unit-testable 
 without a real keyboard, mirroring the existing pure `classifyClose` export in
 `vncClient.ts`.
 
-`keyRelay.ts` uses noVNC's shipped Unicode→keysym table at
-`@novnc/novnc/core/input/keysymdef.js` (`keysyms.lookup(codepoint)`) rather than
-hand-rolling the mapping. Control keysyms: Enter = `0xFF0D` (XK_Return),
-Backspace = `0xFF08` (XK_BackSpace).
+`keyRelay.ts` is **self-contained** — it does NOT import noVNC's internal keysym tables.
+The `@novnc/novnc` package declares `"exports": "./core/rfb.js"` (a single string), which
+seals every subpath, so `@novnc/novnc/core/input/keysymdef.js` is not importable. The
+helper reproduces noVNC's `lookup()` rule directly: a Latin-1 codepoint (`0x20`–`0xFF`)
+maps one-to-one to itself; any other codepoint maps to the Unicode keysym form
+`0x01000000 | codepoint`. (The legacy non-Unicode keysym table is intentionally skipped —
+acceptable YAGNI for mobile text entry; modern X/VNC accept the Unicode form.) Control
+keysyms are local constants: Enter = `0xFF0D` (XK_Return), Backspace = `0xFF08`
+(XK_BackSpace). `rfb.sendKey(keysym, code)` with `down` omitted auto-sends a press+release
+pair, so printable chars need a single call.
 
 ## Data flow
 
