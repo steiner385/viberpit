@@ -59,6 +59,26 @@ async def test_mark_needs_reauth_writes_audit_event():
 
 
 @pytest.mark.asyncio
+async def test_mark_needs_reauth_audit_records_token_expiry(monkeypatch):
+    from sqlalchemy import select
+    from server.db import init_db, db_session
+    from server.db.models import AuditEvent
+    from server.sessions import orchestrator as orch_mod
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+    orch = _orch()
+    ca = mock.MagicMock()
+    ca._slot_expires_at.return_value = 1893456000000  # fixed ms-epoch
+    monkeypatch.setattr(orch_mod, "ccswitch_accounts", ca)
+    await orch._mark_needs_reauth_audit("primary")
+    async with db_session() as db:
+        rows = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "account.needs_reauth"))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].detail["token_expires_at"] == 1893456000000
+    ca._slot_expires_at.assert_called_once_with("primary")
+
+
+@pytest.mark.asyncio
 async def test_start_launches_token_refresh_monitor_and_stop_cancels():
     orch = _orch()
     orch._refresh_idle_tokens_once = mock.AsyncMock()

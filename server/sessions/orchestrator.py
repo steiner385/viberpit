@@ -2401,7 +2401,7 @@ class SessionOrchestrator:
         if _session_factory is None:
             return
         f = AuthFailure(account=account, status=401, body=None,
-                        path="live-session", token_expires_at=None, attempts=1)
+                        path="live-session", token_expires_at=ccswitch_accounts._slot_expires_at(account), attempts=1)
         try:
             async with db_session() as db:
                 await record_audit(db, "account.needs_reauth", "system", build_needs_reauth_detail(f))
