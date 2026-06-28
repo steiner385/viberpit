@@ -320,3 +320,37 @@ def test_recompose_forces_token_refresh_before_reassign(monkeypatch):
     asyncio.run(o._recompose_same_account(rec))
 
     assert order == [("refresh", "kindash"), ("reassign", "kindash", "recompose")], order
+
+
+def test_recompose_proceeds_when_token_refresh_raises(monkeypatch):
+    """Best-effort contract: token refresh failure must NOT abort recovery.
+
+    When ccswitch_accounts.ensure_valid_token raises (e.g., corrupt grant),
+    _recompose_same_account must swallow the exception and proceed to
+    _reassign anyway, degrading to today's behavior rather than aborting
+    the recovery action. This guards the safety property that the session
+    can still be reassigned even if the token can't be refreshed.
+    """
+    from unittest import mock
+    o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
+    o._clock = lambda: 1000.0
+    order = []
+
+    async def spy_reassign(record, new_account, *, reason):
+        order.append(("reassign", new_account, reason))
+    o._reassign = spy_reassign
+
+    rec = SessionRecord(id="s1", name="n", account="kindash", claude_session_id="c1",
+                        cols=80, rows=24, cwd="/tmp/x")
+    o._records["s1"] = rec
+    o._drivers["s1"] = object()
+
+    ca = mock.MagicMock()
+    ca.ensure_valid_token.side_effect = RuntimeError("boom")
+    monkeypatch.setattr(orch_mod, "ccswitch_accounts", ca)
+
+    # Must not raise despite token refresh failure.
+    asyncio.run(o._recompose_same_account(rec))
+
+    # _reassign must still run with the expected arguments.
+    assert ("reassign", "kindash", "recompose") in order, order
