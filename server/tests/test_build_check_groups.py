@@ -108,3 +108,16 @@ def test_merge_group_check_uses_own_event_for_history():
         "merge_group check must be flagged overdue when its own-event p50 is exceeded; "
         "a pull_request-keyed lookup would return None and leave overdue=False"
     )
+
+
+def test_running_check_with_no_store_does_not_crash():
+    """store=None (no history DB, e.g. prod without the pipeline_history migration) must
+    NOT crash the drill-down: durations/cost/status still build; overdue is just False.
+    The drill-down only needs history for the overdue flag, not for the rows themselves."""
+    head = [_head("slow", "2026-06-28T12:00:00Z", None, conclusion=None, status="IN_PROGRESS")]
+    groups = build_check_groups(head, {"checks": [], "eta_seconds": None},
+                                None, "octo/repo", NOW)
+    row = groups[0].checks[0]
+    assert row.duration_seconds == 600  # elapsed still computed without a store
+    assert row.overdue is False         # no history → never overdue (never crashes)
+    assert row.conclusion == "pending"

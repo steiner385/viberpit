@@ -162,9 +162,10 @@ class PrPopulationPoller:
         always shows data (just without ETA).  The SQLite HistoryStore is used
         on the event-loop thread; only the network call is offloaded to a thread.
         """
+        # `store` (pipeline-history DB) may be None — ETA/overdue need it, but the
+        # per-check drill-down (check_groups) does not. Do NOT bail on a missing store,
+        # or the drill-down silently never appears wherever there's no history DB (prod).
         store = self._store()
-        if store is None:
-            return prs_by_repo
 
         # Collect (repo, number) pairs for open PRs only.
         open_keys: list[tuple[str, int]] = []
@@ -187,12 +188,21 @@ class PrPopulationPoller:
 
         now = self._now_fn()
 
+        # build_check_groups is always needed (store-independent). compute_pr_eta needs
+        # the history store, so import + run it only when we actually have one.
         try:
-            from server.pipeline.eta import compute_pr_eta
             from server.pipeline.checkgroups import build_check_groups
         except Exception:
-            log.warning("pr_population.eta_import_failed", exc_info=True)
+            log.warning("pr_population.checkgroups_import_failed", exc_info=True)
             return prs_by_repo
+
+        compute_pr_eta: Callable[..., tuple[int | None, int | None, bool]] | None = None
+        if store is not None:
+            try:
+                from server.pipeline.eta import compute_pr_eta as _compute_pr_eta
+                compute_pr_eta = _compute_pr_eta
+            except Exception:
+                log.warning("pr_population.eta_import_failed", exc_info=True)
 
         # SQLite reads + compute run on the event-loop thread (store is not thread-safe).
         result: dict[str, tuple[PullRequestInfo, ...]] = {}
@@ -203,17 +213,20 @@ class PrPopulationPoller:
                     key = (repo, pr.number)
                     checks = checks_by_pr.get(key, [])
                     try:
-                        eta_s, eta_pct, eta_over = compute_pr_eta(store, repo, checks, now)
+                        # check_groups always (rows/durations/cost need no history);
+                        # ETA/overdue only when a history store is present.
                         groups = build_check_groups(
                             checks, merge_by_pr.get(key, {}), store, repo, now,
                         )
-                        pr = dataclasses.replace(
-                            pr,
-                            eta_seconds=eta_s,
-                            eta_percent=eta_pct,
-                            eta_overdue=eta_over,
-                            check_groups=groups,
-                        )
+                        fields: dict = {"check_groups": groups}
+                        if compute_pr_eta is not None:
+                            eta_s, eta_pct, eta_over = compute_pr_eta(
+                                store, repo, checks, now
+                            )
+                            fields["eta_seconds"] = eta_s
+                            fields["eta_percent"] = eta_pct
+                            fields["eta_overdue"] = eta_over
+                        pr = dataclasses.replace(pr, **fields)
                     except Exception:
                         log.debug(
                             "pr_population.eta_compute_failed repo=%s pr=%s",

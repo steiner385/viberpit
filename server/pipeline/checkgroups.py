@@ -42,7 +42,10 @@ def _row(c: dict, store, repo: str, now: datetime) -> CheckRow:
         duration = None  # legacy StatusContext / no timing
 
     overdue = False
-    if running and started is not None and duration is not None:
+    # `store` may be None when there is no pipeline-history DB (e.g. prod without the
+    # migration). Overdue is the ONLY part of a row that needs history, so skip it and
+    # leave overdue=False — the row (name/duration/status/cost) still builds. Never deref None.
+    if store is not None and running and started is not None and duration is not None:
         # Use the check's own event (e.g. "merge_group") so merge-group checks don't
         # borrow pull_request history; fall back to _EVENT when the field is absent.
         exp = store.expected(repo, c.get("name", ""), c.get("event") or _EVENT)
