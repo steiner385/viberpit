@@ -14,6 +14,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useAddAccount, useAddAccountStatus, useCancelAddAccount, QK } from '@/api/hooks'
+import { accountNameError } from '@/lib/accountName'
 import { ReauthBrowserPanel } from './ReauthBrowserPanel'
 
 interface AddAccountDialogProps {
@@ -78,9 +79,13 @@ export function AddAccountDialog({ onClose }: AddAccountDialogProps) {
   }, [status?.state, qc])
 
   const trimmed = name.trim()
+  // Mirror the backend rule client-side so an invalid name never round-trips to
+  // a 400 that surfaces as a generic toast. null = valid (or empty).
+  const nameError = accountNameError(trimmed)
+  const canSubmit = !!trimmed && !nameError && !isRunning
 
   function handleSubmit() {
-    if (!trimmed || isRunning) return
+    if (!canSubmit) return
     setOptimisticIdle(false)
     setStarted(true)
     addAccount.mutate(trimmed, {
@@ -144,10 +149,16 @@ export function AddAccountDialog({ onClose }: AddAccountDialogProps) {
               'disabled:opacity-60',
             )}
           />
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            A short identifier (letters, numbers, <code>. _ -</code>). You can add a
-            friendly nickname afterwards.
-          </p>
+          {nameError ? (
+            <p className="text-xs text-red-600 dark:text-red-400" role="alert">
+              {nameError}
+            </p>
+          ) : (
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              A short identifier (letters, numbers, <code>. _ -</code>). You can add a
+              friendly nickname afterwards.
+            </p>
+          )}
         </div>
 
         {isRunning && (
@@ -198,7 +209,7 @@ export function AddAccountDialog({ onClose }: AddAccountDialogProps) {
             <Button
               type="button"
               onClick={handleSubmit}
-              disabled={!trimmed || isRunning}
+              disabled={!canSubmit}
               className="min-h-[44px]"
             >
               {isRunning ? 'Adding…' : 'Add'}
