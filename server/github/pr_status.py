@@ -221,6 +221,14 @@ def build_eta_checks_query(prs: list[tuple[str, int]]) -> str:
             f"        ... on StatusContext {{ context state }}\n"
             f"      }} }}\n"
             f"    }} }} }} }}\n"
+            f"    mergeQueueEntry {{ estimatedTimeToMerge headCommit {{ statusCheckRollup {{\n"
+            f"      contexts(first: 100) {{ nodes {{\n"
+            f"        __typename\n"
+            f"        ... on CheckRun {{ name status conclusion startedAt completedAt "
+            f"checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}\n"
+            f"        ... on StatusContext {{ context state }}\n"
+            f"      }} }}\n"
+            f"    }} }} }}\n"
             f"  }}\n"
             f"}}"
         )
@@ -267,6 +275,46 @@ def parse_eta_checks_response(
                     "isRequired": False, "workflowName": None, "event": "pull_request",
                 })
         out[key] = checks
+    return out
+
+
+def parse_merge_group_response(
+    response: dict, prs: list[tuple[str, int]]
+) -> dict[tuple[str, int], dict]:
+    """Parse the mergeQueueEntry block of a ``build_eta_checks_query`` response.
+
+    Returns (repo, number) -> {"checks": [...], "eta_seconds": int | None}.
+    Empty checks + None eta when the PR is not enqueued (mergeQueueEntry null).
+    """
+    data = (response or {}).get("data") or {}
+    out: dict[tuple[str, int], dict] = {}
+    for i, key in enumerate(prs):
+        node = data.get(_alias(i)) or {}
+        entry = (node.get("pullRequest") or {}).get("mergeQueueEntry")
+        if not entry:
+            out[key] = {"checks": [], "eta_seconds": None}
+            continue
+        rollup = (entry.get("headCommit") or {}).get("statusCheckRollup") or {}
+        contexts = ((rollup.get("contexts") or {}).get("nodes")) or []
+        checks: list[dict] = []
+        for c in contexts:
+            if c.get("__typename") == "CheckRun":
+                wf = (((c.get("checkSuite") or {}).get("workflowRun") or {}).get("workflow") or {})
+                checks.append({
+                    "name": c.get("name", ""), "status": c.get("status", ""),
+                    "conclusion": c.get("conclusion"), "started_at": c.get("startedAt"),
+                    "completed_at": c.get("completedAt"),
+                    "isRequired": False, "workflowName": wf.get("name"),
+                    "event": "merge_group",
+                })
+            else:
+                checks.append({
+                    "name": c.get("context", ""), "status": "COMPLETED",
+                    "conclusion": c.get("state"), "started_at": None,
+                    "completed_at": None, "isRequired": False,
+                    "workflowName": None, "event": "merge_group",
+                })
+        out[key] = {"checks": checks, "eta_seconds": entry.get("estimatedTimeToMerge")}
     return out
 
 
