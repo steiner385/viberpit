@@ -385,28 +385,6 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
             <button
               type="button"
               className={cn(
-                'rounded px-2 py-1 text-xs min-h-[44px]',
-                'text-gray-500 dark:text-gray-400',
-                'hover:text-gray-700 dark:hover:text-gray-200',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-                'disabled:opacity-40',
-              )}
-              aria-label={`Generate long-lived token for ${account.name}`}
-              onClick={() => {
-                setReauthOptimisticIdle(false)
-                setReauthStarted(true)
-                reauthAccount.mutate(
-                  { name: account.name, mode: 'setup_token' },
-                  { onError: () => setReauthStarted(false) },
-                )
-              }}
-              disabled={isReauthRunning || isAwaitingCode}
-            >
-              Generate long-lived token
-            </button>
-            <button
-              type="button"
-              className={cn(
                 'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
                 'text-gray-500 dark:text-gray-400',
                 'hover:bg-gray-100 dark:hover:bg-gray-700',
@@ -452,6 +430,34 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
           </div>
         )}
       </div>
+
+      {/* Generate long-lived (setup-token) — available on every account row */}
+      {!editing && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className={cn(
+              'rounded px-2 py-1 text-xs min-h-[44px]',
+              'text-gray-500 dark:text-gray-400',
+              'hover:text-gray-700 dark:hover:text-gray-200',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+              'disabled:opacity-40',
+            )}
+            aria-label={`Generate long-lived token for ${account.name}`}
+            onClick={() => {
+              setReauthOptimisticIdle(false)
+              setReauthStarted(true)
+              reauthAccount.mutate(
+                { name: account.name, mode: 'setup_token' },
+                { onError: () => setReauthStarted(false) },
+              )
+            }}
+            disabled={isReauthRunning || isAwaitingCode}
+          >
+            Generate long-lived token
+          </button>
+        </div>
+      )}
 
       {/* Reauth status line */}
       {!editing && isReauthRunning && (

@@ -404,9 +404,10 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
     render(<Dashboard />, { wrapper })
     await switchToAccountsTab(user)
 
-    // Auth URL anchor should be present with the correct href
+    // Auth URL anchor should be present with the correct href and safe rel
     const anchor = screen.getByRole('link', { name: authUrl })
     expect(anchor).toHaveAttribute('href', authUrl)
+    expect(anchor).toHaveAttribute('rel', 'noopener noreferrer')
 
     // Copy button should be present
     expect(screen.getByRole('button', { name: /copy/i })).toBeInTheDocument()
@@ -439,5 +440,22 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
       { name: 'kindash', code: 'my-secret-code' },
       expect.anything(),
     )
+  })
+
+  it('"Generate long-lived token" button is disabled while awaiting_code', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useAccounts).mockReturnValue({
+      data: [makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useReauthStatus).mockReturnValue({
+      data: makeReauthState({ state: 'awaiting_code', authUrl: 'https://claude.com/cai/oauth/authorize?x=1' } as Partial<ReauthState>),
+      isLoading: false,
+    } as ReturnType<typeof hooks.useReauthStatus>)
+
+    render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
+
+    expect(screen.getByRole('button', { name: /generate long-lived token for kindash/i })).toBeDisabled()
   })
 })
