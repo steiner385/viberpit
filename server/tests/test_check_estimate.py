@@ -1,7 +1,7 @@
 # server/tests/test_check_estimate.py
 from datetime import datetime, timezone
-from server.pipeline.check_eta import check_estimate, CheckEstimate
-from server.pipeline.history import Expected
+from server.pipeline.check_eta import check_estimate
+from server.pipeline.history import Expected, percentile
 
 NOW = datetime(2026, 6, 29, 12, 10, 0, tzinfo=timezone.utc)
 EXP = Expected(p10=120.0, p50=300.0, p90=600.0, n=20)
@@ -43,8 +43,13 @@ def test_running_with_qualifying_samples_uses_percentiles():
     # elapsed 60s; samples all > elapsed → percentile-based remaining
     samples = [100.0, 200.0, 300.0, 400.0, 500.0]  # >=5, all > 60
     est = check_estimate(_chk("IN_PROGRESS", "2026-06-29T12:09:00Z"), EXP, samples, NOW, 300.0)
+    elapsed = 60.0
+    sq = sorted(samples)
     # nominal remaining = median(samples) - elapsed = 300 - 60
-    assert est.rem_nominal == 300.0 - 60.0
+    assert est.rem_nominal == 300.0 - elapsed
+    # high remaining = percentile(sq, 0.9) - elapsed
+    expected_high = max(percentile(sq, 0.9) - elapsed, 0.0)
+    assert est.rem_high == expected_high
     assert est.rem_low <= est.rem_nominal <= est.rem_high
 
 
@@ -60,3 +65,12 @@ def test_no_expected_uses_fallback():
     est = check_estimate(_chk("IN_PROGRESS", "2026-06-29T12:09:00Z"), None, [], NOW, fallback=200.0)
     # p50=p10=p90=fallback when no Expected → rem_nominal = 200 - 60
     assert est.rem_nominal == 200.0 - 60.0
+
+
+def test_overdue_when_elapsed_exceeds_1_5x_p50():
+    # <5 samples (empty) → falls back to Expected; elapsed=150 > 1.5*60=90 → overdue
+    exp = Expected(p10=10.0, p50=60.0, p90=90.0, n=3)
+    # started 2.5 min (150s) ago relative to NOW (12:10:00)
+    started = "2026-06-29T12:07:30Z"
+    est = check_estimate(_chk("IN_PROGRESS", started), exp, [], NOW, fallback=60.0)
+    assert est.overdue is True

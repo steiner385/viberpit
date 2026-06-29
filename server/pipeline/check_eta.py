@@ -76,8 +76,8 @@ def check_estimate(
         elif qualifying is not None and len(qualifying) >= 2:
             sq = sorted(qualifying)
             rem_low = max(percentile(sq, 0.1) - elapsed, 0.0)
-            rem_nom = median(sq) - elapsed
-            rem_high = percentile(sq, 0.9) - elapsed
+            rem_nom = max(median(sq) - elapsed, 0.0)
+            rem_high = max(percentile(sq, 0.9) - elapsed, 0.0)
             denom = elapsed + rem_nom
             progress = min(elapsed / denom, RUNNING_CAP) if denom else RUNNING_CAP
         else:
