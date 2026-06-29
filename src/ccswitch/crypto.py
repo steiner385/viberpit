@@ -10,8 +10,10 @@ Design constraints:
 """
 import base64
 import os
+import re
 import subprocess
 import sys
+from pathlib import Path
 
 
 class CryptoError(Exception):
@@ -171,8 +173,28 @@ def store_key_in_keyring(b64key: str) -> None:
         )
 
 
+def _oat_env_name(account: str) -> str:
+    return "CCSWITCH_OAT_" + re.sub(r"[^A-Za-z0-9]", "_", account).upper()
+
+
+def _oat_file(account: str) -> Path:
+    from . import paths
+    return paths.store_dir() / "oat" / account
+
+
 def store_oauth_token(account: str, token: str) -> None:
-    """Store a long-lived setup-token (sk-ant-oat01-…) in the GNOME keyring."""
+    """Store a setup-token. Preferred path: master-key-encrypted file under the store dir
+    (readable by the keyring-less daemon, which has CCSWITCH_MASTER_KEY). Falls back to the
+    GNOME keyring only when no master key is available (interactive dev without a key)."""
+    if key_available():
+        p = _oat_file(account)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(p.parent, 0o700)
+        enc = encrypt(token)
+        fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(enc)
+        return
     proc = subprocess.run(
         ["secret-tool", "store", "--label", f"ccswitch oauth token {account}",
          "service", "ccswitch", "username", f"oat-{account}"],
@@ -183,7 +205,19 @@ def store_oauth_token(account: str, token: str) -> None:
 
 
 def read_oauth_token(account: str) -> str | None:
-    """Return the stored setup-token for *account*, or None if absent/unreadable."""
+    """Return the stored setup-token for *account*, or None. Precedence mirrors master_key():
+    1) env override CCSWITCH_OAT_<ACCOUNT>, 2) master-key-encrypted file, 3) GNOME keyring."""
+    env_val = os.environ.get(_oat_env_name(account), "").strip()
+    if env_val:
+        return env_val
+    p = _oat_file(account)
+    try:
+        if p.exists():
+            raw = p.read_text().strip()
+            if raw:
+                return decrypt(raw) if is_encrypted(raw) else raw
+    except Exception:
+        return None
     try:
         proc = subprocess.run(
             ["secret-tool", "lookup", "service", "ccswitch", "username", f"oat-{account}"],
