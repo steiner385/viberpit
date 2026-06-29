@@ -27,5 +27,13 @@ def _store(tmp_path):
 def test_compute_pr_eta_queued_check(tmp_path):
     s = _store(tmp_path)
     # no live checks → expected 'ci' is queued → eta ≈ p50 (100)
-    eta, percent, overdue = compute_pr_eta(s, "o/n", [], NOW)
+    eta, eta_low, eta_high, percent, overdue = compute_pr_eta(s, "o/n", [], NOW)
     assert eta == 100 and percent == 0 and overdue is False
+
+
+def test_compute_pr_eta_returns_low_high(tmp_path):
+    s = _store(tmp_path)
+    checks = [{"name": "ci", "status": "IN_PROGRESS", "started_at": NOW.isoformat()}]
+    eta_s, eta_low, eta_high, pct, overdue = compute_pr_eta(s, "o/n", checks, NOW)
+    if not overdue:
+        assert eta_low <= eta_s <= eta_high

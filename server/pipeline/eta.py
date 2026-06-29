@@ -14,7 +14,7 @@ _EVENT = "pull_request"
 
 def compute_pr_eta(
     store: HistoryStore, repo: str, checks: list[dict], now: datetime
-) -> tuple[int | None, int | None, bool]:
+) -> tuple[int | None, int | None, int | None, int | None, bool]:
     prefixes = effective_prefixes(repo, store)
     rollup_wf = rollup_workflow_for(repo, store)
     req = required_checks(checks, prefixes, rollup_wf)
@@ -27,4 +27,7 @@ def compute_pr_eta(
         samples=lambda n: store.samples(repo, n, _EVENT),
         queue_delay=lambda n: store.expected_runner_wait(repo, n, _EVENT),
     )
-    return result.eta_seconds, result.percent, result.overdue
+    return (
+        result.eta_seconds, result.eta_low_seconds, result.eta_high_seconds,
+        result.percent, result.overdue,
+    )
