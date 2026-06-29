@@ -38,8 +38,11 @@ class FakeReauthManager:
         self.raise_no_key = False
         self.holding_identity: str | None = None
         self.holding_started_at: float | None = None
+        self.last_start_mode: str | None = None
+        self.last_submit_code: tuple[str, str] | None = None
 
-    async def start(self, name: str, identity: str) -> ReauthState:
+    async def start(self, name: str, identity: str, mode: str = "login") -> ReauthState:
+        self.last_start_mode = mode
         if self.raise_no_key:
             raise ReauthNoKey("no key")
         if self.raise_busy:
@@ -68,6 +71,11 @@ class FakeReauthManager:
     async def cancel(self, name: str) -> ReauthState:
         self._state = ReauthState(state="idle", message="cancelled")
         return await self.status(name)
+
+    async def submit_code(self, name: str, code: str) -> ReauthState:
+        self.last_submit_code = (name, code)
+        self._state = ReauthState(state="running")
+        return ReauthState(state=self._state.state)
 
     def sweep_stale(self) -> None:
         pass
@@ -424,3 +432,83 @@ def test_reauth_status_returns_vnc_session():
             resp = client.get("/api/accounts/primary/reauth", headers=IDENTITY_HEADERS)
     assert resp.status_code == 200
     assert resp.json()["vncSession"] == "__reauth__"
+
+
+# ---------------------------------------------------------------------------
+# B2c: POST /{name}/reauth/code + mode query param
+# ---------------------------------------------------------------------------
+
+
+def test_reauth_submit_code_returns_state():
+    """POST /api/accounts/{name}/reauth/code calls submit_code and returns state dict."""
+    fake_rm = FakeReauthManager()
+    fake_rm._state = ReauthState(state="awaiting_code")
+
+    with temp_env():
+        _seed_slot("primary")
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client(fake_rm)
+        with client:
+            resp = client.post(
+                "/api/accounts/primary/reauth/code",
+                json={"code": "MYOAUTHCODE"},
+                headers=IDENTITY_HEADERS,
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "running"
+    assert fake_rm.last_submit_code == ("primary", "MYOAUTHCODE")
+
+
+def test_reauth_submit_code_404_unknown():
+    """POST /api/accounts/{name}/reauth/code returns 404 for unknown slot."""
+    fake_rm = FakeReauthManager()
+
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client(fake_rm)
+        with client:
+            resp = client.post(
+                "/api/accounts/nobody/reauth/code",
+                json={"code": "X"},
+                headers=IDENTITY_HEADERS,
+            )
+
+    assert resp.status_code == 404
+
+
+def test_reauth_start_mode_query_param_forwarded():
+    """POST /api/accounts/{name}/reauth?mode=setup_token forwards mode to reauth.start."""
+    fake_rm = FakeReauthManager()
+
+    with temp_env():
+        _seed_slot("primary")
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client(fake_rm)
+        with client:
+            resp = client.post(
+                "/api/accounts/primary/reauth?mode=setup_token",
+                headers=IDENTITY_HEADERS,
+            )
+
+    assert resp.status_code == 202
+    assert fake_rm.last_start_mode == "setup_token"
+
+
+def test_reauth_start_mode_defaults_to_login():
+    """POST /api/accounts/{name}/reauth without mode= defaults to 'login'."""
+    fake_rm = FakeReauthManager()
+
+    with temp_env():
+        _seed_slot("primary")
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client(fake_rm)
+        with client:
+            resp = client.post(
+                "/api/accounts/primary/reauth",
+                headers=IDENTITY_HEADERS,
+            )
+
+    assert resp.status_code == 202
+    assert fake_rm.last_start_mode == "login"
