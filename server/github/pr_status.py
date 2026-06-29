@@ -104,6 +104,7 @@ class PullRequestInfo:
     eta_percent: int | None = None
     eta_overdue: bool = False
     deployed_envs: tuple[str, ...] = ()
+    check_groups: tuple[CheckGroup, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -124,6 +125,7 @@ class PullRequestInfo:
             "eta_percent": self.eta_percent,
             "eta_overdue": self.eta_overdue,
             "deployed_envs": list(self.deployed_envs),
+            "check_groups": [g.to_dict() for g in self.check_groups],
         }
 
     @classmethod
@@ -147,6 +149,7 @@ class PullRequestInfo:
             eta_percent=d.get("eta_percent"),
             eta_overdue=d.get("eta_overdue", False),
             deployed_envs=tuple(d.get("deployed_envs", [])),
+            check_groups=tuple(CheckGroup.from_dict(g) for g in d.get("check_groups", [])),
         )
 
 
