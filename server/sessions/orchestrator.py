@@ -291,6 +291,13 @@ class SessionOrchestrator:
         if rec is None:
             return {}
         tok = crypto.read_oauth_token(rec.account)
+        if tok:
+            # DIAGNOSTIC (issue #346): a pinned-primary session was observed carrying another
+            # account's token, contradicting this account-keyed lookup. Log which account each
+            # injection is keyed on + a token hash (NEVER the token value) to trace it.
+            import hashlib
+            log.info("oat_env.inject session=%s account=%s token_sha=%s",
+                     session_id, rec.account, hashlib.sha256(tok.encode()).hexdigest()[:12])
         return {"CLAUDE_CODE_OAUTH_TOKEN": tok} if tok else {}
 
     def _session_factory(self, session_id: str):
