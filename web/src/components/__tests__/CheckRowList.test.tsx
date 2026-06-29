@@ -21,4 +21,26 @@ describe('CheckRowList', () => {
       status: 'IN_PROGRESS' })]} />)
     expect(screen.getByTestId('check-row-slow')).toHaveAttribute('data-state', 'overdue')
   })
+  it('renders both checks when two share a name but have different workflows', () => {
+    const checks = [
+      row({ name: 'lint', workflow: 'CI' }),
+      row({ name: 'lint', workflow: 'Nightly' }),
+    ]
+    render(<CheckRowList checks={checks} />)
+    const rows = screen.getAllByTestId(/^check-row-/)
+    expect(rows).toHaveLength(2)
+  })
+  it('sorts rows by (workflow, name)', () => {
+    const checks = [
+      row({ name: 'test', workflow: 'Zeta' }),
+      row({ name: 'lint', workflow: 'Alpha' }),
+      row({ name: 'build', workflow: 'Alpha' }),
+    ]
+    render(<CheckRowList checks={checks} />)
+    const rows = screen.getAllByTestId(/^check-row-/)
+    const texts = rows.map((r) => r.textContent ?? '')
+    expect(texts[0]).toContain('build')
+    expect(texts[1]).toContain('lint')
+    expect(texts[2]).toContain('test')
+  })
 })

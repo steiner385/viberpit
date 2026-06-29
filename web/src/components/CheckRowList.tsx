@@ -13,14 +13,19 @@ function visualState(c: CheckRow): CheckVisualState {
 }
 
 export function CheckRowList({ checks }: { checks: CheckRow[] }) {
+  const sorted = [...checks].sort((a, b) => {
+    const wa = a.workflow ?? ''
+    const wb = b.workflow ?? ''
+    return wa < wb ? -1 : wa > wb ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+  })
   return (
     <ul className="space-y-0.5">
-      {checks.map((c) => {
+      {sorted.map((c) => {
         const state = visualState(c)
         const done = state === 'done' || state === 'failed'
         return (
           <li
-            key={c.name}
+            key={`${c.workflow ?? ''}/${c.name}`}
             data-testid={`check-row-${c.name}`}
             data-state={state}
             className="flex items-center gap-2 text-xs"

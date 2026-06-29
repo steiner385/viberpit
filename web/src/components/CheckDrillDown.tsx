@@ -20,6 +20,11 @@ export function CheckDrillDown({ groups }: { groups: CheckGroup[] }) {
           <h4 className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
             {GROUP_LABEL[grp.kind]}
           </h4>
+          {grp.eta_seconds != null && (
+            <p data-testid={`merge-eta-${grp.kind}`} className="mb-1 text-[11px] text-muted-foreground">
+              in queue: ~{formatEta(grp.eta_seconds)}
+            </p>
+          )}
           {grp.cost_usd != null && (
             <p data-testid={`ci-cost-${grp.kind}`} className="mb-1 text-[11px] text-muted-foreground">
               CI cost this run: {formatEta(grp.total_seconds)} (~${grp.cost_usd})

@@ -372,6 +372,8 @@ def parse_merge_group_response(
                     "completed_at": None, "isRequired": False,
                     "workflowName": None, "event": "merge_group",
                 })
+        # GitHub's MergeQueueEntry.estimatedTimeToMerge is in SECONDS (per the GraphQL
+        # schema) — stored raw and rendered via formatEta (seconds). Do NOT multiply.
         out[key] = {"checks": checks, "eta_seconds": entry.get("estimatedTimeToMerge")}
     return out
 

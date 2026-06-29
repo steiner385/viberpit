@@ -4,10 +4,10 @@ import { render, screen } from '@testing-library/react'
 import { CheckDrillDown } from '@/components/CheckDrillDown'
 import type { CheckGroup } from '@/api/types'
 
-const g = (kind: 'head' | 'merge', cost: number | null): CheckGroup => ({
+const g = (kind: 'head' | 'merge', cost: number | null, eta?: number | null): CheckGroup => ({
   kind, checks: [{ name: `${kind}-lint`, workflow: 'CI', status: 'COMPLETED',
     conclusion: 'success', duration_seconds: 1920, required: true, overdue: false }],
-  total_seconds: 1920, cost_usd: cost, eta_seconds: null,
+  total_seconds: 1920, cost_usd: cost, eta_seconds: eta ?? null,
 })
 
 describe('CheckDrillDown', () => {
@@ -21,5 +21,14 @@ describe('CheckDrillDown', () => {
   it('omits cost line when cost is null', () => {
     render(<CheckDrillDown groups={[g('head', null)]} />)
     expect(screen.queryByTestId('ci-cost-head')).toBeNull()
+  })
+  it('renders merge-queue ETA when eta_seconds is set', () => {
+    render(<CheckDrillDown groups={[g('merge', null, 300)]} />)
+    const el = screen.getByTestId('merge-eta-merge')
+    expect(el).toHaveTextContent('5m')
+  })
+  it('omits ETA line when eta_seconds is null', () => {
+    render(<CheckDrillDown groups={[g('merge', null, null)]} />)
+    expect(screen.queryByTestId('merge-eta-merge')).toBeNull()
   })
 })
