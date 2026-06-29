@@ -70,6 +70,52 @@ def test_capture_setup_token_captures_and_stores(monkeypatch, tmp_path):
             os.environ["CCSWITCH_MASTER_KEY"] = old_key
 
 
+def test_capture_setup_token_newline_does_not_submit(monkeypatch, tmp_path):
+    """Regression contract for the \\n→\\r fix: if the code is submitted with a
+    newline instead of a carriage-return, claude's raw-mode TUI never registers
+    Enter, no token is produced, and capture_setup_token returns False.
+
+    Proven live: claude only submits on \\r. This locks that contract as a
+    machine-checkable test (the happy-path test already breaks if \\r is reverted,
+    but this asserts the failure direction explicitly)."""
+    old_key = os.environ.get("CCSWITCH_MASTER_KEY")
+    os.environ["CCSWITCH_MASTER_KEY"] = _TEST_KEY_B64
+    try:
+        from ccswitch import auth_login, crypto, paths
+
+        monkeypatch.setattr(paths, "store_dir", lambda: tmp_path)
+        monkeypatch.setattr(paths, "reauth_tmp_dir", lambda: tmp_path)
+
+        # Downgrade ONLY the code-submission write (\r → \n) to simulate the
+        # pre-fix behavior; leave every other os.write untouched.
+        real_write = auth_login.os.write
+
+        def write_downgrading_cr(fd, data):
+            if b"FAKECODE" in data:
+                data = data.replace(b"\r", b"\n")
+            return real_write(fd, data)
+
+        monkeypatch.setattr(auth_login.os, "write", write_downgrading_cr)
+
+        ok = auth_login.capture_setup_token(
+            "acct_lf",
+            on_url=lambda u: None,
+            get_code=lambda: "FAKECODE#fakestate",
+            claude_bin=[sys.executable, FAKE_OK],
+            post_code_timeout_s=8.0,
+        )
+
+        assert ok is False, "submitting the code with \\n (not \\r) must NOT mint a token"
+        assert crypto.read_oauth_token("acct_lf") is None, (
+            "no token should be stored when the code was never submitted"
+        )
+    finally:
+        if old_key is None:
+            os.environ.pop("CCSWITCH_MASTER_KEY", None)
+        else:
+            os.environ["CCSWITCH_MASTER_KEY"] = old_key
+
+
 def test_capture_setup_token_returns_false_when_no_token(monkeypatch, tmp_path):
     """Failure path: fake binary prints no sk-ant-oat01 token → returns False."""
     old_key = os.environ.get("CCSWITCH_MASTER_KEY")
