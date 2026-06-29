@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 import signal
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -192,8 +193,14 @@ class ReauthManager:
     # Public API
     # ------------------------------------------------------------------
 
-    async def start(self, name: str, identity: str) -> ReauthState:
+    async def start(self, name: str, identity: str, mode: str = "login") -> ReauthState:
         """Start a reauth for *name*.
+
+        Args:
+            name:     account name.
+            identity: identity/email for display.
+            mode:     "login" (default) uses the OAuth browser flow;
+                      "setup_token" uses the PTY-driven setup-token flow.
 
         Raises:
             ReauthNoKey:  no encryption key is configured (would store plaintext).
@@ -211,6 +218,10 @@ class ReauthManager:
                 identity=identity,
                 started_at=time.time(),
             )
+            self._mode = mode
+            # Code-handoff primitives for setup_token flow (reset each run)
+            self._code_event = threading.Event()
+            self._submitted_code: str | None = None
             task = asyncio.create_task(self._run(name))
             self._state._task = task
 
@@ -303,10 +314,15 @@ class ReauthManager:
 
     async def _run(self, name: str) -> None:
         """Execute the runner under a timeout and update state on completion."""
+        runner = (
+            self._setup_token_runner
+            if getattr(self, "_mode", "login") == "setup_token"
+            else self._runner
+        )
         try:
-            result = await asyncio.wait_for(self._runner(name), timeout=self._timeout_s)
+            result = await asyncio.wait_for(runner(name), timeout=self._timeout_s)
             async with self._lock:
-                if self._state.state == "running":
+                if self._state.state in ("running", "awaiting_code"):
                     self._state.state = "success" if result else "error"
                     self._state.message = None if result else "runner returned False"
             if result:
@@ -319,7 +335,7 @@ class ReauthManager:
                     log.warning("reauth.success_audit_failed account=%s", name, exc_info=True)
         except asyncio.TimeoutError:
             async with self._lock:
-                if self._state.state == "running":
+                if self._state.state in ("running", "awaiting_code"):
                     self._state.state = "timeout"
                     self._state.message = f"timed out after {self._timeout_s}s"
             self._kill_launcher()
@@ -329,10 +345,53 @@ class ReauthManager:
             raise
         except Exception as exc:
             async with self._lock:
-                if self._state.state == "running":
+                if self._state.state in ("running", "awaiting_code"):
                     self._state.state = "error"
                     self._state.message = str(exc)
             log.exception("reauth error for %r: %s", name, exc)
+
+    async def _setup_token_runner(self, name: str) -> bool:
+        """Async runner for the setup-token flow.
+
+        Drives capture_setup_token in a worker thread via asyncio.to_thread.
+        The on_url callback writes the URL into state (awaiting_code) from the
+        worker thread — same established pattern as _production_runner mutating
+        self._state._temp_profile from a thread.
+        The get_code callback blocks the worker thread until submit_code() sets
+        the threading.Event, bounded by the overall _run timeout.
+        """
+        from ccswitch.auth_login import capture_setup_token
+
+        manager = self
+
+        def _on_url(url: str) -> None:
+            # worker-thread context: mutating _state from thread is an established pattern here
+            manager._state.auth_url = url
+            manager._state.state = "awaiting_code"
+
+        def _get_code() -> str:
+            # block until the API calls submit_code(); the _run timeout cancels the task
+            # if this never resolves, so we use _timeout_s as a belt-and-suspenders guard
+            manager._code_event.wait(timeout=manager._timeout_s)
+            manager._state.state = "running"   # back to processing once we have the code
+            return manager._submitted_code or ""
+
+        return await asyncio.to_thread(
+            capture_setup_token, name, on_url=_on_url, get_code=_get_code
+        )
+
+    async def submit_code(self, name: str, code: str) -> ReauthState:
+        """Unblock the setup-token runner by providing the pasted OAuth code.
+
+        If the manager is not in the ``awaiting_code`` state this is a no-op
+        (returns the current state snapshot without raising).
+        """
+        async with self._lock:
+            if self._state.state != "awaiting_code":
+                return self.status(name)   # nothing waiting; no-op snapshot
+            self._submitted_code = code
+        self._code_event.set()
+        return self.status(name)
 
     def _kill_launcher(self) -> None:
         """Send SIGTERM to the Chrome launcher PID if known."""

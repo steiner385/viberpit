@@ -458,3 +458,121 @@ async def test_success_writes_audit_row_no_token_material():
     assert "accessToken" not in detail_str, "accessToken must not appear in audit detail"
     assert "refreshToken" not in detail_str, "refreshToken must not appear in audit detail"
     assert "subscriptionType" not in detail_str, "subscriptionType must not appear in audit detail"
+
+
+# ---------------------------------------------------------------------------
+# Phase B2b: setup-token runner + async↔thread bridge + submit_code
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_setup_token_flow_awaiting_code_then_submit_succeeds(monkeypatch):
+    """Full bridge: fake capture drives on_url → awaiting_code, then submit_code
+    unblocks get_code() → runner returns True → state == success."""
+    from ccswitch import auth_login
+    from server.reauth import ReauthManager
+
+    got: dict = {}
+
+    def fake_capture(name, *, on_url, get_code, claude_bin=None, env_extra=None):
+        on_url("https://claude.com/cai/oauth/authorize?x=1")
+        code = get_code()          # blocks until submit_code
+        got["code"] = code
+        return True
+
+    monkeypatch.setattr(auth_login, "capture_setup_token", fake_capture)
+
+    m = ReauthManager(key_available=lambda: True)
+    await m.start("acct", "me@x", mode="setup_token")
+
+    # wait for the runner thread to surface the URL → awaiting_code
+    for _ in range(100):
+        if m.status("acct").state == "awaiting_code":
+            break
+        await asyncio.sleep(0.02)
+    snap = m.status("acct")
+    assert snap.state == "awaiting_code", f"expected awaiting_code, got {snap.state!r}"
+    assert snap.auth_url == "https://claude.com/cai/oauth/authorize?x=1"
+
+    await m.submit_code("acct", "PASTEDCODE")
+
+    # wait for completion
+    for _ in range(100):
+        if m.status("acct").state in ("success", "error", "timeout"):
+            break
+        await asyncio.sleep(0.02)
+    assert m.status("acct").state == "success", (
+        f"expected success after submit, got {m.status('acct').state!r}"
+    )
+    assert got["code"] == "PASTEDCODE"
+
+
+@pytest.mark.asyncio
+async def test_submit_code_noop_when_not_awaiting():
+    """submit_code() when state is idle returns a snapshot and does not crash."""
+    from server.reauth import ReauthManager
+
+    m = ReauthManager(key_available=lambda: True)
+    # state is idle — submit_code should be a no-op
+    snap = await m.submit_code("acct", "ANYCODE")
+    assert snap.state == "idle"
+
+
+@pytest.mark.asyncio
+async def test_setup_token_runner_false_marks_error(monkeypatch):
+    """If fake_capture returns False the state transitions to 'error'."""
+    from ccswitch import auth_login
+    from server.reauth import ReauthManager
+
+    def fake_capture(name, *, on_url, get_code, claude_bin=None, env_extra=None):
+        on_url("https://claude.com/cai/oauth/authorize?x=99")
+        get_code()
+        return False
+
+    monkeypatch.setattr(auth_login, "capture_setup_token", fake_capture)
+
+    m = ReauthManager(key_available=lambda: True)
+    await m.start("acct2", "me@x", mode="setup_token")
+
+    for _ in range(100):
+        if m.status("acct2").state == "awaiting_code":
+            break
+        await asyncio.sleep(0.02)
+
+    await m.submit_code("acct2", "SOMECODE")
+
+    for _ in range(100):
+        if m.status("acct2").state in ("success", "error", "timeout"):
+            break
+        await asyncio.sleep(0.02)
+    assert m.status("acct2").state == "error"
+
+
+@pytest.mark.asyncio
+async def test_start_mode_login_uses_login_runner(monkeypatch):
+    """mode='login' (default) still uses the login runner, not setup_token."""
+    from ccswitch import auth_login
+    from server.reauth import ReauthManager
+
+    setup_token_called = []
+
+    def fake_capture_setup(name, *, on_url, get_code, claude_bin=None, env_extra=None):
+        setup_token_called.append(True)
+        return True
+
+    monkeypatch.setattr(auth_login, "capture_setup_token", fake_capture_setup)
+    monkeypatch.setattr(auth_login, "capture_login",
+                        lambda name, env_extra=None: True)
+    monkeypatch.setattr(auth_login, "prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-mode")
+    monkeypatch.setattr(auth_login, "cleanup_reauth_profile", lambda t: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
+
+    m = ReauthManager(key_available=lambda: True, timeout_s=5)
+    await m.start("acct3", "me@x", mode="login")
+
+    for _ in range(50):
+        if m.status("acct3").state in ("success", "error", "timeout"):
+            break
+        await asyncio.sleep(0.02)
+
+    assert not setup_token_called, "setup_token runner should NOT be used for mode='login'"
