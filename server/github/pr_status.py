@@ -31,6 +31,61 @@ class CheckDetail:
 
 
 @dataclass(frozen=True)
+class CheckRow:
+    name: str
+    workflow: str | None
+    status: str        # GraphQL status passthrough: COMPLETED/IN_PROGRESS/QUEUED/PENDING/...
+    conclusion: str    # normalised lowercase: success/failure/pending/neutral/skipped/...
+    duration_seconds: int | None
+    required: bool
+    overdue: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name, "workflow": self.workflow, "status": self.status,
+            "conclusion": self.conclusion, "duration_seconds": self.duration_seconds,
+            "required": self.required, "overdue": self.overdue,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CheckRow":
+        return cls(
+            name=d.get("name", ""), workflow=d.get("workflow"),
+            status=d.get("status", ""), conclusion=d.get("conclusion", ""),
+            duration_seconds=d.get("duration_seconds"),
+            required=bool(d.get("required", False)), overdue=bool(d.get("overdue", False)),
+        )
+
+
+@dataclass(frozen=True)
+class CheckGroup:
+    kind: str  # "head" | "merge"
+    checks: tuple[CheckRow, ...]
+    total_seconds: int
+    cost_usd: float | None
+    eta_seconds: int | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "checks": [c.to_dict() for c in self.checks],
+            "total_seconds": self.total_seconds,
+            "cost_usd": self.cost_usd,
+            "eta_seconds": self.eta_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CheckGroup":
+        return cls(
+            kind=d.get("kind", ""),
+            checks=tuple(CheckRow.from_dict(c) for c in d.get("checks", [])),
+            total_seconds=int(d.get("total_seconds", 0)),
+            cost_usd=d.get("cost_usd"),
+            eta_seconds=d.get("eta_seconds"),
+        )
+
+
+@dataclass(frozen=True)
 class PullRequestInfo:
     number: int
     url: str
