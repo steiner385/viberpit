@@ -1,15 +1,20 @@
 """Reauth profile preparation and cleanup for the account-reauthenticator flow."""
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
+import re
+import select
 import shlex
 import shutil
 import sqlite3
+import struct
 import subprocess
 import tempfile
+import termios
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from . import configdir, paths
 from .creds import read_json, split_credentials, write_credentials, write_json_secure
@@ -178,3 +183,145 @@ def capture_login(
 
     finally:
         cleanup_reauth_profile(capture_dir)
+
+
+# Matches the sk-ant-oat01 token (bytes pattern for PTY buffer)
+_TOKEN_RE = re.compile(rb"sk-ant-oat01-[A-Za-z0-9_\-]+")
+# Matches the authorize URL (bytes pattern; cut at first whitespace or ESC)
+_URL_RE = re.compile(rb"https://claude\.com/cai/oauth/authorize[^\s\x1b]+")
+
+
+def capture_setup_token(
+    name: str,
+    *,
+    on_url: Callable[[str], None],
+    get_code: Callable[[], str],
+    claude_bin: Sequence[str] | None = None,
+    env_extra: dict[str, str] | None = None,
+) -> bool:
+    """Drive ``claude setup-token`` via a PTY, capture the sk-ant-oat01 token, and
+    store it ENCRYPTED via crypto.store_oauth_token(name, token).
+
+    Returns True on success, False otherwise.
+
+    Flow:
+    - spawn ``claude setup-token`` attached to a PTY (wide winsize so the URL
+      doesn't wrap) in an isolated CLAUDE_CONFIG_DIR under reauth_tmp_dir()
+    - read output; when the authorize URL appears, call on_url(url)
+    - call get_code() (blocking) and write the returned code + "\\n" to the PTY
+    - drain remaining PTY output after process exit (token is printed just
+      before exit and can be missed by the in-loop reads)
+    - extract the sk-ant-oat01 token; store via crypto.store_oauth_token
+
+    The token value and the pasted code are NEVER logged or printed.
+    """
+    import pty
+
+    from .config import load_config
+
+    if claude_bin is None:
+        cfg = load_config()
+        claude_cmd: list[str] = shlex.split(
+            os.environ.get("CCSWITCH_CLAUDE_BIN", cfg.claude_bin)
+        )
+    else:
+        claude_cmd = list(claude_bin)
+
+    argv = claude_cmd + ["setup-token"]
+
+    # Create an isolated CLAUDE_CONFIG_DIR under reauth-tmp (not /tmp)
+    reauth_root = paths.reauth_tmp_dir()
+    reauth_root.mkdir(parents=True, exist_ok=True)
+    os.chmod(reauth_root, 0o700)
+    capture_dir = tempfile.mkdtemp(prefix="setuptok-", dir=str(reauth_root))
+    os.chmod(capture_dir, 0o700)
+
+    env = {
+        **os.environ,
+        "CLAUDE_CONFIG_DIR": capture_dir,
+        "TERM": "xterm-256color",
+        **(env_extra or {}),
+    }
+
+    # Open a PTY pair; set a wide window so the URL prints on one line
+    mo, sl = pty.openpty()
+    fcntl.ioctl(sl, termios.TIOCSWINSZ, struct.pack("HHHH", 60, 400, 0, 0))
+
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=sl,
+            stdout=sl,
+            stderr=sl,
+            env=env,
+            preexec_fn=os.setsid,
+            close_fds=True,
+        )
+        os.close(sl)  # child owns the slave end; close our copy
+
+        buf = b""
+        url_surfaced = False
+        code_sent = False
+
+        # Main read loop — runs while the process is alive
+        while proc.poll() is None:
+            ready, _, _ = select.select([mo], [], [], 0.5)
+            if ready:
+                try:
+                    chunk = os.read(mo, 4096)
+                    buf += chunk
+                except OSError:
+                    break  # PTY closed / EIO
+
+            if not url_surfaced:
+                m = _URL_RE.search(buf)
+                if m:
+                    url = m.group(0).decode("latin-1")
+                    on_url(url)
+                    url_surfaced = True
+
+            if url_surfaced and not code_sent:
+                code = get_code()  # BLOCKING — caller provides the code
+                os.write(mo, (code + "\n").encode())
+                code_sent = True
+
+        # Drain remaining PTY output — the token is printed just before exit
+        # and can arrive after proc.poll() returns non-None
+        while True:
+            ready, _, _ = select.select([mo], [], [], 0.5)
+            if not ready:
+                break
+            try:
+                chunk = os.read(mo, 4096)
+                if not chunk:
+                    break
+                buf += chunk
+            except OSError:
+                break
+
+        # Extract the token
+        tm = _TOKEN_RE.search(buf)
+        if not tm:
+            log.debug("capture_setup_token: no sk-ant-oat01 token found in output")
+            return False
+
+        token = tm.group(0).decode("ascii")
+        # Store encrypted — NEVER log the token value
+        from .crypto import store_oauth_token
+
+        store_oauth_token(name, token)
+        log.debug("capture_setup_token: token stored for account %r", name)
+        return True
+
+    finally:
+        # Close PTY fds safely (sl may be closed by child, mo may be closed by read loop)
+        for fd in (mo, sl):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        # Clean up the isolated config dir
+        try:
+            shutil.rmtree(capture_dir, ignore_errors=True)
+        except Exception:
+            pass
