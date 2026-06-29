@@ -201,30 +201,77 @@ class TestCryptoModule(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_store_and_read_oauth_token_roundtrip(self):
+        """Keyring fallback: when no master key is available, store/read use secret-tool."""
         from ccswitch import crypto
         calls = []
         def fake_run(argv, **kw):
             calls.append((argv, kw.get("input")))
             class R: returncode = 0; stdout = "sk-ant-oat01-XYZ\n"; stderr = ""
             return R()
-        with mock.patch("ccswitch.crypto.subprocess.run", side_effect=fake_run):
-            crypto.store_oauth_token("primary", "sk-ant-oat01-XYZ")
-            val = crypto.read_oauth_token("primary")
+        with mock.patch("ccswitch.crypto.key_available", return_value=False):
+            with mock.patch("ccswitch.crypto.subprocess.run", side_effect=fake_run):
+                crypto.store_oauth_token("primary", "sk-ant-oat01-XYZ")
+                val = crypto.read_oauth_token("primary")
         store_argv, store_input = calls[0]
         self.assertIn("oat-primary", store_argv)
         self.assertEqual(store_input, "sk-ant-oat01-XYZ")
         self.assertEqual(val, "sk-ant-oat01-XYZ")
 
     def test_read_oauth_token_missing_returns_none(self):
-        from ccswitch import crypto
+        import tempfile
+        from pathlib import Path
+        from ccswitch import crypto, paths
         class R: returncode = 1; stdout = ""; stderr = ""
-        with mock.patch("ccswitch.crypto.subprocess.run", return_value=R()):
-            self.assertIsNone(crypto.read_oauth_token("ghost"))
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(paths, "store_dir", return_value=Path(d)):
+                with mock.patch("ccswitch.crypto.subprocess.run", return_value=R()):
+                    self.assertIsNone(crypto.read_oauth_token("ghost"))
 
     def test_read_oauth_token_secret_tool_absent_returns_none(self):
+        """When no key and no secret-tool, read returns None (keyring fallback path)."""
         from ccswitch import crypto
-        with mock.patch("ccswitch.crypto.subprocess.run", side_effect=FileNotFoundError()):
-            assert crypto.read_oauth_token("primary") is None
+        with mock.patch("ccswitch.crypto.key_available", return_value=False):
+            with mock.patch("ccswitch.crypto.subprocess.run", side_effect=FileNotFoundError()):
+                assert crypto.read_oauth_token("primary") is None
+
+    def test_oauth_token_encrypted_file_roundtrip(self):
+        import tempfile
+        import os as _os
+        from pathlib import Path
+        from ccswitch import crypto, paths
+        _os.environ["CCSWITCH_MASTER_KEY"] = _TEST_KEY_B64
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                with mock.patch.object(paths, "store_dir", return_value=Path(d)):
+                    crypto.store_oauth_token("secondary", "sk-ant-oat01-FILE")
+                    # on disk it must be ENCRYPTED, not plaintext
+                    raw = (Path(d) / "oat" / "secondary").read_text()
+                    assert "sk-ant-oat01-FILE" not in raw and crypto.is_encrypted(raw)
+                    # and read decrypts it (no keyring involved)
+                    assert crypto.read_oauth_token("secondary") == "sk-ant-oat01-FILE"
+        finally:
+            _os.environ.pop("CCSWITCH_MASTER_KEY", None)
+
+    def test_oauth_token_env_override_wins(self):
+        import os as _os
+        from ccswitch import crypto
+        _os.environ["CCSWITCH_OAT_SECONDARY"] = "sk-ant-oat01-ENV"
+        try:
+            assert crypto.read_oauth_token("secondary") == "sk-ant-oat01-ENV"
+        finally:
+            _os.environ.pop("CCSWITCH_OAT_SECONDARY", None)
+
+    def test_oauth_token_missing_returns_none(self):
+        import tempfile
+        import os as _os
+        from pathlib import Path
+        from ccswitch import crypto, paths
+        _os.environ.pop("CCSWITCH_OAT_GHOST", None)
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(paths, "store_dir", return_value=Path(d)):
+                # no env, no file; keyring lookup fails (mock secret-tool absent)
+                with mock.patch("ccswitch.crypto.subprocess.run", side_effect=FileNotFoundError()):
+                    assert crypto.read_oauth_token("ghost") is None
 
 
 class TestReadWriteCredentials(unittest.TestCase):
