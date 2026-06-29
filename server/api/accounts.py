@@ -278,7 +278,15 @@ async def add_account_start(
     except InvalidAccountName:
         raise HTTPException(
             status_code=400,
-            detail={"error": "invalid_name", "name": name},
+            detail={
+                "error": "invalid_name",
+                "name": name,
+                "message": (
+                    "Account name must be a short identifier — letters, numbers, "
+                    ". _ - only (no @ or spaces). It's not an email; add a friendly "
+                    "nickname afterwards."
+                ),
+            },
         )
 
     if paths.slot_path(name).exists():

@@ -88,6 +88,26 @@ def test_add_start_400_invalid_name():
     assert resp.status_code == 400
 
 
+def test_add_start_400_invalid_name_has_human_message():
+    """A 400 invalid_name carries a human-readable `message` so the UI can show
+    specific guidance instead of a generic 'Something went wrong' toast."""
+    fake_rm = FakeReauthManager()
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client(fake_rm)
+        with client:
+            resp = client.post(
+                "/api/accounts/add",
+                json={"name": "tony@steinonline.net"},
+                headers=IDENTITY_HEADERS,
+            )
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["error"] == "invalid_name"
+    assert isinstance(detail.get("message"), str) and detail["message"].strip()
+
+
 def test_add_start_400_dotted_name():
     """POST /api/accounts/add returns 400 for a hidden-file (dot-prefixed) name."""
     fake_rm = FakeReauthManager()
