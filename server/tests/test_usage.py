@@ -206,3 +206,37 @@ async def test_start_idempotent():
     await poller.start()  # second call — should be a no-op
     assert poller._task is task_before
     await poller.stop()
+
+
+# ---------------------------------------------------------------------------
+# Blast-radius guard: one account's usage_fn raising must NOT fail the whole
+# sweep.  Incident 2026-06-29: a single account with a malformed credential blob
+# raised out of usage_fn → all() propagated the exception → /rpc/usage 500 →
+# remote edge mapped DaemonError to a blanket 409 on EVERY route. One bad
+# account must degrade to None for itself, never poison the others' usage.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_all_isolates_a_single_account_failure():
+    good = _make_usage(session_pct=42.0)
+
+    def usage_fn(account: str) -> Usage:
+        if account == "bad":
+            raise KeyError("refreshToken")  # the exact incident exception
+        return good
+
+    poller = UsagePoller(usage_fn=usage_fn)
+    with patch("server.usage.poller.list_accounts",
+               return_value=[{"name": "good"}, {"name": "bad"}]):
+        result = await poller.all()  # must not raise
+
+    assert result == {"good": good, "bad": None}
+
+
+@pytest.mark.asyncio
+async def test_get_returns_none_when_usage_fn_raises():
+    def boom(account: str) -> Usage:
+        raise RuntimeError("unexpected")
+
+    poller = UsagePoller(usage_fn=boom)
+    assert await poller.get("alpha") is None

@@ -104,7 +104,18 @@ class UsagePoller:
 
         async with lock:
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, self._usage_fn, account)
+            try:
+                result = await loop.run_in_executor(None, self._usage_fn, account)
+            except Exception:
+                # The usage_fn contract is to return None on failure, but a
+                # malformed credential slot or other unexpected fault can still
+                # raise. Contain it here: a single account must degrade to "no
+                # usage" (None) and grow its backoff, never propagate out of the
+                # sweep. all() aggregates via get(), so one bad account propagating
+                # would 500 the whole /rpc/usage RPC — which the remote-mode edge
+                # maps to a blanket 409 on every route. See test_usage.py.
+                log.exception("UsagePoller: usage fetch for %s raised; treating as None", account)
+                result = None
             self._note_outcome(account, result)
             old = self._cache.get(account, _SENTINEL)
             self._cache[account] = result
