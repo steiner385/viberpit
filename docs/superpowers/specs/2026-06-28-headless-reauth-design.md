@@ -26,9 +26,17 @@ dropped to a fallback.
 
 1. **Generation** — per account, run `claude setup-token` (interactive code-paste OAuth, ~yearly)
    through the existing virtual-browser/VNC reauth surface. No loopback port needed.
-2. **Storage** — the `sk-ant-oat01` token stored in the **GNOME keyring** via the existing
-   `crypto.py` / `secret-tool` pattern (service `ccswitch`, username `oat-<account>`), the same
-   mechanism as the master key. No new secrets subsystem; no plaintext at rest.
+2. **Storage** — CORRECTED 2026-06-28 (A3 live finding): the systemd `ccswitch-daemon` has **no
+   GNOME keyring / D-Bus session** (it gets `CCSWITCH_MASTER_KEY` from
+   `EnvironmentFile=/etc/ccswitch/ccswitch.env`, and `secret-tool` fails with no session bus). So
+   keyring storage is **unreadable by the daemon** — Phase A's keyring `read_oauth_token` returns
+   None in prod (safe fallback, but no token auth). **Corrected storage:** envelope-encrypt the
+   token with the master key (`crypto.encrypt`, exactly as `refreshToken` is encrypted in store
+   slots — the daemon decrypts via its env master key) and store the ciphertext in a
+   daemon-readable file under `paths.store_dir()` (e.g. `oat/<account>`). `read_oauth_token`
+   precedence mirrors `master_key()`: env-var override → encrypted file → keyring (interactive
+   fallback). Preserves no-plaintext-at-rest; the keyring `oat-<account>` path from Phase A becomes
+   the interactive-only fallback.
 3. **Injection** — orchestrator sets `CLAUDE_CODE_OAUTH_TOKEN` in each session's SDK subprocess
    env (per-process isolation preserved alongside `CLAUDE_CONFIG_DIR`).
 4. **Detection / regen** — a 401 on the token marks the account `needs-reauth` (reusing the
