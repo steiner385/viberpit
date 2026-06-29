@@ -54,7 +54,12 @@ dropped to a fallback.
    augments, then replaces, `capture_login`.
 3. **Quota/ToS confirmation** — confirm multi-session usage under a setup-token behaves like
    today's `claude` usage on Max (verify-in-implementation).
-4. **Revocation path** — map how to revoke/rotate an `oat` token (needed operationally).
+4. **Revocation path** — RESOLVED (see spike doc Revocation finding): there is **no per-token
+   revoke** for a setup-token. It is a 1-year grant; `logout` doesn't touch it; rotation =
+   generate-new (old lingers to expiry); only an account-level reset kills it early. Phase B/C
+   therefore rely on token *hygiene* (keyring-only, never logged, host-generated) rather than
+   revocation, and must inject per-account only (never a process-wide `CLAUDE_CODE_OAUTH_TOKEN`,
+   which precedence #5 would apply to every session).
 
 ## Problem
 

@@ -32,17 +32,42 @@
 4. Drop: the grant-harvest/refresh churn, the passkey/virtual-authenticator pipeline, the `op`
    password fallback. Keep: Phase 1's in-session-401 hardening (still useful), audit instrumentation.
 
+## Revocation finding (resolves the Phase B gate) — confirmed vs official docs (code.claude.com/docs/en/iam)
+
+- **No documented revoke for a setup-token.** It is a standalone **1-year** OAuth grant that
+  "does not save anywhere"; `claude auth logout` / `/logout` only manage the local
+  `.credentials.json` (the subscription `/login` creds), NOT the setup-token. No CLI revoke; no
+  advertised OAuth revocation endpoint (`.well-known` → 404).
+- **Rotation = generate-new.** A fresh token does not invalidate prior ones; the old lingers until
+  1-year expiry (or an account-level global session reset). There is no per-token kill switch.
+- **Consequence for Phase B/C:** treat tokens as long-lived-until-expiry; token hygiene is the
+  control (keyring-only at rest, never logged, generated on the host). A compromised token is
+  neutralized only by an account reset (disruptive) or expiry.
+
+## Auth-precedence finding (validates Phase A coexistence + ambient-leak risk)
+
+Docs order: cloud creds → `ANTHROPIC_AUTH_TOKEN` → `ANTHROPIC_API_KEY` → `apiKeyHelper`
+→ **`CLAUDE_CODE_OAUTH_TOKEN` (#5)** → subscription `/login` creds (#6).
+- Phase A correct: injected token (#5) wins over composed legacy creds (#6); absent → falls to #6.
+- Ambient-leak risk real: a daemon-env token overrides #6 for EVERY session → Phase B/C must
+  inject per-account only, never process-wide.
+
 ## Caveats / follow-ups
 
 - **Token generation is interactive** (code-paste OAuth) — still needs a human ~yearly. Acceptable.
-- **Revocation path** not yet mapped — confirm how to revoke/rotate a leaked or stale `oat` token
-  (account settings vs. regenerate). NEEDED before relying on it.
-- **ToS/quota** — `setup-token` is the sanctioned subscription-headless mechanism, but confirm
+- **Scope (confirmed by docs):** setup-tokens are **inference-only and cannot establish Remote
+  Control sessions** — bounds any leak to subscription inference quota.
+- **ToS/quota** — `setup-token` is the sanctioned subscription-headless mechanism; still confirm
   multi-session quota behavior matches today's `claude` usage.
 - The Spike A/B passkey findings remain a documented *fallback* if `setup-token` is ever withdrawn.
 
 ## SECURITY NOTE (this spike)
 
 During the spike, the generated `primary` token (scope `user:inference`, 1-yr) was accidentally
-printed into the session transcript by a log-grep. It was wiped from disk; it MUST be revoked —
-its blast radius is inference calls against `primary`'s Max quota (no account/data access).
+printed into the session transcript by a log-grep. It was wiped from disk. Blast radius is bounded
+to inference against `primary`'s Max quota (no account/data access, no Remote Control — per docs).
+Because there is **no per-token revoke** (see Revocation finding), the options are: (a) revoke via
+claude.ai account settings IF a session/device-revocation UI exists, (b) an account-level global
+sign-out/credential reset on `primary` (invalidates it but disrupts `primary`), or (c) accept the
+bounded risk + monitor `primary` usage and let it expire (≤1yr). Recommended: (a) if available,
+else (c) given the narrow scope.
