@@ -2319,6 +2319,14 @@ class SessionOrchestrator:
             await self._rotate_away(record, reason="rate_limit")
             return
         if kind == "auth_401":
+            if self._session_uses_setup_token(record):
+                # A setup-token has no refresh grant — a 401 means the long-lived token is
+                # dead. Skip the recompose detour; flag for regeneration and rotate.
+                self._recompose_attempts.pop(record.id, None)
+                self._recovery.quarantine(record.account, until=now + QUARANTINE_401)
+                self._mark_needs_reauth(record.account)
+                await self._rotate_away(record, reason="auth_401_setup_token")
+                return
             if not self._recently_recomposed(record.id, now):
                 self._recompose_attempts[record.id] = now
                 await self._recompose_same_account(record)
@@ -2334,6 +2342,12 @@ class SessionOrchestrator:
     def _recently_recomposed(self, session_id: str, now: float) -> bool:
         ts = self._recompose_attempts.get(session_id)
         return ts is not None and (now - ts) <= self._recompose_ttl
+
+    def _session_uses_setup_token(self, record: SessionRecord) -> bool:
+        """True when this session authenticates via a stored long-lived setup-token
+        (CLAUDE_CODE_OAUTH_TOKEN). A 401 on such a session is terminal — there is no
+        OAuth grant to recompose — so it goes straight to needs-reauth."""
+        return bool(crypto.read_oauth_token(record.account))
 
     async def _replay_same_account(self, record: SessionRecord, retry_after: float) -> None:
         """Wait out a short Retry-After, then re-send the last prompt on the same account."""

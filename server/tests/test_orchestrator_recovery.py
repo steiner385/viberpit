@@ -37,6 +37,10 @@ def _make_orch():
     o._recompose_same_account = spy_recompose
     o._pause_session = spy_pause
     o._mark_needs_reauth = spy_reauth
+    # Default to False so the real crypto.read_oauth_token is never called in the
+    # shared fixture — a real dev-machine token would flip existing OAuth-path tests
+    # into the new setup-token branch and cause false failures.
+    o._session_uses_setup_token = lambda rec: False
     return o
 
 
@@ -354,3 +358,23 @@ def test_recompose_proceeds_when_token_refresh_raises(monkeypatch):
 
     # _reassign must still run with the expected arguments.
     assert ("reassign", "kindash", "recompose") in order, order
+
+
+def test_401_setup_token_skips_recompose_and_marks_reauth():
+    """A setup-token 401 must short-circuit to needs-reauth+rotate — never recompose."""
+    o = _make_orch(); rec = _rec(o)
+    o._session_uses_setup_token = lambda r: True
+    asyncio.run(o._recover_session(rec, "auth_401", None))
+    assert ("needs_reauth", "kindash") in o.calls
+    assert ("rotate", "s1", "auth_401_setup_token") in o.calls
+    assert ("recompose", "s1") not in o.calls
+    assert "kindash" in o._recovery.quarantined(now=1000.0)
+
+
+def test_401_oauth_path_unchanged_when_no_setup_token():
+    """With the default False predicate the first OAuth 401 still only recomposes."""
+    o = _make_orch(); rec = _rec(o)
+    # _session_uses_setup_token already defaults to False in _make_orch()
+    asyncio.run(o._recover_session(rec, "auth_401", None))
+    assert o.calls == [("recompose", "s1")]
+    assert o._recovery.quarantined(now=1000.0) == frozenset()
