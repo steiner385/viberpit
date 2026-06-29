@@ -103,6 +103,8 @@ class PullRequestInfo:
     eta_seconds: int | None = None
     eta_percent: int | None = None
     eta_overdue: bool = False
+    eta_low_seconds: int | None = None
+    eta_high_seconds: int | None = None
     deployed_envs: tuple[str, ...] = ()
     check_groups: tuple[CheckGroup, ...] = ()
 
@@ -124,6 +126,8 @@ class PullRequestInfo:
             "eta_seconds": self.eta_seconds,
             "eta_percent": self.eta_percent,
             "eta_overdue": self.eta_overdue,
+            "eta_low_seconds": self.eta_low_seconds,
+            "eta_high_seconds": self.eta_high_seconds,
             "deployed_envs": list(self.deployed_envs),
             "check_groups": [g.to_dict() for g in self.check_groups],
         }
@@ -148,6 +152,8 @@ class PullRequestInfo:
             eta_seconds=d.get("eta_seconds"),
             eta_percent=d.get("eta_percent"),
             eta_overdue=d.get("eta_overdue", False),
+            eta_low_seconds=d.get("eta_low_seconds"),
+            eta_high_seconds=d.get("eta_high_seconds"),
             deployed_envs=tuple(d.get("deployed_envs", [])),
             check_groups=tuple(CheckGroup.from_dict(g) for g in d.get("check_groups", [])),
         )

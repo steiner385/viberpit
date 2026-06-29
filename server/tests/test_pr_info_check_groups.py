@@ -166,3 +166,12 @@ def test_enrich_attaches_check_groups_without_history_store():
     assert pr.eta_seconds is None
     # No store → overdue never asserted true (and never crashes)
     assert all(not c.overdue for g in pr.check_groups for c in g.checks)
+
+
+def test_pullrequestinfo_eta_range_roundtrip():
+    from server.github.pr_status import PullRequestInfo
+    pr = PullRequestInfo(number=1, url="u", state="open", checks="pending", title="t",
+                         eta_seconds=300, eta_low_seconds=120, eta_high_seconds=600)
+    d = pr.to_dict()
+    assert d["eta_low_seconds"] == 120 and d["eta_high_seconds"] == 600
+    assert PullRequestInfo.from_dict(d).eta_low_seconds == 120
