@@ -41,6 +41,24 @@ def test_apiretry_counts_as_progress():
     assert d.last_progress_at == t0 + 100
 
 
+@pytest.mark.asyncio
+async def test_drain_alive_tracks_pump_lifecycle():
+    """drain_alive is the watchdog's 'interrupt didn't land' signal: it stays True
+    while the turn's drain task runs, so a turn whose _turn_active was flipped False by
+    an interrupt but whose drain never completed (wedged SDK subprocess) is detectable."""
+    d = _make_driver()
+    assert d.drain_alive is False                  # no turn started → no pump
+    gate = asyncio.Event()
+    async def _runner():
+        await gate.wait()
+    d._pump = asyncio.create_task(_runner())
+    await asyncio.sleep(0)
+    assert d.drain_alive is True                    # drain running
+    gate.set()
+    await d._pump
+    assert d.drain_alive is False                   # drain completed
+
+
 def test_empty_thinking_delta_still_not_progress():
     d = _make_driver()
     t0 = d.last_progress_at

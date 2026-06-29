@@ -2184,7 +2184,14 @@ class SessionOrchestrator:
         # no SDK progress for STALL_TIMEOUT; do not chase IPC drops for that symptom.
         quarantined = self._recovery.quarantined(now=now)
         for sid, driver in list(self._drivers.items()):
-            if not getattr(driver, "_turn_active", False):
+            # A live turn (`_turn_active`) is the obvious wedge candidate. But an
+            # interrupt that the SDK ignored leaves a ZOMBIE: `interrupt()` flips
+            # `_turn_active` False, yet the drain never completes (`drain_alive`) because
+            # the subprocess is genuinely hung mid-compaction. Both need watching; only a
+            # turn that is neither active nor still draining is truly idle.
+            active = getattr(driver, "_turn_active", False)
+            zombie = (not active) and getattr(driver, "drain_alive", False)
+            if not active and not zombie:
                 continue
             # A turn whose silence is attributable to API throttling — the driver is
             # backing off, or its account is in recovery quarantine (recently 429'd) —
@@ -2202,7 +2209,23 @@ class SessionOrchestrator:
                 # by user]" users see when they take a while to answer.
                 continue
             if self._recovery.stall_cap_reached(sid, now=now):
-                continue  # repeatedly stalling — don't interrupt-loop
+                # Interrupts aren't landing (the cap of in-window attempts is spent and
+                # the turn is still wedged) — escalate to a recompose-in-place rather
+                # than abandon it. Bounded by crash_cap (shared with process-crash
+                # recovery; both rebuild the driver on the same account, resume, and
+                # resend the last prompt) so a turn that keeps wedging ultimately pauses
+                # to needs_attention instead of looping forever.
+                record = self._records.get(sid)
+                if record is None:
+                    continue
+                if self._recovery.crash_cap_reached(sid, now=now):
+                    log.warning("stall watchdog: recompose cap reached, pausing session=%s", sid)
+                    await self._pause_session(record, reason="stall_cap")
+                else:
+                    self._recovery.record_crash(sid, now=now)
+                    log.warning("stall watchdog: recomposing wedged turn session=%s", sid)
+                    await self._reassign(record, record.account, reason="stall_recompose")
+                continue
             self._recovery.record_stall(sid, now=now)
             log.warning("stall watchdog: interrupting wedged turn session=%s", sid)
             await driver.interrupt()

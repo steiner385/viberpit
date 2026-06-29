@@ -62,3 +62,45 @@ async def test_backstop_without_boundary_records_nothing():
     d._condensing = False
     d._condense_started_at = None       # backstop clears without recording
     assert recorded == []
+
+
+@pytest.mark.asyncio
+async def test_interrupt_clears_condensing_flag():
+    """A stall-watchdog interrupt while a turn is wedged inside compaction must clear
+    the condensing flag. derive_status ranks ``condensing`` ABOVE ``turn_active``, so
+    leaving the flag set pins the persisted status to 'condensing' forever even though
+    interrupt() set turn_active=False — the bug that strands a card on "Condensing…"."""
+    statuses: list[str] = []
+    async def on_status(_sid, status): statuses.append(status)
+    d, _ = _driver(on_status=on_status)
+    await d.start()
+    d._turn_active = True
+    await d._on_pre_compact()             # compaction starts: condensing=True
+    assert d._condensing is True
+    statuses.clear()
+
+    await d.interrupt()
+
+    assert d._condensing is False
+    assert d._condense_started_at is None
+    assert "condensing" not in statuses   # interrupt must not re-persist condensing
+
+
+@pytest.mark.asyncio
+async def test_interrupt_emits_condensing_inactive_to_clear_overlay():
+    """interrupt() during compaction must also forward a Condensing(active=False) event
+    so an open session view clears its progress overlay (mirrors _consume_condensing)."""
+    d, _ = _driver()
+    await d.start()
+    d._turn_active = True
+    await d._on_pre_compact()
+    while not d._out.empty():             # drain the active=True + status events
+        d._out.get_nowait()
+
+    await d.interrupt()
+
+    out = []
+    while not d._out.empty():
+        out.append(d._out.get_nowait())
+    cond_off = [e for e in out if isinstance(e, ev.Condensing) and not e.active]
+    assert cond_off, "interrupt must emit Condensing(active=False)"

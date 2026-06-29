@@ -178,6 +178,73 @@ def test_check_stalls_interrupts_wedged_turn():
     assert interrupted == [True]
 
 
+def test_check_stalls_escalates_zombie_to_recompose_after_cap():
+    """A turn the watchdog already interrupted but that stayed wedged (the SDK ignored
+    the interrupt: _turn_active flipped False yet the drain never completed and progress
+    is still frozen) must be recomposed in place once interrupts hit the stall cap —
+    not silently abandoned."""
+    o = _make_orch(); _rec(o)
+    reassigned = []
+    async def spy_reassign(record, new_account, *, reason):
+        reassigned.append((record.id, new_account, reason))
+    o._reassign = spy_reassign
+    class _Zombie:
+        _turn_active = False        # interrupt() already flipped it
+        drain_alive = True          # but the drain never completed → subprocess wedged
+        last_progress_at = 0.0      # progress frozen
+        async def interrupt(self):
+            raise AssertionError("must escalate, not interrupt again")
+    o._drivers["s1"] = _Zombie()
+    for _ in range(R.STALL_CAP):    # interrupts already exhausted
+        o._recovery.record_stall("s1", now=10_000.0)
+    asyncio.run(o._check_stalls(now=10_000.0))
+    assert reassigned == [("s1", "kindash", "stall_recompose")]
+
+
+def test_check_stalls_zombie_pauses_after_crash_cap():
+    """A turn that keeps wedging through repeated recomposes is bounded by crash_cap —
+    it ends at needs_attention (paused), not an endless recompose loop."""
+    o = _make_orch(); _rec(o)
+    async def spy_reassign(record, new_account, *, reason):
+        o.calls.append(("reassign", record.id, reason))
+    o._reassign = spy_reassign
+    class _Zombie:
+        _turn_active = False
+        drain_alive = True
+        last_progress_at = 0.0
+        async def interrupt(self): pass
+    o._drivers["s1"] = _Zombie()
+    for _ in range(R.STALL_CAP):
+        o._recovery.record_stall("s1", now=10_000.0)
+    for _ in range(R.CRASH_CAP):
+        o._recovery.record_crash("s1", now=10_000.0)
+    asyncio.run(o._check_stalls(now=10_000.0))
+    assert ("pause", "s1", "stall_cap") in o.calls
+    assert ("reassign", "s1", "stall_recompose") not in o.calls
+
+
+def test_check_stalls_leaves_resolved_turn_alone():
+    """A turn whose interrupt DID land — drain completed (drain_alive False), turn
+    inactive — is genuinely finished; the watchdog must not recompose or interrupt it,
+    even with the stall cap already reached."""
+    o = _make_orch(); _rec(o)
+    reassigned = []
+    async def spy_reassign(record, new_account, *, reason):
+        reassigned.append(record.id)
+    o._reassign = spy_reassign
+    class _Done:
+        _turn_active = False
+        drain_alive = False
+        last_progress_at = 0.0
+        async def interrupt(self):
+            raise AssertionError("resolved turn must be left alone")
+    o._drivers["s1"] = _Done()
+    for _ in range(R.STALL_CAP):
+        o._recovery.record_stall("s1", now=10_000.0)
+    asyncio.run(o._check_stalls(now=10_000.0))
+    assert reassigned == []
+
+
 def test_check_stalls_leaves_progressing_turn_alone():
     o = _make_orch()
     interrupted = []
