@@ -103,6 +103,9 @@ export function PipelineBoard({
                           states={p.node_states}
                           etaSeconds={p.eta_seconds}
                           etaOverdue={p.eta_overdue}
+                          etaLowSeconds={p.eta_low_seconds}
+                          etaHighSeconds={p.eta_high_seconds}
+                          etaPercent={p.eta_percent}
                         />
                         {p.session && (
                           <span
