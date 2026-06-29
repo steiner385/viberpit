@@ -131,3 +131,38 @@ def test_enrich_attaches_check_groups(tmp_path):
     assert pr.check_groups[0].kind == "head", (
         f"first group kind should be 'head', got {pr.check_groups[0].kind!r}"
     )
+
+
+def test_enrich_attaches_check_groups_without_history_store():
+    """Regression: when there is NO HistoryStore (prod without the pipeline_history DB),
+    enrichment must STILL populate check_groups from the checks query — it only needs the
+    store for the ETA/overdue flags. Previously _enrich_with_eta bailed at `store is None`,
+    so the drill-down never appeared in prod despite the checks being fetchable."""
+    from server.github.pr_population import PrPopulationPoller
+
+    p = PrPopulationPoller(
+        query_fn=lambda repo: _pop_resp(42),
+        eta_query_fn=_eta_checks_resp_with_head_and_merge,
+        history_store=None,
+        now_fn=lambda: NOW,
+    )
+    # Force "no history DB available" deterministically (don't touch the real default path).
+    p._store_init_attempted = True
+    p._history_store = None
+
+    asyncio.run(p.refresh_once([REPO]))
+    prs = p.cached(REPO)
+    assert len(prs) == 1
+    pr = prs[0]
+
+    # check_groups must still be populated even with no store...
+    assert len(pr.check_groups) >= 1, (
+        f"check_groups must populate without a history store; got {pr.check_groups!r}"
+    )
+    assert pr.check_groups[0].kind == "head"
+    # ...and the head check's row is present (durations work without history)
+    assert any(c.name == "ci" for c in pr.check_groups[0].checks)
+    # ETA needs the store, so it stays absent — but the drill-down does not.
+    assert pr.eta_seconds is None
+    # No store → overdue never asserted true (and never crashes)
+    assert all(not c.overdue for g in pr.check_groups for c in g.checks)
