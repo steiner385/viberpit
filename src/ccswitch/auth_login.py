@@ -197,7 +197,7 @@ def capture_setup_token(
     on_url: Callable[[str], None],
     get_code: Callable[[], str],
     claude_bin: Sequence[str] | None = None,
-    env_extra: dict | None = None,
+    env_extra: dict[str, str] | None = None,
 ) -> bool:
     """Drive ``claude setup-token`` via a PTY, capture the sk-ant-oat01 token, and
     store it ENCRYPTED via crypto.store_oauth_token(name, token).
@@ -276,11 +276,8 @@ def capture_setup_token(
             if not url_surfaced:
                 m = _URL_RE.search(buf)
                 if m:
-                    # Decode as latin-1 (safe for arbitrary bytes) and strip
-                    # any trailing ANSI escape that slipped in
-                    url_raw = m.group(0).decode("latin-1")
-                    url_clean = re.sub(r"\x1b\[[0-9;]*[A-Za-z]$", "", url_raw)
-                    on_url(url_clean)
+                    url = m.group(0).decode("latin-1")
+                    on_url(url)
                     url_surfaced = True
 
             if url_surfaced and not code_sent:
@@ -302,8 +299,6 @@ def capture_setup_token(
             except OSError:
                 break
 
-        os.close(mo)
-
         # Extract the token
         tm = _TOKEN_RE.search(buf)
         if not tm:
@@ -319,6 +314,12 @@ def capture_setup_token(
         return True
 
     finally:
+        # Close PTY fds safely (sl may be closed by child, mo may be closed by read loop)
+        for fd in (mo, sl):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         # Clean up the isolated config dir
         try:
             shutil.rmtree(capture_dir, ignore_errors=True)
