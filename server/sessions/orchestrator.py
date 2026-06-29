@@ -2511,11 +2511,14 @@ class SessionOrchestrator:
                 on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester,
             )
+            # Set the record's account BEFORE start(): start() triggers the SDK factory →
+            # _oat_env, which reads record.account to pick the setup-token. If left stale, a
+            # cross-account reassign injects the old account's token into the new config (#346).
+            record.account = new_account
             await new_driver.start()
             self._drivers[record.id] = new_driver
             if record.model is not None:
                 await new_driver.set_model(record.model)
-            record.account = new_account
             last = self._last_prompt.get(record.id)
             if last:
                 await new_driver.send_prompt(last)
