@@ -2,6 +2,7 @@ import { Check, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { StageModel, NodeState } from '@/api/types'
 import { formatEta } from '@/lib/formatEta'
+import { nodeCircleClass } from '@/lib/checkState'
 
 // Fallback skeleton shown when no model is available yet.
 const SKELETON_NODES = [
@@ -9,21 +10,6 @@ const SKELETON_NODES = [
   { id: 'ready', label: 'Ready' },
   { id: 'merged', label: 'Merged' },
 ]
-
-// Map a node state to the Tailwind classes for the circle.
-function nodeCircleClass(state: NodeState | 'pending'): string {
-  switch (state) {
-    case 'done':
-      return 'bg-green-500 border-green-500 text-white dark:bg-green-500 dark:border-green-500'
-    case 'active':
-      return 'bg-accent border-accent text-accent-foreground ring-2 ring-accent/40'
-    case 'failed':
-      return 'bg-red-500 border-red-500 text-white dark:bg-red-500 dark:border-red-500'
-    case 'pending':
-    default:
-      return 'bg-transparent border-gray-300 dark:border-gray-600 text-gray-400 dark:text-gray-500'
-  }
-}
 
 // Connector line tint: green when upstream is done, gray otherwise.
 function connectorClass(upstreamState: NodeState | 'pending'): string {
