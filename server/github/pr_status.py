@@ -39,12 +39,18 @@ class CheckRow:
     duration_seconds: int | None
     required: bool
     overdue: bool
+    rem_low_seconds: int | None = None
+    rem_nominal_seconds: int | None = None
+    rem_high_seconds: int | None = None
 
     def to_dict(self) -> dict:
         return {
             "name": self.name, "workflow": self.workflow, "status": self.status,
             "conclusion": self.conclusion, "duration_seconds": self.duration_seconds,
             "required": self.required, "overdue": self.overdue,
+            "rem_low_seconds": self.rem_low_seconds,
+            "rem_nominal_seconds": self.rem_nominal_seconds,
+            "rem_high_seconds": self.rem_high_seconds,
         }
 
     @classmethod
@@ -54,6 +60,9 @@ class CheckRow:
             status=d.get("status", ""), conclusion=d.get("conclusion", ""),
             duration_seconds=d.get("duration_seconds"),
             required=bool(d.get("required", False)), overdue=bool(d.get("overdue", False)),
+            rem_low_seconds=d.get("rem_low_seconds"),
+            rem_nominal_seconds=d.get("rem_nominal_seconds"),
+            rem_high_seconds=d.get("rem_high_seconds"),
         )
 
 

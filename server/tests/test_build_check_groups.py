@@ -3,10 +3,11 @@ import math
 from datetime import datetime, timezone
 
 from server.pipeline.checkgroups import build_check_groups, RUNNER_RATE_USD_PER_MIN
+from server.pipeline.history import Expected
 
 
 class _FakeExpected:
-    def __init__(self, p50): self.p50 = p50
+    def __init__(self, p50): self.p10 = p50; self.p50 = p50; self.p90 = p50
 
 
 class _FakeStore:
@@ -14,6 +15,7 @@ class _FakeStore:
     def expected(self, repo, name, event):
         v = self._p50s.get(name)
         return _FakeExpected(v) if v is not None else None
+    def samples(self, repo, name, event): return []
 
 
 NOW = datetime(2026, 6, 28, 12, 10, 0, tzinfo=timezone.utc)
@@ -80,6 +82,8 @@ class _EventAwareFakeStore:
         v = self._data.get((name, event))
         return _FakeExpected(v) if v is not None else None
 
+    def samples(self, repo, name, event): return []
+
 
 def test_merge_group_check_uses_own_event_for_history():
     """A running merge_group check whose p50 history exists ONLY under event=merge_group
@@ -108,6 +112,34 @@ def test_merge_group_check_uses_own_event_for_history():
         "merge_group check must be flagged overdue when its own-event p50 is exceeded; "
         "a pull_request-keyed lookup would return None and leave overdue=False"
     )
+
+
+class _RangeStore:
+    def __init__(self, exp): self._exp = exp
+    def expected(self, repo, name, event): return self._exp
+    def samples(self, repo, name, event): return []
+
+
+def test_running_row_gets_rem_range():
+    head = [_head("slow", "2026-06-28T12:09:00Z", None, conclusion=None, status="IN_PROGRESS")]
+    store = _RangeStore(Expected(p10=120.0, p50=300.0, p90=600.0, n=20))
+    groups = build_check_groups(head, {"checks": [], "eta_seconds": None}, store, "octo/repo", NOW)
+    row = groups[0].checks[0]
+    assert row.rem_low_seconds is not None
+    assert row.rem_low_seconds <= row.rem_nominal_seconds <= row.rem_high_seconds
+
+
+def test_done_row_has_no_rem():
+    head = [_head("lint", "2026-06-28T12:00:00Z", "2026-06-28T12:05:00Z")]
+    store = _RangeStore(Expected(p10=1.0, p50=2.0, p90=3.0, n=5))
+    row = build_check_groups(head, {"checks": [], "eta_seconds": None}, store, "octo/repo", NOW)[0].checks[0]
+    assert row.rem_nominal_seconds is None
+
+
+def test_no_store_no_rem():
+    head = [_head("slow", "2026-06-28T12:09:00Z", None, conclusion=None, status="IN_PROGRESS")]
+    row = build_check_groups(head, {"checks": [], "eta_seconds": None}, None, "octo/repo", NOW)[0].checks[0]
+    assert row.rem_nominal_seconds is None
 
 
 def test_running_check_with_no_store_does_not_crash():
