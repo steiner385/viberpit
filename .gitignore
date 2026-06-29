@@ -4,6 +4,10 @@ __pycache__/
 *.egg-info/
 .superpowers/
 
+# Local dev environment (secrets + scratch DB/logs) — never commit
+.env
+.dev/
+
 # Test artifacts (created by temp_env() at repo root)
 .claude.json
 .credentials.json

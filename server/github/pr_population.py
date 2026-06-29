@@ -24,6 +24,7 @@ from .pr_status import (
     build_eta_checks_query,
     build_population_query,
     parse_eta_checks_response,
+    parse_merge_group_response,
     parse_population_response,
 )
 
@@ -179,6 +180,7 @@ class PrPopulationPoller:
             # eta_query_fn is a blocking network call — run it in a thread.
             response = await asyncio.to_thread(self._eta_query_fn, open_keys)
             checks_by_pr = parse_eta_checks_response(response, open_keys)
+            merge_by_pr = parse_merge_group_response(response, open_keys)
         except Exception:
             log.warning("pr_population.eta_fetch_failed", exc_info=True)
             return prs_by_repo
@@ -187,6 +189,7 @@ class PrPopulationPoller:
 
         try:
             from server.pipeline.eta import compute_pr_eta
+            from server.pipeline.checkgroups import build_check_groups
         except Exception:
             log.warning("pr_population.eta_import_failed", exc_info=True)
             return prs_by_repo
@@ -201,11 +204,15 @@ class PrPopulationPoller:
                     checks = checks_by_pr.get(key, [])
                     try:
                         eta_s, eta_pct, eta_over = compute_pr_eta(store, repo, checks, now)
+                        groups = build_check_groups(
+                            checks, merge_by_pr.get(key, {}), store, repo, now,
+                        )
                         pr = dataclasses.replace(
                             pr,
                             eta_seconds=eta_s,
                             eta_percent=eta_pct,
                             eta_overdue=eta_over,
+                            check_groups=groups,
                         )
                     except Exception:
                         log.debug(

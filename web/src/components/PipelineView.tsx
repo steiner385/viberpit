@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Wrench, SquareTerminal } from 'lucide-react'
+import { Wrench, SquareTerminal, ChevronRight, ChevronDown } from 'lucide-react'
 import { GroupHeader } from './GroupHeader'
 import { PrPill } from './PrPill'
 import { StageTrack } from './StageTrack'
+import { CheckDrillDown } from './CheckDrillDown'
 import { useAllPrs, useFixPr, useStageModels } from '@/api/hooks'
 import { isActionablePrState } from '@/session/prStatus'
 import type { PipelinePr, StageModel } from '@/api/types'
@@ -21,6 +22,8 @@ export function PipelineBoard({
 }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const toggle = (key: string) => setCollapsed((c) => ({ ...c, [key]: !c[key] }))
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const toggleExpand = (key: string) => setExpanded((e) => ({ ...e, [key]: !e[key] }))
 
   if (prs.length === 0) {
     return (
@@ -77,6 +80,22 @@ export function PipelineBoard({
                         }}
                         className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-muted/60 cursor-pointer"
                       >
+                        {p.check_groups && p.check_groups.length > 0 && (
+                          <button
+                            type="button"
+                            data-testid={`pipeline-expand-${p.number}`}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              toggleExpand(`${p.repo}#${p.number}`)
+                            }}
+                            aria-label={`Toggle checks for PR #${p.number}`}
+                            className="shrink-0 text-muted-foreground"
+                          >
+                            {expanded[`${p.repo}#${p.number}`]
+                              ? <ChevronDown size={14} aria-hidden />
+                              : <ChevronRight size={14} aria-hidden />}
+                          </button>
+                        )}
                         <PrPill pr={p} />
                         <span className="truncate text-sm">{p.title}</span>
                         <StageTrack
@@ -111,6 +130,9 @@ export function PipelineBoard({
                           </button>
                         )}
                       </div>
+                      {expanded[`${p.repo}#${p.number}`] && p.check_groups && (
+                        <CheckDrillDown groups={p.check_groups} />
+                      )}
                     </li>
                   )
                 })}

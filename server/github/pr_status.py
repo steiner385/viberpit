@@ -31,6 +31,61 @@ class CheckDetail:
 
 
 @dataclass(frozen=True)
+class CheckRow:
+    name: str
+    workflow: str | None
+    status: str        # GraphQL status passthrough: COMPLETED/IN_PROGRESS/QUEUED/PENDING/...
+    conclusion: str    # normalised lowercase: success/failure/pending/neutral/skipped/...
+    duration_seconds: int | None
+    required: bool
+    overdue: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name, "workflow": self.workflow, "status": self.status,
+            "conclusion": self.conclusion, "duration_seconds": self.duration_seconds,
+            "required": self.required, "overdue": self.overdue,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CheckRow":
+        return cls(
+            name=d.get("name", ""), workflow=d.get("workflow"),
+            status=d.get("status", ""), conclusion=d.get("conclusion", ""),
+            duration_seconds=d.get("duration_seconds"),
+            required=bool(d.get("required", False)), overdue=bool(d.get("overdue", False)),
+        )
+
+
+@dataclass(frozen=True)
+class CheckGroup:
+    kind: str  # "head" | "merge"
+    checks: tuple[CheckRow, ...]
+    total_seconds: int
+    cost_usd: float | None
+    eta_seconds: int | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "checks": [c.to_dict() for c in self.checks],
+            "total_seconds": self.total_seconds,
+            "cost_usd": self.cost_usd,
+            "eta_seconds": self.eta_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CheckGroup":
+        return cls(
+            kind=d.get("kind", ""),
+            checks=tuple(CheckRow.from_dict(c) for c in d.get("checks", [])),
+            total_seconds=int(d.get("total_seconds", 0)),
+            cost_usd=d.get("cost_usd"),
+            eta_seconds=d.get("eta_seconds"),
+        )
+
+
+@dataclass(frozen=True)
 class PullRequestInfo:
     number: int
     url: str
@@ -49,6 +104,7 @@ class PullRequestInfo:
     eta_percent: int | None = None
     eta_overdue: bool = False
     deployed_envs: tuple[str, ...] = ()
+    check_groups: tuple[CheckGroup, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +125,7 @@ class PullRequestInfo:
             "eta_percent": self.eta_percent,
             "eta_overdue": self.eta_overdue,
             "deployed_envs": list(self.deployed_envs),
+            "check_groups": [g.to_dict() for g in self.check_groups],
         }
 
     @classmethod
@@ -92,6 +149,7 @@ class PullRequestInfo:
             eta_percent=d.get("eta_percent"),
             eta_overdue=d.get("eta_overdue", False),
             deployed_envs=tuple(d.get("deployed_envs", [])),
+            check_groups=tuple(CheckGroup.from_dict(g) for g in d.get("check_groups", [])),
         )
 
 
@@ -221,6 +279,14 @@ def build_eta_checks_query(prs: list[tuple[str, int]]) -> str:
             f"        ... on StatusContext {{ context state }}\n"
             f"      }} }}\n"
             f"    }} }} }} }}\n"
+            f"    mergeQueueEntry {{ estimatedTimeToMerge headCommit {{ statusCheckRollup {{\n"
+            f"      contexts(first: 100) {{ nodes {{\n"
+            f"        __typename\n"
+            f"        ... on CheckRun {{ name status conclusion startedAt completedAt "
+            f"checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}\n"
+            f"        ... on StatusContext {{ context state }}\n"
+            f"      }} }}\n"
+            f"    }} }} }}\n"
             f"  }}\n"
             f"}}"
         )
@@ -267,6 +333,48 @@ def parse_eta_checks_response(
                     "isRequired": False, "workflowName": None, "event": "pull_request",
                 })
         out[key] = checks
+    return out
+
+
+def parse_merge_group_response(
+    response: dict, prs: list[tuple[str, int]]
+) -> dict[tuple[str, int], dict]:
+    """Parse the mergeQueueEntry block of a ``build_eta_checks_query`` response.
+
+    Returns (repo, number) -> {"checks": [...], "eta_seconds": int | None}.
+    Empty checks + None eta when the PR is not enqueued (mergeQueueEntry null).
+    """
+    data = (response or {}).get("data") or {}
+    out: dict[tuple[str, int], dict] = {}
+    for i, key in enumerate(prs):
+        node = data.get(_alias(i)) or {}
+        entry = (node.get("pullRequest") or {}).get("mergeQueueEntry")
+        if not entry:
+            out[key] = {"checks": [], "eta_seconds": None}
+            continue
+        rollup = (entry.get("headCommit") or {}).get("statusCheckRollup") or {}
+        contexts = ((rollup.get("contexts") or {}).get("nodes")) or []
+        checks: list[dict] = []
+        for c in contexts:
+            if c.get("__typename") == "CheckRun":
+                wf = (((c.get("checkSuite") or {}).get("workflowRun") or {}).get("workflow") or {})
+                checks.append({
+                    "name": c.get("name", ""), "status": c.get("status", ""),
+                    "conclusion": c.get("conclusion"), "started_at": c.get("startedAt"),
+                    "completed_at": c.get("completedAt"),
+                    "isRequired": False, "workflowName": wf.get("name"),
+                    "event": "merge_group",
+                })
+            else:
+                checks.append({
+                    "name": c.get("context", ""), "status": "COMPLETED",
+                    "conclusion": c.get("state"), "started_at": None,
+                    "completed_at": None, "isRequired": False,
+                    "workflowName": None, "event": "merge_group",
+                })
+        # GitHub's MergeQueueEntry.estimatedTimeToMerge is in SECONDS (per the GraphQL
+        # schema) — stored raw and rendered via formatEta (seconds). Do NOT multiply.
+        out[key] = {"checks": checks, "eta_seconds": entry.get("estimatedTimeToMerge")}
     return out
 
 

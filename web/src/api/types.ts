@@ -145,6 +145,26 @@ export interface PullRequestInfo {
   eta_percent?: number | null
   /** True when the CI run has exceeded its expected duration. */
   eta_overdue?: boolean
+  /** Per-check drill-down groups (head commit + merge group); snake_case to match backend. */
+  check_groups?: CheckGroup[]
+}
+
+export interface CheckRow {
+  name: string
+  workflow: string | null
+  status: string
+  conclusion: string
+  duration_seconds: number | null
+  required: boolean
+  overdue: boolean
+}
+
+export interface CheckGroup {
+  kind: 'head' | 'merge'
+  checks: CheckRow[]
+  total_seconds: number
+  cost_usd: number | null
+  eta_seconds?: number | null
 }
 
 export type NodeState = 'done' | 'active' | 'failed' | 'pending'

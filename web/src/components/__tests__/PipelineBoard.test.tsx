@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { PipelineBoard } from '../PipelineView'
 import type { PipelinePr, StageModel } from '@/api/types'
@@ -112,5 +113,32 @@ describe('PipelineBoard', () => {
     expect(label).toHaveTextContent('My session')
     expect(label).toHaveAttribute('title', 'Session: My session')
     expect(label.querySelector('svg')).not.toBeNull()
+  })
+
+  it('expands a PR row to show its check drill-down', async () => {
+    const user = userEvent.setup()
+    const prs = [{
+      repo: 'o/r', number: 5, url: 'u', state: 'open', checks: 'passing', title: 'feat',
+      deployed: false, session: null, node_states: [],
+      check_groups: [{ kind: 'head', total_seconds: 60, cost_usd: 0.01, eta_seconds: null,
+        checks: [{ name: 'lint', workflow: 'CI', status: 'COMPLETED', conclusion: 'success',
+          duration_seconds: 60, required: true, overdue: false }] }],
+    }] as unknown as PipelinePr[]
+    render(<PipelineBoard prs={prs} stageModels={{}} />)
+    expect(screen.queryByTestId('check-row-lint')).toBeNull()
+    await user.click(screen.getByTestId('pipeline-expand-5'))
+    expect(screen.getByTestId('check-row-lint')).toBeInTheDocument()
+  })
+
+  it('expand chevron does not trigger row navigation', async () => {
+    const user = userEvent.setup()
+    const onOpenSession = vi.fn()
+    const prs = [{ repo: 'o/r', number: 5, url: 'u', state: 'open', checks: 'passing',
+      title: 'feat', deployed: false, session: { id: 's1', name: 'sess' }, node_states: [],
+      check_groups: [{ kind: 'head', total_seconds: 0, cost_usd: null, eta_seconds: null,
+        checks: [] }] }] as unknown as PipelinePr[]
+    render(<PipelineBoard prs={prs} stageModels={{}} onOpenSession={onOpenSession} />)
+    await user.click(screen.getByTestId('pipeline-expand-5'))
+    expect(onOpenSession).not.toHaveBeenCalled()
   })
 })
