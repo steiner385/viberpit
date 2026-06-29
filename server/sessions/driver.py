@@ -110,6 +110,19 @@ class SessionDriver:
         return self._last_progress_at
 
     @property
+    def drain_alive(self) -> bool:
+        """True while the current turn's drain task is still running.
+
+        The stall watchdog reads this to tell a *resolved* interrupt from one the SDK
+        ignored. ``interrupt()`` flips ``_turn_active`` False immediately, but the
+        subprocess only really stops when the drain unwinds and completes. If the drain
+        is STILL alive a tick later with progress frozen, the interrupt didn't land (a
+        wedged compaction subprocess) — the watchdog escalates that to a recompose
+        instead of abandoning the zombie turn.
+        """
+        return self._pump is not None and not self._pump.done()
+
+    @property
     def awaiting_user_input(self) -> bool:
         """True when the turn is blocked inside ``_can_use_tool`` waiting on the human
         (a pending permission, ExitPlanMode plan approval, or AskUserQuestion).
@@ -343,6 +356,23 @@ class SessionDriver:
         """
         return self._qreg.pending(self.session_id)
 
+    def _reset_turn_flags(self) -> None:
+        """Clear every turn-scoped flag so none outlives the turn that set it.
+
+        Called from BOTH turn-teardown paths — ``_drain``'s ``finally`` (the normal
+        end) and ``interrupt()`` (a Stop / stall-watchdog kill). Keeping the reset in
+        one place is what stops the two sites drifting: ``interrupt()`` used to skip
+        ``_condensing``, and because ``derive_status`` ranks ``condensing`` ABOVE
+        ``turn_active``, an interrupt during compaction stranded the dashboard status on
+        'condensing' forever (the card never left "Condensing…" until a fresh prompt
+        rebuilt the turn). ``_retrying`` is masked by the ``turn_active`` check so its
+        omission was harmless, but it belongs to the same turn-scoped class — reset it
+        here too rather than rely on the masking.
+        """
+        self._retrying = False
+        self._condensing = False
+        self._condense_started_at = None
+
     def _dash_signals(self) -> StatusSignals:
         """Snapshot the live driver state into the inputs of derive_status."""
         perms = self._reg.pending(self.session_id)
@@ -531,13 +561,10 @@ class SessionDriver:
             self._last_turn_outcome = "failed"
             await self._maybe_signal_recovery("driver_error", full)
         finally:
-            # Reset retrying flag so a turn that ends mid-retry doesn't leak into the next.
-            self._retrying = False
             # Capture any token rotation the SDK performed during this turn.
             await self._call_sync_back()
-            # Compaction is turn-scoped; never let a condensing flag outlive the turn.
-            self._condensing = False
-            self._condense_started_at = None
+            # Clear every turn-scoped flag so none outlives the turn that set it.
+            self._reset_turn_flags()
             # If queued prompts remain, pop the front and start the next turn.
             if self._queue:
                 next_text, next_images = self._queue.pop(0)
@@ -661,6 +688,15 @@ class SessionDriver:
         if self._client:
             await self._client.interrupt()
         self._turn_active = False
+        # Clear turn-scoped flags BEFORE deriving the post-interrupt status. Without
+        # this, _condensing stays True and (outranking turn_active in derive_status)
+        # re-persists 'condensing' — the interrupt would visibly do nothing to the pill.
+        was_condensing = self._condensing
+        self._reset_turn_flags()
+        if was_condensing:
+            # Forward an inactive boundary so an open session view clears its progress
+            # overlay (mirrors _consume_condensing); the normal boundary never arrives.
+            await self._out.put(ev.Condensing(active=False))
         await self._out.put(ev.QueueUpdate([]))
         await self._emit_status()
 
