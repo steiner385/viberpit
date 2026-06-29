@@ -69,8 +69,6 @@ async def test_inprocess_adapter_has_submit_code():
 @pytest.mark.asyncio
 async def test_inprocess_adapter_start_passes_mode():
     """InProcessReauthAdapter.start forwards mode= to the inner manager."""
-    import asyncio
-
     modes_seen: list[str] = []
 
     class _CapturingManager:
