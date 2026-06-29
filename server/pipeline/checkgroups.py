@@ -43,7 +43,9 @@ def _row(c: dict, store, repo: str, now: datetime) -> CheckRow:
 
     overdue = False
     if running and started is not None and duration is not None:
-        exp = store.expected(repo, c.get("name", ""), _EVENT)
+        # Use the check's own event (e.g. "merge_group") so merge-group checks don't
+        # borrow pull_request history; fall back to _EVENT when the field is absent.
+        exp = store.expected(repo, c.get("name", ""), c.get("event") or _EVENT)
         if exp is not None and exp.p50 and duration > exp.p50:
             overdue = True
 

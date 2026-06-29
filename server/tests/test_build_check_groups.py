@@ -67,3 +67,44 @@ def test_merge_group_appended_with_eta():
     assert [g.kind for g in groups] == ["head", "merge"]
     assert groups[1].eta_seconds == 180
     assert groups[1].checks[0].name == "e2e"
+
+
+class _EventAwareFakeStore:
+    """Fake store that keys expected duration on (name, event) so we can assert
+    that _row passes the check's own event, not a hardcoded constant."""
+    def __init__(self, data: dict):
+        # data: {(name, event): p50}
+        self._data = data
+
+    def expected(self, repo, name, event):
+        v = self._data.get((name, event))
+        return _FakeExpected(v) if v is not None else None
+
+
+def test_merge_group_check_uses_own_event_for_history():
+    """A running merge_group check whose p50 history exists ONLY under event=merge_group
+    must be flagged overdue=True.  With the old hardcoded _EVENT="pull_request" lookup
+    store.expected() returns None → overdue stays False (the regression this test covers)."""
+    # p50=120s exists only for event="merge_group"; pull_request has no entry
+    store = _EventAwareFakeStore({("mg-lint", "merge_group"): 120.0})
+    # started 10 min ago, still running → elapsed=600s > p50=120s → overdue
+    merge_check = {
+        "name": "mg-lint",
+        "status": "IN_PROGRESS",
+        "conclusion": None,
+        "started_at": "2026-06-28T12:00:00Z",
+        "completed_at": None,
+        "isRequired": True,
+        "workflowName": "CI / Merge",
+        "event": "merge_group",
+    }
+    groups = build_check_groups([], {"checks": [merge_check], "eta_seconds": None},
+                                store, "octo/repo", NOW)
+    assert len(groups) == 2  # head (empty) + merge
+    assert groups[1].kind == "merge"
+    row = groups[1].checks[0]
+    assert row.duration_seconds == 600
+    assert row.overdue is True, (
+        "merge_group check must be flagged overdue when its own-event p50 is exceeded; "
+        "a pull_request-keyed lookup would return None and leave overdue=False"
+    )
