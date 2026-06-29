@@ -41,6 +41,27 @@ class _FakeX11:
         self.stopped.append(key)
 
 
+def test_reauthstate_auth_url_serialises_roundtrip():
+    from server.reauth import ReauthState
+    s = ReauthState(state="awaiting_code", auth_url="https://claude.com/cai/oauth/authorize?x=1")
+    assert s.to_dict()["authUrl"] == "https://claude.com/cai/oauth/authorize?x=1"
+    assert s.to_dict()["state"] == "awaiting_code"
+    back = ReauthState.from_dict(s.to_dict())
+    assert back.auth_url == "https://claude.com/cai/oauth/authorize?x=1"
+    assert back.state == "awaiting_code"
+
+
+def test_manager_status_carries_auth_url():
+    # The status() snapshot must propagate auth_url (this is the site that feeds the API).
+    from server.reauth import ReauthManager
+    m = ReauthManager(key_available=lambda: True)
+    m._state.auth_url = "https://claude.com/cai/oauth/authorize?x=2"
+    m._state.state = "awaiting_code"
+    snap = m.status("acct")
+    assert snap.auth_url == "https://claude.com/cai/oauth/authorize?x=2"
+    assert snap.to_dict()["authUrl"] == "https://claude.com/cai/oauth/authorize?x=2"
+
+
 def test_reauth_state_to_dict_includes_vnc_session():
     from server.reauth import ReauthState
     s = ReauthState(state="running", vnc_session="__reauth__")

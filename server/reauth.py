@@ -51,7 +51,7 @@ class ReauthNoKey(Exception):
 
 @dataclass
 class ReauthState:
-    state: str = "idle"          # idle|running|cancelling|success|error|timeout
+    state: str = "idle"          # idle|running|cancelling|success|error|timeout|awaiting_code
     message: str | None = None
     identity: str | None = None
     started_at: float | None = None
@@ -60,6 +60,7 @@ class ReauthState:
     _launcher_pid: int | None = field(default=None, repr=False, compare=False)
     _temp_profile: str | None = field(default=None, repr=False, compare=False)
     vnc_session: str | None = None   # reserved key while a virtual display is live; None on :0 fallback
+    auth_url: str | None = None
 
     def to_dict(self) -> dict:
         """Return a camelCase dict safe for JSON serialisation."""
@@ -69,6 +70,7 @@ class ReauthState:
             "identity": self.identity,
             "startedAt": self.started_at,
             "vncSession": self.vnc_session,
+            "authUrl": self.auth_url,
         }
 
     @staticmethod
@@ -79,6 +81,7 @@ class ReauthState:
             identity=d.get("identity"),
             started_at=d.get("startedAt"),
             vnc_session=d.get("vncSession"),
+            auth_url=d.get("authUrl"),
         )
 
 
@@ -216,6 +219,7 @@ class ReauthManager:
             message=self._state.message,
             identity=self._state.identity,
             started_at=self._state.started_at,
+            auth_url=self._state.auth_url,
         )
 
     def status(self, name: str) -> ReauthState:
@@ -227,6 +231,7 @@ class ReauthManager:
             identity=s.identity,
             started_at=s.started_at,
             vnc_session=s.vnc_session,
+            auth_url=s.auth_url,
         )
 
     async def cancel(self, name: str) -> ReauthState:
