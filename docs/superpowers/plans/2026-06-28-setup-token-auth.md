@@ -206,6 +206,39 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
+## PHASE A.2 — Daemon-readable encrypted token storage (CORRECTION, do before step-1 verify)
+
+A3 live verification found the systemd daemon has **no keyring** (uses `CCSWITCH_MASTER_KEY` from
+`/etc/ccswitch/ccswitch.env`; `secret-tool` fails with no D-Bus session). So Phase A's keyring
+`read_oauth_token` is inert in prod. Rework storage to envelope-encryption the daemon can read.
+
+### Task A2.1: encrypted-file token store (replaces keyring as primary)
+
+**Files:** Modify `src/ccswitch/crypto.py` (or a new `src/ccswitch/oat_store.py`); Test `tests/test_crypto.py`.
+
+**Interfaces (corrected):**
+- `store_oauth_token(account, token)`: if `key_available()`, write `crypto.encrypt(token)` to
+  `paths.store_dir()/oat/<account>` (mode 0600). Falls back to keyring only if no master key.
+- `read_oauth_token(account) -> str | None`: precedence mirroring `master_key()` —
+  1) env override `CCSWITCH_OAT_<ACCOUNT_SANITIZED>`, 2) the encrypted file
+  (`crypto.decrypt`, guarded — return None on missing/decrypt-fail), 3) keyring `oat-<account>`
+  (interactive fallback, with the existing timeout+guard).
+
+- [ ] Step 1: write tests — roundtrip via encrypted file (mock `key_available`/`encrypt`/`decrypt`),
+  env-override wins, missing→None, decrypt-failure→None. (Mirror `tests/test_crypto.py` style.)
+- [ ] Step 2: run, confirm FAIL.
+- [ ] Step 3: implement the precedence + encrypted-file write/read (reuse `crypto.encrypt/decrypt/is_encrypted`, `paths.store_dir()`).
+- [ ] Step 4: run, confirm PASS + full `tests/test_crypto.py` green + ruff/mypy.
+- [ ] Step 5: commit.
+
+### Task A2.2: live A3 verification (now meaningful)
+- [ ] Generate a `setup-token` for one account; `store_oauth_token` writes the encrypted file.
+- [ ] Confirm a daemon session on that account authenticates via the token and
+  `CLAUDE_CODE_OAUTH_TOKEN` is in the subprocess env (`/proc/<pid>/environ`, redacted).
+- [ ] Confirm the daemon (no keyring) reads it — proving the correction.
+
+---
+
 ## PHASE B — Interactive token generation in the dashboard (structured; verify revocation first)
 
 > Gated on the spec's open verifications: **revocation path** and **quota/ToS**. Detail the
