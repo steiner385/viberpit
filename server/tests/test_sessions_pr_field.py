@@ -1,7 +1,7 @@
 import pytest
 
 from server.api.sessions import _record_to_dict, _resolve_prs
-from server.github.pr_status import PullRequestInfo
+from server.github.pr_status import CheckGroup, CheckRow, PullRequestInfo
 from server.sessions.types import SessionRecord
 
 
@@ -20,7 +20,7 @@ def test_record_to_dict_includes_prs_when_given():
         "state": "open", "checks": "passing", "title": "t", "deployed": False,
         "deployed_envs": [],
         "head_sha": "", "is_draft": False, "merged": False, "updated_at": "",
-        "checks_detail": [], "stage": "", "repo": "",
+        "checks_detail": [], "check_groups": [], "stage": "", "repo": "",
         "eta_seconds": None, "eta_percent": None, "eta_overdue": False,
     }]
     assert "pr" not in d
@@ -50,3 +50,17 @@ async def test_resolve_prs_handles_sync_async_and_missing():
     assert [p.number for p in await _resolve_prs(_SyncOrch(), rec)] == [1]
     assert [p.number for p in await _resolve_prs(_AsyncOrch(), rec)] == [2]
     assert await _resolve_prs(_NoOrch(), rec) == []
+
+
+def test_record_to_dict_pr_includes_check_groups_key():
+    row = CheckRow(
+        name="build", workflow="CI", status="COMPLETED", conclusion="success",
+        duration_seconds=30, required=True, overdue=False,
+    )
+    group = CheckGroup("head", (row,), 30, 0.008)
+    pr = PullRequestInfo(
+        7, "https://github.com/o/r/pull/7", "open", "passing", "feat",
+        check_groups=(group,),
+    )
+    d = _record_to_dict(_rec(), repo="o/r", prs=[pr])
+    assert d["prs"][0]["check_groups"][0]["kind"] == "head"
