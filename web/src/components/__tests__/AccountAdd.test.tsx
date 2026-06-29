@@ -26,6 +26,7 @@ vi.mock('@/api/hooks', () => ({
   useReauthAccount: vi.fn(),
   useReauthStatus: vi.fn(),
   useCancelReauth: vi.fn(),
+  useSubmitReauthCode: vi.fn(),
   useAddAccount: vi.fn(),
   useAddAccountStatus: vi.fn(),
   useCancelAddAccount: vi.fn(),
@@ -92,6 +93,7 @@ function setupDefaultMocks() {
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
   vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: makeReauthState({ state: 'idle' }), isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
   vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
+  vi.mocked(hooks.useSubmitReauthCode).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useSubmitReauthCode>)
   vi.mocked(hooks.useAddAccount).mockReturnValue({ ...NOOP_MUTATION, mutate: addMutate } as unknown as ReturnType<typeof hooks.useAddAccount>)
   vi.mocked(hooks.useAddAccountStatus).mockReturnValue({ data: makeReauthState({ state: 'idle' }), isLoading: false } as ReturnType<typeof hooks.useAddAccountStatus>)
   vi.mocked(hooks.useCancelAddAccount).mockReturnValue({ ...NOOP_MUTATION, mutate: cancelAddMutate } as unknown as ReturnType<typeof hooks.useCancelAddAccount>)

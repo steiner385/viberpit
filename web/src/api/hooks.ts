@@ -274,9 +274,22 @@ export function useUpdateAccountNickname() {
   })
 }
 
+type ReauthAccountInput = string | { name: string; mode?: 'login' | 'setup_token' }
+
 export function useReauthAccount() {
-  return useMutation<ReauthState, ApiRequestError, string>({
-    mutationFn: (name) => api.post<ReauthState>(`/accounts/${encodeURIComponent(name)}/reauth`),
+  return useMutation<ReauthState, ApiRequestError, ReauthAccountInput>({
+    mutationFn: (input) => {
+      const { name, mode } = typeof input === 'string' ? { name: input, mode: undefined } : input
+      const path = `/accounts/${encodeURIComponent(name)}/reauth${mode === 'setup_token' ? '?mode=setup_token' : ''}`
+      return api.post<ReauthState>(path)
+    },
+  })
+}
+
+export function useSubmitReauthCode() {
+  return useMutation<ReauthState, ApiRequestError, { name: string; code: string }>({
+    mutationFn: ({ name, code }) =>
+      api.post<ReauthState>(`/accounts/${encodeURIComponent(name)}/reauth/code`, { code }),
   })
 }
 

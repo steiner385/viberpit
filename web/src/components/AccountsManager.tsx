@@ -21,6 +21,7 @@ import {
   useReauthAccount,
   useReauthStatus,
   useCancelReauth,
+  useSubmitReauthCode,
   QK,
 } from '@/api/hooks'
 import { AddAccountDialog } from './AddAccountDialog'
@@ -193,10 +194,13 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
   const [reauthStarted, setReauthStarted] = useState(false)
   // Optimistic local idle override — set when user cancels
   const [reauthOptimisticIdle, setReauthOptimisticIdle] = useState(false)
+  // Code input for awaiting_code state
+  const [code, setCode] = useState('')
 
   const qc = useQueryClient()
   const reauthAccount = useReauthAccount()
   const cancelReauth = useCancelReauth()
+  const submitCode = useSubmitReauthCode()
 
   // Poll status while reauth is running (enabled when started and not optimistically idled)
   const reauthStatusQuery = useReauthStatus(account.name, reauthStarted && !reauthOptimisticIdle)
@@ -263,6 +267,7 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
   const displayLabel = account.nickname || account.name
 
   const isReauthRunning = reauthStatus?.state === 'running' || reauthStatus?.state === 'cancelling'
+  const isAwaitingCode = reauthStatus?.state === 'awaiting_code'
   const isReauthSuccess = reauthStatus?.state === 'success'
   const isReauthError = reauthStatus?.state === 'error' || reauthStatus?.state === 'timeout'
 
@@ -356,12 +361,12 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
                 )}
                 aria-label={`Re-authenticate ${account.name}`}
                 onClick={handleReauth}
-                disabled={isReauthRunning}
+                disabled={isReauthRunning || isAwaitingCode}
               >
                 Re-authenticate
               </button>
             )}
-            {isReauthRunning && (
+            {(isReauthRunning || isAwaitingCode) && (
               <button
                 type="button"
                 className={cn(
@@ -377,6 +382,28 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
                 Cancel
               </button>
             )}
+            <button
+              type="button"
+              className={cn(
+                'rounded px-2 py-1 text-xs min-h-[44px]',
+                'text-gray-500 dark:text-gray-400',
+                'hover:text-gray-700 dark:hover:text-gray-200',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                'disabled:opacity-40',
+              )}
+              aria-label={`Generate long-lived token for ${account.name}`}
+              onClick={() => {
+                setReauthOptimisticIdle(false)
+                setReauthStarted(true)
+                reauthAccount.mutate(
+                  { name: account.name, mode: 'setup_token' },
+                  { onError: () => setReauthStarted(false) },
+                )
+              }}
+              disabled={isReauthRunning || isAwaitingCode}
+            >
+              Generate long-lived token
+            </button>
             <button
               type="button"
               className={cn(
@@ -440,6 +467,72 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
             Opening Chrome on the host screen — sign in there…
           </p>
         )
+      )}
+      {!editing && isAwaitingCode && reauthStatus?.authUrl && (
+        <div className="flex flex-col gap-2 mt-1">
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            Open this URL, approve, then paste the code below.
+          </p>
+          <div className="flex items-center gap-2 min-w-0">
+            <a
+              href={reauthStatus.authUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(
+                'text-xs text-blue-600 dark:text-blue-400 underline truncate min-w-0 flex-1',
+              )}
+            >
+              {reauthStatus.authUrl}
+            </a>
+            <button
+              type="button"
+              className={cn(
+                'rounded px-2 py-1 text-xs flex-shrink-0',
+                'border border-gray-300 dark:border-gray-600',
+                'text-gray-700 dark:text-gray-300',
+                'hover:bg-gray-100 dark:hover:bg-gray-700',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+              )}
+              onClick={() => { void navigator.clipboard.writeText(reauthStatus.authUrl!) }}
+            >
+              Copy
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              aria-label={`Authorization code for ${account.name}`}
+              placeholder="Paste authorization code…"
+              className={cn(
+                'flex-1 min-w-0 rounded border border-gray-300 dark:border-gray-600',
+                'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
+                'px-2 py-1 text-xs',
+                'focus:outline-none focus:ring-2 focus:ring-blue-500',
+              )}
+            />
+            <button
+              type="button"
+              className={cn(
+                'rounded px-2 py-1 text-xs font-medium flex-shrink-0',
+                'bg-blue-600 text-white hover:bg-blue-700',
+                'dark:bg-blue-700 dark:hover:bg-blue-600',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                'disabled:opacity-40',
+              )}
+              disabled={!code.trim()}
+              onClick={() => {
+                submitCode.mutate(
+                  { name: account.name, code: code.trim() },
+                  { onSuccess: () => setCode('') },
+                )
+              }}
+            >
+              Submit code
+            </button>
+          </div>
+        </div>
       )}
       {!editing && isReauthSuccess && (
         <p className="text-xs text-green-600 dark:text-green-400">
