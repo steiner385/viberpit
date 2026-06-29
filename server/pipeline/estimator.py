@@ -1,6 +1,7 @@
 """Port of Plotroom's estimator/progress.ts — the CI-progress ETA.
 
-Pure: (checks, expected_set, lookup, now, samples, queue_delay) → (percent, eta, overdue).
+Pure: (checks, expected_set, lookup, now, samples, queue_delay) →
+ProgressResult(percent, eta_seconds nominal, eta_low_seconds, eta_high_seconds, overdue).
 """
 from __future__ import annotations
 
