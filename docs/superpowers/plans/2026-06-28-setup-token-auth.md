@@ -239,24 +239,41 @@ A3 live verification found the systemd daemon has **no keyring** (uses `CCSWITCH
 
 ---
 
-## PHASE B — Interactive token generation in the dashboard (structured; verify revocation first)
+## PHASE B — Interactive token generation in the dashboard (UNBLOCKED)
 
-> Gated on the spec's open verifications: **revocation path** and **quota/ToS**. Detail the
-> bite-sized TDD once those resolve (a manual revoke confirmation + a quota check).
+> Gates resolved: **revocation** (no per-token revoke; rotation=regen — recorded in spec/spike) and
+> **quota/ToS** (RESOLVED: setup-token draws on the subscription's own quota, scoped inference-only,
+> Anthropic's sanctioned headless mechanism; Spike D's 6-concurrent confirmed normal metering).
 
-### File structure
-- Modify: `src/ccswitch/auth_login.py` — add `capture_setup_token(name, *, env_extra) -> bool`:
-  drives `claude setup-token` (the proven pty + code-paste flow), captures `sk-ant-oat01-…`,
-  stores it via `crypto.store_oauth_token`. Mirrors `capture_login`'s isolation + no-logging.
-- Modify: `server/reauth.py` — runner option to call `capture_setup_token` instead of
-  `capture_login`; surface the code-paste step to the dashboard (the user pastes the code).
-- Modify: `server/api/accounts.py` / frontend — a "Generate long-lived token" action on the
-  add/reauth flow; the code-paste input field.
+**Design (reuse, not parallel):** extend the existing `ReauthManager` (`server/reauth.py`) — it
+already owns the global single-flight lock + start/status/cancel + state machine. Add a
+setup-token runner mode, an `awaiting_code` state, an `auth_url` field, and a `submit_code` method.
+Storage uses the encrypted-file `crypto.store_oauth_token` from Phase A.2. The code-paste flow was
+proven live in the A3 spike driver.
 
-### Tasks (to expand post-verification)
-1. `capture_setup_token` (pty-driven, code injected from the API; token → keyring; never logged).
-2. reauth/add wiring + code-paste surface in the dashboard.
-3. needs-reauth on token 401 (reuse the existing ledger + `account.needs_reauth` audit path).
+### Task B1 — `capture_setup_token` core (this PR)
+**Files:** Modify `src/ccswitch/auth_login.py`; Test `server/tests/test_capture_setup_token.py` +
+a fake setup-token binary `server/tests/fakes/fake_claude_setup_token.py` (mirrors
+`fakes/fake_claude_login.py`).
+- `capture_setup_token(name, *, on_url, get_code, claude_bin=None, env_extra=None) -> bool`:
+  pty-drives `claude setup-token`; when the `https://claude.com/cai/oauth/authorize…` URL appears,
+  calls `on_url(url)`; calls `get_code()` (blocking, returns the user's pasted code) and injects it;
+  on success extracts the `sk-ant-oat01-…` token and stores it via `crypto.store_oauth_token(name, token)`
+  (encrypted file). Returns True/False. The token value is NEVER logged or returned.
+- Fake binary: prints a fake authorize URL, reads a line (the code) from stdin, prints
+  `sk-ant-oat01-FAKE…`, exits 0. Test drives `capture_setup_token` with `claude_bin=[python, fake]`,
+  asserts on_url got a URL, get_code was called, and `read_oauth_token(name)` returns the fake token.
+
+### Tasks B2–B5 (subsequent PRs)
+2. **B2** — `ReauthManager` extension: `awaiting_code` state + `auth_url` in `ReauthState.to_dict`,
+   `submit_code(name, code)`, and a setup-token runner wiring `capture_setup_token` (on_url →
+   state.auth_url; get_code → blocks on an Event set by submit_code).
+3. **B3** — API: `POST /{name}/reauth/code` (and `/add/code`) → `manager.submit_code`; include
+   `authUrl` in the reauth/add status response.
+4. **B4** — frontend: in the add/reauth dialog, show `authUrl` + a code-paste input when state is
+   `awaiting_code`; POST the code.
+5. **B5** — needs-reauth on token 401: classify a setup-token 401 → `account.needs_reauth` (reuse
+   the existing ledger + audit path) so the dashboard prompts regeneration (~yearly).
 
 ---
 

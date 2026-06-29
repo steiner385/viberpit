@@ -60,8 +60,12 @@ dropped to a fallback.
 2. **Generation surface** — recommend: add a "Generate long-lived token" action to the existing
    add/reauth dashboard flow (reuses the virtual browser), capturing the code-paste step; this
    augments, then replaces, `capture_login`.
-3. **Quota/ToS confirmation** — confirm multi-session usage under a setup-token behaves like
-   today's `claude` usage on Max (verify-in-implementation).
+3. **Quota/ToS confirmation** — RESOLVED (docs + Spike D): a setup-token "authenticates with your
+   Claude subscription… scoped to inference only" — same subscription quota as interactive `claude`,
+   no separate metering, Anthropic's sanctioned headless mechanism. Spike D's 6 concurrent calls
+   metered as normal inference. ccswitch's usage-aware rotation is unaffected (token changes auth,
+   not the quota model). Phase C note: usage *polling* currently uses legacy creds — under hard
+   replace it must work via the token (or keep a minimal creds path for usage only).
 4. **Revocation path** — RESOLVED (see spike doc Revocation finding): there is **no per-token
    revoke** for a setup-token. It is a 1-year grant; `logout` doesn't touch it; rotation =
    generate-new (old lingers to expiry); only an account-level reset kills it early. Phase B/C
