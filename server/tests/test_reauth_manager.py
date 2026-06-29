@@ -474,7 +474,7 @@ async def test_setup_token_flow_awaiting_code_then_submit_succeeds(monkeypatch):
 
     got: dict = {}
 
-    def fake_capture(name, *, on_url, get_code, claude_bin=None, env_extra=None):
+    def fake_capture(name, *, on_url, get_code, claude_bin=None, env_extra=None, on_pid=None, post_code_timeout_s=60.0):
         on_url("https://claude.com/cai/oauth/authorize?x=1")
         code = get_code()          # blocks until submit_code
         got["code"] = code
@@ -524,7 +524,7 @@ async def test_setup_token_runner_false_marks_error(monkeypatch):
     from ccswitch import auth_login
     from server.reauth import ReauthManager
 
-    def fake_capture(name, *, on_url, get_code, claude_bin=None, env_extra=None):
+    def fake_capture(name, *, on_url, get_code, claude_bin=None, env_extra=None, on_pid=None, post_code_timeout_s=60.0):
         on_url("https://claude.com/cai/oauth/authorize?x=99")
         get_code()
         return False
@@ -556,7 +556,7 @@ async def test_start_mode_login_uses_login_runner(monkeypatch):
 
     setup_token_called = []
 
-    def fake_capture_setup(name, *, on_url, get_code, claude_bin=None, env_extra=None):
+    def fake_capture_setup(name, *, on_url, get_code, claude_bin=None, env_extra=None, on_pid=None, post_code_timeout_s=60.0):
         setup_token_called.append(True)
         return True
 
@@ -593,7 +593,7 @@ async def test_cancel_during_awaiting_code_aborts_promptly(monkeypatch):
     from ccswitch import auth_login
     from server.reauth import ReauthManager
 
-    def fake_capture(name, *, on_url, get_code, claude_bin=None, env_extra=None):
+    def fake_capture(name, *, on_url, get_code, claude_bin=None, env_extra=None, on_pid=None, post_code_timeout_s=60.0):
         on_url("https://claude.com/cai/oauth/authorize?x=1")
         get_code()          # blocks on the event until cancel sets it
         return False
@@ -632,4 +632,81 @@ async def test_cancel_during_awaiting_code_aborts_promptly(monkeypatch):
     # After cancel the state MUST be "idle" — cancel() transitions cancelling → idle.
     assert final_state == "idle", (
         f"cancel must leave state idle; got {final_state!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_setup_token_cancel_reaps_child_via_on_pid(monkeypatch):
+    """Test D: cancel() in setup_token mode signals the child PID set via on_pid.
+
+    Verifies the full chain:
+    - _setup_token_runner passes on_pid= to capture_setup_token
+    - on_pid callback sets manager._state._launcher_pid
+    - cancel() → _kill_launcher() → os.killpg(os.getpgid(pid), SIGTERM)
+    """
+    import os
+    import signal
+    from ccswitch import auth_login
+    from server.reauth import ReauthManager
+
+    SENTINEL_PID = 12345   # fake child PID (not a real process)
+    SENTINEL_PGID = 12345  # session leader: pgid == pid
+
+    killpg_calls: list[tuple[int, int]] = []
+
+    orig_getpgid = os.getpgid
+
+    def patched_getpgid(pid: int) -> int:
+        if pid == SENTINEL_PID:
+            return SENTINEL_PGID
+        return orig_getpgid(pid)
+
+    monkeypatch.setattr(os, "getpgid", patched_getpgid)
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+
+    def fake_capture(
+        name,
+        *,
+        on_url,
+        get_code,
+        claude_bin=None,
+        env_extra=None,
+        on_pid=None,
+        post_code_timeout_s=60.0,
+    ):
+        if on_pid is not None:
+            on_pid(SENTINEL_PID)
+        on_url("https://claude.com/cai/oauth/authorize?x=1")
+        get_code()  # blocks until cancel sets the event
+        return False
+
+    monkeypatch.setattr(auth_login, "capture_setup_token", fake_capture)
+
+    m = ReauthManager(key_available=lambda: True, timeout_s=60)
+    await m.start("acct_d", "me@x", mode="setup_token")
+
+    # Wait for awaiting_code (URL surfaced)
+    for _ in range(100):
+        if m.status("acct_d").state == "awaiting_code":
+            break
+        await asyncio.sleep(0.02)
+    assert m.status("acct_d").state == "awaiting_code", (
+        f"Expected awaiting_code, got {m.status('acct_d').state!r}"
+    )
+
+    # _launcher_pid must be set by the on_pid callback before cancel
+    assert m._state._launcher_pid == SENTINEL_PID, (
+        f"_launcher_pid should be set via on_pid; got {m._state._launcher_pid!r}"
+    )
+
+    await m.cancel("acct_d")
+
+    # _kill_launcher must have sent SIGTERM to the process group
+    sigterm_calls = [
+        (pgid, sig)
+        for pgid, sig in killpg_calls
+        if sig == signal.SIGTERM and pgid == SENTINEL_PGID
+    ]
+    assert sigterm_calls, (
+        f"Expected os.killpg({SENTINEL_PGID}, SIGTERM) from _kill_launcher; got: {killpg_calls}"
     )
