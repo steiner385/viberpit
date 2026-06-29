@@ -8,11 +8,13 @@ import re
 import select
 import shlex
 import shutil
+import signal
 import sqlite3
 import struct
 import subprocess
 import tempfile
 import termios
+import time
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -198,6 +200,8 @@ def capture_setup_token(
     get_code: Callable[[], str],
     claude_bin: Sequence[str] | None = None,
     env_extra: dict[str, str] | None = None,
+    on_pid: Callable[[int], None] | None = None,
+    post_code_timeout_s: float = 60.0,
 ) -> bool:
     """Drive ``claude setup-token`` via a PTY, capture the sk-ant-oat01 token, and
     store it ENCRYPTED via crypto.store_oauth_token(name, token).
@@ -208,7 +212,13 @@ def capture_setup_token(
     - spawn ``claude setup-token`` attached to a PTY (wide winsize so the URL
       doesn't wrap) in an isolated CLAUDE_CONFIG_DIR under reauth_tmp_dir()
     - read output; when the authorize URL appears, call on_url(url)
-    - call get_code() (blocking) and write the returned code + "\\n" to the PTY
+    - call get_code() (blocking) and write the returned code + "\\r" to the PTY
+      (claude's raw-mode TUI registers Enter as carriage-return \\r, not \\n)
+    - if on_pid is provided, call it with proc.pid immediately after Popen so
+      callers can track and reap the child on cancel/timeout
+    - after the code is sent, a post_code_timeout_s deadline limits how long we
+      wait for the process to produce a token; if "Invalid code" appears in the
+      output, fail fast immediately (kill + return False)
     - drain remaining PTY output after process exit (token is printed just
       before exit and can be missed by the in-loop reads)
     - extract the sk-ant-oat01 token; store via crypto.store_oauth_token
@@ -259,9 +269,14 @@ def capture_setup_token(
         )
         os.close(sl)  # child owns the slave end; close our copy
 
+        # Expose child PID to callers immediately so cancel/timeout can reap it.
+        if on_pid is not None:
+            on_pid(proc.pid)
+
         buf = b""
         url_surfaced = False
         code_sent = False
+        post_code_deadline: float | None = None
 
         # Main read loop — runs while the process is alive
         while proc.poll() is None:
@@ -282,8 +297,33 @@ def capture_setup_token(
 
             if url_surfaced and not code_sent:
                 code = get_code()  # BLOCKING — caller provides the code
-                os.write(mo, (code + "\n").encode())
+                # claude's raw-mode TUI registers Enter as \r, not \n.
+                # Sending \n causes the code to appear on screen but never submit;
+                # sending \r causes immediate submission. — do NOT log the code.
+                os.write(mo, (code + "\r").encode())
                 code_sent = True
+                post_code_deadline = time.monotonic() + post_code_timeout_s
+
+            if code_sent:
+                # Fast-fail: invalid code → claude re-prompts but never produces a token.
+                if b"Invalid code" in buf:
+                    log.debug("capture_setup_token: invalid code detected, aborting")
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except OSError:
+                        pass
+                    break
+                # Bounded wait: kill if claude still hasn't exited after timeout.
+                if post_code_deadline is not None and time.monotonic() > post_code_deadline:
+                    log.debug(
+                        "capture_setup_token: post-code timeout (%.1fs), aborting",
+                        post_code_timeout_s,
+                    )
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except OSError:
+                        pass
+                    break
 
         # Drain remaining PTY output — the token is printed just before exit
         # and can arrive after proc.poll() returns non-None

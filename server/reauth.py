@@ -381,8 +381,18 @@ class ReauthManager:
                 manager._state.state = "running"   # back to processing once we have the code
             return manager._submitted_code or ""
 
+        def _on_pid(pid: int) -> None:
+            # worker-thread context: same established pattern as mutating _state
+            # from threads elsewhere in this module.  Stores the child PID so
+            # cancel() → _kill_launcher() can signal it.
+            manager._state._launcher_pid = pid
+
         return await asyncio.to_thread(
-            capture_setup_token, name, on_url=_on_url, get_code=_get_code
+            capture_setup_token,
+            name,
+            on_url=_on_url,
+            get_code=_get_code,
+            on_pid=_on_pid,
         )
 
     async def submit_code(self, name: str, code: str) -> ReauthState:
@@ -399,17 +409,25 @@ class ReauthManager:
         return self.status(name)
 
     def _kill_launcher(self) -> None:
-        """Send SIGTERM to the Chrome launcher PID if known."""
+        """Signal any tracked child process to terminate.
+
+        _state._launcher_pid — used for the setup-token child (set via on_pid).
+            The child runs in its own session (os.setsid), so we kill the whole
+            process group to catch any sub-processes it may have spawned.
+
+        _state._temp_profile/launcher.pid — used for the Chrome reauth browser.
+            A single SIGTERM to the launcher script PID is sufficient here.
+        """
         pid = self._state._launcher_pid
         if pid is not None:
             try:
-                os.kill(pid, signal.SIGTERM)
-                log.info("sent SIGTERM to launcher PID %d", pid)
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                log.info("sent SIGTERM to process group of setup-token child PID %d", pid)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
             self._state._launcher_pid = None
 
-        # Also try reading launcher.pid from the temp profile dir
+        # Also try reading launcher.pid from the temp profile dir (Chrome reauth path)
         temp = self._state._temp_profile
         if temp:
             pid_file = Path(temp) / "launcher.pid"

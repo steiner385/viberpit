@@ -21,6 +21,9 @@ FAKE_OK = str(
 FAKE_NOTOKEN = str(
     Path(__file__).parent / "fakes" / "fake_claude_setup_token_notoken.py"
 )
+FAKE_HANG = str(
+    Path(__file__).parent / "fakes" / "fake_claude_setup_token_hang.py"
+)
 
 
 def test_capture_setup_token_captures_and_stores(monkeypatch, tmp_path):
@@ -88,6 +91,72 @@ def test_capture_setup_token_returns_false_when_no_token(monkeypatch, tmp_path):
         # No encrypted file should exist
         oat_file = tmp_path / "oat" / "acct2"
         assert not oat_file.exists(), "No token file should be created on failure"
+    finally:
+        if old_key is None:
+            os.environ.pop("CCSWITCH_MASTER_KEY", None)
+        else:
+            os.environ["CCSWITCH_MASTER_KEY"] = old_key
+
+
+def test_capture_setup_token_on_pid_receives_child_pid(monkeypatch, tmp_path):
+    """Test C: on_pid callback is invoked with the spawned child's PID (positive int)."""
+    old_key = os.environ.get("CCSWITCH_MASTER_KEY")
+    os.environ["CCSWITCH_MASTER_KEY"] = _TEST_KEY_B64
+    try:
+        from ccswitch import auth_login, paths
+
+        monkeypatch.setattr(paths, "store_dir", lambda: tmp_path)
+        monkeypatch.setattr(paths, "reauth_tmp_dir", lambda: tmp_path)
+
+        pids: list[int] = []
+
+        ok = auth_login.capture_setup_token(
+            "acct_pid",
+            on_url=lambda u: None,
+            get_code=lambda: "FAKECODE#fakestate",
+            claude_bin=[sys.executable, FAKE_OK],
+            on_pid=lambda pid: pids.append(pid),
+        )
+
+        assert ok is True, "capture_setup_token should return True on success"
+        assert len(pids) == 1, f"on_pid should be called exactly once; got {pids!r}"
+        assert pids[0] > 0, f"on_pid should receive a positive PID; got {pids[0]!r}"
+    finally:
+        if old_key is None:
+            os.environ.pop("CCSWITCH_MASTER_KEY", None)
+        else:
+            os.environ["CCSWITCH_MASTER_KEY"] = old_key
+
+
+def test_capture_setup_token_bounded_failure_returns_false(monkeypatch, tmp_path):
+    """Test B: hang/invalid-code fake returns False within post_code_timeout_s, not hanging."""
+    import time
+
+    old_key = os.environ.get("CCSWITCH_MASTER_KEY")
+    os.environ["CCSWITCH_MASTER_KEY"] = _TEST_KEY_B64
+    try:
+        from ccswitch import auth_login, paths
+
+        monkeypatch.setattr(paths, "store_dir", lambda: tmp_path)
+        monkeypatch.setattr(paths, "reauth_tmp_dir", lambda: tmp_path)
+
+        t0 = time.monotonic()
+        ok = auth_login.capture_setup_token(
+            "acct_hang",
+            on_url=lambda u: None,
+            get_code=lambda: "FAKECODE#fakestate",
+            claude_bin=[sys.executable, FAKE_HANG],
+            post_code_timeout_s=2.0,
+        )
+        elapsed = time.monotonic() - t0
+
+        assert ok is False, "capture_setup_token should return False for non-completing claude"
+        assert elapsed < 5.0, (
+            f"capture_setup_token should return within ~5s; took {elapsed:.1f}s"
+        )
+        # No token file should be created
+        oat_file = tmp_path / "oat" / "acct_hang"
+        assert not oat_file.exists(), "No token file should be created on bounded failure"
     finally:
         if old_key is None:
             os.environ.pop("CCSWITCH_MASTER_KEY", None)
