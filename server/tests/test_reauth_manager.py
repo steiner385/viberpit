@@ -576,3 +576,66 @@ async def test_start_mode_login_uses_login_runner(monkeypatch):
         await asyncio.sleep(0.02)
 
     assert not setup_token_called, "setup_token runner should NOT be used for mode='login'"
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_awaiting_code_aborts_promptly(monkeypatch):
+    """cancel() during awaiting_code should unblock the get_code wait promptly.
+
+    Pre-fix: cancel() checks if state in ("running", "cancelling") and returns
+    immediately if state == "awaiting_code", leaving the worker thread blocked
+    on _code_event.wait(timeout=_timeout_s) (~300s).
+
+    Post-fix: cancel() includes "awaiting_code" in the guard and calls
+    _code_event.set() to unblock the thread immediately.
+    """
+    import time
+    from ccswitch import auth_login
+    from server.reauth import ReauthManager
+
+    def fake_capture(name, *, on_url, get_code, claude_bin=None, env_extra=None):
+        on_url("https://claude.com/cai/oauth/authorize?x=1")
+        get_code()          # blocks on the event until cancel sets it
+        return False
+
+    monkeypatch.setattr(auth_login, "capture_setup_token", fake_capture)
+
+    m = ReauthManager(key_available=lambda: True, timeout_s=300)   # long timeout to make test meaningful
+    await m.start("acct", "me@x", mode="setup_token")
+
+    # wait for the runner thread to surface the URL → awaiting_code
+    for _ in range(200):
+        if m.status("acct").state == "awaiting_code":
+            break
+        await asyncio.sleep(0.02)
+    assert m.status("acct").state == "awaiting_code", (
+        f"expected awaiting_code before cancel, got {m.status('acct').state!r}"
+    )
+
+    t0 = time.monotonic()
+    await m.cancel("acct")
+    elapsed = time.monotonic() - t0
+
+    # POST-FIX: cancel should return promptly (well under 10s; pre-fix would hang ~300s or leave state awaiting_code)
+    assert elapsed < 10, f"cancel took {elapsed:.1f}s — should be prompt, not timeout"
+
+    # After cancel returns, the underlying task may still be transitioning (worker thread unwinding).
+    # The worker thread was unblocked by setting the event, so it can finish quickly.
+    # Wait for the worker thread to fully complete and _run to settle the state.
+    for _ in range(200):
+        state = m.status("acct").state
+        if state in ("idle", "error", "success", "timeout"):
+            break
+        await asyncio.sleep(0.02)
+
+    final_state = m.status("acct").state
+    # The core assertion: cancel() must have unblocked awaiting_code promptly (not hung until timeout).
+    assert final_state != "awaiting_code", (
+        f"cancel must abort awaiting_code; state is still {final_state!r} after unblock"
+    )
+    # final_state could be error (fake_capture returned False), running/idle (task unwinding),
+    # or success/timeout depending on timing and full-suite scheduling pressure.
+    # The key invariant: NOT awaiting_code (cancel unblocked it promptly).
+    assert final_state in ("idle", "error", "success", "timeout", "running", "cancelling"), (
+        f"unexpected final state {final_state!r}"
+    )

@@ -252,11 +252,15 @@ class ReauthManager:
         tracked launcher PID.
         """
         async with self._lock:
-            if self._state.state not in ("running", "cancelling"):
+            if self._state.state not in ("running", "cancelling", "awaiting_code"):
                 return self.status(name)
 
             self._state.state = "cancelling"
             task = self._state._task
+
+        # Unblock any thread waiting in _setup_token_runner._get_code on the event
+        if getattr(self, "_code_event", None) is not None:
+            self._code_event.set()
 
         # Kill the launcher Chrome window if we know its PID
         self._kill_launcher()
