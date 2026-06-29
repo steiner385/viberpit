@@ -371,8 +371,12 @@ async def reauth_start(
     request: Request,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
+    mode: str = "login",
 ) -> dict:
     """Start a re-authentication flow for the named account.
+
+    Query params:
+      mode: "login" (default, browser OAuth flow) or "setup_token" (PTY-driven flow).
 
     Returns 202 + state dict on success.
     Returns 409 if another reauth is already running.
@@ -383,7 +387,7 @@ async def reauth_start(
 
     reauth = _get_reauth(request)
     try:
-        state = await reauth.start(name, identity)
+        state = await reauth.start(name, identity, mode=mode)
     except ReauthBusy as exc:
         raise HTTPException(
             status_code=409,
@@ -451,4 +455,29 @@ async def reauth_cancel(
             detail={"account": name},
         )
 
+    return state.to_dict()
+
+
+class ReauthCodeBody(BaseModel):
+    code: str
+
+
+@router.post("/{name}/reauth/code")
+async def reauth_submit_code(
+    name: str,
+    body: ReauthCodeBody,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Submit the OAuth code for the setup-token flow.
+
+    Called when the user pastes the authorization code from the oauth URL.
+    If the manager is not in ``awaiting_code`` state this is a no-op.
+
+    Returns 404 if the account name is invalid or the slot does not exist.
+    """
+    _check_name_and_slot(name)
+
+    reauth = _get_reauth(request)
+    state = await reauth.submit_code(name, body.code)
     return state.to_dict()

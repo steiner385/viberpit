@@ -18,14 +18,14 @@ def _reraise(exc: DaemonError) -> None:
 
 
 class RemoteReauthManager:
-    """Forwards start/status/cancel to the daemon over /rpc."""
+    """Forwards start/status/cancel/submit_code to the daemon over /rpc."""
 
     def __init__(self, client) -> None:
         self._client = client
 
-    async def start(self, name: str, identity: str) -> ReauthState:
+    async def start(self, name: str, identity: str, mode: str = "login") -> ReauthState:
         try:
-            d = await self._client.call("reauth_start", name=name, identity=identity)
+            d = await self._client.call("reauth_start", name=name, identity=identity, mode=mode)
         except DaemonError as exc:
             _reraise(exc)
         return ReauthState.from_dict(d)  # type: ignore[return-value]
@@ -37,6 +37,13 @@ class RemoteReauthManager:
     async def cancel(self, name: str) -> ReauthState:
         d = await self._client.call("reauth_cancel", name=name)
         return ReauthState.from_dict(d)
+
+    async def submit_code(self, name: str, code: str) -> ReauthState:
+        try:
+            d = await self._client.call("reauth_submit_code", name=name, code=code)
+        except DaemonError as exc:
+            _reraise(exc)
+        return ReauthState.from_dict(d)  # type: ignore[return-value]
 
     # The daemon owns the reauth lifecycle in remote mode (it runs the runner, the
     # reauth-tmp sweep, and shutdown in its own lifespan). The edge calls these in its
@@ -54,14 +61,17 @@ class InProcessReauthAdapter:
     def __init__(self, manager) -> None:
         self._m = manager
 
-    async def start(self, name: str, identity: str) -> ReauthState:
-        return await self._m.start(name, identity)
+    async def start(self, name: str, identity: str, mode: str = "login") -> ReauthState:
+        return await self._m.start(name, identity, mode)
 
     async def status(self, name: str) -> ReauthState:
         return self._m.status(name)
 
     async def cancel(self, name: str) -> ReauthState:
         return await self._m.cancel(name)
+
+    async def submit_code(self, name: str, code: str) -> ReauthState:
+        return await self._m.submit_code(name, code)
 
     # passthroughs the lifespan/sweep code calls on the edge
     def sweep_stale(self) -> None:

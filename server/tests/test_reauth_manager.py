@@ -629,13 +629,7 @@ async def test_cancel_during_awaiting_code_aborts_promptly(monkeypatch):
         await asyncio.sleep(0.02)
 
     final_state = m.status("acct").state
-    # The core assertion: cancel() must have unblocked awaiting_code promptly (not hung until timeout).
-    assert final_state != "awaiting_code", (
-        f"cancel must abort awaiting_code; state is still {final_state!r} after unblock"
-    )
-    # final_state could be error (fake_capture returned False), running/idle (task unwinding),
-    # or success/timeout depending on timing and full-suite scheduling pressure.
-    # The key invariant: NOT awaiting_code (cancel unblocked it promptly).
-    assert final_state in ("idle", "error", "success", "timeout", "running", "cancelling"), (
-        f"unexpected final state {final_state!r}"
+    # After cancel the state MUST be "idle" — cancel() transitions cancelling → idle.
+    assert final_state == "idle", (
+        f"cancel must leave state idle; got {final_state!r}"
     )

@@ -377,7 +377,8 @@ class ReauthManager:
             # block until the API calls submit_code(); the _run timeout cancels the task
             # if this never resolves, so we use _timeout_s as a belt-and-suspenders guard
             manager._code_event.wait(timeout=manager._timeout_s)
-            manager._state.state = "running"   # back to processing once we have the code
+            if manager._state.state != "cancelling":
+                manager._state.state = "running"   # back to processing once we have the code
             return manager._submitted_code or ""
 
         return await asyncio.to_thread(
