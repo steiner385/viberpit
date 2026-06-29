@@ -130,6 +130,13 @@ def ensure_valid_token(name: str) -> dict:
         blob = read_credentials(paths.slot_path(name))
         if _is_fresh(blob, cfg):
             return blob
+        # A blob with no usable refreshToken (e.g. an empty `{}` slot left by a
+        # reauth that failed mid-write) cannot be refreshed — it is a dead token
+        # family. Surface it as AuthError, the canonical needs-reauth signal, so
+        # callers route it through the existing recovery/needs-reauth path instead
+        # of letting a bare KeyError escape and crash the whole usage sweep.
+        if not blob.get("refreshToken"):
+            raise oauth.AuthError("credential slot has no refreshToken")
         new_blob = oauth.refresh_access_token(
             blob["refreshToken"], blob,
             max_retries=cfg.retry_max_retries, max_total_sec=cfg.retry_max_total_sec)
