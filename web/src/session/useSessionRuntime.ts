@@ -161,10 +161,11 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat') => {
       const sent = answerQuestion(sessionId, questionId, selected, mode)
       if (!sent) return false
-      dispatch({ type: '_resolveQuestion', questionId })
-      if (selected.length > 0) {
-        dispatch({ type: 'user', turnId: `answer:${questionId}`, text: selected.join(', ') })
-      }
+      // Resolve in place — the answered question card stays anchored where it was asked,
+      // carrying the chosen labels. (Previously this also appended a user bubble at the
+      // transcript tail; the agent's continuation rendered above it, leaving the answer
+      // stranded at the bottom. The inline resolution is the single source of truth now.)
+      dispatch({ type: '_resolveQuestion', questionId, selected })
       // If this question was armed for chat, the answer resolves it — disarm.
       setArmedQuestionId((cur) => (cur === questionId ? null : cur))
       return true
@@ -217,8 +218,8 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     (text: string, attachmentIds: AttachmentIds) => {
       if (armedQuestionId) {
         answerQuestion(sessionId, armedQuestionId, [text], 'chat')
-        dispatch({ type: '_resolveQuestion', questionId: armedQuestionId })
-        dispatch({ type: 'user', turnId: `answer:${armedQuestionId}`, text })
+        // Resolve in place carrying the typed reply (no tail bubble — see deliverAnswer).
+        dispatch({ type: '_resolveQuestion', questionId: armedQuestionId, selected: [text] })
         setArmedQuestionId(null)
         return
       }

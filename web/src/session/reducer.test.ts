@@ -233,15 +233,21 @@ describe('transcriptReducer', () => {
 
   // ── question ──────────────────────────────────────────────────────────────
 
-  it('_resolveQuestion removes the matching question block', () => {
+  it('_resolveQuestion marks the question answered in place (kept inline, not live, no tail turn)', () => {
     const s = reduce([
       { type: 'turnStart', turnId: 't1' },
-      { type: 'question',  questionId: 'q-1', turnId: 't1', header: 'Pick one', question: 'Which?', options: [], multiSelect: false },
+      { type: 'question',  questionId: 'q-1', turnId: 't1', header: 'Pick one', question: 'Which?', options: [{ label: 'A' }, { label: 'B' }], multiSelect: false },
     ])
-    expect(s.turns[0].blocks.some((b) => b.kind === 'question')).toBe(true)
+    const turnCount = s.turns.length
 
-    const resolved = transcriptReducer(s, { type: '_resolveQuestion', questionId: 'q-1' })
-    expect(resolved.turns[0].blocks.some((b) => b.kind === 'question')).toBe(false)
+    const resolved = transcriptReducer(s, { type: '_resolveQuestion', questionId: 'q-1', selected: ['A'] })
+    // The block stays at its original position in the asking turn — not removed,
+    // and crucially NOT appended as a separate user turn at the transcript tail.
+    expect(resolved.turns).toHaveLength(turnCount)
+    const q = resolved.turns[0].blocks.find((b) => b.kind === 'question')
+    expect(q && q.kind === 'question' && q.answered).toEqual(['A'])
+    expect(q && q.kind === 'question' && q.live).toBe(false)
+    expect(resolved.turns.some((t) => t.role === 'user')).toBe(false)
   })
 
   // ── error ─────────────────────────────────────────────────────────────────

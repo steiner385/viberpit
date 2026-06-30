@@ -168,30 +168,56 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
     </>
   )
 
-  // Read-only (historical / replayed) — show what was asked, no interaction.
+  // Read-only — historical/replayed, OR resolved in place once answered. When the
+  // user has answered, `block.answered` carries the chosen labels: highlight those
+  // options so the card reads as "here's what you picked", anchored where it was asked.
   if (readOnly) {
+    const answered = block.answered ?? []
+    const picked = new Set(answered)
+    // Free-form / chat replies aren't among the offered options — surface them verbatim.
+    const optionLabels = new Set(block.options.map((o) => optionLabel(o)))
+    const freeform = answered.filter((a) => !optionLabels.has(a))
     return (
       <div role="group" aria-labelledby={headerId} className={containerClass}>
         {heading}
         <ul className="space-y-1">
-          {block.options.map((opt) => (
-            <li
-              key={optionLabel(opt)}
-              className={cn(
-                'rounded px-3 py-2 text-sm',
-                'bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700',
-                'text-gray-500 dark:text-gray-400',
-              )}
-            >
-              <span className="block">{optionLabel(opt)}</span>
-              {optionDescription(opt) && (
-                <span className="block text-xs text-gray-400 dark:text-gray-500 mt-0.5">
-                  {optionDescription(opt)}
+          {block.options.map((opt) => {
+            const label = optionLabel(opt)
+            const isPicked = picked.has(label)
+            return (
+              <li
+                key={label}
+                aria-checked={isPicked || undefined}
+                role={picked.size > 0 ? 'radio' : undefined}
+                className={cn(
+                  'flex items-start gap-2 rounded px-3 py-2 text-sm border',
+                  isPicked
+                    ? 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/30 text-gray-800 dark:text-gray-200 ring-1 ring-blue-300 dark:ring-blue-700'
+                    : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 text-gray-500 dark:text-gray-400',
+                )}
+              >
+                {picked.size > 0 && (
+                  <span aria-hidden="true" className="inline-block w-4">{isPicked ? '✓' : ''}</span>
+                )}
+                <span className="block">
+                  <span className="block">{label}</span>
+                  {optionDescription(opt) && (
+                    <span className={cn('block text-xs mt-0.5',
+                      isPicked ? 'text-gray-500 dark:text-gray-400' : 'text-gray-400 dark:text-gray-500')}>
+                      {optionDescription(opt)}
+                    </span>
+                  )}
                 </span>
-              )}
-            </li>
-          ))}
+              </li>
+            )
+          })}
         </ul>
+        {freeform.length > 0 && (
+          <p className="mt-2 text-sm text-gray-800 dark:text-gray-200">
+            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Your answer: </span>
+            {freeform.join(', ')}
+          </p>
+        )}
       </div>
     )
   }
