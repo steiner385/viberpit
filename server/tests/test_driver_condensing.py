@@ -3,6 +3,7 @@ import pytest
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions import events as ev
+from server.tests.fakes import fake_sdk as f
 from server.tests.fakes.fake_sdk import FakeSDKClient
 
 
@@ -62,6 +63,52 @@ async def test_backstop_without_boundary_records_nothing():
     d._condensing = False
     d._condense_started_at = None       # backstop clears without recording
     assert recorded == []
+
+
+@pytest.mark.asyncio
+async def test_assistant_output_clears_condensing_when_boundary_missing():
+    """Compaction that produces no ``compact_boundary`` must still be cleared by the
+    post-compaction assistant output. ``derive_status`` ranks ``condensing`` ABOVE
+    ``turn_active``, so if real text deltas stream in while ``_condensing`` is still
+    True, the status stays 'condensing' and the UI shows the Condensing… bar while the
+    reply visibly streams. This mirrors the ``_retrying`` flag, which any real event
+    already clears in the drain loop."""
+    class _PreCompactClient(FakeSDKClient):
+        """Fires the SDK PreCompact hook, then streams a reply with NO compact_boundary."""
+        def __init__(self, msgs, on_pre_compact, **kw):
+            super().__init__(msgs, **kw)
+            self._pc = on_pre_compact
+        async def receive_response(self):
+            await self._pc()                       # compaction begins mid-turn
+            async for m in super().receive_response():
+                yield m
+
+    msgs = [f.stream_start(uuid="t1"), f.stream_text("post-compaction reply", uuid="t1"),
+            f.result(uuid="t1")]
+
+    def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return _PreCompactClient(msgs, on_pre_compact, on_can_use_tool=can_use_tool)
+
+    d = SessionDriver("sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
+                      sdk_factory=factory, registry=PermissionRegistry(), identity="x")
+    await d.start()
+    await d.send_prompt("hi")
+    seen = []
+    async for e in d.events():
+        seen.append(e)
+        if isinstance(e, ev.TurnEnd):
+            break
+    await d.aclose()
+
+    i_active = next(i for i, x in enumerate(seen) if isinstance(x, ev.Condensing) and x.active)
+    i_text = next(i for i, x in enumerate(seen) if isinstance(x, ev.TextDelta))
+    i_end = next(i for i, x in enumerate(seen) if isinstance(x, ev.TurnEnd))
+    # The post-compaction reply (no compact_boundary) must itself clear condensing:
+    # a Condensing(active=False) lands once content starts, before the turn ends.
+    cleared_at = [i for i, x in enumerate(seen)
+                  if isinstance(x, ev.Condensing) and not x.active and i_active < i < i_end]
+    assert cleared_at, "post-compaction output must clear condensing before the turn ends"
+    assert cleared_at[0] <= i_text, "condensing must clear no later than the first content delta"
 
 
 @pytest.mark.asyncio
