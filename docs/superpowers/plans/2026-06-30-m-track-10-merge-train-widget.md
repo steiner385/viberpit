@@ -17,7 +17,10 @@
 - **Read path makes no GitHub call** — the endpoint serves from the DB/cache, same as `GET /api/prs`.
 - **Pure I/O separation** — query-building, parsing, and metric derivation are pure functions (no network, no DB); only the store module and poller touch I/O.
 - **Auth** — every new endpoint depends on `current_identity`; tests must pin `CCSWITCH_TAILNET_ALLOWLIST` or run under `CCSWITCH_DEV=1` with an empty allowlist.
-- Tests: server → `pytest server/tests/`; web (in `web/`) → `vitest run`, `tsc --noEmit`, `eslint`. A fresh worktree has no built env — run server tests via the main checkout's `.venv/bin/python -m pytest` and symlink `web/node_modules` from the main checkout.
+- **Async tests use `@pytest.mark.asyncio`** (the repo uses `pytest-asyncio`, strict mode — there is no `anyio`). DB-touching tests follow the `asyncio.run(body())` + `init_db(db_url=f"sqlite+aiosqlite:///{tmp_path}/…")` idiom from `server/tests/test_app_rehydrate_on_startup.py`, **not** async fixtures.
+- **Verified test env (this session):** the worktree has no built env. Run server tests as:
+  `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/ccswitch/5a95d24e && /mnt/ssk-ssd/tony/GitHub/.ccswitch/clones/steiner385/cc-account-switcher/.venv/bin/python -m pytest server/tests/…`
+  (run from the worktree root so `import server` resolves to the worktree copy — confirmed). `web/node_modules` is already symlinked from that clone; run web tests in `web/` with `npx vitest run` / `npx tsc --noEmit` / `npx eslint`.
 
 ---
 
@@ -709,9 +712,14 @@ Ensure `Integer` is imported in that file's SQLAlchemy import line (it imports `
 
 - [ ] **Step 2: Write the failing test**
 
+> **Convention:** DB tests in this repo do **not** use async fixtures. They wrap an async
+> body in `asyncio.run(...)` inside a sync `tmp_path` test and call `init_db(db_url=...)`
+> first (see `server/tests/test_app_rehydrate_on_startup.py`). The store reaches the global
+> `_session_factory` that `init_db` sets, via the `db_session()` export.
+
 ```python
 # server/tests/test_merge_queue_store.py
-import pytest
+import asyncio
 from server.db import init_db
 from server.github.merge_queue import QueueEntry
 from server.pipeline import merge_queue_store as store
@@ -721,33 +729,35 @@ def _e(num, oid="h", checks="pending"):
                       batch_head_oid=oid, group_checks=checks, checks_total=4,
                       checks_done=None, eta_seconds=None)
 
-@pytest.fixture
-async def db(tmp_path):
-    await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+def test_record_then_window_round_trips(tmp_path):
+    async def body():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        await store.record("r", 100, (_e(1), _e(2, oid="b")))
+        await store.record("r", 200, (_e(1),))
+        win = await store.window("r", since_epoch=0)
+        assert [o.captured_at for o in win] == [100, 200]      # ascending
+        assert {e.pr_number for e in win[0].entries} == {1, 2}
+        assert win[0].entries[0].batch_head_oid in {"h", "b"}
+    asyncio.run(body())
 
-@pytest.mark.anyio
-async def test_record_then_window_round_trips(db):
-    await store.record("r", 100, (_e(1), _e(2, oid="b")))
-    await store.record("r", 200, (_e(1),))
-    win = await store.window("r", since_epoch=0)
-    assert [o.captured_at for o in win] == [100, 200]      # ascending
-    assert {e.pr_number for e in win[0].entries} == {1, 2}
-    assert win[0].entries[0].batch_head_oid in {"h", "b"}
+def test_window_filters_by_since(tmp_path):
+    async def body():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        await store.record("r", 100, (_e(1),))
+        await store.record("r", 500, (_e(1),))
+        win = await store.window("r", since_epoch=300)
+        assert [o.captured_at for o in win] == [500]
+    asyncio.run(body())
 
-@pytest.mark.anyio
-async def test_window_filters_by_since(db):
-    await store.record("r", 100, (_e(1),))
-    await store.record("r", 500, (_e(1),))
-    win = await store.window("r", since_epoch=300)
-    assert [o.captured_at for o in win] == [500]
-
-@pytest.mark.anyio
-async def test_prune_drops_old_rows(db):
-    await store.record("r", 100, (_e(1),))
-    await store.record("r", 9000, (_e(1),))
-    deleted = await store.prune(older_than_epoch=1000)
-    assert deleted == 1
-    assert [o.captured_at for o in await store.window("r", 0)] == [9000]
+def test_prune_drops_old_rows(tmp_path):
+    async def body():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        await store.record("r", 100, (_e(1),))
+        await store.record("r", 9000, (_e(1),))
+        deleted = await store.prune(older_than_epoch=1000)
+        assert deleted == 1
+        assert [o.captured_at for o in await store.window("r", 0)] == [9000]
+    asyncio.run(body())
 ```
 
 - [ ] **Step 3: Run it to verify it fails**
@@ -847,11 +857,14 @@ git commit -m "feat(pipeline): persist merge-queue observations (M-Track-10)"
 
 ```python
 # server/tests/test_pr_population_merge_queue.py
+from datetime import datetime, timezone
 import pytest
 from server.github.pr_population import PrPopulationPoller
 from server.github.merge_queue import QueueEntry
 
-@pytest.mark.anyio
+_FIXED_NOW = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)  # epoch 1751284800
+
+@pytest.mark.asyncio
 async def test_refresh_snapshots_merge_queue():
     captured = {}
     def qfn(repo):  # population query — return empty population
@@ -868,8 +881,7 @@ async def test_refresh_snapshots_merge_queue():
         captured["by_repo"] = by_repo
         captured["at"] = captured_at
     p = PrPopulationPoller(query_fn=qfn, merge_queue_query_fn=mqfn, merge_queue_sink=sink,
-                           now_fn=lambda: __import__("datetime").datetime(2026, 6, 30, 12, 0, 0,
-                               tzinfo=__import__("datetime").timezone.utc))
+                           now_fn=lambda: _FIXED_NOW)
     await p.refresh_once(["acme/web"])
     assert captured["by_repo"]["acme/web"][0] == QueueEntry(
         pr_number=7, position=1, state="AWAITING_CHECKS", enqueued_at=1751277600,
@@ -877,7 +889,7 @@ async def test_refresh_snapshots_merge_queue():
         eta_seconds=60)
     assert captured["at"] == 1751284800
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_refresh_ok_when_merge_queue_fns_absent():
     def qfn(repo):
         return {"data": {"repo": {"pullRequests": {"nodes": []}, "deployments": {"nodes": []}}}}
