@@ -65,11 +65,18 @@ class DaemonClient:
             )
         self._ws: Any = None
         self._reader_task: asyncio.Task | None = None
-        self._queues: dict[str, asyncio.Queue] = {}      # stream -> event queue
+        # stream -> set of subscriber queues. A stream may have MORE THAN ONE local
+        # subscriber (e.g. the same session open in two tabs/devices, both served by
+        # this one shared edge client). Each gets its own queue; _deliver fans out to
+        # all of them. Previously this was a single queue per stream that subscribe()
+        # overwrote, so a second subscriber silently starved the first — the live
+        # transcript went dead until a detach/reattach forced a fresh disk replay.
+        self._subscribers: dict[str, set[asyncio.Queue]] = {}
         self._ready: dict[str, asyncio.Event] = {}        # stream -> subscribed-on-daemon
         self._desired: set[str] = set()                   # streams to (re)subscribe on connect
         self._last_seq: dict[str, int] = {}               # stream -> highest delivered seq
         self._baseline: dict[str, int | None] = {}        # stream -> initial `since` for first subscribe
+        self._epoch: str | None = None                    # daemon PROC_EPOCH; change ⇒ restart
         self._started = False
 
     async def call(self, method: str, **params) -> dict:
@@ -90,25 +97,59 @@ class DaemonClient:
             raise DaemonUnavailable(str(exc)) from exc
         return resp.json()
 
+    def _add_subscriber(self, stream: str, maxsize: int = 1000) -> asyncio.Queue:
+        """Register a new local subscriber queue for *stream* and return it."""
+        q: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
+        self._subscribers.setdefault(stream, set()).add(q)
+        return q
+
     def subscribe(self, stream: str, since: int | None = None, maxsize: int = 1000):
-        self._queues[stream] = asyncio.Queue(maxsize=maxsize)
-        self._ready[stream] = asyncio.Event()
-        self._desired.add(stream)
-        self._baseline[stream] = since
+        q = self._add_subscriber(stream, maxsize)
+        self._ready.setdefault(stream, asyncio.Event())
+        # The daemon-side subscription is per stream, not per local subscriber. Only the
+        # FIRST subscriber establishes (and seeds the resume baseline for) the stream;
+        # additional subscribers just join the fan-out. Re-sending subscribe for an
+        # already-desired stream would re-trigger the daemon's replay-on-subscribe and
+        # duplicate events into every queue.
+        newly_desired = stream not in self._desired
+        if newly_desired:
+            self._desired.add(stream)
+            self._baseline[stream] = since
         if not self._started:
             self._started = True
             self._reader_task = asyncio.create_task(self._reader())
-        elif self._ws is not None:
+        elif self._ws is not None and newly_desired:
             # Reader already connected — register this new stream now. (On the first
             # subscribe, or after a reconnect, the reader subscribes all _desired itself.)
             asyncio.create_task(self._send_subscribe(stream))
-        return self._iter(stream)
+        return self._iter(stream, q)
 
     def _since_for(self, stream: str) -> int | None:
         # Reconnect → resume after the last delivered seq; first subscribe → the baseline.
         if stream in self._last_seq:
             return self._last_seq[stream]
         return self._baseline.get(stream)
+
+    async def _reconcile_epoch(self) -> None:
+        """Detect a daemon restart and drop stale per-stream watermarks.
+
+        The daemon's seq space is per-process: a restart resets seq→0. Carrying the
+        old high `since` into the new daemon makes its `seq > since` replay filter drop
+        every restart-window event. On a changed epoch, clear `_last_seq` and reset each
+        baseline to None so the next subscribe is `since=None` (full-ring replay).
+        Best-effort: if `/info` is unreachable, keep prior watermarks and retry next loop.
+        """
+        try:
+            epoch = (await self.info()).get("epoch")
+        except Exception:  # noqa: BLE001 — /info momentarily unavailable mid-restart
+            return
+        if epoch is None:
+            return
+        if self._epoch is not None and epoch != self._epoch:
+            self._last_seq.clear()
+            for stream in self._baseline:
+                self._baseline[stream] = None
+        self._epoch = epoch
 
     async def _send_subscribe(self, stream: str) -> None:
         ws = self._ws
@@ -124,24 +165,31 @@ class DaemonClient:
         """Await until the daemon has acknowledged the subscription (test sync point)."""
         await asyncio.wait_for(self._ready[stream].wait(), 5)
 
-    async def _iter(self, stream: str):
-        q = self._queues[stream]
-        while True:
-            yield await q.get()
+    async def _iter(self, stream: str, q: asyncio.Queue):
+        try:
+            while True:
+                yield await q.get()
+        finally:
+            # Drop just THIS subscriber's queue; other subscribers on the stream keep
+            # receiving. (GeneratorExit/cancel of a consuming task lands here.)
+            subs = self._subscribers.get(stream)
+            if subs is not None:
+                subs.discard(q)
 
     def _deliver(self, stream: str, event: dict, seq: int | None = None) -> None:
         if seq is not None:
             self._last_seq[stream] = seq
-        q = self._queues.get(stream)
-        if q is None:
+        subs = self._subscribers.get(stream)
+        if not subs:
             return
-        if q.full():
-            try:
-                q.get_nowait()  # drop oldest
-            except asyncio.QueueEmpty:
-                pass
-            log.warning("ipc: subscriber queue for %s full — dropped oldest", stream)
-        q.put_nowait(event)
+        for q in subs:
+            if q.full():
+                try:
+                    q.get_nowait()  # drop oldest
+                except asyncio.QueueEmpty:
+                    pass
+                log.warning("ipc: subscriber queue for %s full — dropped oldest", stream)
+            q.put_nowait(event)
 
     async def _reader(self) -> None:
         backoff = 0.05
@@ -150,6 +198,11 @@ class DaemonClient:
                 async with daemon_ws_connect(self.endpoint, "/events", self._ssl) as ws:
                     self._ws = ws
                     backoff = 0.05
+                    # A reconnect may be a brand-new daemon (deploy/crash) whose seq
+                    # space reset to 0. Reconcile the epoch BEFORE resubscribing so a
+                    # stale `since` watermark can't make the new daemon skip every
+                    # restart-window event (the silent transcript-tail gap).
+                    await self._reconcile_epoch()
                     for stream in list(self._desired):
                         await ws.send(json.dumps(proto.subscribe_frame(stream, since=self._since_for(stream))))
                         self._ready[stream].set()

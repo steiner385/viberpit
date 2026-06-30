@@ -17,6 +17,14 @@ log = logging.getLogger("server.ipc.daemon")
 
 
 def create_daemon_app() -> FastAPI:
+    from server.obs.context import PROC_EPOCH
+    import uuid as _uuid
+    # Capture a unique epoch at app-creation time. In production this equals
+    # PROC_EPOCH (one app per process); the UUID suffix differentiates test
+    # instances created within the same process/millisecond. The edge client
+    # watches this in /info to detect a daemon restart (seq-reset gap recovery).
+    _app_epoch = f"{PROC_EPOCH}-{_uuid.uuid4().hex[:8]}"
+
     app = FastAPI(title="ccswitch-sessiond")
     app.state.rpc = {}
 
@@ -199,7 +207,7 @@ def create_daemon_app() -> FastAPI:
     @app.get("/info")
     async def info() -> dict:
         from server.version import running_git_sha
-        return {"sha": running_git_sha(), "protocol": proto.PROTOCOL_VERSION}
+        return {"sha": running_git_sha(), "protocol": proto.PROTOCOL_VERSION, "epoch": _app_epoch}
 
     @app.get("/healthz")
     async def healthz() -> dict:
