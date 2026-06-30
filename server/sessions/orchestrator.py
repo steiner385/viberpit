@@ -1132,9 +1132,22 @@ class SessionOrchestrator:
             key=lambda p: (_STATE_RANK.get(p.state, 99), -p.number),
         )
 
-    def _pr_repos(self) -> list[str]:
-        """Sorted distinct repos across all live sessions — the population to watch."""
-        return sorted({r.repo for r in self._records.values() if r.repo})
+    async def _pr_repos(self) -> list[str]:
+        """Distinct repos to watch: live in-memory sessions ∪ all persisted sessions
+        (incl. archived), so a repo with only an archived session still appears."""
+        repos = {r.repo for r in self._records.values() if r.repo}
+        from sqlalchemy import select as sa_select
+        try:
+            async with db_session() as db:
+                rows = (
+                    await db.execute(
+                        sa_select(DbSession.repo).where(DbSession.repo.is_not(None)).distinct()
+                    )
+                ).scalars().all()
+            repos.update(r for r in rows if r)
+        except Exception:
+            log.warning("orchestrator.pr_repos_db_query_failed", exc_info=True)
+        return sorted(repos)
 
     def all_repos_stage_models(self) -> "dict[str, StageModel]":
         """Per-repo StageModel for every watched repo (derived from CI/CD facts)."""
