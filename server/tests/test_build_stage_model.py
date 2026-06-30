@@ -24,14 +24,14 @@ def test_queue_node_only_when_has_queue():
 
 def test_deploy_node_only_when_has_deploy():
     m = build_stage_model("o/r", ci_graph=None, has_queue=False, deploy_envs=["production"])
-    assert _ids(m) == ["ci", "ready", "deploy:production", "merged"]
-    assert m.nodes[2].kind == "deploy"
-    assert m.nodes[2].label == "production"
+    assert _ids(m) == ["ci", "ready", "merged", "deploy:production"]
+    assert m.nodes[3].kind == "deploy"
+    assert m.nodes[3].label == "production"
 
 
 def test_full_track_order():
     m = build_stage_model("o/r", ci_graph={"workflowName": "CI"}, has_queue=True, deploy_envs=["production"])
-    assert _ids(m) == ["ci", "ready", "queue", "deploy:production", "merged"]
+    assert _ids(m) == ["ci", "ready", "queue", "merged", "deploy:production"]
     assert [n.order for n in m.nodes] == [0, 1, 2, 3, 4]
 
 
@@ -39,7 +39,7 @@ def test_multiple_deploy_nodes_in_given_order():
     m = build_stage_model("o/r", ci_graph=None, has_queue=False,
                           deploy_envs=["qa", "staging", "production"])
     ids = [n.id for n in m.nodes]
-    assert ids == ["ci", "ready", "deploy:qa", "deploy:staging", "deploy:production", "merged"]
+    assert ids == ["ci", "ready", "merged", "deploy:qa", "deploy:staging", "deploy:production"]
     assert [n.label for n in m.nodes if n.kind == "deploy"] == ["qa", "staging", "production"]
     assert [n.order for n in m.nodes] == [0, 1, 2, 3, 4, 5]
 

@@ -45,7 +45,7 @@ def test_all_repos_stage_models_adds_queue_and_deploy():
                         deployed=True, deployed_envs=("production",))
     orch = _mk_orch({"o/r": (q, d)})
     models = orch.all_repos_stage_models()
-    assert [n.id for n in models["o/r"].nodes] == ["ci", "ready", "queue", "deploy:production", "merged"]
+    assert [n.id for n in models["o/r"].nodes] == ["ci", "ready", "queue", "merged", "deploy:production"]
 
 
 def test_all_prs_attaches_node_states():
@@ -65,4 +65,4 @@ def test_all_repos_stage_models_builds_deploy_nodes_from_deployed_envs(monkeypat
     models = orch.all_repos_stage_models()
     ids = [n.id for n in models["o/r"].nodes]
     # union {staging, production, qa} ordered → qa, staging, production
-    assert ids == ["ci", "ready", "deploy:qa", "deploy:staging", "deploy:production", "merged"]
+    assert ids == ["ci", "ready", "merged", "deploy:qa", "deploy:staging", "deploy:production"]

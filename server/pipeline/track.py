@@ -96,9 +96,9 @@ def build_stage_model(
     specs.append(("ready", "Ready", "gate"))
     if has_queue:
         specs.append(("queue", "Queue", "queue"))
+    specs.append(("merged", "Merged", "merged"))
     for env in deploy_envs:
         specs.append((f"deploy:{env}", env, "deploy"))
-    specs.append(("merged", "Merged", "merged"))
     nodes = tuple(
         StageNode(id=sid, label=label, kind=kind, order=i)
         for i, (sid, label, kind) in enumerate(specs)
@@ -114,22 +114,19 @@ _STAGE_TO_NODE = {"": "ci", "parked": "ci", "ci": "ci", "ready": "ready",
 def place_pr_on_track(pr: "PullRequestInfo", model: StageModel) -> list["NodeStatus"]:
     ids = [n.id for n in model.nodes]
     order_by_id = {n.id: n.order for n in model.nodes}
-    has_deploy_nodes = any(n.kind == "deploy" for n in model.nodes)
 
     if pr.stage == "merged":
-        # Back-compat bridge: M-Track-1 tests set deployed=True without deployed_envs.
+        # A merged PR has landed: ci/ready/queue/merged are all done. Deploy nodes
+        # (now AFTER merged) carry the promotion frontier.
         deployed = set(getattr(pr, "deployed_envs", ()) or ())
-        if pr.deployed:
+        if pr.deployed:  # back-compat: deployed=True without deployed_envs
             deployed.add("production")
 
-        # Compute furthest-deployed order so we never mark a node "active" if a
-        # later node is already "done" (the skipped/out-of-order case).
         deploy_nodes = [n for n in model.nodes if n.kind == "deploy"]
         last_deployed_order = max(
             (n.order for n in deploy_nodes if n.id.split("deploy:", 1)[1] in deployed),
             default=-1,
         )
-        # Frontier = first non-deployed deploy node strictly after the furthest deployed one.
         frontier_id: str | None = None
         for n in deploy_nodes:
             env = n.id.split("deploy:", 1)[1]
@@ -147,15 +144,7 @@ def place_pr_on_track(pr: "PullRequestInfo", model: StageModel) -> list["NodeSta
                     state = "active"
                 else:
                     state = "pending"
-            elif n.kind == "merged":
-                if has_deploy_nodes:
-                    # Done only when every deploy node is done (no frontier).
-                    state = "done" if frontier_id is None and all(
-                        dn.id.split("deploy:", 1)[1] in deployed for dn in deploy_nodes
-                    ) else "pending"
-                else:
-                    state = "active"  # M-Track-1: no deploy tracking → merged is the active terminal
-            else:  # ci / ready / queue cleared by a merged PR
+            else:  # ci / ready / queue / merged — all cleared by a merged PR
                 state = "done"
             out.append(NodeStatus(id=n.id, state=state))
         return out
