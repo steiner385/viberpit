@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timezone
 from server.sessions.background_tasks import (
     scan_open_background_tasks, scan_pending_wakeup, is_parked, build_rearm_prompt,
-    OpenBgTask,
+    last_turn_awaits_user, OpenBgTask,
 )
 
 
@@ -23,6 +23,13 @@ def _user(text, *, is_meta=False):
     """A real user turn boundary (is_meta=True models a fired /loop wakeup re-injection)."""
     return {"type": "user", "isMeta": is_meta,
             "message": {"role": "user", "content": text}}
+
+
+def _assistant_text(text):
+    """An assistant turn that ends in prose (a hand-back message, no tool_use)."""
+    return {"type": "assistant", "uuid": "u",
+            "message": {"model": "claude-opus-4-8",
+                        "content": [{"type": "text", "text": text}]}}
 
 
 def _write(tmp_path, lines):
@@ -74,6 +81,59 @@ def test_dedups_by_tool_use_id_and_tolerates_garbage(tmp_path):
                                            {"description": "m", "command": "z"})) + "\n")
     tasks = scan_open_background_tasks(path)
     assert [t.tool_use_id for t in tasks] == ["toolu_mon"]
+
+
+def test_awaits_user_detects_prose_options(tmp_path):
+    # The real scenario: agent finished a turn by presenting numbered options for the
+    # user to choose — a hand-back with no structured AskUserQuestion.
+    path = _write(tmp_path, [
+        _user("plan the work"),
+        _assistant_text(
+            "Plan is ready.\n\nTwo execution options:\n"
+            "1. Subagent-Driven (recommended) — fresh implementer per task.\n"
+            "2. Inline Execution — I run the two tasks here with checkpoints."),
+    ])
+    assert last_turn_awaits_user(path) is True
+
+
+def test_awaits_user_detects_trailing_question(tmp_path):
+    path = _write(tmp_path, [
+        _assistant_text("I can take approach A or B. Which would you prefer?"),
+    ])
+    assert last_turn_awaits_user(path) is True
+
+
+def test_awaits_user_false_for_plain_report(tmp_path):
+    path = _write(tmp_path, [
+        _assistant_text("Done. Merged PR #10 and the deploy is green. "
+                        "I'll keep monitoring the rollout in the background."),
+    ])
+    assert last_turn_awaits_user(path) is False
+
+
+def test_awaits_user_uses_latest_assistant_text_only(tmp_path):
+    # An earlier turn asked, but the latest turn is a plain report → not awaiting.
+    path = _write(tmp_path, [
+        _assistant_text("Which option do you want?"),
+        _user("option 1"),
+        _assistant_text("Got it — running option 1 now. Monitoring in the background."),
+    ])
+    assert last_turn_awaits_user(path) is False
+
+
+def test_awaits_user_ignores_tool_use_only_final_turn(tmp_path):
+    # A turn whose last assistant entry is a bare tool_use (e.g. an armed wakeup) has
+    # no hand-back prose → not awaiting (must not mask the waiting_external overlay).
+    path = _write(tmp_path, [
+        _user("poll the PRs"),
+        _assistant_tool("toolu_w1", "ScheduleWakeup",
+                        {"delaySeconds": 1200, "reason": "watching CI"}),
+    ])
+    assert last_turn_awaits_user(path) is False
+
+
+def test_awaits_user_none_path_is_false(tmp_path):
+    assert last_turn_awaits_user(None) is False
 
 
 def test_pending_wakeup_armed_when_last_turn_scheduled(tmp_path):
