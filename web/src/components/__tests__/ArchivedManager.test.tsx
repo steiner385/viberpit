@@ -322,7 +322,10 @@ describe('ArchivedManager — bulk delete progress', () => {
     await user.click(screen.getByRole('checkbox', { name: /select all/i }))
     await user.click(screen.getByRole('button', { name: /delete \(4\)/i }))
 
-    expect(screen.getByRole('progressbar')).toBeInTheDocument()
+    const bar = screen.getByRole('progressbar')
+    expect(bar).toBeInTheDocument()
+    expect(bar).toHaveAttribute('aria-valuenow', '2')
+    expect(bar).toHaveAttribute('aria-valuemax', '4')
     expect(screen.getByText(/2 of 4/)).toBeInTheDocument()
   })
 

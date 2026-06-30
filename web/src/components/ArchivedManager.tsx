@@ -31,6 +31,7 @@ import {
 } from '@/session/archivedOrdering'
 import { SessionListControls } from '@/components/SessionListControls'
 import { GroupedList } from '@/components/GroupedList'
+import { prefersReducedMotion } from './session/brailleSpinner'
 
 const CHECKBOX_CLS = cn(
   'h-4 w-4 rounded border-gray-300 dark:border-gray-600',
@@ -127,7 +128,7 @@ function PermanentDeleteDialog({ names, onClose, onConfirm, isPending, progress,
               className="h-2 w-full overflow-hidden rounded bg-gray-200 dark:bg-gray-700"
             >
               <div
-                className="h-full rounded bg-red-600 transition-[width] duration-200 ease-linear"
+                className={cn('h-full rounded bg-red-600', !prefersReducedMotion() && 'transition-[width] duration-200 ease-linear')}
                 style={{ width: `${progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%` }}
               />
             </div>
