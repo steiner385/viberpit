@@ -173,6 +173,30 @@ class Attachment(Base):
     )
 
 
+class MergeQueueObservation(Base):
+    """One row per PR per poll snapshot for the merge-train widget (M-Track-10).
+
+    All non-key columns are NULLABLE so init_db backfills them on existing dev
+    DBs without a migration. The store groups rows by captured_at to reconstruct
+    Observation objects for the pure derivation in merge_train.py.
+    """
+
+    __tablename__ = "merge_queue_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    captured_at: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    state: Mapped[str | None] = mapped_column(String, nullable=True)
+    enqueued_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    batch_head_oid: Mapped[str | None] = mapped_column(String, nullable=True)
+    group_checks: Mapped[str | None] = mapped_column(String, nullable=True)
+    checks_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    checks_done: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    eta_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class AppSettings(Base):
     """Single-row application settings (singleton id='singleton')."""
 
