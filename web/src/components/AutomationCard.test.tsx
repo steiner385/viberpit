@@ -1,5 +1,6 @@
 // web/src/components/AutomationCard.test.tsx
 import { render, screen, fireEvent } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { AutomationCard } from './AutomationCard'
 import * as hooks from '@/api/hooks'
@@ -20,7 +21,7 @@ describe('AutomationCard', () => {
       { mutate: vi.fn() } as unknown as ReturnType<typeof hooks.usePatchAutomation>)
     vi.spyOn(hooks, 'useAutomationEvents').mockReturnValue(
       { data: [] } as unknown as ReturnType<typeof hooks.useAutomationEvents>)
-    render(<AutomationCard automation={PR_DOCTOR} />)
+    render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
     expect(screen.getByText('PR Doctor')).toBeInTheDocument()
     expect(screen.getByText('idle')).toBeInTheDocument()
     expect(screen.getByRole('switch')).toBeInTheDocument()
@@ -32,7 +33,7 @@ describe('AutomationCard', () => {
       { mutate } as unknown as ReturnType<typeof hooks.usePatchAutomation>)
     vi.spyOn(hooks, 'useAutomationEvents').mockReturnValue(
       { data: [] } as unknown as ReturnType<typeof hooks.useAutomationEvents>)
-    render(<AutomationCard automation={PR_DOCTOR} />)
+    render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
     fireEvent.click(screen.getByRole('switch'))
     expect(mutate).toHaveBeenCalledWith({ id: 'pr-doctor', body: { enabled: true } })
   })

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { useAutomationEvents, usePatchAutomation } from '@/api/hooks'
 import type { Automation } from '@/api/automations'
@@ -9,6 +10,7 @@ const LEVEL_DOT: Record<string, string> = {
 
 export function AutomationCard({ automation: a }: { automation: Automation }) {
   const [open, setOpen] = useState(false)
+  const navigate = useNavigate()
   const patch = usePatchAutomation()
   const events = useAutomationEvents(a.id, open)
 
@@ -16,6 +18,7 @@ export function AutomationCard({ automation: a }: { automation: Automation }) {
     <div className="rounded-lg border border-border bg-card">
       <div className="flex items-center gap-3 p-4">
         <button
+          type="button"
           aria-label={open ? 'Collapse' : 'Expand'}
           onClick={() => setOpen((v) => !v)}
           className="text-left flex-1"
@@ -37,8 +40,10 @@ export function AutomationCard({ automation: a }: { automation: Automation }) {
           </select>
         )}
         <button
+          type="button"
           role="switch"
           aria-checked={a.enabled}
+          aria-label={`${a.name} enabled`}
           onClick={() => patch.mutate({ id: a.id, body: { enabled: !a.enabled } })}
           className={cn('relative w-10 h-6 rounded-full transition-colors',
             a.enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600')}
@@ -54,11 +59,15 @@ export function AutomationCard({ automation: a }: { automation: Automation }) {
             {(events.data ?? []).length === 0
               ? <p className="text-sm text-muted-foreground">No activity yet.</p>
               : <ul className="space-y-1 text-sm">
-                  {(events.data ?? []).map((e, i) => (
-                    <li key={i} className="flex gap-2">
+                  {(events.data ?? []).map((e) => (
+                    <li key={`${e.ts}-${e.sessionId ?? ''}`} className="flex gap-2">
                       <span className="text-muted-foreground tabular-nums">{e.ts.slice(11, 19)}</span>
                       {e.sessionId
-                        ? <a href={`/session/${e.sessionId}`} className="text-blue-600 hover:underline">{e.summary}</a>
+                        ? <button
+                            type="button"
+                            onClick={() => navigate(`/session/${e.sessionId}`)}
+                            className="text-blue-600 hover:underline text-left"
+                          >{e.summary}</button>
                         : <span>{e.summary}</span>}
                     </li>
                   ))}
