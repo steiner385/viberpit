@@ -148,7 +148,7 @@ export function PipelineBoard({
                         )}
                       </div>
                       {expanded[`${p.repo}#${p.number}`] && p.check_groups && (
-                        <CheckDrillDown groups={p.check_groups} />
+                        <CheckDrillDown groups={p.check_groups} updatedAt={updatedAt} />
                       )}
                     </li>
                   )
