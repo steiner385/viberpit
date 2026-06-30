@@ -99,7 +99,7 @@ def test_eta_live_parity():
     for repo, num, oracle_eta, oracle_checks_raw in targets:
         # Convert oracle checks to our format, using state_at for elapsed → started_at
         checks = [_oracle_check_to_ours(c, state_at) for c in oracle_checks_raw]
-        ours, _pct, _ov = compute_pr_eta(store, repo, checks, state_at)
+        ours, _low, _high, _pct, _ov = compute_pr_eta(store, repo, checks, state_at)
         tol = max(2, 0.05 * oracle_eta)
         if ours is None or abs(ours - oracle_eta) > tol:
             mismatches.append((repo, num, oracle_eta, ours))
