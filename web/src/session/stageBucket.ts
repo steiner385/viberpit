@@ -3,7 +3,7 @@ import type { PipelinePr, StageModel, StageNode } from '@/api/types'
 
 export type StageBucket = 'ci' | 'ready' | 'queue' | 'deploy' | 'merged'
 
-export const STAGE_BUCKETS: StageBucket[] = ['ci', 'ready', 'queue', 'deploy', 'merged']
+export const STAGE_BUCKETS: StageBucket[] = ['ci', 'ready', 'queue', 'merged', 'deploy']
 
 export const STAGE_BUCKET_LABELS: Record<StageBucket, string> = {
   ci: 'CI', ready: 'Ready', queue: 'Queue', deploy: 'Deploy', merged: 'Merged',

@@ -40,7 +40,7 @@ def test_merged_not_deployed_leaves_deploy_active():
     m = build_stage_model("o/r", ci_graph=None, has_queue=False, deploy_envs=["production"])
     st = _states(_pr(stage="merged", state="merged", merged=True, deployed=False), m)
     assert st["deploy:production"] == "active"
-    assert st["merged"] == "pending"
+    assert st["merged"] == "done"
 
 
 def test_queue_pr_active_on_queue_node():
@@ -55,10 +55,10 @@ def test_queue_pr_failing_lights_queue_failed():
     assert st["queue"] == "failed"
 
 
-def test_merged_pr_no_deploy_node_merged_active():
+def test_merged_pr_no_deploy_node_merged_done():
     m = build_stage_model("o/r", ci_graph=None, has_queue=False, deploy_envs=[])
     st = _states(_pr(stage="merged", state="merged", merged=True, deployed=False), m)
-    assert st == {"ci": "done", "ready": "done", "merged": "active"}
+    assert st == {"ci": "done", "ready": "done", "merged": "done"}
 
 
 def test_merged_live_in_first_env_only():
@@ -66,8 +66,8 @@ def test_merged_live_in_first_env_only():
                           deploy_envs=["qa", "staging", "production"])
     pr = _pr(stage="merged", state="merged", merged=True, deployed_envs=("qa",))
     st = _states(pr, m)
-    assert st == {"ci": "done", "ready": "done", "deploy:qa": "done",
-                  "deploy:staging": "active", "deploy:production": "pending", "merged": "pending"}
+    assert st == {"ci": "done", "ready": "done", "merged": "done", "deploy:qa": "done",
+                  "deploy:staging": "active", "deploy:production": "pending"}
 
 
 def test_merged_live_in_all_envs_merged_done():
@@ -85,7 +85,7 @@ def test_merged_live_in_none_first_deploy_active():
     st = _states(pr, m)
     assert st["deploy:qa"] == "active"
     assert st["deploy:production"] == "pending"
-    assert st["merged"] == "pending"
+    assert st["merged"] == "done"
 
 
 def test_merged_skipped_env_no_active_behind_done():
@@ -94,5 +94,5 @@ def test_merged_skipped_env_no_active_behind_done():
     pr = _pr(stage="merged", state="merged", merged=True, deployed_envs=("production",))
     st = _states(pr, m)
     # production is the furthest-deployed (and last) → no frontier after it; nothing "active" behind it
-    assert st == {"ci": "done", "ready": "done", "deploy:qa": "pending",
-                  "deploy:staging": "pending", "deploy:production": "done", "merged": "pending"}
+    assert st == {"ci": "done", "ready": "done", "merged": "done", "deploy:qa": "pending",
+                  "deploy:staging": "pending", "deploy:production": "done"}
