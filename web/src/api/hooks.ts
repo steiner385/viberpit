@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState, useRef, useCallback, useSyncExternalStore
 import { api, ApiRequestError } from './client'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
-  DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel,
+  DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, MergeTrainState,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
@@ -26,6 +26,7 @@ export const QK = {
   sessionSearch: (q: string, scope: string = 'live') => ['session-search', scope, q] as const,
   prs: ['prs'] as const,
   pipelineRepos: ['pipeline-repos'] as const,
+  pipelineTrains: ['pipeline-trains'] as const,
 }
 
 export function useModels() {
@@ -594,5 +595,14 @@ export function useStageModels() {
     queryFn: () => api.get<Record<string, StageModel>>('/pipeline/repos'),
     staleTime: 15_000,
     refetchInterval: 30_000,
+  })
+}
+
+export function useMergeTrains() {
+  return useQuery<Record<string, MergeTrainState>>({
+    queryKey: QK.pipelineTrains,
+    queryFn: () => api.get<Record<string, MergeTrainState>>('/pipeline/trains'),
+    staleTime: 10_000,
+    refetchInterval: 15_000,
   })
 }
