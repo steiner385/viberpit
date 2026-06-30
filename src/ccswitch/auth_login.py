@@ -351,7 +351,7 @@ def capture_setup_token(
         tm = _TOKEN_RE.search(buf)
         if not tm:
             log.warning(
-                "capture_setup_token: no sk-ant-oat01 token in claude's output for account %r "
+                "capture_setup_token: no setup-token in claude's output for account %r "
                 "— generation failed (claude exited or was killed without emitting a token)",
                 name,
             )

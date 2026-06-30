@@ -171,7 +171,9 @@ def test_capture_setup_token_logs_warning_on_no_token(monkeypatch, tmp_path, cap
         assert ok is False
         warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert warnings, "failed generation must emit a WARNING (was DEBUG-only, invisible in prod)"
-        assert any("no sk-ant-oat01 token" in r.getMessage() for r in warnings)
+        # NB: the message must NOT embed the literal sk-ant-oat01 pattern — the redaction
+        # logging filter (active in the full suite) scrubs it to [REDACTED]. Assert on durable text.
+        assert any("no setup-token in claude's output" in r.getMessage() for r in warnings)
     finally:
         if old_key is None:
             os.environ.pop("CCSWITCH_MASTER_KEY", None)
