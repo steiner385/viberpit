@@ -24,11 +24,11 @@ function DashboardRoute({ tab }: { tab: TabId }) {
   const rawDialog = searchParams.get('dialog')
   const dialog = rawDialog === 'new' || rawDialog === 'settings' ? rawDialog : null
   return (
-    <div className="min-h-dvh bg-background text-foreground">
-      <header className="p-4 border-b border-border">
+    <div className="h-dvh flex flex-col overflow-hidden bg-background text-foreground">
+      <header className="shrink-0 p-4 border-b border-border">
         <h1 className="text-2xl font-bold tracking-tight">ccswitch</h1>
       </header>
-      <main className="p-4">
+      <main className="flex-1 min-h-0 flex flex-col px-4">
         <Dashboard
           activeTab={tab}
           onTabChange={(next) => navigate(next === 'sessions' ? '/sessions' : `/${next}`)}
