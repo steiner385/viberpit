@@ -128,5 +128,6 @@ describe('StageTrack live tick', () => {
     act(() => { vi.advanceTimersByTime(0) })
     const solid = container.querySelector('[data-testid="ci-band"] span') as HTMLElement
     expect(solid.className).toContain('bg-amber-500')
+    expect(solid.style.width).toBe('100%')
   })
 })

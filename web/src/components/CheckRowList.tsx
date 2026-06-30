@@ -51,7 +51,7 @@ export function CheckRowList({ checks, updatedAt }: { checks: CheckRow[]; update
               {seg ? (
                 <>
                   <span data-band="solid" className={cn('absolute inset-y-0 left-0 rounded-l', checkStateColor(state))}
-                    style={{ width: `${seg.solidPct}%` }} aria-hidden />
+                    style={{ width: `${overrun ? 100 : seg.solidPct}%` }} aria-hidden />
                   <span data-band="range" className={cn('absolute inset-y-0 opacity-30', checkStateColor(state))}
                     style={{ left: `${seg.bandLeftPct}%`, width: `${seg.bandWidthPct}%` }} aria-hidden />
                   <span data-band="tick" className="absolute inset-y-[-1px] w-px bg-foreground"

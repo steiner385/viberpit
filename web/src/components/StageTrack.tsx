@@ -65,11 +65,12 @@ export function StageTrack({ model, states, updatedAt, etaSeconds, etaOverdue, e
                     lowS: etaLowSeconds!, nominalS: etaSeconds ?? 0, highS: etaHighSeconds!,
                   })
                 : null
-              const bandColor = isOverrun(liveDeltaS, etaHighSeconds ?? null) ? 'bg-amber-500' : 'bg-accent'
+              const overrun = isOverrun(liveDeltaS, etaHighSeconds ?? null)
+              const bandColor = overrun ? 'bg-amber-500' : 'bg-accent'
               if (seg) {
                 return (
                   <div data-testid="ci-band" className="relative h-1.5 w-10 shrink-0 overflow-hidden rounded bg-gray-200 dark:bg-gray-700">
-                    <span className={cn('absolute inset-y-0 left-0 rounded-l', bandColor)} style={{ width: `${seg.solidPct}%` }} aria-hidden />
+                    <span className={cn('absolute inset-y-0 left-0 rounded-l', bandColor)} style={{ width: `${overrun ? 100 : seg.solidPct}%` }} aria-hidden />
                     <span className={cn('absolute inset-y-0 opacity-30', bandColor)} style={{ left: `${seg.bandLeftPct}%`, width: `${seg.bandWidthPct}%` }} aria-hidden />
                     <span className="absolute inset-y-[-1px] w-px bg-foreground" style={{ left: `${seg.tickPct}%` }} aria-hidden />
                   </div>

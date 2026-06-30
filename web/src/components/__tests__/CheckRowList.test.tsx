@@ -109,6 +109,7 @@ describe('CheckRowList live tick', () => {
     act(() => { vi.advanceTimersByTime(0) })
     expect(container.querySelector('[data-state="overdue"]')).not.toBeNull()
     expect(screen.getByTestId('check-row-build')).toHaveTextContent('⚠')
+    expect((container.querySelector('[data-band="solid"]') as HTMLElement).style.width).toBe('100%')
   })
 
   it('does not tick a done row (now has no effect)', () => {
