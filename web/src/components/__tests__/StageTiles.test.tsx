@@ -45,3 +45,44 @@ describe('StageTiles', () => {
     ])
   })
 })
+
+const failingPr = (n: number, over: Partial<PipelinePr> = {}): PipelinePr =>
+  ({ number: n, url: 'u', state: 'open', checks: 'failing', title: 't', deployed: false,
+     repo: 'o/r', session: null, node_states: [{ id: 'queue', state: 'failed' }], ...over } as unknown as PipelinePr)
+
+describe('StageTiles — Failed filter', () => {
+  it('counts failing PRs in the Failed tile', () => {
+    render(<StageTiles prs={[...prs, failingPr(9)]} stageModels={{ 'o/r': model }}
+      active={new Set()} onToggle={() => {}} failedActive={false} onToggleFailed={() => {}} />)
+    expect(screen.getByTestId('pr-filter-failed')).toHaveTextContent('1')
+  })
+
+  it('disables the Failed tile when no PRs are failing', () => {
+    render(<StageTiles prs={prs} stageModels={{ 'o/r': model }}
+      active={new Set()} onToggle={() => {}} failedActive={false} onToggleFailed={() => {}} />)
+    expect(screen.getByTestId('pr-filter-failed')).toBeDisabled()
+  })
+
+  it('marks the Failed tile pressed and toggles on click', async () => {
+    const onToggleFailed = vi.fn()
+    const user = userEvent.setup()
+    render(<StageTiles prs={[failingPr(9)]} stageModels={{ 'o/r': model }}
+      active={new Set()} onToggle={() => {}} failedActive onToggleFailed={onToggleFailed} />)
+    expect(screen.getByTestId('pr-filter-failed')).toHaveAttribute('aria-pressed', 'true')
+    await user.click(screen.getByTestId('pr-filter-failed'))
+    expect(onToggleFailed).toHaveBeenCalled()
+  })
+
+  it('excludes a closed PR with a frozen failing rollup from the count', () => {
+    render(<StageTiles prs={[failingPr(8, { state: 'closed' })]} stageModels={{ 'o/r': model }}
+      active={new Set()} onToggle={() => {}} failedActive={false} onToggleFailed={() => {}} />)
+    expect(screen.getByTestId('pr-filter-failed')).toHaveTextContent('0')
+    expect(screen.getByTestId('pr-filter-failed')).toBeDisabled()
+  })
+
+  it('labels the filter row as a PR filter group', () => {
+    render(<StageTiles prs={prs} stageModels={{ 'o/r': model }}
+      active={new Set()} onToggle={() => {}} failedActive={false} onToggleFailed={() => {}} />)
+    expect(screen.getByRole('group', { name: /filter/i })).toBeInTheDocument()
+  })
+})
