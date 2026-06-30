@@ -9,7 +9,14 @@ from server.sessions.types import SYSTEM_IDENTITY
 
 
 def register_orchestrator_rpc(app, orch) -> None:
-    app.state.pumped = set()
+    # session_id -> the driver object whose events() a live pump task is forwarding.
+    # Must track the DRIVER, not just the session_id: a driver can be torn down and
+    # rebuilt (watchdog/token recompose, resume after detach) while the session_id is
+    # unchanged. A plain set that was added-to but never cleared stranded the pump on
+    # the dead driver forever — the replacement driver's events published nowhere and
+    # the live transcript froze until a reattach forced a disk replay. Keying on driver
+    # identity lets ensure_driver restart the pump for a swapped-in driver.
+    app.state.pumped = {}
 
     async def _global_pump():
         q = orch.subscribe_events()
@@ -24,16 +31,26 @@ def register_orchestrator_rpc(app, orch) -> None:
         app.state.global_pump = None   # no loop at register time (sync TestClient tests don't use the bus)
 
     async def _pump(session_id: str, driver) -> None:
-        async for e in driver.events():
-            await app.state.publish(session_id, e.to_wire())
+        try:
+            async for e in driver.events():
+                await app.state.publish(session_id, e.to_wire())
+        finally:
+            # Self-clean so a future ensure_driver (reattach, or a new driver after a
+            # recompose) can restart the pump. Only clear if we're still the registered
+            # pump for this driver — a newer pump may already have replaced us.
+            if app.state.pumped.get(session_id) is driver:
+                del app.state.pumped[session_id]
 
     async def ensure_driver(params: dict) -> dict:
         session_id = params["session_id"]
         driver = await orch.ensure_driver(session_id, params.get("identity", SYSTEM_IDENTITY))
         if driver is None:
             return {"found": False}
-        if session_id not in app.state.pumped:
-            app.state.pumped.add(session_id)
+        # (Re)start the pump whenever the live driver isn't the one we're already
+        # pumping — first attach, OR a swapped-in driver after a teardown/recompose.
+        # Same driver → no-op (avoids double-pumping, which would duplicate events).
+        if app.state.pumped.get(session_id) is not driver:
+            app.state.pumped[session_id] = driver
             asyncio.create_task(_pump(session_id, driver), name=f"pump-{session_id}")
         return {"found": True, "status": driver.current_status(), "queued": driver.queued(), "head_seq": app.state.head_seq(session_id)}
 
