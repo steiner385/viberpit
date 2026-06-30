@@ -69,7 +69,7 @@ function ConfigInput({ field, value, onChange }: FieldProps) {
         <input
           type="number"
           value={value == null ? '' : String(value)}
-          onChange={(e) => onChange(field.key, e.target.valueAsNumber)}
+          onChange={(e) => { const v = e.target.valueAsNumber; if (!Number.isNaN(v)) onChange(field.key, v) }}
           className="text-sm rounded border border-border bg-background px-2 py-1 w-28"
         />
       )
