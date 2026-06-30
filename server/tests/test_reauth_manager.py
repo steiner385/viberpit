@@ -669,3 +669,41 @@ async def test_unexpected_store_failure_sets_error_not_stuck(monkeypatch, tmp_pa
     assert st.state == "error", f"expected error, got {st.state!r}"
     assert st.state != "awaiting_code", "state must not be stuck in awaiting_code"
     assert GOOD_TOKEN not in (st.message or ""), "token must not appear in the error message"
+
+
+# ---------------------------------------------------------------------------
+# Bug 1: a terminal 'success' from one account must not leak into another
+# account's *scoped* status poll. The single global _state made success
+# "sticky": the next account's first poll saw the prior account's success,
+# the frontend stopped polling on the terminal state, and reauth on the new
+# account froze. status(name, scoped=True) returns idle for any account that
+# does not own the current state. Unscoped status() stays raw (add-flow compat).
+# ---------------------------------------------------------------------------
+
+def test_scoped_status_does_not_leak_success_to_other_account():
+    async def runner(name): await asyncio.sleep(0.01); return True
+    m = ReauthManager(runner=runner, key_available=lambda: True, timeout_s=5)
+
+    async def run():
+        await m.start("acctA", "a@example.com")
+        for _ in range(50):
+            if m.status("acctA").state in ("success", "error", "timeout"): break
+            await asyncio.sleep(0.01)
+        return (
+            m.status("acctA", scoped=True).state,
+            m.status("acctB", scoped=True).state,
+            m.status("acctB").state,  # unscoped: raw global (add-flow compat)
+            m.status("acctA", scoped=True).to_dict().get("account"),
+        )
+
+    a_scoped, b_scoped, b_unscoped, a_account = asyncio.run(run())
+    assert a_scoped == "success", "owning account still sees its terminal state"
+    assert b_scoped == "idle", "a different account must not see the leaked success"
+    assert b_unscoped == "success", "unscoped status stays raw for the add flow"
+    assert a_account == "acctA", "wire format exposes the owning account"
+
+
+def test_scoped_status_passes_through_when_no_active_account():
+    """A fresh manager (no reauth started) reports idle to any scoped poll."""
+    m = ReauthManager(runner=lambda n: True, key_available=lambda: True, timeout_s=5)
+    assert m.status("whoever", scoped=True).state == "idle"

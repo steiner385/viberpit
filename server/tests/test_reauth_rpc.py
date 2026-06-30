@@ -10,7 +10,7 @@ class _FakeReauth:
     async def start(self, name, identity, mode="login"):
         self.calls.append(("start", name, identity, mode))
         return ReauthState(state="running", identity=identity, vnc_session="__reauth__")
-    def status(self, name):
+    def status(self, name, *, scoped=False):
         return ReauthState(state="running", vnc_session="__reauth__")
     async def cancel(self, name):
         self.calls.append(("cancel", name))

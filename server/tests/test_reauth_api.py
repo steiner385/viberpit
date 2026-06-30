@@ -58,7 +58,7 @@ class FakeReauthManager:
             started_at=self._state.started_at,
         )
 
-    async def status(self, name: str) -> ReauthState:
+    async def status(self, name: str, *, scoped: bool = False) -> ReauthState:
         s = self._state
         return ReauthState(
             state=s.state,

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import { ClipboardPaste } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { VncClient, type VncState } from '../vnc/vncClient'
 import { useZoom } from '../vnc/useZoom'
 import { statusTier } from '../session/statusTier'
 import { useMediaQuery } from '@/lib/useMediaQuery'
 import { relayInput, relayKeydown } from '../vnc/keyRelay'
+import { pasteClipboardToSession } from '../vnc/clipboardPaste'
 
 const COPY = {
   disabled: "Browser sharing isn't enabled on this server.",
@@ -42,6 +44,26 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
   // Push a key into the live session; no-ops when not connected.
   const send = (keysym: number, code: string | null, down?: boolean) =>
     clientRef.current?.sendKey(keysym, code, down)
+
+  // Paste-from-clipboard: type the user's client clipboard into the focused
+  // remote field (e.g. a password box in the login window). Typed via keysyms,
+  // so it lands even when the remote X session has no clipboard manager.
+  const [pasteHint, setPasteHint] = useState<string | null>(null)
+  const pasteHintTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(pasteHintTimer.current), [])
+
+  async function pasteFromClipboard() {
+    const result = await pasteClipboardToSession(() => navigator.clipboard.readText(), send)
+    setPasteHint(
+      result === 'denied'
+        ? 'Clipboard blocked — allow access, or type it in.'
+        : result === 'empty'
+          ? 'Clipboard is empty.'
+          : 'Pasted into the session.',
+    )
+    clearTimeout(pasteHintTimer.current)
+    pasteHintTimer.current = setTimeout(() => setPasteHint(null), 2500)
+  }
 
   function toggleKeyboard() {
     const next = !keyboardOpen
@@ -241,6 +263,17 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
 
       {/* Top-right zoom cluster — one group, ≥44px targets */}
       <div className="absolute right-2 top-2 flex items-center gap-1">
+        <button
+          aria-label="Paste from clipboard"
+          title="Paste your clipboard into the session"
+          className={cn(
+            'min-h-[44px] min-w-[44px] flex items-center justify-center',
+            'rounded border border-border bg-background/80 px-2',
+          )}
+          onClick={pasteFromClipboard}
+        >
+          <ClipboardPaste size={16} aria-hidden="true" />
+        </button>
         {isTouch && (
           <button
             aria-label={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}
@@ -294,6 +327,16 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
           </button>
         )}
       </div>
+
+      {/* Transient paste feedback (auto-clears) — sits just under the button cluster. */}
+      {pasteHint && (
+        <div
+          role="status"
+          className="absolute right-2 top-14 rounded bg-background/90 px-2 py-1 text-xs text-muted-foreground shadow"
+        >
+          {pasteHint}
+        </div>
+      )}
 
       {/* "Tap to control" caption — shown when connected, canvas not focused, and
           the empty-state hint is not visible (only one bottom caption at a time). */}

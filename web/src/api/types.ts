@@ -3,6 +3,7 @@ export type AccountStatus = 'ok' | 'limited' | 'needs-relogin' | 'needs-reauth' 
 export interface ReauthState {
   state: 'idle' | 'running' | 'cancelling' | 'success' | 'error' | 'timeout' | 'awaiting_code'
   message?: string | null
+  account?: string | null   // the account/slot this operation targets (scopes per-account status)
   startedAt?: number | null
   vncSession?: string | null
   authUrl?: string | null
