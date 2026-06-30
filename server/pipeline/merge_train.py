@@ -107,3 +107,48 @@ def derive_live(latest: "Observation", now: int) -> dict:
         "building": building,
         "merges_next": _build(head) if head else None,
     }
+
+
+def derive_history(observations: list["Observation"], now: int, window_seconds: int = 86400) -> dict:
+    cutoff = now - window_seconds
+    obs = sorted((o for o in observations if o.captured_at >= cutoff), key=lambda o: o.captured_at)
+    ejects = 0
+    merged: set[str] = set()
+    failed: set[str] = set()
+    for prev, cur in zip(obs, obs[1:]):
+        present = {e.pr_number for e in cur.entries}
+        for e in prev.entries:
+            if e.pr_number in present:
+                continue
+            if e.state == "UNMERGEABLE" or e.group_checks == "failing":
+                ejects += 1
+                if e.batch_head_oid:
+                    failed.add(e.batch_head_oid)
+            elif e.group_checks == "passing" and e.batch_head_oid:
+                merged.add(e.batch_head_oid)
+    merged -= failed                       # a batch that ever failed is counted failed
+    completed = len(merged) + len(failed)
+    success_pct = (len(merged) / completed * 100) if completed else None
+    span_h = ((obs[-1].captured_at - obs[0].captured_at) / 3600) if len(obs) >= 2 else 0.0
+    trains_per_hour = (completed / span_h) if (completed and span_h > 0) else None
+    return {"ejects_24h": ejects, "batch_success_pct": success_pct,
+            "trains_per_hour": trains_per_hour}
+
+
+def derive_merge_train_state(
+    repo: str, observations: list["Observation"], now: int,
+    awaiting_qa: int, awaiting_prod: int, window_seconds: int = 86400,
+) -> MergeTrainState:
+    latest = max(observations, key=lambda o: o.captured_at, default=None)
+    live = derive_live(latest, now) if latest else {
+        "depth": 0, "oldest_wait_seconds": None, "failing": (), "building": None,
+        "blocked": (), "merges_next": None}
+    hist = derive_history(observations, now, window_seconds)
+    return MergeTrainState(
+        repo=repo, depth=live["depth"], trains_per_hour=hist["trains_per_hour"],
+        batch_success_pct=hist["batch_success_pct"], ejects_24h=hist["ejects_24h"],
+        oldest_wait_seconds=live["oldest_wait_seconds"], failing=live["failing"],
+        building=live["building"], blocked=live["blocked"],
+        awaiting_qa=awaiting_qa, awaiting_prod=awaiting_prod,
+        merges_next=live["merges_next"],
+    )
