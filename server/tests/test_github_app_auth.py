@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 
 import pytest
 from cryptography.hazmat.primitives import hashes, serialization
@@ -142,7 +143,7 @@ def test_token_for_owner_none_when_unconfigured(monkeypatch):
     assert A.token_for_owner("cairnea") is None
 
 
-def test_token_for_owner_routes_per_owner(monkeypatch, tmp_path):
+def test_token_for_owner_routes_per_owner(monkeypatch, tmp_path, caplog):
     A.reset()
     _key, pem = _keypair()
     rest = _FakeRest({
@@ -159,7 +160,11 @@ def test_token_for_owner_routes_per_owner(monkeypatch, tmp_path):
     monkeypatch.setattr(A, "_app_rest", rest)
     assert A.token_for_owner("cairnea") == "ghs_CA"
     assert A.token_for_owner("steiner385") == "ghs_ST"
-    assert A.token_for_owner("nobody") is None  # uncovered → fallback
+    # Uncovered owner warns once, not twice
+    with caplog.at_level(logging.WARNING):
+        assert A.token_for_owner("nobody") is None   # first call — warns
+        assert A.token_for_owner("nobody") is None   # second call — must NOT warn again
+    assert caplog.text.count("owner_no_installation") == 1
 
 
 def test_token_for_owner_swallows_mint_error(monkeypatch, caplog):

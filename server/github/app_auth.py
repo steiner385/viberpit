@@ -7,6 +7,7 @@ import base64
 import datetime as _dt
 import json
 import logging
+import threading
 import time
 from typing import Any, Callable, cast
 
@@ -160,7 +161,6 @@ class AppTokenSource:
 # ---------------------------------------------------------------------------
 # Task 3: token_for_owner facade (singleton, fallback, warn-once)
 # ---------------------------------------------------------------------------
-import threading  # noqa: E402
 
 _lock = threading.Lock()
 _app_rest: AppRest = default_app_rest        # monkeypatchable seam
@@ -193,7 +193,8 @@ def _load_app_config() -> tuple[int, int | None, str] | None:
     if not app_id or not key_path:
         return None
     try:
-        pem = open(key_path, encoding="utf-8").read()
+        with open(key_path, encoding="utf-8") as fh:
+            pem = fh.read()
     except OSError:
         log.warning("github_app.private_key_unreadable")  # no path/secret in the msg
         return None
@@ -224,6 +225,7 @@ def token_for_owner(owner: str) -> str | None:
                 return None
             src = _sources.get(inst)
             if src is None:
+                # _app_rest is captured per installation at first construction; tests reset() before patching.
                 src = AppTokenSource(_signer, inst, _app_rest, clock=_clock)
                 _sources[inst] = src
             return src.get()
