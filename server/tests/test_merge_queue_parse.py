@@ -8,6 +8,7 @@ def test_build_query_aliases_one_block_per_repo():
     assert q.count("mergeQueue") == 2
     assert "r0: repository(owner: \"cairnea\", name: \"KinDash\")" in q
     assert "r1: repository(owner: \"acme\", name: \"web\")" in q
+    assert q.count("{") == q.count("}")
 
 def test_build_query_empty_repos_returns_empty_string():
     assert build_merge_queue_query([]) == ""

@@ -40,7 +40,7 @@ def build_merge_queue_query(repos: list[str]) -> str:
             f"    position state enqueuedAt estimatedTimeToMerge\n"
             f"    headCommit {{ oid statusCheckRollup {{ state contexts(first: 100) {{\n"
             f"      totalCount nodes {{ __typename ... on CheckRun {{ status }} ... on StatusContext {{ state }} }}\n"
-            f"    }} }} }} }}\n"
+            f"    }} }} }}\n"
             f"    pullRequest {{ number }}\n"
             f"  }} }} }}\n"
             f"}}"
