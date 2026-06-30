@@ -648,9 +648,16 @@ class SessionOrchestrator:
         # card shows time since the last real turn, not a reset on every re-arm.
         completed_turn = status == "done"
         if completed_turn:
-            from .background_tasks import is_parked
-            if is_parked(self.transcript_path(session_id)):
-                status = "waiting_external"
+            from .background_tasks import is_parked, last_turn_awaits_user
+            tpath = self.transcript_path(session_id)
+            if is_parked(tpath):
+                # A parked `done` turn normally reads "Waiting…". But if the turn handed
+                # a question/decision back to the user in prose (no structured
+                # `pending_question`, which would already win in derive_status), it needs
+                # the user — not a timer/process — so surface "Answer needed" instead of
+                # masking it as waiting_external.
+                status = ("waiting_question" if last_turn_awaits_user(tpath)
+                          else "waiting_external")
         # Advance the "active … ago" clock ONLY when the assistant hands output back —
         # a finished or user-paused turn (ACTIVITY_STATUSES). Bumping it on every status
         # (in_progress) or incidental row write is the bug that pinned every card to

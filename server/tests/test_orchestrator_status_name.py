@@ -97,6 +97,32 @@ def test_persist_status_done_overlays_waiting_external_when_parked(tmp_path):
     assert asyncio.run(run()) == "waiting_external"
 
 
+def _parked_asking_transcript(tmp_path):
+    """Parked on an open background task AND the final assistant message hands a prose
+    question/decision back to the user — the real "Waiting… masks needs-you" bug."""
+    p = tmp_path / "claude-s1.jsonl"
+    p.write_text(
+        '{"type":"user","message":{"role":"user","content":"unblock the PRs"}}\n'
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1",'
+        '"name":"Bash","input":{"command":"gh pr checks","run_in_background":true}}]}}\n'
+        '{"type":"assistant","message":{"content":[{"type":"text","text":'
+        '"Two execution options:\\n1. Subagent-Driven (recommended).\\n'
+        '2. Inline Execution."}]}}\n'
+    )
+    return p
+
+
+def test_persist_status_done_parked_but_asking_user_is_answer_needed(tmp_path):
+    """A parked turn whose final message hands a prose question/decision back to the
+    user must read "Answer needed" (needs-you), not be masked as "Waiting…"."""
+    async def run():
+        orch = await _build_orch(tmp_path, name_is_auto=False)
+        orch.transcript_path = lambda sid: str(_parked_asking_transcript(tmp_path))
+        await orch._persist_status("s1", "done")
+        return orch.record("s1").status
+    assert asyncio.run(run()) == "waiting_question"
+
+
 def _killed_only_transcript(tmp_path):
     """A transcript whose only background poller was killed by a deploy → NOT parked
     (killed tasks are dead, re-armed under a new id), so is_parked() is False."""

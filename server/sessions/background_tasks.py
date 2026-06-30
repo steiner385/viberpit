@@ -220,6 +220,68 @@ def is_parked(jsonl_path: str | None) -> bool:
             or scan_pending_wakeup(jsonl_path))
 
 
+# Tail of the final hand-back message scanned for a solicitation phrase. The closing of
+# a message is where an agent puts its ask ("…which do you want?"); scanning the whole
+# body would fire on rhetorical questions posed mid-explanation.
+_ASK_TAIL_CHARS = 800
+
+# Lowercased substrings that mark an assistant message as handing a decision back to the
+# user. Deliberately broad (the cost of a false "Answer needed" is a harmless nudge; the
+# cost of a miss is the bug we are fixing). A trailing "?" is handled separately.
+_ASK_PHRASES: tuple[str, ...] = (
+    "options:", "(recommended)", "recommended)",
+    "which option", "which approach", "which one", "which do you", "which would you",
+    "would you like", "would you prefer", "do you want", "want me to",
+    "should i ", "shall i ", "let me know", "your call", "pick one",
+    "how would you like", "two options", "three options", "go with",
+)
+
+
+def _text_awaits_user(text: str) -> bool:
+    """Heuristic: does this assistant prose hand a question/decision back to the user?"""
+    t = text.rstrip()
+    if not t:
+        return False
+    if t.endswith("?"):
+        return True
+    tail = t[-_ASK_TAIL_CHARS:].lower()
+    return any(p in tail for p in _ASK_PHRASES)
+
+
+def _last_assistant_text(jsonl_path: str) -> str:
+    """Concatenated text of the most recent assistant message that produced any prose.
+
+    Assistant entries that are pure tool_use (no ``text`` block) are skipped: they are
+    not a hand-back to the user, so the last *spoken* message is what we judge."""
+    last = ""
+    for o in _iter_jsonl(jsonl_path):
+        if o.get("type") != "assistant":
+            continue
+        content = (o.get("message") or {}).get("content")
+        if isinstance(content, str):
+            if content.strip():
+                last = content
+            continue
+        if not isinstance(content, list):
+            continue
+        text = "".join(b.get("text") or "" for b in content
+                       if isinstance(b, dict) and b.get("type") == "text")
+        if text.strip():
+            last = text
+    return last
+
+
+def last_turn_awaits_user(jsonl_path: str | None) -> bool:
+    """True iff the assistant's most recent message handed a question/decision back to
+    the user in prose (no structured ``AskUserQuestion``, which already maps to
+    ``waiting_question``). Lets ``_persist_status`` keep the ``waiting_external``
+    overlay from masking a parked turn that actually needs the user — surfacing
+    "Answer needed" instead of "Waiting…"."""
+    if not jsonl_path:
+        return False
+    return _text_awaits_user(_last_assistant_text(jsonl_path))
+
+
 def build_rearm_prompt(tasks: list[OpenBgTask]) -> str:
     lines = ["The daemon was restarted (deploy) and these background tasks were "
              "stopped. Relaunch each one with exactly the parameters shown."]
