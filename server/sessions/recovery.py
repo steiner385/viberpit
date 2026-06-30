@@ -106,7 +106,7 @@ class RecoveryState:
         """Dropped-turn resends recorded for *session_id* within the window
         (expired entries are pruned, matching the cap check)."""
         cutoff = now - self._resend_window
-        recent = [t for t in self._resends.get(session_id, ()) if t >= cutoff]
+        recent = [t for t in self._resends.get(session_id, ()) if t > cutoff]
         self._resends[session_id] = recent
         return len(recent)
 
