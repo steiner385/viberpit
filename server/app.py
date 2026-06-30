@@ -148,6 +148,14 @@ async def _lifespan(app: FastAPI):
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
 
+    from server.automations.registry import registry as _automation_registry
+    try:
+        await _automation_registry.ensure_rows()
+    except Exception:
+        _logging.getLogger("server").warning(
+            "startup: automation ensure_rows failed", exc_info=True
+        )
+
     from server.db import db_session as _db_session_factory
     from server.usage.auth_failure_audit import AuthFailureAuditor
     _auth_auditor = AuthFailureAuditor(identity="system", session_factory=_db_session_factory)
