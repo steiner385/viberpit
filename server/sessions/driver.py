@@ -531,6 +531,15 @@ class SessionDriver:
                     if isinstance(e, ev.Condensing):
                         await self._consume_condensing(e)
                         continue
+                    # Genuine assistant output proves compaction is over. The clean
+                    # signal is the SDK's compact_boundary (a Condensing(active=False),
+                    # handled above), but it does not always arrive before the
+                    # post-compaction reply streams. Since derive_status ranks
+                    # 'condensing' ABOVE 'turn_active', a lingering flag pins the status
+                    # to "Condensing…" while real text streams in. Clear it on the first
+                    # content event — exactly as _retrying is cleared by any real event.
+                    if self._condensing and isinstance(e, (ev.TextDelta, ev.ThinkingDelta, ev.ToolCall, ev.ToolResult)):
+                        await self._consume_condensing(ev.Condensing(active=False))
                     if isinstance(e, ev.TextDelta):
                         self._last_assistant_parts.append(e.text)
                     elif isinstance(e, ev.TurnEnd):
