@@ -14,7 +14,7 @@ export type Block =
   | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }>; ts?: number }
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown>; ts?: number }; ts?: number }
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; ts?: number }
-  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; ts?: number }
+  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; answered?: string[]; ts?: number }
   | { kind: 'notice';     id: string; text: string; ts?: number }
   | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; ts?: number }
 
@@ -107,7 +107,7 @@ function num(v: unknown): number {
 
 export type LocalAction =
   | { type: '_resolvePermission'; permId: string }
-  | { type: '_resolveQuestion';   questionId: string }
+  | { type: '_resolveQuestion';   questionId: string; selected?: string[] }
   | { type: '_clearError' }
   | { type: '_seedUserPrompt';    text: string }
   | { type: '_rotation';          from: string; to: string; reason?: string }
@@ -682,13 +682,28 @@ export function transcriptReducer(
     }
 
     case '_resolveQuestion': {
-      const { questionId } = ev
+      const { questionId, selected } = ev
+      // Resolve the question IN PLACE — mark it answered and no longer live, keeping
+      // it at its original position in the turn that asked it. The server delivers the
+      // answer only as a tool result (never echoed as a user turn), so the client used
+      // to fake a user bubble appended at the transcript TAIL. But the agent continues
+      // the turn that asked the question, which sits ABOVE that tail bubble, so every
+      // post-answer update rendered above the user's answer — the answer looked stranded
+      // at the bottom. Keeping the answered question inline anchors it chronologically:
+      // the resolved card renders where it was asked, and all continuation lands after it.
       let changed = false
       const nextTurns = state.turns.map((turn) => {
         const hasIt = turn.blocks.some((b) => b.kind === 'question' && b.questionId === questionId)
         if (!hasIt) return turn
         changed = true
-        return { ...turn, blocks: turn.blocks.filter((b) => !(b.kind === 'question' && b.questionId === questionId)) }
+        return {
+          ...turn,
+          blocks: turn.blocks.map((b) =>
+            b.kind === 'question' && b.questionId === questionId
+              ? { ...b, live: false, answered: selected ?? [] }
+              : b,
+          ),
+        }
       })
       if (!changed) return state // No matching question block found; return unchanged state
       return { ...state, turns: nextTurns }

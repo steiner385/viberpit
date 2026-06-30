@@ -300,4 +300,18 @@ describe('QuestionCard readOnly', () => {
     await user.click(screen.getByRole('radio', { name: 'Option A' }))
     expect(onAnswer).toHaveBeenCalledWith('q-1', ['Option A'])
   })
+
+  it('answered (read-only) marks the chosen option checked and leaves others unchecked', () => {
+    render(<QuestionCard block={{ ...singleQ, answered: ['Option B'] }} onAnswer={vi.fn()} readOnly />)
+    const chosen = screen.getByRole('radio', { name: /Option B/ })
+    const other = screen.getByRole('radio', { name: /Option A/ })
+    expect(chosen).toHaveAttribute('aria-checked', 'true')
+    expect(other).not.toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('answered (read-only) surfaces a free-form reply that is not one of the options', () => {
+    render(<QuestionCard block={{ ...singleQ, answered: ['something custom'] }} onAnswer={vi.fn()} readOnly />)
+    expect(screen.getByText(/Your answer:/)).toBeInTheDocument()
+    expect(screen.getByText(/something custom/)).toBeInTheDocument()
+  })
 })
