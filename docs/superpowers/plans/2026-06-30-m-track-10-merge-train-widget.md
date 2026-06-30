@@ -133,12 +133,17 @@ def test_parse_maps_entries_per_repo():
         {"position": 1, "state": "AWAITING_CHECKS", "enqueuedAt": "2026-06-30T10:00:00Z",
          "estimatedTimeToMerge": 720,
          "headCommit": {"oid": "abc", "statusCheckRollup": {"state": "PENDING",
-            "contexts": {"totalCount": 4}}},
+            "contexts": {"totalCount": 4, "nodes": [
+                {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SKIPPED"},
+                {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None},
+                {"__typename": "StatusContext", "state": "PENDING"}]}}},
          "pullRequest": {"number": 10824}},
         {"position": 2, "state": "UNMERGEABLE", "enqueuedAt": "2026-06-30T09:30:00Z",
          "estimatedTimeToMerge": None,
          "headCommit": {"oid": "def", "statusCheckRollup": {"state": "FAILURE",
-            "contexts": {"totalCount": 4}}},
+            "contexts": {"totalCount": 4, "nodes": [
+                {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"}]}}},
          "pullRequest": {"number": 10805}},
     ]}}}}}
     out = parse_merge_queue_response(resp, ["cairnea/KinDash"])
@@ -146,14 +151,24 @@ def test_parse_maps_entries_per_repo():
     assert entries[0] == QueueEntry(
         pr_number=10824, position=1, state="AWAITING_CHECKS",
         enqueued_at=1751277600, batch_head_oid="abc",
-        group_checks="pending", checks_total=4, checks_done=None, eta_seconds=720)
+        group_checks="pending", checks_total=4, checks_done=2, eta_seconds=720)
     assert entries[1].state == "UNMERGEABLE"
     assert entries[1].group_checks == "failing"
+    assert entries[1].checks_done == 1
 
 def test_parse_real_fixture_does_not_raise():
     fix = json.loads(Path("server/tests/fixtures/merge_queue_kindash.json").read_text())
     out = parse_merge_queue_response(fix, ["cairnea/KinDash"])
     assert isinstance(out["cairnea/KinDash"], tuple)
+
+def test_parse_null_rollup_is_unknown():
+    # synthetic fixture (Task 1) covers UNMERGEABLE + null rollup + a failing batch.
+    fix = json.loads(Path("server/tests/fixtures/merge_queue_synthetic.json").read_text())
+    by_num = {e.pr_number: e for e in parse_merge_queue_response(fix, ["cairnea/KinDash"])["cairnea/KinDash"]}
+    assert by_num[10805].group_checks is None      # statusCheckRollup: null → unknown
+    assert by_num[10805].checks_total is None
+    assert by_num[10823].group_checks == "failing"
+    assert by_num[10824].checks_done == 2          # 2 COMPLETED of 4
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -204,7 +219,9 @@ def build_merge_queue_query(repos: list[str]) -> str:
             f"{_alias(i)}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
             f"  mergeQueue {{ entries(first: 50) {{ nodes {{\n"
             f"    position state enqueuedAt estimatedTimeToMerge\n"
-            f"    headCommit {{ oid statusCheckRollup {{ state contexts(first: 100) {{ totalCount }} }} }}\n"
+            f"    headCommit {{ oid statusCheckRollup {{ state contexts(first: 100) {{\n"
+            f"      totalCount nodes {{ __typename ... on CheckRun {{ status }} ... on StatusContext {{ state }} }}\n"
+            f"    }} }} }} }}\n"
             f"    pullRequest {{ number }}\n"
             f"  }} }} }}\n"
             f"}}"
@@ -228,13 +245,33 @@ def _group_checks(rollup_state: str | None) -> str | None:
     return None
 
 
+_TERMINAL_STATUS_STATES = {"SUCCESS", "FAILURE", "ERROR", "EXPECTED"}
+
+
+def _checks_done(rollup: dict) -> int | None:
+    """Completed-context count = the progress numerator (Task 1 spike: GitHub gives
+    per-context status, not a passed-count). CheckRun done when status==COMPLETED;
+    StatusContext done when its state is terminal."""
+    nodes = ((rollup.get("contexts") or {}).get("nodes"))
+    if not nodes:
+        return None
+    done = 0
+    for c in nodes:
+        if c.get("__typename") == "CheckRun":
+            if c.get("status") == "COMPLETED":
+                done += 1
+        elif c.get("state") in _TERMINAL_STATUS_STATES:   # StatusContext
+            done += 1
+    return done
+
+
 def _entry(node: dict) -> QueueEntry | None:
     pr = node.get("pullRequest") or {}
     number = pr.get("number")
     if number is None:
         return None
     head = node.get("headCommit") or {}
-    rollup = head.get("statusCheckRollup") or {}
+    rollup = head.get("statusCheckRollup") or {}    # may be null on UNMERGEABLE entries
     total = ((rollup.get("contexts") or {}).get("totalCount"))
     return QueueEntry(
         pr_number=int(number),
@@ -244,7 +281,7 @@ def _entry(node: dict) -> QueueEntry | None:
         batch_head_oid=head.get("oid"),
         group_checks=_group_checks(rollup.get("state")),
         checks_total=total,
-        checks_done=None,  # GitHub's rollup exposes no passed-count; Task 1 confirmed None.
+        checks_done=_checks_done(rollup),
         eta_seconds=node.get("estimatedTimeToMerge"),
     )
 
@@ -261,12 +298,10 @@ def parse_merge_queue_response(response: dict, repos: list[str]) -> dict[str, tu
     return out
 ```
 
-> Note: if Task 1 found a usable passed-count for `checks_done`, populate it in `_entry` and update the test's expected `checks_done`. Otherwise it stays `None` and `building.percent` is `None` (the widget shows ETA only).
-
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest server/tests/test_merge_queue_parse.py -v`
-Expected: PASS (4 tests).
+Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -875,7 +910,9 @@ async def test_refresh_snapshots_merge_queue():
             {"position": 1, "state": "AWAITING_CHECKS", "enqueuedAt": "2026-06-30T10:00:00Z",
              "estimatedTimeToMerge": 60,
              "headCommit": {"oid": "x", "statusCheckRollup": {"state": "PENDING",
-                "contexts": {"totalCount": 2}}},
+                "contexts": {"totalCount": 2, "nodes": [
+                    {"__typename": "CheckRun", "status": "COMPLETED"},
+                    {"__typename": "CheckRun", "status": "IN_PROGRESS"}]}}},
              "pullRequest": {"number": 7}}]}}}}}
     async def sink(by_repo, captured_at):
         captured["by_repo"] = by_repo
@@ -885,7 +922,7 @@ async def test_refresh_snapshots_merge_queue():
     await p.refresh_once(["acme/web"])
     assert captured["by_repo"]["acme/web"][0] == QueueEntry(
         pr_number=7, position=1, state="AWAITING_CHECKS", enqueued_at=1751277600,
-        batch_head_oid="x", group_checks="pending", checks_total=2, checks_done=None,
+        batch_head_oid="x", group_checks="pending", checks_total=2, checks_done=1,
         eta_seconds=60)
     assert captured["at"] == 1751284800
 
