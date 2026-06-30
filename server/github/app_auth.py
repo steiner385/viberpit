@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Any, Callable, cast
 
+import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
@@ -45,7 +46,8 @@ class AppJwtSigner:
                  clock: Callable[[], float] = time.time) -> None:
         self.app_id = app_id
         self._pem = private_key_pem
-        # validate eagerly (raises on a bad PEM); cast asserts RSA key type
+        # load_pem_private_key validates the PEM is parseable (raises on a bad PEM);
+        # cast is only for the type-checker; a non-RSA key would fail later at .sign() time
         cast(RSAPrivateKey, serialization.load_pem_private_key(private_key_pem.encode(), password=None))
         self._clock = clock
 
@@ -57,8 +59,6 @@ class AppJwtSigner:
 # Task 2: GhAppError, AppRest, default_app_rest, InstallationRegistry,
 #          AppTokenSource, REFRESH_MARGIN_S
 # ---------------------------------------------------------------------------
-
-import httpx  # noqa: E402  (stdlib imports above; httpx is third-party)
 
 REFRESH_MARGIN_S = 300  # 5 * 60_000 ms, mirrors Plotroom's TOKEN_REFRESH_MARGIN_MS
 _REST_BASE = "https://api.github.com"
