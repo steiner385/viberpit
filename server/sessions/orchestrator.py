@@ -407,6 +407,8 @@ class SessionOrchestrator:
         permission_mode: str = "interactive",
         attachment_ids: list[str] | None = None,
         name_is_auto: bool = True,
+        origin: str | None = None,
+        origin_ref: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
 
@@ -524,6 +526,8 @@ class SessionOrchestrator:
                 branch=branch_name,
                 permission_mode=permission_mode,
                 name_is_auto=name_is_auto,
+                origin=origin,
+                origin_ref=origin_ref,
             )
             db.add(row)
 
@@ -544,6 +548,8 @@ class SessionOrchestrator:
             # waiting for the first status event (mirrors the DB row's utcnow default).
             updated_at=datetime.utcnow(),
             usage_unverified=usage_unverified,
+            origin=origin,
+            origin_ref=origin_ref,
         )
         self._records[session_id] = record
         log_event(log, logging.INFO, "session.start",

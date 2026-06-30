@@ -81,3 +81,29 @@ class AutomationContext:
             else:
                 row.state = state
             await db.flush()
+
+    async def spawn_session(self, *, origin_ref: str, dedupe_key: str | None = None,
+                            **create_kwargs) -> Any:
+        """Find-or-create a session for this automation. If a NON-terminal session
+        with the same (origin, dedupe_key) already exists, return it and emit a
+        'skipped_duplicate' event instead of creating a second. Otherwise create
+        via the injected create_session (which stamps origin/origin_ref), then emit
+        a linked 'spawned' event."""
+        from server.db.models import Session
+        key = dedupe_key or origin_ref
+        async with db_session() as db:
+            existing = (await db.execute(select(Session).where(
+                Session.origin == self.automation_id,
+                Session.origin_ref == key,
+                Session.status != "ended"))).scalars().first()
+        if existing is not None:
+            await self.emit("info", f"skipped duplicate spawn for {key}",
+                            kind="skipped_duplicate", target=key, session_id=existing.id)
+            return existing
+        if self._create_session is None:
+            raise RuntimeError("AutomationContext has no create_session bound")
+        rec = await self._create_session(origin=self.automation_id, origin_ref=origin_ref,
+                                         **create_kwargs)
+        await self.emit("info", f"spawned session for {origin_ref}",
+                        kind="spawned", target=origin_ref, session_id=getattr(rec, "id", None))
+        return rec
