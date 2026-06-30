@@ -1136,12 +1136,12 @@ class SessionOrchestrator:
         """Distinct repos to watch: live in-memory sessions ∪ all persisted sessions
         (incl. archived), so a repo with only an archived session still appears."""
         repos = {r.repo for r in self._records.values() if r.repo}
-        from sqlalchemy import select
+        from sqlalchemy import select as sa_select
         try:
             async with db_session() as db:
                 rows = (
                     await db.execute(
-                        select(DbSession.repo).where(DbSession.repo.is_not(None)).distinct()
+                        sa_select(DbSession.repo).where(DbSession.repo.is_not(None)).distinct()
                     )
                 ).scalars().all()
             repos.update(r for r in rows if r)
