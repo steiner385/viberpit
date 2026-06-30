@@ -57,17 +57,32 @@ class _StubPoller:
 
 
 def _build_orch(pr: PullRequestInfo, *, has_driver: bool = True):
-    """Build a minimal SessionOrchestrator with only the attributes Task-3 touches."""
+    """Build a minimal SessionOrchestrator with only the attributes Task-3 touches.
+
+    The auto-fix loop guard now lives in the durable pr-doctor automation target
+    state (automation_target_state), so the orch carries a real AutomationContext
+    bound to whichever DB the caller already initialised for the test.
+    """
     import server.sessions.orchestrator as orch_mod
+    from server.automations.context import AutomationContext
 
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
     orch._records = {"sess1": _make_record()}
     orch._pushed_pr = set()
-    orch._pr_fix_attempts = set()
+    orch._pr_doctor_ctx = AutomationContext("pr-doctor")
     orch._pr_poller = _StubPoller(pr)  # type: ignore[assignment]  # stub stands in for PrStatusPoller
     # Sentinel driver object — only presence in the dict matters.
     orch._drivers = {"sess1": object()} if has_driver else {}  # type: ignore[dict-item]
     return orch
+
+
+async def _init_pr_doctor_db(tmp_path) -> None:
+    """Init a per-test file DB and ensure the pr-doctor automation row exists so
+    the durable loop-guard target-state writes/reads have a table to land in."""
+    from server.db import init_db
+    from server.automations.registry import registry
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'autofix.db'}")
+    await registry.ensure_rows()
 
 
 # ---------------------------------------------------------------------------
@@ -199,9 +214,10 @@ async def test_request_pr_fix_unknown_session(orch_with_failing_pr):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_auto_mode_injects_once_per_failure_event(orch_with_failing_pr, monkeypatch):
+async def test_auto_mode_injects_once_per_failure_event(orch_with_failing_pr, monkeypatch, tmp_path):
     import server.sessions.orchestrator as orch_mod
 
+    await _init_pr_doctor_db(tmp_path)
     orch, sent = orch_with_failing_pr
 
     # Switch mode to "auto"
@@ -225,12 +241,13 @@ async def test_auto_mode_injects_once_per_failure_event(orch_with_failing_pr, mo
 
 
 @pytest.mark.asyncio
-async def test_auto_mode_pending_interloper_does_not_re_arm(orch_with_failing_pr, monkeypatch):
+async def test_auto_mode_pending_interloper_does_not_re_arm(orch_with_failing_pr, monkeypatch, tmp_path):
     """A transient failing→pending→failing CI cycle (the real path while a pushed
     fix re-runs) must NOT re-arm the guard — only a genuine ``passing`` does.
     Otherwise a PR the agent can't fix loops on every CI run."""
     import server.sessions.orchestrator as orch_mod
 
+    await _init_pr_doctor_db(tmp_path)
     orch, sent = orch_with_failing_pr
 
     async def _mode_auto(self_):
@@ -255,9 +272,10 @@ async def test_auto_mode_pending_interloper_does_not_re_arm(orch_with_failing_pr
 
 
 @pytest.mark.asyncio
-async def test_off_mode_never_injects(orch_with_failing_pr, monkeypatch):
+async def test_off_mode_never_injects(orch_with_failing_pr, monkeypatch, tmp_path):
     import server.sessions.orchestrator as orch_mod
 
+    await _init_pr_doctor_db(tmp_path)
     orch, sent = orch_with_failing_pr
 
     async def _mode_off(self_):
@@ -270,9 +288,10 @@ async def test_off_mode_never_injects(orch_with_failing_pr, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_propose_mode_never_auto_injects(orch_with_failing_pr, monkeypatch):
+async def test_propose_mode_never_auto_injects(orch_with_failing_pr, monkeypatch, tmp_path):
     import server.sessions.orchestrator as orch_mod
 
+    await _init_pr_doctor_db(tmp_path)
     orch, sent = orch_with_failing_pr
 
     async def _mode_propose(self_):
@@ -285,9 +304,10 @@ async def test_propose_mode_never_auto_injects(orch_with_failing_pr, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_auto_mode_no_live_driver_falls_back(orch_with_failing_pr_no_driver, monkeypatch):
+async def test_auto_mode_no_live_driver_falls_back(orch_with_failing_pr_no_driver, monkeypatch, tmp_path):
     import server.sessions.orchestrator as orch_mod
 
+    await _init_pr_doctor_db(tmp_path)
     orch, sent, pushed = orch_with_failing_pr_no_driver
 
     async def _mode_auto(self_):

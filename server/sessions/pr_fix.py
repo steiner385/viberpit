@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from server.github.pr_status import PullRequestInfo
 
-# The single source of truth for the pr_autofix_mode vocabulary. The settings
-# API validates against the same set (kept in sync there for the HTTP layer).
+# The single source of truth for the pr-doctor mode vocabulary. The orchestrator
+# validates the pr-doctor automation registry row's `mode` against this set.
 VALID_AUTOFIX_MODES: frozenset[str] = frozenset({"off", "propose", "auto"})
 
 
