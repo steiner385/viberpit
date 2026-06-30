@@ -75,3 +75,35 @@ class MergeTrainState:
             awaiting_qa=d.get("awaiting_qa", 0), awaiting_prod=d.get("awaiting_prod", 0),
             merges_next=TrainBuild.from_dict(n) if n else None,
         )
+
+
+_BIG = 1 << 30
+
+
+def _percent(e: "QueueEntry") -> int | None:
+    if e.checks_total and e.checks_done is not None and e.checks_total > 0:
+        return round(100 * e.checks_done / e.checks_total)
+    return None
+
+
+def _build(e: "QueueEntry") -> "TrainBuild":
+    return TrainBuild(pr_number=e.pr_number, percent=_percent(e), eta_seconds=e.eta_seconds)
+
+
+def derive_live(latest: "Observation", now: int) -> dict:
+    entries = latest.entries
+    enq = [e.enqueued_at for e in entries if e.enqueued_at is not None]
+    head = min(
+        entries,
+        key=lambda e: e.position if e.position is not None else _BIG,
+        default=None,
+    ) if entries else None
+    building = _build(head) if (head and head.group_checks == "pending") else None
+    return {
+        "depth": len(entries),
+        "oldest_wait_seconds": (now - min(enq)) if enq else None,
+        "failing": tuple(e.pr_number for e in entries if e.group_checks == "failing"),
+        "blocked": tuple(e.pr_number for e in entries if e.state == "UNMERGEABLE"),
+        "building": building,
+        "merges_next": _build(head) if head else None,
+    }
