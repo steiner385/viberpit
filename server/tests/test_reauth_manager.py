@@ -461,50 +461,107 @@ async def test_success_writes_audit_row_no_token_material():
 
 
 # ---------------------------------------------------------------------------
-# Phase B2b: setup-token runner + async↔thread bridge + submit_code
+# Phase B2b (new): in-process OAuth exchange via setup_token_oauth
 # ---------------------------------------------------------------------------
+
+import ccswitch.setup_token_oauth as _sto
+
+
+def _make_manager(monkeypatch, tmp_path):
+    """Construct a ReauthManager with key available and setup_token_oauth.begin() mocked."""
+    from server.reauth import ReauthManager
+    from ccswitch.setup_token_oauth import SetupTokenChallenge
+
+    fake_challenge = SetupTokenChallenge(
+        authorize_url="https://claude.com/cai/oauth/authorize?state=FAKE",
+        verifier="fake-verifier",
+        state="FAKE",
+    )
+    monkeypatch.setattr(_sto, "begin", lambda: fake_challenge)
+    return ReauthManager(key_available=lambda: True)
 
 
 @pytest.mark.asyncio
-async def test_setup_token_flow_awaiting_code_then_submit_succeeds(monkeypatch):
-    """Full bridge: fake capture drives on_url → awaiting_code, then submit_code
-    unblocks get_code() → runner returns True → state == success."""
-    from ccswitch import auth_login
-    from server.reauth import ReauthManager
+async def test_setup_token_start_enters_awaiting_code_without_subprocess(monkeypatch, tmp_path):
+    """start(mode='setup_token') enters awaiting_code immediately — no background task."""
+    mgr = _make_manager(monkeypatch, tmp_path)
+    await mgr.start("acct", "id@example.com", mode="setup_token")
+    st = mgr.status("acct")
+    assert st.state == "awaiting_code"
+    assert "claude.com/cai/oauth/authorize" in (st.auth_url or "")
+    # No background asyncio task should be running
+    assert mgr._state._task is None
 
-    got: dict = {}
 
-    def fake_capture(name, *, on_url, get_code, claude_bin=None, env_extra=None, on_pid=None, post_code_timeout_s=60.0):
-        on_url("https://claude.com/cai/oauth/authorize?x=1")
-        code = get_code()          # blocks until submit_code
-        got["code"] = code
-        return True
+@pytest.mark.asyncio
+async def test_setup_token_submit_code_stores_token(monkeypatch, tmp_path):
+    """submit_code() on awaiting_code: exchanges code, stores token, marks reauthenticated."""
+    mgr = _make_manager(monkeypatch, tmp_path)
+    stored: dict = {}
+    monkeypatch.setattr("ccswitch.crypto.store_oauth_token",
+                        lambda name, tok: stored.__setitem__(name, tok))
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated",
+                        lambda name: stored.__setitem__("reauth", name))
+    monkeypatch.setattr(_sto, "exchange", lambda code, ch: "sk-ant-oat01-OK123")
 
-    monkeypatch.setattr(auth_login, "capture_setup_token", fake_capture)
+    await mgr.start("acct", "id@example.com", mode="setup_token")
+    # state embeds the FAKE state, so construct the code accordingly
+    await mgr.submit_code("acct", f"CODE#{mgr._setup_challenge.state}")
 
-    m = ReauthManager(key_available=lambda: True)
-    await m.start("acct", "me@x", mode="setup_token")
+    assert stored.get("acct") == "sk-ant-oat01-OK123"
+    assert stored.get("reauth") == "acct"
+    assert mgr.status("acct").state == "success"
 
-    # wait for the runner thread to surface the URL → awaiting_code
-    for _ in range(100):
-        if m.status("acct").state == "awaiting_code":
-            break
-        await asyncio.sleep(0.02)
-    snap = m.status("acct")
-    assert snap.state == "awaiting_code", f"expected awaiting_code, got {snap.state!r}"
-    assert snap.auth_url == "https://claude.com/cai/oauth/authorize?x=1"
 
-    await m.submit_code("acct", "PASTEDCODE")
+@pytest.mark.asyncio
+async def test_setup_token_submit_invalid_code_sets_error(monkeypatch, tmp_path):
+    """SetupTokenInvalidCode → state=error with user-facing message."""
+    mgr = _make_manager(monkeypatch, tmp_path)
 
-    # wait for completion
-    for _ in range(100):
-        if m.status("acct").state in ("success", "error", "timeout"):
-            break
-        await asyncio.sleep(0.02)
-    assert m.status("acct").state == "success", (
-        f"expected success after submit, got {m.status('acct').state!r}"
-    )
-    assert got["code"] == "PASTEDCODE"
+    def boom(code, ch):
+        raise _sto.SetupTokenInvalidCode("bad")
+
+    monkeypatch.setattr(_sto, "exchange", boom)
+    await mgr.start("acct", "id@example.com", mode="setup_token")
+    await mgr.submit_code("acct", f"CODE#{mgr._setup_challenge.state}")
+
+    st = mgr.status("acct")
+    assert st.state == "error"
+    assert "invalid or expired" in (st.message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_setup_token_submit_state_mismatch_sets_error(monkeypatch, tmp_path):
+    """SetupTokenStateMismatch → state=error with restart message."""
+    mgr = _make_manager(monkeypatch, tmp_path)
+
+    def boom(code, ch):
+        raise _sto.SetupTokenStateMismatch("mismatch")
+
+    monkeypatch.setattr(_sto, "exchange", boom)
+    await mgr.start("acct", "id@example.com", mode="setup_token")
+    await mgr.submit_code("acct", "CODE#WRONGSTATE")
+
+    st = mgr.status("acct")
+    assert st.state == "error"
+    assert "restart" in (st.message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_setup_token_submit_transient_sets_error(monkeypatch, tmp_path):
+    """SetupTokenTransient → state=error with try-again message."""
+    mgr = _make_manager(monkeypatch, tmp_path)
+
+    def boom(code, ch):
+        raise _sto.SetupTokenTransient("network")
+
+    monkeypatch.setattr(_sto, "exchange", boom)
+    await mgr.start("acct", "id@example.com", mode="setup_token")
+    await mgr.submit_code("acct", f"CODE#{mgr._setup_challenge.state}")
+
+    st = mgr.status("acct")
+    assert st.state == "error"
+    assert "try again" in (st.message or "").lower()
 
 
 @pytest.mark.asyncio
@@ -513,39 +570,24 @@ async def test_submit_code_noop_when_not_awaiting():
     from server.reauth import ReauthManager
 
     m = ReauthManager(key_available=lambda: True)
-    # state is idle — submit_code should be a no-op
     snap = await m.submit_code("acct", "ANYCODE")
     assert snap.state == "idle"
 
 
 @pytest.mark.asyncio
-async def test_setup_token_runner_false_marks_error(monkeypatch):
-    """If fake_capture returns False the state transitions to 'error'."""
-    from ccswitch import auth_login
-    from server.reauth import ReauthManager
+async def test_setup_token_cancel_during_awaiting_code_returns_idle(monkeypatch, tmp_path):
+    """cancel() during awaiting_code transitions to idle promptly (no background thread to unblock)."""
+    import time
+    mgr = _make_manager(monkeypatch, tmp_path)
+    await mgr.start("acct", "id@example.com", mode="setup_token")
+    assert mgr.status("acct").state == "awaiting_code"
 
-    def fake_capture(name, *, on_url, get_code, claude_bin=None, env_extra=None, on_pid=None, post_code_timeout_s=60.0):
-        on_url("https://claude.com/cai/oauth/authorize?x=99")
-        get_code()
-        return False
+    t0 = time.monotonic()
+    await mgr.cancel("acct")
+    elapsed = time.monotonic() - t0
 
-    monkeypatch.setattr(auth_login, "capture_setup_token", fake_capture)
-
-    m = ReauthManager(key_available=lambda: True)
-    await m.start("acct2", "me@x", mode="setup_token")
-
-    for _ in range(100):
-        if m.status("acct2").state == "awaiting_code":
-            break
-        await asyncio.sleep(0.02)
-
-    await m.submit_code("acct2", "SOMECODE")
-
-    for _ in range(100):
-        if m.status("acct2").state in ("success", "error", "timeout"):
-            break
-        await asyncio.sleep(0.02)
-    assert m.status("acct2").state == "error"
+    assert elapsed < 2.0, f"cancel should be prompt; took {elapsed:.2f}s"
+    assert mgr.status("acct").state == "idle"
 
 
 @pytest.mark.asyncio
@@ -554,13 +596,8 @@ async def test_start_mode_login_uses_login_runner(monkeypatch):
     from ccswitch import auth_login
     from server.reauth import ReauthManager
 
-    setup_token_called = []
-
-    def fake_capture_setup(name, *, on_url, get_code, claude_bin=None, env_extra=None, on_pid=None, post_code_timeout_s=60.0):
-        setup_token_called.append(True)
-        return True
-
-    monkeypatch.setattr(auth_login, "capture_setup_token", fake_capture_setup)
+    setup_token_begin_called = []
+    monkeypatch.setattr(_sto, "begin", lambda: setup_token_begin_called.append(True) or (_ for _ in ()).throw(AssertionError("begin() called for login mode")))
     monkeypatch.setattr(auth_login, "capture_login",
                         lambda name, env_extra=None: True)
     monkeypatch.setattr(auth_login, "prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-mode")
@@ -575,138 +612,5 @@ async def test_start_mode_login_uses_login_runner(monkeypatch):
             break
         await asyncio.sleep(0.02)
 
-    assert not setup_token_called, "setup_token runner should NOT be used for mode='login'"
-
-
-@pytest.mark.asyncio
-async def test_cancel_during_awaiting_code_aborts_promptly(monkeypatch):
-    """cancel() during awaiting_code should unblock the get_code wait promptly.
-
-    Pre-fix: cancel() checks if state in ("running", "cancelling") and returns
-    immediately if state == "awaiting_code", leaving the worker thread blocked
-    on _code_event.wait(timeout=_timeout_s) (~300s).
-
-    Post-fix: cancel() includes "awaiting_code" in the guard and calls
-    _code_event.set() to unblock the thread immediately.
-    """
-    import time
-    from ccswitch import auth_login
-    from server.reauth import ReauthManager
-
-    def fake_capture(name, *, on_url, get_code, claude_bin=None, env_extra=None, on_pid=None, post_code_timeout_s=60.0):
-        on_url("https://claude.com/cai/oauth/authorize?x=1")
-        get_code()          # blocks on the event until cancel sets it
-        return False
-
-    monkeypatch.setattr(auth_login, "capture_setup_token", fake_capture)
-
-    m = ReauthManager(key_available=lambda: True, timeout_s=300)   # long timeout to make test meaningful
-    await m.start("acct", "me@x", mode="setup_token")
-
-    # wait for the runner thread to surface the URL → awaiting_code
-    for _ in range(200):
-        if m.status("acct").state == "awaiting_code":
-            break
-        await asyncio.sleep(0.02)
-    assert m.status("acct").state == "awaiting_code", (
-        f"expected awaiting_code before cancel, got {m.status('acct').state!r}"
-    )
-
-    t0 = time.monotonic()
-    await m.cancel("acct")
-    elapsed = time.monotonic() - t0
-
-    # POST-FIX: cancel should return promptly (well under 10s; pre-fix would hang ~300s or leave state awaiting_code)
-    assert elapsed < 10, f"cancel took {elapsed:.1f}s — should be prompt, not timeout"
-
-    # After cancel returns, the underlying task may still be transitioning (worker thread unwinding).
-    # The worker thread was unblocked by setting the event, so it can finish quickly.
-    # Wait for the worker thread to fully complete and _run to settle the state.
-    for _ in range(200):
-        state = m.status("acct").state
-        if state in ("idle", "error", "success", "timeout"):
-            break
-        await asyncio.sleep(0.02)
-
-    final_state = m.status("acct").state
-    # After cancel the state MUST be "idle" — cancel() transitions cancelling → idle.
-    assert final_state == "idle", (
-        f"cancel must leave state idle; got {final_state!r}"
-    )
-
-
-@pytest.mark.asyncio
-async def test_setup_token_cancel_reaps_child_via_on_pid(monkeypatch):
-    """Test D: cancel() in setup_token mode signals the child PID set via on_pid.
-
-    Verifies the full chain:
-    - _setup_token_runner passes on_pid= to capture_setup_token
-    - on_pid callback sets manager._state._launcher_pid
-    - cancel() → _kill_launcher() → os.killpg(os.getpgid(pid), SIGTERM)
-    """
-    import os
-    import signal
-    from ccswitch import auth_login
-    from server.reauth import ReauthManager
-
-    SENTINEL_PID = 12345   # fake child PID (not a real process)
-    SENTINEL_PGID = 12345  # session leader: pgid == pid
-
-    killpg_calls: list[tuple[int, int]] = []
-
-    orig_getpgid = os.getpgid
-
-    def patched_getpgid(pid: int) -> int:
-        if pid == SENTINEL_PID:
-            return SENTINEL_PGID
-        return orig_getpgid(pid)
-
-    monkeypatch.setattr(os, "getpgid", patched_getpgid)
-    monkeypatch.setattr(os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
-
-    def fake_capture(
-        name,
-        *,
-        on_url,
-        get_code,
-        claude_bin=None,
-        env_extra=None,
-        on_pid=None,
-        post_code_timeout_s=60.0,
-    ):
-        if on_pid is not None:
-            on_pid(SENTINEL_PID)
-        on_url("https://claude.com/cai/oauth/authorize?x=1")
-        get_code()  # blocks until cancel sets the event
-        return False
-
-    monkeypatch.setattr(auth_login, "capture_setup_token", fake_capture)
-
-    m = ReauthManager(key_available=lambda: True, timeout_s=60)
-    await m.start("acct_d", "me@x", mode="setup_token")
-
-    # Wait for awaiting_code (URL surfaced)
-    for _ in range(100):
-        if m.status("acct_d").state == "awaiting_code":
-            break
-        await asyncio.sleep(0.02)
-    assert m.status("acct_d").state == "awaiting_code", (
-        f"Expected awaiting_code, got {m.status('acct_d').state!r}"
-    )
-
-    # _launcher_pid must be set by the on_pid callback before cancel
-    assert m._state._launcher_pid == SENTINEL_PID, (
-        f"_launcher_pid should be set via on_pid; got {m._state._launcher_pid!r}"
-    )
-
-    await m.cancel("acct_d")
-
-    # _kill_launcher must have sent SIGTERM to the process group
-    sigterm_calls = [
-        (pgid, sig)
-        for pgid, sig in killpg_calls
-        if sig == signal.SIGTERM and pgid == SENTINEL_PGID
-    ]
-    assert sigterm_calls, (
-        f"Expected os.killpg({SENTINEL_PGID}, SIGTERM) from _kill_launcher; got: {killpg_calls}"
-    )
+    assert not setup_token_begin_called, "setup_token_oauth.begin() should NOT be called for mode='login'"
+    assert m.status("acct3").state == "success"
