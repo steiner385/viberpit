@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import { useSettings, useFixPr, useGenerateSuggestions } from '@/api/hooks'
+import { useAutomations, useFixPr, useGenerateSuggestions } from '@/api/hooks'
 import { SessionCard } from './SessionCard'
 import { GroupedList } from './GroupedList'
 import { EmptyState } from './EmptyState'
@@ -76,7 +76,8 @@ export function SessionList({
   onNavigate,
   onExit,
 }: SessionListProps) {
-  const { data: appSettings } = useSettings()
+  const { data: automations } = useAutomations()
+  const prDoctorMode = automations?.find((a) => a.id === 'pr-doctor')?.mode ?? undefined
   const fixPr = useFixPr()
   const genSuggestions = useGenerateSuggestions()
 
@@ -136,7 +137,7 @@ export function SessionList({
       onGenerateSuggestion={(id) => genSuggestions.mutateAsync({ id })}
       onNavigate={onNavigate}
       onExit={onExit}
-      prAutofixMode={appSettings?.prAutofixMode}
+      prAutofixMode={prDoctorMode}
       onFixPr={(id, number) => fixPr.mutate({ id, number })}
     />
   )
