@@ -162,6 +162,16 @@ class ErrorEvent:
                                "resetsAt": self.resets_at, "turnId": self.turn_id, "ts": self.ts}
 
 @dataclass
+class Recovering:
+    """A turn dropped before the model produced any output and is being auto-resent.
+    Self-healing — surfaced to the UI as a soft notice (NOT a red error). The
+    orchestrator drives the actual resend off the TurnFailure signal."""
+    turn_id: str | None; message: str
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "recovering", "turnId": self.turn_id,
+                               "message": self.message, "ts": self.ts}
+
+@dataclass
 class ReplayComplete:
     def to_wire(self): return {"type": "replayComplete"}
 
