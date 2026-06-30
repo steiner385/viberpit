@@ -102,10 +102,15 @@ class RecoveryState:
     def record_resend(self, session_id: str, *, now: float) -> None:
         self._resends[session_id].append(now)
 
+    def resend_count(self, session_id: str, *, now: float) -> int:
+        """Dropped-turn resends recorded for *session_id* within the window
+        (expired entries are pruned, matching the cap check)."""
+        cutoff = now - self._resend_window
+        recent = [t for t in self._resends.get(session_id, ()) if t >= cutoff]
+        self._resends[session_id] = recent
+        return len(recent)
+
     def resend_cap_reached(self, session_id: str, *, now: float) -> bool:
         """True if *session_id* has already auto-resent ``resend_cap`` dropped turns
         within the window."""
-        cutoff = now - self._resend_window
-        recent = [t for t in self._resends.get(session_id, ()) if t > cutoff]
-        self._resends[session_id] = recent
-        return len(recent) >= self._resend_cap
+        return self.resend_count(session_id, now=now) >= self._resend_cap
