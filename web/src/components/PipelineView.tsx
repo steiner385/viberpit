@@ -5,18 +5,22 @@ import { GroupHeader } from './GroupHeader'
 import { PrPill } from './PrPill'
 import { StageTrack } from './StageTrack'
 import { CheckDrillDown } from './CheckDrillDown'
+import { StageTiles } from './StageTiles'
 import { useAllPrs, useFixPr, useStageModels } from '@/api/hooks'
 import { isActionablePrState } from '@/session/prStatus'
+import { stageBucketOf, type StageBucket } from '@/session/stageBucket'
 import type { PipelinePr, StageModel } from '@/api/types'
 
 export function PipelineBoard({
   prs,
   stageModels,
+  activeStages,
   onOpenSession,
   onFixPr,
 }: {
   prs: PipelinePr[]
   stageModels: Record<string, StageModel>
+  activeStages: Set<StageBucket>
   onOpenSession?: (sessionId: string) => void
   onFixPr?: (sessionId: string, number: number) => void
 }) {
@@ -25,17 +29,24 @@ export function PipelineBoard({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const toggleExpand = (key: string) => setExpanded((e) => ({ ...e, [key]: !e[key] }))
 
-  if (prs.length === 0) {
+  const shown = activeStages.size === 0
+    ? prs
+    : prs.filter((p) => {
+        const b = stageBucketOf(p, stageModels[p.repo ?? ''])
+        return b != null && activeStages.has(b)
+      })
+
+  if (shown.length === 0) {
     return (
       <p className="text-sm text-muted-foreground py-8 text-center">
-        No open PRs in your repos.
+        {activeStages.size > 0 ? 'No PRs match the selected stages.' : 'No open PRs in your repos.'}
       </p>
     )
   }
 
   // Group PRs by repo.
   const byRepo: Record<string, PipelinePr[]> = {}
-  for (const p of prs) {
+  for (const p of shown) {
     const repo = p.repo ?? ''
     if (!byRepo[repo]) byRepo[repo] = []
     byRepo[repo].push(p)
@@ -153,12 +164,24 @@ export function PipelineView() {
   const { data: prs = [] } = useAllPrs()
   const { data: stageModels = {} } = useStageModels()
   const fixPr = useFixPr()
+  const [active, setActive] = useState<Set<StageBucket>>(new Set())
+  const onToggle = (b: StageBucket) =>
+    setActive((prev) => {
+      const next = new Set(prev)
+      if (next.has(b)) next.delete(b)
+      else next.add(b)
+      return next
+    })
   return (
-    <PipelineBoard
-      prs={prs}
-      stageModels={stageModels}
-      onOpenSession={(id) => navigate(`/session/${id}`)}
-      onFixPr={(id, number) => fixPr.mutate({ id, number })}
-    />
+    <div className="space-y-3">
+      <StageTiles prs={prs} stageModels={stageModels} active={active} onToggle={onToggle} />
+      <PipelineBoard
+        prs={prs}
+        stageModels={stageModels}
+        activeStages={active}
+        onOpenSession={(id) => navigate(`/session/${id}`)}
+        onFixPr={(id, number) => fixPr.mutate({ id, number })}
+      />
+    </div>
   )
 }
