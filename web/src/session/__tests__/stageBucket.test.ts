@@ -42,6 +42,6 @@ describe('stageBucketOf', () => {
     expect(stageBucketOf(pr({ node_states: [], stage: '' } as Partial<PipelinePr>), undefined)).toBeNull()
   })
   it('exposes the fixed bucket order', () => {
-    expect(STAGE_BUCKETS).toEqual(['ci', 'ready', 'queue', 'deploy', 'merged'])
+    expect(STAGE_BUCKETS).toEqual(['ci', 'ready', 'queue', 'merged', 'deploy'])
   })
 })

@@ -37,4 +37,11 @@ describe('StageTiles', () => {
     await user.click(screen.getByTestId('stage-tile-merged'))
     expect(onToggle).toHaveBeenCalledWith('merged')
   })
+  it('renders tiles in CI · Ready · Queue · Merged · Deploy order', () => {
+    render(<StageTiles prs={[]} stageModels={{}} active={new Set()} onToggle={() => {}} />)
+    const order = screen.getAllByTestId(/^stage-tile-/).map((el) => el.getAttribute('data-testid'))
+    expect(order).toEqual([
+      'stage-tile-ci', 'stage-tile-ready', 'stage-tile-queue', 'stage-tile-merged', 'stage-tile-deploy',
+    ])
+  })
 })
