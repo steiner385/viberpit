@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable, Union
 from ccswitch import gitrepos
 
 from server.github import app_auth
-from .merge_queue import parse_merge_queue_response, QueueEntry
+from .merge_queue import parse_merge_queue_response
 from .pr_status import (
     PullRequestInfo,
     build_eta_checks_query,
