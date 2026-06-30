@@ -20,6 +20,7 @@ import {
   useBulkUnarchiveSessions,
   useBulkPermanentDeleteSessions,
 } from '@/api/hooks'
+import type { BulkDeleteProgress } from '@/api/hooks'
 import type { ArchivedSession, BatchResult } from '@/api/types'
 import { useSessionSearch } from '@/session/useSessionSearch'
 import { useItemOrdering } from '@/session/useSessionOrdering'
@@ -53,9 +54,11 @@ interface PermanentDeleteDialogProps {
   onClose: () => void
   onConfirm: () => void
   isPending: boolean
+  progress?: BulkDeleteProgress | null   // bulk only: drives the progress bar
+  onCancel?: () => void                  // bulk only: abort mid-run
 }
 
-function PermanentDeleteDialog({ names, onClose, onConfirm, isPending }: PermanentDeleteDialogProps) {
+function PermanentDeleteDialog({ names, onClose, onConfirm, isPending, progress, onCancel }: PermanentDeleteDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
   const count = names.length
@@ -66,7 +69,7 @@ function PermanentDeleteDialog({ names, onClose, onConfirm, isPending }: Permane
 
   React.useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') { onClose(); return }
+      if (e.key === 'Escape') { if (!isPending) onClose(); return }
       if (e.key === 'Tab') {
         const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
           'button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
@@ -83,7 +86,7 @@ function PermanentDeleteDialog({ names, onClose, onConfirm, isPending }: Permane
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [onClose])
+  }, [onClose, isPending])
 
   return (
     <div
@@ -91,7 +94,7 @@ function PermanentDeleteDialog({ names, onClose, onConfirm, isPending }: Permane
       role="dialog"
       aria-modal="true"
       aria-labelledby="perm-delete-dialog-title"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+      onClick={(e) => { if (e.target === e.currentTarget && !isPending) onClose() }}
     >
       <div
         ref={dialogRef}
@@ -109,27 +112,49 @@ function PermanentDeleteDialog({ names, onClose, onConfirm, isPending }: Permane
           {count === 1 ? 'Permanently delete session' : `Permanently delete ${count} sessions`}
         </h2>
 
-        <p className="text-sm text-gray-700 dark:text-gray-300">
-          {count === 1 ? (
-            <>
-              Permanently delete <span className="font-medium">&lsquo;{names[0]}&rsquo;</span>? This removes the
-              session folder and all its data. This can&rsquo;t be undone.
-            </>
-          ) : (
-            <>
-              Permanently delete <span className="font-medium">{count} sessions</span>? This removes their
-              session folders and all their data. This can&rsquo;t be undone.
-            </>
-          )}
-        </p>
+        {isPending && progress ? (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm text-gray-700 dark:text-gray-300">
+              <span>Deleting…</span>
+              <span className="tabular-nums">{progress.done} of {progress.total}</span>
+            </div>
+            <div
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={progress.total}
+              aria-valuenow={progress.done}
+              aria-valuetext={`Deleting ${progress.done} of ${progress.total}`}
+              className="h-2 w-full overflow-hidden rounded bg-gray-200 dark:bg-gray-700"
+            >
+              <div
+                className="h-full rounded bg-red-600 transition-[width] duration-200 ease-linear"
+                style={{ width: `${progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%` }}
+              />
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-700 dark:text-gray-300">
+            {count === 1 ? (
+              <>
+                Permanently delete <span className="font-medium">&lsquo;{names[0]}&rsquo;</span>? This removes the
+                session folder and all its data. This can&rsquo;t be undone.
+              </>
+            ) : (
+              <>
+                Permanently delete <span className="font-medium">{count} sessions</span>? This removes their
+                session folders and all their data. This can&rsquo;t be undone.
+              </>
+            )}
+          </p>
+        )}
 
         <div className="flex gap-3 justify-end pt-2">
           <Button
             ref={cancelRef}
             type="button"
             variant="outline"
-            onClick={onClose}
-            disabled={isPending}
+            onClick={isPending ? onCancel : onClose}
+            disabled={isPending && !onCancel}
           >
             Cancel
           </Button>
@@ -222,6 +247,7 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
   // Last row toggled without shift — the pivot for shift-click range selection.
   const [anchorId, setAnchorId] = useState<string | null>(null)
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [bulkSnapshot, setBulkSnapshot] = useState<{ ids: string[]; names: string[] } | null>(null)
   const [summary, setSummary] = useState<string | null>(null)
 
   // Drop selected ids that no longer exist after a refetch.
@@ -307,16 +333,26 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
     })
   }
 
-  function confirmBulkDelete() {
-    const ids = [...selected]
-    if (ids.length === 0) { setBulkDeleteOpen(false); return }
-    bulkDelete.mutate(ids, {
-      onSuccess: (res) => { setSummary(summarize('Deleted', res)); setSelected(new Set()); setBulkDeleteOpen(false) },
-      onError: () => setBulkDeleteOpen(false),
-    })
+  function openBulkDelete() {
+    const sel = archivedSessions.filter((s) => selected.has(s.id))
+    if (sel.length === 0) return
+    setBulkSnapshot({ ids: sel.map((s) => s.id), names: sel.map(displayNameOf) })
+    setBulkDeleteOpen(true)
   }
 
-  const selectedNames = archivedSessions.filter((s) => selected.has(s.id)).map(displayNameOf)
+  function confirmBulkDelete() {
+    const ids = bulkSnapshot?.ids ?? []
+    if (ids.length === 0) { setBulkDeleteOpen(false); setBulkSnapshot(null); return }
+    bulkDelete.mutate(ids, {
+      onSuccess: (res) => {
+        setSummary(summarize('Deleted', res))
+        setSelected(new Set())
+        setBulkDeleteOpen(false)
+        setBulkSnapshot(null)
+      },
+      onError: () => { setBulkDeleteOpen(false); setBulkSnapshot(null) },
+    })
+  }
 
   // ── Per-row renderer ──────────────────────────────────────────────────────────
   // Returns a keyed <div> (not <li>) because GroupedList panels are <div role="group">
@@ -427,7 +463,7 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
         <BulkActionBar
           count={selected.size}
           onUnarchive={handleBulkUnarchive}
-          onDelete={() => setBulkDeleteOpen(true)}
+          onDelete={openBulkDelete}
           onClear={clearSelection}
           unarchivePending={bulkUnarchive.isPending}
         />
@@ -512,12 +548,14 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
         />
       )}
 
-      {bulkDeleteOpen && (
+      {bulkDeleteOpen && bulkSnapshot && (
         <PermanentDeleteDialog
-          names={selectedNames}
-          onClose={() => setBulkDeleteOpen(false)}
+          names={bulkSnapshot.names}
+          onClose={() => { setBulkDeleteOpen(false); setBulkSnapshot(null) }}
           onConfirm={confirmBulkDelete}
           isPending={bulkDelete.isPending}
+          progress={bulkDelete.progress}
+          onCancel={bulkDelete.cancel}
         />
       )}
     </div>
