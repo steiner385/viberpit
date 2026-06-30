@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils'
 import type { StageModel, NodeState } from '@/api/types'
 import { formatEta } from '@/lib/formatEta'
 import { nodeCircleClass } from '@/lib/checkState'
+import { bandSegments, pseudoElapsedFromPercent } from '@/lib/etaBand'
 
 // Fallback skeleton shown when no model is available yet.
 const SKELETON_NODES = [
@@ -23,9 +24,12 @@ interface StageTrackProps {
   states: { id: string; state: NodeState }[] | undefined
   etaSeconds?: number | null
   etaOverdue?: boolean
+  etaLowSeconds?: number | null
+  etaHighSeconds?: number | null
+  etaPercent?: number | null
 }
 
-export function StageTrack({ model, states, etaSeconds, etaOverdue }: StageTrackProps) {
+export function StageTrack({ model, states, etaSeconds, etaOverdue, etaLowSeconds, etaHighSeconds, etaPercent }: StageTrackProps) {
   // Build a lookup of state by node id.
   const stateById: Record<string, NodeState> = {}
   if (states) {
@@ -47,9 +51,27 @@ export function StageTrack({ model, states, etaSeconds, etaOverdue }: StageTrack
         return (
           <div key={node.id} className="flex items-center">
             {/* Connector line before this node (skip for first) */}
-            {!isFirst && (
-              <div className={cn('h-0.5 w-6 shrink-0', connectorClass(prev))} aria-hidden />
-            )}
+            {!isFirst && (() => {
+              const prevNode = nodes[idx - 1]
+              const showBand = prevNode?.kind === 'ci' && prev === 'active'
+                && etaPercent != null && etaLowSeconds != null && etaHighSeconds != null
+              const seg = showBand
+                ? bandSegments({
+                    elapsedS: pseudoElapsedFromPercent(etaSeconds ?? 0, etaPercent!),
+                    lowS: etaLowSeconds!, nominalS: etaSeconds ?? 0, highS: etaHighSeconds!,
+                  })
+                : null
+              if (seg) {
+                return (
+                  <div data-testid="ci-band" className="relative h-1.5 w-10 shrink-0 overflow-hidden rounded bg-gray-200 dark:bg-gray-700">
+                    <span className="absolute inset-y-0 left-0 rounded-l bg-accent" style={{ width: `${seg.solidPct}%` }} aria-hidden />
+                    <span className="absolute inset-y-0 bg-accent opacity-30" style={{ left: `${seg.bandLeftPct}%`, width: `${seg.bandWidthPct}%` }} aria-hidden />
+                    <span className="absolute inset-y-[-1px] w-px bg-foreground" style={{ left: `${seg.tickPct}%` }} aria-hidden />
+                  </div>
+                )
+              }
+              return <div className={cn('h-0.5 w-6 shrink-0', connectorClass(prev))} aria-hidden />
+            })()}
             {/* Node column: circle + label */}
             <div className="flex flex-col items-center gap-0.5">
               <div

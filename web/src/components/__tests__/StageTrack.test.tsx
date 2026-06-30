@@ -47,6 +47,17 @@ describe('StageTrack', () => {
     expect(screen.getByText(/~1m|~75s/)).toBeInTheDocument()
   })
 
+  it('renders a band on the connector after an active CI node when a range is present', () => {
+    const bandModel: StageModel = { repo: 'o/r', nodes: [
+      { id: 'ci', label: 'CI', kind: 'ci', order: 0, source: 'derived' },
+      { id: 'merged', label: 'Merged', kind: 'merged', order: 1, source: 'derived' },
+    ] }
+    render(<StageTrack model={bandModel}
+      states={[{ id: 'ci', state: 'active' }, { id: 'merged', state: 'pending' }]}
+      etaSeconds={180} etaLowSeconds={60} etaHighSeconds={420} etaPercent={40} />)
+    expect(screen.getByTestId('ci-band')).toBeInTheDocument()
+  })
+
   it('renders one node per deploy env with env-name labels and states', () => {
     const multiDeployModel = { repo: 'o/r', nodes: [
       { id: 'ci', label: 'CI', kind: 'ci', order: 0, source: 'derived' },

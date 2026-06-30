@@ -9,6 +9,7 @@ import math
 from datetime import datetime
 
 from server.github.pr_status import CheckGroup, CheckRow, _CONCLUSION_MAP
+from server.pipeline.check_eta import check_estimate
 
 RUNNER_RATE_USD_PER_MIN = 0.008  # GitHub-hosted Linux 2-core list price (2026-06); estimate only.
 _EVENT = "pull_request"
@@ -52,10 +53,26 @@ def _row(c: dict, store, repo: str, now: datetime) -> CheckRow:
         if exp is not None and exp.p50 and duration > exp.p50:
             overdue = True
 
+    rem_low = rem_nom = rem_high = None
+    # Range needs real per-check history; only for a RUNNING check with an Expected.
+    if store is not None and running and started is not None:
+        event = c.get("event") or _EVENT
+        exp = store.expected(repo, c.get("name", ""), event)
+        if exp is not None:
+            est = check_estimate(
+                c, exp, store.samples(repo, c.get("name", ""), event),
+                now, fallback=exp.p50,
+            )
+            if est is not None:
+                rem_low = round(est.rem_low)
+                rem_nom = round(est.rem_nominal)
+                rem_high = round(est.rem_high)
+
     return CheckRow(
         name=c.get("name", ""), workflow=c.get("workflowName"),
         status=c.get("status", ""), conclusion=_normalise_conclusion(c.get("conclusion")),
         duration_seconds=duration, required=bool(c.get("isRequired", False)), overdue=overdue,
+        rem_low_seconds=rem_low, rem_nominal_seconds=rem_nom, rem_high_seconds=rem_high,
     )
 
 

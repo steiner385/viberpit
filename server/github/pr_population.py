@@ -196,7 +196,7 @@ class PrPopulationPoller:
             log.warning("pr_population.checkgroups_import_failed", exc_info=True)
             return prs_by_repo
 
-        compute_pr_eta: Callable[..., tuple[int | None, int | None, bool]] | None = None
+        compute_pr_eta: Callable[..., tuple[int | None, int | None, int | None, int | None, bool]] | None = None
         if store is not None:
             try:
                 from server.pipeline.eta import compute_pr_eta as _compute_pr_eta
@@ -220,10 +220,12 @@ class PrPopulationPoller:
                         )
                         fields: dict = {"check_groups": groups}
                         if compute_pr_eta is not None:
-                            eta_s, eta_pct, eta_over = compute_pr_eta(
+                            eta_s, eta_low, eta_high, eta_pct, eta_over = compute_pr_eta(
                                 store, repo, checks, now
                             )
                             fields["eta_seconds"] = eta_s
+                            fields["eta_low_seconds"] = eta_low
+                            fields["eta_high_seconds"] = eta_high
                             fields["eta_percent"] = eta_pct
                             fields["eta_overdue"] = eta_over
                         pr = dataclasses.replace(pr, **fields)

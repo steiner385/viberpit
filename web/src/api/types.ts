@@ -146,6 +146,10 @@ export interface PullRequestInfo {
   eta_percent?: number | null
   /** True when the CI run has exceeded its expected duration. */
   eta_overdue?: boolean
+  /** Lower-bound ETA seconds (optimistic confidence band). */
+  eta_low_seconds?: number | null
+  /** Upper-bound ETA seconds (pessimistic confidence band). */
+  eta_high_seconds?: number | null
   /** Per-check drill-down groups (head commit + merge group); snake_case to match backend. */
   check_groups?: CheckGroup[]
 }
@@ -158,6 +162,9 @@ export interface CheckRow {
   duration_seconds: number | null
   required: boolean
   overdue: boolean
+  rem_low_seconds?: number | null
+  rem_nominal_seconds?: number | null
+  rem_high_seconds?: number | null
 }
 
 export interface CheckGroup {

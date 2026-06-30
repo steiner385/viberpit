@@ -43,4 +43,21 @@ describe('CheckRowList', () => {
     expect(texts[1]).toContain('lint')
     expect(texts[2]).toContain('test')
   })
+  it('renders a confidence band for a running row with a range', () => {
+    render(<CheckRowList checks={[row({
+      name: 'slow', conclusion: 'pending', status: 'IN_PROGRESS', duration_seconds: 240,
+      rem_low_seconds: 60, rem_nominal_seconds: 180, rem_high_seconds: 420,
+    })]} />)
+    const r = screen.getByTestId('check-row-slow')
+    expect(r.querySelector('[data-band="solid"]')).toBeInTheDocument()
+    expect(r.querySelector('[data-band="range"]')).toBeInTheDocument()
+    expect(r.querySelector('[data-band="tick"]')).toBeInTheDocument()
+  })
+  it('falls back to the plain bar when a running row has no range', () => {
+    render(<CheckRowList checks={[row({
+      name: 'norange', conclusion: 'pending', status: 'IN_PROGRESS', duration_seconds: 30,
+      rem_low_seconds: null, rem_nominal_seconds: null, rem_high_seconds: null,
+    })]} />)
+    expect(screen.getByTestId('check-row-norange').querySelector('[data-band="range"]')).toBeNull()
+  })
 })

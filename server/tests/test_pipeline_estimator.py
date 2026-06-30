@@ -12,7 +12,8 @@ def _lookup(table):
 def test_all_complete_is_100_eta_0():
     checks = [{"name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS", "started_at": None}]
     r = compute_progress(checks, ["ci"], _lookup({"ci": Expected(50, 100, 150, 8)}), NOW)
-    assert r == ProgressResult(percent=100, eta_seconds=0, overdue=False)
+    assert r == ProgressResult(percent=100, eta_seconds=0, eta_low_seconds=0,
+                               eta_high_seconds=0, overdue=False)
 
 
 def test_queued_expected_uses_p50_plus_queue_delay():

@@ -39,12 +39,18 @@ class CheckRow:
     duration_seconds: int | None
     required: bool
     overdue: bool
+    rem_low_seconds: int | None = None
+    rem_nominal_seconds: int | None = None
+    rem_high_seconds: int | None = None
 
     def to_dict(self) -> dict:
         return {
             "name": self.name, "workflow": self.workflow, "status": self.status,
             "conclusion": self.conclusion, "duration_seconds": self.duration_seconds,
             "required": self.required, "overdue": self.overdue,
+            "rem_low_seconds": self.rem_low_seconds,
+            "rem_nominal_seconds": self.rem_nominal_seconds,
+            "rem_high_seconds": self.rem_high_seconds,
         }
 
     @classmethod
@@ -54,6 +60,9 @@ class CheckRow:
             status=d.get("status", ""), conclusion=d.get("conclusion", ""),
             duration_seconds=d.get("duration_seconds"),
             required=bool(d.get("required", False)), overdue=bool(d.get("overdue", False)),
+            rem_low_seconds=d.get("rem_low_seconds"),
+            rem_nominal_seconds=d.get("rem_nominal_seconds"),
+            rem_high_seconds=d.get("rem_high_seconds"),
         )
 
 
@@ -103,6 +112,8 @@ class PullRequestInfo:
     eta_seconds: int | None = None
     eta_percent: int | None = None
     eta_overdue: bool = False
+    eta_low_seconds: int | None = None
+    eta_high_seconds: int | None = None
     deployed_envs: tuple[str, ...] = ()
     check_groups: tuple[CheckGroup, ...] = ()
 
@@ -124,6 +135,8 @@ class PullRequestInfo:
             "eta_seconds": self.eta_seconds,
             "eta_percent": self.eta_percent,
             "eta_overdue": self.eta_overdue,
+            "eta_low_seconds": self.eta_low_seconds,
+            "eta_high_seconds": self.eta_high_seconds,
             "deployed_envs": list(self.deployed_envs),
             "check_groups": [g.to_dict() for g in self.check_groups],
         }
@@ -148,6 +161,8 @@ class PullRequestInfo:
             eta_seconds=d.get("eta_seconds"),
             eta_percent=d.get("eta_percent"),
             eta_overdue=d.get("eta_overdue", False),
+            eta_low_seconds=d.get("eta_low_seconds"),
+            eta_high_seconds=d.get("eta_high_seconds"),
             deployed_envs=tuple(d.get("deployed_envs", [])),
             check_groups=tuple(CheckGroup.from_dict(g) for g in d.get("check_groups", [])),
         )
