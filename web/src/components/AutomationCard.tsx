@@ -1,12 +1,194 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
-import { useAutomationEvents, usePatchAutomation } from '@/api/hooks'
-import type { Automation } from '@/api/automations'
+import {
+  useAutomationEvents, useAutomationSessions, useGithubRepos, usePatchAutomation,
+} from '@/api/hooks'
+import type { Automation, ConfigField } from '@/api/automations'
 
 const LEVEL_DOT: Record<string, string> = {
   idle: 'bg-gray-400', active: 'bg-blue-500', warn: 'bg-amber-500', error: 'bg-red-500',
 }
+
+// --- Config field renderers ---------------------------------------------------
+
+interface FieldProps {
+  field: ConfigField
+  value: unknown
+  onChange: (key: string, val: unknown) => void
+}
+
+function RepoMultiselect({ field, value, onChange }: FieldProps) {
+  const repos = useGithubRepos()
+  const selected: string[] = Array.isArray(value) ? (value as string[]) : []
+
+  function toggle(nameWithOwner: string) {
+    const next = selected.includes(nameWithOwner)
+      ? selected.filter((r) => r !== nameWithOwner)
+      : [...selected, nameWithOwner]
+    onChange(field.key, next)
+  }
+
+  if (repos.isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading repos…</p>
+  }
+
+  return (
+    <div className="space-y-1 max-h-40 overflow-y-auto border border-border rounded p-2">
+      {(repos.data ?? []).map((repo) => (
+        <label key={repo.nameWithOwner} className="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            checked={selected.includes(repo.nameWithOwner)}
+            onChange={() => toggle(repo.nameWithOwner)}
+            className="rounded"
+          />
+          {repo.nameWithOwner}
+        </label>
+      ))}
+      {(repos.data ?? []).length === 0 && (
+        <p className="text-sm text-muted-foreground">No repos available.</p>
+      )}
+    </div>
+  )
+}
+
+function ConfigInput({ field, value, onChange }: FieldProps) {
+  switch (field.type) {
+    case 'bool':
+      return (
+        <input
+          type="checkbox"
+          checked={Boolean(value)}
+          onChange={(e) => onChange(field.key, e.target.checked)}
+          className="rounded"
+        />
+      )
+    case 'int':
+      return (
+        <input
+          type="number"
+          value={value == null ? '' : String(value)}
+          onChange={(e) => onChange(field.key, e.target.valueAsNumber)}
+          className="text-sm rounded border border-border bg-background px-2 py-1 w-28"
+        />
+      )
+    case 'string':
+      return (
+        <input
+          type="text"
+          value={value == null ? '' : String(value)}
+          onChange={(e) => onChange(field.key, e.target.value)}
+          className="text-sm rounded border border-border bg-background px-2 py-1 w-full"
+        />
+      )
+    case 'enum':
+      return (
+        <select
+          value={value == null ? '' : String(value)}
+          onChange={(e) => onChange(field.key, e.target.value)}
+          className="text-sm rounded border border-border bg-background px-2 py-1"
+        >
+          {(field.choices ?? []).map((c) => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+        </select>
+      )
+    case 'repo-multiselect':
+      return <RepoMultiselect field={field} value={value} onChange={onChange} />
+    default:
+      return null
+  }
+}
+
+// --- Config panel ------------------------------------------------------------
+
+interface ConfigPanelProps {
+  automation: Automation
+}
+
+function ConfigPanel({ automation: a }: ConfigPanelProps) {
+  const patch = usePatchAutomation()
+  // Local config state seeded from server values (fall back to field defaults)
+  const [localConfig, setLocalConfig] = useState<Record<string, unknown>>(() => {
+    const init: Record<string, unknown> = {}
+    for (const f of a.configSchema) {
+      init[f.key] = a.config[f.key] ?? f.default
+    }
+    return init
+  })
+
+  function handleChange(key: string, val: unknown) {
+    const next = { ...localConfig, [key]: val }
+    setLocalConfig(next)
+    patch.mutate({ id: a.id, body: { config: next } })
+  }
+
+  return (
+    <section>
+      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Configuration</h4>
+      <div className="space-y-3">
+        {a.configSchema.map((field) => (
+          <div key={field.key}>
+            <label className="block text-sm font-medium mb-1">
+              {field.type === 'bool' ? (
+                <span className="flex items-center gap-2">
+                  <ConfigInput field={field} value={localConfig[field.key]} onChange={handleChange} />
+                  {field.label}
+                </span>
+              ) : (
+                <>
+                  <span className="block mb-1">{field.label}</span>
+                  <ConfigInput field={field} value={localConfig[field.key]} onChange={handleChange} />
+                </>
+              )}
+            </label>
+            {field.help && (
+              <p className="text-xs text-muted-foreground mt-0.5">{field.help}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+// --- Spawned sessions section ------------------------------------------------
+
+interface SpawnedSessionsSectionProps {
+  id: string
+  enabled: boolean
+}
+
+function SpawnedSessionsSection({ id, enabled }: SpawnedSessionsSectionProps) {
+  const sessions = useAutomationSessions(id, enabled)
+  const list = sessions.data ?? []
+
+  return (
+    <section>
+      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Spawned Sessions</h4>
+      {list.length === 0
+        ? <p className="text-sm text-muted-foreground">No sessions spawned.</p>
+        : (
+          <ul className="space-y-1 text-sm">
+            {list.map((s) => (
+              <li key={s.id} className="flex items-center gap-2">
+                <Link
+                  to={`/session/${s.id}`}
+                  className="text-blue-600 hover:underline"
+                >
+                  {s.name}
+                </Link>
+                <span className="text-muted-foreground">· {s.status}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+    </section>
+  )
+}
+
+// --- Main card ---------------------------------------------------------------
 
 export function AutomationCard({ automation: a }: { automation: Automation }) {
   const [open, setOpen] = useState(false)
@@ -73,14 +255,8 @@ export function AutomationCard({ automation: a }: { automation: Automation }) {
                   ))}
                 </ul>}
           </section>
-          {a.configSchema.length > 0 && (
-            <section>
-              <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Configuration</h4>
-              <p className="text-sm text-muted-foreground">
-                {a.configSchema.map((f) => f.label).join(', ')}
-              </p>
-            </section>
-          )}
+          <SpawnedSessionsSection id={a.id} enabled={open} />
+          {a.configSchema.length > 0 && <ConfigPanel automation={a} />}
         </div>
       )}
     </div>

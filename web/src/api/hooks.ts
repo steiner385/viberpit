@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
 import {
-  fetchAutomations, fetchAutomationEvents, patchAutomation,
+  fetchAutomations, fetchAutomationEvents, fetchSpawnedSessions, patchAutomation,
   type Automation, type AutomationEvent, type AutomationPatch,
 } from './automations'
 import type {
@@ -32,6 +32,7 @@ export const QK = {
   pipelineRepos: ['pipeline-repos'] as const,
   automations: ['automations'] as const,
   automationEvents: (id: string) => ['automation-events', id] as const,
+  automationSessions: (id: string) => ['automation-sessions', id] as const,
 }
 
 export function useModels() {
@@ -573,6 +574,14 @@ export function useAutomations() {
 export function useAutomationEvents(id: string, enabled = true) {
   return useQuery<AutomationEvent[]>({
     queryKey: QK.automationEvents(id), queryFn: () => fetchAutomationEvents(id),
+    enabled, staleTime: 10_000 })
+}
+
+export type SpawnedSession = { id: string; name: string; status: string; originRef: string | null }
+
+export function useAutomationSessions(id: string, enabled = true) {
+  return useQuery<SpawnedSession[]>({
+    queryKey: QK.automationSessions(id), queryFn: () => fetchSpawnedSessions(id),
     enabled, staleTime: 10_000 })
 }
 
