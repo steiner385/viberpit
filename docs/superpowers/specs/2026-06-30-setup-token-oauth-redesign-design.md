@@ -151,12 +151,28 @@ Every path logs at `warning` (with account name, never the token/code). No silen
 
 **Live-gated (skipped in CI):** one end-to-end test behind an env flag requiring a real approval.
 
-## Implementation-phase verification (first task, before coding `exchange`)
+## Verified exchange request (DONE — mitmproxy capture + live end-to-end, 2026-06-30)
 
-Byte-verify the **exact** token-exchange request the real `claude setup-token` sends — body
-encoding (JSON vs form-urlencoded), exact field names, and required headers — by intercepting it
-once (mitmproxy via `HTTPS_PROXY`, or `NODE_EXTRA_CA_CERTS`). Lock those into `exchange()`. This
-is the one assumption not yet verified at the byte level; everything else is confirmed.
+Captured the real binary's exchange via mitmproxy AND validated our own implementation against the
+live endpoint (hosted redirect + pasted code → 200 + token; stored for `tony_kindash.com`). No
+residual risk.
+
+**Request:** `POST https://platform.claude.com/v1/oauth/token`
+- Headers: `Content-Type: application/json`, `Accept: application/json`, `User-Agent: axios/1.15.2`.
+- Body (JSON):
+  `{"grant_type":"authorization_code","code":"<auth code, ~48 ch, part BEFORE '#'>",
+  "redirect_uri":"<MUST match the authorize redirect_uri>","client_id":"9d1c250a-…",
+  "code_verifier":"<43 ch>","state":"<part AFTER '#'>","expires_in":31536000}`
+  - `expires_in: 31536000` (1 yr) — **required to mint the long-lived token**; always send it.
+  - `redirect_uri`: the binary used `http://localhost:<random>/callback` (it runs a loopback
+    callback server in the browser path). We have no loopback in the headless daemon and the user
+    approves on a remote device, so we use the **HOSTED** `https://platform.claude.com/oauth/code/callback`
+    in BOTH `begin()` and `exchange()` — validated working.
+
+**Response 200 (JSON):** `token_type=Bearer`, **`access_token`** = `sk-ant-oat01-…` (108 ch) ← the
+setup-token; `refresh_token` = `sk-ant-ort01-…` (unused, non-rotating); `expires_in=31536000`,
+`scope=user:inference`, plus `token_uuid/organization/account`. Parse `access_token` (regex
+`sk-ant-oat01-…` as fallback). 400 → invalid/expired; ≥500/network → transient.
 
 ## Out of scope
 

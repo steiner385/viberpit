@@ -29,49 +29,14 @@
 
 ---
 
-### Task 1: Byte-verify the real token-exchange request (manual checkpoint)
+### Task 1: Byte-verify the real token-exchange request — ✅ DONE (2026-06-30)
 
-This is the one assumption not yet verified at the byte level: the exact body encoding (JSON vs
-form-urlencoded), field names, and headers `claude setup-token` sends to `TOKEN_URL`. Do this
-ONCE against the real binary; record the result in the spec. **Requires a live OAuth approval —
-a human runs it; a subagent cannot.**
-
-- [ ] **Step 1: Start an intercepting proxy**
-
-```bash
-pip install mitmproxy   # or use an existing install
-mitmdump -w /tmp/setuptok_flow.mitm -p 8888 >/tmp/mitmdump.log 2>&1 &
-```
-
-- [ ] **Step 2: Run setup-token through the proxy (trust mitm CA via NODE_EXTRA_CA_CERTS)**
-
-```bash
-CLAUDE=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher-deploy/.venv/lib/python3.12/site-packages/claude_agent_sdk/_bundled/claude
-NODE_EXTRA_CA_CERTS="$HOME/.mitmproxy/mitmproxy-ca-cert.pem" \
-  HTTPS_PROXY=http://127.0.0.1:8888 HTTP_PROXY=http://127.0.0.1:8888 \
-  CLAUDE_CONFIG_DIR=$(mktemp -d) "$CLAUDE" setup-token
-# approve in the browser; let it complete
-```
-
-- [ ] **Step 3: Inspect the POST to /v1/oauth/token**
-
-```bash
-mitmdump -nr /tmp/setuptok_flow.mitm 2>/dev/null | grep -i oauth/token
-# then read the request body/headers from the flow (mitmproxy -r /tmp/setuptok_flow.mitm)
-```
-
-Record in the spec under a new "## Verified exchange request" heading: HTTP method, exact URL,
-`Content-Type` (JSON vs form), the exact body field names + values, and any required headers
-(Authorization? Anthropic-specific?). If the body differs from the assumed
-`{grant_type, code, state, client_id, redirect_uri, code_verifier}`, Tasks 3's implementation
-must match what was observed.
-
-- [ ] **Step 4: Commit the spec update**
-
-```bash
-git add docs/superpowers/specs/2026-06-30-setup-token-oauth-redesign-design.md
-git commit -m "docs(spec): record verified setup-token exchange request shape"
-```
+Completed before execution. Captured the real `claude setup-token` exchange via mitmproxy AND
+validated our own implementation end-to-end against the live endpoint (hosted redirect + pasted
+code → HTTP 200 + `sk-ant-oat01` token; stored for `tony_kindash.com`). The verified request/response
+shape is recorded in the spec under "## Verified exchange request" and already baked into Task 3
+below (JSON body, `expires_in: 31536000`, hosted `redirect_uri`, `User-Agent: axios/1.15.2`,
+`access_token` response field). No subagent action required for this task.
 
 ---
 
@@ -158,7 +123,10 @@ TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
 SCOPE = "user:inference"
-_USER_AGENT = "ccswitch-setup-token/1.0"
+# Mimic the binary's exchange client (captured: axios/1.15.2) for WAF/Cloudflare friendliness.
+_USER_AGENT = "axios/1.15.2"
+# Captured: claude requests a 1-year token lifetime in the exchange body. Required.
+_EXPIRES_IN = 31536000
 
 
 @dataclass
@@ -207,11 +175,9 @@ git commit -m "feat(setup-token): begin() builds PKCE authorize URL in-process"
 
 ---
 
-### Task 2.5: Adjust constants/body to match Task 1's verified shape (if needed)
+### Task 2.5: Adjust to verified shape — ✅ N/A
 
-Only if Task 1 revealed a different body encoding/field set than assumed. Update the module
-constants/exchange body and the relevant tests to match the observed request, then commit. If
-Task 1 confirmed the assumed shape, skip and note "no change needed."
+Folded into Task 3 (verified shape already baked in). No separate task.
 
 ---
 
@@ -270,6 +236,7 @@ def test_exchange_success_returns_token(monkeypatch):
     assert body["code_verifier"] == c.verifier
     assert body["client_id"] == sto.CLIENT_ID
     assert body["redirect_uri"] == sto.REDIRECT_URI
+    assert body["expires_in"] == 31536000   # required for the 1-yr token (verified)
     headers = captured["kwargs"].get("headers", {})
     assert "User-Agent" in headers
 
@@ -358,12 +325,17 @@ def exchange(pasted_code: str, challenge: SetupTokenChallenge) -> str:
     body = {
         "grant_type": "authorization_code",
         "code": code,
-        "state": state,
-        "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
+        "client_id": CLIENT_ID,
         "code_verifier": challenge.verifier,
+        "state": state,
+        "expires_in": _EXPIRES_IN,
     }
-    headers = {"User-Agent": _USER_AGENT, "Content-Type": "application/json"}
+    headers = {
+        "User-Agent": _USER_AGENT,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
     try:
         resp = httpx.post(TOKEN_URL, json=body, headers=headers, timeout=_TIMEOUT_S)
     except httpx.HTTPError as exc:
@@ -376,14 +348,22 @@ def exchange(pasted_code: str, challenge: SetupTokenChallenge) -> str:
     if resp.status_code != 200:
         raise SetupTokenError(f"unexpected token endpoint status {resp.status_code}")
 
-    m = _TOKEN_RE.search(resp.text)
-    if not m:
+    # The setup-token is the JSON `access_token` (verified). Regex is a fallback.
+    try:
+        token = (resp.json() or {}).get("access_token") or ""
+    except ValueError:
+        token = ""
+    if not token:
+        m = _TOKEN_RE.search(resp.text)
+        token = m.group(0) if m else ""
+    if not token.startswith("sk-ant-oat01-"):
         raise SetupTokenNoToken("token endpoint returned no setup-token")
-    return m.group(0)
+    return token
 ```
 
-> NOTE: if Task 1 found the body is form-encoded, change `json=body` to `data=body` and drop the
-> JSON `Content-Type`; update the success test's body-reading accordingly.
+> Verified live (see spec "Verified exchange request"): body is JSON; `redirect_uri` must equal the
+> hosted `REDIRECT_URI` used in `begin()`; `expires_in` is required for the 1-yr token; response
+> `access_token` is the `sk-ant-oat01-…` value.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
