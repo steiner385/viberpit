@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useState, useRef, useCallback, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
@@ -452,32 +452,69 @@ export function useBulkUnarchiveSessions() {
   })
 }
 
+export interface BulkDeleteProgress {
+  done: number
+  total: number
+}
+
+const DELETE_CHUNK_SIZE = 10
+
+/**
+ * Permanently delete many archived sessions, chunked for live progress + cancel.
+ *
+ * The backend processes a batch sequentially and only replies when the whole
+ * batch is done, so a single 95-id request is a multi-minute black box. We slice
+ * the ids into chunks and fire one request per chunk, advancing `progress` after
+ * each. Succeeded ids are pruned from the cache incrementally so the list shrinks
+ * in step with the bar. Best-effort: a chunk whose request throws has its ids
+ * counted as failed and the loop continues. `cancel()` stops the loop at the next
+ * chunk boundary; already-deleted sessions stay deleted.
+ */
 export function useBulkPermanentDeleteSessions() {
   const qc = useQueryClient()
-  return useMutation<BatchResult, ApiRequestError, string[], { prev?: ArchivedSession[] }>({
-    mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/permanent-delete', { ids }),
-    onMutate: async (ids) => {
-      await qc.cancelQueries({ queryKey: QK.archived })
-      const prev = qc.getQueryData<ArchivedSession[]>(QK.archived)
-      const idSet = new Set(ids)
-      qc.setQueryData<ArchivedSession[]>(QK.archived, (cur) => (cur ?? []).filter((x) => !idSet.has(x.id)))
-      return { prev }
-    },
-    onError: (_e, _ids, ctx) => {
-      if (ctx?.prev) qc.setQueryData(QK.archived, ctx.prev)
-      toast.error(`Couldn't delete sessions`)
+  const [progress, setProgress] = useState<BulkDeleteProgress | null>(null)
+  const cancelRef = useRef(false)
+
+  const mutation = useMutation<BatchResult & { aborted: boolean }, ApiRequestError, string[]>({
+    mutationFn: async (ids) => {
+      cancelRef.current = false
+      const succeeded: string[] = []
+      const failed: { id: string; error: string }[] = []
+      setProgress({ done: 0, total: ids.length })
+      for (let i = 0; i < ids.length; i += DELETE_CHUNK_SIZE) {
+        if (cancelRef.current) break
+        const chunk = ids.slice(i, i + DELETE_CHUNK_SIZE)
+        try {
+          const res = await api.post<BatchResult>('/sessions/batch/permanent-delete', { ids: chunk })
+          succeeded.push(...res.succeeded)
+          failed.push(...res.failed)
+          const okSet = new Set(res.succeeded)
+          qc.setQueryData<ArchivedSession[]>(QK.archived, (cur) => (cur ?? []).filter((x) => !okSet.has(x.id)))
+        } catch {
+          for (const id of chunk) failed.push({ id, error: 'request failed' })
+        }
+        setProgress({ done: Math.min(i + DELETE_CHUNK_SIZE, ids.length), total: ids.length })
+      }
+      return { succeeded, failed, aborted: cancelRef.current }
     },
     onSuccess: (result) => {
       const n = result.succeeded.length
       const f = result.failed.length
-      if (f > 0) toast.error(`Deleted ${n} · ${f} failed`)
-      else toast.success(`Deleted ${n}`)
+      const stopped = result.aborted ? ' · stopped' : ''
+      if (f > 0) toast.error(`Deleted ${n} · ${f} failed${stopped}`)
+      else toast.success(`Deleted ${n}${stopped}`)
     },
     onSettled: () => {
+      setProgress(null)
+      cancelRef.current = false
       qc.invalidateQueries({ queryKey: QK.archived })
       qc.invalidateQueries({ queryKey: QK.sessions })
     },
   })
+
+  const cancel = useCallback(() => { cancelRef.current = true }, [])
+
+  return { ...mutation, progress, cancel }
 }
 
 /** Live untracked claude sessions eligible for adoption. Polled while the panel is open. */
