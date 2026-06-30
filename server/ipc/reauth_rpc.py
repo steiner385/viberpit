@@ -14,7 +14,7 @@ def register_reauth(app: FastAPI, reauth) -> None:
         return (await reauth.start(p["name"], p["identity"], mode=p.get("mode", "login"))).to_dict()
 
     async def reauth_status(p: dict) -> dict:
-        return reauth.status(p.get("name", "")).to_dict()
+        return reauth.status(p.get("name", ""), scoped=p.get("scoped", False)).to_dict()
 
     async def reauth_cancel(p: dict) -> dict:
         return (await reauth.cancel(p.get("name", ""))).to_dict()

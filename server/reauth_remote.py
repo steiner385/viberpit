@@ -30,8 +30,8 @@ class RemoteReauthManager:
             _reraise(exc)
         return ReauthState.from_dict(d)  # type: ignore[return-value]
 
-    async def status(self, name: str) -> ReauthState:
-        d = await self._client.call("reauth_status", name=name)
+    async def status(self, name: str, *, scoped: bool = False) -> ReauthState:
+        d = await self._client.call("reauth_status", name=name, scoped=scoped)
         return ReauthState.from_dict(d)
 
     async def cancel(self, name: str) -> ReauthState:
@@ -64,8 +64,8 @@ class InProcessReauthAdapter:
     async def start(self, name: str, identity: str, mode: str = "login") -> ReauthState:
         return await self._m.start(name, identity, mode)
 
-    async def status(self, name: str) -> ReauthState:
-        return self._m.status(name)
+    async def status(self, name: str, *, scoped: bool = False) -> ReauthState:
+        return self._m.status(name, scoped=scoped)
 
     async def cancel(self, name: str) -> ReauthState:
         return await self._m.cancel(name)

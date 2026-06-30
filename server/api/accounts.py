@@ -426,7 +426,9 @@ async def reauth_status(
     _check_name_and_slot(name)
 
     reauth = _get_reauth(request)
-    state = await reauth.status(name)
+    # Scoped: a reauth in flight for a *different* account reads as idle here, so
+    # one account's terminal success can't freeze reauth on another (see Bug 1).
+    state = await reauth.status(name, scoped=True)
     return state.to_dict()
 
 
