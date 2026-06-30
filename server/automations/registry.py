@@ -40,3 +40,7 @@ class AutomationRegistry:
 
 
 registry = AutomationRegistry()
+
+from .pr_doctor import PrDoctor  # noqa: E402  (register the built-in automations)
+
+registry.register(PrDoctor())
