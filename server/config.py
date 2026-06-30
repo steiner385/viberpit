@@ -23,6 +23,11 @@ try:
         master_key: str | None = Field(default=None, alias="CCSWITCH_MASTER_KEY")
         session_secret: str | None = Field(default=None, alias="CCSWITCH_SESSION_SECRET")
         tailnet_allowlist: str = Field(default="", alias="CCSWITCH_TAILNET_ALLOWLIST")
+        github_app_id: int | None = Field(default=None, alias="CCSWITCH_GITHUB_APP_ID")
+        github_app_installation_id: int | None = Field(
+            default=None, alias="CCSWITCH_GITHUB_APP_INSTALLATION_ID")
+        github_app_private_key_path: str | None = Field(
+            default=None, alias="CCSWITCH_GITHUB_APP_PRIVATE_KEY_PATH")
         repo_root: str = Field(
             default_factory=lambda: str(Path.home() / "GitHub"),
             alias="CCSWITCH_REPO_ROOT",
@@ -90,6 +95,16 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         tailnet_allowlist: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_TAILNET_ALLOWLIST", "")
         )
+        github_app_id: int | None = dataclasses.field(
+            default_factory=lambda: (
+                int(os.environ["CCSWITCH_GITHUB_APP_ID"])
+                if os.environ.get("CCSWITCH_GITHUB_APP_ID") else None))
+        github_app_installation_id: int | None = dataclasses.field(
+            default_factory=lambda: (
+                int(os.environ["CCSWITCH_GITHUB_APP_INSTALLATION_ID"])
+                if os.environ.get("CCSWITCH_GITHUB_APP_INSTALLATION_ID") else None))
+        github_app_private_key_path: str | None = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_GITHUB_APP_PRIVATE_KEY_PATH"))
         repo_root: str = dataclasses.field(
             default_factory=lambda: os.environ.get(
                 "CCSWITCH_REPO_ROOT",
