@@ -54,12 +54,36 @@ async def test_subscribe_after_connection_established():
 
 
 @pytest.mark.asyncio
+async def test_two_subscribers_same_stream_both_receive():
+    """Two concurrent subscribers to the SAME stream must BOTH receive each event.
+
+    Regression (transcript goes silent until reattach): subscribe() overwrote the
+    stream's single queue, so a second subscriber (e.g. the same session open in a
+    second tab/device on the one shared edge client) orphaned the first subscriber's
+    queue — it starved permanently until a detach/reattach forced a fresh disk replay.
+    """
+    async with serve_daemon_uds(create_daemon_app()) as sock:
+        client = DaemonClient(sock)
+        try:
+            a = client.subscribe("dup")
+            await client.events_ready("dup")
+            b = client.subscribe("dup")          # second subscriber on the SAME stream
+            await client.call("echo", stream="dup", text="hi")
+            ev_a = await asyncio.wait_for(a.__anext__(), 2)
+            ev_b = await asyncio.wait_for(b.__anext__(), 2)
+        finally:
+            await client.aclose()
+    assert ev_a == {"type": "echo", "text": "hi"}
+    assert ev_b == {"type": "echo", "text": "hi"}
+
+
+@pytest.mark.asyncio
 async def test_deliver_drops_oldest_on_overflow():
     client = DaemonClient("/unused.sock")
-    client._queues["s"] = asyncio.Queue(maxsize=2)
+    q = client._add_subscriber("s", maxsize=2)
     client._deliver("s", {"i": 1})
     client._deliver("s", {"i": 2})
     client._deliver("s", {"i": 3})           # overflow → drop oldest ({"i":1})
-    drained = [client._queues["s"].get_nowait() for _ in range(2)]
+    drained = [q.get_nowait() for _ in range(2)]
     assert drained == [{"i": 2}, {"i": 3}]
     await client.aclose()
