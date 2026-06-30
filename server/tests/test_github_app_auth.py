@@ -128,3 +128,45 @@ def test_token_source_refresh_forces_remint():
     # refresh() must force re-mint unconditionally
     tok2 = src.refresh()
     assert tok2 == "ghs_AAA" and len(rest.calls) == 2  # re-minted
+
+
+# ---------------------------------------------------------------------------
+# Task 3: token_for_owner facade (singleton, fallback, warn-once)
+# ---------------------------------------------------------------------------
+from server.github import app_auth as A  # noqa: E402
+
+
+def test_token_for_owner_none_when_unconfigured(monkeypatch):
+    A.reset()
+    monkeypatch.setattr(A, "_load_app_config", lambda: None)  # nothing configured
+    assert A.token_for_owner("cairnea") is None
+
+
+def test_token_for_owner_routes_per_owner(monkeypatch, tmp_path):
+    A.reset()
+    _key, pem = _keypair()
+    rest = _FakeRest({
+        ("GET", "/app/installations"): [
+            {"id": 11, "account": {"login": "cairnea"}},
+            {"id": 22, "account": {"login": "steiner385"}},
+        ],
+        ("POST", "/app/installations/11/access_tokens"):
+            {"token": "ghs_CA", "expires_at": "2099-01-01T00:00:00Z"},
+        ("POST", "/app/installations/22/access_tokens"):
+            {"token": "ghs_ST", "expires_at": "2099-01-01T00:00:00Z"},
+    })
+    monkeypatch.setattr(A, "_load_app_config", lambda: (4031757, None, pem))
+    monkeypatch.setattr(A, "_app_rest", rest)
+    assert A.token_for_owner("cairnea") == "ghs_CA"
+    assert A.token_for_owner("steiner385") == "ghs_ST"
+    assert A.token_for_owner("nobody") is None  # uncovered → fallback
+
+
+def test_token_for_owner_swallows_mint_error(monkeypatch, caplog):
+    A.reset()
+    _key, pem = _keypair()
+    rest = _FakeRest({("GET", "/app/installations"): GhAppError("boom")})
+    monkeypatch.setattr(A, "_load_app_config", lambda: (4031757, None, pem))
+    monkeypatch.setattr(A, "_app_rest", rest)
+    assert A.token_for_owner("cairnea") is None
+    assert "ghs_" not in caplog.text  # no token leaked

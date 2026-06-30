@@ -155,3 +155,78 @@ class AppTokenSource:
             raise GhAppError("GitHub App: access_tokens response missing token/expires_at")
         self._cached = (token, _parse_expires(expires_at))
         return token
+
+
+# ---------------------------------------------------------------------------
+# Task 3: token_for_owner facade (singleton, fallback, warn-once)
+# ---------------------------------------------------------------------------
+import threading  # noqa: E402
+
+_lock = threading.Lock()
+_app_rest: AppRest = default_app_rest        # monkeypatchable seam
+_clock: Callable[[], float] = time.time       # monkeypatchable seam
+
+_signer: AppJwtSigner | None = None
+_registry: InstallationRegistry | None = None
+_sources: dict[int, AppTokenSource] = {}
+_registry_loaded = False
+_warned_owners: set[str] = set()
+
+
+def reset() -> None:
+    """Test isolation: drop all cached state."""
+    global _signer, _registry, _registry_loaded
+    with _lock:
+        _signer = None
+        _registry = None
+        _registry_loaded = False
+        _sources.clear()
+        _warned_owners.clear()
+
+
+def _load_app_config() -> tuple[int, int | None, str] | None:
+    """(app_id, installation_id, private_key_pem) or None when not configured."""
+    from server.config import get_settings
+    s = get_settings()
+    app_id = getattr(s, "github_app_id", None)
+    key_path = getattr(s, "github_app_private_key_path", None)
+    if not app_id or not key_path:
+        return None
+    try:
+        pem = open(key_path, encoding="utf-8").read()
+    except OSError:
+        log.warning("github_app.private_key_unreadable")  # no path/secret in the msg
+        return None
+    return int(app_id), getattr(s, "github_app_installation_id", None), pem
+
+
+def token_for_owner(owner: str) -> str | None:
+    """Installation token for `owner`'s installation, or None → caller uses the user gh token."""
+    cfg = _load_app_config()
+    if cfg is None:
+        return None
+    app_id, inst_id_pin, pem = cfg
+    try:
+        with _lock:
+            global _signer, _registry, _registry_loaded
+            if _signer is None:
+                _signer = AppJwtSigner(app_id, pem, clock=_clock)
+                _registry = InstallationRegistry(_signer, _app_rest, installation_id=inst_id_pin)
+                _registry_loaded = False
+            if not _registry_loaded:
+                _registry.load()  # type: ignore[union-attr]
+                _registry_loaded = True
+            inst = _registry.installation_for(owner)  # type: ignore[union-attr]
+            if inst is None:
+                if owner not in _warned_owners:
+                    _warned_owners.add(owner)
+                    log.warning("github_app.owner_no_installation owner=%s", owner)
+                return None
+            src = _sources.get(inst)
+            if src is None:
+                src = AppTokenSource(_signer, inst, _app_rest, clock=_clock)
+                _sources[inst] = src
+            return src.get()
+    except Exception:
+        log.warning("github_app.token_mint_failed", exc_info=True)  # never logs token/key
+        return None
