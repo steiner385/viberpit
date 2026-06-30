@@ -366,6 +366,12 @@ class ReauthManager:
             if self._state.state != "awaiting_code":
                 return self.status(name)   # nothing waiting; no-op snapshot
             challenge = self._setup_challenge
+            # M-A: claim the slot before releasing the lock so a concurrent
+            # duplicate submit_code (e.g. mobile double-tap) sees state !=
+            # "awaiting_code" and returns the in-progress snapshot instead of
+            # firing a second exchange.
+            self._state.state = "running"
+            self._state.message = None
 
         from ccswitch import accounts, crypto, setup_token_oauth
 
@@ -385,6 +391,12 @@ class ReauthManager:
         except setup_token_oauth.SetupTokenError as exc:
             log.warning("setup-token exchange failed for %r: %s", name, exc)
             await self._fail(name, "Token service returned no token.")
+        except Exception as exc:
+            # M-C: catch unexpected failures (e.g. crypto/accounts errors) so
+            # the UI never hangs in awaiting_code/running.  Never log the token
+            # or the pasted code.
+            log.warning("setup-token unexpected error for %r: %s", name, exc)
+            await self._fail(name, "Token generation failed — try again.")
 
         return self.status(name)
 

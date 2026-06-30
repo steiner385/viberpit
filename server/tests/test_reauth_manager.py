@@ -614,3 +614,58 @@ async def test_start_mode_login_uses_login_runner(monkeypatch):
 
     assert not setup_token_begin_called, "setup_token_oauth.begin() should NOT be called for mode='login'"
     assert m.status("acct3").state == "success"
+
+
+# ---------------------------------------------------------------------------
+# Fix M-A + M-C: double-submit guard and unexpected-exception handler
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_double_submit_is_noop(monkeypatch, tmp_path):
+    """M-A: second sequential submit_code call is a no-op — exchange called exactly once."""
+    mgr = _make_manager(monkeypatch, tmp_path)
+
+    call_count = 0
+
+    def counting_exchange(code, ch):
+        nonlocal call_count
+        call_count += 1
+        return "sk-ant-oat01-GOODTOKEN"
+
+    monkeypatch.setattr(_sto, "exchange", counting_exchange)
+    monkeypatch.setattr("ccswitch.crypto.store_oauth_token", lambda name, tok: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda name: None)
+
+    await mgr.start("acct", "id@example.com", mode="setup_token")
+    code = f"CODE#{mgr._setup_challenge.state}"
+
+    # First call — should exchange and succeed.
+    st1 = await mgr.submit_code("acct", code)
+    # Second call — state is no longer awaiting_code; must be a no-op.
+    st2 = await mgr.submit_code("acct", code)
+
+    assert call_count == 1, f"exchange must be called exactly once; got {call_count}"
+    assert st1.state == "success"
+    assert st2.state == "success"  # snapshot of current state — still success
+
+
+@pytest.mark.asyncio
+async def test_unexpected_store_failure_sets_error_not_stuck(monkeypatch, tmp_path):
+    """M-C: RuntimeError during crypto.store_oauth_token → state=error, message excludes token."""
+    mgr = _make_manager(monkeypatch, tmp_path)
+
+    GOOD_TOKEN = "sk-ant-oat01-SECRETTOKEN"
+    monkeypatch.setattr(_sto, "exchange", lambda code, ch: GOOD_TOKEN)
+
+    def boom(name, tok):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("ccswitch.crypto.store_oauth_token", boom)
+
+    await mgr.start("acct", "id@example.com", mode="setup_token")
+    st = await mgr.submit_code("acct", f"CODE#{mgr._setup_challenge.state}")
+
+    assert st.state == "error", f"expected error, got {st.state!r}"
+    assert st.state != "awaiting_code", "state must not be stuck in awaiting_code"
+    assert GOOD_TOKEN not in (st.message or ""), "token must not appear in the error message"
