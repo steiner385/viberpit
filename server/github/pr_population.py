@@ -15,7 +15,7 @@ import logging
 import random
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable, Union
+from typing import Any, Awaitable, Callable, Union
 
 from ccswitch import gitrepos
 
@@ -55,7 +55,7 @@ def _default_eta_query(prs: list[tuple[str, int]]) -> dict:
     by_owner: dict[str, list[int]] = {}
     for i, (repo, _num) in enumerate(prs):
         by_owner.setdefault(repo.split("/", 1)[0], []).append(i)
-    merged: dict = {}
+    merged: dict[str, Any] = {}
     for owner, idxs in by_owner.items():
         subset = [prs[i] for i in idxs]
         query = build_eta_checks_query(subset)
