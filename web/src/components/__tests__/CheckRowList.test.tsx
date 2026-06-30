@@ -108,6 +108,7 @@ describe('CheckRowList live tick', () => {
     const { container } = render(<CheckRowList checks={[runningRow()]} updatedAt={updatedAt} />)
     act(() => { vi.advanceTimersByTime(0) })
     expect(container.querySelector('[data-state="overdue"]')).not.toBeNull()
+    expect(screen.getByTestId('check-row-build')).toHaveTextContent('⚠')
   })
 
   it('does not tick a done row (now has no effect)', () => {
