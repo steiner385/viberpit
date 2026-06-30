@@ -144,6 +144,43 @@ def test_capture_setup_token_returns_false_when_no_token(monkeypatch, tmp_path):
             os.environ["CCSWITCH_MASTER_KEY"] = old_key
 
 
+def test_capture_setup_token_logs_warning_on_no_token(monkeypatch, tmp_path, caplog):
+    """Observability: a failed generation must be visible in prod (INFO) logs.
+
+    The failure path previously logged only at DEBUG, so in production a failed
+    setup-token generation produced no log line at all. Lock in WARNING level.
+    """
+    import logging
+
+    old_key = os.environ.get("CCSWITCH_MASTER_KEY")
+    os.environ["CCSWITCH_MASTER_KEY"] = _TEST_KEY_B64
+    try:
+        from ccswitch import auth_login, paths
+
+        monkeypatch.setattr(paths, "store_dir", lambda: tmp_path)
+        monkeypatch.setattr(paths, "reauth_tmp_dir", lambda: tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger=auth_login.log.name):
+            ok = auth_login.capture_setup_token(
+                "acct_warn",
+                on_url=lambda u: None,
+                get_code=lambda: "BADCODE",
+                claude_bin=[sys.executable, FAKE_NOTOKEN],
+            )
+
+        assert ok is False
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings, "failed generation must emit a WARNING (was DEBUG-only, invisible in prod)"
+        # NB: the message must NOT embed the literal sk-ant-oat01 pattern — the redaction
+        # logging filter (active in the full suite) scrubs it to [REDACTED]. Assert on durable text.
+        assert any("no setup-token in claude's output" in r.getMessage() for r in warnings)
+    finally:
+        if old_key is None:
+            os.environ.pop("CCSWITCH_MASTER_KEY", None)
+        else:
+            os.environ["CCSWITCH_MASTER_KEY"] = old_key
+
+
 def test_capture_setup_token_on_pid_receives_child_pid(monkeypatch, tmp_path):
     """Test C: on_pid callback is invoked with the spawned child's PID (positive int)."""
     old_key = os.environ.get("CCSWITCH_MASTER_KEY")

@@ -307,7 +307,11 @@ def capture_setup_token(
             if code_sent:
                 # Fast-fail: invalid code → claude re-prompts but never produces a token.
                 if b"Invalid code" in buf:
-                    log.debug("capture_setup_token: invalid code detected, aborting")
+                    log.warning(
+                        "capture_setup_token: claude reported 'Invalid code' for account %r "
+                        "— aborting (the pasted code was rejected by the OAuth server)",
+                        name,
+                    )
                     try:
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                     except OSError:
@@ -315,9 +319,13 @@ def capture_setup_token(
                     break
                 # Bounded wait: kill if claude still hasn't exited after timeout.
                 if post_code_deadline is not None and time.monotonic() > post_code_deadline:
-                    log.debug(
-                        "capture_setup_token: post-code timeout (%.1fs), aborting",
+                    log.warning(
+                        "capture_setup_token: post-code timeout (%.1fs) for account %r — claude "
+                        "read the code but never produced a token. `claude setup-token` completes "
+                        "via browser+poll; headless code-paste is a fragile fallback that can hang "
+                        "on a valid code (see setup-token-needs-browser-not-paste).",
                         post_code_timeout_s,
+                        name,
                     )
                     try:
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -342,7 +350,11 @@ def capture_setup_token(
         # Extract the token
         tm = _TOKEN_RE.search(buf)
         if not tm:
-            log.debug("capture_setup_token: no sk-ant-oat01 token found in output")
+            log.warning(
+                "capture_setup_token: no setup-token in claude's output for account %r "
+                "— generation failed (claude exited or was killed without emitting a token)",
+                name,
+            )
             return False
 
         token = tm.group(0).decode("ascii")
@@ -350,7 +362,7 @@ def capture_setup_token(
         from .crypto import store_oauth_token
 
         store_oauth_token(name, token)
-        log.debug("capture_setup_token: token stored for account %r", name)
+        log.info("capture_setup_token: setup-token stored for account %r", name)
         return True
 
     finally:
