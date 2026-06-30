@@ -67,3 +67,46 @@ def test_events_endpoint_empty_ok():
     with _client() as c:
         r = c.get("/api/automations/pr-doctor/events", headers=H)
         assert r.status_code == 200 and r.json() == []
+
+
+def test_sessions_endpoint_returns_only_origin_matched():
+    """GET /api/automations/{id}/sessions returns only sessions with matching origin."""
+    import asyncio
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+
+    async def _seed():
+        async with db_session() as db:
+            # Session spawned by pr-doctor automation
+            db.add(DbSession(
+                id="s-origin-match",
+                name="pr-fix-session",
+                account_name="acct1",
+                cwd="/tmp",
+                origin="pr-doctor",
+                origin_ref="owner/repo#42",
+            ))
+            # Session with no origin (human-created) — must NOT appear
+            db.add(DbSession(
+                id="s-no-origin",
+                name="manual-session",
+                account_name="acct2",
+                cwd="/tmp",
+                origin=None,
+            ))
+
+    with _client() as c:
+        # Seed rows now that init_db has run (in-memory DB is alive)
+        asyncio.run(_seed())
+
+        r = c.get("/api/automations/pr-doctor/sessions", headers=H)
+        assert r.status_code == 200
+        sessions = r.json()
+        ids = [s["id"] for s in sessions]
+        assert "s-origin-match" in ids
+        assert "s-no-origin" not in ids
+        matched = next(s for s in sessions if s["id"] == "s-origin-match")
+        assert matched["originRef"] == "owner/repo#42"
+
+        # 401 without auth header
+        assert c.get("/api/automations/pr-doctor/sessions").status_code == 401
