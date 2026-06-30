@@ -3,7 +3,8 @@ import { cn } from '@/lib/utils'
 import type { StageModel, NodeState } from '@/api/types'
 import { formatEta } from '@/lib/formatEta'
 import { nodeCircleClass } from '@/lib/checkState'
-import { bandSegments, pseudoElapsedFromPercent } from '@/lib/etaBand'
+import { bandSegments, pseudoElapsedFromPercent, isOverrun } from '@/lib/etaBand'
+import { useNow } from '@/hooks/useNow'
 
 // Fallback skeleton shown when no model is available yet.
 const SKELETON_NODES = [
@@ -22,6 +23,7 @@ function connectorClass(upstreamState: NodeState | 'pending'): string {
 interface StageTrackProps {
   model: StageModel | undefined
   states: { id: string; state: NodeState }[] | undefined
+  updatedAt: number
   etaSeconds?: number | null
   etaOverdue?: boolean
   etaLowSeconds?: number | null
@@ -29,7 +31,8 @@ interface StageTrackProps {
   etaPercent?: number | null
 }
 
-export function StageTrack({ model, states, etaSeconds, etaOverdue, etaLowSeconds, etaHighSeconds, etaPercent }: StageTrackProps) {
+export function StageTrack({ model, states, updatedAt, etaSeconds, etaOverdue, etaLowSeconds, etaHighSeconds, etaPercent }: StageTrackProps) {
+  const now = useNow()
   // Build a lookup of state by node id.
   const stateById: Record<string, NodeState> = {}
   if (states) {
@@ -53,19 +56,21 @@ export function StageTrack({ model, states, etaSeconds, etaOverdue, etaLowSecond
             {/* Connector line before this node (skip for first) */}
             {!isFirst && (() => {
               const prevNode = nodes[idx - 1]
+              const liveDeltaS = Math.max(0, (now - updatedAt) / 1000)
               const showBand = prevNode?.kind === 'ci' && prev === 'active'
                 && etaPercent != null && etaLowSeconds != null && etaHighSeconds != null
               const seg = showBand
                 ? bandSegments({
-                    elapsedS: pseudoElapsedFromPercent(etaSeconds ?? 0, etaPercent!),
+                    elapsedS: pseudoElapsedFromPercent(etaSeconds ?? 0, etaPercent!) + liveDeltaS,
                     lowS: etaLowSeconds!, nominalS: etaSeconds ?? 0, highS: etaHighSeconds!,
                   })
                 : null
+              const bandColor = isOverrun(liveDeltaS, etaHighSeconds ?? null) ? 'bg-amber-500' : 'bg-accent'
               if (seg) {
                 return (
                   <div data-testid="ci-band" className="relative h-1.5 w-10 shrink-0 overflow-hidden rounded bg-gray-200 dark:bg-gray-700">
-                    <span className="absolute inset-y-0 left-0 rounded-l bg-accent" style={{ width: `${seg.solidPct}%` }} aria-hidden />
-                    <span className="absolute inset-y-0 bg-accent opacity-30" style={{ left: `${seg.bandLeftPct}%`, width: `${seg.bandWidthPct}%` }} aria-hidden />
+                    <span className={cn('absolute inset-y-0 left-0 rounded-l', bandColor)} style={{ width: `${seg.solidPct}%` }} aria-hidden />
+                    <span className={cn('absolute inset-y-0 opacity-30', bandColor)} style={{ left: `${seg.bandLeftPct}%`, width: `${seg.bandWidthPct}%` }} aria-hidden />
                     <span className="absolute inset-y-[-1px] w-px bg-foreground" style={{ left: `${seg.tickPct}%` }} aria-hidden />
                   </div>
                 )

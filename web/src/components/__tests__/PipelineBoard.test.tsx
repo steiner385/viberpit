@@ -40,6 +40,7 @@ describe('PipelineBoard', () => {
         ]}
         stageModels={{ ...models, 'other/repo': { repo: 'other/repo', nodes: ciModel.nodes } }}
         activeStages={new Set()}
+        updatedAt={Date.now()}
       />,
     )
     // Both repo headers should be present
@@ -56,6 +57,7 @@ describe('PipelineBoard', () => {
         ]}
         stageModels={{ 'aaa/good': ciModel, 'zzz/broken': ciModel }}
         activeStages={new Set()}
+        updatedAt={Date.now()}
       />,
     )
     const headers = screen.getAllByRole('button')
@@ -71,13 +73,14 @@ describe('PipelineBoard', () => {
         prs={[pr({ number: 1 })]}
         stageModels={models}
         activeStages={new Set()}
+        updatedAt={Date.now()}
       />,
     )
     expect(screen.getByTestId('stage-node-ci')).toBeInTheDocument()
   })
 
   it('shows an empty state when there are no PRs', () => {
-    render(<PipelineBoard prs={[]} stageModels={{}} activeStages={new Set()} />)
+    render(<PipelineBoard prs={[]} stageModels={{}} activeStages={new Set()} updatedAt={Date.now()} />)
     expect(screen.getByText(/no open prs/i)).toBeInTheDocument()
   })
 
@@ -93,6 +96,7 @@ describe('PipelineBoard', () => {
         ]}
         stageModels={models}
         activeStages={new Set()}
+        updatedAt={Date.now()}
         onOpenSession={onOpenSession}
         onFixPr={onFixPr}
       />,
@@ -113,6 +117,7 @@ describe('PipelineBoard', () => {
         prs={[pr({ number: 7, stage: 'ready', session: { id: 's7', name: 'My session' } })]}
         stageModels={models}
         activeStages={new Set()}
+        updatedAt={Date.now()}
       />,
     )
     const label = screen.getByTestId('pipeline-session-7')
@@ -130,7 +135,7 @@ describe('PipelineBoard', () => {
         checks: [{ name: 'lint', workflow: 'CI', status: 'COMPLETED', conclusion: 'success',
           duration_seconds: 60, required: true, overdue: false }] }],
     }] as unknown as PipelinePr[]
-    render(<PipelineBoard prs={prs} stageModels={{}} activeStages={new Set()} />)
+    render(<PipelineBoard prs={prs} stageModels={{}} activeStages={new Set()} updatedAt={Date.now()} />)
     expect(screen.queryByTestId('check-row-lint')).toBeNull()
     await user.click(screen.getByTestId('pipeline-expand-5'))
     expect(screen.getByTestId('check-row-lint')).toBeInTheDocument()
@@ -143,7 +148,7 @@ describe('PipelineBoard', () => {
       title: 'feat', deployed: false, session: { id: 's1', name: 'sess' }, node_states: [],
       check_groups: [{ kind: 'head', total_seconds: 0, cost_usd: null, eta_seconds: null,
         checks: [] }] }] as unknown as PipelinePr[]
-    render(<PipelineBoard prs={prs} stageModels={{}} activeStages={new Set()} onOpenSession={onOpenSession} />)
+    render(<PipelineBoard prs={prs} stageModels={{}} activeStages={new Set()} updatedAt={Date.now()} onOpenSession={onOpenSession} />)
     await user.click(screen.getByTestId('pipeline-expand-5'))
     expect(onOpenSession).not.toHaveBeenCalled()
   })
@@ -163,7 +168,7 @@ describe('PipelineBoard', () => {
     ] as unknown as PipelinePr[]
     const models = { 'o/r': model, 'x/y': { ...model, repo: 'x/y' } } as Record<string, StageModel>
     // queue filter → only PR #1 and only repo o/r
-    render(<PipelineBoard prs={prs} stageModels={models} activeStages={new Set<StageBucket>(['queue'])} />)
+    render(<PipelineBoard prs={prs} stageModels={models} activeStages={new Set<StageBucket>(['queue'])} updatedAt={Date.now()} />)
     expect(screen.getByTestId('pipeline-row-1')).toBeInTheDocument()
     expect(screen.queryByTestId('pipeline-row-2')).toBeNull()
     expect(screen.queryByTestId('pipeline-row-3')).toBeNull()
@@ -172,7 +177,7 @@ describe('PipelineBoard', () => {
   it('empty active set shows everything', () => {
     const prs = [{ repo: 'o/r', number: 1, url: 'u', state: 'open', checks: 'pending', title: 't',
       deployed: false, session: null, node_states: [] }] as unknown as PipelinePr[]
-    render(<PipelineBoard prs={prs} stageModels={{}} activeStages={new Set()} />)
+    render(<PipelineBoard prs={prs} stageModels={{}} activeStages={new Set()} updatedAt={Date.now()} />)
     expect(screen.getByTestId('pipeline-row-1')).toBeInTheDocument()
   })
 })

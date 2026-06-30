@@ -15,12 +15,14 @@ export function PipelineBoard({
   prs,
   stageModels,
   activeStages,
+  updatedAt,
   onOpenSession,
   onFixPr,
 }: {
   prs: PipelinePr[]
   stageModels: Record<string, StageModel>
   activeStages: Set<StageBucket>
+  updatedAt: number
   onOpenSession?: (sessionId: string) => void
   onFixPr?: (sessionId: string, number: number) => void
 }) {
@@ -112,6 +114,7 @@ export function PipelineBoard({
                         <StageTrack
                           model={model}
                           states={p.node_states}
+                          updatedAt={updatedAt}
                           etaSeconds={p.eta_seconds}
                           etaOverdue={p.eta_overdue}
                           etaLowSeconds={p.eta_low_seconds}
@@ -161,7 +164,7 @@ export function PipelineBoard({
 
 export function PipelineView() {
   const navigate = useNavigate()
-  const { data: prs = [] } = useAllPrs()
+  const { data: prs = [], dataUpdatedAt } = useAllPrs()
   const { data: stageModels = {} } = useStageModels()
   const fixPr = useFixPr()
   const [active, setActive] = useState<Set<StageBucket>>(new Set())
@@ -179,6 +182,7 @@ export function PipelineView() {
         prs={prs}
         stageModels={stageModels}
         activeStages={active}
+        updatedAt={dataUpdatedAt}
         onOpenSession={(id) => navigate(`/session/${id}`)}
         onFixPr={(id, number) => fixPr.mutate({ id, number })}
       />
