@@ -1,6 +1,5 @@
 import base64
 import json
-import time
 
 import pytest
 from cryptography.hazmat.primitives import hashes, serialization
@@ -109,3 +108,23 @@ def test_token_source_caches_until_margin_then_refreshes():
     assert len(rest.calls) == 1   # minted once
     tok2 = src.get()
     assert tok2 == "ghs_AAA" and len(rest.calls) == 1  # cached, no second mint
+    # Advance time to within the margin: expires_at (1700003600) - new_now = REFRESH_MARGIN_S
+    # new_now = expires_at - REFRESH_MARGIN_S = 1700003600 - 300 = 1700003300
+    t[0] = 1_700_003_600.0 - REFRESH_MARGIN_S
+    tok3 = src.get()
+    assert tok3 == "ghs_AAA" and len(rest.calls) == 2  # re-minted due to margin breach
+
+
+def test_token_source_refresh_forces_remint():
+    t = [1_700_000_000.0]
+    rest = _FakeRest({
+        ("POST", "/app/installations/11/access_tokens"):
+            {"token": "ghs_AAA", "expires_at": "2023-11-14T23:13:20Z"},
+    })
+    src = AppTokenSource(_signer(), 11, rest, clock=lambda: t[0])
+    tok1 = src.get()
+    assert tok1 == "ghs_AAA"
+    assert len(rest.calls) == 1  # minted once
+    # refresh() must force re-mint unconditionally
+    tok2 = src.refresh()
+    assert tok2 == "ghs_AAA" and len(rest.calls) == 2  # re-minted
