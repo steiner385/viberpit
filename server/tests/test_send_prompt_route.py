@@ -52,7 +52,7 @@ class _FakeSessions:
             return object()
         return None
 
-    async def send_prompt(self, sid, text):
+    async def send_prompt(self, sid, text, attachment_ids=None):
         self.sent.append((sid, text))
 
     async def latest_suggestions(self, sid):

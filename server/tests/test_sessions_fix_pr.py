@@ -53,7 +53,7 @@ class _FakeSessions:
         self.fixed.append((sid, number))
         return self._fix_result
 
-    async def send_prompt(self, sid, text):
+    async def send_prompt(self, sid, text, attachment_ids=None):
         pass
 
     async def latest_suggestions(self, sid):
