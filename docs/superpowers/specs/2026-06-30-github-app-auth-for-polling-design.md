@@ -1,156 +1,162 @@
-# M-Track-9: GitHub App auth for PR polling — Design
+# M-Track-9: GitHub App auth for PR polling (mimic Plotroom) — Design
 
 **Date:** 2026-06-30
-**Status:** Approved (design); pending user review → implementation plan
-**Context:** ccswitch's PR-population poller authenticates as the host `gh` **user** (shared 5,000 req/hr)
-over GraphQL. Reuse Plotroom's existing **GitHub App 4031757** to poll via short-lived installation
-tokens (15,000 req/hr per installation). Polling is already GraphQL — this swaps only the credential.
+**Status:** Approved (design, revised to mimic Plotroom faithfully); pending user review → plan
+**Context:** ccswitch's PR poller authenticates as the host `gh` **user** (shared 5,000 req/hr) over
+GraphQL. Reuse Plotroom's existing **GitHub App 4031757** with the **same mechanism Plotroom uses** —
+a shared JWT signer, an installation registry (owner→installation), and per-installation tokens —
+so polling runs on installation tokens (15,000 req/hr per installation).
 
 ---
 
 ## 1. Goal
 
-Authenticate the **population + eta-checks GraphQL poll path** as GitHub App 4031757 (the App Plotroom
-already uses), minting and caching installation tokens, so frequent polling no longer competes for the
-user's 5k/hr limit. Falls back to today's user-`gh` path when the App isn't configured. **Poll path
-only** for now (decided); other `gh` calls (branch list, default-branch, PR fix actions) stay on the
-user token — expanding to those is a later milestone.
+Port Plotroom's `server/auth.ts` App-token machinery into ccswitch (Python) **faithfully**, and route the
+**population + eta-checks GraphQL poll path** through it: each repo's poll uses the installation token for
+**that repo's owner** (cairnea vs steiner385 are distinct installations of App 4031757). Falls back to the
+user-`gh` token when the App isn't configured or an owner has no installation. **Poll path only** for now
+(other `gh` calls unchanged — expand later, per decision).
 
-## 2. Background (verified)
+## 2. What we mimic (from `pr-dashboard/server/auth.ts`, read in full)
 
-- Plotroom (`pr-dashboard/config.json`): `tokenSource: "app"`, `app.appId: 4031757`, private key inline.
-  Its `server/auth.ts` mints a JWT (RS256, `iss=appId`, backdated `iat`, `exp` ≈ +9 min) → resolves the
-  installation (`GET /app/installations`, or a configured `installationId`) → `POST
-  /app/installations/{id}/access_tokens` → `{token, expires_at}`, cached until a refresh margin.
-- ccswitch `_run_gh` (`src/ccswitch/gitrepos.py`) strips `GITHUB_TOKEN` so `gh` uses the keyring user
-  login. The poll queries run `gh api graphql` via `_run_gh`.
-- Deps present: **`httpx` 0.28** (REST mint calls) and **`cryptography`** (RS256 JWT signing — no new
-  dependency, no PyJWT).
+Three pieces, ported 1:1 (constants, JWT shape, REST paths, error wording):
 
-## 3. Decisions (locked during brainstorming)
+- **`AppJwtSigner`** — PEM read & validated **once** at construction; `mint()` builds an RS256 JWT:
+  `header=b64url({"alg":"RS256","typ":"JWT"})`, `payload=b64url({"iat": nowS-60, "exp": nowS+540,
+  "iss": str(appId)})`, `sig=b64url(RSA-SHA256 over "head.payload")`. Constants verbatim:
+  `JWT_BACKDATE_S=60`, `JWT_TTL_S=540`.
+- **`InstallationRegistry`** — `load()` mints a JWT and `GET /app/installations` → builds a
+  case-insensitive `login → {id}` map; `installationFor(owner) -> id | None`; `refresh()` re-loads (new
+  installs without restart). If pinned to one `installationId`, resolves just `GET
+  /app/installations/{id}`. Same "no installations — install the app first" / multi-install error wording.
+- **`AppTokenSource`** (one per installation) — caches `{token, expiresAt}`; `get()` returns the cached
+  token while `expiresAt - now > TOKEN_REFRESH_MARGIN_MS (5*60_000)`, else mints: JWT → `POST
+  /app/installations/{id}/access_tokens` (Bearer JWT) → cache `{token, Date.parse(expires_at)}`. Shared
+  in-flight mint so concurrent callers exec once. REST base derived from the GraphQL api URL
+  (`…/graphql` → `https://api.github.com`), exactly like Plotroom's `deriveRestBase`.
 
-1. **Credential storage:** a `0600` PEM file referenced by env, NOT plaintext-inline (Plotroom's way) and
-   NOT ccswitch's envelope crypto (overkill for App infra config):
-   - `CCSWITCH_GITHUB_APP_ID` (e.g. `4031757`)
-   - `CCSWITCH_GITHUB_APP_INSTALLATION_ID` (optional — auto-resolved if a single installation)
-   - `CCSWITCH_GITHUB_APP_PRIVATE_KEY_PATH` → a `0600` file holding App 4031757's PEM (copied out of
-     Plotroom's `config.json`).
-2. **Scope:** only the population + eta GraphQL poll path uses the App token. Other `gh` calls unchanged.
-3. **Graceful fallback:** App not configured, or any mint failure → fall back to the user-`gh` path
-   (log a warning, redaction-safe). The board never goes dark over an auth-config gap.
+Plotroom's `GithubClient` uses the token as a `Bearer` on its **own** `fetch` GraphQL calls and routes
+**one client per installation** keyed by owner (`routedClient(owner)`), skipping owners with no
+installation (logged once). ccswitch instead issues GraphQL via the **`gh` CLI per repo**, so the
+adaptation is: resolve the token for the repo's owner and hand it to `gh` via `GH_TOKEN`.
 
-## 4. Architecture
+## 3. Decisions (locked)
 
-### 4.1 `server/github/app_auth.py` — token minting (sync; runs inside the poll thread)
-The poll queries run via `asyncio.to_thread`, so a **synchronous** provider (httpx `Client`) avoids
-async/sync friction. Module-level singleton + `threading.Lock` around refresh.
+1. **Credential storage** — `0600` PEM file via env, not plaintext-inline (Plotroom) nor envelope crypto:
+   `CCSWITCH_GITHUB_APP_ID`, `CCSWITCH_GITHUB_APP_PRIVATE_KEY_PATH`, optional
+   `CCSWITCH_GITHUB_APP_INSTALLATION_ID` (pins a single installation; otherwise the registry maps all).
+2. **Scope** — population + eta GraphQL poll path only. Other `gh` calls unchanged.
+3. **Per-owner routing** (faithful to Plotroom) — each repo's poll uses its owner's installation token;
+   an owner with no installation, or App-not-configured, falls back to the user `gh` token (logged once
+   per owner, like Plotroom's invisible-owner warning).
+4. **Sync implementation** — the poll runs in `asyncio.to_thread`, so the signer/registry/token-source
+   use a **synchronous** `httpx.Client`; a module singleton + `threading.Lock` guards mint/registry load.
 
-- `_mint_jwt(app_id: int, private_key_pem: str, now: float) -> str` — header `{"alg":"RS256","typ":"JWT"}`,
-  payload `{"iat": int(now)-60, "exp": int(now)+540, "iss": str(app_id)}`, base64url-encoded, signed with
-  the RSA key via `cryptography` (`load_pem_private_key` → `sign(..., PKCS1v15(), SHA256())`).
-- `class AppTokenProvider`: fields `app_id`, `private_key_pem`, `installation_id | None`, injectable
-  `http` (callable like `httpx.request`) and `clock`. Holds `_cached: {token, expires_at} | None`.
-  - `token() -> str` — return cached token while `expires_at - now > REFRESH_MARGIN_S (300)`, else
-    `refresh()`.
-  - `refresh()` — mint JWT → if `installation_id` unset, `GET /app/installations` (use the sole
-    installation; if 0 or >1 and unset, raise a clear error) → `POST
-    /app/installations/{id}/access_tokens` (Bearer JWT) → cache `{token, expires_at}` (parse GitHub's
-    `expires_at` ISO).
-- `get_poll_token() -> str | None` — module entry point used by the poller: builds the singleton from
-  `get_settings()` (returns `None` if `github_app_id`/key path absent), calls `.token()`, and returns the
-  token; on ANY exception logs a redaction-safe warning (`github_app.token_mint_failed`) and returns
-  `None` (→ caller falls back). **Never logs the token or key.**
+## 4. Architecture — `server/github/app_auth.py` (Python port)
 
-### 4.2 Settings — `server/config.py`
-Add three pydantic fields:
+- `mint_jwt(app_id, private_key_pem, now) -> str` — RS256 via **`cryptography`** (`load_pem_private_key`
+  → `sign(data, PKCS1v15(), SHA256())`), base64url header/payload/sig. (No PyJWT; `cryptography` is a dep.)
+- `class AppJwtSigner` — loads/validates the PEM once; `mint()`.
+- `class InstallationRegistry(signer, http, installation_id=None)` — `load()` / `installation_for(owner)`
+  / `refresh()`; case-insensitive owner map; the verbatim error wording.
+- `class AppTokenSource(signer, installation_id, http, clock)` — `get()` with the 5-min refresh margin +
+  in-flight de-dupe; `refresh()`.
+- **Module facade** `token_for_owner(owner: str) -> str | None`:
+  - Build (once, lazily, lock-guarded) the shared `AppJwtSigner` + `InstallationRegistry` from
+    `get_settings()`; return `None` immediately if `github_app_id`/key path unset (→ caller uses user gh).
+  - `inst_id = registry.installation_for(owner)`; `None` → log once (`github_app.owner_no_installation
+    owner=…`) and return `None` (fallback).
+  - Lazily create + cache an `AppTokenSource` per `inst_id`; return `.get()`.
+  - **Any** exception (bad key, network, GitHub 5xx) → log a redaction-safe warning
+    (`github_app.token_mint_failed`) and return `None` (→ fallback). Never logs token/JWT/key.
+- `apiUrl` is `https://api.github.com/graphql`; REST base `https://api.github.com` (the `deriveRestBase`
+  port). Headers mirror Plotroom: `accept: application/vnd.github+json`, `user-agent: ccswitch`.
+
+### Settings (`server/config.py`) — both Settings variants
 ```
 github_app_id: int | None = Field(default=None, alias="CCSWITCH_GITHUB_APP_ID")
 github_app_installation_id: int | None = Field(default=None, alias="CCSWITCH_GITHUB_APP_INSTALLATION_ID")
 github_app_private_key_path: str | None = Field(default=None, alias="CCSWITCH_GITHUB_APP_PRIVATE_KEY_PATH")
 ```
-(The dataclass `Settings` variant for remote/daemon mode gets the same three via `os.environ.get`.)
 
-### 4.3 `gitrepos._run_gh` — optional installation token
-`src/ccswitch/gitrepos.py`: `_run_gh(args, token: str | None = None)`. When `token` is provided, run the
-subprocess with `GH_TOKEN=<token>` in the env (and the existing `GITHUB_TOKEN`-strip still applies, so
-only the App token is present; `gh` prefers `GH_TOKEN`). When `token is None`, behaviour is unchanged
-(user keyring login). A `GhError` is unchanged.
+### `gitrepos._run_gh(args, token: str | None = None)` (`src/ccswitch/gitrepos.py`)
+`token` provided → subprocess env sets `GH_TOKEN=<token>` (the existing `GITHUB_TOKEN` strip still
+applies, so only the App token is present; `gh` prefers `GH_TOKEN`). `token=None` → unchanged.
 
-### 4.4 Poll path wiring — `server/github/pr_population.py`
-`_default_query` and `_default_eta_query` (both sync, run in `to_thread`): call
-`app_auth.get_poll_token()` and pass `token=` to `gitrepos._run_gh`. `None` → unchanged user-token call.
-No change to the GraphQL documents or response parsing.
+### Poll wiring (`server/github/pr_population.py`)
+`_default_query(repo)` / `_default_eta_query(prs)`: derive owner (`repo.split("/")[0]`; for the eta query,
+group by owner / use the first key's owner — see edge cases), call `app_auth.token_for_owner(owner)`, pass
+`token=` to `_run_gh`. `None` → unchanged user-token call. No change to the GraphQL docs or parsing.
 
 ## 5. Data flow
 
 ```
-poll cycle (to_thread)
-  → app_auth.get_poll_token()  [singleton + lock]
-       cached & fresh? → reuse
-       else refresh: mint JWT (cryptography RS256) → GET /app/installations → POST access_tokens (httpx) → cache
-  → gitrepos._run_gh(["api","graphql","-f",query], token=<ghs_… or None>)
-       token set → GH_TOKEN=token (App installation, 15k/hr); None → user keyring (fallback)
-  → same GraphQL parse as today
+poll repo "owner/name" (to_thread)
+  → app_auth.token_for_owner("owner")
+       not configured? → None
+       registry.installation_for(owner) → inst_id  (load() once; GET /app/installations w/ JWT)
+       AppTokenSource[inst_id].get() → cached or mint (JWT → POST access_tokens) → ghs_… token
+       owner uncovered / mint error → log once → None
+  → gitrepos._run_gh(["api","graphql","-f",query], token=ghs_… or None)
+       token → GH_TOKEN (App installation, 15k/hr) ; None → user keyring (fallback)
+  → same GraphQL parse
 ```
 
 ## 6. Error handling & edge cases
 
-- **App not configured** (`github_app_id` or key path unset) → `get_poll_token()` returns `None` → user
-  token path. No error surfaced. This is the default until the operator sets the env + key file.
-- **Mint/exchange failure** (bad key, network, GitHub 5xx, 0/many installations with none configured) →
-  caught in `get_poll_token`, warning logged (no secret material), returns `None` → fallback. A poll
-  never crashes over auth.
-- **Token expiry / clock skew** — refresh margin 300s; JWT `iat` backdated 60s (GitHub's clock-skew
-  guard, mirrors Plotroom).
-- **Secret hygiene:** the PEM file is `0600` and **git-ignored** (add the canonical path / `*.pem` to
-  `.gitignore` if a default path is used); the token (`ghs_…`) and key are NEVER logged (the obs
-  redaction filter also scrubs token-shaped literals — don't rely on it, just don't log them).
-- **Concurrency:** the singleton's `refresh()` is guarded by a `threading.Lock` (the poll runs in a
-  worker thread; one refresh at a time).
+- **App not configured** → `token_for_owner` returns `None` → user token. Default state until the operator
+  sets the env + key file. No behaviour change.
+- **Owner has no installation** → `None` + one-time warning → that repo polls on the user token (graceful;
+  mirrors Plotroom's skip-with-warning, but ccswitch falls back rather than skipping the repo entirely).
+- **Mint/registry failure** (bad key, network, 5xx, 0/many installations unconfigured) → caught in the
+  facade, warning (no secret), `None` → fallback. A poll never crashes over auth.
+- **eta-checks query spans multiple owners** (it batches PRs across repos): group `open_keys` by owner and
+  run one `gh` call per owner-group with that owner's token (mirrors Plotroom's per-owner requests), OR —
+  simpler first cut — if all open keys share one owner use its token, else fall back to user token for the
+  mixed batch. **Decision: group the eta query by owner** (one `_run_gh` per owner subset) to stay on App
+  tokens; documented, tested.
+- **Token expiry / clock skew** — 5-min refresh margin; JWT `iat` backdated 60s (verbatim).
+- **Secret hygiene** — PEM `0600`, git-ignored; token/JWT/key never logged (obs redaction also scrubs
+  token-shaped literals, but don't rely on it).
+- **Concurrency** — module singleton (signer, registry, per-inst sources) guarded by `threading.Lock`;
+  in-flight mint de-dupe per source (Plotroom's pattern).
 
-## 7. Testing (TDD)
+## 7. Testing (TDD) — all with an injected `http` fn + clock; no live GitHub; ephemeral in-test RSA keypair
 
-- `_mint_jwt`: header/payload claims (`iss=appId`, `iat` backdated, `exp`=iat+~9min); the signature
-  verifies against the RSA **public** key (generate an ephemeral RSA keypair in-test — no real App key).
-- `AppTokenProvider` with an **injected `http` fn + clock** (no live GitHub): mints once and caches;
-  reuses within margin; refreshes when within `REFRESH_MARGIN_S`; resolves a sole installation; errors
-  clearly on 0/many installations when `installation_id` unset.
-- `get_poll_token`: returns `None` when settings unset; returns `None` + warning on mint exception
-  (fallback); returns the token when configured. Assert no token/key string appears in caplog.
-- `gitrepos._run_gh(token=…)`: subprocess env carries `GH_TOKEN=<token>`; `token=None` path leaves no
-  `GH_TOKEN` and strips `GITHUB_TOKEN` (existing behaviour) — assert via an injected/echoed env.
-- `pr_population` poll path: when `get_poll_token` returns a token, `_run_gh` is called with `token=`;
-  when `None`, called without — using a stub.
-- Full backend suite green (no signature-change fan-out: `_run_gh` gains an optional kwarg; existing
-  callers unaffected).
+- `mint_jwt`/`AppJwtSigner`: header/payload claims (`iss`, `iat=now-60`, `exp=now+540`); signature
+  verifies with the public key; invalid PEM → clear error.
+- `InstallationRegistry`: `load()` maps owner→id (case-insensitive); `installation_for` hit/miss;
+  `installationId`-pinned path; 0-install and multi-install error wording.
+- `AppTokenSource`: mint+cache; reuse within margin; refresh at margin; in-flight de-dupe; cache uses
+  `expires_at`.
+- `token_for_owner`: `None` when unconfigured; per-owner routing returns the right installation's token;
+  uncovered owner → `None` + one warning; mint exception → `None` + warning; **no token/key in caplog**.
+- `gitrepos._run_gh(token=…)`: subprocess env carries `GH_TOKEN`; `token=None` leaves none + strips
+  `GITHUB_TOKEN`.
+- `pr_population`: per-repo poll passes the owner's token; eta query grouped by owner; `None` → user path.
+- Whole backend suite (the `_run_gh` optional kwarg is the only shared-helper change; existing callers
+  unaffected).
 
 ## 8. Files touched
 
-**New**
-- `server/github/app_auth.py` (+ test `server/tests/test_github_app_auth.py`).
+**New:** `server/github/app_auth.py` (+ `server/tests/test_github_app_auth.py`).
+**Modified:** `server/config.py` (3 settings, both variants); `src/ccswitch/gitrepos.py` (`_run_gh(token=)`
++ test); `server/github/pr_population.py` (per-owner token routing in both poll fns + test); `.gitignore`
+(ignore the App PEM if a default path is documented).
 
-**Modified**
-- `server/config.py` — three `CCSWITCH_GITHUB_APP_*` settings (both Settings variants).
-- `src/ccswitch/gitrepos.py` — `_run_gh(token=…)` optional kwarg (+ test).
-- `server/github/pr_population.py` — poll path passes `app_auth.get_poll_token()` to `_run_gh` (+ test).
-- `.gitignore` — ignore the App PEM if a default in-repo/`.dev` path is documented (keys never committed).
+## 9. Operational note (one-time, post-merge)
 
-## 9. Operational note (not code)
-
-After merge, the operator (one-time): copy App 4031757's private key from `pr-dashboard/config.json`
-into a `0600` PEM file, and set `CCSWITCH_GITHUB_APP_ID=4031757`,
-`CCSWITCH_GITHUB_APP_PRIVATE_KEY_PATH=<that file>`, and (recommended) `CCSWITCH_GITHUB_APP_INSTALLATION_ID`
-in the deploy env. Until then, polling transparently uses the user token (no behaviour change).
+Copy App 4031757's private key from `pr-dashboard/config.json` into a `0600` PEM file; set
+`CCSWITCH_GITHUB_APP_ID=4031757` and `CCSWITCH_GITHUB_APP_PRIVATE_KEY_PATH=<file>` (leave
+`INSTALLATION_ID` unset so the registry maps all owners). Until set, polling stays on the user token.
 
 ## 10. Risks
 
-- **Private key handling** — `0600` file, git-ignored, never logged; the env points at it. The plan must
-  not commit a key or print it in tests (tests use an ephemeral in-test keypair).
-- **Installation scope** — App 4031757's installation must cover the watched repos (it polls Plotroom's
-  repos today, which overlap). If a watched repo isn't in the installation, that repo's poll 404s under
-  the App token; the fallback covers the not-configured case, but a misscoped install would need the
-  per-repo error to degrade gracefully — log + skip that repo (population already best-effort per repo).
-- **`gh` GH_TOKEN precedence** — confirm `gh` uses `GH_TOKEN` over a keyring login (it does); the
-  `_run_gh(token=)` path sets it explicitly.
-- **No signature-change fan-out** — `_run_gh` gains an optional kwarg; the poll path is the only new
-  caller. Whole-suite run still recommended (it's the `gitrepos` shared helper).
+- **Installation coverage** — App 4031757 must be installed on every watched owner (cairnea, steiner385).
+  An uncovered owner falls back to the user token (logged once) — correct, but the rate-limit win only
+  applies to covered owners. The registry + per-owner routing is exactly why we mimic Plotroom rather
+  than use one global token.
+- **Private key handling** — `0600`, git-ignored, never logged; tests use an ephemeral keypair, never the
+  real key.
+- **`gh` GH_TOKEN precedence** — confirmed `gh` prefers `GH_TOKEN`; `_run_gh(token=)` sets it explicitly.
+- **No signature-change fan-out** — `_run_gh` gains an optional kwarg; whole-suite run still recommended.
