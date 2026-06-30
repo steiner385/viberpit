@@ -18,7 +18,6 @@ import asyncio
 import logging
 import os
 import signal
-import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -116,6 +115,7 @@ class ReauthManager:
         self._x11 = x11
         self._state = ReauthState()
         self._lock = asyncio.Lock()
+        self._setup_challenge: Any = None   # SetupTokenChallenge while awaiting_code
 
         # Wire default production runner AFTER self._state is initialised so
         # the closure can write self._state._temp_profile.
@@ -199,8 +199,8 @@ class ReauthManager:
         Args:
             name:     account name.
             identity: identity/email for display.
-            mode:     "login" (default) uses the OAuth browser flow;
-                      "setup_token" uses the PTY-driven setup-token flow.
+            mode:     "login" (default) uses the OAuth browser flow (Chrome runner);
+                      "setup_token" uses the in-process PKCE OAuth exchange.
 
         Raises:
             ReauthNoKey:  no encryption key is configured (would store plaintext).
@@ -213,17 +213,28 @@ class ReauthManager:
             if self._state.state in ("running", "cancelling"):
                 raise ReauthBusy(self._state.identity, self._state.started_at)
 
-            self._state = ReauthState(
-                state="running",
-                identity=identity,
-                started_at=time.time(),
-            )
-            self._mode = mode
-            # Code-handoff primitives for setup_token flow (reset each run)
-            self._code_event = threading.Event()
-            self._submitted_code: str | None = None
-            task = asyncio.create_task(self._run(name))
-            self._state._task = task
+            if mode == "setup_token":
+                # In-process PKCE flow — no PTY/subprocess needed.
+                # begin() is fast (pure crypto), safe to call under the lock.
+                from ccswitch import setup_token_oauth
+                challenge = setup_token_oauth.begin()
+                self._setup_challenge = challenge
+                self._state = ReauthState(
+                    state="awaiting_code",
+                    identity=identity,
+                    started_at=time.time(),
+                    auth_url=challenge.authorize_url,
+                )
+                # No background task — submit_code() does the async exchange.
+            else:
+                self._state = ReauthState(
+                    state="running",
+                    identity=identity,
+                    started_at=time.time(),
+                )
+                self._mode = mode
+                task = asyncio.create_task(self._run(name))
+                self._state._task = task
 
         return ReauthState(
             state=self._state.state,
@@ -258,11 +269,7 @@ class ReauthManager:
             self._state.state = "cancelling"
             task = self._state._task
 
-        # Unblock any thread waiting in _setup_token_runner._get_code on the event
-        if getattr(self, "_code_event", None) is not None:
-            self._code_event.set()
-
-        # Kill the launcher Chrome window if we know its PID
+        # Kill the launcher Chrome window if we know its PID (login mode only)
         self._kill_launcher()
 
         if task is not None and not task.done():
@@ -317,14 +324,9 @@ class ReauthManager:
     # ------------------------------------------------------------------
 
     async def _run(self, name: str) -> None:
-        """Execute the runner under a timeout and update state on completion."""
-        runner = (
-            self._setup_token_runner
-            if getattr(self, "_mode", "login") == "setup_token"
-            else self._runner
-        )
+        """Execute the login runner under a timeout and update state on completion."""
         try:
-            result = await asyncio.wait_for(runner(name), timeout=self._timeout_s)
+            result = await asyncio.wait_for(self._runner(name), timeout=self._timeout_s)
             async with self._lock:
                 if self._state.state in ("running", "awaiting_code"):
                     self._state.state = "success" if result else "error"
@@ -354,49 +356,8 @@ class ReauthManager:
                     self._state.message = str(exc)
             log.exception("reauth error for %r: %s", name, exc)
 
-    async def _setup_token_runner(self, name: str) -> bool:
-        """Async runner for the setup-token flow.
-
-        Drives capture_setup_token in a worker thread via asyncio.to_thread.
-        The on_url callback writes the URL into state (awaiting_code) from the
-        worker thread — same established pattern as _production_runner mutating
-        self._state._temp_profile from a thread.
-        The get_code callback blocks the worker thread until submit_code() sets
-        the threading.Event, bounded by the overall _run timeout.
-        """
-        from ccswitch.auth_login import capture_setup_token
-
-        manager = self
-
-        def _on_url(url: str) -> None:
-            # worker-thread context: mutating _state from thread is an established pattern here
-            manager._state.auth_url = url
-            manager._state.state = "awaiting_code"
-
-        def _get_code() -> str:
-            # block until the API calls submit_code(); the _run timeout cancels the task
-            # if this never resolves, so we use _timeout_s as a belt-and-suspenders guard
-            manager._code_event.wait(timeout=manager._timeout_s)
-            if manager._state.state != "cancelling":
-                manager._state.state = "running"   # back to processing once we have the code
-            return manager._submitted_code or ""
-
-        def _on_pid(pid: int) -> None:
-            # worker-thread context: same established pattern as mutating _state
-            # from threads elsewhere in this module.  Stores the child PID so
-            # cancel() → _kill_launcher() can signal it.
-            manager._state._launcher_pid = pid
-
-        return await asyncio.to_thread(
-            capture_setup_token,
-            name,
-            on_url=_on_url,
-            get_code=_get_code,
-            on_pid=_on_pid,
-        )
-
     async def submit_code(self, name: str, code: str) -> ReauthState:
-        """Unblock the setup-token runner by providing the pasted OAuth code.
+        """Exchange the pasted OAuth code for a long-lived setup-token and store it.
 
         If the manager is not in the ``awaiting_code`` state this is a no-op
         (returns the current state snapshot without raising).
@@ -404,16 +365,53 @@ class ReauthManager:
         async with self._lock:
             if self._state.state != "awaiting_code":
                 return self.status(name)   # nothing waiting; no-op snapshot
-            self._submitted_code = code
-        self._code_event.set()
+            challenge = self._setup_challenge
+            # M-A: claim the slot before releasing the lock so a concurrent
+            # duplicate submit_code (e.g. mobile double-tap) sees state !=
+            # "awaiting_code" and returns the in-progress snapshot instead of
+            # firing a second exchange.
+            self._state.state = "running"
+            self._state.message = None
+
+        from ccswitch import accounts, crypto, setup_token_oauth
+
+        try:
+            token = await asyncio.to_thread(setup_token_oauth.exchange, code, challenge)
+            await asyncio.to_thread(crypto.store_oauth_token, name, token)
+            await asyncio.to_thread(accounts.mark_reauthenticated, name)
+            async with self._lock:
+                self._state.state = "success"
+                self._state.message = None
+        except setup_token_oauth.SetupTokenStateMismatch:
+            await self._fail(name, "Code didn't match this request — restart generation.")
+        except setup_token_oauth.SetupTokenInvalidCode:
+            await self._fail(name, "Code invalid or expired — generate a new one.")
+        except setup_token_oauth.SetupTokenTransient:
+            await self._fail(name, "Couldn't reach the token service — try again.")
+        except setup_token_oauth.SetupTokenError as exc:
+            log.warning("setup-token exchange failed for %r: %s", name, exc)
+            await self._fail(name, "Token service returned no token.")
+        except Exception as exc:
+            # M-C: catch unexpected failures (e.g. crypto/accounts errors) so
+            # the UI never hangs in awaiting_code/running.  Never log the token
+            # or the pasted code.
+            log.warning("setup-token unexpected error for %r: %s", name, exc)
+            await self._fail(name, "Token generation failed — try again.")
+
         return self.status(name)
 
-    def _kill_launcher(self) -> None:
-        """Signal any tracked child process to terminate.
+    async def _fail(self, name: str, msg: str) -> None:
+        """Set error state with a user-facing message; log at WARNING (no token/code)."""
+        log.warning("reauth setup-token error for %r: %s", name, msg)
+        async with self._lock:
+            self._state.state = "error"
+            self._state.message = msg
 
-        _state._launcher_pid — used for the setup-token child (set via on_pid).
-            The child runs in its own session (os.setsid), so we kill the whole
-            process group to catch any sub-processes it may have spawned.
+    def _kill_launcher(self) -> None:
+        """Signal any tracked Chrome launcher process to terminate.
+
+        _state._launcher_pid — set by the Chrome login path if needed.
+            Kills the whole process group to catch sub-processes it spawned.
 
         _state._temp_profile/launcher.pid — used for the Chrome reauth browser.
             A single SIGTERM to the launcher script PID is sufficient here.
@@ -422,7 +420,7 @@ class ReauthManager:
         if pid is not None:
             try:
                 os.killpg(os.getpgid(pid), signal.SIGTERM)
-                log.info("sent SIGTERM to process group of setup-token child PID %d", pid)
+                log.info("sent SIGTERM to process group of launcher PID %d", pid)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
             self._state._launcher_pid = None
