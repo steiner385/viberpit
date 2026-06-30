@@ -7,7 +7,7 @@ import { StageTrack } from './StageTrack'
 import { CheckDrillDown } from './CheckDrillDown'
 import { StageTiles } from './StageTiles'
 import { useAllPrs, useFixPr, useStageModels } from '@/api/hooks'
-import { isActionablePrState } from '@/session/prStatus'
+import { isActionablePrState, anyChecksFailing } from '@/session/prStatus'
 import { stageBucketOf, type StageBucket } from '@/session/stageBucket'
 import type { PipelinePr, StageModel } from '@/api/types'
 
@@ -15,6 +15,7 @@ export function PipelineBoard({
   prs,
   stageModels,
   activeStages,
+  failedOnly = false,
   updatedAt,
   onOpenSession,
   onFixPr,
@@ -22,6 +23,7 @@ export function PipelineBoard({
   prs: PipelinePr[]
   stageModels: Record<string, StageModel>
   activeStages: Set<StageBucket>
+  failedOnly?: boolean
   updatedAt: number
   onOpenSession?: (sessionId: string) => void
   onFixPr?: (sessionId: string, number: number) => void
@@ -31,17 +33,20 @@ export function PipelineBoard({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const toggleExpand = (key: string) => setExpanded((e) => ({ ...e, [key]: !e[key] }))
 
-  const shown = activeStages.size === 0
+  // Stage tiles are an OR-set (empty = all); "Failed" is an AND status facet.
+  const stageShown = activeStages.size === 0
     ? prs
     : prs.filter((p) => {
         const b = stageBucketOf(p, stageModels[p.repo ?? ''])
         return b != null && activeStages.has(b)
       })
+  const shown = failedOnly ? stageShown.filter((p) => anyChecksFailing([p])) : stageShown
 
   if (shown.length === 0) {
+    const filtered = activeStages.size > 0 || failedOnly
     return (
       <p className="text-sm text-muted-foreground py-8 text-center">
-        {activeStages.size > 0 ? 'No PRs match the selected stages.' : 'No open PRs in your repos.'}
+        {filtered ? 'No PRs match the selected filters.' : 'No open PRs in your repos.'}
       </p>
     )
   }
@@ -168,6 +173,7 @@ export function PipelineView() {
   const { data: stageModels = {} } = useStageModels()
   const fixPr = useFixPr()
   const [active, setActive] = useState<Set<StageBucket>>(new Set())
+  const [failedOnly, setFailedOnly] = useState(false)
   const onToggle = (b: StageBucket) =>
     setActive((prev) => {
       const next = new Set(prev)
@@ -177,11 +183,19 @@ export function PipelineView() {
     })
   return (
     <div className="space-y-3">
-      <StageTiles prs={prs} stageModels={stageModels} active={active} onToggle={onToggle} />
+      <StageTiles
+        prs={prs}
+        stageModels={stageModels}
+        active={active}
+        onToggle={onToggle}
+        failedActive={failedOnly}
+        onToggleFailed={() => setFailedOnly((v) => !v)}
+      />
       <PipelineBoard
         prs={prs}
         stageModels={stageModels}
         activeStages={active}
+        failedOnly={failedOnly}
         updatedAt={dataUpdatedAt}
         onOpenSession={(id) => navigate(`/session/${id}`)}
         onFixPr={(id, number) => fixPr.mutate({ id, number })}

@@ -180,4 +180,84 @@ describe('PipelineBoard', () => {
     render(<PipelineBoard prs={prs} stageModels={{}} activeStages={new Set()} updatedAt={Date.now()} />)
     expect(screen.getByTestId('pipeline-row-1')).toBeInTheDocument()
   })
+
+  it('failedOnly shows only PRs whose checks are failing', () => {
+    render(
+      <PipelineBoard
+        prs={[
+          pr({ number: 1, repo: 'o/n', stage: 'ci', checks: 'failing' }),
+          pr({ number: 2, repo: 'o/n', stage: 'ready', checks: 'passing' }),
+        ]}
+        stageModels={models}
+        activeStages={new Set()}
+        updatedAt={Date.now()}
+        failedOnly
+      />,
+    )
+    expect(screen.getByTestId('pipeline-row-1')).toBeInTheDocument()
+    expect(screen.queryByTestId('pipeline-row-2')).toBeNull()
+  })
+
+  it('failedOnly excludes a closed PR with a frozen failing rollup', () => {
+    render(
+      <PipelineBoard
+        prs={[
+          pr({ number: 1, repo: 'o/n', stage: 'ci', checks: 'failing', state: 'open' }),
+          pr({ number: 2, repo: 'o/n', stage: 'ci', checks: 'failing', state: 'closed' }),
+        ]}
+        stageModels={models}
+        activeStages={new Set()}
+        updatedAt={Date.now()}
+        failedOnly
+      />,
+    )
+    expect(screen.getByTestId('pipeline-row-1')).toBeInTheDocument()
+    expect(screen.queryByTestId('pipeline-row-2')).toBeNull()
+  })
+
+  it('failedOnly AND-combines with the active stage filter', () => {
+    const ciStates = [
+      { id: 'ci', state: 'failed' as const },
+      { id: 'ready', state: 'pending' as const },
+      { id: 'merged', state: 'pending' as const },
+    ]
+    const readyStates = [
+      { id: 'ci', state: 'done' as const },
+      { id: 'ready', state: 'active' as const },
+      { id: 'merged', state: 'pending' as const },
+    ]
+    render(
+      <PipelineBoard
+        prs={[
+          // CI bucket + failing → kept by BOTH filters
+          pr({ number: 1, repo: 'o/n', stage: 'ci', checks: 'failing', node_states: ciStates }),
+          // CI bucket + passing → kept by stage, dropped by failedOnly
+          pr({ number: 2, repo: 'o/n', stage: 'ci', checks: 'passing', node_states: ciStates }),
+          // Ready bucket + failing → kept by failedOnly, dropped by the stage filter
+          pr({ number: 3, repo: 'o/n', stage: 'ready', checks: 'failing', node_states: readyStates }),
+        ]}
+        stageModels={models}
+        activeStages={new Set<StageBucket>(['ci'])}
+        updatedAt={Date.now()}
+        failedOnly
+      />,
+    )
+    expect(screen.getByTestId('pipeline-row-1')).toBeInTheDocument()
+    expect(screen.queryByTestId('pipeline-row-2')).toBeNull()
+    expect(screen.queryByTestId('pipeline-row-3')).toBeNull()
+  })
+
+  it('failedOnly with no failing PRs shows a filtered empty state', () => {
+    render(
+      <PipelineBoard
+        prs={[pr({ number: 1, repo: 'o/n', stage: 'ci', checks: 'passing' })]}
+        stageModels={models}
+        activeStages={new Set()}
+        updatedAt={Date.now()}
+        failedOnly
+      />,
+    )
+    expect(screen.queryByTestId('pipeline-row-1')).toBeNull()
+    expect(screen.getByText(/no prs match/i)).toBeInTheDocument()
+  })
 })
