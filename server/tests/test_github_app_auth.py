@@ -2,10 +2,14 @@ import base64
 import json
 import time
 
+import pytest
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 
 from server.github.app_auth import mint_jwt, AppJwtSigner
+from server.github.app_auth import (
+    InstallationRegistry, AppTokenSource, GhAppError, REFRESH_MARGIN_S,
+)
 
 
 def _keypair():
@@ -48,6 +52,60 @@ def test_signer_loads_pem_once_and_mints():
 
 
 def test_signer_rejects_bad_pem():
-    import pytest
     with pytest.raises(Exception):
         AppJwtSigner(1, "not a pem", clock=lambda: 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: InstallationRegistry + AppTokenSource + GhAppError + REFRESH_MARGIN_S
+# ---------------------------------------------------------------------------
+
+class _FakeRest:
+    """Records calls; returns canned JSON per (method, path)."""
+    def __init__(self, routes): self.routes = routes; self.calls = []
+    def __call__(self, method, path, jwt):
+        self.calls.append((method, path))
+        for (m, p), resp in self.routes.items():
+            if m == method and (p == path or (p.endswith("*") and path.startswith(p[:-1]))):
+                if isinstance(resp, Exception): raise resp
+                return resp
+        raise GhAppError(f"GitHub App REST {method} {path}: HTTP 404")
+
+
+def _signer():
+    _key, pem = _keypair()
+    return AppJwtSigner(4031757, pem, clock=lambda: 1_700_000_000.0)
+
+
+def test_registry_maps_owner_case_insensitive():
+    rest = _FakeRest({("GET", "/app/installations"): [
+        {"id": 11, "account": {"login": "cairnea"}},
+        {"id": 22, "account": {"login": "Steiner385"}},
+    ]})
+    reg = InstallationRegistry(_signer(), rest)
+    reg.load()
+    assert reg.installation_for("cairnea") == 11
+    assert reg.installation_for("steiner385") == 22   # case-insensitive
+    assert reg.installation_for("unknown") is None
+
+
+def test_registry_no_installations_errors():
+    rest = _FakeRest({("GET", "/app/installations"): []})
+    with pytest.raises(GhAppError):
+        InstallationRegistry(_signer(), rest).load()
+
+
+def test_token_source_caches_until_margin_then_refreshes():
+    t = [1_700_000_000.0]
+    rest = _FakeRest({
+        ("POST", "/app/installations/11/access_tokens"):
+            # expires_at = clock + 3600 so (expires_at - now)=3600 > REFRESH_MARGIN_S=300
+            {"token": "ghs_AAA", "expires_at": "2023-11-14T23:13:20Z"},
+    })
+    # expires_at parses to an epoch; first get mints
+    src = AppTokenSource(_signer(), 11, rest, clock=lambda: t[0])
+    tok1 = src.get()
+    assert tok1 == "ghs_AAA"
+    assert len(rest.calls) == 1   # minted once
+    tok2 = src.get()
+    assert tok2 == "ghs_AAA" and len(rest.calls) == 1  # cached, no second mint
