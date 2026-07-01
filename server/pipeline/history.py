@@ -68,6 +68,32 @@ class CheckFlakeStat:
 _FLAKE_PASS = {"success"}
 _FLAKE_FAIL = {"failure", "cancelled", "timed_out", "error", "action_required"}
 
+_REG_RECENT_K = 10
+_REG_PRIOR_N = 20
+_REG_MIN = 30
+_REG_RATIO = 1.5
+_REG_MIN_DELTA = 60.0
+
+
+@dataclass(frozen=True)
+class CheckRegressionStat:
+    check_name: str
+    event: str
+    prior_p50: float
+    recent_p50: float
+    ratio: float
+    since: str
+
+    def to_dict(self) -> dict:
+        return {
+            "check_name": self.check_name,
+            "event": self.event,
+            "prior_p50": self.prior_p50,
+            "recent_p50": self.recent_p50,
+            "ratio": self.ratio,
+            "since": self.since,
+        }
+
 
 def _parse_iso_ms(iso: str) -> float:
     """ms since epoch from an ISO-8601 string (tolerant of trailing Z)."""
@@ -172,6 +198,44 @@ class HistoryStore:
                 flaky_commits=flaky, total_commits=total, n=totals[key]))
         stats.sort(key=lambda x: (x.flake_pct, x.flaky_commits), reverse=True)
         return stats[:limit]
+
+    def duration_regressions(self, repo: str) -> list[CheckRegressionStat]:
+        """Checks whose rolling-median SUCCESS duration stepped up (Plotroom
+        measureDurationStep). Window-independent: last 10 vs prior 20 samples."""
+        pairs = self._conn.execute(
+            "SELECT DISTINCT check_name, event FROM check_durations WHERE repo=?",
+            (repo,),
+        ).fetchall()
+        out: list[CheckRegressionStat] = []
+        for p in pairs:
+            rows = self._conn.execute(
+                "SELECT duration_secs, completed_at FROM check_durations "
+                "WHERE repo=? AND check_name=? AND event=? AND conclusion='SUCCESS' "
+                "ORDER BY completed_at DESC LIMIT ?",
+                (repo, p["check_name"], p["event"], _REG_MIN),
+            ).fetchall()
+            if len(rows) < _REG_MIN:
+                continue
+            durs = [float(r["duration_secs"]) for r in rows]
+            recent = median(durs[:_REG_RECENT_K])
+            prior = median(durs[_REG_RECENT_K:_REG_MIN])
+            if prior <= 0:
+                continue
+            ratio = recent / prior
+            if ratio < _REG_RATIO or (recent - prior) < _REG_MIN_DELTA:
+                continue
+            out.append(
+                CheckRegressionStat(
+                    check_name=p["check_name"],
+                    event=p["event"],
+                    prior_p50=prior,
+                    recent_p50=recent,
+                    ratio=ratio,
+                    since=rows[_REG_RECENT_K - 1]["completed_at"],
+                )
+            )
+        out.sort(key=lambda s: s.ratio, reverse=True)
+        return out
 
     def expected_runner_wait(self, repo: str, name: str, event: str) -> float | None:
         rows = self._conn.execute(

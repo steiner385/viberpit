@@ -72,3 +72,57 @@ def test_flakiest_checks_math(tmp_path):
     assert "skiponly" not in by                          # no definite outcome → dropped
     # ranked flakiest-first
     assert s.flakiest_checks("o/n", since_iso="2026-01-01T00:00:00Z")[0].check_name == "flaky"
+
+
+def _dur_rows(check, event, durs):
+    # durs is oldest→newest; completed_at increases so ORDER BY completed_at DESC
+    # yields newest first. All SUCCESS. 9-column tuples matching _store's INSERT.
+    rows = []
+    for i, d in enumerate(durs):
+        ts = f"2026-06-{i+1:02d}T00:00:00Z"
+        rows.append(("o/r", check, event, float(d), ts, "SUCCESS", "", 1, i + 1))
+    return rows
+
+
+def test_duration_regressions_flags_a_real_step(tmp_path):
+    # 20 prior samples ~30s, 10 recent ~120s → ratio 4, delta 90 → flagged.
+    durs = [30.0] * 20 + [120.0] * 10
+    st = _store(tmp_path, _dur_rows("slow-check", "pull_request", durs))
+    regs = st.duration_regressions("o/r")
+    assert len(regs) == 1
+    r = regs[0]
+    assert r.check_name == "slow-check" and r.event == "pull_request"
+    assert r.prior_p50 == 30.0 and r.recent_p50 == 120.0
+    assert r.ratio == 4.0
+    # since = oldest completed_at of the recent-10 window = the 21st inserted row (day 21)
+    assert r.since == "2026-06-21T00:00:00Z"
+
+
+def test_duration_regressions_ignores_below_ratio(tmp_path):
+    # recent 40 vs prior 30 → ratio 1.33 < 1.5 → not flagged.
+    durs = [30.0] * 20 + [40.0] * 10
+    st = _store(tmp_path, _dur_rows("mild", "push", durs))
+    assert st.duration_regressions("o/r") == []
+
+
+def test_duration_regressions_ignores_below_abs_delta(tmp_path):
+    # recent 75 vs prior 50 → ratio 1.5 but delta 25 < 60 → not flagged.
+    durs = [50.0] * 20 + [75.0] * 10
+    st = _store(tmp_path, _dur_rows("smallabs", "push", durs))
+    assert st.duration_regressions("o/r") == []
+
+
+def test_duration_regressions_needs_min_samples(tmp_path):
+    durs = [10.0] * 15 + [200.0] * 10  # only 25 samples < 30
+    st = _store(tmp_path, _dur_rows("thin", "push", durs))
+    assert st.duration_regressions("o/r") == []
+
+
+def test_duration_regressions_sorted_by_ratio_desc(tmp_path):
+    # "a": prior=20, recent=80 → ratio 4, delta 60 → flagged
+    # "b": prior=10, recent=100 → ratio 10, delta 90 → flagged; b ranks first
+    rows = _dur_rows("a", "push", [20.0] * 20 + [80.0] * 10)
+    rows += _dur_rows("b", "push", [10.0] * 20 + [100.0] * 10)
+    st = _store(tmp_path, rows)
+    regs = st.duration_regressions("o/r")
+    assert [r.check_name for r in regs] == ["b", "a"]
