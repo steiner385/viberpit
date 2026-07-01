@@ -851,7 +851,7 @@ class SessionOrchestrator:
         from ccswitch.oauth import AuthError
         try:
             await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, account)
-        except AuthError as exc:
+        except (AuthError, FileNotFoundError) as exc:
             log.debug("title gen skipped — token refresh failed account=%s: %s", account, exc)
             return None
         return await generate_title(prompts, config_dir=str(compose(account)), cwd=cwd)
@@ -1938,7 +1938,7 @@ class SessionOrchestrator:
             from ccswitch.oauth import AuthError
             try:
                 await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, rec.account)
-            except AuthError:
+            except (AuthError, FileNotFoundError):
                 self._detached_suggestions[session_id] = (signature, [])
                 return
             events = await replay_events(path)
@@ -1985,7 +1985,7 @@ class SessionOrchestrator:
             from ccswitch.oauth import AuthError
             try:
                 await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, rec.account)
-            except AuthError:
+            except (AuthError, FileNotFoundError):
                 return []
             path = await self._resolve_transcript_path(session_id)
             if not path:
