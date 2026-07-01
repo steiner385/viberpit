@@ -21,15 +21,15 @@ def _store(tmp_path, rows):
 def test_slowest_checks_ranks_by_p50_with_ratio(tmp_path):
     rows = [
         # slow check: durations 100,100,100,900 (p90 high → ratio > 1)
-        ("o/n", "slow", "pr", 100, "2026-07-01T00:00:00Z", "success", "s1", 1, 1),
-        ("o/n", "slow", "pr", 100, "2026-07-01T00:00:00Z", "success", "s2", 1, 2),
-        ("o/n", "slow", "pr", 100, "2026-07-01T00:00:00Z", "success", "s3", 1, 3),
-        ("o/n", "slow", "pr", 900, "2026-07-01T00:00:00Z", "success", "s4", 1, 4),
+        ("o/n", "slow", "pr", 100, "2026-07-01T00:00:00Z", "SUCCESS", "s1", 1, 1),
+        ("o/n", "slow", "pr", 100, "2026-07-01T00:00:00Z", "SUCCESS", "s2", 1, 2),
+        ("o/n", "slow", "pr", 100, "2026-07-01T00:00:00Z", "SUCCESS", "s3", 1, 3),
+        ("o/n", "slow", "pr", 900, "2026-07-01T00:00:00Z", "SUCCESS", "s4", 1, 4),
         # fast check
-        ("o/n", "fast", "pr", 10, "2026-07-01T00:00:00Z", "success", "f1", 1, 5),
-        ("o/n", "fast", "pr", 10, "2026-07-01T00:00:00Z", "success", "f2", 1, 6),
+        ("o/n", "fast", "pr", 10, "2026-07-01T00:00:00Z", "SUCCESS", "f1", 1, 5),
+        ("o/n", "fast", "pr", 10, "2026-07-01T00:00:00Z", "SUCCESS", "f2", 1, 6),
         # a FAILURE row must be ignored by the duration panel
-        ("o/n", "fast", "pr", 9999, "2026-07-01T00:00:00Z", "failure", "f3", 1, 7),
+        ("o/n", "fast", "pr", 9999, "2026-07-01T00:00:00Z", "FAILURE", "f3", 1, 7),
     ]
     s = _store(tmp_path, rows)
     out = s.slowest_checks("o/n", since_iso="2026-01-01T00:00:00Z")
@@ -41,8 +41,8 @@ def test_slowest_checks_ranks_by_p50_with_ratio(tmp_path):
 
 def test_slowest_checks_filters_by_window(tmp_path):
     rows = [
-        ("o/n", "c", "pr", 50, "2026-06-01T00:00:00Z", "success", "a", 1, 1),  # old
-        ("o/n", "c", "pr", 60, "2026-07-01T00:00:00Z", "success", "b", 1, 2),  # in window
+        ("o/n", "c", "pr", 50, "2026-06-01T00:00:00Z", "SUCCESS", "a", 1, 1),  # old
+        ("o/n", "c", "pr", 60, "2026-07-01T00:00:00Z", "SUCCESS", "b", 1, 2),  # in window
     ]
     s = _store(tmp_path, rows)
     out = s.slowest_checks("o/n", since_iso="2026-06-15T00:00:00Z")
@@ -52,16 +52,16 @@ def test_slowest_checks_filters_by_window(tmp_path):
 def test_flakiest_checks_math(tmp_path):
     rows = [
         # 'flaky': commit A fails then passes (same sha) → flaky; commit B passes → clean
-        ("o/n", "flaky", "pr", 1, "2026-07-01T00:00:00Z", "failure", "A", 1, 1),
-        ("o/n", "flaky", "pr", 1, "2026-07-01T00:00:00Z", "success", "A", 2, 2),
-        ("o/n", "flaky", "pr", 1, "2026-07-01T00:00:00Z", "success", "B", 1, 3),
+        ("o/n", "flaky", "pr", 1, "2026-07-01T00:00:00Z", "FAILURE", "A", 1, 1),
+        ("o/n", "flaky", "pr", 1, "2026-07-01T00:00:00Z", "SUCCESS", "A", 2, 2),
+        ("o/n", "flaky", "pr", 1, "2026-07-01T00:00:00Z", "SUCCESS", "B", 1, 3),
         # 'solid': always green over two commits → 0%
-        ("o/n", "solid", "pr", 1, "2026-07-01T00:00:00Z", "success", "C", 1, 4),
-        ("o/n", "solid", "pr", 1, "2026-07-01T00:00:00Z", "success", "D", 1, 5),
+        ("o/n", "solid", "pr", 1, "2026-07-01T00:00:00Z", "SUCCESS", "C", 1, 4),
+        ("o/n", "solid", "pr", 1, "2026-07-01T00:00:00Z", "SUCCESS", "D", 1, 5),
         # 'broken': always fails → 0% (no pass, so no flake)
-        ("o/n", "broken", "pr", 1, "2026-07-01T00:00:00Z", "failure", "E", 1, 6),
+        ("o/n", "broken", "pr", 1, "2026-07-01T00:00:00Z", "FAILURE", "E", 1, 6),
         # 'skiponly': skipped only → excluded entirely (no definite outcome)
-        ("o/n", "skiponly", "pr", 1, "2026-07-01T00:00:00Z", "skipped", "F", 1, 7),
+        ("o/n", "skiponly", "pr", 1, "2026-07-01T00:00:00Z", "SKIPPED", "F", 1, 7),
     ]
     s = _store(tmp_path, rows)
     by = {x.check_name: x for x in s.flakiest_checks("o/n", since_iso="2026-01-01T00:00:00Z")}

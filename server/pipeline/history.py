@@ -116,7 +116,7 @@ class HistoryStore:
         self, repo: str, since_iso: str, limit: int = 10, event: str | None = None,
     ) -> "list[CheckDurationStat]":
         q = ("SELECT check_name, event, duration_secs FROM check_durations "
-             "WHERE repo=? AND UPPER(conclusion)='SUCCESS' AND completed_at >= ?")
+             "WHERE repo=? AND conclusion='SUCCESS' AND completed_at >= ?")
         args: list = [repo, since_iso]
         if event is not None:
             q += " AND event=?"
