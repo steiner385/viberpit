@@ -42,11 +42,38 @@ The bug only manifests on **reconnect** (mobile network blips, laptop sleep, red
 and on **second viewers** (desktop + phone, two tabs) — exactly the intermittent pattern
 reported.
 
+## Verified transcript behavior (spike, 2026-07-01)
+
+Confirmed against the real `claude` binary (v2.1.197) — both an isolated headless run
+polled mid-stream and a real ccswitch/SDK transcript:
+
+- The CLI writes **one JSONL line per content block**, each with its own `entry.uuid`
+  (blocks of one API message share `msg.id` but are separate lines).
+- A **partial, still-streaming block is absent from disk** until it completes: in the
+  spike the assistant text stayed 0 chars on disk for ~33s, then jumped to full (4589) in
+  one step — never written incrementally.
+- **Completed** blocks of an in-progress turn **are** flushed mid-turn (real transcript:
+  block timestamps :16.7 / :17.1 / :18.8 spread across the turn, before it ended).
+- The **user line is flushed at send, before any assistant output** (spike: user line on
+  disk at t=3.9s while 0 assistant blocks existed; real transcript: user :09 vs assistant :16).
+
+**Implication:** on a mid-stream reconnect the JSONL holds `[prior turns] + [current turn's
+user line + its completed blocks]`, missing only the in-flight block. Naively replaying the
+JSONL and then the driver buffer therefore duplicates the current turn's completed blocks.
+Because the user line is reliably on disk before streaming, "exclude from the last real user
+line" reliably identifies the in-progress turn with no flush-race in practice.
+
+Live (translator) and replay (replay.py) also use different turn-id schemes at different
+granularities (live: one stable `tid` per logical turn, reset at `ResultMessage`; replay:
+one `TurnStart`/`TurnEnd` per block keyed by `entry.uuid`), so there is no shared key to
+dedup the two sources. The stitch must make them cover **disjoint** logical turns.
+
 ## Design
 
 The fix gives the authoritative producer a bounded, replayable record of the current turn,
 and makes each mode backfill it on attach through its natural mechanism — coordinated at a
-single, mode-agnostic seam in `ws.py`.
+single, mode-agnostic seam in `ws.py`. The JSONL replay is trimmed to exclude the
+in-progress logical turn so the two sources never overlap.
 
 ### Layer 1 — driver (in-process)
 
@@ -64,6 +91,9 @@ single, mode-agnostic seam in `ws.py`.
    existing frontend reducer already understands. A coalesced text block is emitted as a
    single `TextDelta` carrying the full accumulated text; after the client's `replayReset`
    the reducer builds the block from that one delta, and subsequent live deltas append to it.
+   **`turn_active -> bool`** — a public property (`bool(self._turn_active)`) that `ws.py` reads
+   to decide `drop_incomplete_turn`. `RemoteDriver` exposes the same attribute from the
+   `ensure_driver` snapshot.
 
 3. **Broadcast fan-out** — replace the single destructive `_out` queue with per-subscriber
    fan-out:
@@ -87,33 +117,57 @@ single, mode-agnostic seam in `ws.py`.
 
 ### Layer 2 — remote/daemon
 
-4. **Subscribe from turn start, not from now.** The daemon's `_pump` tracks a
-   `turn_start_seq` per stream, reset when it publishes a `UserMessage`. `ensure_driver`
-   returns `turn_start_seq`; `RemoteDriver.events()` subscribes `since=turn_start_seq - 1`
-   so the daemon replays the whole in-progress turn from its existing ring buffer.
+4. **Subscribe from turn start, not from now.** In `daemon.py` `publish`, track two
+   per-stream values derived from the published wire events:
+   - `turn_start_seq[stream]` — set to the current `seq` when `event["type"] == "user"`.
+   - `turn_open[stream]` — `True` on a `user` event; `False` on a `turnEnd` event **or** a
+     `status` event whose `state` is terminal (`done`/`complete`/`needs_attention`/`idle`).
+     Belt-and-suspenders so an error turn that emits no `turnEnd` still closes on its status.
+
+   `ensure_driver` returns `resume_seq = turn_start_seq[stream] - 1 if turn_open[stream] else
+   head_seq(stream)`, plus `turn_active = turn_open[stream]`. `RemoteDriver.events()` subscribes
+   `since=resume_seq`; when a turn is open this replays the whole in-progress turn from the ring,
+   otherwise it is from-now (the JSONL already has everything).
    - Bump the default replay-ring size (`CCSWITCH_IPC_REPLAY_BUFFER`) so a normal turn fits.
    - Overflow (a turn longer than the ring) falls back to the existing `gap_frame` →
      edge-resync-from-disk path. That is the pre-existing worst case, now narrowed to only
      turns that exceed the ring rather than every reconnect.
 
+### Trim the in-progress turn from the JSONL replay
+
+`replay_window(path, ..., drop_incomplete_turn: bool)` gains a flag. When true, it drops the
+trailing in-progress logical turn: everything from the **last real `UserMessage`** (the same
+"real user" test replay.py already applies — string/text content, has text or images, not
+`isMeta`) to the end of the file. `ws.py` passes `drop_incomplete_turn=driver.turn_active`.
+When no turn is active the flag is false and replay is unchanged.
+
 ### Uniform seam (`ws.py`)
 
-After the JSONL replay + `replayComplete`, and before starting the live stream, emit
-`driver.live_turn_events()` as one batch, then start the live stream.
+`_handle_attach` reads `active = driver.turn_active` once, replays the JSONL with
+`drop_incomplete_turn=active`, sends `replayComplete`, then — before starting the live
+stream — emits `driver.live_turn_events()` as one batch.
 
-- **In-process:** `live_turn_events()` returns the buffer (the in-progress turn); the live
-  broadcast then carries only future events. Past = buffer, future = queue, no overlap.
-- **Remote:** `RemoteDriver.live_turn_events()` returns `[]`. Remote backfill is owned by the
-  single daemon ring via `since=turn_start_seq`, so emitting the buffer here too would
-  duplicate. One source of truth per mode; the `ws.py` call site stays mode-agnostic.
+- **In-process:** `live_turn_events()` returns the buffer (the whole in-progress turn); the
+  trimmed JSONL stops before that turn; the live broadcast carries only future events.
+  JSONL = prior turns, buffer = in-progress turn, queue = future. All disjoint.
+- **Remote:** `RemoteDriver.live_turn_events()` returns `[]` and `RemoteDriver.turn_active`
+  comes from the `ensure_driver` snapshot. Remote backfill is owned by the single daemon ring
+  via `since=turn_start_seq-1`, so the in-progress turn replays from the ring while the trimmed
+  JSONL stops before it. One source of truth per mode; the `ws.py` call site stays mode-agnostic.
 
 ## Why this avoids duplication
 
-The dangerous seam is the distributed snapshot: separately snapshotting a driver-side turn
-buffer *and* a daemon-side `head_seq` can overlap by one not-yet-pumped event. By making
-`RemoteDriver.live_turn_events()` return `[]` and letting the single daemon ring own remote
-backfill (`since=turn_start_seq`), each mode has exactly one source of truth for the
-in-progress turn, and the `ws.py` seam never double-counts.
+Two disjointness rules eliminate every overlap:
+
+1. **JSONL vs in-progress turn:** the trimmed replay stops at the in-progress turn's user
+   line, so the JSONL contributes only *prior* turns; the in-progress turn comes solely from
+   the buffer (in-process) or the ring (remote). Verified safe by the spike: the user line is
+   on disk before streaming, so the trim boundary is unambiguous.
+2. **In-progress turn vs live future:** in-process, the buffer is a synchronous snapshot at
+   subscribe time and the subscriber queue only receives later events (atomic registration).
+   Remote, the single `since=resume_seq` subscription serves both replay and live from one
+   ordered source. Making `RemoteDriver.live_turn_events()` return `[]` keeps remote to that
+   single source and avoids the distributed-snapshot overlap (driver buffer vs `head_seq`).
 
 ## Testing
 
@@ -124,17 +178,23 @@ in-progress turn, and the `ws.py` seam never double-counts.
   - `_turn_buffer` is cleared at turn settle → attach while idle replays nothing (no dup
     against JSONL).
   - `live_turn_events()` emits a single `TextDelta` per coalesced text block, in block order.
-- **Daemon test:** with a mid-turn stream, a subscriber using `since=turn_start_seq-1`
-  replays the whole turn from the ring; `turn_start_seq` resets on each `UserMessage`.
+- **Replay trim test:** `replay_window(path, drop_incomplete_turn=True)` drops everything from
+  the last real `UserMessage` onward; with `False` (or no active turn) replay is unchanged;
+  tool-result "user" lines are not treated as the trim boundary.
+- **Daemon test:** `publish` sets `turn_start_seq` on a `user` event and flips `turn_open` on
+  `user` / `turnEnd` / terminal `status`; `ensure_driver` returns `resume_seq=turn_start_seq-1`
+  while a turn is open and `head_seq` once it closes; a subscriber replays the whole turn.
 - **Integration:** simulate attach → stream partial turn → reattach; assert the reattached
   client sees the full message, not the tail.
 
 ## Known limitations
 
-- **Turn-boundary flush race:** clearing `_turn_buffer` at settle assumes the SDK has flushed
-  the completed turn to the JSONL by then. A sub-second window at the exact boundary could
-  miss the just-completed turn on a coincident attach; it self-heals on the next attach/refresh.
-  This replaces total in-progress-turn loss with a narrow boundary window — a strict improvement.
+- **Turn-boundary settle window:** `_turn_buffer` is cleared and `turn_active` flips false at
+  settle. If the SDK has not yet flushed the just-completed turn's final block to the JSONL at
+  that exact instant, a coincident attach could miss that final block (the trimmed replay no
+  longer trims it, but the disk copy may lag by <1s). Self-heals on the next attach/refresh.
+  The spike shows the user line and completed blocks are flushed promptly, so this window is
+  sub-second and far narrower than today's total in-progress-turn loss — a strict improvement.
 - **Remote long-turn overflow:** a single turn longer than the (bumped) replay ring falls back
   to disk resync, which lacks the in-progress turn. Bounded by ring size; acceptable for v1.
 
