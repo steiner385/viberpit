@@ -15,9 +15,9 @@ export function InsightsView() {
   const { data: models } = useStageModels()
   const repos = useMemo(() => Object.keys(models ?? {}).sort(), [models])
   const [repo, setRepo] = useState<string | undefined>(undefined)
-  const [window, setWindow] = useState('7d')
+  const [timeWindow, setTimeWindow] = useState('7d')
   const selected = repo ?? repos[0]
-  const { data } = useCheckInsights(selected, window)
+  const { data } = useCheckInsights(selected, timeWindow)
 
   const slowCols: Column<CheckDurationStat>[] = [
     { header: 'Check', cell: (r) => r.check_name },
@@ -48,7 +48,7 @@ export function InsightsView() {
         <label>
           Window{' '}
           <select className="rounded border border-gray-300 dark:border-gray-700 bg-transparent px-1 py-0.5"
-                  value={window} onChange={(e) => setWindow(e.target.value)}>
+                  value={timeWindow} onChange={(e) => setTimeWindow(e.target.value)}>
             {WINDOWS.map((w) => <option key={w} value={w}>{w}</option>)}
           </select>
         </label>

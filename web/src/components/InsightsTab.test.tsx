@@ -1,50 +1,73 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query'
-import * as hooks from '../api/hooks'
 import { Dashboard } from './Dashboard'
 
-function stub<T>(d: T): UseQueryResult<T> {
-  return { data: d, dataUpdatedAt: 0, isLoading: false, isError: false } as unknown as UseQueryResult<T>
-}
+vi.mock('@/api/hooks', () => ({
+  useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
+  useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
+  useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAccounts: vi.fn(() => ({ data: [], isLoading: false })),
+  useSessions: vi.fn(() => ({ data: [], isLoading: false })),
+  useCreateSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useRenameSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useCloseSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useRefreshAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useUpdateAccountNickname: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useDeleteAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useGithubRepos: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
+  useGithubBranches: vi.fn(() => ({ data: { default: null, branches: [] }, isLoading: false })),
+  useSettings: vi.fn(() => ({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false })),
+  useUpdateSettings: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useReauthAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useReauthStatus: vi.fn(() => ({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false })),
+  useCancelReauth: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useArchivedSessions: vi.fn(() => ({ data: [], isLoading: false })),
+  useUnarchiveSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  usePermanentDeleteSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useBulkUnarchiveSessions: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useBulkPermanentDeleteSessions: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useSendPrompt: () => ({ mutate: vi.fn() }),
+  useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  usePendingDeploy: () => ({ data: { behind: false, commits: [], ci: 'green' } }),
+  useDeployStatus: () => ({ data: { running: false, phases: {} } }),
+  useStartDeploy: () => ({ mutate: vi.fn(), isPending: false }),
+  useAllPrs: vi.fn(() => ({ data: [] })),
+  useStageModels: vi.fn(() => ({ data: { 'o/n': {} } })),
+  useCheckInsights: vi.fn(() => ({
+    data: { repo: 'o/n', window: '7d', slowest: [], flakiest: [] },
+    dataUpdatedAt: 0, isLoading: false, isError: false,
+  })),
+  useSessionsViewing: vi.fn(),
+  useAutomations: vi.fn(() => ({ data: [], isLoading: false })),
+  QK: {
+    accounts: ['accounts'],
+    sessions: ['sessions'],
+    archived: ['archived-sessions'],
+    config: ['config'],
+    githubRepos: ['github-repos'],
+    githubBranches: (repo?: string) => ['github-branches', repo],
+    settings: ['settings'],
+  },
+}))
 
-function mutStub(): UseMutationResult<unknown, unknown, unknown, unknown> {
-  return { mutate: vi.fn(), isPending: false } as unknown as UseMutationResult<unknown, unknown, unknown, unknown>
-}
+vi.mock('@/session/useSessionSearch', () => ({
+  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
+}))
 
-function mockDashboardHooks() {
-  vi.spyOn(hooks, 'useAccounts').mockReturnValue(stub([]))
-  vi.spyOn(hooks, 'useSessions').mockReturnValue(stub([]))
-  vi.spyOn(hooks, 'useSessionsViewing').mockReturnValue(undefined)
-  vi.spyOn(hooks, 'useArchivedSessions').mockReturnValue(stub([]))
-  vi.spyOn(hooks, 'useSettings').mockReturnValue(stub(null as never))
-  vi.spyOn(hooks, 'useConfig').mockReturnValue(stub(null as never))
-  vi.spyOn(hooks, 'useGithubRepos').mockReturnValue(stub([]))
-  vi.spyOn(hooks, 'useCreateSession').mockReturnValue(mutStub() as never)
-  vi.spyOn(hooks, 'useRenameSession').mockReturnValue(mutStub() as never)
-  vi.spyOn(hooks, 'useCloseSession').mockReturnValue(mutStub() as never)
-  vi.spyOn(hooks, 'usePermanentDeleteSession').mockReturnValue(mutStub() as never)
-  vi.spyOn(hooks, 'useSendPrompt').mockReturnValue(mutStub() as never)
-  vi.spyOn(hooks, 'useStageModels').mockReturnValue(stub({ 'o/n': {} as never }))
-  vi.spyOn(hooks, 'useCheckInsights').mockReturnValue(stub({
-    repo: 'o/n', window: '7d', slowest: [], flakiest: [],
-  }))
+function wrapper({ children }: { children: React.ReactNode }) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 }
 
 describe('Insights tab', () => {
-  beforeEach(() => vi.restoreAllMocks())
-
   it('renders InsightsView when the active tab is insights', () => {
-    mockDashboardHooks()
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <MemoryRouter>
-        <QueryClientProvider client={qc}>
-          <Dashboard activeTab="insights" />
-        </QueryClientProvider>
+        <Dashboard activeTab="insights" />
       </MemoryRouter>,
+      { wrapper },
     )
     expect(screen.getByText(/Slowest \/ most-variable/i)).toBeInTheDocument()
   })
