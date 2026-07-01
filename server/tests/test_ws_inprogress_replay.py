@@ -1,6 +1,5 @@
 import json
 import asyncio
-import pytest
 from server.bridge import ws as wsmod
 
 
