@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import tempfile
 from sqlalchemy import select
 
 from server.db import init_db, db_session

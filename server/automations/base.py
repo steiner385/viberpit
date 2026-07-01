@@ -1,7 +1,7 @@
 """Automation contract value types + pure config validation (no I/O)."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 FIELD_TYPES = {"bool", "int", "string", "enum", "repo-multiselect"}
