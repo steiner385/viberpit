@@ -7,7 +7,7 @@ import {
 } from './automations'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
-  DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, MergeTrainState,
+  DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, MergeTrainState, CheckInsights,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
@@ -34,6 +34,8 @@ export const QK = {
   automationEvents: (id: string) => ['automation-events', id] as const,
   automationSessions: (id: string) => ['automation-sessions', id] as const,
   pipelineTrains: ['pipeline-trains'] as const,
+  pipelineInsights: (repo?: string, window?: string) =>
+    ['pipeline-insights', repo, window] as const,
 }
 
 export function useModels() {
@@ -637,5 +639,17 @@ export function useMergeTrains() {
     queryFn: () => api.get<Record<string, MergeTrainState>>('/pipeline/trains'),
     staleTime: 10_000,
     refetchInterval: 15_000,
+  })
+}
+
+export function useCheckInsights(repo: string | undefined, window: string) {
+  return useQuery<CheckInsights>({
+    queryKey: QK.pipelineInsights(repo, window),
+    queryFn: () =>
+      api.get<CheckInsights>(
+        `/pipeline/insights/checks?repo=${encodeURIComponent(repo as string)}&window=${window}`),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+    enabled: !!repo,
   })
 }

@@ -134,6 +134,10 @@ class RemoteOrchestrator:
         r = await self._client.call("all_merge_trains")
         return {k: MergeTrainState.from_dict(v) for k, v in (r.get("trains") or {}).items()}
 
+    async def check_insights(self, repo: str, window: str) -> dict:
+        """Resolve per-repo Check Health insights from the daemon (already JSON-safe)."""
+        return await self._client.call("check_insights", repo=repo, window=window)
+
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
         """Inject the branch-aware fix prompt for PR #pr_number via the daemon.
 

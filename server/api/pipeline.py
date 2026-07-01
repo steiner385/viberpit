@@ -51,3 +51,17 @@ async def list_merge_trains(
     orch = request.app.state.sessions
     trains = await orch.all_merge_trains()
     return {repo: st.to_dict() for repo, st in trains.items()}
+
+
+@repos_router.get("/insights/checks")
+async def check_insights(
+    request: Request,
+    repo: str,
+    window: str = "7d",
+    _identity: str = Depends(current_identity),
+) -> dict:
+    orch = request.app.state.sessions
+    result = orch.check_insights(repo, window)
+    if inspect.isawaitable(result):
+        result = await result
+    return result
