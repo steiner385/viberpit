@@ -1244,7 +1244,8 @@ class SessionOrchestrator:
         return out
 
     def check_insights(self, repo: str, window: str, now=None) -> dict:
-        """Per-repo Check Health: slowest + flakiest checks over a time window.
+        """Per-repo Check Health: slowest + flakiest checks, duration regressions,
+        and runner-wait health over a time window.
         Reads the read-only HistoryStore; returns a JSON-safe payload. Empty lists
         when history is unavailable or the repo has no rows (never raises)."""
         from datetime import datetime, timedelta, timezone
@@ -1252,18 +1253,27 @@ class SessionOrchestrator:
                     "14d": timedelta(days=14), "30d": timedelta(days=30)}
         win = window if window in _WINDOWS else "7d"
         store = self._pr_population.history_store()
+        empty = {"repo": repo, "window": win, "slowest": [], "flakiest": [],
+                 "regressions": [], "runner_wait_health": []}
         if store is None or not repo:
-            return {"repo": repo, "window": win, "slowest": [], "flakiest": []}
+            return empty
         now = now or datetime.now(timezone.utc)
         since_iso = (now - _WINDOWS[win]).strftime("%Y-%m-%dT%H:%M:%SZ")
+        prev_since_iso = (now - 2 * _WINDOWS[win]).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
             slowest = store.slowest_checks(repo, since_iso)
             flakiest = store.flakiest_checks(repo, since_iso)
+            regressions = store.duration_regressions(repo)
+            runner_wait = store.runner_wait_health(repo, since_iso, prev_since_iso)
         except Exception:
-            return {"repo": repo, "window": win, "slowest": [], "flakiest": []}
-        return {"repo": repo, "window": win,
-                "slowest": [s.to_dict() for s in slowest],
-                "flakiest": [f.to_dict() for f in flakiest]}
+            return empty
+        return {
+            "repo": repo, "window": win,
+            "slowest": [s.to_dict() for s in slowest],
+            "flakiest": [f.to_dict() for f in flakiest],
+            "regressions": [r.to_dict() for r in regressions],
+            "runner_wait_health": [w.to_dict() for w in runner_wait],
+        }
 
     @staticmethod
     def _deploy_backlog(prs) -> "tuple[int, int]":
