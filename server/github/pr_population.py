@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable, Union
 from ccswitch import gitrepos
 
 from server.github import app_auth
-from .merge_queue import parse_merge_queue_response
+from .merge_queue import build_merge_queue_query, parse_merge_queue_response
 from .pr_status import (
     PullRequestInfo,
     build_eta_checks_query,
@@ -64,6 +64,34 @@ def _default_eta_query(prs: list[tuple[str, int]]) -> dict:
         proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"], token=token)
         if proc.returncode != 0:
             raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql (eta) failed")
+        sub_data = (json.loads(proc.stdout or "{}").get("data") or {})
+        for j, global_i in enumerate(idxs):
+            node = sub_data.get(f"r{j}")
+            if node is not None:
+                merged[f"r{global_i}"] = node
+    return {"data": merged}
+
+
+def _default_merge_queue_query(repos: list[str]) -> dict:
+    """Run build_merge_queue_query via gh, grouped by owner so each owner's repos use
+    that owner's App installation token. Responses are merged with aliases remapped to
+    the original `repos` index, so parse_merge_queue_response(response, repos) is unchanged.
+    This is the multi-owner generalisation of the previous first-owner-only shortcut."""
+    if not repos:
+        return {}
+    by_owner: dict[str, list[int]] = {}
+    for i, repo in enumerate(repos):
+        by_owner.setdefault(repo.split("/", 1)[0], []).append(i)
+    merged: dict[str, Any] = {}
+    for owner, idxs in by_owner.items():
+        subset = [repos[i] for i in idxs]
+        query = build_merge_queue_query(subset)
+        if not query:
+            continue
+        token = app_auth.token_for_owner(owner)
+        proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"], token=token)
+        if proc.returncode != 0:
+            raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql (merge queue) failed")
         sub_data = (json.loads(proc.stdout or "{}").get("data") or {})
         for j, global_i in enumerate(idxs):
             node = sub_data.get(f"r{j}")
