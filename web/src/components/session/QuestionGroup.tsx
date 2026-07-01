@@ -30,13 +30,16 @@ export function QuestionGroup({ questions, onAnswer }: Props) {
   const [trackH, setTrackH] = useState<number | undefined>(undefined)
   const trackRef = useRef<HTMLDivElement>(null)
 
-  // Start on the first question. A `snap-mandatory` track has no guaranteed
-  // initial scroll offset — the browser can resolve the first snap to the *last*
-  // snap point during layout, leaving the visible card out of sync with the
-  // `active` indicator. Reset scrollLeft before paint (useLayoutEffect, mount
-  // only) so question 1 is always the one shown. We set scrollLeft directly
-  // rather than scrollIntoView, which would also scroll ancestor containers
-  // (the chat transcript) on mount.
+  // Start on the first question, and stay there until the user moves. The track
+  // uses `snap-proximity` (not `mandatory`): `mandatory` forces the container to
+  // rest on *some* snap point and re-resolves which one on every relayout — and
+  // when the offset is ambiguous the browser can pick the *last* card, overriding
+  // this reset. That's not a one-time mount glitch: applying `trackH` below (a
+  // `transition-[height]` reflow) and the ResizeObserver re-snap after mount, so a
+  // mount-only fix can't hold. `proximity` only snaps when already near a point,
+  // so at rest it stays at offset 0 (the first card) and never force-jumps.
+  // We still pin scrollLeft to 0 before paint so the initial card is deterministic
+  // (scrollLeft directly, not scrollIntoView, which would scroll the chat transcript).
   useLayoutEffect(() => {
     if (trackRef.current) trackRef.current.scrollLeft = 0
   }, [])
@@ -156,7 +159,7 @@ export function QuestionGroup({ questions, onAnswer }: Props) {
         data-testid="question-carousel"
         style={trackH ? { height: `${trackH}px` } : undefined}
         className={cn(
-          'flex items-start snap-x snap-mandatory overflow-x-auto overflow-y-hidden scroll-smooth gap-3',
+          'flex items-start snap-x snap-proximity overflow-x-auto overflow-y-hidden scroll-smooth gap-3',
           'transition-[height] duration-200', // panel grows/shrinks to the active card
           '-mx-1 px-1', // keep focus rings from clipping at the track edges
           '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
