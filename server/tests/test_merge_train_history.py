@@ -38,6 +38,19 @@ def test_window_excludes_old_observations():
     # now far ahead; cutoff drops both -> no history
     h = derive_history(obs, now=1_000_000, window_seconds=86400)
     assert h["ejects_24h"] == 0
+    assert h["batch_success_pct"] is None
+    assert h["trains_per_hour"] is None
+
+def test_failed_wins_for_shared_batch_oid():
+    # two PRs share oid "shared"; one departs passing, one departs failing → batch counts FAILED
+    obs = [
+        Observation(0, (_e(1, "passing", oid="shared"), _e(2, "failing", oid="shared"))),
+        Observation(60, ()),  # both depart
+    ]
+    h = derive_history(obs, now=60)
+    assert h["ejects_24h"] == 1
+    assert h["batch_success_pct"] == 0.0   # 0 merged / (0 merged + 1 failed batch)
+
 
 def test_derive_full_state_idle_when_empty():
     st = derive_merge_train_state("r", [], now=10, awaiting_qa=0, awaiting_prod=0)

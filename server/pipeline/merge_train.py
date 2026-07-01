@@ -41,7 +41,11 @@ class MergeTrainState:
     merges_next: TrainBuild | None
 
     def is_idle(self) -> bool:
-        """No queue activity and no recent history → the widget renders nothing."""
+        """No queue activity and no recent history → the widget renders nothing.
+
+        Note: the canonical render gate is ``isIdle`` in MergeTrainWidget.tsx — this Python
+        method is a convenience mirror used in tests. Keep both in sync if the logic changes.
+        """
         return (
             self.depth == 0 and self.ejects_24h == 0 and not self.failing
             and not self.blocked and not self.building
@@ -126,6 +130,9 @@ def derive_history(observations: list["Observation"], now: int, window_seconds: 
                     failed.add(e.batch_head_oid)
             elif e.group_checks == "passing" and e.batch_head_oid:
                 merged.add(e.batch_head_oid)
+            # NOTE: a PR that completes AND merges within one poll interval departs while
+            # last-seen "pending" — counted as neither merged nor eject (undercounts trains/hr;
+            # never inflates ejects). Inherent to snapshot polling.
     merged -= failed                       # a batch that ever failed is counted failed
     completed = len(merged) + len(failed)
     success_pct = (len(merged) / completed * 100) if completed else None

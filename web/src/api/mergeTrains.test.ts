@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as React from 'react'
@@ -31,6 +31,8 @@ function wrapper({ children }: { children: React.ReactNode }) {
 }
 
 describe('useMergeTrains', () => {
+  beforeEach(() => vi.clearAllMocks())
+
   it('fetches the per-repo train map from /pipeline/trains', async () => {
     const get = vi.spyOn(api, 'get').mockResolvedValue({
       'cairnea/KinDash': { repo: 'cairnea/KinDash', depth: 5, ejects_24h: 46 },

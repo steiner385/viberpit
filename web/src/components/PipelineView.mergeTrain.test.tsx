@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -53,6 +53,8 @@ function renderView() {
 }
 
 describe('PipelineView merge-train widget', () => {
+  beforeEach(() => vi.clearAllMocks())
+
   it('shows the train widget for a repo with active queue data', () => {
     renderView()
     expect(screen.getByText(/depth 5/)).toBeInTheDocument()

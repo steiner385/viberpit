@@ -10,9 +10,10 @@ function fmtDuration(secs: number | null): string {
 }
 
 function buildLabel(b: TrainBuild): string {
-  const pct = b.percent != null ? `${b.percent}% ` : ''
-  const eta = b.eta_seconds != null ? `${fmtDuration(b.eta_seconds)} left` : ''
-  return `#${b.pr_number} ${pct}${eta}`.trim()
+  const parts: string[] = [`#${b.pr_number}`]
+  if (b.percent != null) parts.push(`${b.percent}%`)
+  if (b.eta_seconds != null) parts.push(`${fmtDuration(b.eta_seconds)} left`)
+  return parts.join(' ')
 }
 
 function isIdle(s: MergeTrainState): boolean {
