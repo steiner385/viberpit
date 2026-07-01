@@ -128,6 +128,12 @@ class RemoteOrchestrator:
         r = await self._client.call("all_repos_stage_models")
         return {k: StageModel.from_dict(v) for k, v in (r.get("models") or {}).items()}
 
+    async def all_merge_trains(self) -> "dict":
+        """Resolve per-repo MergeTrainState (the merge-train widget) from the daemon."""
+        from server.pipeline.merge_train import MergeTrainState
+        r = await self._client.call("all_merge_trains")
+        return {k: MergeTrainState.from_dict(v) for k, v in (r.get("trains") or {}).items()}
+
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
         """Inject the branch-aware fix prompt for PR #pr_number via the daemon.
 
