@@ -177,18 +177,26 @@ Gating in `plan_recovery`: `off`→`Notify`; `propose`→`Propose(kind)` for any
 ### 6. Retry / escalation / re-arm / termination (shell per-target state)
 
 Per-target state JSON keyed by `target = f"{repo}#{pr.number}"`:
-`{attempts, mechanical_attempts, last_failure, last_head_sha, last_action_sha, gave_up}`.
+`{attempts, mechanical_attempts, total_attempts, total_mechanical, last_failure, last_head_sha,
+last_action_sha, gave_up}`.
 
 - **Attempt accounting:** a `SessionFix` that really injects, or a `Mechanical` `gh` success,
-  increments its respective counter (session→`attempts`, mechanical→`mechanical_attempts`) using the
-  shell's mark-before-await semantics (a draining/no-driver/`gh`-failure does **not** consume the
-  attempt). On reaching the cap → emit `gave_up`, notify (needs-human), set `gave_up=true`, stop.
-- **Self-push re-arm guard (the livelock fix):** when PR Doctor pushes a fix or runs update-branch,
-  record the resulting head as `last_action_sha`. Re-arm (reset `attempts`/`mechanical_attempts`/
-  `gave_up`) **only** when `info.head_sha ∉ {last_head_sha, last_action_sha}` — i.e. a *genuine
-  external/human* push. A fix attempt that pushes and stays red therefore **consumes** an attempt
-  instead of refreshing the budget, so `gave_up` is actually reachable. A *different* failure class
-  also re-arms.
+  increments **both** its re-armable counter (session→`attempts`, mechanical→`mechanical_attempts`)
+  **and** a monotonic total (`total_attempts` / `total_mechanical`), using the shell's
+  mark-before-await semantics (a draining/no-driver/`gh`-failure does **not** consume the attempt).
+  **Async-inject reality:** injection is async — `record_attempt` records the *pre*-fix head, so when
+  the agent's fix pushes a new (still-red) head the next poll can't tell "our own fix's push" from "an
+  external human push" by sha, and the self-push re-arm below resets `attempts` to 0. Give-up
+  therefore keys on the **monotonic, re-arm-immune total** (`total_attempts ≥ max_attempts` /
+  `total_mechanical ≥ mechanical_attempts`), not the re-armable counter. It is **sticky**: once the
+  ceiling is hit → emit `gave_up`, notify (needs-human), set `gave_up=true`, stop — a human who keeps
+  pushing red after N attempts is already in the loop, so PR Doctor hands off rather than looping.
+- **Self-push re-arm guard:** when PR Doctor pushes a fix or runs update-branch, record the resulting
+  head as `last_action_sha`. Re-arm (reset the re-armable `attempts`/`mechanical_attempts` + `gave_up`,
+  but **never** the monotonic `total_*` ceiling) **only** when
+  `info.head_sha ∉ {last_head_sha, last_action_sha}` — i.e. a push that looks external. The re-armable
+  counter drives the orchestrator's per-head one-shot guard (at most one inject per head); the
+  monotonic total drives give-up (above). A *different* failure class also re-arms.
 - **Recovery:** transition to healthy (priority-7) after a prior attempt → emit `recovered`, reset.
 - **Terminate:** `merged`/`closed` → emit `merged`/`closed` terminal event, mark the target-state row
   terminal (so §2's provider drops it) then delete it.

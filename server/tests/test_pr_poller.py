@@ -130,3 +130,67 @@ async def test_on_change_callback_exception_does_not_break_refresh():
     # Cache should still be populated despite the callback error
     info = p.cached("o/r", "br")
     assert info is not None and info.checks == "passing"
+
+
+# ---------------------------------------------------------------------------
+# on_cycle sweep hook — fires once per poll cycle AFTER refresh_once
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_set_on_cycle_stores_and_fire_invokes():
+    """set_on_cycle stores the fn; _fire_on_cycle invokes it (sync + async)."""
+    p = PrStatusPoller(query_fn=_good_query)
+    calls = []
+    p.set_on_cycle(lambda: calls.append("sync"))
+    assert p._on_cycle is not None
+    await p._fire_on_cycle()
+    assert calls == ["sync"]
+
+    async def async_cb():
+        calls.append("async")
+
+    p.set_on_cycle(async_cb)
+    await p._fire_on_cycle()
+    assert calls == ["sync", "async"]
+
+
+@pytest.mark.asyncio
+async def test_fire_on_cycle_noop_without_hook():
+    """No registered hook → _fire_on_cycle is a harmless no-op."""
+    p = PrStatusPoller(query_fn=_good_query)
+    await p._fire_on_cycle()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_on_cycle_fires_after_refresh_and_reads_fresh_cache():
+    """The sweep hook runs after refresh_once, so it sees the fresh cache."""
+    p = PrStatusPoller(query_fn=_good_query)
+    seen = []
+
+    async def sweep():
+        # Reads the cache the poller just refreshed.
+        seen.append(p.cached("o/r", "br"))
+
+    p.set_on_cycle(sweep)
+    await p.refresh_once(PAIRS)
+    await p._fire_on_cycle()
+    assert len(seen) == 1
+    assert seen[0] is not None and seen[0].number == 5
+
+
+@pytest.mark.asyncio
+async def test_on_cycle_exception_is_swallowed():
+    """A raising sweep hook must not propagate (poll loop survives)."""
+    p = PrStatusPoller(query_fn=_good_query)
+
+    def boom():
+        raise RuntimeError("sweep exploded")
+
+    p.set_on_cycle(boom)
+    await p._fire_on_cycle()  # must not raise
+
+    async def aboom():
+        raise RuntimeError("async sweep exploded")
+
+    p.set_on_cycle(aboom)
+    await p._fire_on_cycle()  # must not raise

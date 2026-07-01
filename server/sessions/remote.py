@@ -147,6 +147,19 @@ class RemoteOrchestrator:
         """
         return await self._client.call("request_pr_fix", session_id=session_id, pr_number=pr_number)
 
+    async def pr_doctor_actionable(self) -> "list[dict]":
+        """Actionable PRs (real recovery mode) for the PR Doctor card, via the daemon."""
+        r = await self._client.call("pr_doctor_actionable")
+        return r.get("prs") or []
+
+    async def pr_doctor_fix(self, repo: str, number: int, kind: str) -> str:
+        """Trigger a one-tap PR Doctor recovery for PR #number via the daemon."""
+        return await self._client.call("pr_doctor_fix", repo=repo, number=number, kind=kind)
+
+    async def backlog_runner_implement(self, primary: str) -> str:
+        """Propose-tap: claim + spawn the batch for *primary* via the daemon."""
+        return await self._client.call("backlog_runner_implement", primary=primary)
+
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)
         return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None

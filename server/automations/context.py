@@ -82,13 +82,28 @@ class AutomationContext:
                 row.state = state
             await db.flush()
 
+    async def delete_target_state(self, target: str) -> None:
+        """Drop the durable state row for *target* (idempotent). Used when a target
+        reaches terminal rest (merged / gave-up) so the table stays bounded."""
+        async with db_session() as db:
+            await db.execute(delete(AutomationTargetState).where(
+                AutomationTargetState.automation_id == self.automation_id,
+                AutomationTargetState.target == target))
+
+    async def list_target_states(self) -> dict[str, dict]:
+        """All durable target states for this automation, keyed by target."""
+        async with db_session() as db:
+            rows = (await db.execute(select(AutomationTargetState).where(
+                AutomationTargetState.automation_id == self.automation_id))).scalars().all()
+        return {r.target: dict(r.state) for r in rows}
+
     async def spawn_session(self, *, origin_ref: str, dedupe_key: str | None = None,
-                            **create_kwargs) -> Any:
+                            detail: dict | None = None, **create_kwargs) -> Any:
         """Find-or-create a session for this automation. If a NON-terminal session
         with the same (origin, dedupe_key) already exists, return it and emit a
         'skipped_duplicate' event instead of creating a second. Otherwise create
         via the injected create_session (which stamps origin/origin_ref), then emit
-        a linked 'spawned' event."""
+        a linked 'spawned' event (carrying the optional ``detail`` payload)."""
         from server.db.models import Session
         key = dedupe_key or origin_ref
         async with db_session() as db:
@@ -105,5 +120,6 @@ class AutomationContext:
         rec = await self._create_session(origin=self.automation_id, origin_ref=origin_ref,
                                          **create_kwargs)
         await self.emit("info", f"spawned session for {origin_ref}",
-                        kind="spawned", target=origin_ref, session_id=getattr(rec, "id", None))
+                        kind="spawned", target=origin_ref,
+                        session_id=getattr(rec, "id", None), detail=detail)
         return rec

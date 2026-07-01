@@ -165,13 +165,37 @@ def orch_with_failing_pr_no_driver(monkeypatch):
 
     monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
 
+    # No live driver → the SessionFix branch now spawns a fresh de-duped session.
+    # Record spawns (returning a fake record with an id) so no real create_session
+    # / worktree runs.
+    import types as _types
+    spawns: list[dict] = []
+    _seen: dict[str, object] = {}
+
+    async def fake_spawn(*, origin_ref, dedupe_key=None, **kwargs):
+        key = dedupe_key or origin_ref
+        if key in _seen:
+            return _seen[key]
+        rec = _types.SimpleNamespace(id="spawned-1")
+        _seen[key] = rec
+        spawns.append({"origin_ref": origin_ref, "dedupe_key": dedupe_key, **kwargs})
+        return rec
+
+    orch._pr_doctor_ctx.spawn_session = fake_spawn  # type: ignore[method-assign]
+
+    # Resolve the clone cwd off a fake so the spawn path runs without real git/gh.
+    def _fake_ensure_clone(repo_root, name_with_owner, url):
+        return "/fake/clone/o__r"
+
+    monkeypatch.setattr(orch_mod.gitrepos, "ensure_clone", _fake_ensure_clone, raising=True)
+
     # Default mode: propose (tests override to "auto" as needed).
     async def _mode_propose(self_):
         return "propose"
 
     monkeypatch.setattr(orch_mod.SessionOrchestrator, "_pr_autofix_mode", _mode_propose, raising=True)
 
-    return orch, sent, pushed
+    return orch, sent, pushed, spawns
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +332,7 @@ async def test_auto_mode_no_live_driver_falls_back(orch_with_failing_pr_no_drive
     import server.sessions.orchestrator as orch_mod
 
     await _init_pr_doctor_db(tmp_path)
-    orch, sent, pushed = orch_with_failing_pr_no_driver
+    orch, sent, pushed, spawns = orch_with_failing_pr_no_driver
 
     async def _mode_auto(self_):
         return "auto"
@@ -316,5 +340,11 @@ async def test_auto_mode_no_live_driver_falls_back(orch_with_failing_pr_no_drive
     monkeypatch.setattr(orch_mod.SessionOrchestrator, "_pr_autofix_mode", _mode_auto, raising=True)
 
     await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-    assert sent == []  # no injection without a live driver
-    assert any("PR broke" in t for t in pushed)  # fell back to the notification
+    # No live driver → spawn a fresh de-duped fix session (recovery took action),
+    # so no inject into the (nonexistent) driver and no break notification.
+    assert sent == []
+    assert len(spawns) == 1
+    assert spawns[0]["origin_ref"] == "o/r#7"
+    assert spawns[0]["dedupe_key"] == "o/r#7"
+    assert "gh pr checkout 7" in spawns[0]["initial_prompt"]
+    assert pushed == []  # recovery fired → skip the redundant break notification

@@ -67,3 +67,25 @@ export function fetchSpawnedSessions(
 export function patchAutomation(id: string, body: AutomationPatch): Promise<Automation> {
   return api.patch<Automation>(`/automations/${id}`, body)
 }
+
+// --- PR Doctor propose surface (one-tap actions) -----------------------------
+
+export type PrDoctorKind = 'out_of_date' | 'failing_ci' | 'merge_conflict'
+
+export interface PrDoctorActionablePr {
+  repo: string
+  number: number
+  kind: PrDoctorKind
+  url: string
+  title: string
+}
+
+export function fetchPrDoctorActionable(): Promise<PrDoctorActionablePr[]> {
+  return api.get<PrDoctorActionablePr[]>('/automations/pr-doctor/actionable')
+}
+
+export function postPrDoctorFix(
+  body: { repo: string; number: number; kind: PrDoctorKind },
+): Promise<{ status: string }> {
+  return api.post<{ status: string }>('/automations/pr-doctor/fix', body)
+}

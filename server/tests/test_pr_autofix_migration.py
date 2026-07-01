@@ -79,11 +79,39 @@ def _build_orch(pr: PullRequestInfo, *, has_driver: bool = True):
         pushed.append(title)
 
     orch.send_prompt = fake_send  # type: ignore[method-assign, assignment]
+
+    # No-driver SessionFix now spawns a fresh de-duped session; record spawns so
+    # no real create_session runs. Exposed on the orch for the tests that inspect.
+    import types as _types
+    spawns: list[dict] = []
+    _seen: dict[str, object] = {}
+
+    async def fake_spawn(*, origin_ref, dedupe_key=None, **kwargs):
+        key = dedupe_key or origin_ref
+        if key in _seen:
+            return _seen[key]
+        rec = _types.SimpleNamespace(id="spawned-1")
+        _seen[key] = rec
+        spawns.append({"origin_ref": origin_ref, "dedupe_key": dedupe_key, **kwargs})
+        return rec
+
+    orch._pr_doctor_ctx.spawn_session = fake_spawn  # type: ignore[method-assign]
+    orch._test_spawns = spawns  # type: ignore[attr-defined]
+
+    # Resolve the clone cwd off a fake so the no-driver spawn path runs without
+    # real git/gh; restored alongside notify below.
+    def _fake_ensure_clone(repo_root, name_with_owner, url):
+        return "/fake/clone/o__r"
+
+    _orig_ensure_clone = orch_mod.gitrepos.ensure_clone
+    orch_mod.gitrepos.ensure_clone = _fake_ensure_clone  # type: ignore[attr-defined]
+
     _orig_notify = orch_mod.push_mod.notify
     orch_mod.push_mod.notify = fake_notify  # type: ignore[attr-defined]
 
     def restore():
         orch_mod.push_mod.notify = _orig_notify  # type: ignore[attr-defined]
+        orch_mod.gitrepos.ensure_clone = _orig_ensure_clone  # type: ignore[attr-defined]
 
     return orch, sent, pushed, restore
 
@@ -203,23 +231,27 @@ def test_rearm_on_passing(tmp_path):
     asyncio.run(run())
 
 
-def test_draining_no_driver_rearms(tmp_path):
-    """No live driver ⇒ falls back to notify AND re-arms (mark-before-await: a
-    non-injection does NOT consume the one attempt, so the next failing retries)."""
+def test_no_driver_spawns_deduped(tmp_path):
+    """No live driver ⇒ spawn a fresh de-duped fix session (recovery took action).
+
+    Supersedes the old no-driver→notify+re-arm behaviour: the SessionFix branch
+    now spawns when the owning driver is gone, consuming the per-head attempt.
+    A second failing poll on the same head de-dups (guard holds), so no second
+    spawn and no injection even once a driver appears on the same head."""
     async def run():
         await _init_db(tmp_path, "drain.db")
         await _set_mode("auto")
         orch, sent, pushed, restore = _build_orch(_pr(), has_driver=False)
 
         await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-        assert sent == []  # no live driver → no injection
-        assert any("PR broke" in t for t in pushed)  # fell back to notify
+        assert sent == []  # no live driver → spawn, not inject
+        assert pushed == []  # recovery fired → no break notification
+        assert len(orch._test_spawns) == 1  # type: ignore[attr-defined]
+        assert orch._test_spawns[0]["origin_ref"] == "o/r#7"  # type: ignore[attr-defined]
 
-        # Re-armed: once a driver appears, the next failing CAN inject. (The
-        # attempted flag must NOT have stuck from the no-driver pass.)
-        orch._drivers = {"sess1": object()}  # type: ignore[dict-item]
+        # Same head, second poll → per-head guard holds: no second spawn.
         await orch._on_pr_change("o/r", "feat/x", "failing", "failing")
-        assert len(sent) == 1
+        assert len(orch._test_spawns) == 1  # type: ignore[attr-defined]
 
         restore()
 
