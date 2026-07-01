@@ -58,7 +58,7 @@ def test_check_insights_unknown_window_clamps_to_7d():
     assert out["window"] == "7d"
 
 
-def test_check_insights_includes_regressions_and_runner_waits(monkeypatch):
+def test_check_insights_includes_regressions_and_runner_waits():
     from datetime import datetime, timezone
 
     class _Reg:
