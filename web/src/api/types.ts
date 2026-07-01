@@ -223,6 +223,31 @@ export interface MergeTrainState {
   merges_next: TrainBuild | null
 }
 
+export interface CheckDurationStat {
+  check_name: string
+  event: string
+  p50: number
+  p90: number
+  ratio: number | null
+  n: number
+}
+
+export interface CheckFlakeStat {
+  check_name: string
+  event: string
+  flake_pct: number
+  flaky_commits: number
+  total_commits: number
+  n: number
+}
+
+export interface CheckInsights {
+  repo: string
+  window: string
+  slowest: CheckDurationStat[]
+  flakiest: CheckFlakeStat[]
+}
+
 export interface ModelOption { id: string; label: string }
 
 export interface PendingDeploy {
