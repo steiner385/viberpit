@@ -36,6 +36,20 @@ class Expected:
     n: int
 
 
+@dataclass(frozen=True)
+class CheckDurationStat:
+    check_name: str
+    event: str
+    p50: float
+    p90: float
+    ratio: float | None
+    n: int
+
+    def to_dict(self) -> dict:
+        return {"check_name": self.check_name, "event": self.event, "p50": self.p50,
+                "p90": self.p90, "ratio": self.ratio, "n": self.n}
+
+
 def _parse_iso_ms(iso: str) -> float:
     """ms since epoch from an ISO-8601 string (tolerant of trailing Z)."""
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000.0
@@ -78,6 +92,32 @@ class HistoryStore:
             (repo, event, cutoff),
         ).fetchall()
         return [r["check_name"] for r in rows]
+
+    def slowest_checks(
+        self, repo: str, since_iso: str, limit: int = 10, event: str | None = None,
+    ) -> "list[CheckDurationStat]":
+        q = ("SELECT check_name, event, duration_secs FROM check_durations "
+             "WHERE repo=? AND UPPER(conclusion)='SUCCESS' AND completed_at >= ?")
+        args: list = [repo, since_iso]
+        if event is not None:
+            q += " AND event=?"
+            args.append(event)
+        groups: dict[tuple[str, str], list[float]] = {}
+        for r in self._conn.execute(q, args).fetchall():
+            if r["duration_secs"] is None:
+                continue
+            groups.setdefault((r["check_name"], r["event"] or ""), []).append(
+                float(r["duration_secs"]))
+        stats: list[CheckDurationStat] = []
+        for (name, ev), vals in groups.items():
+            s = sorted(vals)
+            p50 = percentile(s, 0.5)
+            p90 = percentile(s, 0.9)
+            stats.append(CheckDurationStat(
+                check_name=name, event=ev, p50=p50, p90=p90,
+                ratio=(p90 / p50) if p50 else None, n=len(s)))
+        stats.sort(key=lambda x: x.p50, reverse=True)
+        return stats[:limit]
 
     def expected_runner_wait(self, repo: str, name: str, event: str) -> float | None:
         rows = self._conn.execute(
