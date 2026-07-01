@@ -115,13 +115,25 @@ async def generate_title(
         async for msg in query_fn(prompt=body, options=options):
             messages.append(msg)
     except Exception as exc:
-        # The title reply is yielded as an assistant message *before* any
-        # trailing error. The claude binary routinely ends a one-shot query
-        # with a result flagged is_error=True yet subtype "success" (the SDK
-        # raises "Claude Code returned an error result: success"); salvage the
-        # text we already collected rather than discarding a perfectly good
-        # title. A single-line warning — titling is best-effort, so a full
-        # traceback per query is pure noise.
+        # When the Claude binary fails due to an HTTP API error (401 auth, 429
+        # rate-limit, 5xx) it emits an AssistantMessage whose text IS the error
+        # string (e.g. "Failed to authenticate. API Error: 401 Invalid…") before
+        # the ResultMessage. Detect this via ResultMessage.api_error_status and
+        # discard the collected text rather than persisting an error string as the
+        # session name. Only salvage text when the failure has no HTTP status — those
+        # are process exits whose partial assistant text may still be a useful title.
+        # Duck-typed (no SDK import): only ResultMessage carries api_error_status.
+        api_err = next(
+            (getattr(m, "api_error_status", None) for m in messages
+             if getattr(m, "api_error_status", None) is not None),
+            None,
+        )
+        if api_err is not None:
+            log.warning("generate_title HTTP %s config_dir=%s: %s",
+                        api_err, config_dir, exc)
+            return None
+        # Non-HTTP process exit: salvage any partial title the assistant emitted
+        # before the error (e.g. tool permission denied, token limit).
         salvaged = _sanitize(_extract_text(messages))
         if salvaged is None:
             log.warning("generate_title failed for config_dir=%s: %s", config_dir, exc)

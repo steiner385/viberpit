@@ -102,6 +102,55 @@ def test_salvages_title_when_query_raises_after_yielding():
     assert _run(["x"], query_fn=qf) == "Fix the login bug"
 
 
+def _result_msg(api_error_status: int):
+    """Fake ResultMessage with api_error_status set (HTTP error case)."""
+    return SimpleNamespace(api_error_status=api_error_status, is_error=True, subtype="success")
+
+
+def test_discards_error_text_on_http_api_error():
+    # When the Claude binary fails due to a 401/429/5xx HTTP error, it emits
+    # an AssistantMessage whose text IS the error string. The ResultMessage
+    # carries api_error_status != None. We must return None rather than
+    # persisting an error string like "Failed to authenticate. API Error: 401"
+    # as the session name.
+    def qf(*, prompt, options=None, **_):
+        async def gen():
+            yield _assistant("Failed to authenticate. API Error: 401 Invalid authentication credentials")
+            yield _result_msg(401)
+            raise RuntimeError("Claude Code returned an error result: success")
+
+        return gen()
+
+    assert _run(["x"], query_fn=qf) is None
+
+
+def test_discards_error_text_on_rate_limit():
+    # Same guard for 429 rate-limit errors.
+    def qf(*, prompt, options=None, **_):
+        async def gen():
+            yield _assistant("Rate limit exceeded. API Error: 429")
+            yield _result_msg(429)
+            raise RuntimeError("Claude Code returned an error result: success")
+
+        return gen()
+
+    assert _run(["x"], query_fn=qf) is None
+
+
+def test_salvages_when_result_has_no_api_error_status():
+    # A non-HTTP process exit (e.g. permission denied, tool error) sets
+    # api_error_status=None — in that case partial assistant text is a valid title.
+    def qf(*, prompt, options=None, **_):
+        async def gen():
+            yield _assistant("Partial title text")
+            yield SimpleNamespace(api_error_status=None, is_error=True, subtype="success")
+            raise RuntimeError("Claude Code returned an error result: success")
+
+        return gen()
+
+    assert _run(["x"], query_fn=qf) == "Partial title text"
+
+
 def test_passes_model_and_config_dir_through_options():
     capture: dict = {}
     qf = _fake_query([_assistant("Title")], capture=capture)
