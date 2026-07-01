@@ -1,6 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState, useRef, useCallback, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
+import {
+  fetchAutomations, fetchAutomationEvents, fetchSpawnedSessions, patchAutomation,
+  type Automation, type AutomationEvent, type AutomationPatch,
+} from './automations'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
   DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, MergeTrainState,
@@ -26,6 +30,9 @@ export const QK = {
   sessionSearch: (q: string, scope: string = 'live') => ['session-search', scope, q] as const,
   prs: ['prs'] as const,
   pipelineRepos: ['pipeline-repos'] as const,
+  automations: ['automations'] as const,
+  automationEvents: (id: string) => ['automation-events', id] as const,
+  automationSessions: (id: string) => ['automation-sessions', id] as const,
   pipelineTrains: ['pipeline-trains'] as const,
 }
 
@@ -124,7 +131,6 @@ export interface AppSettings {
   thinkingCollapsed: boolean
   repoRoot: string | null
   defaultToolDetail: ToolDetailMode
-  prAutofixMode: string
 }
 
 export function useSettings() {
@@ -595,6 +601,33 @@ export function useStageModels() {
     queryFn: () => api.get<Record<string, StageModel>>('/pipeline/repos'),
     staleTime: 15_000,
     refetchInterval: 30_000,
+  })
+}
+
+export function useAutomations() {
+  return useQuery<Automation[]>({
+    queryKey: QK.automations, queryFn: fetchAutomations, staleTime: 10_000 })
+}
+
+export function useAutomationEvents(id: string, enabled = true) {
+  return useQuery<AutomationEvent[]>({
+    queryKey: QK.automationEvents(id), queryFn: () => fetchAutomationEvents(id),
+    enabled, staleTime: 10_000 })
+}
+
+export type SpawnedSession = { id: string; name: string; status: string; originRef: string | null }
+
+export function useAutomationSessions(id: string, enabled = true) {
+  return useQuery<SpawnedSession[]>({
+    queryKey: QK.automationSessions(id), queryFn: () => fetchSpawnedSessions(id),
+    enabled, staleTime: 10_000 })
+}
+
+export function usePatchAutomation() {
+  const qc = useQueryClient()
+  return useMutation<Automation, ApiRequestError, { id: string; body: AutomationPatch }>({
+    mutationFn: ({ id, body }) => patchAutomation(id, body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.automations }) },
   })
 }
 

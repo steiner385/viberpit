@@ -34,6 +34,8 @@ class SessionRecord:
     # Fields with defaults so existing create_session constructions keep compiling
     repo: str | None = None          # GitHub nameWithOwner this session works on (None = scratch)
     branch: str | None = None        # per-session worktree branch (joins to PR headRefName)
+    origin: str | None = None        # automation_id that spawned this session (None = human-created)
+    origin_ref: str | None = None    # automation's reference key (e.g. "owner/repo#123")
     detached: bool = False           # True for rehydrated sessions with no live driver
     status: str = "idle"             # idle / in_progress / condensing / waiting_input / ready_review / done / waiting_external / limited / ended
     name_is_auto: bool = True        # False once the user manually renames the session
@@ -67,6 +69,7 @@ class SessionRecord:
             "id": self.id, "name": self.name, "account": self.account,
             "claudeSessionId": self.claude_session_id, "cols": self.cols, "rows": self.rows,
             "cwd": self.cwd, "repo": self.repo, "branch": self.branch, "detached": self.detached,
+            "origin": self.origin, "origin_ref": self.origin_ref,
             "status": self.status, "nameIsAuto": self.name_is_auto,
             "permissionMode": self.permission_mode,
             "createdAt": iso_utc(self.created_at),
@@ -95,6 +98,7 @@ class SessionRecord:
             id=d["id"], name=d["name"], account=d["account"],
             claude_session_id=d["claudeSessionId"], cols=d["cols"], rows=d["rows"],
             cwd=d["cwd"], repo=d.get("repo"), branch=d.get("branch"), detached=d.get("detached", False),
+            origin=d.get("origin"), origin_ref=d.get("origin_ref"),
             status=d.get("status", "idle"), name_is_auto=d.get("nameIsAuto", True),
             permission_mode=d.get("permissionMode", "interactive"),
             created_at=datetime.fromisoformat(created) if created else None,

@@ -293,9 +293,13 @@ class SessionOrchestrator:
         # (repo, branch) pairs whose PR is currently in a failing-CI state (M2b.2 debounce):
         # push fires once on entry into failing; cleared on recovery so a re-break re-fires.
         self._pushed_pr: set[tuple[str, str]] = set()
-        # Auto-fix loop guard: (repo, branch) we've already auto-attempted since
-        # the last recovery. Sibling of _pushed_pr; in-memory, resets on restart.
-        self._pr_fix_attempts: set[tuple[str, str]] = set()
+        # Auto-fix loop guard + activity feed: the pr-doctor automation's outward
+        # seam. Per-target ``attempted`` state lives in automation_target_state
+        # (durable; survives restart), keyed by ``f"{repo}#{number}"`` — no parallel
+        # in-memory set. See _on_pr_change.
+        from server.automations.context import AutomationContext
+        self._pr_doctor_ctx = AutomationContext(
+            "pr-doctor", create_session=self.create_session)
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
@@ -436,6 +440,8 @@ class SessionOrchestrator:
         permission_mode: str = "interactive",
         attachment_ids: list[str] | None = None,
         name_is_auto: bool = True,
+        origin: str | None = None,
+        origin_ref: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
 
@@ -553,6 +559,8 @@ class SessionOrchestrator:
                 branch=branch_name,
                 permission_mode=permission_mode,
                 name_is_auto=name_is_auto,
+                origin=origin,
+                origin_ref=origin_ref,
             )
             db.add(row)
 
@@ -573,6 +581,8 @@ class SessionOrchestrator:
             # waiting for the first status event (mirrors the DB row's utcnow default).
             updated_at=datetime.utcnow(),
             usage_unverified=usage_unverified,
+            origin=origin,
+            origin_ref=origin_ref,
         )
         self._records[session_id] = record
         log_event(log, logging.INFO, "session.start",
@@ -770,9 +780,19 @@ class SessionOrchestrator:
             # transient ``pending``/``none``. CI normally cycles
             # failing→pending→failing while a pushed fix re-runs; clearing on
             # ``pending`` would let the next ``failing`` trigger a fresh auto-fix
-            # and loop forever on a PR the agent can't fix.
+            # and loop forever on a PR the agent can't fix. The guard lives in the
+            # durable pr-doctor target state (automation_target_state), keyed by
+            # ``f"{repo}#{number}"`` — clearing == setting it back to ``{}``.
             if new_checks == "passing":
-                self._pr_fix_attempts.discard(key)
+                info = self.pr_for(repo, branch)
+                if info is not None:
+                    target = f"{repo}#{info.number}"
+                    state = await self._pr_doctor_ctx.get_target_state(target)
+                    if state.get("attempted"):
+                        await self._pr_doctor_ctx.set_target_state(target, {})
+                        await self._pr_doctor_ctx.emit(
+                            "info", f"{repo}#{info.number} CI recovered",
+                            kind="recovered", target=target)
             return
         rec = next(
             (r for r in self._records.values() if r.repo == repo and r.branch == branch),
@@ -781,20 +801,32 @@ class SessionOrchestrator:
         if rec is None:
             return
 
+        info = self.pr_for(repo, branch)
+        target = f"{repo}#{info.number}" if info is not None else f"{repo}#{branch}"
+        # Surface the failure on the activity feed once, on the transition INTO
+        # failing (not on every failing→failing re-poll).
+        if old_checks != "failing":
+            await self._pr_doctor_ctx.emit(
+                "warn", f"{repo} CI failing on {target}", kind="detected", target=target)
+
         mode = await self._pr_autofix_mode()
         # Auto: one attempt per failure event, only if a live driver exists.
-        if mode == "auto" and key not in self._pr_fix_attempts:
-            info = self.pr_for(repo, branch)
-            if info is not None and rec.id in self._drivers:
+        if mode == "auto" and info is not None and rec.id in self._drivers:
+            state = await self._pr_doctor_ctx.get_target_state(target)
+            if not state.get("attempted"):
                 # Mark before awaiting (re-entrancy guard), but only a real
                 # injection consumes the one attempt — a transient failure
                 # (draining / unresolved branch) re-arms so it can retry.
-                self._pr_fix_attempts.add(key)
+                await self._pr_doctor_ctx.set_target_state(target, {"attempted": True})
                 result = await self.request_pr_fix(rec.id, info.number)
                 if result == "sent":
+                    await self._pr_doctor_ctx.emit(
+                        "info", f"auto-fix injected for {target}",
+                        kind="attempted", target=target, session_id=rec.id)
                     return  # injected; skip the redundant break notification
-                self._pr_fix_attempts.discard(key)
-                # Could not inject (draining / not actionable) → fall through to notify.
+                # Could not inject (draining / not actionable) → re-arm so the
+                # next failing can retry, then fall through to notify.
+                await self._pr_doctor_ctx.set_target_state(target, {})
 
         # Notify (off, propose, or auto-fallback). Debounced like before.
         if key in self._pushed_pr:
@@ -1261,14 +1293,13 @@ class SessionOrchestrator:
         return out
 
     async def _pr_autofix_mode(self) -> str:
-        """Current pr_autofix_mode from AppSettings; NULL/unknown → 'propose'."""
+        """Current pr-doctor mode from the automation registry row; NULL/unknown → 'propose'."""
         from sqlalchemy import select
-        from server.db.models import AppSettings
+        from server.db.models import Automation
         async with db_session() as db:
-            row = (
-                await db.execute(select(AppSettings).where(AppSettings.id == "singleton"))
-            ).scalar_one_or_none()
-            mode = (row.pr_autofix_mode if row else None) or "propose"
+            row = (await db.execute(
+                select(Automation).where(Automation.id == "pr-doctor"))).scalar_one_or_none()
+            mode = (row.mode if row else None) or "propose"
         from server.sessions.pr_fix import VALID_AUTOFIX_MODES
         return mode if mode in VALID_AUTOFIX_MODES else "propose"
 

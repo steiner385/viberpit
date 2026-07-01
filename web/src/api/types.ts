@@ -84,6 +84,10 @@ export interface Session {
   prs: PullRequestInfo[]
   /** True when the session was created without a verified usage read (optimistic pick). */
   usageUnverified?: boolean
+  /** The automation_id that spawned this session (e.g. 'pr-doctor'); null/absent = human-created. */
+  origin?: string | null
+  /** The automation's reference key (e.g. 'owner/repo#123'); null/absent when origin is absent. */
+  originRef?: string | null
   /** Client-only: true while an optimistic create placeholder awaits the server. Never sent by the server. */
   pending?: boolean
 }

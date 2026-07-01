@@ -43,6 +43,12 @@ RECONCILE_EXEMPT: set[str] = {
     # so no synthesizable default. (endpoint is the PK → already reconcile-exempt.)
     "push_subscriptions.p256dh",  # required at subscribe; browser-supplied key
     "push_subscriptions.auth",    # required at subscribe; browser-supplied auth secret
+    # automation_event: a NEW table (create_all builds it fully-formed on dev SQLite;
+    # Alembic 0002_automation_registry builds it on prod). These NOT NULL columns are
+    # part of the initial CREATE TABLE, never ALTER-added to a populated table, and each
+    # is mandatory at emit time, so no synthesizable default.
+    "automation_event.automation_id",  # required at emit; the owning automation id
+    "automation_event.summary",        # required at emit; the event text
 }
 
 

@@ -3,15 +3,35 @@
 from __future__ import annotations
 
 import pytest
+from server.github.pr_status import PullRequestInfo
 from server.sessions.types import SessionRecord
+
+
+class _StubPoller:
+    """Returns a fixed failing PR for the (repo, branch) the push tests use, so
+    the durable loop-guard can resolve a target (``repo#number``). The mode is
+    'propose' in these tests, so the auto path is never taken regardless."""
+
+    def cached(self, repo: str, branch: str):
+        return PullRequestInfo(
+            number=7, url="https://x/pull/7", state="open", checks="failing", title="t")
+
+
+async def _init_pr_doctor_db(tmp_path) -> None:
+    from server.db import init_db
+    from server.automations.registry import registry
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'push.db'}")
+    await registry.ensure_rows()
 
 
 def _make_orch():
     from server.sessions.orchestrator import SessionOrchestrator
+    from server.automations.context import AutomationContext
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
     orch._records = {}
     orch._pushed_pr = set()
-    orch._pr_fix_attempts = set()
+    orch._pr_doctor_ctx = AutomationContext("pr-doctor")
+    orch._pr_poller = _StubPoller()  # type: ignore[assignment]
     orch._drivers = {}
     return orch
 
@@ -37,9 +57,10 @@ def _add_record(
 
 
 @pytest.mark.asyncio
-async def test_pr_push_fires_once_on_transition_into_failing(monkeypatch):
+async def test_pr_push_fires_once_on_transition_into_failing(monkeypatch, tmp_path):
     """passing→failing fires push once; a second identical call does NOT re-fire."""
     import server.sessions.orchestrator as orch_mod
+    await _init_pr_doctor_db(tmp_path)
     calls = []
 
     async def fake_notify(title, body, *, url=None):
@@ -68,9 +89,10 @@ async def test_pr_push_fires_once_on_transition_into_failing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pr_push_re_fires_after_recovery(monkeypatch):
+async def test_pr_push_re_fires_after_recovery(monkeypatch, tmp_path):
     """failing→passing clears debounce; a later failing fires again."""
     import server.sessions.orchestrator as orch_mod
+    await _init_pr_doctor_db(tmp_path)
     calls = []
 
     async def fake_notify(title, body, *, url=None):
@@ -101,9 +123,10 @@ async def test_pr_push_re_fires_after_recovery(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pr_push_no_match_no_crash(monkeypatch):
+async def test_pr_push_no_match_no_crash(monkeypatch, tmp_path):
     """A (repo, branch) with no matching session → no push, no crash."""
     import server.sessions.orchestrator as orch_mod
+    await _init_pr_doctor_db(tmp_path)
     calls = []
 
     async def fake_notify(title, body, *, url=None):
