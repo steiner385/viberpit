@@ -53,4 +53,4 @@ async def prune(older_than_epoch: int) -> int:
             delete(MergeQueueObservation)
             .where(MergeQueueObservation.captured_at < older_than_epoch))
         await s.commit()
-        return result.rowcount or 0
+        return result.rowcount or 0  # type: ignore[attr-defined]  # CursorResult at runtime

@@ -184,9 +184,12 @@ class MergeQueueObservation(Base):
     __tablename__ = "merge_queue_observations"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    captured_at: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # repo/captured_at/pr_number are always written (never null); the column stays
+    # nullable=True so init_db backfills existing dev DBs without a migration, but the
+    # Python attribute is typed non-optional since the store never reads a null here.
+    repo: Mapped[str] = mapped_column(String, nullable=True, index=True)
+    captured_at: Mapped[int] = mapped_column(Integer, nullable=True, index=True)
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=True)
     position: Mapped[int | None] = mapped_column(Integer, nullable=True)
     state: Mapped[str | None] = mapped_column(String, nullable=True)
     enqueued_at: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypedDict
 
 from server.github.merge_queue import QueueEntry
 
@@ -94,7 +95,16 @@ def _build(e: "QueueEntry") -> "TrainBuild":
     return TrainBuild(pr_number=e.pr_number, percent=_percent(e), eta_seconds=e.eta_seconds)
 
 
-def derive_live(latest: "Observation", now: int) -> dict:
+class _LiveSegments(TypedDict):
+    depth: int
+    oldest_wait_seconds: int | None
+    failing: tuple[int, ...]
+    blocked: tuple[int, ...]
+    building: TrainBuild | None
+    merges_next: TrainBuild | None
+
+
+def derive_live(latest: "Observation", now: int) -> "_LiveSegments":
     entries = latest.entries
     enq = [e.enqueued_at for e in entries if e.enqueued_at is not None]
     head = min(
@@ -147,9 +157,9 @@ def derive_merge_train_state(
     awaiting_qa: int, awaiting_prod: int, window_seconds: int = 86400,
 ) -> MergeTrainState:
     latest = max(observations, key=lambda o: o.captured_at, default=None)
-    live = derive_live(latest, now) if latest else {
-        "depth": 0, "oldest_wait_seconds": None, "failing": (), "building": None,
-        "blocked": (), "merges_next": None}
+    # An empty Observation yields the same all-zero live segments as the no-data case,
+    # so derive_live stays the single code path (and keeps a precise return type).
+    live = derive_live(latest if latest is not None else Observation(now, ()), now)
     hist = derive_history(observations, now, window_seconds)
     return MergeTrainState(
         repo=repo, depth=live["depth"], trains_per_hour=hist["trains_per_hour"],
