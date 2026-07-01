@@ -78,7 +78,7 @@ def _build_orch(pr: PullRequestInfo, *, has_driver: bool = True):
     async def fake_notify(title, body, *, url=None):
         pushed.append(title)
 
-    orch.send_prompt = fake_send  # type: ignore[method-assign]
+    orch.send_prompt = fake_send  # type: ignore[method-assign, assignment]
     _orig_notify = orch_mod.push_mod.notify
     orch_mod.push_mod.notify = fake_notify  # type: ignore[attr-defined]
 
