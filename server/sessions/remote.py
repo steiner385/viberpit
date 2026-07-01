@@ -33,12 +33,17 @@ class RemoteDriver:
     ws.py needs ``.events()`` (an async generator of objects with ``.to_wire()``),
     ``.current_status()`` (sync, returns str), and ``.queued()`` (sync, returns list).
     """
-    def __init__(self, client, session_id: str, status="idle", queued=None, head_seq=None):
+    def __init__(self, client, session_id: str, status="idle", queued=None, head_seq=None,
+                 resume_since=None, turn_active=False):
         self._client = client
         self._session_id = session_id
         self._status = status
         self._queued = queued or []
         self._head_seq = head_seq
+        # Where to resume the daemon topic: while a turn is open this is just before its
+        # user message, so the whole in-progress turn replays from the ring; else from-now.
+        self._resume_since = resume_since if resume_since is not None else head_seq
+        self.turn_active = bool(turn_active)
         self._bg_tasks: set[asyncio.Task] = set()
 
     def current_status(self) -> str:
@@ -89,7 +94,7 @@ class RemoteDriver:
         task.add_done_callback(_done)
 
     async def events(self):
-        async for wire in self._client.subscribe(self._session_id, since=self._head_seq):
+        async for wire in self._client.subscribe(self._session_id, since=self._resume_since):
             yield _WireEvent(wire)
 
 
@@ -163,7 +168,9 @@ class RemoteOrchestrator:
         r = await self._client.call("ensure_driver", session_id=session_id, identity=identity)
         if not r["found"]:
             return None
-        return RemoteDriver(self._client, session_id, status=r["status"], queued=r["queued"], head_seq=r.get("head_seq"))
+        return RemoteDriver(self._client, session_id, status=r["status"], queued=r["queued"],
+                            head_seq=r.get("head_seq"), resume_since=r.get("resume_since"),
+                            turn_active=r.get("turn_active", False))
 
     async def archive_session(self, session_id):
         return await self._client.call("archive_session", session_id=session_id)

@@ -133,3 +133,49 @@ async def test_remote_driver_subscribes_with_head_seq_anchor():
     except StopAsyncIteration:
         pass
     assert captured["since"] == 7
+
+
+def test_remote_driver_subscribes_from_resume_since_and_exposes_turn_active():
+    import asyncio
+    from server.sessions.remote import RemoteDriver
+
+    captured = {}
+    class FakeClient:
+        def subscribe(self, session_id, since=None):
+            captured["since"] = since
+            async def gen():
+                if False:
+                    yield None
+            return gen()
+
+    async def run():
+        d = RemoteDriver(FakeClient(), "s", status="in_progress", queued=[],
+                         head_seq=10, resume_since=3, turn_active=True)
+        assert d.turn_active is True
+        async for _ in d.events():
+            pass
+    asyncio.run(run())
+    assert captured["since"] == 3   # resume_since, not head_seq
+
+
+def test_remote_orchestrator_threads_resume_fields():
+    import asyncio
+    from server.sessions.remote import RemoteOrchestrator
+
+    class FakeClient:
+        async def call(self, method, **kw):
+            assert method == "ensure_driver"
+            return {"found": True, "status": "in_progress", "queued": [],
+                    "head_seq": 10, "resume_since": 3, "turn_active": True}
+        def subscribe(self, *a, **k):
+            async def gen():
+                if False:
+                    yield None
+            return gen()
+
+    async def run():
+        orch = RemoteOrchestrator(FakeClient())
+        d = await orch.ensure_driver("s", "ident")
+        assert d.turn_active is True
+        assert d._resume_since == 3
+    asyncio.run(run())
