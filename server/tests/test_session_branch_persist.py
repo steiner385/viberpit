@@ -166,6 +166,9 @@ async def test_refresh_live_branches_updates_moved_worktree(monkeypatch):
     )
     monkeypatch.setattr(orch_mod.worktrees, "is_git_repo", lambda p: True)
     monkeypatch.setattr(orch_mod.worktrees, "current_branch", lambda p: "feat/new-pr-branch")
+    # Isolate the DB (_pr_pairs now also reads archived sessions from the DB); a
+    # bare db_session() would hit global state and leak into later tests.
+    monkeypatch.setattr(orch_mod, "db_session", lambda: _FakeDB([]))
     await orch._refresh_live_branches()
     assert orch._records["s1"].branch == "feat/new-pr-branch"
     assert ("o/r", "feat/new-pr-branch") in await orch._pr_pairs()

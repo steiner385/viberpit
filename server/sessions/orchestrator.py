@@ -1793,12 +1793,16 @@ class SessionOrchestrator:
             log.warning("orchestrator._pr_pairs_db_query_failed", exc_info=True)
 
         # --- Source 3: self-prune terminal PRs to bound growth ---
-        pruned: set[tuple[str, str]] = set()
-        for repo, br in seen:
-            cached = self._pr_poller.cached(repo, br)
-            if cached is not None and cached.state in ("merged", "closed"):
-                pruned.add((repo, br))
-        seen -= pruned
+        # Defensive: a minimally-constructed orchestrator (some tests build via
+        # __new__) may have no poller; skip pruning rather than raise.
+        poller = getattr(self, "_pr_poller", None)
+        if poller is not None:
+            pruned: set[tuple[str, str]] = set()
+            for repo, br in seen:
+                cached = poller.cached(repo, br)
+                if cached is not None and cached.state in ("merged", "closed"):
+                    pruned.add((repo, br))
+            seen -= pruned
 
         return list(seen)
 
