@@ -116,6 +116,9 @@ class PullRequestInfo:
     eta_high_seconds: int | None = None
     deployed_envs: tuple[str, ...] = ()
     check_groups: tuple[CheckGroup, ...] = ()
+    mergeable: str = "UNKNOWN"          # MERGEABLE | CONFLICTING | UNKNOWN
+    merge_state_status: str = ""        # BEHIND | BLOCKED | CLEAN | DIRTY | DRAFT | UNSTABLE | UNKNOWN
+    auto_merge_enabled: bool = False    # autoMergeRequest != null
 
     def to_dict(self) -> dict:
         return {
@@ -139,6 +142,9 @@ class PullRequestInfo:
             "eta_high_seconds": self.eta_high_seconds,
             "deployed_envs": list(self.deployed_envs),
             "check_groups": [g.to_dict() for g in self.check_groups],
+            "mergeable": self.mergeable,
+            "merge_state_status": self.merge_state_status,
+            "auto_merge_enabled": self.auto_merge_enabled,
         }
 
     @classmethod
@@ -165,6 +171,9 @@ class PullRequestInfo:
             eta_high_seconds=d.get("eta_high_seconds"),
             deployed_envs=tuple(d.get("deployed_envs", [])),
             check_groups=tuple(CheckGroup.from_dict(g) for g in d.get("check_groups", [])),
+            mergeable=d.get("mergeable", "UNKNOWN"),
+            merge_state_status=d.get("merge_state_status", ""),
+            auto_merge_enabled=d.get("auto_merge_enabled", False),
         )
 
 
@@ -204,7 +213,8 @@ def _alias(i: int) -> str:
 # Shared PR-node selection so build_pr_query (per-branch) and the population
 # query (per-repo) can never drift in which fields they fetch.
 _PR_NODE_FIELDS = (
-    "number url title state isDraft updatedAt mergedAt headRefOid mergeStateStatus\n"
+    "number url title state isDraft updatedAt mergedAt headRefOid mergeStateStatus mergeable\n"
+    "      autoMergeRequest { enabledAt }\n"
     "      commits(last: 1) { nodes { commit { statusCheckRollup { state\n"
     "        contexts(first: 100) { nodes {\n"
     "          __typename\n"
@@ -518,6 +528,9 @@ def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
         checks_detail=_checks_detail(pr),
         stage=stage,
         deployed_envs=deployed_envs,
+        mergeable=pr.get("mergeable") or "UNKNOWN",
+        merge_state_status=pr.get("mergeStateStatus") or "",
+        auto_merge_enabled=pr.get("autoMergeRequest") is not None,
     )
 
 
