@@ -198,6 +198,27 @@ export interface PipelinePr extends PullRequestInfo {
   node_states?: { id: string; state: NodeState }[]
 }
 
+export interface TrainBuild {
+  pr_number: number
+  percent: number | null
+  eta_seconds: number | null
+}
+
+export interface MergeTrainState {
+  repo: string
+  depth: number
+  trains_per_hour: number | null
+  batch_success_pct: number | null
+  ejects_24h: number
+  oldest_wait_seconds: number | null
+  failing: number[]
+  building: TrainBuild | null
+  blocked: number[]
+  awaiting_qa: number
+  awaiting_prod: number
+  merges_next: TrainBuild | null
+}
+
 export interface ModelOption { id: string; label: string }
 
 export interface PendingDeploy {

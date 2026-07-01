@@ -33,8 +33,9 @@ vi.mock('@/api/hooks', () => ({
   usePendingDeploy: () => ({ data: { behind: false, commits: [], ci: 'green' } }),
   useDeployStatus: () => ({ data: { running: false, phases: {} } }),
   useStartDeploy: () => ({ mutate: vi.fn(), isPending: false }),
-  useAllPrs: vi.fn(() => ({ data: [] })),
+  useAllPrs: vi.fn(() => ({ data: [], dataUpdatedAt: 0 })),
   useStageModels: vi.fn(() => ({ data: {} })),
+  useMergeTrains: vi.fn(() => ({ data: {} })),
   useSessionsViewing: vi.fn(),
   QK: {
     accounts: ['accounts'],
