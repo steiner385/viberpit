@@ -28,8 +28,11 @@ async def _build_orch(tmp_path, **row):
 
 
 def _attach_stub_driver(orch, sid):
-    """Give a (detached) session a live-driver stand-in exposing just an _out queue."""
-    drv = types.SimpleNamespace(_out=asyncio.Queue())
+    """Give a (detached) session a live-driver stand-in whose emit() feeds a drainable
+    queue, mirroring the real driver's broadcast emit path (orchestrator calls
+    driver.emit(...) for out-of-band events like a rename Title)."""
+    q: asyncio.Queue = asyncio.Queue()
+    drv = types.SimpleNamespace(_out=q, emit=q.put_nowait)
     orch._drivers[sid] = drv
     return drv
 

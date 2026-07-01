@@ -915,7 +915,7 @@ class SessionOrchestrator:
             )
         driver = self._drivers.get(session_id)
         if driver is not None:
-            await driver._out.put(ev.Title(title=title, source=source))
+            driver.emit(ev.Title(title=title, source=source))
         log.info("session.auto_name id=%s title=%r source=%s", session_id, title, source)
 
     async def _titling_sweep(self) -> None:

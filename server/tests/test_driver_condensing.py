@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import pytest
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
@@ -33,10 +34,12 @@ async def test_pre_compact_emits_estimate():
     async def est():
         return 8000.0
     d, _ = _driver(get_condense_estimate=est)
+    out_q: asyncio.Queue = asyncio.Queue()
+    d._subscribers.add(out_q)
     await d._on_pre_compact()
     out = []
-    while not d._out.empty():
-        out.append(d._out.get_nowait())
+    while not out_q.empty():
+        out.append(out_q.get_nowait())
     cond = [e for e in out if isinstance(e, ev.Condensing) and e.active]
     assert cond and cond[0].expected_ms == 8000.0
 
@@ -138,16 +141,18 @@ async def test_interrupt_emits_condensing_inactive_to_clear_overlay():
     """interrupt() during compaction must also forward a Condensing(active=False) event
     so an open session view clears its progress overlay (mirrors _consume_condensing)."""
     d, _ = _driver()
+    out_q: asyncio.Queue = asyncio.Queue()
+    d._subscribers.add(out_q)
     await d.start()
     d._turn_active = True
     await d._on_pre_compact()
-    while not d._out.empty():             # drain the active=True + status events
-        d._out.get_nowait()
+    while not out_q.empty():             # drain the active=True + status events
+        out_q.get_nowait()
 
     await d.interrupt()
 
     out = []
-    while not d._out.empty():
-        out.append(d._out.get_nowait())
+    while not out_q.empty():
+        out.append(out_q.get_nowait())
     cond_off = [e for e in out if isinstance(e, ev.Condensing) and not e.active]
     assert cond_off, "interrupt must emit Condensing(active=False)"
