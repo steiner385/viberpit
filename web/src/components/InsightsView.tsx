@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useStageModels, useCheckInsights } from '../api/hooks'
 import { CheckTable, type Column } from './CheckTable'
-import type { CheckDurationStat, CheckFlakeStat } from '../api/types'
+import type { CheckDurationStat, CheckFlakeStat, CheckRegressionStat, RunnerWaitStat } from '../api/types'
 
 const WINDOWS = ['24h', '7d', '14d', '30d']
 
@@ -61,6 +61,37 @@ export function InsightsView() {
             rows={data?.slowest ?? []} empty={`No check timing for ${selected} in this window.`} />
           <CheckTable title="Flakiest checks" columns={flakeCols}
             rows={data?.flakiest ?? []} empty={`No flaky checks for ${selected} in this window.`} />
+          <CheckTable<CheckRegressionStat>
+            title="Duration regressions (live — not affected by window)"
+            rows={data?.regressions ?? []}
+            empty="No regressions detected"
+            columns={[
+              { header: 'Check', cell: (r) => r.check_name },
+              { header: 'Event', cell: (r) => r.event },
+              { header: 'Was', cell: (r) => fmtSecs(r.prior_p50) },
+              { header: 'Now', cell: (r) => fmtSecs(r.recent_p50) },
+              { header: 'Slowdown', cell: (r) => `${r.ratio.toFixed(1)}×` },
+              { header: 'Since', cell: (r) => r.since.slice(0, 10) },
+            ]}
+          />
+          <CheckTable<RunnerWaitStat>
+            title="Runner-wait health"
+            rows={data?.runner_wait_health ?? []}
+            empty="No runner-wait data"
+            columns={[
+              { header: 'Event', cell: (r) => r.event },
+              { header: 'p50', cell: (r) => fmtSecs(r.p50) },
+              { header: 'p90', cell: (r) => fmtSecs(r.p90) },
+              {
+                header: 'Δ vs prev',
+                cell: (r) =>
+                  r.prev_p50 == null
+                    ? '—'
+                    : `${r.p50 >= r.prev_p50 ? '↑' : '↓'} ${fmtSecs(Math.abs(r.p50 - r.prev_p50))}`,
+              },
+              { header: 'n', cell: (r) => String(r.n) },
+            ]}
+          />
         </>
       )}
     </div>
