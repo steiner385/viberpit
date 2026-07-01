@@ -28,8 +28,11 @@ async def _build_orch(tmp_path, **row):
 
 
 def _attach_stub_driver(orch, sid):
-    """Give a (detached) session a live-driver stand-in exposing just an _out queue."""
-    drv = types.SimpleNamespace(_out=asyncio.Queue())
+    """Give a (detached) session a live-driver stand-in whose emit() feeds a drainable
+    queue, mirroring the real driver's broadcast emit path (orchestrator calls
+    driver.emit(...) for out-of-band events like a rename Title)."""
+    q: asyncio.Queue = asyncio.Queue()
+    drv = types.SimpleNamespace(_events=q, emit=q.put_nowait)
     orch._drivers[sid] = drv
     return drv
 
@@ -253,8 +256,8 @@ def test_auto_name_emits_title_event_to_live_header(tmp_path):
         drv = _attach_stub_driver(orch, "s1")
         await orch._persist_status("s1", "done")
         events = []
-        while not drv._out.empty():
-            events.append(drv._out.get_nowait())
+        while not drv._events.empty():
+            events.append(drv._events.get_nowait())
         return orch.record("s1").name, events
 
     name, events = asyncio.run(run())
@@ -274,10 +277,10 @@ def test_auto_name_idempotent_no_event_when_unchanged(tmp_path):
         orch.transcript_path = lambda sid: str(transcript)
         drv = _attach_stub_driver(orch, "s1")
         await orch._persist_status("s1", "done")   # adopts → 1 event
-        while not drv._out.empty():
-            drv._out.get_nowait()
+        while not drv._events.empty():
+            drv._events.get_nowait()
         await orch._persist_status("s1", "done")   # same title → no event
-        return drv._out.empty()
+        return drv._events.empty()
 
     assert asyncio.run(run()) is True
 

@@ -79,6 +79,31 @@ async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -
             ).to_wire())
 
 
+async def _run_replay_and_complete(orchestrator, send, session_id: str,
+                                   drop_incomplete: bool = False) -> list:
+    """Replay the transcript (trimmed of the in-progress turn when drop_incomplete) as
+    one batch, then replayComplete. Returns the replayed events. See build_ws_router's
+    _replay_and_complete for the rationale (reset-leading batch, always-fire complete)."""
+    events: list = []
+    earliest_turn = 0
+    total_turns = 0
+    try:
+        path = await orchestrator.transcript_path(session_id)
+        if path:
+            window = await replay_window(path, drop_incomplete_turn=drop_incomplete)
+            events = window.events
+            earliest_turn = window.earliest_turn
+            total_turns = window.total_turns
+        if events:
+            redacted_replay = [{"type": "replayReset"}]
+            redacted_replay += [redact_event(e.to_wire()) for e in events]
+            await send({"type": "batch", "events": redacted_replay})
+    except Exception:
+        log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
+    await send({"type": "replayComplete", "earliestTurn": earliest_turn, "totalTurns": total_turns})
+    return events
+
+
 def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
     """Return an APIRouter containing the /ws endpoint wired to *orchestrator*."""
     router = APIRouter()
@@ -168,42 +193,15 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
         # Attach / detach
         # ------------------------------------------------------------------
 
-        async def _replay_and_complete(session_id: str) -> list:
-            """Replay the transcript (if any) as one batch frame, then replayComplete.
-
-            A transcript that can't be located or parsed must NOT crash the WS (which
-            would close the socket → client reconnect-loop on a blank screen) — skip the
-            history and continue. replayComplete ALWAYS fires so the client's loading
-            spinner clears, and now carries earliestTurn/totalTurns so the client knows
-            whether older history exists. Returns the replayed events (for idle-suggestion
-            seeding).
-            """
-            events: list = []
-            earliest_turn = 0
-            total_turns = 0
-            try:
-                path = await orchestrator.transcript_path(session_id)
-                if path:
-                    window = await replay_window(path)
-                    events = window.events
-                    earliest_turn = window.earliest_turn
-                    total_turns = window.total_turns
-                if events:
-                    # Lead the replay with a reset. attach is re-sent on every WS
-                    # reconnect (client.ts onopen), so the same transcript is replayed
-                    # repeatedly into a reducer that is never recreated. Streamed
-                    # text/thinking deltas are append-only, so without a reset each
-                    # reconnect re-appends a full copy of every assistant block — the
-                    # "sessions duplicating content" bug. The reset is the first event
-                    # of this single batch frame, so the client clears and rebuilds
-                    # atomically (no flicker, no duplication).
-                    redacted_replay = [{"type": "replayReset"}]
-                    redacted_replay += [redact_event(e.to_wire()) for e in events]
-                    await _send({"type": "batch", "events": redacted_replay})
-            except Exception:
-                log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
-            await _send({"type": "replayComplete", "earliestTurn": earliest_turn, "totalTurns": total_turns})
-            return events
+        async def _replay_and_complete(session_id: str, drop_incomplete: bool = False) -> list:
+            """Delegate to the module-level helper, binding this socket's orchestrator
+            and _send.  A transcript that can't be located or parsed must NOT crash the
+            WS — the helper swallows the error and always fires replayComplete so the
+            client's loading spinner clears.  Returns the replayed events (for
+            idle-suggestion seeding).  Pass drop_incomplete=True for a LIVE session
+            whose driver reports turn_active so the in-progress turn is owned solely by
+            the driver's events() buffer replay (no duplication)."""
+            return await _run_replay_and_complete(orchestrator, _send, session_id, drop_incomplete)
 
         async def _resume_driver_or_error(session_id: str):
             """Resume (or fetch) the live driver, bounded by _RESUME_TIMEOUT.
@@ -346,8 +344,8 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             # Send the deferred initial prompt (if any) now that the client is watching.
             # The prompt was stored in create_session instead of being sent immediately
             # so that its events stream live to this first attach rather than racing the
-            # transcript-file write or arriving before any consumer exists in
-            # driver._out. Only fires on the first attach (pop clears the entry);
+            # transcript-file write or arriving before any subscriber is registered on
+            # the driver. Only fires on the first attach (pop clears the entry);
             # reconnects fall through to live-stream only.
             pending_prompt = await orchestrator.pop_pending_initial_prompt(session_id)
             pending_attachment_ids = await orchestrator.pop_pending_initial_attachment_ids(session_id)
@@ -396,7 +394,8 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             driver = await _resume_driver_or_error(session_id)
             if driver is None:
                 return
-            events = await _replay_and_complete(session_id)
+            active = getattr(driver, "turn_active", False)
+            events = await _replay_and_complete(session_id, drop_incomplete=active)
             await _emit_live_extras(session_id, driver, events)
             _start_live_stream(session_id, driver)
 

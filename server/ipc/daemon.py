@@ -33,9 +33,15 @@ def create_daemon_app() -> FastAPI:
 
     # Per-stream replay ring buffer: (seq, event). Closes the at-attach/reconnect gap —
     # events published before a subscriber connects are kept and replayed on subscribe.
-    _maxlen = int(os.environ.get("CCSWITCH_IPC_REPLAY_BUFFER", "256"))
+    _maxlen = int(os.environ.get("CCSWITCH_IPC_REPLAY_BUFFER", "2048"))
     app.state.buffers = {}   # stream -> deque[(seq, event)]
     app.state.seqs = {}      # stream -> last assigned seq (int)
+    # Turn-boundary tracking for in-progress-turn replay: the seq of the current
+    # turn's user message, and whether a turn is open. A reconnecting edge resumes
+    # from turn_start_seq so the whole in-progress turn replays from the ring.
+    app.state.turn_start_seqs = {}   # stream -> seq of the last `user` event
+    app.state.turn_open = {}         # stream -> bool
+    _TERMINAL_STATES = {"done", "complete", "needs_attention", "idle"}
     # Per-stream observability (issue #185): the ring buffer drops its oldest entry on
     # every event past the cap — that's NORMAL for live delivery, so it must NOT log per
     # event. We count instead. `dropped` only matters as a precursor to a RECONNECT GAP
@@ -60,10 +66,26 @@ def create_daemon_app() -> FastAPI:
 
     app.state.head_seq = head_seq
 
+    def turn_open_for(stream: str) -> bool:
+        return bool(app.state.turn_open.get(stream))
+
+    app.state.turn_open_for = turn_open_for
+
+    def resume_since(stream: str) -> int | None:
+        # While a turn is open, resume from just before its user message so the whole
+        # in-progress turn replays from the ring; otherwise from-now (disk has the rest).
+        if app.state.turn_open.get(stream):
+            return app.state.turn_start_seqs.get(stream, 0) - 1
+        return head_seq(stream)
+
+    app.state.resume_since = resume_since
+
     def evict(stream: str) -> None:
         app.state.buffers.pop(stream, None)
         app.state.seqs.pop(stream, None)
         app.state.stats.pop(stream, None)
+        app.state.turn_start_seqs.pop(stream, None)
+        app.state.turn_open.pop(stream, None)
 
     app.state.evict = evict
 
@@ -119,6 +141,14 @@ def create_daemon_app() -> FastAPI:
             # Benign ring eviction — count it, don't flood the log (issue #185).
             st["dropped"] += 1
         buf.append((seq, event))
+        etype = event.get("type")
+        if etype == "user":
+            app.state.turn_start_seqs[stream] = seq
+            app.state.turn_open[stream] = True
+        elif etype == "turnEnd":
+            app.state.turn_open[stream] = False
+        elif etype == "status" and event.get("state") in _TERMINAL_STATES:
+            app.state.turn_open[stream] = False
         if len(buf) > st["high_water"]:
             st["high_water"] = len(buf)
         frame_text = _dumps(proto.event_frame(stream, event, seq))

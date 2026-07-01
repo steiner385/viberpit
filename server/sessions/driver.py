@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import base64
+import dataclasses
 import logging
 import os
 import time
@@ -23,6 +24,15 @@ log = logging.getLogger(__name__)
 _STATUS_TRACE = os.environ.get("CCSWITCH_STATUS_TRACE", "false").lower() in ("1", "true", "yes", "on")
 
 _STREAM_DONE = object()
+
+# Events that reconstruct a turn's transcript — the only ones retained in the
+# in-progress-turn buffer and replayed to a late subscriber. Control/ephemeral
+# events (Status, QueueUpdate, ContextUsage, Suggestions, Title, PermissionRequest,
+# Question, Condensing, TurnFailure) are re-emitted from authoritative state by the
+# WS attach path (_emit_live_extras); buffering them would double-emit.
+_TURN_CONTENT = (ev.UserMessage, ev.TurnStart, ev.TurnModel, ev.SessionMeta,
+                 ev.TextDelta, ev.ThinkingDelta, ev.ToolCall, ev.ToolResult,
+                 ev.TurnEnd, ev.ErrorEvent)
 
 # How long aclose() waits for the CLI to flush its synthetic interrupt result for a
 # turn wedged mid-tool-call before giving up and cancelling the drain.
@@ -84,7 +94,13 @@ class SessionDriver:
         self._qreg = QuestionRegistry()
         self._tr = Translator()
         self._client = None
-        self._out: asyncio.Queue = asyncio.Queue()
+        # Broadcast fan-out: each events() subscriber gets its own queue. A single
+        # asyncio.Queue is a WORK queue (each item to one getter) — fatal when
+        # "attach" happens more than once per session (reconnect, 2nd viewer).
+        self._subscribers: set[asyncio.Queue] = set()
+        # Coalesced transcript events of the IN-PROGRESS turn, replayed to a late
+        # subscriber so a mid-stream (re)attach shows the whole message, not the tail.
+        self._turn_buffer: list = []
         self._pump: asyncio.Task | None = None
         self._titled: bool = False
         self._queue: list[tuple[str, list[dict]]] = []
@@ -99,6 +115,7 @@ class SessionDriver:
         self._turn_produced_output: bool = False
         self._last_assistant_parts: list[str] = []
         self._last_turn_id: str = ""
+        self._last_suggestions: list[str] = []
         self._idle_seeded: bool = False
 
     def _turn(self):
@@ -188,7 +205,7 @@ class SessionDriver:
                 est = await self._get_condense_estimate()
             except Exception:
                 log.warning("driver.get_condense_estimate failed session=%s", self.session_id, exc_info=True)
-        await self._out.put(ev.Condensing(active=True, expected_ms=est))
+        self._emit(ev.Condensing(active=True, expected_ms=est))
         await self._emit_status()
         return {}
 
@@ -204,7 +221,7 @@ class SessionDriver:
                 except Exception:
                     log.warning("driver.record_condense_ms failed session=%s", self.session_id, exc_info=True)
         await self._emit_status()
-        await self._out.put(e)   # forward so the UI clears the bar
+        self._emit(e)   # forward so the UI clears the bar
 
     async def _emit_status(self, count: int | None = None) -> None:
         """Single status emitter — rich vocabulary to BOTH consumers.
@@ -233,7 +250,7 @@ class SessionDriver:
                 sig.pending_plan, self.awaiting_user_input,
                 self._clock() - self._last_progress_at, n,
             )
-        await self._out.put(ev.Status(state=status, count=n))
+        self._emit(ev.Status(state=status, count=n))
         if self._on_status is not None:
             try:
                 await self._on_status(self.session_id, status)
@@ -292,7 +309,7 @@ class SessionDriver:
                 self.session_id, turn_id, header, question_text, options, multi_select,
                 self.identity,
             )
-            await self._out.put(ev.Question(
+            self._emit(ev.Question(
                 question_id=qid,
                 turn_id=turn_id,
                 header=header,
@@ -395,7 +412,7 @@ class SessionDriver:
             self.session_id, turn_id, tool_name, tool_input,
             mode=self.mode, denylist=self.denylist, allowlist=True, identity=self.identity)
         if perm_id is not None:
-            await self._out.put(ev.PermissionRequest(
+            self._emit(ev.PermissionRequest(
                 perm_id, turn_id, tool_name, ev.tool_kind(tool_name),
                 tool_input, plan=(tool_name == "ExitPlanMode")))
             # A prompt is now pending for the user → waiting_input / ready_review.
@@ -433,13 +450,13 @@ class SessionDriver:
             log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
                       self.session_id, len(self._queue))
             await self._emit_status()
-            await self._out.put(ev.QueueUpdate(self.queue_wire()))
+            self._emit(ev.QueueUpdate(self.queue_wire()))
             return
         # C3 — auto-title from the first prompt (first line, max 50 chars).
         if not self._titled:
             self._titled = True
             first_line = text.splitlines()[0] if text else (text or "image")
-            await self._out.put(ev.Title(title=first_line[:50], source="prompt"))
+            self._emit(ev.Title(title=first_line[:50], source="prompt"))
         await self._start_turn(text, images)
 
     async def _start_turn(self, text: str, images: list[dict] | None = None):
@@ -448,6 +465,7 @@ class SessionDriver:
         self._cancel_suggest()
         self._last_user_text = text
         self._last_assistant_parts = []
+        self._turn_buffer = []
         self._turn_produced_output = False
         self._turn_active = True
         self._last_turn_outcome = "success"
@@ -456,7 +474,7 @@ class SessionDriver:
         wire_images = [{"url": im["url"], "mime": im["mime"], "name": im.get("name", "")}
                        for im in images]
         user_turn = uuid.uuid4().hex
-        await self._out.put(ev.UserMessage(
+        self._emit(ev.UserMessage(
             turn_id=user_turn, text=text, src_uuid=user_turn,
             images=wire_images or None))
         assert self._client is not None  # _start_turn only runs once the client is connected
@@ -498,7 +516,7 @@ class SessionDriver:
         retry_after = failure.retry_after
         if retry_after is None and self._last_rate_reset is not None:
             retry_after = max(0.0, float(self._last_rate_reset) - self._clock())
-        await self._out.put(ev.TurnFailure(
+        self._emit(ev.TurnFailure(
             kind=failure.kind, account=self.account, retry_after=retry_after))
         if self._on_recoverable_failure is not None:
             try:
@@ -550,7 +568,7 @@ class SessionDriver:
                     if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
                         self._turn_produced_output = True
                     self._note_progress(e)
-                    await self._out.put(e)
+                    self._emit(e)
                 if self.claude_session_id is None and self._tr.session_id:
                     self.claude_session_id = self._tr.session_id
                     if self._on_session_id is not None:
@@ -565,7 +583,7 @@ class SessionDriver:
             # to act on; redaction scrubs any secret-shaped substrings downstream.
             detail = str(exc).strip() or "no detail"
             full = f"{type(exc).__name__}: {detail}"
-            await self._out.put(ev.ErrorEvent(
+            self._emit(ev.ErrorEvent(
                 "driver_error", full[:500], turn_id=self._turn()))
             self._last_turn_outcome = "failed"
             await self._maybe_signal_recovery("driver_error", full)
@@ -579,10 +597,11 @@ class SessionDriver:
                 next_text, next_images = self._queue.pop(0)
                 log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
                           self.session_id, len(self._queue))
-                await self._out.put(ev.QueueUpdate(self.queue_wire()))
+                self._emit(ev.QueueUpdate(self.queue_wire()))
                 await self._start_turn(next_text, next_images)
             else:
                 self._turn_active = False
+                self._turn_buffer = []
                 self._turns_completed += 1
                 # Turn settled — refresh the exact context-window readout.
                 await self._emit_context_usage()
@@ -607,16 +626,67 @@ class SessionDriver:
         if index < 0 or index >= len(self._queue):
             return False
         self._queue.pop(index)
-        await self._out.put(ev.QueueUpdate(self.queue_wire()))
+        self._emit(ev.QueueUpdate(self.queue_wire()))
         await self._emit_status()
         return True
 
-    async def events(self):
-        while True:
-            item = await self._out.get()
-            if item is _STREAM_DONE:
+    def _buffer_event(self, e) -> None:
+        """Append e to the in-progress-turn buffer, coalescing consecutive same-block
+        text/thinking deltas into one accumulated event (bounded by content, not count)."""
+        if isinstance(e, (ev.TextDelta, ev.ThinkingDelta)) and self._turn_buffer:
+            last = self._turn_buffer[-1]
+            if (type(last) is type(e) and last.turn_id == e.turn_id
+                    and last.src_uuid == e.src_uuid
+                    and last.parent_tool_use_id == e.parent_tool_use_id):
+                self._turn_buffer[-1] = dataclasses.replace(last, text=last.text + e.text)
                 return
-            yield item
+        self._turn_buffer.append(e)
+
+    def _emit(self, e) -> None:
+        """Fan an event out to every subscriber and (if transcript content) the buffer.
+        Replaces the old single-queue put; put_nowait on unbounded subscriber queues
+        never blocks, so this is synchronous."""
+        if isinstance(e, _TURN_CONTENT):
+            self._buffer_event(e)
+        for q in self._subscribers:
+            q.put_nowait(e)
+
+    def emit(self, e) -> None:
+        """Public out-of-band emit for the orchestrator (e.g. a user rename → Title).
+        Delegates to the broadcast path so external callers never touch internals."""
+        self._emit(e)
+
+    @property
+    def turn_active(self) -> bool:
+        return self._turn_active
+
+    async def events(self):
+        # Snapshot the in-progress turn and register a fresh live queue ATOMICALLY —
+        # no await between the two lines, so no event can slip into the gap (single
+        # asyncio thread). Snapshot = the past; the queue = strictly the future.
+        snapshot = list(self._turn_buffer)
+        # Re-emit the latest suggestions to every new subscriber. Suggestions are
+        # current-state (like Status), not buffered turn content, and are produced by a
+        # fire-and-forget task that can fire before OR after a subscriber attaches — so a
+        # late/reconnecting viewer (or an idle-attach seed that raced the subscribe) would
+        # otherwise never see them. Delivering from the cached snapshot is idempotent: the
+        # producing _emit either already ran (cache set, no live copy for THIS subscriber)
+        # or runs later (live copy) — never both for one subscriber.
+        if self._last_suggestions:
+            snapshot.append(ev.Suggestions(
+                self.session_id, self._last_turn_id, list(self._last_suggestions)))
+        q: asyncio.Queue = asyncio.Queue()
+        self._subscribers.add(q)
+        try:
+            for e in snapshot:
+                yield e
+            while True:
+                item = await q.get()
+                if item is _STREAM_DONE:
+                    return
+                yield item
+        finally:
+            self._subscribers.discard(q)
 
     def _cancel_suggest(self) -> None:
         if self._suggest_task is not None and not self._suggest_task.done():
@@ -640,7 +710,7 @@ class SessionDriver:
         log.info("suggestions session=%s turn=%s n=%d", self.session_id, turn_id, len(items))
         if items:
             self._last_suggestions = items
-            await self._out.put(ev.Suggestions(self.session_id, turn_id, items))
+            self._emit(ev.Suggestions(self.session_id, turn_id, items))
 
     async def generate_suggestions_now(self) -> list[str]:
         """Generate next-prompt suggestions on demand (synchronously awaited).
@@ -660,7 +730,7 @@ class SessionDriver:
         items = await self._suggester.generate(self.cwd, self.config_dir, context)
         if items:
             self._last_suggestions = items
-            await self._out.put(
+            self._emit(
                 ev.Suggestions(self.session_id, self._last_turn_id or "on-demand", items)
             )
         return list(items or [])
@@ -705,8 +775,8 @@ class SessionDriver:
         if was_condensing:
             # Forward an inactive boundary so an open session view clears its progress
             # overlay (mirrors _consume_condensing); the normal boundary never arrives.
-            await self._out.put(ev.Condensing(active=False))
-        await self._out.put(ev.QueueUpdate([]))
+            self._emit(ev.Condensing(active=False))
+        self._emit(ev.QueueUpdate([]))
         await self._emit_status()
 
     async def set_permission_mode(self, mode: str):
@@ -745,7 +815,7 @@ class SessionDriver:
         if not isinstance(used, int) or not isinstance(mx, int) or mx <= 0:
             return
         pct, model = cu.get("percentage"), cu.get("model")
-        await self._out.put(ev.ContextUsage(
+        self._emit(ev.ContextUsage(
             used_tokens=used, max_tokens=mx,
             percentage=float(pct) if isinstance(pct, (int, float)) else round(used / mx * 100, 1),
             model=model if isinstance(model, str) else None))
@@ -823,4 +893,5 @@ class SessionDriver:
         # session (e.g. a long-running session where the SDK refreshed but the
         # drain's finally sync_back already ran before the close was requested).
         await self._call_sync_back()
-        await self._out.put(_STREAM_DONE)
+        for q in self._subscribers:
+            q.put_nowait(_STREAM_DONE)

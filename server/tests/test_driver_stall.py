@@ -91,20 +91,23 @@ async def test_retrying_clears_on_real_event_with_status_emit():
     ]
     d = _make_driver(messages)
     await d.start()
+    # Subscribe BEFORE send_prompt: Status is a control event broadcast only to current
+    # subscribers, so the 'retrying' status emitted during the drain would be missed by a
+    # subscriber that attaches after the prompt.
+    out_q: asyncio.Queue = asyncio.Queue()
+    d._subscribers.add(out_q)
     await d.send_prompt("go")
+    if d._pump:
+        await d._pump
 
     statuses: list[str] = []
     saw_turn_end = False
-    async def collect():
-        nonlocal saw_turn_end
-        async for e in d.events():
-            if isinstance(e, ev.Status):
-                statuses.append(e.state)
-            if isinstance(e, ev.TurnEnd):
-                saw_turn_end = True
-                break
-
-    await asyncio.wait_for(collect(), timeout=5.0)
+    while not out_q.empty():
+        e = out_q.get_nowait()
+        if isinstance(e, ev.Status):
+            statuses.append(e.state)
+        if isinstance(e, ev.TurnEnd):
+            saw_turn_end = True
     await d.aclose()
 
     assert saw_turn_end, "turn did not complete"

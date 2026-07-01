@@ -52,7 +52,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         if app.state.pumped.get(session_id) is not driver:
             app.state.pumped[session_id] = driver
             asyncio.create_task(_pump(session_id, driver), name=f"pump-{session_id}")
-        return {"found": True, "status": driver.current_status(), "queued": driver.queued(), "head_seq": app.state.head_seq(session_id)}
+        return {"found": True, "status": driver.current_status(), "queued": driver.queued(),
+                "head_seq": app.state.head_seq(session_id),
+                "resume_since": app.state.resume_since(session_id),
+                "turn_active": app.state.turn_open_for(session_id)}
 
     async def list_sessions(params: dict) -> dict:
         return {"sessions": [r.to_dict() for r in orch.list_sessions()]}

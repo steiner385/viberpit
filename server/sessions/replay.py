@@ -128,8 +128,16 @@ def _build_events(path: str) -> tuple[list, object | None]:
     return out, meta_event
 
 
-def _window(path: str, before: int | None, limit: int) -> ReplayWindow:
+def _window(path: str, before: int | None, limit: int, drop_incomplete_turn: bool = False) -> ReplayWindow:
     out, meta_event = _build_events(path)
+    if drop_incomplete_turn:
+        # Drop the trailing in-progress logical turn: everything from the last real
+        # UserMessage onward. The live driver buffer / daemon ring owns that turn, and
+        # its blocks are flushed to disk mid-stream, so keeping them here duplicates.
+        last_user = max((i for i, e in enumerate(out) if isinstance(e, ev.UserMessage)),
+                        default=None)
+        if last_user is not None:
+            out = out[:last_user]
     starts = [i for i, e in enumerate(out) if isinstance(e, ev.TurnStart)]
     ends   = [i for i, e in enumerate(out) if isinstance(e, ev.TurnEnd)]
     total = len(starts)
@@ -155,8 +163,9 @@ def _parse(path: str, max_turns: int) -> list:
     return _window(path, before=None, limit=max_turns).events
 
 
-async def replay_window(jsonl_path: str, *, before: int | None = None, limit: int = 20) -> ReplayWindow:
-    return await asyncio.to_thread(_window, jsonl_path, before, limit)
+async def replay_window(jsonl_path: str, *, before: int | None = None, limit: int = 20,
+                        drop_incomplete_turn: bool = False) -> ReplayWindow:
+    return await asyncio.to_thread(_window, jsonl_path, before, limit, drop_incomplete_turn)
 
 
 async def replay_events(jsonl_path: str, *, max_turns: int = 20) -> list:
