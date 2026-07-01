@@ -113,13 +113,21 @@ def derive_live(latest: "Observation", now: int) -> "_LiveSegments":
         default=None,
     ) if entries else None
     building = _build(head) if (head and head.group_checks == "pending") else None
+    if head is None:
+        merges_next: "TrainBuild | None" = None
+    elif head.state == "UNMERGEABLE" or head.group_checks == "failing":
+        # Head is blocked/failing — still name it (it IS next in line), but drop the
+        # percent/ETA so the widget doesn't imply progress or a merge time it won't meet.
+        merges_next = TrainBuild(pr_number=head.pr_number, percent=None, eta_seconds=None)
+    else:
+        merges_next = _build(head)
     return {
         "depth": len(entries),
         "oldest_wait_seconds": (now - min(enq)) if enq else None,
         "failing": tuple(e.pr_number for e in entries if e.group_checks == "failing"),
         "blocked": tuple(e.pr_number for e in entries if e.state == "UNMERGEABLE"),
         "building": building,
-        "merges_next": _build(head) if head else None,
+        "merges_next": merges_next,
     }
 
 

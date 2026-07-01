@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
-import json
 import logging
 import os
 import shutil
@@ -249,33 +248,18 @@ class SessionOrchestrator:
         self._pr_poller: PrStatusPoller = PrStatusPoller()
         self._pr_poller.set_pairs_provider(self._pr_pairs)
         self._pr_poller.set_on_change(self._on_pr_change)
-        from server.github.pr_population import PrPopulationPoller
-        from server.github.merge_queue import build_merge_queue_query
+        from server.github.pr_population import PrPopulationPoller, _default_merge_queue_query
         from server.pipeline import merge_queue_store
-        from ccswitch import gitrepos as _gitrepos
-        from server.github import app_auth as _app_auth
-
-        def _merge_queue_query(repos: list[str]) -> dict:
-            query = build_merge_queue_query(repos)
-            if not query:
-                return {}
-            # Single-owner simplification: use the first repo's owner for the token.
-            # Limitation: if watched repos span multiple GitHub owners (organisations),
-            # only the first owner's installation token is used. For multi-owner support,
-            # mirror the per-owner grouping in _default_eta_query.
-            token = _app_auth.token_for_owner(repos[0].split("/", 1)[0]) if repos else None
-            proc = _gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"], token=token)
-            if proc.returncode != 0:
-                raise _gitrepos.GhError(proc.stderr.strip() or "gh api graphql (merge queue) failed")
-            return json.loads(proc.stdout or "{}")
 
         async def _merge_queue_sink(by_repo: dict, captured_at: int) -> None:
             for repo, entries in by_repo.items():
                 await merge_queue_store.record(repo, captured_at, entries)
             await merge_queue_store.prune(older_than_epoch=captured_at - 36 * 3600)
 
+        # _default_merge_queue_query groups watched repos by owner so each org's repos
+        # use that org's installation token (works across multiple GitHub owners).
         self._pr_population: PrPopulationPoller = PrPopulationPoller(
-            merge_queue_query_fn=_merge_queue_query,
+            merge_queue_query_fn=_default_merge_queue_query,
             merge_queue_sink=_merge_queue_sink,
         )
         self._pr_population.set_repos_provider(self._pr_repos)

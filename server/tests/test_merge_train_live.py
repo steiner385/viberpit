@@ -8,6 +8,19 @@ def _e(num, pos, state, checks, oid="h", enq=0, total=4, eta=None):
                       checks_done=None, eta_seconds=eta)
 
 
+def test_merges_next_omits_progress_when_head_blocked_or_failing():
+    now = 100
+    # Head is UNMERGEABLE + failing: identify it, but don't imply a % or an ETA
+    # it will never meet (seen live: #10805 showed "100% ~33m" while blocked+failing).
+    blocked_head = Observation(now, (_e(10805, 1, "UNMERGEABLE", "failing", eta=1998),))
+    assert derive_live(blocked_head, now)["merges_next"] == TrainBuild(10805, None, None)
+
+    # A healthy (pending) head keeps its ETA.
+    ok_head = Observation(now, (_e(10824, 1, "AWAITING_CHECKS", "pending", eta=720),))
+    mn = derive_live(ok_head, now)["merges_next"]
+    assert mn.pr_number == 10824 and mn.eta_seconds == 720
+
+
 def test_live_segments():
     now = 10_000
     latest = Observation(captured_at=now, entries=(
