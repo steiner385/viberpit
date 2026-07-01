@@ -95,6 +95,24 @@ class CheckRegressionStat:
         }
 
 
+@dataclass(frozen=True)
+class RunnerWaitStat:
+    event: str
+    p50: float
+    p90: float
+    prev_p50: float | None
+    n: int
+
+    def to_dict(self) -> dict:
+        return {
+            "event": self.event,
+            "p50": self.p50,
+            "p90": self.p90,
+            "prev_p50": self.prev_p50,
+            "n": self.n,
+        }
+
+
 def _parse_iso_ms(iso: str) -> float:
     """ms since epoch from an ISO-8601 string (tolerant of trailing Z)."""
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000.0
@@ -235,6 +253,38 @@ class HistoryStore:
                 )
             )
         out.sort(key=lambda s: s.ratio, reverse=True)
+        return out
+
+    def runner_wait_health(
+        self, repo: str, since_iso: str, prev_since_iso: str
+    ) -> list[RunnerWaitStat]:
+        """Per-event runner pickup wait p50/p90 over the current window, with the
+        prior equal-length window's p50 for a delta. Rows at exactly since_iso are
+        current."""
+        rows = self._conn.execute(
+            "SELECT event, wait_secs, started_at FROM runner_waits "
+            "WHERE repo=? AND started_at >= ?",
+            (repo, prev_since_iso),
+        ).fetchall()
+        cur: dict[str, list[float]] = {}
+        prev: dict[str, list[float]] = {}
+        for r in rows:
+            w = float(r["wait_secs"])
+            bucket = cur if r["started_at"] >= since_iso else prev
+            bucket.setdefault(r["event"], []).append(w)
+        out: list[RunnerWaitStat] = []
+        for ev in sorted(cur):
+            c = sorted(cur[ev])
+            pv = sorted(prev.get(ev, []))
+            out.append(
+                RunnerWaitStat(
+                    event=ev,
+                    p50=percentile(c, 0.5),
+                    p90=percentile(c, 0.9),
+                    prev_p50=percentile(pv, 0.5) if pv else None,
+                    n=len(c),
+                )
+            )
         return out
 
     def expected_runner_wait(self, repo: str, name: str, event: str) -> float | None:
