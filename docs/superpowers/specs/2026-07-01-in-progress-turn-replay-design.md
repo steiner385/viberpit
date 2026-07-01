@@ -87,10 +87,13 @@ in-progress logical turn so the two sources never overlap.
    - Coalesced per block (text appended into the open text block) so the buffer is bounded
      by turn **content**, not delta **count**. A 5-minute reply is a handful of blocks.
 
-2. **`live_turn_events() -> list[dict]`** — returns `_turn_buffer` as wire-format events the
-   existing frontend reducer already understands. A coalesced text block is emitted as a
-   single `TextDelta` carrying the full accumulated text; after the client's `replayReset`
-   the reducer builds the block from that one delta, and subsequent live deltas append to it.
+2. **Buffer replay is internal to `events()`** (see item 3) — a new subscriber's `events()`
+   atomically snapshots `_turn_buffer` and registers its live queue, yielding the buffered
+   in-progress turn first, then live events. A coalesced text block is a single `TextDelta`
+   with the full accumulated text; after the client's `replayReset` the reducer builds the
+   block from that one delta and subsequent live deltas append to it. Doing the snapshot
+   *inside* `events()` (no `await` between snapshot and register) is what makes it race-free:
+   a separate "emit the buffer, then subscribe" seam would drop any delta emitted in the gap.
    **`turn_active -> bool`** — a public property (`bool(self._turn_active)`) that `ws.py` reads
    to decide `drop_incomplete_turn`. `RemoteDriver` exposes the same attribute from the
    `ensure_driver` snapshot.
@@ -98,14 +101,15 @@ in-progress logical turn so the two sources never overlap.
 3. **Broadcast fan-out** — replace the single destructive `_out` queue with per-subscriber
    fan-out:
    - `self._subscribers: set[asyncio.Queue]`.
-   - `_emit(e)` (replacing the ~15 `await self._out.put(e)` call sites): appends `e` to
+   - `_emit(e)` (replacing the ~19 `await self._out.put(e)` call sites): appends `e` to
      `_turn_buffer` when `e` is transcript content, then `put_nowait`s `e` to every
      subscriber queue. Non-blocking; unbounded queues (parity with today's `out_q`).
-   - `events()` creates a fresh queue, registers it in `_subscribers` **synchronously**
-     (no `await` between registration and first drain, so no event can interleave-and-miss),
-     drains it, and unregisters in `finally`.
+   - `events()` **synchronously** (no `await` between these two lines) snapshots
+     `list(self._turn_buffer)` and adds a fresh queue to `_subscribers`; yields the snapshot,
+     then drains the queue until `_STREAM_DONE`; unregisters the queue in `finally`.
    - `aclose()` broadcasts the `_STREAM_DONE` sentinel to every subscriber queue.
-   - Two simultaneous in-process viewers now each receive the full stream.
+   - Two simultaneous in-process viewers now each receive the full stream, each with its own
+     buffer snapshot.
 
    *Transcript-content classification:* only events that reconstruct the turn are buffered
    (`UserMessage`, `TextDelta`, `ThinkingDelta`, `ToolCall`, `ToolResult`, `TurnEnd`,
@@ -144,16 +148,16 @@ When no turn is active the flag is false and replay is unchanged.
 ### Uniform seam (`ws.py`)
 
 `_handle_attach` reads `active = driver.turn_active` once, replays the JSONL with
-`drop_incomplete_turn=active`, sends `replayComplete`, then — before starting the live
-stream — emits `driver.live_turn_events()` as one batch.
+`drop_incomplete_turn=active`, sends `replayComplete`, runs `_emit_live_extras`, then starts
+the live stream. The in-progress turn is delivered **by `events()` itself** (not a separate
+emit), so `ws.py` needs no new emit call — only the `turn_active`-driven JSONL trim.
 
-- **In-process:** `live_turn_events()` returns the buffer (the whole in-progress turn); the
-  trimmed JSONL stops before that turn; the live broadcast carries only future events.
-  JSONL = prior turns, buffer = in-progress turn, queue = future. All disjoint.
-- **Remote:** `RemoteDriver.live_turn_events()` returns `[]` and `RemoteDriver.turn_active`
-  comes from the `ensure_driver` snapshot. Remote backfill is owned by the single daemon ring
-  via `since=turn_start_seq-1`, so the in-progress turn replays from the ring while the trimmed
-  JSONL stops before it. One source of truth per mode; the `ws.py` call site stays mode-agnostic.
+- **In-process:** `events()` yields the buffer snapshot (the whole in-progress turn) then live;
+  the trimmed JSONL stops before that turn. JSONL = prior turns, buffer = in-progress turn,
+  queue = future. All disjoint.
+- **Remote:** `RemoteDriver.turn_active` comes from the `ensure_driver` snapshot; its `events()`
+  subscribes `since=resume_seq`, so the in-progress turn replays from the daemon ring while the
+  trimmed JSONL stops before it. One source of truth per mode; the seam stays mode-agnostic.
 
 ## Why this avoids duplication
 
@@ -163,21 +167,23 @@ Two disjointness rules eliminate every overlap:
    line, so the JSONL contributes only *prior* turns; the in-progress turn comes solely from
    the buffer (in-process) or the ring (remote). Verified safe by the spike: the user line is
    on disk before streaming, so the trim boundary is unambiguous.
-2. **In-progress turn vs live future:** in-process, the buffer is a synchronous snapshot at
-   subscribe time and the subscriber queue only receives later events (atomic registration).
-   Remote, the single `since=resume_seq` subscription serves both replay and live from one
-   ordered source. Making `RemoteDriver.live_turn_events()` return `[]` keeps remote to that
-   single source and avoids the distributed-snapshot overlap (driver buffer vs `head_seq`).
+2. **In-progress turn vs live future:** in-process, `events()` takes a synchronous buffer
+   snapshot and registers its queue with no `await` between, so the snapshot is the past and
+   the queue is strictly the future (no overlap, nothing missed). Remote, the single
+   `since=resume_seq` subscription serves both replay and live from one ordered source. Keeping
+   remote to that single source (the daemon ring, not a second driver-buffer emit) avoids the
+   distributed-snapshot overlap (driver buffer vs `head_seq`).
 
 ## Testing
 
 - **Driver unit tests:**
-  - Attach mid-turn (new `events()` subscriber) replays the coalesced in-progress content,
-    then receives subsequent live deltas exactly once.
+  - A late `events()` subscriber (opened mid-turn) receives the coalesced in-progress content
+    as its first events, then subsequent live deltas exactly once (no dup, no missed gap).
   - Two concurrent subscribers each receive the full stream (broadcast).
-  - `_turn_buffer` is cleared at turn settle → attach while idle replays nothing (no dup
-    against JSONL).
-  - `live_turn_events()` emits a single `TextDelta` per coalesced text block, in block order.
+  - `_turn_buffer` is cleared at turn settle → a subscriber opened while idle replays nothing
+    (no dup against JSONL); `turn_active` is False.
+  - The buffer coalesces consecutive same-block text into one `TextDelta` carrying the full
+    accumulated text, in block order, interleaved correctly with tool calls/results.
 - **Replay trim test:** `replay_window(path, drop_incomplete_turn=True)` drops everything from
   the last real `UserMessage` onward; with `False` (or no active turn) replay is unchanged;
   tool-result "user" lines are not treated as the trim boundary.
