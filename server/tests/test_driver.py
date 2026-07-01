@@ -777,15 +777,32 @@ def test_dropped_turn_emits_recovering_not_error():
 
 
 def test_emit_error_puts_errorevent():
-    """emit_error() should put an ErrorEvent with the given code on _out."""
+    """emit_error() anchors ErrorEvent to _last_turn_id (the dropped turn's real id),
+    falling back to self._turn() when _last_turn_id is empty."""
     msgs = [f.result(uuid="t1")]  # minimal: just enough for the driver to init
 
-    async def run():
+    async def run_with_last_turn_id():
         d = SessionDriver("ee1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
         await d.start()
+        d._last_turn_id = "t7"  # simulate post-drain state where translator already reset
         await d.emit_error("turn_dropped_cap", "gave up")
         return _drain_queue(d._out)
 
-    out = asyncio.run(run())
-    assert any(isinstance(e, ev.ErrorEvent) and e.code == "turn_dropped_cap" for e in out)
+    out = asyncio.run(run_with_last_turn_id())
+    err = next(e for e in out if isinstance(e, ev.ErrorEvent))
+    assert err.code == "turn_dropped_cap"
+    assert err.turn_id == "t7", f"expected turn_id='t7', got {err.turn_id!r}"
+
+    async def run_without_last_turn_id():
+        d = SessionDriver("ee2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
+        await d.start()
+        # _last_turn_id is "" (empty) — falls back to self._turn()
+        await d.emit_error("turn_dropped_cap", "gave up")
+        return _drain_queue(d._out)
+
+    out2 = asyncio.run(run_without_last_turn_id())
+    err2 = next(e for e in out2 if isinstance(e, ev.ErrorEvent))
+    assert err2.code == "turn_dropped_cap"
+    assert err2.turn_id == "turn"  # _turn() fallback when _last_turn_id is empty

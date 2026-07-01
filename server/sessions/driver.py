@@ -514,8 +514,12 @@ class SessionDriver:
 
     async def emit_error(self, code: str, message: str) -> None:
         """Surface a red error card anchored to the current turn. Used by the
-        orchestrator to explain an exhausted auto-recovery (the give-up surface)."""
-        await self._out.put(ev.ErrorEvent(code, message, turn_id=self._turn()))
+        orchestrator to explain an exhausted auto-recovery (the give-up surface).
+
+        Anchors to _last_turn_id (set on TurnEnd, not cleared by _reset_turn_flags)
+        so the give-up card lands in the same transcript row as the Recovering cards,
+        even though the translator's _turn_id has already been reset by drain time."""
+        await self._out.put(ev.ErrorEvent(code, message, turn_id=self._last_turn_id or self._turn()))
 
     async def _drain(self):
         try:
