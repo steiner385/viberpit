@@ -3,6 +3,7 @@ export type AccountStatus = 'ok' | 'limited' | 'needs-relogin' | 'needs-reauth' 
 export interface ReauthState {
   state: 'idle' | 'running' | 'cancelling' | 'success' | 'error' | 'timeout' | 'awaiting_code'
   message?: string | null
+  account?: string | null   // the account/slot this operation targets (scopes per-account status)
   startedAt?: number | null
   vncSession?: string | null
   authUrl?: string | null
@@ -199,6 +200,27 @@ export interface PipelinePr extends PullRequestInfo {
   session: { id: string; name: string } | null
   /** Per-node placement states for this PR's position on its repo's stage track. */
   node_states?: { id: string; state: NodeState }[]
+}
+
+export interface TrainBuild {
+  pr_number: number
+  percent: number | null
+  eta_seconds: number | null
+}
+
+export interface MergeTrainState {
+  repo: string
+  depth: number
+  trains_per_hour: number | null
+  batch_success_pct: number | null
+  ejects_24h: number
+  oldest_wait_seconds: number | null
+  failing: number[]
+  building: TrainBuild | null
+  blocked: number[]
+  awaiting_qa: number
+  awaiting_prod: number
+  merges_next: TrainBuild | null
 }
 
 export interface ModelOption { id: string; label: string }

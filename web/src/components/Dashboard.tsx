@@ -668,7 +668,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const isLoading = accountsLoading || sessionsLoading
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-1 min-h-0 flex-col gap-4 pt-4">
       {/* All-limited banner — global, above tabs */}
       {allLimitedReset !== undefined && (
         <AllLimitedBanner
@@ -816,7 +816,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           id="tabpanel-sessions"
           role="tabpanel"
           aria-labelledby="tab-sessions"
-          className="space-y-3"
+          className="flex flex-1 min-h-0 flex-col gap-3"
         >
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
@@ -866,6 +866,9 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
               onSearchChange={sessionSearch.setQuery}
             />
           )}
+          {/* Scroll region: only the session list scrolls; the controls above
+              and the DispatchBar below stay fixed within the viewport. */}
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-3">
           <SessionList
             sessions={orderedSessions}
             groups={groups}
@@ -891,6 +894,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           />
 
           {config?.adoptionEnabled && <AdoptPanel />}
+          </div>
 
           <DispatchBar
             repos={reposQuery.data ?? []}
@@ -924,7 +928,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           id="tabpanel-accounts"
           role="tabpanel"
           aria-labelledby="tab-accounts"
-          className="space-y-2"
+          className="flex-1 min-h-0 overflow-y-auto space-y-2 pb-4"
         >
           {/* Single source of truth for the accounts panel — the same
               self-contained component DesktopShell mounts in the desktop pane. */}
@@ -938,7 +942,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           id="tabpanel-archived"
           role="tabpanel"
           aria-labelledby="tab-archived"
-          className="space-y-3"
+          className="flex-1 min-h-0 overflow-y-auto space-y-3 pb-4"
         >
           <ArchivedManager onReviewSession={handleReview} />
         </div>
@@ -946,7 +950,9 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
       {/* Pipeline panel */}
       {activeTab === 'pipeline' && (
-        <PipelineView />
+        <div className="flex-1 min-h-0 overflow-y-auto pb-4">
+          <PipelineView />
+        </div>
       )}
 
       {/* Automation panel */}

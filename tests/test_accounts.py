@@ -278,3 +278,68 @@ class TestRefreshSerialization(unittest.TestCase):
                 for t in ts: t.join()
             self.assertEqual(len(calls), 1)  # serialized: second caller re-read the fresh token
             self.assertTrue(all(r["accessToken"] == "new" for r in results))
+
+
+class TestUsageForSetupTokenFallback(unittest.TestCase):
+    """A setup-token (sk-ant-oat01) makes an account launch-capable via
+    CLAUDE_CODE_OAUTH_TOKEN, so usage_for must NOT flip it to needs-reauth when
+    the slot's browser-OAuth token is dead. Best-effort: fetch usage with the
+    setup-token; keep status 'ok' (usage unknown) if that fails. Regression:
+    'Generate long-lived token' wrote the setup-token but usage_for re-stamped
+    needs-reauth on the very next poll, so the account flipped straight back to
+    'needs authentication'. (Bug 2)
+    """
+
+    OAT = "sk-ant-oat01-SECRET"
+
+    def test_dead_refresh_with_setup_token_fetches_usage_and_stays_ok(self):
+        # site 1: expired slot token + dead refresh; setup-token exists and the
+        # usage API accepts it → real usage, status ok.
+        with temp_env():
+            from ccswitch import accounts, oauth, crypto
+            _seed_account("alpha", expires_in_ms=-1)
+            with mock.patch.object(crypto, "read_oauth_token", return_value=self.OAT), \
+                 mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead")), \
+                 mock.patch.object(oauth, "fetch_usage", return_value=usage(session=42.0)) as fu:
+                u = accounts.usage_for("alpha")
+            self.assertIsNotNone(u)
+            self.assertEqual(u.session_pct, 42.0)
+            self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
+            # Usage was fetched with the setup-token, not the dead slot token.
+            fu.assert_called_once_with(self.OAT, max_retries=mock.ANY, max_total_sec=mock.ANY)
+
+    def test_dead_refresh_with_setup_token_usage_unknown_stays_ok(self):
+        # site 1: setup-token exists but the usage API rejects it (or is down).
+        # Must NOT flip to needs-reauth; status stays ok, usage None.
+        with temp_env():
+            from ccswitch import accounts, oauth, crypto
+            _seed_account("alpha", expires_in_ms=-1)
+            with mock.patch.object(crypto, "read_oauth_token", return_value=self.OAT), \
+                 mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead")), \
+                 mock.patch.object(oauth, "fetch_usage", side_effect=oauth.AuthError("401")):
+                u = accounts.usage_for("alpha")
+            self.assertIsNone(u)
+            self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
+
+    def test_no_setup_token_still_marks_needs_reauth(self):
+        # Guardrail: without a setup-token the dead-refresh path is unchanged.
+        with temp_env():
+            from ccswitch import accounts, oauth, crypto
+            _seed_account("alpha", expires_in_ms=-1)
+            with mock.patch.object(crypto, "read_oauth_token", return_value=None), \
+                 mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead")):
+                self.assertIsNone(accounts.usage_for("alpha"))
+                self.assertEqual(accounts.list_accounts()[0]["status"], "needs-reauth")
+
+    def test_fetch_401_survives_refresh_with_setup_token_stays_ok(self):
+        # site 2: fresh slot token, usage 401s, forced refresh+refetch also 401s.
+        # With a setup-token present, keep ok instead of needs-reauth.
+        with temp_env():
+            from ccswitch import accounts, oauth, crypto
+            _seed_account("alpha")  # fresh
+            with mock.patch.object(crypto, "read_oauth_token", return_value=self.OAT), \
+                 mock.patch.object(oauth, "fetch_usage", side_effect=oauth.AuthError("401")), \
+                 mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead")):
+                u = accounts.usage_for("alpha")
+            self.assertIsNone(u)
+            self.assertEqual(accounts.list_accounts()[0]["status"], "ok")

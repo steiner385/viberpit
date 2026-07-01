@@ -164,6 +164,40 @@ def acquire_valid_token(name: str) -> dict:
         raise
 
 
+# Sentinel: no setup-token exists, so the caller should perform its normal
+# needs-reauth flip. Distinct from `None`, which the fallback returns to mean
+# "setup-token present, account kept ok, but usage is unknown".
+_NO_SETUP_TOKEN: object = object()
+
+
+def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "oauth.Usage | None | object":
+    """Auth fallback for accounts that hold a long-lived setup-token.
+
+    A setup-token (``sk-ant-oat01``) makes the account launch-capable via
+    ``CLAUDE_CODE_OAUTH_TOKEN`` even when the slot's browser-OAuth token is dead,
+    so the usage path must NOT flip such an account to needs-reauth. Best-effort
+    fetch usage with the setup-token; on any failure keep the account ``ok`` with
+    usage unknown — the orchestrator's in-session 401 path stays the authority on
+    a token that is genuinely dead for inference too. Returns ``_NO_SETUP_TOKEN``
+    when no token exists, so the caller proceeds to its normal needs-reauth flip.
+    NEVER logs the token.
+    """
+    from . import crypto
+    tok = crypto.read_oauth_token(name)
+    if not tok:
+        return _NO_SETUP_TOKEN
+    u: oauth.Usage | None = None
+    try:
+        u = oauth.fetch_usage(tok, **retry_kw)
+    except (oauth.AuthError, oauth.UsageError, oauth.TransientError) as e:
+        log.warning("usage_for(%s): setup-token usage fetch failed (%s); keeping ok, usage unknown", name, e)
+    with ledger.locked_ledger() as led:
+        if u is not None:
+            ledger.record_usage(led, name, u, now)
+        ledger.set_status(led, name, "ok")
+    return u
+
+
 def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -> oauth.Usage | None:
     """Cached-or-fetched usage. Returns None and marks needs-reauth if auth fails.
 
@@ -215,6 +249,10 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         log.warning("usage_for(%s): transient refresh error, leaving status unchanged: %s", name, e)
         return None
     except oauth.AuthError as e:
+        # A live setup-token keeps the account usable — don't flip to needs-reauth.
+        fb = _setup_token_usage_fallback(name, now, retry_kw)
+        if fb is not _NO_SETUP_TOKEN:
+            return fb  # type: ignore[return-value]
         log.warning("usage_for(%s): refresh token dead (%s) — marking needs-reauth", name, e)
         emit_auth_failure(AuthFailure(
             account=name, status=getattr(e, "status", None), body=getattr(e, "body", None),
@@ -252,6 +290,10 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             log.warning("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
             return None
         except oauth.AuthError as e:
+            # A live setup-token keeps the account usable — don't flip to needs-reauth.
+            fb = _setup_token_usage_fallback(name, now, retry_kw)
+            if fb is not _NO_SETUP_TOKEN:
+                return fb  # type: ignore[return-value]
             log.warning("usage_for(%s): 401 survived a fresh refresh (%s) — marking needs-reauth", name, e)
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, name, "needs-reauth")

@@ -105,12 +105,16 @@ describe('useSessionRuntime.onAnswer', () => {
     act(() => { result.current.onChat('q2') })
     expect(result.current.armedQuestionId).toBe('q2')
 
-    // Answer it — WS send fires + armed id is cleared + the block is removed from state.
+    // Answer it — WS send fires + armed id is cleared + the block is resolved IN PLACE.
     act(() => { result.current.onAnswer('q2', ['Yes']) })
     expect(mockAnswerQuestion).toHaveBeenCalledWith('sess2', 'q2', ['Yes'], 'option')
     expect(result.current.armedQuestionId).toBeNull()
-    // Assert the question block is no longer in state (cleared by _resolveQuestion).
-    expect(result.current.state.turns.flatMap((t) => t.blocks).some((b) => b.kind === 'question' && b.questionId === 'q2')).toBe(false)
+    // The question block stays inline (anchored where it was asked), now marked answered
+    // and no longer live — NOT removed, and NOT echoed as a tail user turn.
+    const q = result.current.state.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question' && b.questionId === 'q2')
+    expect(q && q.kind === 'question' && q.answered).toEqual(['Yes'])
+    expect(q && q.kind === 'question' && q.live).toBe(false)
+    expect(result.current.state.turns.some((t) => t.role === 'user')).toBe(false)
   })
 
   it('keeps the question and surfaces a notice when the WS send is dropped', () => {
@@ -170,7 +174,10 @@ describe('useSessionRuntime.onAnswer', () => {
 
     expect(mockAnswerQuestion).toHaveBeenCalledTimes(2)    // auto-resent on reconnect
     expect(mockAnswerQuestion).toHaveBeenLastCalledWith('sess4', 'q4', ['Yes'], 'option')
-    expect(qExists('q4')).toBe(false)                      // resolved after resend
+    // Resolved in place after resend: the block stays inline but is no longer live.
+    const q4 = result.current.state.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question' && b.questionId === 'q4')
+    expect(q4 && q4.kind === 'question' && q4.live).toBe(false)
+    expect(q4 && q4.kind === 'question' && q4.answered).toEqual(['Yes'])
     expect(result.current.state.error).toBeNull()          // notice cleared
   })
 })

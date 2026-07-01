@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import os
 import shutil
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
+    from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
 
 from ccswitch import accounts as ccswitch_accounts
@@ -248,7 +250,34 @@ class SessionOrchestrator:
         self._pr_poller.set_pairs_provider(self._pr_pairs)
         self._pr_poller.set_on_change(self._on_pr_change)
         from server.github.pr_population import PrPopulationPoller
-        self._pr_population: PrPopulationPoller = PrPopulationPoller()
+        from server.github.merge_queue import build_merge_queue_query
+        from server.pipeline import merge_queue_store
+        from ccswitch import gitrepos as _gitrepos
+        from server.github import app_auth as _app_auth
+
+        def _merge_queue_query(repos: list[str]) -> dict:
+            query = build_merge_queue_query(repos)
+            if not query:
+                return {}
+            # Single-owner simplification: use the first repo's owner for the token.
+            # Limitation: if watched repos span multiple GitHub owners (organisations),
+            # only the first owner's installation token is used. For multi-owner support,
+            # mirror the per-owner grouping in _default_eta_query.
+            token = _app_auth.token_for_owner(repos[0].split("/", 1)[0]) if repos else None
+            proc = _gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"], token=token)
+            if proc.returncode != 0:
+                raise _gitrepos.GhError(proc.stderr.strip() or "gh api graphql (merge queue) failed")
+            return json.loads(proc.stdout or "{}")
+
+        async def _merge_queue_sink(by_repo: dict, captured_at: int) -> None:
+            for repo, entries in by_repo.items():
+                await merge_queue_store.record(repo, captured_at, entries)
+            await merge_queue_store.prune(older_than_epoch=captured_at - 36 * 3600)
+
+        self._pr_population: PrPopulationPoller = PrPopulationPoller(
+            merge_queue_query_fn=_merge_queue_query,
+            merge_queue_sink=_merge_queue_sink,
+        )
         self._pr_population.set_repos_provider(self._pr_repos)
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
@@ -1206,6 +1235,35 @@ class SessionOrchestrator:
                 deploy_envs=order_deploy_envs(repo_envs),
             )
         return models
+
+    async def all_merge_trains(self) -> "dict[str, MergeTrainState]":
+        """Merge-train state for every watched repo, derived from the 24-hour
+        merge-queue observation window plus existing PR population data.
+        """
+        from server.pipeline.merge_train import derive_merge_train_state
+        from server.pipeline import merge_queue_store
+        import time as _time
+        now = int(_time.time())
+        since = now - 86400
+        out: dict = {}
+        pop = self._pr_population.all()
+        for repo, prs in pop.items():
+            obs = await merge_queue_store.window(repo, since)
+            qa, prod = self._deploy_backlog(prs)
+            out[repo] = derive_merge_train_state(repo, obs, now, qa, prod)
+        return out
+
+    @staticmethod
+    def _deploy_backlog(prs) -> "tuple[int, int]":
+        """Compute awaiting_qa / awaiting_prod from the cached PR population.
+
+        Reuses existing PipelinePr / PullRequestInfo fields — does NOT re-query GitHub.
+        awaiting_qa  = merged & not deployed to any environment.
+        awaiting_prod = merged & not deployed to production (subset of awaiting_qa + staging).
+        """
+        awaiting_prod = sum(1 for p in prs if p.merged and "production" not in p.deployed_envs)
+        awaiting_qa = sum(1 for p in prs if p.merged and not p.deployed_envs)
+        return awaiting_qa, awaiting_prod
 
     def all_prs(self) -> "list[PipelinePr]":
         """Full PR population (all watched repos) joined to authoring sessions.

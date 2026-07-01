@@ -15,10 +15,12 @@ import logging
 import random
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable, Union
+from typing import Any, Awaitable, Callable, Union
 
 from ccswitch import gitrepos
 
+from server.github import app_auth
+from .merge_queue import parse_merge_queue_response
 from .pr_status import (
     PullRequestInfo,
     build_eta_checks_query,
@@ -38,21 +40,36 @@ def _merged_since(retention_days: int) -> str:
 
 def _default_query(repo: str, retention_days: int) -> dict:
     query = build_population_query(repo, _merged_since(retention_days))
-    proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"])
+    token = app_auth.token_for_owner(repo.split("/", 1)[0])
+    proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"], token=token)
     if proc.returncode != 0:
         raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql failed")
     return json.loads(proc.stdout or "{}")
 
 
 def _default_eta_query(prs: list[tuple[str, int]]) -> dict:
-    """Run build_eta_checks_query via gh and return the parsed JSON response."""
+    """Run build_eta_checks_query via gh, grouped by owner so each owner's PRs use
+    that owner's App installation token. Responses are merged with aliases remapped
+    to the original `prs` index, so parse_eta_checks_response(response, prs) is unchanged."""
     if not prs:
         return {}
-    query = build_eta_checks_query(prs)
-    proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"])
-    if proc.returncode != 0:
-        raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql (eta) failed")
-    return json.loads(proc.stdout or "{}")
+    by_owner: dict[str, list[int]] = {}
+    for i, (repo, _num) in enumerate(prs):
+        by_owner.setdefault(repo.split("/", 1)[0], []).append(i)
+    merged: dict[str, Any] = {}
+    for owner, idxs in by_owner.items():
+        subset = [prs[i] for i in idxs]
+        query = build_eta_checks_query(subset)
+        token = app_auth.token_for_owner(owner)
+        proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"], token=token)
+        if proc.returncode != 0:
+            raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql (eta) failed")
+        sub_data = (json.loads(proc.stdout or "{}").get("data") or {})
+        for j, global_i in enumerate(idxs):
+            node = sub_data.get(f"r{j}")
+            if node is not None:
+                merged[f"r{global_i}"] = node
+    return {"data": merged}
 
 
 def _try_load_store(db_path: str | None):  # type: ignore[return]
@@ -83,6 +100,8 @@ class PrPopulationPoller:
         history_store=None,          # HistoryStore | None (pre-built; beats db_path)
         history_db_path: str | None = None,  # fallback: open from this path lazily
         now_fn: Callable[[], datetime] | None = None,
+        merge_queue_query_fn: Callable[[list[str]], dict] | None = None,
+        merge_queue_sink: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
         self._poll_interval = poll_interval
         self._retention_days = retention_days
@@ -105,6 +124,8 @@ class PrPopulationPoller:
         self._history_db_path = history_db_path
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         self._store_init_attempted = history_store is not None
+        self._merge_queue_query_fn = merge_queue_query_fn
+        self._merge_queue_sink = merge_queue_sink
 
     def set_repos_provider(
         self, fn: Union[Callable[[], list[str]], Callable[[], Awaitable[list[str]]]]
@@ -258,6 +279,15 @@ class PrPopulationPoller:
                 new_cache = await self._enrich_with_eta(new_cache)
             except Exception:
                 log.warning("pr_population.eta_enrich_failed", exc_info=True)
+        if self._merge_queue_query_fn and self._merge_queue_sink:
+            repos_for_mq = list(new_cache.keys()) or repos
+            try:
+                resp = await asyncio.to_thread(self._merge_queue_query_fn, repos_for_mq)
+                by_repo = parse_merge_queue_response(resp, repos_for_mq)
+                captured_at = int(self._now_fn().timestamp())
+                await self._merge_queue_sink(by_repo, captured_at)
+            except Exception:
+                log.warning("pr_population.merge_queue_failed", exc_info=True)
         self._cache.update(new_cache)
         if any_fail and not any_ok:
             self._fail_count += 1

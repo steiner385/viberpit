@@ -54,6 +54,7 @@ class ReauthState:
     state: str = "idle"          # idle|running|cancelling|success|error|timeout|awaiting_code
     message: str | None = None
     identity: str | None = None
+    account: str | None = None   # the account/slot this operation targets (scopes status())
     started_at: float | None = None
     # internal only — not serialised
     _task: asyncio.Task | None = field(default=None, repr=False, compare=False)
@@ -68,6 +69,7 @@ class ReauthState:
             "state": self.state,
             "message": self.message,
             "identity": self.identity,
+            "account": self.account,
             "startedAt": self.started_at,
             "vncSession": self.vnc_session,
             "authUrl": self.auth_url,
@@ -79,6 +81,7 @@ class ReauthState:
             state=d.get("state", "idle"),
             message=d.get("message"),
             identity=d.get("identity"),
+            account=d.get("account"),
             started_at=d.get("startedAt"),
             vnc_session=d.get("vncSession"),
             auth_url=d.get("authUrl"),
@@ -222,6 +225,7 @@ class ReauthManager:
                 self._state = ReauthState(
                     state="awaiting_code",
                     identity=identity,
+                    account=name,
                     started_at=time.time(),
                     auth_url=challenge.authorize_url,
                 )
@@ -230,6 +234,7 @@ class ReauthManager:
                 self._state = ReauthState(
                     state="running",
                     identity=identity,
+                    account=name,
                     started_at=time.time(),
                 )
                 self._mode = mode
@@ -240,17 +245,32 @@ class ReauthManager:
             state=self._state.state,
             message=self._state.message,
             identity=self._state.identity,
+            account=self._state.account,
             started_at=self._state.started_at,
             auth_url=self._state.auth_url,
         )
 
-    def status(self, name: str) -> ReauthState:
-        """Return a snapshot of the current state (name is for API compat)."""
+    def status(self, name: str, *, scoped: bool = False) -> ReauthState:
+        """Return a snapshot of the current state.
+
+        The manager runs one reauth at a time over a single global ``_state``.
+        With ``scoped=True`` the snapshot is returned only to the account that
+        owns the current operation; any *other* account gets a fresh ``idle``
+        state. This stops a terminal result (``success``/``error``/``timeout``)
+        from one account leaking into a different account's first poll — which
+        otherwise froze reauth on every other account (the frontend stops
+        polling the instant it sees a terminal state). ``scoped=False`` (default)
+        returns the raw global snapshot, which the nameless add-account flow
+        relies on.
+        """
         s = self._state
+        if scoped and s.account is not None and s.account != name:
+            return ReauthState()
         return ReauthState(
             state=s.state,
             message=s.message,
             identity=s.identity,
+            account=s.account,
             started_at=s.started_at,
             vnc_session=s.vnc_session,
             auth_url=s.auth_url,

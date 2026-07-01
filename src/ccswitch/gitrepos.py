@@ -67,14 +67,18 @@ def _gh_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"}
 
 
-def _run_gh(args: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run a ``gh`` command (GITHUB_TOKEN stripped). Raise GhError if gh is absent."""
+def _run_gh(args: list[str], token: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run a ``gh`` command. ``GITHUB_TOKEN`` is always stripped; when ``token`` is
+    given (a GitHub App installation token), ``GH_TOKEN`` is set so gh uses it."""
+    env = _gh_env()
+    if token:
+        env["GH_TOKEN"] = token
     try:
         return subprocess.run(
             ["gh", *args],
             capture_output=True,
             text=True,
-            env=_gh_env(),
+            env=env,
         )
     except FileNotFoundError as exc:  # gh not installed
         raise GhError("the `gh` CLI is not installed or not on PATH") from exc

@@ -184,6 +184,35 @@ describe('BrowserTab', () => {
     }
   })
 
+  it('pastes the client clipboard into the session and confirms', async () => {
+    const readText = vi.fn().mockResolvedValue('hunter2')
+    vi.stubGlobal('navigator', { clipboard: { readText } })
+    try {
+      render(<BrowserTab sessionId="S" statusState="working" initialState="connected" />)
+      fireEvent.click(screen.getByRole('button', { name: /paste from clipboard/i }))
+      expect(readText).toHaveBeenCalled()
+      await waitFor(() =>
+        expect(screen.getByText(/pasted into the session/i)).toBeInTheDocument(),
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('surfaces a blocked-clipboard hint instead of failing silently', async () => {
+    const readText = vi.fn().mockRejectedValue(new DOMException('no', 'NotAllowedError'))
+    vi.stubGlobal('navigator', { clipboard: { readText } })
+    try {
+      render(<BrowserTab sessionId="S" statusState="working" initialState="connected" />)
+      fireEvent.click(screen.getByRole('button', { name: /paste from clipboard/i }))
+      await waitFor(() =>
+        expect(screen.getByText(/clipboard blocked/i)).toBeInTheDocument(),
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   afterEach(() => {
     // Reset focus to body between tests to avoid leaking focus state
     if (document.activeElement && document.activeElement !== document.body) {

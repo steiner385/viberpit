@@ -9,7 +9,7 @@ const GROUP_LABEL: Record<CheckGroup['kind'], string> = {
 }
 const GROUP_ORDER: CheckGroup['kind'][] = ['merge', 'head']
 
-export function CheckDrillDown({ groups }: { groups: CheckGroup[] }) {
+export function CheckDrillDown({ groups, updatedAt }: { groups: CheckGroup[]; updatedAt: number }) {
   const ordered = [...groups].sort(
     (a, b) => GROUP_ORDER.indexOf(a.kind) - GROUP_ORDER.indexOf(b.kind),
   )
@@ -30,7 +30,7 @@ export function CheckDrillDown({ groups }: { groups: CheckGroup[] }) {
               CI cost this run: {formatEta(grp.total_seconds)} (~${grp.cost_usd})
             </p>
           )}
-          <CheckRowList checks={grp.checks} />
+          <CheckRowList checks={grp.checks} updatedAt={updatedAt} />
         </section>
       ))}
     </div>

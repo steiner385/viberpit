@@ -72,7 +72,7 @@ function setupMocks(sessions: ArchivedSession[]) {
   vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
   vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
-  vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
+  vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue({ ...NOOP_MUTATION, progress: null, cancel: vi.fn() } as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
 }
 
 // Four sessions sharing the default archivedAt → the default 'archived' sort
@@ -285,5 +285,63 @@ describe('ArchivedManager — shift-click range selection', () => {
 
     expect(screen.getByRole('region', { name: /bulk actions/i })).toHaveTextContent(/1 selected/i)
     expect(screen.getByRole('checkbox', { name: /select gamma/i })).toBeChecked()
+  })
+})
+
+describe('ArchivedManager — bulk delete progress', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.localStorage.clear()
+    searchState = { query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }
+  })
+
+  it('keeps the frozen count after the archived list empties mid-delete', async () => {
+    const user = userEvent.setup()
+    setupMocks(fourArchived())
+    const { rerender } = render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
+
+    await user.click(screen.getByRole('checkbox', { name: /select all/i }))
+    await user.click(screen.getByRole('button', { name: /delete \(4\)/i }))
+    expect(screen.getByText('Permanently delete 4 sessions')).toBeInTheDocument()
+
+    // Simulate the optimistic cache emptying out from under the open dialog.
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+    rerender(<ArchivedManager onReviewSession={vi.fn()} />)
+
+    expect(screen.getByText('Permanently delete 4 sessions')).toBeInTheDocument()
+  })
+
+  it('renders a progress bar with "X of N" while deleting', async () => {
+    const user = userEvent.setup()
+    setupMocks(fourArchived())
+    vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue({
+      mutate: vi.fn(), isPending: true, progress: { done: 2, total: 4 }, cancel: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
+
+    await user.click(screen.getByRole('checkbox', { name: /select all/i }))
+    await user.click(screen.getByRole('button', { name: /delete \(4\)/i }))
+
+    const bar = screen.getByRole('progressbar')
+    expect(bar).toBeInTheDocument()
+    expect(bar).toHaveAttribute('aria-valuenow', '2')
+    expect(bar).toHaveAttribute('aria-valuemax', '4')
+    expect(screen.getByText(/2 of 4/)).toBeInTheDocument()
+  })
+
+  it('Cancel during a delete calls the hook cancel(), not close', async () => {
+    const user = userEvent.setup()
+    const cancel = vi.fn()
+    setupMocks(fourArchived())
+    vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue({
+      mutate: vi.fn(), isPending: true, progress: { done: 1, total: 4 }, cancel,
+    } as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
+
+    await user.click(screen.getByRole('checkbox', { name: /select all/i }))
+    await user.click(screen.getByRole('button', { name: /delete \(4\)/i }))
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }))
+
+    expect(cancel).toHaveBeenCalled()
   })
 })
