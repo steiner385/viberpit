@@ -1,0 +1,92 @@
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Dashboard } from '../Dashboard'
+
+vi.mock('@/api/hooks', () => ({
+  useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
+  useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
+  useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAccounts: vi.fn(() => ({ data: [], isLoading: false })),
+  useSessions: vi.fn(() => ({ data: [], isLoading: false })),
+  useCreateSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useRenameSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useCloseSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useRefreshAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useUpdateAccountNickname: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useDeleteAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useGithubRepos: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
+  useGithubBranches: vi.fn(() => ({ data: { default: null, branches: [] }, isLoading: false })),
+  useSettings: vi.fn(() => ({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false })),
+  useUpdateSettings: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useReauthAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useReauthStatus: vi.fn(() => ({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false })),
+  useCancelReauth: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useArchivedSessions: vi.fn(() => ({ data: [], isLoading: false })),
+  useUnarchiveSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  usePermanentDeleteSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useBulkUnarchiveSessions: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useBulkPermanentDeleteSessions: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useSendPrompt: () => ({ mutate: vi.fn() }),
+  useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  usePendingDeploy: () => ({ data: { behind: false, commits: [], ci: 'green' } }),
+  useDeployStatus: () => ({ data: { running: false, phases: {} } }),
+  useStartDeploy: () => ({ mutate: vi.fn(), isPending: false }),
+  useAllPrs: vi.fn(() => ({ data: [] })),
+  useStageModels: vi.fn(() => ({ data: {} })),
+  useSessionsViewing: vi.fn(),
+  useAutomations: vi.fn(() => ({ data: [], isLoading: false })),
+  QK: {
+    accounts: ['accounts'],
+    sessions: ['sessions'],
+    archived: ['archived-sessions'],
+    config: ['config'],
+    githubRepos: ['github-repos'],
+    githubBranches: (repo?: string) => ['github-branches', repo],
+    settings: ['settings'],
+  },
+}))
+
+vi.mock('@/session/useSessionSearch', () => ({
+  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
+}))
+
+function wrapper({ children }: { children: React.ReactNode }) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+}
+
+describe('Automation tab', () => {
+  it('shows the Automation tab button in the tab list', () => {
+    render(
+      <MemoryRouter>
+        <Dashboard activeTab="automation" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
+      </MemoryRouter>,
+      { wrapper },
+    )
+    expect(screen.getByRole('tab', { name: 'Automation' })).toBeInTheDocument()
+  })
+
+  it('marks the Automation tab as selected when activeTab="automation"', () => {
+    render(
+      <MemoryRouter>
+        <Dashboard activeTab="automation" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
+      </MemoryRouter>,
+      { wrapper },
+    )
+    expect(screen.getByRole('tab', { name: 'Automation' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('renders the automation tabpanel when the Automation tab is active', () => {
+    render(
+      <MemoryRouter>
+        <Dashboard activeTab="automation" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
+      </MemoryRouter>,
+      { wrapper },
+    )
+    const panel = screen.getByRole('tabpanel', { hidden: false })
+    expect(panel).toBeTruthy()
+    expect(panel.id).toBe('tabpanel-automation')
+  })
+})

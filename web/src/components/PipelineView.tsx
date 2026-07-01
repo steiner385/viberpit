@@ -2,18 +2,20 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Wrench, SquareTerminal, ChevronRight, ChevronDown } from 'lucide-react'
 import { GroupHeader } from './GroupHeader'
+import { MergeTrainWidget } from './MergeTrainWidget'
 import { PrPill } from './PrPill'
 import { StageTrack } from './StageTrack'
 import { CheckDrillDown } from './CheckDrillDown'
 import { StageTiles } from './StageTiles'
-import { useAllPrs, useFixPr, useStageModels } from '@/api/hooks'
+import { useAllPrs, useFixPr, useMergeTrains, useStageModels } from '@/api/hooks'
 import { isActionablePrState, anyChecksFailing } from '@/session/prStatus'
 import { stageBucketOf, type StageBucket } from '@/session/stageBucket'
-import type { PipelinePr, StageModel } from '@/api/types'
+import type { MergeTrainState, PipelinePr, StageModel } from '@/api/types'
 
 export function PipelineBoard({
   prs,
   stageModels,
+  trains,
   activeStages,
   failedOnly = false,
   updatedAt,
@@ -22,6 +24,7 @@ export function PipelineBoard({
 }: {
   prs: PipelinePr[]
   stageModels: Record<string, StageModel>
+  trains?: Record<string, MergeTrainState>
   activeStages: Set<StageBucket>
   failedOnly?: boolean
   updatedAt: number
@@ -81,6 +84,7 @@ export function PipelineBoard({
               collapsed={!!collapsed[repo]}
               onToggle={() => toggle(repo)}
             />
+            {!collapsed[repo] && <MergeTrainWidget state={trains?.[repo]} />}
             {!collapsed[repo] && (
               <ul className="mt-1 space-y-1">
                 {rows.map((p) => {
@@ -171,6 +175,7 @@ export function PipelineView() {
   const navigate = useNavigate()
   const { data: prs = [], dataUpdatedAt } = useAllPrs()
   const { data: stageModels = {} } = useStageModels()
+  const { data: trains } = useMergeTrains()
   const fixPr = useFixPr()
   const [active, setActive] = useState<Set<StageBucket>>(new Set())
   const [failedOnly, setFailedOnly] = useState(false)
@@ -194,6 +199,7 @@ export function PipelineView() {
       <PipelineBoard
         prs={prs}
         stageModels={stageModels}
+        trains={trains}
         activeStages={active}
         failedOnly={failedOnly}
         updatedAt={dataUpdatedAt}

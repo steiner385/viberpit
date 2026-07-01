@@ -341,6 +341,9 @@ def test_build_population_query_scopes_to_repo_and_date():
 
 
 def test_parse_population_response_sets_repo_and_buckets_open_and_merged():
+    # Merged 2 days ago (relative to now) so it stays within derive_merged_stage's
+    # retention window on any wall-clock date — a hardcoded date here was a time-bomb.
+    recent = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     response = {"data": {
         "repo": {
             "deployments": {"nodes": []},
@@ -354,8 +357,8 @@ def test_parse_population_response_sets_repo_and_buckets_open_and_merged():
         },
         "merged": {"nodes": [
             {"number": 9, "url": "u9", "title": "merged one", "state": "MERGED",
-             "isDraft": False, "updatedAt": "2026-06-24T00:00:00Z",
-             "mergedAt": "2026-06-24T00:00:00Z", "headRefOid": "def",
+             "isDraft": False, "updatedAt": recent,
+             "mergedAt": recent, "headRefOid": "def",
              "mergeStateStatus": None, "commits": {"nodes": []}},
         ]},
     }}

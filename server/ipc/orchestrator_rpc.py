@@ -91,6 +91,18 @@ def register_orchestrator_rpc(app, orch) -> None:
             models = await models
         return {"models": {k: v.to_dict() for k, v in models.items()}}
 
+    async def all_merge_trains(params: dict) -> dict:
+        trains = orch.all_merge_trains()
+        if inspect.isawaitable(trains):
+            trains = await trains
+        return {"trains": {k: v.to_dict() for k, v in trains.items()}}
+
+    async def check_insights(params: dict) -> dict:
+        result = orch.check_insights(params["repo"], params.get("window", "7d"))
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
     register_rpc(app, "ensure_driver", ensure_driver)
     register_rpc(app, "list_sessions", list_sessions)
     register_rpc(app, "get_session", get_session)
@@ -100,6 +112,8 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "prs_for", prs_for)
     register_rpc(app, "all_prs", all_prs)
     register_rpc(app, "all_repos_stage_models", all_repos_stage_models)
+    register_rpc(app, "all_merge_trains", all_merge_trains)
+    register_rpc(app, "check_insights", check_insights)
 
     async def _maybe_await(r):
         return await r if inspect.isawaitable(r) else r

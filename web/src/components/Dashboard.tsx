@@ -16,6 +16,8 @@ import { HelpDrawer } from './HelpDrawer'
 import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
 import { PipelineView } from './PipelineView'
+import { AutomationView } from './AutomationView'
+import { InsightsView } from './InsightsView'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import {
   useAccounts,
@@ -411,7 +413,7 @@ export function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPend
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-export type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline'
+export type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline' | 'automation' | 'insights'
 
 interface DashboardProps {
   /** Called when the user opens a session (navigates to Terminal view).
@@ -506,14 +508,18 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const accountsTabRef = useRef<HTMLButtonElement>(null)
   const archivedTabRef = useRef<HTMLButtonElement>(null)
   const pipelineTabRef = useRef<HTMLButtonElement>(null)
+  const automationTabRef = useRef<HTMLButtonElement>(null)
+  const insightsTabRef = useRef<HTMLButtonElement>(null)
 
   const tabRefs: Record<TabId, React.RefObject<HTMLButtonElement | null>> = {
     sessions: sessionsTabRef,
     accounts: accountsTabRef,
     archived: archivedTabRef,
     pipeline: pipelineTabRef,
+    automation: automationTabRef,
+    insights: insightsTabRef,
   }
-  const TAB_ORDER: TabId[] = ['sessions', 'accounts', 'pipeline', 'archived']
+  const TAB_ORDER: TabId[] = ['sessions', 'accounts', 'pipeline', 'automation', 'insights', 'archived']
 
   function handleTabKeyDown(e: React.KeyboardEvent, current: TabId) {
     const idx = TAB_ORDER.indexOf(current)
@@ -783,6 +789,50 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         >
           Pipeline
         </button>
+
+        {/* Automation tab */}
+        <button
+          ref={automationTabRef}
+          role="tab"
+          id="tab-automation"
+          aria-selected={activeTab === 'automation'}
+          aria-controls="tabpanel-automation"
+          tabIndex={activeTab === 'automation' ? 0 : -1}
+          onKeyDown={(e) => handleTabKeyDown(e, 'automation')}
+          onClick={() => setActiveTab('automation')}
+          aria-label="Automation"
+          className={cn(
+            'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
+            activeTab === 'automation'
+              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
+          )}
+        >
+          Automation
+        </button>
+
+        {/* Insights tab */}
+        <button
+          ref={insightsTabRef}
+          role="tab"
+          id="tab-insights"
+          aria-selected={activeTab === 'insights'}
+          aria-controls="tabpanel-insights"
+          tabIndex={activeTab === 'insights' ? 0 : -1}
+          onKeyDown={(e) => handleTabKeyDown(e, 'insights')}
+          onClick={() => setActiveTab('insights')}
+          aria-label="Insights"
+          className={cn(
+            'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
+            activeTab === 'insights'
+              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
+          )}
+        >
+          Insights
+        </button>
       </div>
 
       {/* Sessions panel */}
@@ -927,6 +977,16 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       {activeTab === 'pipeline' && (
         <div className="flex-1 min-h-0 overflow-y-auto pb-4">
           <PipelineView />
+        </div>
+      )}
+
+      {/* Automation panel */}
+      {activeTab === 'automation' && <AutomationView />}
+
+      {/* Insights panel */}
+      {activeTab === 'insights' && (
+        <div className="flex-1 min-h-0 overflow-y-auto pb-4">
+          <InsightsView />
         </div>
       )}
 

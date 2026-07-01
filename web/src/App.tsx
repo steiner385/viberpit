@@ -121,6 +121,8 @@ function App() {
           <Route path="/accounts" element={<DashboardRoute tab="accounts" />} />
           <Route path="/archived" element={<DashboardRoute tab="archived" />} />
           <Route path="/pipeline" element={<DashboardRoute tab="pipeline" />} />
+          <Route path="/automation" element={<DashboardRoute tab="automation" />} />
+          <Route path="/insights" element={<DashboardRoute tab="insights" />} />
           <Route path="/session/:sessionId" element={<SessionRoute />} />
           <Route path="/session/:sessionId/subagent/:agentId" element={<SubSessionRoute />} />
           <Route path="/review/:sessionId" element={<ReviewRoute />} />

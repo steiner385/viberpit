@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
+    from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
 
 from ccswitch import accounts as ccswitch_accounts
@@ -247,8 +248,20 @@ class SessionOrchestrator:
         self._pr_poller: PrStatusPoller = PrStatusPoller()
         self._pr_poller.set_pairs_provider(self._pr_pairs)
         self._pr_poller.set_on_change(self._on_pr_change)
-        from server.github.pr_population import PrPopulationPoller
-        self._pr_population: PrPopulationPoller = PrPopulationPoller()
+        from server.github.pr_population import PrPopulationPoller, _default_merge_queue_query
+        from server.pipeline import merge_queue_store
+
+        async def _merge_queue_sink(by_repo: dict, captured_at: int) -> None:
+            for repo, entries in by_repo.items():
+                await merge_queue_store.record(repo, captured_at, entries)
+            await merge_queue_store.prune(older_than_epoch=captured_at - 36 * 3600)
+
+        # _default_merge_queue_query groups watched repos by owner so each org's repos
+        # use that org's installation token (works across multiple GitHub owners).
+        self._pr_population: PrPopulationPoller = PrPopulationPoller(
+            merge_queue_query_fn=_default_merge_queue_query,
+            merge_queue_sink=_merge_queue_sink,
+        )
         self._pr_population.set_repos_provider(self._pr_repos)
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
@@ -264,9 +277,13 @@ class SessionOrchestrator:
         # (repo, branch) pairs whose PR is currently in a failing-CI state (M2b.2 debounce):
         # push fires once on entry into failing; cleared on recovery so a re-break re-fires.
         self._pushed_pr: set[tuple[str, str]] = set()
-        # Auto-fix loop guard: (repo, branch) we've already auto-attempted since
-        # the last recovery. Sibling of _pushed_pr; in-memory, resets on restart.
-        self._pr_fix_attempts: set[tuple[str, str]] = set()
+        # Auto-fix loop guard + activity feed: the pr-doctor automation's outward
+        # seam. Per-target ``attempted`` state lives in automation_target_state
+        # (durable; survives restart), keyed by ``f"{repo}#{number}"`` — no parallel
+        # in-memory set. See _on_pr_change.
+        from server.automations.context import AutomationContext
+        self._pr_doctor_ctx = AutomationContext(
+            "pr-doctor", create_session=self.create_session)
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
@@ -407,6 +424,8 @@ class SessionOrchestrator:
         permission_mode: str = "interactive",
         attachment_ids: list[str] | None = None,
         name_is_auto: bool = True,
+        origin: str | None = None,
+        origin_ref: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
 
@@ -524,6 +543,8 @@ class SessionOrchestrator:
                 branch=branch_name,
                 permission_mode=permission_mode,
                 name_is_auto=name_is_auto,
+                origin=origin,
+                origin_ref=origin_ref,
             )
             db.add(row)
 
@@ -544,6 +565,8 @@ class SessionOrchestrator:
             # waiting for the first status event (mirrors the DB row's utcnow default).
             updated_at=datetime.utcnow(),
             usage_unverified=usage_unverified,
+            origin=origin,
+            origin_ref=origin_ref,
         )
         self._records[session_id] = record
         log_event(log, logging.INFO, "session.start",
@@ -741,9 +764,19 @@ class SessionOrchestrator:
             # transient ``pending``/``none``. CI normally cycles
             # failing→pending→failing while a pushed fix re-runs; clearing on
             # ``pending`` would let the next ``failing`` trigger a fresh auto-fix
-            # and loop forever on a PR the agent can't fix.
+            # and loop forever on a PR the agent can't fix. The guard lives in the
+            # durable pr-doctor target state (automation_target_state), keyed by
+            # ``f"{repo}#{number}"`` — clearing == setting it back to ``{}``.
             if new_checks == "passing":
-                self._pr_fix_attempts.discard(key)
+                info = self.pr_for(repo, branch)
+                if info is not None:
+                    target = f"{repo}#{info.number}"
+                    state = await self._pr_doctor_ctx.get_target_state(target)
+                    if state.get("attempted"):
+                        await self._pr_doctor_ctx.set_target_state(target, {})
+                        await self._pr_doctor_ctx.emit(
+                            "info", f"{repo}#{info.number} CI recovered",
+                            kind="recovered", target=target)
             return
         rec = next(
             (r for r in self._records.values() if r.repo == repo and r.branch == branch),
@@ -752,20 +785,32 @@ class SessionOrchestrator:
         if rec is None:
             return
 
+        info = self.pr_for(repo, branch)
+        target = f"{repo}#{info.number}" if info is not None else f"{repo}#{branch}"
+        # Surface the failure on the activity feed once, on the transition INTO
+        # failing (not on every failing→failing re-poll).
+        if old_checks != "failing":
+            await self._pr_doctor_ctx.emit(
+                "warn", f"{repo} CI failing on {target}", kind="detected", target=target)
+
         mode = await self._pr_autofix_mode()
         # Auto: one attempt per failure event, only if a live driver exists.
-        if mode == "auto" and key not in self._pr_fix_attempts:
-            info = self.pr_for(repo, branch)
-            if info is not None and rec.id in self._drivers:
+        if mode == "auto" and info is not None and rec.id in self._drivers:
+            state = await self._pr_doctor_ctx.get_target_state(target)
+            if not state.get("attempted"):
                 # Mark before awaiting (re-entrancy guard), but only a real
                 # injection consumes the one attempt — a transient failure
                 # (draining / unresolved branch) re-arms so it can retry.
-                self._pr_fix_attempts.add(key)
+                await self._pr_doctor_ctx.set_target_state(target, {"attempted": True})
                 result = await self.request_pr_fix(rec.id, info.number)
                 if result == "sent":
+                    await self._pr_doctor_ctx.emit(
+                        "info", f"auto-fix injected for {target}",
+                        kind="attempted", target=target, session_id=rec.id)
                     return  # injected; skip the redundant break notification
-                self._pr_fix_attempts.discard(key)
-                # Could not inject (draining / not actionable) → fall through to notify.
+                # Could not inject (draining / not actionable) → re-arm so the
+                # next failing can retry, then fall through to notify.
+                await self._pr_doctor_ctx.set_target_state(target, {})
 
         # Notify (off, propose, or auto-fallback). Debounced like before.
         if key in self._pushed_pr:
@@ -1175,6 +1220,57 @@ class SessionOrchestrator:
             )
         return models
 
+    async def all_merge_trains(self) -> "dict[str, MergeTrainState]":
+        """Merge-train state for every watched repo, derived from the 24-hour
+        merge-queue observation window plus existing PR population data.
+        """
+        from server.pipeline.merge_train import derive_merge_train_state
+        from server.pipeline import merge_queue_store
+        import time as _time
+        now = int(_time.time())
+        since = now - 86400
+        out: dict = {}
+        pop = self._pr_population.all()
+        for repo, prs in pop.items():
+            obs = await merge_queue_store.window(repo, since)
+            qa, prod = self._deploy_backlog(prs)
+            out[repo] = derive_merge_train_state(repo, obs, now, qa, prod)
+        return out
+
+    def check_insights(self, repo: str, window: str, now=None) -> dict:
+        """Per-repo Check Health: slowest + flakiest checks over a time window.
+        Reads the read-only HistoryStore; returns a JSON-safe payload. Empty lists
+        when history is unavailable or the repo has no rows (never raises)."""
+        from datetime import datetime, timedelta, timezone
+        _WINDOWS = {"24h": timedelta(hours=24), "7d": timedelta(days=7),
+                    "14d": timedelta(days=14), "30d": timedelta(days=30)}
+        win = window if window in _WINDOWS else "7d"
+        store = self._pr_population.history_store()
+        if store is None or not repo:
+            return {"repo": repo, "window": win, "slowest": [], "flakiest": []}
+        now = now or datetime.now(timezone.utc)
+        since_iso = (now - _WINDOWS[win]).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            slowest = store.slowest_checks(repo, since_iso)
+            flakiest = store.flakiest_checks(repo, since_iso)
+        except Exception:
+            return {"repo": repo, "window": win, "slowest": [], "flakiest": []}
+        return {"repo": repo, "window": win,
+                "slowest": [s.to_dict() for s in slowest],
+                "flakiest": [f.to_dict() for f in flakiest]}
+
+    @staticmethod
+    def _deploy_backlog(prs) -> "tuple[int, int]":
+        """Compute awaiting_qa / awaiting_prod from the cached PR population.
+
+        Reuses existing PipelinePr / PullRequestInfo fields — does NOT re-query GitHub.
+        awaiting_qa  = merged & not deployed to any environment.
+        awaiting_prod = merged & not deployed to production (subset of awaiting_qa + staging).
+        """
+        awaiting_prod = sum(1 for p in prs if p.merged and "production" not in p.deployed_envs)
+        awaiting_qa = sum(1 for p in prs if p.merged and not p.deployed_envs)
+        return awaiting_qa, awaiting_prod
+
     def all_prs(self) -> "list[PipelinePr]":
         """Full PR population (all watched repos) joined to authoring sessions.
 
@@ -1203,14 +1299,13 @@ class SessionOrchestrator:
         return out
 
     async def _pr_autofix_mode(self) -> str:
-        """Current pr_autofix_mode from AppSettings; NULL/unknown → 'propose'."""
+        """Current pr-doctor mode from the automation registry row; NULL/unknown → 'propose'."""
         from sqlalchemy import select
-        from server.db.models import AppSettings
+        from server.db.models import Automation
         async with db_session() as db:
-            row = (
-                await db.execute(select(AppSettings).where(AppSettings.id == "singleton"))
-            ).scalar_one_or_none()
-            mode = (row.pr_autofix_mode if row else None) or "propose"
+            row = (await db.execute(
+                select(Automation).where(Automation.id == "pr-doctor"))).scalar_one_or_none()
+            mode = (row.mode if row else None) or "propose"
         from server.sessions.pr_fix import VALID_AUTOFIX_MODES
         return mode if mode in VALID_AUTOFIX_MODES else "propose"
 

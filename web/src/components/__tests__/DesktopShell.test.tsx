@@ -30,6 +30,7 @@ vi.mock('@/api/hooks', () => ({
   useArchivedSessions: vi.fn(), useUnarchiveSession: vi.fn(), usePermanentDeleteSession: vi.fn(),
   useModels: vi.fn(), useSendPrompt: vi.fn(), useFixPr: vi.fn(),
   usePendingDeploy: vi.fn(), useDeployStatus: vi.fn(), useStartDeploy: vi.fn(),
+  useAutomations: vi.fn(() => ({ data: [] })),
   useSessionsViewing: vi.fn(),
   QK: { accounts: ['accounts'], sessions: ['sessions'], archived: ['archived-sessions'], config: ['config'], githubRepos: ['github-repos'], githubBranches: (r?: string) => ['github-branches', r], settings: ['settings'] },
 }))
