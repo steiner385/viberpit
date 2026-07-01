@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,22 +17,29 @@ from tests.helpers import temp_env
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 
-def _make_app_and_client():
+@contextmanager
+def _client():
+    """A live-app TestClient over an isolated file-backed SQLite DB.
+
+    A temp *file* DB (not ``:memory:``) is deliberate: with the app's live
+    orchestrator, an in-memory DB forces every consumer onto one shared
+    connection, so the orchestrator's startup poll races the settings
+    PUT-then-GET on that connection (flaky ``interactive`` vs ``auto``). A file
+    DB gives each connection its own handle to one real database, and the WAL
+    pragma the engine sets makes a committed write visible to the next reader.
+    """
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
+    from fastapi.testclient import TestClient
 
-    with patch.dict(
-        os.environ,
-        {
-            "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
-        },
-    ):
-        orch = SessionOrchestrator(poll_interval=9999.0)
-        app = create_app(orchestrator=orch)
-        from fastapi.testclient import TestClient
-
-        client = TestClient(app, raise_server_exceptions=False)
-        return app, client
+    with temp_env(), tempfile.TemporaryDirectory() as d:
+        db_url = f"sqlite+aiosqlite:///{Path(d) / 'settings.db'}"
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}):
+            orch = SessionOrchestrator(poll_interval=9999.0)
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=False)
+            with client:
+                yield client
 
 
 # ---------------------------------------------------------------------------
@@ -40,11 +49,8 @@ def _make_app_and_client():
 
 def test_get_settings_returns_defaults():
     """GET /api/settings returns the singleton row with defaults on first call."""
-    with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            _, client = _make_app_and_client()
-            with client:
-                resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+    with _client() as client:
+        resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
 
     assert resp.status_code == 200
     data = resp.json()
@@ -60,21 +66,18 @@ def test_get_settings_returns_defaults():
 
 def test_put_settings_round_trips():
     """PUT {defaultPermissionMode: 'auto'} then GET → 'auto'."""
-    with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            _, client = _make_app_and_client()
-            with client:
-                put_resp = client.put(
-                    "/api/settings",
-                    json={"defaultPermissionMode": "auto"},
-                    headers=IDENTITY_HEADERS,
-                )
-                assert put_resp.status_code == 200
-                assert put_resp.json()["defaultPermissionMode"] == "auto"
+    with _client() as client:
+        put_resp = client.put(
+            "/api/settings",
+            json={"defaultPermissionMode": "auto"},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["defaultPermissionMode"] == "auto"
 
-                get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
-                assert get_resp.status_code == 200
-                assert get_resp.json()["defaultPermissionMode"] == "auto"
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.status_code == 200
+        assert get_resp.json()["defaultPermissionMode"] == "auto"
 
 
 # ---------------------------------------------------------------------------
@@ -84,21 +87,18 @@ def test_put_settings_round_trips():
 
 def test_put_rejects_invalid_mode():
     """PUT {defaultPermissionMode: 'bogus'} → value silently stays 'interactive'."""
-    with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            _, client = _make_app_and_client()
-            with client:
-                put_resp = client.put(
-                    "/api/settings",
-                    json={"defaultPermissionMode": "bogus"},
-                    headers=IDENTITY_HEADERS,
-                )
-                assert put_resp.status_code == 200
-                assert put_resp.json()["defaultPermissionMode"] == "interactive"
+    with _client() as client:
+        put_resp = client.put(
+            "/api/settings",
+            json={"defaultPermissionMode": "bogus"},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["defaultPermissionMode"] == "interactive"
 
-                get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
-                assert get_resp.status_code == 200
-                assert get_resp.json()["defaultPermissionMode"] == "interactive"
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.status_code == 200
+        assert get_resp.json()["defaultPermissionMode"] == "interactive"
 
 
 # ---------------------------------------------------------------------------
@@ -108,11 +108,8 @@ def test_put_rejects_invalid_mode():
 
 def test_get_settings_default_tool_detail_is_auto():
     """GET /api/settings returns defaultToolDetail 'auto' by default."""
-    with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            _, client = _make_app_and_client()
-            with client:
-                resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+    with _client() as client:
+        resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
 
     assert resp.status_code == 200
     assert resp.json()["defaultToolDetail"] == "auto"
@@ -120,35 +117,29 @@ def test_get_settings_default_tool_detail_is_auto():
 
 def test_put_default_tool_detail_round_trips():
     """PUT {defaultToolDetail: 'all-closed'} then GET → 'all-closed'."""
-    with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            _, client = _make_app_and_client()
-            with client:
-                put_resp = client.put(
-                    "/api/settings",
-                    json={"defaultToolDetail": "all-closed"},
-                    headers=IDENTITY_HEADERS,
-                )
-                assert put_resp.status_code == 200
-                assert put_resp.json()["defaultToolDetail"] == "all-closed"
+    with _client() as client:
+        put_resp = client.put(
+            "/api/settings",
+            json={"defaultToolDetail": "all-closed"},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["defaultToolDetail"] == "all-closed"
 
-                get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
-                assert get_resp.json()["defaultToolDetail"] == "all-closed"
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.json()["defaultToolDetail"] == "all-closed"
 
 
 def test_put_rejects_invalid_tool_detail():
     """PUT {defaultToolDetail: 'bogus'} → value silently stays 'auto'."""
-    with temp_env():
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            _, client = _make_app_and_client()
-            with client:
-                put_resp = client.put(
-                    "/api/settings",
-                    json={"defaultToolDetail": "bogus"},
-                    headers=IDENTITY_HEADERS,
-                )
-                assert put_resp.status_code == 200
-                assert put_resp.json()["defaultToolDetail"] == "auto"
+    with _client() as client:
+        put_resp = client.put(
+            "/api/settings",
+            json={"defaultToolDetail": "bogus"},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["defaultToolDetail"] == "auto"
 
 # NOTE: prAutofixMode is no longer an /api/settings field. The pr-doctor mode
 # moved onto the automation registry row (Automation id="pr-doctor", column
