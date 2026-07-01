@@ -50,6 +50,25 @@ class CheckDurationStat:
                 "p90": self.p90, "ratio": self.ratio, "n": self.n}
 
 
+@dataclass(frozen=True)
+class CheckFlakeStat:
+    check_name: str
+    event: str
+    flake_pct: float
+    flaky_commits: int
+    total_commits: int
+    n: int
+
+    def to_dict(self) -> dict:
+        return {"check_name": self.check_name, "event": self.event,
+                "flake_pct": self.flake_pct, "flaky_commits": self.flaky_commits,
+                "total_commits": self.total_commits, "n": self.n}
+
+
+_FLAKE_PASS = {"success"}
+_FLAKE_FAIL = {"failure", "cancelled", "timed_out", "error", "action_required"}
+
+
 def _parse_iso_ms(iso: str) -> float:
     """ms since epoch from an ISO-8601 string (tolerant of trailing Z)."""
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000.0
@@ -117,6 +136,41 @@ class HistoryStore:
                 check_name=name, event=ev, p50=p50, p90=p90,
                 ratio=(p90 / p50) if p50 else None, n=len(s)))
         stats.sort(key=lambda x: x.p50, reverse=True)
+        return stats[:limit]
+
+    def flakiest_checks(
+        self, repo: str, since_iso: str, limit: int = 10, event: str | None = None,
+    ) -> "list[CheckFlakeStat]":
+        q = ("SELECT check_name, event, head_sha, conclusion FROM check_durations "
+             "WHERE repo=? AND completed_at >= ?")
+        args: list = [repo, since_iso]
+        if event is not None:
+            q += " AND event=?"
+            args.append(event)
+        # (check, event) -> head_sha -> {"pass": bool, "fail": bool}
+        by_check: dict[tuple[str, str], dict[str, dict[str, bool]]] = {}
+        totals: dict[tuple[str, str], int] = {}
+        for r in self._conn.execute(q, args).fetchall():
+            key = (r["check_name"], r["event"] or "")
+            totals[key] = totals.get(key, 0) + 1
+            c = (r["conclusion"] or "").lower()
+            commits = by_check.setdefault(key, {})
+            flags = commits.setdefault(r["head_sha"] or "", {"pass": False, "fail": False})
+            if c in _FLAKE_PASS:
+                flags["pass"] = True
+            elif c in _FLAKE_FAIL:
+                flags["fail"] = True
+        stats: list[CheckFlakeStat] = []
+        for key, commits in by_check.items():
+            decided = [f for f in commits.values() if f["pass"] or f["fail"]]
+            total = len(decided)
+            if total == 0:
+                continue
+            flaky = sum(1 for f in decided if f["pass"] and f["fail"])
+            stats.append(CheckFlakeStat(
+                check_name=key[0], event=key[1], flake_pct=100.0 * flaky / total,
+                flaky_commits=flaky, total_commits=total, n=totals[key]))
+        stats.sort(key=lambda x: (x.flake_pct, x.flaky_commits), reverse=True)
         return stats[:limit]
 
     def expected_runner_wait(self, repo: str, name: str, event: str) -> float | None:

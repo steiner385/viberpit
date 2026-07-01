@@ -47,3 +47,28 @@ def test_slowest_checks_filters_by_window(tmp_path):
     s = _store(tmp_path, rows)
     out = s.slowest_checks("o/n", since_iso="2026-06-15T00:00:00Z")
     assert len(out) == 1 and out[0].n == 1 and out[0].p50 == 60
+
+
+def test_flakiest_checks_math(tmp_path):
+    rows = [
+        # 'flaky': commit A fails then passes (same sha) → flaky; commit B passes → clean
+        ("o/n", "flaky", "pr", 1, "2026-07-01T00:00:00Z", "failure", "A", 1, 1),
+        ("o/n", "flaky", "pr", 1, "2026-07-01T00:00:00Z", "success", "A", 2, 2),
+        ("o/n", "flaky", "pr", 1, "2026-07-01T00:00:00Z", "success", "B", 1, 3),
+        # 'solid': always green over two commits → 0%
+        ("o/n", "solid", "pr", 1, "2026-07-01T00:00:00Z", "success", "C", 1, 4),
+        ("o/n", "solid", "pr", 1, "2026-07-01T00:00:00Z", "success", "D", 1, 5),
+        # 'broken': always fails → 0% (no pass, so no flake)
+        ("o/n", "broken", "pr", 1, "2026-07-01T00:00:00Z", "failure", "E", 1, 6),
+        # 'skiponly': skipped only → excluded entirely (no definite outcome)
+        ("o/n", "skiponly", "pr", 1, "2026-07-01T00:00:00Z", "skipped", "F", 1, 7),
+    ]
+    s = _store(tmp_path, rows)
+    by = {x.check_name: x for x in s.flakiest_checks("o/n", since_iso="2026-01-01T00:00:00Z")}
+    assert by["flaky"].flaky_commits == 1 and by["flaky"].total_commits == 2
+    assert by["flaky"].flake_pct == 50.0
+    assert by["solid"].flake_pct == 0.0 and by["solid"].total_commits == 2
+    assert by["broken"].flake_pct == 0.0 and by["broken"].total_commits == 1
+    assert "skiponly" not in by                          # no definite outcome → dropped
+    # ranked flakiest-first
+    assert s.flakiest_checks("o/n", since_iso="2026-01-01T00:00:00Z")[0].check_name == "flaky"
