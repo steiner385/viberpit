@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from server.pipeline.track import StageModel
 
 from ccswitch import accounts as ccswitch_accounts
-from ccswitch import configdir, crypto, worktrees
+from ccswitch import configdir, crypto, gitrepos, worktrees
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
@@ -65,7 +65,7 @@ from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
 from server.github.pr_status import PullRequestInfo
-from server.sessions.pr_fix import build_pr_fix_prompt
+from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_prompt
 
 log = logging.getLogger(__name__)
 
@@ -248,6 +248,10 @@ class SessionOrchestrator:
         self._pr_poller: PrStatusPoller = PrStatusPoller()
         self._pr_poller.set_pairs_provider(self._pr_pairs)
         self._pr_poller.set_on_change(self._on_pr_change)
+        # Per-poll-cycle SWEEP: after every refresh the sweep re-classifies the
+        # whole fresh cache so non-CI failure modes (out_of_date/merge_conflict)
+        # that never trip a checks-transition still reach _pr_doctor_step.
+        self._pr_poller.set_on_cycle(self._pr_doctor_sweep)
         from server.github.pr_population import PrPopulationPoller, _default_merge_queue_query
         from server.pipeline import merge_queue_store
 
@@ -284,6 +288,34 @@ class SessionOrchestrator:
         from server.automations.context import AutomationContext
         self._pr_doctor_ctx = AutomationContext(
             "pr-doctor", create_session=self.create_session)
+        # Injectable seam for the pr-doctor Mechanical (update-branch) executor:
+        # a swappable ``gh`` runner so tests can record argv without touching the
+        # network. Defaults to the real ``gh`` shell-out.
+        self._gh_run = gitrepos._run_gh
+        # Backlog Runner control loop. Every I/O seam is now the real Plan-B
+        # wiring: select_batch (label-gated gh query → LLM rank → batch), claim /
+        # unclaim (in-progress label lifecycle), spawn (clone-resolve + de-duped
+        # session), plus in-flight/account/PR-status/config/session-ended probes.
+        from server.automations.backlog_runner import BacklogRunnerLoop
+        self._backlog_ctx = AutomationContext(
+            "backlog-runner", create_session=self.create_session)
+        self._backlog_loop = BacklogRunnerLoop(
+            self._backlog_ctx,
+            select_batch=self._backlog_select_batch,
+            claim=self._backlog_claim,
+            spawn=self._backlog_spawn,
+            count_in_flight=self._backlog_count_in_flight,
+            healthy_account=self._backlog_healthy_account,
+            pr_status_for=self._backlog_pr_status_for,
+            pr_doctor_active=self._backlog_pr_doctor_active,
+            read_config=self._backlog_read_config,
+            clock=time.monotonic,
+            release=self._backlog_release,
+            needs_human=self._backlog_needs_human,
+            session_ended=self._backlog_session_ended,
+            reconcile=self._backlog_reconcile,
+        )
+        self._backlog_task: asyncio.Task | None = None
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
@@ -348,6 +380,11 @@ class SessionOrchestrator:
         self._token_refresh_task = asyncio.create_task(
             self._token_refresh_monitor(), name="token-refresh-monitor"
         )
+        # Backlog Runner control loop: one tick per interval (refill + handoff/
+        # terminal-watch sweep). A disabled row makes each tick a cheap sweep.
+        self._backlog_task = asyncio.create_task(
+            self._backlog_tick_loop(interval=60.0), name="backlog-runner-loop"
+        )
 
     async def _refresh_idle_tokens_once(self) -> None:
         """Proactively refresh idle accounts' access tokens (best-effort).
@@ -393,7 +430,8 @@ class SessionOrchestrator:
             except asyncio.CancelledError:
                 pass
             self._pr_branch_task = None
-        for attr in ("_titling_task", "_rotation_task", "_stall_task", "_token_refresh_task"):
+        for attr in ("_titling_task", "_rotation_task", "_stall_task",
+                     "_token_refresh_task", "_backlog_task"):
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
@@ -635,6 +673,16 @@ class SessionOrchestrator:
             )
         log.info("session.close id=%s", session_id)
 
+        # Nudge the Backlog Runner when one of its sessions ends so a freed slot
+        # refills immediately (and the terminal-watch runs) without waiting for
+        # the next interval tick. Best-effort; the loop is non-reentrant so this
+        # never overlaps an in-progress tick.
+        if record is not None and getattr(record, "origin", None) == "backlog-runner":
+            try:
+                asyncio.create_task(self._backlog_loop.tick(), name="backlog-runner-nudge")
+            except Exception:  # pragma: no cover — scheduling must never break close
+                log.debug("backlog_runner.nudge_failed", exc_info=True)
+
     async def rename_session(self, session_id: str, name: str) -> None:
         """Update the session name in the DB and in-memory record.
 
@@ -748,14 +796,303 @@ class SessionOrchestrator:
         else:
             self._pushed.discard(session_id)
 
+    # ------------------------------------------------------------------
+    # Backlog Runner control-loop dependencies (injected into BacklogRunnerLoop)
+    # ------------------------------------------------------------------
+
+    async def _backlog_read_config(self) -> tuple[str, dict]:
+        """The backlog-runner row's (mode, config) merged onto the schema defaults.
+
+        Mode is ``off`` unless the row is enabled AND carries a mode; an
+        absent/invalid row falls back to ``off`` + pure defaults so a bad config
+        never spawns.  Single source of truth for the flags the loop reads."""
+        from server.automations.backlog_runner import BacklogRunner
+        from server.automations.base import validate_config
+        from sqlalchemy import select
+        from server.db.models import Automation
+        enabled, mode, raw = False, None, {}
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "backlog-runner"))).scalar_one_or_none()
+                if row is not None:
+                    enabled = bool(row.enabled)
+                    mode = row.mode
+                    raw = dict(row.config) if row.config else {}
+        except Exception:
+            log.debug("backlog_runner.config.load_failed", exc_info=True)
+        try:
+            config = validate_config(BacklogRunner.config_schema, raw)
+        except ValueError:
+            config = validate_config(BacklogRunner.config_schema, {})
+        effective = mode if (enabled and mode in ("propose", "auto")) else "off"
+        return effective, config
+
+    async def _backlog_count_in_flight(self) -> int:
+        """Restart-safe in-flight count: non-terminal sessions this automation
+        owns (``origin == 'backlog-runner'``), read fresh from the DB every tick
+        so a process restart re-derives the true count (never cached)."""
+        from sqlalchemy import func, select
+        async with db_session() as db:
+            return (await db.execute(
+                select(func.count()).select_from(DbSession).where(
+                    DbSession.origin == "backlog-runner",
+                    DbSession.status != "ended"))).scalar_one()
+
+    async def _backlog_healthy_account(self) -> str | None:
+        """A non-quarantined, non-limited account with headroom, or None.
+
+        Reuses the same selection the interactive path uses (``select_account``
+        excluding quarantined accounts, load-aware) plus the usage-ceiling guard
+        (``_account_limited``). None means: pause spawning until an account frees."""
+        try:
+            picked = select_account(
+                exclude=self._recovery.quarantined(now=self._clock()),
+                load=self.live_session_load())
+        except AllAccountsBusy:
+            return None
+        if self._account_limited(picked.name):
+            return None
+        return picked.name
+
+    async def _backlog_pr_status_for(self, target: str) -> PullRequestInfo | None:
+        """The poller-cached PullRequestInfo for a runner target.
+
+        The target key is ``owner/repo#N``; the loop stores the spawned session's
+        (repo, branch) in the target state, so we look up the branch there and
+        read the poller cache. Falls back to a repo-wide scan by PR number."""
+        repo = target.split("#", 1)[0]
+        st = await self._backlog_ctx.get_target_state(target)
+        branch = st.get("branch")
+        if branch:
+            info = self._pr_poller.cached(repo, branch)
+            if info is not None:
+                return info
+        # Fallback: no recorded branch — match by number across cached pairs.
+        try:
+            number = int(target.split("#", 1)[1])
+        except (IndexError, ValueError):
+            return None
+        for (crepo, cbranch), info in list(self._pr_poller._cache.items()):
+            if crepo == repo and info.number == number:
+                return info
+        return None
+
+    async def _backlog_pr_doctor_active(self, repo: str) -> bool:
+        """True when PR Doctor is enabled and covers *repo* (empty scope = all).
+
+        Read from the pr-doctor row so ``should_free_slot`` knows whether a safety
+        net exists to carry the PR to auto-merge."""
+        from sqlalchemy import select
+        from server.db.models import Automation
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "pr-doctor"))).scalar_one_or_none()
+            if row is None or not row.enabled:
+                return False
+            scope = (row.config or {}).get("enabled_repos") or []
+            return not scope or repo in scope
+        except Exception:
+            log.debug("backlog_runner.pr_doctor_active_failed", exc_info=True)
+            return False
+
+    async def _backlog_select_batch(self, config: dict):
+        """Real selection: label-gated ``gh`` candidate query → LLM rank → batch.
+
+        Runs entirely through the injected ``gh_run`` seam (default the real
+        ``gh`` shell-out) and the Haiku ranking; returns a ``Batch`` or ``None``."""
+        from server.automations.backlog_runner import select_batch
+        return await select_batch(config, gh_run=self._gh_run)
+
+    async def _backlog_claim(self, batch) -> bool:
+        """Atomically claim every issue in *batch* (add the ``in-progress`` label).
+
+        Posts a brief linking comment on each issue so a human sees who claimed
+        it and can trace back to the runner via the ``origin_ref``."""
+        from server.automations import backlog_github
+        comment = (f"Claimed by ccswitch Backlog Runner ({batch.primary}) — "
+                   f"an implementation session is in progress.")
+        return await asyncio.to_thread(
+            backlog_github.claim_batch, batch, gh_run=self._gh_run, comment=comment)
+
+    async def _backlog_batch_for(self, target: str):
+        """Reconstruct the claimed Batch for *target* from its durable state
+        (falls back to the primary ref alone)."""
+        from server.automations.backlog_selection import Batch
+        st = await self._backlog_ctx.get_target_state(target)
+        issues = st.get("issues") or [target]
+        return Batch(primary=target, issues=list(issues),
+                     repo=target.split("#", 1)[0])
+
+    async def _backlog_release(self, target: str) -> None:
+        """RELEASE-only path (spawn failure): remove ``in-progress`` and return
+        the batch to the pool. Does NOT add ``needs-human`` — a transient spawn
+        failure is retried, not escalated. Best-effort, off the event loop."""
+        from server.automations import backlog_github
+        batch = await self._backlog_batch_for(target)
+        await asyncio.to_thread(
+            backlog_github.unclaim_batch, batch, gh_run=self._gh_run)
+
+    async def _backlog_needs_human(self, target: str) -> None:
+        """GIVE-UP path: add ``needs-human`` and remove ``in-progress`` so a human
+        picks the target up. Used only after ``max_attempts`` or a PR-Doctor
+        give-up. Best-effort, off the event loop."""
+        from server.automations import backlog_github
+        batch = await self._backlog_batch_for(target)
+        await asyncio.to_thread(
+            backlog_github.label_needs_human, batch, gh_run=self._gh_run)
+
+    async def _backlog_reconcile(self, claimed_refs: list[str],
+                                 live_refs: set[str]) -> None:
+        """Return orphaned claims to the pool (crash-between-claim-and-spawn).
+
+        For each durably-claimed ref with no live runner session (not in
+        ``live_refs``), remove the ``in-progress`` label. Best-effort, off the
+        event loop."""
+        from server.automations import backlog_github
+        await asyncio.to_thread(
+            backlog_github.reconcile_dangling, list(claimed_refs), set(live_refs),
+            gh_run=self._gh_run)
+
+    async def _backlog_session_ended(self, session_id: str) -> bool:
+        """True once the runner session *session_id* has reached a terminal state.
+
+        Reads the DB row (restart-safe; the in-memory record may be gone) and
+        treats ``status == 'ended'`` as ended so the sweep can charge an attempt
+        for a session that finished without a mergeable PR."""
+        from sqlalchemy import select as _select
+        async with db_session() as db:
+            status = (await db.execute(_select(DbSession.status).where(
+                DbSession.id == session_id))).scalar_one_or_none()
+        return status == "ended"
+
+    async def _backlog_spawn(self, batch, account: str):
+        """Spawn a de-duped runner session for *batch*, seeded with the implement
+        prompt.
+
+        Resolves the repo's ccswitch-owned clone ``cwd`` off the event loop
+        (mirrors PR Doctor's spawn), then spawns via the de-dup-safe context
+        spawner (stamps origin/origin_ref, enforces one session per primary, and
+        emits ``spawned`` with ``detail.issues``). Returns the SessionRecord."""
+        from server.automations.backlog_prompt import build_implement_prompt
+        from server.config import get_settings
+        url = f"https://github.com/{batch.repo}.git"
+        cwd = await asyncio.to_thread(
+            gitrepos.ensure_clone, get_settings().repo_root, batch.repo, url)
+        return await self._backlog_ctx.spawn_session(
+            origin_ref=batch.primary,
+            dedupe_key=batch.primary,
+            repo=batch.repo,
+            cwd=cwd,
+            account=account,
+            name=f"backlog {batch.primary}",
+            initial_prompt=build_implement_prompt(batch),
+            detail={"issues": batch.issues},
+        )
+
+    async def backlog_runner_implement(self, primary: str) -> str:
+        """Propose-tap: claim (if needed) + spawn the batch for *primary*.
+
+        Re-queries the current label-gated candidate set, pins a batch on
+        *primary*, claims it (unless already claimed), resolves a healthy account,
+        and spawns the de-duped runner session. Returns a status string:
+        ``"spawned"`` / ``"unknown"`` (not a current candidate) /
+        ``"claim_failed"`` / ``"no_account"``."""
+        from server.automations.backlog_github import query_candidates
+        from server.automations.backlog_selection import Batch
+        _mode, config = await self._backlog_read_config()
+        # Query the current candidate set and pin the batch on the requested
+        # primary (the tap targets one issue explicitly; no re-ranking needed).
+        candidates = await asyncio.to_thread(
+            query_candidates, config, gh_run=self._gh_run)
+        by_ref = {c["ref"]: c for c in candidates}
+        if primary not in by_ref:
+            return "unknown"
+        batch = Batch(primary=primary, issues=[primary], repo=by_ref[primary]["repo"])
+        st = await self._backlog_ctx.get_target_state(primary)
+        already_claimed = bool(st.get("issues"))
+        if not already_claimed:
+            if not await self._backlog_claim(batch):
+                return "claim_failed"
+            await self._backlog_ctx.emit("info", f"claimed {primary}",
+                                         kind="claimed", target=primary,
+                                         detail={"issues": batch.issues})
+        account = await self._backlog_healthy_account()
+        if account is None:
+            return "no_account"
+        rec = await self._backlog_spawn(batch, account)
+        # A de-dup hit returns the existing row without appending to spawns; treat
+        # a matching origin_ref that already existed as "exists".
+        await self._backlog_ctx.set_target_state(primary, {
+            "session_id": getattr(rec, "id", None),
+            "repo": batch.repo,
+            "branch": getattr(rec, "branch", None),
+            "attempts": st.get("attempts", 0),
+            "issues": batch.issues,
+            "claimed": True,
+        })
+        return "spawned"
+
+    async def _backlog_tick_loop(self, interval: float) -> None:
+        """Periodic driver for the backlog-runner control loop. Runs a tick every
+        *interval* seconds while the automation is enabled; a disabled row makes
+        each tick idle-and-sweep (mode=='off') cheaply."""
+        while True:
+            try:
+                await self._backlog_loop.tick()
+            except Exception:  # pragma: no cover — tick() already swallows; belt+braces
+                log.warning("backlog_runner.tick_loop_error", exc_info=True)
+            await asyncio.sleep(interval)
+
+    async def _pr_doctor_config(self) -> dict:
+        """The pr-doctor row's config merged onto the PrDoctor schema defaults.
+
+        Single source of truth for the flags ``plan_recovery`` reads
+        (``auto_*``, ``max_attempts``, ``mechanical_attempts``, ``enabled_repos``).
+        Best-effort: an absent/invalid row falls back to pure defaults."""
+        from server.automations.pr_doctor import PrDoctor
+        from server.automations.base import validate_config
+        from sqlalchemy import select
+        from server.db.models import Automation
+        raw: dict = {}
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "pr-doctor"))).scalar_one_or_none()
+                raw = dict(row.config) if row and row.config else {}
+        except Exception:
+            log.debug("pr_doctor.config.load_failed", exc_info=True)
+        try:
+            return validate_config(PrDoctor.config_schema, raw)
+        except ValueError:
+            # A stale/invalid stored config must not break the poll loop — fall
+            # back to pure schema defaults.
+            return validate_config(PrDoctor.config_schema, {})
+
+    async def _pr_doctor_bump_active(self) -> None:
+        """Best-effort ``last_active_at`` heartbeat on the pr-doctor row."""
+        try:
+            from sqlalchemy import update as sa_update
+            from server.db.models import Automation
+            from datetime import datetime, timezone
+            async with db_session() as db:
+                await db.execute(sa_update(Automation)
+                                 .where(Automation.id == "pr-doctor")
+                                 .values(last_active_at=datetime.now(timezone.utc)))
+        except Exception:
+            log.debug("pr_doctor.bump_active_failed", exc_info=True)
+
     async def _on_pr_change(
         self, repo: str, branch: str, old_checks: str | None, new_checks: str
     ) -> None:
-        """PR-poller transition callback: alert when a session's PR enters failing CI.
+        """PR-poller transition callback: dispatch a session's PR through PR Doctor.
 
-        Routed to the owning session by (repo, live branch). Debounced via ``_pushed_pr``:
-        fires once on entry into ``failing``; cleared on recovery so a re-break re-fires
-        (M2b.2 / AUT-02). A transition for a (repo, branch) with no live session is a no-op.
+        Routed to the owning session by (repo, live branch). Recovery/notify are
+        debounced via ``_pushed_pr`` and the durable pr-doctor target state; the
+        failing/transition handling delegates to ``_pr_doctor_step`` which runs
+        the pure engine (classify → plan_recovery → dispatch). A transition for a
+        (repo, branch) with no live session is a no-op (M2b.2 / AUT-02).
         """
         key = (repo, branch)
         if new_checks != "failing":
@@ -772,7 +1109,12 @@ class SessionOrchestrator:
                 if info is not None:
                     target = f"{repo}#{info.number}"
                     state = await self._pr_doctor_ctx.get_target_state(target)
-                    if state.get("attempted"):
+                    # Any recorded attempt (session-fix or mechanical) means we
+                    # tried and CI is now green → clear the per-target state so a
+                    # fresh break re-attempts. ``attempted`` kept for back-compat
+                    # with rows written before the engine migration.
+                    if (state.get("attempted") or state.get("attempts")
+                            or state.get("mechanical_attempts")):
                         await self._pr_doctor_ctx.set_target_state(target, {})
                         await self._pr_doctor_ctx.emit(
                             "info", f"{repo}#{info.number} CI recovered",
@@ -786,39 +1128,303 @@ class SessionOrchestrator:
             return
 
         info = self.pr_for(repo, branch)
-        target = f"{repo}#{info.number}" if info is not None else f"{repo}#{branch}"
         # Surface the failure on the activity feed once, on the transition INTO
         # failing (not on every failing→failing re-poll).
         if old_checks != "failing":
+            target = f"{repo}#{info.number}" if info is not None else f"{repo}#{branch}"
             await self._pr_doctor_ctx.emit(
                 "warn", f"{repo} CI failing on {target}", kind="detected", target=target)
 
-        mode = await self._pr_autofix_mode()
-        # Auto: one attempt per failure event, only if a live driver exists.
-        if mode == "auto" and info is not None and rec.id in self._drivers:
-            state = await self._pr_doctor_ctx.get_target_state(target)
-            if not state.get("attempted"):
-                # Mark before awaiting (re-entrancy guard), but only a real
-                # injection consumes the one attempt — a transient failure
-                # (draining / unresolved branch) re-arms so it can retry.
-                await self._pr_doctor_ctx.set_target_state(target, {"attempted": True})
-                result = await self.request_pr_fix(rec.id, info.number)
-                if result == "sent":
-                    await self._pr_doctor_ctx.emit(
-                        "info", f"auto-fix injected for {target}",
-                        kind="attempted", target=target, session_id=rec.id)
-                    return  # injected; skip the redundant break notification
-                # Could not inject (draining / not actionable) → re-arm so the
-                # next failing can retry, then fall through to notify.
-                await self._pr_doctor_ctx.set_target_state(target, {})
+        injected = False
+        if info is not None:
+            injected = await self._pr_doctor_step(repo, branch, info, rec=rec)
+        if injected:
+            return  # a recovery action fired; skip the redundant break notification
 
-        # Notify (off, propose, or auto-fallback). Debounced like before.
+        # Notify (off, propose, GiveUp, or auto-fallback). Debounced like before.
         if key in self._pushed_pr:
             return
         self._pushed_pr.add(key)
         await push_mod.notify(
             "ccswitch — PR broke", f"{rec.name}: {repo} CI failing", url=f"/session/{rec.id}"
         )
+
+    async def _pr_doctor_sweep(self) -> None:
+        """Per-poll-cycle sweep over the fresh PR cache — the on_cycle hook.
+
+        ``_on_pr_change`` only fires on a CI-``checks`` *transition* to failing, so
+        a PR that goes out-of-date (BEHIND) or into a merge conflict (DIRTY) with
+        green checks is never classified live. This sweep closes that gap: after
+        every poll refresh it walks all tracked ``(repo, branch)`` pairs and runs
+        ``_pr_doctor_step`` on each non-terminal cached PR, so ALL failure modes
+        (out_of_date / merge_conflict / failing_ci) are evaluated every cycle.
+
+        Safe to run every cycle and alongside ``_on_pr_change``: ``_pr_doctor_step``
+        is idempotent — the per-head guard (``last_action_sha`` + a positive attempt
+        count) plus the durable per-target state and the ``detected``-once debounce
+        prevent any double-action across repeated sweeps, so this re-affirms a
+        failing PR harmlessly and never double-injects. Best-effort: a per-PR error
+        is swallowed so one bad PR can't abort the sweep.
+        """
+        from server.automations import pr_doctor_engine as engine
+
+        pairs = await self._pr_pairs()
+        for repo, branch in pairs:
+            info = self.pr_for(repo, branch)
+            if info is None or engine.target_terminal(info):
+                continue
+            rec = self._pr_doctor_owning_rec(repo, branch)
+            try:
+                await self._pr_doctor_step(repo, branch, info, rec=rec)
+            except Exception:
+                log.warning("orchestrator._pr_doctor_sweep_step_failed", exc_info=True)
+
+    async def _pr_doctor_step(
+        self, repo: str, branch: str, info: PullRequestInfo, *, rec=None
+    ) -> bool:
+        """Run the pure PR Doctor engine for one poll of a (repo, PR) and dispatch.
+
+        Reads mode + config, applies repo-scope gating, then
+        ``apply_rearm`` → ``classify`` → ``plan_recovery`` and dispatches on the
+        action type. Returns True iff a recovery action was actually taken (a
+        real injection / mechanical update), so ``_on_pr_change`` can skip the
+        redundant break notification. Behaviour-preserving superset of the old
+        failing-CI auto path: one attempt per failure event, no re-arm on
+        transient pending (``apply_rearm`` encodes that), ``record_attempt`` only
+        on a real injection.
+
+        Action dispatch: ``Notify`` (debounced push, handled by the caller),
+        ``Mechanical`` (gh update-branch via ``_pr_doctor_mechanical``),
+        ``Propose`` (observable intent event, no side effect), and ``SessionFix``.
+        ``SessionFix`` injects the kind-appropriate first prompt into a LIVE
+        driver when the owning session is still running; otherwise it resolves the
+        repo's ccswitch clone ``cwd`` (via ``gitrepos.ensure_clone``, exactly like
+        the New-Session API) and spawns a fresh, de-duped session seeded with that
+        prompt against a real repo checkout + the PR branch. A clone or spawn
+        failure emits an error, notifies, and does NOT consume an attempt (the
+        target re-arms for a later retry); only a real inject/spawn consumes one.
+        """
+        from server.automations import pr_doctor_engine as engine
+
+        mode = await self._pr_autofix_mode()
+        config = await self._pr_doctor_config()
+        await self._pr_doctor_bump_active()
+
+        # Terminal (merged/closed): clear per-target state and stop.
+        if engine.target_terminal(info):
+            target = f"{repo}#{info.number}"
+            await self._pr_doctor_ctx.set_target_state(target, {})
+            await self._pr_doctor_ctx.emit(
+                "info", f"{target} {info.state}", kind="terminal", target=target)
+            return False
+
+        # Repo-scope gate: a non-empty allowlist that excludes this repo → off.
+        enabled_repos = config.get("enabled_repos") or []
+        if enabled_repos and repo not in enabled_repos:
+            return False
+
+        target = f"{repo}#{info.number}"
+        st = await self._pr_doctor_ctx.get_target_state(target)
+        st = engine.apply_rearm(st, info)
+        fm = engine.classify(info)
+        action = engine.plan_recovery(fm, mode, config, st)
+
+        # One auto-attempt per failure *event*: once an action has run against the
+        # current head, don't re-run it until the PR re-arms (apply_rearm resets
+        # the counter on an external push / changed failure class). This preserves
+        # the old ``attempted`` boolean guard (a repeated failing→failing signal on
+        # the same head does NOT re-inject). ``plan_recovery``'s ``max_attempts``
+        # cap still bounds the total; the re-arm supplies fresh budget per push.
+        already_acted = (
+            st.get("last_action_sha") == info.head_sha
+            and (st.get("mechanical_attempts", 0) if isinstance(action, engine.Mechanical)
+                 else st.get("attempts", 0)) > 0
+        )
+        if already_acted and isinstance(action, (engine.Mechanical, engine.SessionFix)):
+            await self._pr_doctor_ctx.set_target_state(target, st)
+            return False
+
+        took_action = False
+        if isinstance(action, engine.GiveUp):
+            # Monotonic ceiling reached — stop auto-acting and hand off to a human.
+            # Mark the target sticky-gave_up (persisted below), emit an observable
+            # `gave_up` event carrying the owning session's origin_ref/target so
+            # the Backlog Runner can react, and notify needs-human via the caller's
+            # debounced push. Do NOT re-inject.
+            st["gave_up"] = True
+            await self._pr_doctor_ctx.emit(
+                "warn", f"gave up auto-fixing {target}",
+                kind="gave_up", target=target, detail={"origin_ref": target})
+            took_action = False
+        elif isinstance(action, engine.Notify):
+            # Notify: the caller fires the debounced push (no further auto action).
+            took_action = False
+        elif isinstance(action, engine.Propose):
+            # Propose surface is LIVE: the one-tap action row is served by
+            # ``pr_doctor_actionable`` (which re-classifies the live poll cache) and
+            # actioned by ``pr_doctor_fix``. This emitted ``proposed`` event is
+            # observability-only — it records the intent on the activity feed with
+            # no auto side effect (does not consume an attempt, so it is NOT a
+            # "took_action"; the caller still fires the debounced notify).
+            await self._pr_doctor_ctx.emit(
+                "info", f"proposed {action.kind} fix for {target}",
+                kind="proposed", target=target)
+            took_action = False
+        elif isinstance(action, engine.Mechanical):
+            ok = await self._pr_doctor_mechanical(repo, info, action.kind)
+            if ok:
+                st = engine.record_attempt(st, action, info.head_sha)
+                took_action = True
+            # else: gh failed → attempt NOT consumed; re-arms next poll.
+        elif isinstance(action, engine.SessionFix):
+            # Delegate to the shared inject-or-spawn executor (single source of
+            # truth for both the auto path here and the manual one-tap
+            # ``pr_doctor_fix``). It returns ``"sent"``/``"spawned"`` on a real
+            # injection (which consumes an attempt) or a transient/error status.
+            status, _ = await self._pr_doctor_session_fix(
+                repo, branch, info, action.kind, rec)
+            if status in ("sent", "spawned"):
+                st = engine.record_attempt(st, action, info.head_sha)
+                # Back-compat marker: pre-engine rows/tests keyed the guard on
+                # ``attempted``. record_attempt already tracks attempts +
+                # last_action_sha (the real guard); this keeps the old key
+                # present for anything still reading it.
+                st["attempted"] = True
+                took_action = True
+            # else: transient / clone_failed / spawn_failed → no attempt consumed;
+            # apply_rearm will let the next failing poll retry.
+
+        await self._pr_doctor_ctx.set_target_state(target, st)
+        return took_action
+
+    async def _pr_doctor_session_fix(
+        self, repo: str, branch: str, info: PullRequestInfo, kind: str, rec
+    ) -> tuple[str, str | None]:
+        """Inject-or-spawn a session-driven PR fix — the shared session executor.
+
+        Single source of truth for both the auto path (``_pr_doctor_step``) and
+        the manual one-tap propose action (``pr_doctor_fix``). Selects the
+        branch-aware first prompt by *kind*; if the owning session is a LIVE
+        driver it injects via the same send-prompt path (``request_pr_fix`` for
+        failing_ci to preserve the old re-resolve+gate behaviour, direct
+        ``send_prompt`` of the conflict prompt for merge_conflict), otherwise it
+        resolves the ccswitch clone ``cwd`` and spawns a fresh, de-duped session
+        seeded with that prompt. Emits the same ``attempted`` / ``spawn_failed``
+        events as before. Returns ``(status, session_id)`` where status is
+        ``"sent"`` | ``"spawned"`` (real injection) | ``"transient"`` |
+        ``"clone_failed"`` | ``"spawn_failed"``. Does NOT touch per-target engine
+        state — the caller records the attempt on a real injection.
+        """
+        target = f"{repo}#{info.number}"
+        # Select the branch-aware first prompt by failure kind. Single source of
+        # truth for both the live-driver inject and the fresh-spawn seed.
+        if kind == "merge_conflict":
+            prompt = build_conflict_fix_prompt(repo, info)
+        else:  # "failing_ci"
+            prompt = build_pr_fix_prompt(repo, info)
+
+        live_rec = rec if (rec is not None and rec.id in self._drivers) else None
+        if live_rec is not None:
+            # LIVE driver → inject the kind-appropriate prompt via the same
+            # send-prompt path request_pr_fix uses. For failing_ci we keep calling
+            # request_pr_fix to preserve the old auto behaviour exactly (it
+            # re-resolves the PR + gates on an actionable state); for
+            # merge_conflict we inject the conflict prompt directly through
+            # send_prompt (the same mechanism).
+            if kind == "merge_conflict":
+                result = await self.send_prompt(live_rec.id, prompt)
+            else:
+                result = await self.request_pr_fix(live_rec.id, info.number)
+            if result == "sent":
+                await self._pr_doctor_ctx.emit(
+                    "info", f"auto-fix injected for {target}",
+                    kind="attempted", target=target, session_id=live_rec.id)
+                return "sent", live_rec.id
+            # transient (draining / not actionable) → no attempt consumed.
+            return "transient", None
+
+        # NO live driver (owning session archived/gone) → spawn a fresh, de-duped
+        # session seeded with the kind-appropriate first prompt. spawn_session
+        # enforces the (origin, dedupe_key) de-dup + stamps provenance and emits
+        # `spawned`; a repeated poll for the same target returns the existing
+        # session instead of a second spawn.
+        #
+        # Resolve the ccswitch-owned clone `cwd` first (mirrors the New-Session
+        # API): create_session's worktree block only runs when `cwd` is a real git
+        # repo, so without it the spawn falls to an empty scratch dir with
+        # branch=None and the seeded `gh pr checkout` can't work. The user's real
+        # ~/GitHub checkouts are never touched.
+        from server.config import get_settings
+        url = f"https://github.com/{repo}.git"
+        try:
+            cwd = await asyncio.to_thread(
+                gitrepos.ensure_clone, get_settings().repo_root, repo, url
+            )
+        except (gitrepos.CloneError, gitrepos.GhError) as exc:
+            # Clone failed → error + notify, attempt NOT consumed (the target
+            # re-arms so a later poll can retry).
+            await self._pr_doctor_ctx.emit(
+                "error", f"clone failed for {target}: {exc}",
+                kind="spawn_failed", target=target)
+            return "clone_failed", None
+        try:
+            rec2 = await self._pr_doctor_ctx.spawn_session(
+                origin_ref=target,
+                dedupe_key=target,
+                repo=repo,
+                branch=branch,
+                cwd=cwd,
+                account=None,  # create_session picks a healthy account
+                name=f"pr-doctor fix {target}",
+                initial_prompt=prompt,
+            )
+        except Exception as exc:
+            # Spawn failed → error + notify, attempt NOT consumed.
+            await self._pr_doctor_ctx.emit(
+                "error", f"spawn failed for {target}: {exc}",
+                kind="spawn_failed", target=target)
+            return "spawn_failed", None
+        # Real successful spawn.
+        sid = getattr(rec2, "id", None)
+        await self._pr_doctor_ctx.emit(
+            "info", f"auto-fix spawned for {target}",
+            kind="attempted", target=target, session_id=sid)
+        return "spawned", sid
+
+    async def _pr_doctor_mechanical(self, repo: str, info, kind: str) -> bool:
+        """Run a mechanical (no-session) recovery action via the gh CLI seam.
+
+        For ``kind == "out_of_date"`` calls GitHub's update-branch API to merge
+        the base into the PR head so CI re-runs.  Uses ``self._gh_run`` which is
+        injectable for tests (defaults to ``gitrepos._run_gh``).
+
+        Returns True on gh success (caller should call record_attempt + set
+        took_action); False on failure / exception (attempt NOT consumed so the
+        target re-arms and retries next poll).
+        """
+        target = f"{repo}#{info.number}"
+        if kind == "out_of_date":
+            argv = ["api", "-X", "PUT", f"repos/{repo}/pulls/{info.number}/update-branch"]
+            try:
+                proc = self._gh_run(argv)
+                if proc.returncode == 0:
+                    await self._pr_doctor_ctx.emit(
+                        "info", f"update-branch succeeded for {target}",
+                        kind="updated_branch", target=target)
+                    return True
+                await self._pr_doctor_ctx.emit(
+                    "warn", f"update-branch failed (rc={proc.returncode}) for {target}",
+                    kind="mechanical_failed", target=target)
+                return False
+            except Exception as exc:  # noqa: BLE001
+                await self._pr_doctor_ctx.emit(
+                    "warn", f"update-branch raised {exc!r} for {target}",
+                    kind="mechanical_failed", target=target)
+                return False
+        # Unknown mechanical kind — warn and return False so the attempt is NOT
+        # consumed; the engine will re-classify next poll rather than burning a try.
+        log.warning("pr_doctor_mechanical: unknown kind=%r for %s", kind, target)
+        return False
 
     async def _condense_estimate(self) -> float:
         from server.sessions import compaction_stats
@@ -1146,11 +1752,18 @@ class SessionOrchestrator:
     async def _pr_pairs(self) -> list[tuple[str, str]]:
         """Distinct (repo, branch) pairs for every PR a session may have authored.
 
-        Unions two live-branch sources so neither PR-badge mechanism is lost:
-        ``authored_branches`` (the multi-PR set, derived from the worktree's
-        reflog + current HEAD) and the live-refreshed ``record.branch`` (the
-        single current PR head). A no-PR branch listed here is harmless — the
-        downstream PR query keeps only branches that actually resolve to a PR.
+        Unions three sources so neither PR-badge mechanism is lost and archived
+        sessions remain visible to PR Doctor:
+
+        1. Live in-memory ``_records``: ``authored_branches`` (multi-PR set)
+           and the live-refreshed ``record.branch`` (current PR head).
+        2. DB-persisted sessions (including ARCHIVED / ended): their
+           ``authored_branches`` and ``branch`` columns are added best-effort.
+           A DB failure falls back gracefully to the live-only set.
+        3. Self-prune: any ``(repo, branch)`` whose previous-poll cache says
+           the PR is terminal (merged / closed) is excluded before returning,
+           so ``authored_branches`` that only grows never bloats the GraphQL
+           query unboundedly.  A branch with no cache yet (None) is kept.
         """
         await self._refresh_live_branches()
         seen: set[tuple[str, str]] = set()
@@ -1161,6 +1774,42 @@ class SessionOrchestrator:
                 seen.add((r.repo, br))
             if r.branch:
                 seen.add((r.repo, r.branch))
+
+        # --- Source 2: archived / all DB sessions (best-effort) ---
+        try:
+            from sqlalchemy import select as sa_select
+            async with db_session() as db:
+                rows = (
+                    await db.execute(
+                        sa_select(
+                            DbSession.repo,
+                            DbSession.branch,
+                            DbSession.authored_branches,
+                        ).where(DbSession.repo.is_not(None))
+                    )
+                ).all()
+            for row_repo, row_branch, row_authored in rows:
+                if not row_repo:
+                    continue
+                for br in (row_authored or []):
+                    seen.add((row_repo, br))
+                if row_branch:
+                    seen.add((row_repo, row_branch))
+        except Exception:
+            log.warning("orchestrator._pr_pairs_db_query_failed", exc_info=True)
+
+        # --- Source 3: self-prune terminal PRs to bound growth ---
+        # Defensive: a minimally-constructed orchestrator (some tests build via
+        # __new__) may have no poller; skip pruning rather than raise.
+        poller = getattr(self, "_pr_poller", None)
+        if poller is not None:
+            pruned: set[tuple[str, str]] = set()
+            for repo, br in seen:
+                cached = poller.cached(repo, br)
+                if cached is not None and cached.state in ("merged", "closed"):
+                    pruned.add((repo, br))
+            seen -= pruned
+
         return list(seen)
 
     def pr_for(self, repo, branch):
@@ -1349,6 +1998,88 @@ class SessionOrchestrator:
             return "not_actionable"
         prompt = build_pr_fix_prompt(rec.repo, info)
         return await self.send_prompt(session_id, prompt)
+
+    def _pr_doctor_owning_rec(self, repo: str, branch: str):
+        """The live session record that authored *branch* in *repo*, or None.
+
+        Used by ``pr_doctor_fix`` to route the session executor at a LIVE driver
+        when the owning session is still running (inject) vs. a fresh spawn when
+        it is gone. Prefers a record with a live driver.
+        """
+        fallback = None
+        for r in self._records.values():
+            if r.repo != repo:
+                continue
+            brs = set(getattr(r, "authored_branches", None) or [])
+            if r.branch:
+                brs.add(r.branch)
+            if branch in brs:
+                if r.id in self._drivers:
+                    return r
+                fallback = fallback or r
+        return fallback
+
+    async def pr_doctor_actionable(self) -> list[dict]:
+        """PRs in the current poll cache with a real recovery mode, for the card.
+
+        Iterates the ``(repo, branch)`` pairs from ``_pr_pairs`` and their cached
+        ``pr_for`` PullRequestInfo, runs the pure engine ``classify`` on each, and
+        returns the ones whose failure mode is a genuine recovery action
+        (``merge_conflict`` / ``out_of_date`` / ``failing_ci`` — not None or the
+        notify-only ``blocked``). Deduped by PR number. Each item is
+        ``{repo, number, kind, url, title}``.
+        """
+        from server.automations import pr_doctor_engine as engine
+        pairs = await self._pr_pairs()
+        by_number: dict[tuple[str, int], dict] = {}
+        for repo, branch in pairs:
+            info = self.pr_for(repo, branch)
+            if info is None:
+                continue
+            kind = engine.classify(info)
+            if kind not in ("merge_conflict", "out_of_date", "failing_ci"):
+                continue
+            by_number.setdefault((repo, info.number), {
+                "repo": repo,
+                "number": info.number,
+                "kind": kind,
+                "url": info.url,
+                "title": info.title,
+            })
+        return sorted(by_number.values(), key=lambda d: (d["repo"], d["number"]))
+
+    async def pr_doctor_fix(self, repo: str, number: int, kind: str) -> str:
+        """One-tap manual recovery for PR *number* in *repo* — the propose action.
+
+        Resolves the cached PR (via ``_pr_pairs`` / ``pr_for``), gates on an
+        ACTIONABLE (open/draft) state — a terminal merged/closed PR is a no-op
+        returning ``"not_actionable"`` — then runs the SAME executor the auto path
+        uses for *kind*: ``out_of_date`` → the mechanical update-branch executor;
+        ``failing_ci`` / ``merge_conflict`` → the shared session inject-or-spawn
+        executor with the kind-appropriate prompt. Returns a status string. Does
+        NOT reimplement the executors (shares them with ``_pr_doctor_step``).
+        """
+        info = None
+        branch = None
+        for r, br in await self._pr_pairs():
+            if r != repo:
+                continue
+            cached = self.pr_for(repo, br)
+            if cached is not None and cached.number == number:
+                info, branch = cached, br
+                break
+        if info is None or branch is None:
+            return "no_pr"
+        # Gate on an actionable (open/draft) state — never act on a terminal PR.
+        if info.state not in ("open", "draft"):
+            return "not_actionable"
+        if kind == "out_of_date":
+            ok = await self._pr_doctor_mechanical(repo, info, kind)
+            return "updated" if ok else "failed"
+        # failing_ci / merge_conflict → shared session executor.
+        rec = self._pr_doctor_owning_rec(repo, branch)
+        status, _ = await self._pr_doctor_session_fix(repo, branch, info, kind, rec)
+        return status
 
     async def refresh_authored_branches(self) -> None:
         """Union each live session's reflog+live branches into its record, persist changes.

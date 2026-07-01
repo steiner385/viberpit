@@ -25,6 +25,16 @@ class PrDoctor:
         ConfigField(key="enabled_repos", label="Repositories",
                     type="repo-multiselect", default=[],
                     help="Limit to these repos (empty = all ccswitch-managed repos)."),
+        ConfigField(key="max_attempts", label="Max fix attempts", type="int", default=3,
+                    help="Session-fix attempts per PR before giving up (0 = notify only)."),
+        ConfigField(key="mechanical_attempts", label="Max branch-update attempts",
+                    type="int", default=2, help="Mechanical (update-branch) attempts per PR."),
+        ConfigField(key="auto_update_out_of_date", label="Auto-update behind branches",
+                    type="bool", default=True, help="Mechanical, safe."),
+        ConfigField(key="auto_fix_failing_ci", label="Auto-fix failing CI",
+                    type="bool", default=True),
+        ConfigField(key="auto_resolve_conflicts", label="Auto-resolve merge conflicts",
+                    type="bool", default=False, help="Risky — spawns a session to rebase/resolve."),
     ]
 
     def status(self, ctx) -> AutomationStatus:

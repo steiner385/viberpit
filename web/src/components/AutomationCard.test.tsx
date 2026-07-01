@@ -45,6 +45,10 @@ function mockBasicHooks(mutate = vi.fn()) {
     { data: [] } as unknown as ReturnType<typeof hooks.useAutomationSessions>)
   vi.spyOn(hooks, 'useGithubRepos').mockReturnValue(
     { data: MOCK_REPOS, isLoading: false, isError: false } as unknown as ReturnType<typeof hooks.useGithubRepos>)
+  vi.spyOn(hooks, 'usePrDoctorActionable').mockReturnValue(
+    { data: [] } as unknown as ReturnType<typeof hooks.usePrDoctorActionable>)
+  vi.spyOn(hooks, 'usePrDoctorFix').mockReturnValue(
+    { mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.usePrDoctorFix>)
 }
 
 describe('AutomationCard', () => {
@@ -87,6 +91,10 @@ describe('AutomationCard', () => {
       } as unknown as ReturnType<typeof hooks.useAutomationSessions>)
       vi.spyOn(hooks, 'useGithubRepos').mockReturnValue(
         { data: [], isLoading: false } as unknown as ReturnType<typeof hooks.useGithubRepos>)
+      vi.spyOn(hooks, 'usePrDoctorActionable').mockReturnValue(
+        { data: [] } as unknown as ReturnType<typeof hooks.usePrDoctorActionable>)
+      vi.spyOn(hooks, 'usePrDoctorFix').mockReturnValue(
+        { mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.usePrDoctorFix>)
 
       render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
       fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
@@ -106,6 +114,10 @@ describe('AutomationCard', () => {
         { data: [] } as unknown as ReturnType<typeof hooks.useAutomationEvents>)
       vi.spyOn(hooks, 'useGithubRepos').mockReturnValue(
         { data: [], isLoading: false } as unknown as ReturnType<typeof hooks.useGithubRepos>)
+      vi.spyOn(hooks, 'usePrDoctorActionable').mockReturnValue(
+        { data: [] } as unknown as ReturnType<typeof hooks.usePrDoctorActionable>)
+      vi.spyOn(hooks, 'usePrDoctorFix').mockReturnValue(
+        { mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.usePrDoctorFix>)
 
       render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
       fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
@@ -202,6 +214,49 @@ describe('AutomationCard', () => {
       render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
       fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
       expect(screen.queryByText('Configuration')).not.toBeInTheDocument()
+    })
+  })
+
+  // --- Actionable PRs section (propose surface) ---
+
+  describe('Actionable PRs', () => {
+    it('renders a kind-labeled button per actionable PR and fixes on click', () => {
+      const fixMutate = vi.fn()
+      mockBasicHooks()
+      vi.spyOn(hooks, 'usePrDoctorActionable').mockReturnValue({
+        data: [
+          { repo: 'owner/repo-a', number: 42, kind: 'out_of_date', url: 'https://x/42', title: 'behind PR' },
+          { repo: 'owner/repo-a', number: 43, kind: 'failing_ci', url: 'https://x/43', title: 'red CI' },
+        ],
+      } as unknown as ReturnType<typeof hooks.usePrDoctorActionable>)
+      vi.spyOn(hooks, 'usePrDoctorFix').mockReturnValue(
+        { mutate: fixMutate, isPending: false } as unknown as ReturnType<typeof hooks.usePrDoctorFix>)
+
+      render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
+      fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
+
+      expect(screen.getByText('behind PR')).toBeInTheDocument()
+      const updateBtn = screen.getByRole('button', { name: 'Update branch' })
+      expect(updateBtn).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Fix CI' })).toBeInTheDocument()
+
+      fireEvent.click(updateBtn)
+      expect(fixMutate).toHaveBeenCalledWith({ repo: 'owner/repo-a', number: 42, kind: 'out_of_date' })
+    })
+
+    it('shows empty state when there are no actionable PRs', () => {
+      mockBasicHooks()
+      render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
+      fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
+      expect(screen.getByText('No actionable PRs.')).toBeInTheDocument()
+    })
+
+    it('is absent for a non-pr-doctor automation', () => {
+      mockBasicHooks()
+      const OTHER: Automation = { ...PR_DOCTOR, id: 'backlog-runner', name: 'Backlog Runner' }
+      render(<MemoryRouter><AutomationCard automation={OTHER} /></MemoryRouter>)
+      fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
+      expect(screen.queryByText('Actionable PRs')).not.toBeInTheDocument()
     })
   })
 })

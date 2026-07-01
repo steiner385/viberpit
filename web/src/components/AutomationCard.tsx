@@ -3,8 +3,9 @@ import { Link, useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import {
   useAutomationEvents, useAutomationSessions, useGithubRepos, usePatchAutomation,
+  usePrDoctorActionable, usePrDoctorFix,
 } from '@/api/hooks'
-import type { Automation, ConfigField } from '@/api/automations'
+import type { Automation, ConfigField, PrDoctorKind } from '@/api/automations'
 
 const LEVEL_DOT: Record<string, string> = {
   idle: 'bg-gray-400', active: 'bg-blue-500', warn: 'bg-amber-500', error: 'bg-red-500',
@@ -188,6 +189,48 @@ function SpawnedSessionsSection({ id, enabled }: SpawnedSessionsSectionProps) {
   )
 }
 
+// --- Actionable PRs section (PR Doctor propose surface) ----------------------
+
+const KIND_LABEL: Record<PrDoctorKind, string> = {
+  out_of_date: 'Update branch',
+  merge_conflict: 'Resolve conflicts',
+  failing_ci: 'Fix CI',
+}
+
+function ActionablePrsSection({ enabled }: { enabled: boolean }) {
+  const actionable = usePrDoctorActionable(enabled)
+  const fix = usePrDoctorFix()
+  const list = actionable.data ?? []
+
+  return (
+    <section>
+      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Actionable PRs</h4>
+      {list.length === 0
+        ? <p className="text-sm text-muted-foreground">No actionable PRs.</p>
+        : (
+          <ul className="space-y-1 text-sm">
+            {list.map((pr) => (
+              <li key={`${pr.repo}#${pr.number}`} className="flex items-center gap-2">
+                <span className="flex-1 truncate">
+                  <span className="text-muted-foreground tabular-nums">#{pr.number}</span>{' '}
+                  {pr.title}
+                </span>
+                <button
+                  type="button"
+                  disabled={fix.isPending}
+                  onClick={() => fix.mutate({ repo: pr.repo, number: pr.number, kind: pr.kind })}
+                  className="rounded border border-border px-2 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
+                >
+                  {KIND_LABEL[pr.kind]}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+    </section>
+  )
+}
+
 // --- Main card ---------------------------------------------------------------
 
 export function AutomationCard({ automation: a }: { automation: Automation }) {
@@ -255,6 +298,7 @@ export function AutomationCard({ automation: a }: { automation: Automation }) {
                   ))}
                 </ul>}
           </section>
+          {a.id === 'pr-doctor' && <ActionablePrsSection enabled={open} />}
           <SpawnedSessionsSection id={a.id} enabled={open} />
           {a.configSchema.length > 0 && <ConfigPanel automation={a} />}
         </div>

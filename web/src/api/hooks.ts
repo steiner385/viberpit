@@ -3,7 +3,9 @@ import { useEffect, useMemo, useState, useRef, useCallback, useSyncExternalStore
 import { api, ApiRequestError } from './client'
 import {
   fetchAutomations, fetchAutomationEvents, fetchSpawnedSessions, patchAutomation,
+  fetchPrDoctorActionable, postPrDoctorFix,
   type Automation, type AutomationEvent, type AutomationPatch,
+  type PrDoctorActionablePr, type PrDoctorKind,
 } from './automations'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
@@ -36,6 +38,7 @@ export const QK = {
   pipelineTrains: ['pipeline-trains'] as const,
   pipelineInsights: (repo?: string, window?: string) =>
     ['pipeline-insights', repo, window] as const,
+  prDoctorActionable: ['pr-doctor-actionable'] as const,
 }
 
 export function useModels() {
@@ -651,5 +654,20 @@ export function useCheckInsights(repo: string | undefined, window: string) {
     staleTime: 15_000,
     refetchInterval: 30_000,
     enabled: !!repo,
+  })
+}
+
+export function usePrDoctorActionable(enabled = true) {
+  return useQuery<PrDoctorActionablePr[]>({
+    queryKey: QK.prDoctorActionable, queryFn: fetchPrDoctorActionable,
+    enabled, staleTime: 10_000 })
+}
+
+export function usePrDoctorFix() {
+  const qc = useQueryClient()
+  return useMutation<{ status: string }, ApiRequestError,
+    { repo: string; number: number; kind: PrDoctorKind }>({
+    mutationFn: (body) => postPrDoctorFix(body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.prDoctorActionable }) },
   })
 }
