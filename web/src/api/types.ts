@@ -241,11 +241,30 @@ export interface CheckFlakeStat {
   n: number
 }
 
+export interface CheckRegressionStat {
+  check_name: string
+  event: string
+  prior_p50: number
+  recent_p50: number
+  ratio: number
+  since: string
+}
+
+export interface RunnerWaitStat {
+  event: string
+  p50: number
+  p90: number
+  prev_p50: number | null
+  n: number
+}
+
 export interface CheckInsights {
   repo: string
   window: string
   slowest: CheckDurationStat[]
   flakiest: CheckFlakeStat[]
+  regressions: CheckRegressionStat[]
+  runner_wait_health: RunnerWaitStat[]
 }
 
 export interface ModelOption { id: string; label: string }
