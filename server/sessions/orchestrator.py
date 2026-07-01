@@ -519,11 +519,10 @@ class SessionOrchestrator:
         self._drivers[session_id] = driver
         if initial_prompt:
             # Defer sending the initial prompt until the first WebSocket client
-            # attaches.  Sending it here (before any consumer exists) causes the
-            # turn's events to accumulate in driver._out with no guarantee they
-            # will be visible: the transcript file may not be flushed yet, and
-            # buffered _out events can race the client's replay.  Deferring means
-            # the client is already watching when the turn runs — events stream
+            # attaches.  Sending it here (before any subscriber exists) risks the
+            # turn's events being lost: control events broadcast to zero subscribers
+            # are dropped, and the transcript file may not be flushed yet.  Deferring
+            # means the client is already watching when the turn runs — events stream
             # live, so nothing is lost.
             self._pending_initial_prompt[session_id] = initial_prompt
         if attachment_ids:

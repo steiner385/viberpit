@@ -115,6 +115,7 @@ class SessionDriver:
         self._turn_produced_output: bool = False
         self._last_assistant_parts: list[str] = []
         self._last_turn_id: str = ""
+        self._last_suggestions: list[str] = []
         self._idle_seeded: bool = False
 
     def _turn(self):
@@ -664,6 +665,16 @@ class SessionDriver:
         # no await between the two lines, so no event can slip into the gap (single
         # asyncio thread). Snapshot = the past; the queue = strictly the future.
         snapshot = list(self._turn_buffer)
+        # Re-emit the latest suggestions to every new subscriber. Suggestions are
+        # current-state (like Status), not buffered turn content, and are produced by a
+        # fire-and-forget task that can fire before OR after a subscriber attaches — so a
+        # late/reconnecting viewer (or an idle-attach seed that raced the subscribe) would
+        # otherwise never see them. Delivering from the cached snapshot is idempotent: the
+        # producing _emit either already ran (cache set, no live copy for THIS subscriber)
+        # or runs later (live copy) — never both for one subscriber.
+        if self._last_suggestions:
+            snapshot.append(ev.Suggestions(
+                self.session_id, self._last_turn_id, list(self._last_suggestions)))
         q: asyncio.Queue = asyncio.Queue()
         self._subscribers.add(q)
         try:

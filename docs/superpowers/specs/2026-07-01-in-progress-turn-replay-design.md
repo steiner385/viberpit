@@ -201,6 +201,13 @@ Two disjointness rules eliminate every overlap:
   longer trims it, but the disk copy may lag by <1s). Self-heals on the next attach/refresh.
   The spike shows the user line and completed blocks are flushed promptly, so this window is
   sub-second and far narrower than today's total in-progress-turn loss — a strict improvement.
+- **Attach-time trim/settle TOCTOU:** `ws.py` reads `driver.turn_active` once, then does a
+  threaded disk read (`replay_window`) + RPC re-emits before `events()` snapshots the buffer. If
+  the turn *settles* in that window, the JSONL is trimmed (dropping the now-complete turn) while
+  `_turn_buffer` has already been cleared → that turn is briefly absent on THIS attach. It
+  self-heals on the next attach (`turn_active` is then False → full, untrimmed replay). The window
+  is wider than a single flush (it spans the disk read), but bounded and self-healing; narrowing it
+  further (snapshotting the buffer and the trim decision atomically) is deferred.
 - **Remote long-turn overflow:** a single turn longer than the (bumped) replay ring falls back
   to disk resync, which lacks the in-progress turn. Bounded by ring size; acceptable for v1.
 
