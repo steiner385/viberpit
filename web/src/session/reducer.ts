@@ -17,6 +17,7 @@ export type Block =
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; answered?: string[]; ts?: number }
   | { kind: 'notice';     id: string; text: string; ts?: number }
   | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; ts?: number }
+  | { kind: 'recovering'; id: string; message: string; ts?: number }
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
@@ -640,6 +641,21 @@ export function transcriptReducer(
       }
       const turns = replaceTurn(withTurn, idx, (t) => ({ ...t, blocks: [...t.blocks, errBlock] }))
       return { ...state, turns, error: banner }
+    }
+
+    // ── recovering ────────────────────────────────────────────────────────────
+    case 'recovering': {
+      // A dropped turn is being auto-resent. Append a soft inline block; deliberately
+      // do NOT raise state.error — this is self-healing, not a failure. If recovery is
+      // exhausted the backend sends a real `error` event (the red give-up surface).
+      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId)
+      const turn = withTurn[idx]
+      const block: Block = {
+        kind: 'recovering', id: `${ev.turnId}:rec:${turn.blocks.length}`,
+        message: ev.message, ts: ev.ts,
+      }
+      const turns = replaceTurn(withTurn, idx, (t) => ({ ...t, blocks: [...t.blocks, block] }))
+      return { ...state, turns }
     }
 
     // ── queueUpdate ───────────────────────────────────────────────────────────

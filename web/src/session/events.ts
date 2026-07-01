@@ -27,12 +27,13 @@ export interface EvCondensing    { type: 'condensing';    active: boolean; expec
 // Exact context-window occupancy pulled from the SDK after a turn settles (same data
 // as the `/context` command). Drives the persistent ctx% readout — see contextWindow.ts.
 export interface EvContextUsage  { type: 'contextUsage';  usedTokens: number; maxTokens: number; percentage: number; model?: string | null }
+export interface EvRecovering    { type: 'recovering';    turnId: string; message: string; ts?: number }
 
 export type SessionEvent =
   | EvUser | EvTurnStart | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvQuestion
   | EvSessionMeta | EvTurnModel | EvTitle | EvStatus | EvReplayReset | EvReplayComplete | EvError | EvQueueUpdate
-  | EvSuggestions | EvCondensing | EvContextUsage
+  | EvSuggestions | EvCondensing | EvContextUsage | EvRecovering
 
 export interface Command {
   name: string
@@ -45,5 +46,5 @@ export interface Command {
 export const SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   'user','turnStart','turnEnd','textDelta','thinkingDelta','toolCall','toolResult',
   'permissionRequest','question','sessionMeta','turnModel','title','status','replayReset','replayComplete','error','queueUpdate',
-  'suggestions','condensing','contextUsage',
+  'suggestions','condensing','contextUsage','recovering',
 ])
