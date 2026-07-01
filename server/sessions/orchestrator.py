@@ -74,6 +74,10 @@ log = logging.getLogger(__name__)
 # limited / ended / archived) are restart-safe: resume + transcript replay recover them.
 _ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "condensing"})
 
+# Message surfaced to the user when auto-recovery gives up on a repeatedly-dropped turn.
+_TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — the context "
+                        "may be full. Send a message to retry, or /compact to free space.")
+
 # Top-tier "needs you" and "crashed/failed" statuses that warrant an outbound push alert.
 # Derived from the same vocabulary as server/sessions/status.py — not a parallel list.
 PUSH_STATUSES: frozenset[str] = frozenset(
@@ -2332,13 +2336,19 @@ class SessionOrchestrator:
         """Apply the recovery policy for one recoverable turn failure."""
         now = self._clock()
         if kind == "turn_dropped":
-            # The turn dropped before the model committed any continuation. Resend the last
-            # prompt on the same account (idempotent — nothing was committed), bounded so a
-            # persistent drop can't loop. Not an account fault → no rotation/quarantine/pause.
+            # A turn that dropped before the model committed any continuation. Escalate:
+            # 1st drop → plain resend (cheap; absorbs a transient drop). Repeat drops in
+            # the window → /compact first (the context is likely full and re-dropping the
+            # resend). At the cap, stop and surface an explicit give-up — not silence.
             if self._recovery.resend_cap_reached(record.id, now=now):
+                driver = self._drivers.get(record.id)
+                if driver is not None:
+                    await driver.emit_error("turn_dropped_cap", _TURN_DROPPED_GIVEUP)
+                await self._pause_session(record, reason="turn_dropped_cap")
                 return
+            precompact = self._recovery.resend_count(record.id, now=now) >= 1
             self._recovery.record_resend(record.id, now=now)
-            await self._replay_same_account(record, 0.0)
+            await self._replay_same_account(record, 0.0, precompact=precompact)
             return
         if self._recovery.rotation_cap_reached(record.id, now=now):
             await self._pause_session(record, reason="rotation_cap")
@@ -2392,13 +2402,19 @@ class SessionOrchestrator:
         OAuth grant to recompose — so it goes straight to needs-reauth."""
         return bool(crypto.read_oauth_token(record.account))
 
-    async def _replay_same_account(self, record: SessionRecord, retry_after: float) -> None:
-        """Wait out a short Retry-After, then re-send the last prompt on the same account."""
+    async def _replay_same_account(self, record: SessionRecord, retry_after: float,
+                                   *, precompact: bool = False) -> None:
+        """Wait out a short Retry-After, then re-send the last prompt on the same account.
+        When *precompact* is set, send /compact first; the driver's FIFO prompt queue runs
+        the resend immediately after the compaction turn completes (no manual await)."""
         await asyncio.sleep(max(0.0, retry_after))
         driver = self._drivers.get(record.id)
         last = self._last_prompt.get(record.id)
-        if driver is not None and last:
-            await driver.send_prompt(last)
+        if driver is None or not last:
+            return
+        if precompact:
+            await driver.send_prompt("/compact")
+        await driver.send_prompt(last)
 
     async def _recompose_same_account(self, record: SessionRecord) -> None:
         """Heal a clobbered live .credentials.json. Force a token refresh FIRST so the
