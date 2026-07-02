@@ -237,7 +237,27 @@ def _default_gh_api_json(path: str, body: str) -> str:
     return r.stdout
 
 
-def publish_deployment(sha: str, gh_api_json: Callable[[str, str], str] | None = None) -> bool:
+def _gh_err_reason(e: Exception) -> str:
+    """Concise one-line failure reason from a gh/subprocess error (prefers stderr tail).
+
+    subprocess.CalledProcessError carries the useful diagnostic on .stderr (e.g. the
+    ``gh: HTTP 307`` a POST hits when the repo was renamed and the git remote is stale);
+    str(e) alone is just "returned non-zero exit status 1". Fall back to the exception
+    text, then the class name, so the surfaced warning is never empty.
+    """
+    stderr = getattr(e, "stderr", None)
+    if isinstance(stderr, str) and stderr.strip():
+        return stderr.strip().splitlines()[-1]
+    return str(e).strip() or e.__class__.__name__
+
+
+def publish_deployment(sha: str, gh_api_json: Callable[[str, str], str] | None = None) -> str | None:
+    """Record a GitHub Deployment for ``sha``. Returns None on success, else a short reason.
+
+    Best-effort: the caller surfaces the reason as a deploy warning but never fails the
+    deploy. The reason is captured (not swallowed) so a recurring failure — e.g. a stale
+    git remote after a repo rename making the POST 307 — is diagnosable from the deploy UI.
+    """
     gh_api_json = gh_api_json or _default_gh_api_json
     try:
         dep_body = json.dumps({
@@ -247,9 +267,9 @@ def publish_deployment(sha: str, gh_api_json: Callable[[str, str], str] | None =
         dep = json.loads(gh_api_json("repos/{owner}/{repo}/deployments", dep_body))
         dep_id = dep.get("id")
         if not dep_id:
-            return False
+            return "no deployment id in response"
         gh_api_json(f"repos/{{owner}}/{{repo}}/deployments/{dep_id}/statuses",
                     json.dumps({"state": "success", "auto_inactive": True}))
-        return True
-    except Exception:
-        return False
+        return None
+    except Exception as e:
+        return _gh_err_reason(e)
