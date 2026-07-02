@@ -8,7 +8,7 @@
 import * as React from 'react'
 import { useState, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Pencil, Check, X, Trash2, Plus } from 'lucide-react'
+import { RefreshCw, Pencil, Check, X, Trash2, Plus, KeyRound } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { UsageBadge, StatusPill } from './UsageBadge'
@@ -349,21 +349,19 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
                 />
               </>
             )}
-            {needsReauth && (
+            {!isReauthRunning && !isAwaitingCode && (
               <button
                 type="button"
                 className={cn(
-                  'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
-                  'bg-amber-500 text-white hover:bg-amber-600',
-                  'dark:bg-amber-600 dark:hover:bg-amber-500',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
-                  'disabled:opacity-40',
+                  'rounded min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
+                  needsReauth
+                    ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
+                    : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
                 )}
                 aria-label={`Re-authenticate ${account.name}`}
                 onClick={handleReauth}
-                disabled={isReauthRunning || isAwaitingCode}
               >
-                Re-authenticate
+                {needsReauth ? 'Re-authenticate' : <KeyRound size={14} aria-hidden="true" />}
               </button>
             )}
             {(isReauthRunning || isAwaitingCode) && (
