@@ -34,6 +34,7 @@ from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
 from server.db import db_session
+from server.ipc import protocol as proto
 from server.ipc.client import DaemonUnavailable
 from server.obs.context import bind_session
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
@@ -74,6 +75,16 @@ async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -
                 except Exception:
                     log.exception("ws.to_wire session=%s", session_id)
                     seq += 1  # consume a seq so the client sees a gap and re-attaches
+                    continue
+                if wire.get("type") == proto.GAP:
+                    # A daemon replay-gap sentinel (issue #185): events were evicted from
+                    # the ring before the edge could deliver them, so this view is behind
+                    # disk. Don't forward the sentinel — consume a seq to leave a hole the
+                    # client's liveBatch gap-healing detects → detach+attach → full replay
+                    # from the transcript (the durable source of truth).
+                    log.warning("ws.live_stream: daemon replay gap session=%s lost=%s — "
+                                "forcing client resync from disk", session_id, wire.get("lost"))
+                    seq += 1
                     continue
                 wire["sessionId"] = session_id
                 wire["seq"] = seq
