@@ -464,6 +464,7 @@ class SessionOrchestrator:
         name_is_auto: bool = True,
         origin: str | None = None,
         origin_ref: str | None = None,
+        model: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
 
@@ -554,6 +555,14 @@ class SessionOrchestrator:
             suggester=self._suggester,
         )
         await driver.start()
+        # Apply the chosen model before the first prompt runs (initial prompt is
+        # deferred until a client attaches, so this always lands on turn one). The
+        # "default" alias / empty means "account default" → leave the driver as-is.
+        model = (model or "").strip() or None
+        if model and model != "default":
+            await driver.set_model(model)
+        else:
+            model = None
         self._drivers[session_id] = driver
         if initial_prompt:
             # Defer sending the initial prompt until the first WebSocket client
@@ -582,6 +591,7 @@ class SessionOrchestrator:
                 name_is_auto=name_is_auto,
                 origin=origin,
                 origin_ref=origin_ref,
+                model=model,
             )
             db.add(row)
 
@@ -604,6 +614,7 @@ class SessionOrchestrator:
             usage_unverified=usage_unverified,
             origin=origin,
             origin_ref=origin_ref,
+            model=model,
         )
         self._records[session_id] = record
         log_event(log, logging.INFO, "session.start",

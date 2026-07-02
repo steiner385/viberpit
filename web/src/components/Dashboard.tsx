@@ -28,6 +28,7 @@ import {
   useCloseSession,
   useGithubRepos,
   useGithubBranches,
+  useModels,
   useSettings,
   useArchivedSessions,
   usePermanentDeleteSession,
@@ -63,7 +64,12 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
   const [account, setAccount] = useState('')
   const [initialPrompt, setInitialPrompt] = useState('')
   const [permissionMode, setPermissionMode] = useState(defaultPermissionMode ?? 'interactive')
+  const [model, setModel] = useState('default')
   const [inlineError, setInlineError] = useState<string | null>(null)
+
+  // Curated model list (server source of truth); "Default" = the account default.
+  const modelsQuery = useModels()
+  const models = modelsQuery.data ?? []
   const firstInputRef = useRef<HTMLInputElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
 
@@ -129,6 +135,8 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
       repo: selectedRepo || undefined,
       branch: effectiveBranch || undefined,
       permissionMode,
+      // "default" means account default — omit so the backend leaves the driver as-is.
+      model: model && model !== 'default' ? model : undefined,
     })
   }
 
@@ -289,6 +297,27 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
             >
               {PERMISSION_MODES.map(({ value, label }) => (
                 <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Model */}
+          <div className="space-y-1">
+            <label htmlFor="new-session-model" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Model
+            </label>
+            <select
+              id="new-session-model"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className={inputClass}
+              disabled={modelsQuery.isLoading}
+              aria-busy={modelsQuery.isLoading}
+            >
+              {/* Fallback so the "default" value always has a matching option before the list loads. */}
+              {models.length === 0 && <option value="default">Default</option>}
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
               ))}
             </select>
           </div>
