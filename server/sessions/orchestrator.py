@@ -612,15 +612,20 @@ class SessionOrchestrator:
         else:
             model = None
         self._drivers[session_id] = driver
-        if initial_prompt:
-            # Defer sending the initial prompt until the first WebSocket client
-            # attaches.  Sending it here (before any subscriber exists) risks the
-            # turn's events being lost: control events broadcast to zero subscribers
-            # are dropped, and the transcript file may not be flushed yet.  Deferring
-            # means the client is already watching when the turn runs — events stream
-            # live, so nothing is lost.
+        # Human-created sessions (origin is None) DEFER the initial prompt until the
+        # first WebSocket client attaches. Sending it before any subscriber exists
+        # risks the turn's events being lost: control events broadcast to zero
+        # subscribers are dropped, and the transcript file may not be flushed yet.
+        # Deferring means the client is already watching when the turn runs.
+        #
+        # Automation-spawned sessions (origin set) have NO human who will ever
+        # attach, so a deferred prompt would never be sent and the session would sit
+        # idle forever. Those send immediately, below — the driver persists its
+        # transcript and fires status callbacks with no live subscriber, and a later
+        # human attach replays the turn.
+        if initial_prompt and origin is None:
             self._pending_initial_prompt[session_id] = initial_prompt
-        if attachment_ids:
+        if attachment_ids and origin is None:
             self._pending_initial_attachment_ids[session_id] = list(attachment_ids)
 
         # Persist DB row
@@ -668,6 +673,11 @@ class SessionOrchestrator:
         log_event(log, logging.INFO, "session.start",
                   session_id=session_id, **{"from": None, "to": "idle", "reason": "create"})
         log.info("session.create id=%s account=%s", session_id, account)
+        # Autonomous kick-off for automation-spawned sessions: no human will attach
+        # to trigger the deferred prompt, so run turn one now (after the DB row +
+        # record exist, so status/claude-session callbacks land on a persisted row).
+        if initial_prompt and origin is not None:
+            await self.send_prompt(session_id, initial_prompt, attachment_ids)
         return record
 
     async def close_session(self, session_id: str) -> None:
