@@ -16,7 +16,7 @@ import { createGapState, resetSeq, handleLiveBatch, type GapState } from './live
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
-export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string }
+export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string }
 export interface WsUsageMsg        { type: 'usage';         account: string; session: { pct: number; resetsAt: string | null }; weekly: { pct: number; resetsAt: string | null } }
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null }
@@ -342,7 +342,7 @@ export class SessionSocket {
     switch (msg.type) {
       case 'status':
         this._emit('status', msg)
-        this._patchSessionStatus(msg.sessionId, msg.status as Session['status'])
+        this._patchSessionStatus(msg.sessionId, msg.status as Session['status'], msg.updatedAt)
         break
       case 'usage':
         this._emit('usage', msg)
@@ -400,21 +400,26 @@ export class SessionSocket {
 
   // ── TanStack Query cache patching ────────────────────────────────────────────
 
-  private _patchSessionStatus(sessionId: string, status: Session['status']) {
+  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string) {
     const qc = this._queryClient
     if (!qc) return
     qc.setQueryData<Session[]>(QK.sessions, (old) => {
       if (!old) return old
-      return old.map((s) => s.id === sessionId ? { ...s, status, updatedAt: new Date().toISOString() } : s)
+      // Use the server's authoritative updatedAt (last_turn_at-based). When the frame
+      // omits it, leave the cached value untouched — never fabricate from the client clock.
+      return old.map((s) => s.id === sessionId
+        ? { ...s, status, ...(updatedAt ? { updatedAt } : {}) }
+        : s)
     })
   }
 
   private _patchSessionAccount(sessionId: string, accountName: string) {
     const qc = this._queryClient
     if (!qc) return
+    // A rotation is not a fresh turn — update the account only, never updatedAt.
     qc.setQueryData<Session[]>(QK.sessions, (old) => {
       if (!old) return old
-      return old.map((s) => s.id === sessionId ? { ...s, accountName, updatedAt: new Date().toISOString() } : s)
+      return old.map((s) => s.id === sessionId ? { ...s, accountName } : s)
     })
   }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, act } from '@testing-library/react'
 import { SubAgentList } from './SubAgentList'
 import { agentDuration } from './subAgentDuration'
 import type { SubAgent } from '@/session/selectors'
@@ -43,6 +43,9 @@ describe('SubAgentList', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date(31_000))
     render(<SubAgentList subAgents={[{ ...base, status: 'running', startedAt: 1000 }]} />)
+    // Flush the shared useNow catch-up timer (setTimeout 0) so the hook ticks
+    // from 0 → Date.now() (31_000) before we assert.
+    act(() => { vi.advanceTimersByTime(0) })
     expect(screen.getByText('30s')).toBeInTheDocument()
   })
 })
