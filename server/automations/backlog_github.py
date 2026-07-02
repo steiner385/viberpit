@@ -43,17 +43,18 @@ def _split_ref(ref: str) -> tuple[str, str]:
 def _build_candidates_query(repos: list[str], eligible_label: str) -> str:
     """A GitHub search-issues GraphQL doc for eligible, unclaimed OPEN issues.
 
-    The search string carries every gate: the eligible label, unassigned
-    (``no:assignee``), and NOT already ``in-progress`` / ``needs-human``.  Repos
-    are OR'd via ``repo:`` qualifiers.  Strings are JSON-encoded so a label or
-    repo name can never break out of the search literal.
+    The search string carries every gate: the eligible label (OMITTED when
+    ``eligible_label`` is blank — then *any* open, unassigned issue is a
+    candidate), unassigned (``no:assignee``), and NOT already ``in-progress`` /
+    ``needs-human``.  Repos are OR'd via ``repo:`` qualifiers.  Strings are
+    JSON-encoded so a label or repo name can never break out of the search
+    literal.
     """
     quals = [f"repo:{r}" for r in repos]
+    quals += ["is:issue", "is:open", "no:assignee"]
+    if eligible_label:
+        quals.append(f"label:{eligible_label}")
     quals += [
-        "is:issue",
-        "is:open",
-        "no:assignee",
-        f"label:{eligible_label}",
         f"-label:{IN_PROGRESS_LABEL}",
         f"-label:{NEEDS_HUMAN_LABEL}",
     ]
@@ -81,7 +82,11 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh) -> list[
     repos = list(config.get("enabled_repos") or [])
     if not repos:
         return []
-    eligible_label = config.get("eligible_label") or "ready"
+    # A blank eligible_label means "no label gate" — consider ALL open,
+    # unassigned issues. Do NOT coerce blank to a default here: the schema
+    # default ("ready") is applied to a *fresh* config by validate_config, so an
+    # explicit blank is the user opting out of the label gate.
+    eligible_label = (config.get("eligible_label") or "").strip()
     query = _build_candidates_query(repos, eligible_label)
 
     proc = gh_run(["api", "graphql", "-f", f"query={query}"])

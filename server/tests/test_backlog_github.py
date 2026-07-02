@@ -75,6 +75,26 @@ def test_query_candidates_gh_failure_returns_empty():
     assert out == []
 
 
+def test_query_candidates_blank_label_drops_the_label_gate():
+    """A blank eligible_label means "no label gate" — any open, unassigned issue
+    is a candidate. The query must NOT carry a `label:` qualifier (and must not
+    silently fall back to `ready`), while the other gates stay."""
+    nodes = [{"number": 7, "title": "Fix login", "repository": {"nameWithOwner": "o/r"}}]
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
+
+    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": ""}, gh_run=fake)
+
+    query = next(a for a in fake.calls[0] if a.startswith("query="))
+    assert "label:ready" not in query          # no silent default
+    assert "label:\\\"ready\\\"" not in query
+    # No positive label gate at all (the only label quals are the exclusions).
+    assert "label:in-progress" in query and "label:needs-human" in query
+    assert " label:" not in query.replace("-label:", "")  # no bare `label:<x>` gate
+    # Other gates still present; the issue is still parsed.
+    assert "no:assignee" in query and "is:open" in query
+    assert out == [{"ref": "o/r#7", "number": 7, "repo": "o/r", "title": "Fix login"}]
+
+
 # --------------------------------------------------------------------------- #
 # claim_batch                                                                  #
 # --------------------------------------------------------------------------- #
