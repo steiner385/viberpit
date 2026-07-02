@@ -69,6 +69,22 @@ def test_parse_open_passing():
     )
 
 
+def test_parse_populates_head_ref():
+    """The PR's head branch (headRefName) is parsed onto PullRequestInfo so PR
+    Doctor can dispatch on population PRs (keyed by repo only, no branch)."""
+    pairs = [("o/r", "br")]
+    node = _pr(7, "OPEN")
+    node["headRefName"] = "feature/x"
+    out = parse_pr_response(_resp({"r0": [node]}), pairs)
+    assert out[("o/r", "br")].head_ref == "feature/x"
+
+
+def test_head_ref_defaults_empty_and_roundtrips():
+    pr = PullRequestInfo(9, "u", "open", "passing", "t", head_ref="ccswitch/x")
+    assert PullRequestInfo.from_dict(pr.to_dict()).head_ref == "ccswitch/x"
+    assert PullRequestInfo(9, "u", "open", "passing", "t").head_ref == ""
+
+
 def test_parse_state_classification():
     pairs = [("o/r", "br")]
     draft = parse_pr_response(_resp({"r0": [_pr(1, "OPEN", draft=True)]}), pairs)[("o/r", "br")]

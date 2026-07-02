@@ -1334,9 +1334,9 @@ class SessionOrchestrator:
         """
         from server.automations import pr_doctor_engine as engine
 
-        pairs = await self._pr_pairs()
+        pairs = await self._pr_doctor_scope_pairs()
         for repo, branch in pairs:
-            info = self.pr_for(repo, branch)
+            info = self.pr_for(repo, branch) or self._pr_population_pr(repo, branch)
             if info is None or engine.target_terminal(info):
                 continue
             rec = self._pr_doctor_owning_rec(repo, branch)
@@ -1994,6 +1994,47 @@ class SessionOrchestrator:
         """Cached PullRequestInfo for a (repo, branch), or None."""
         return self._pr_poller.cached(repo, branch)
 
+    def _pr_population_pr(self, repo: str, branch: str) -> "PullRequestInfo | None":
+        """A population-cached PR for (repo, branch), or None.
+
+        The population poller caches every open PR per repo (keyed by repo only);
+        each PR carries its ``head_ref`` so PR Doctor can resolve one that no
+        ccswitch session authored — i.e. is absent from the per-branch cache."""
+        for info in self._pr_population.cached(repo):
+            if info.head_ref == branch:
+                return info
+        return None
+
+    async def _pr_doctor_scope(self) -> "set[str] | None":
+        """PR Doctor's configured repo scope; None means 'all watched repos'."""
+        from sqlalchemy import select
+        from server.db.models import Automation
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "pr-doctor"))).scalar_one_or_none()
+            repos = list((row.config or {}).get("enabled_repos") or []) if row else []
+        except Exception:  # pragma: no cover — defensive
+            log.warning("orchestrator._pr_doctor_scope_failed", exc_info=True)
+            repos = []
+        return set(repos) or None
+
+    async def _pr_doctor_scope_pairs(self) -> list[tuple[str, str]]:
+        """(repo, branch) pairs PR Doctor should evaluate: every open PR in the
+        population cache within the configured scope, UNION the authored pairs.
+
+        The union keeps archived-session PRs and not-yet-populated repos covered
+        while widening PR Doctor from authored-only to every open PR in scope."""
+        scope = await self._pr_doctor_scope()
+        seen: set[tuple[str, str]] = set(await self._pr_pairs())
+        for repo, prs in self._pr_population.all().items():
+            if scope is not None and repo not in scope:
+                continue
+            for info in prs:
+                if info.head_ref:
+                    seen.add((repo, info.head_ref))
+        return list(seen)
+
     def prs_for(self, session_id: str) -> list[PullRequestInfo]:
         """Deduped, ordered PR list for a session's authored branches.
 
@@ -2234,10 +2275,10 @@ class SessionOrchestrator:
         ``{repo, number, kind, url, title}``.
         """
         from server.automations import pr_doctor_engine as engine
-        pairs = await self._pr_pairs()
+        pairs = await self._pr_doctor_scope_pairs()
         by_number: dict[tuple[str, int], dict] = {}
         for repo, branch in pairs:
-            info = self.pr_for(repo, branch)
+            info = self.pr_for(repo, branch) or self._pr_population_pr(repo, branch)
             if info is None:
                 continue
             kind = engine.classify(info)
