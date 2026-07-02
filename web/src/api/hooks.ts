@@ -162,6 +162,7 @@ export interface CreateSessionInput {
   branch?: string
   permissionMode?: string
   attachmentIds?: string[]
+  model?: string
 }
 
 export function useCreateSession() {

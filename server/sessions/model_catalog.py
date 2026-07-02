@@ -10,13 +10,14 @@ by the binary/account, not here.
 from __future__ import annotations
 
 # Stable aliases the `claude` /model picker accepts (verified against the binary).
-ALIASES: list[str] = ["default", "opus", "sonnet", "haiku", "opusplan"]
+ALIASES: list[str] = ["default", "opus", "sonnet", "haiku", "fable", "opusplan"]
 
 _LABELS: dict[str, str] = {
     "default": "Default",
     "opus": "Opus",
     "sonnet": "Sonnet",
     "haiku": "Haiku",
+    "fable": "Fable",
     "opusplan": "Opus Plan",
 }
 
