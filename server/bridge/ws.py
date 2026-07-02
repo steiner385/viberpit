@@ -94,7 +94,16 @@ async def _run_replay_and_complete(orchestrator, send, session_id: str,
             events = window.events
             earliest_turn = window.earliest_turn
             total_turns = window.total_turns
-        if events:
+        # Lead the replay with a reset so a reconnect re-attach rebuilds the
+        # transcript cleanly instead of re-appending a duplicate copy (see the
+        # reducer's replayReset case). Send it whenever there is history to replay
+        # OR a live in-progress turn will follow (drop_incomplete): on a LIVE attach
+        # the in-progress turn is trimmed from THIS replay and re-supplied by the
+        # live stream, so when the trim leaves the history window empty we must STILL
+        # reset — otherwise the client renders the live turn under a stale
+        # "Beginning of session" state and double-appends it on the next reconnect
+        # (#390 regression: the old `if events:` guard skipped the reset here).
+        if events or drop_incomplete:
             redacted_replay = [{"type": "replayReset"}]
             redacted_replay += [redact_event(e.to_wire()) for e in events]
             await send({"type": "batch", "events": redacted_replay})
