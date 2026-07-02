@@ -188,6 +188,20 @@ def test_subagent_events_tagged_and_separately_turned():
     main_start = next(e for e in out if isinstance(e, TurnStart) and e.parent_tool_use_id is None)
     assert sub_text.turn_id != main_start.turn_id
 
+def test_subagent_thinking_delta_carries_parent_tool_use_id():
+    # ThinkingDelta shares the TextDelta stamping path; assert the sub-agent tag
+    # explicitly so a regression on thinking blocks can't hide behind text coverage.
+    msgs = [f.stream_start(uuid="t1"),
+            f.tool_use("task1", "Task", {"subagent_type": "Explore", "description": "x"}, uuid="t1"),
+            f.stream_start(uuid="sa1", pid="task1"),
+            f.stream_thinking("sub-thinking", uuid="sa1", pid="task1"),
+            f.result(uuid="t1")]
+    _, out = _run(msgs)
+    sub_think = next(e for e in out if isinstance(e, ThinkingDelta))
+    assert sub_think.text == "sub-thinking"
+    assert sub_think.parent_tool_use_id == "task1"
+
+
 def test_parallel_subagents_get_distinct_turns():
     msgs = [f.stream_start(uuid="t1"),
             f.tool_use("taskA", "Task", {}, uuid="t1"),

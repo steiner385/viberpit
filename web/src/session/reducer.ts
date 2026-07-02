@@ -240,6 +240,10 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
       const [turns, idx] = ensureAssistantTurn(thread.turns, turnId)
       const turn = turns[idx]
       if (turn.blocks.some((b) => b.kind === 'tool' && b.toolId === toolId)) {
+        // Idempotent replay of a tool we already have. Return the *same* thread
+        // reference (skip the re-render) only when nothing would change: the open
+        // block is already closed AND `ensureAssistantTurn` reused the array. If
+        // either differs, fall through to publish the closed-block/new-turns state.
         if (thread.openBlockId === null && turns === thread.turns) return thread
         return { turns, openBlockId: null }
       }
