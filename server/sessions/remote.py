@@ -152,6 +152,10 @@ class RemoteOrchestrator:
         """
         return await self._client.call("request_pr_fix", session_id=session_id, pr_number=pr_number)
 
+    async def automation_statuses(self) -> "dict[str, dict]":
+        """Rendered live status per automation id (badge text/level), via the daemon."""
+        return await self._client.call("automation_statuses")
+
     async def pr_doctor_actionable(self) -> "list[dict]":
         """Actionable PRs (real recovery mode) for the PR Doctor card, via the daemon."""
         r = await self._client.call("pr_doctor_actionable")

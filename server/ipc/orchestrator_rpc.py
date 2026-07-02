@@ -137,6 +137,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "live_session_load", "live_session_counts",
         "snapshot_deploy", "restore_deploy",
         "request_pr_fix", "pr_doctor_fix", "backlog_runner_implement",
+        "automation_statuses",
     ]
 
     def _make_simple(method_name):

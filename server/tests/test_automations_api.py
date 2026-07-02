@@ -40,6 +40,26 @@ def test_list_includes_pr_doctor():
         assert "configSchema" in pd and "status" in pd
 
 
+def test_list_status_reflects_live_ctx_counts():
+    """The badge shows real status threaded from the orchestrator's live ctx —
+    not a hardcoded 'idle'. Regression: list endpoint passed ``ctx=None``, so a
+    busily-working runner always rendered idle."""
+    with _client() as c:
+        # The HTTP layer talks to the async adapter; the live ctx lives on the
+        # wrapped orchestrator (``._orch``) where the loops stash counts each tick.
+        orch = c.app.state.sessions._orch
+        orch._pr_doctor_ctx.pr_doctor_counts = {"failing": 2}
+        orch._backlog_ctx.backlog_counts = {"in_flight": 1, "eligible": 3, "needs_human": 0}
+
+        automations = c.get("/api/automations", headers=H).json()
+        pd = next(a for a in automations if a["id"] == "pr-doctor")
+        assert pd["status"]["level"] == "active"
+        assert "2" in pd["status"]["text"]
+        br = next(a for a in automations if a["id"] == "backlog-runner")
+        assert br["status"]["level"] == "active"
+        assert "1 implementing" in br["status"]["text"]
+
+
 def test_requires_auth():
     with _client() as c:
         assert c.get("/api/automations").status_code == 401
