@@ -73,4 +73,15 @@ describe('DeployOverlay', () => {
     render(<DeployOverlay />)
     expect(screen.getByText(/deployed/i)).toBeInTheDocument()
   })
+
+  it('surfaces lost sessions as a warning on the success screen', () => {
+    mock({
+      ctrl: { visible: true, intent: 'held-success' },
+      deploy: { running: false, phases: {}, warnings: [], restore: { restored: ['s1'], failed: ['s2'] } },
+    })
+    render(<DeployOverlay />)
+    expect(screen.getByText(/deployed/i)).toBeInTheDocument()
+    expect(screen.getByText(/couldn.t be resumed/i)).toBeInTheDocument()
+    expect(screen.getByText(/s2/)).toBeInTheDocument()
+  })
 })

@@ -32,13 +32,16 @@ describe('deployPhases', () => {
     expect(allPhasesDone(D({ phases: { preflight: 'done' } }))).toBe(false)
   })
 
-  it('deployOutcome is failure on error, failed phase, or failed resume', () => {
+  it('deployOutcome is failure on error or a failed phase, not on a lost session', () => {
     const all = Object.fromEntries(DEPLOY_PHASES.map(p => [p.key, 'done']))
     expect(deployOutcome(D({ phases: all }))).toBe('success')
     expect(deployOutcome(D({ phases: all, error: 'boom' }))).toBe('failure')
     expect(deployOutcome(D({ phases: { ...all, restart: 'failed' } }))).toBe('failure')
+    // A completed deploy that couldn't resume some sessions still succeeded — the
+    // backend treats lost sessions as a warning, not a rollback. Surface them as a
+    // warning on the success screen instead of a red "Upgrade failed".
     expect(deployOutcome(D({ phases: all, restore: { restored: [], failed: ['s1'] } })))
-      .toBe('failure')
+      .toBe('success')
     expect(deployOutcome(D({ phases: { preflight: 'done' } }))).toBe('failure') // incomplete
   })
 })
