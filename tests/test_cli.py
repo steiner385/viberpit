@@ -3,6 +3,25 @@ from unittest import mock
 from tests.helpers import temp_env
 
 
+class TestFmtReset(unittest.TestCase):
+    """`_fmt_reset` renders a usage window's reset time in local tz, and a clear
+    'fresh' state when there is no active window (resets_at is None/empty)."""
+
+    def test_none_renders_fresh(self):
+        from ccswitch.cli import _fmt_reset
+        self.assertEqual(_fmt_reset(None, "America/New_York"), "fresh")
+
+    def test_empty_string_renders_fresh(self):
+        from ccswitch.cli import _fmt_reset
+        self.assertEqual(_fmt_reset("", "America/New_York"), "fresh")
+
+    def test_iso_rendered_in_local_tz(self):
+        from ccswitch.cli import _fmt_reset
+        # 18:30 UTC -> 13:30 (1:30 PM) in America/New_York (EST, UTC-5).
+        out = _fmt_reset("2026-01-15T18:30:00+00:00", "America/New_York")
+        self.assertEqual(out, "Thu 1:30 PM EST")
+
+
 class TestCli(unittest.TestCase):
     def test_list_runs(self):
         with temp_env():
