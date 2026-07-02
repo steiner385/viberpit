@@ -1,10 +1,12 @@
-import { useRef, useEffect, useCallback, Fragment } from 'react'
+import { useRef, useEffect, useCallback, useMemo } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import type { Turn as TurnType, RotationMarker, SubThread } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { Turn } from './Turn'
 import { RotationDivider } from './RotationDivider'
 import { ModelSwitchDivider } from './ModelSwitchDivider'
 import { modelName } from '@/session/modelName'
+import { buildRenderRows, type RenderRow } from './transcriptRows'
 
 const TOP_THRESHOLD = 64
 
@@ -29,25 +31,19 @@ interface Props {
 }
 
 /**
- * Group rotations by their anchor turn id so each can be rendered immediately
- * after the turn it followed. Rotations with a null anchor (they arrived before
- * any turn) are returned separately and render at the very top.
+ * TranscriptView — the session transcript. Renders every turn, interleaved
+ * rotation dividers, and model-switch dividers through a single windowed list
+ * (@tanstack/react-virtual): only the rows near the viewport are in the DOM, so
+ * a 2000-turn session stays a handful of nodes instead of growing unbounded.
+ *
+ * Scroll behavior is unchanged from the render-all version it replaces:
+ *  - stick-to-bottom follows content all the way down while the user is at the
+ *    bottom (a ResizeObserver on the spacer catches the virtualizer's async
+ *    remeasurement — late markdown/font/image layout, expanding a tool group),
+ *  - scrolling up to read history latches auto-pin off,
+ *  - scrolling near the top pages in older turns and the prior scroll anchor is
+ *    restored so the viewport doesn't jump.
  */
-function groupRotationsByAnchor(rotations: RotationMarker[]) {
-  const byTurn = new Map<string, RotationMarker[]>()
-  const top: RotationMarker[] = []
-  for (const r of rotations) {
-    if (r.afterTurnId === null) {
-      top.push(r)
-      continue
-    }
-    const list = byTurn.get(r.afterTurnId) ?? []
-    list.push(r)
-    byTurn.set(r.afterTurnId, list)
-  }
-  return { byTurn, top }
-}
-
 export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -60,6 +56,31 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
   // flight. The browser delivers the resulting scroll event asynchronously, so
   // we must ignore it: only a real user gesture should change isNearBottom.
   const programmaticScrollRef = useRef(false)
+
+  const lastTurnId = turns.length ? turns[turns.length - 1].id : null
+
+  // The full ordered render list: head markers, then the flattened transcript.
+  // buildRenderRows is the single source of truth for which rows exist.
+  const rows = useMemo<RenderRow[]>(
+    () => buildRenderRows(turns, rotations, { loadingOlder, earliestTurn }),
+    [turns, rotations, loadingOlder, earliestTurn],
+  )
+
+  // @tanstack/react-virtual returns uncacheable functions by design; the React
+  // Compiler skips memoizing this hook's result, which is correct here (we read
+  // getTotalSize()/getVirtualItems() fresh every render).
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => containerRef.current,
+    estimateSize: () => 120,
+    overscan: 8,
+    // Key by stable row identity so cached row measurements survive prepends
+    // (paging in older turns) — only the newly added rows fall back to estimate.
+    getItemKey: (i) => rows[i].key,
+  })
+
+  const totalSize = virtualizer.getTotalSize()
 
   // Move scrollTop ourselves without the resulting scroll event being mistaken
   // for a user scroll. Cleared on the next frame (not on the scroll event) so it
@@ -103,11 +124,12 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
   // Pin to the true bottom whenever the content height changes — not just when
   // turns/rotations change. Entering an active session replays the whole
   // transcript at once, then keeps growing as markdown, syntax highlighting,
-  // web fonts and images lay out asynchronously *after* React commits. A prop
-  // effect can't see that late growth, so a synchronous scroll would land above
-  // the real bottom. A ResizeObserver on the content fires post-layout on every
-  // height change (including the initial observe), so we follow content all the
-  // way down — but only while the user hasn't scrolled up to read history.
+  // web fonts and images lay out asynchronously *after* React commits. With
+  // virtualization that late growth surfaces as the virtualizer remeasuring the
+  // last row and enlarging the spacer (its height === getTotalSize()), so a
+  // ResizeObserver on the spacer fires post-layout on every height change
+  // (including the initial observe). We follow content all the way down — but
+  // only while the user hasn't scrolled up to read history.
   useEffect(() => {
     const content = contentRef.current
     if (!content) return
@@ -120,16 +142,41 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
     return () => ro.disconnect()
   }, [scrollProgrammatically])
 
-  const { byTurn, top } = groupRotationsByAnchor(rotations)
-  // Defensive: rotations anchored to a turn that isn't present (shouldn't happen
-  // in normal flow) are surfaced after the transcript rather than silently lost.
-  const knownIds = new Set(turns.map((t) => t.id))
-  const orphans = rotations.filter((r) => r.afterTurnId !== null && !knownIds.has(r.afterTurnId))
+  const virtualRows = virtualizer.getVirtualItems()
+
+  function renderRow(row: RenderRow) {
+    switch (row.kind) {
+      case 'loading-older':
+        return <div className="py-2 text-center text-xs text-gray-400">Loading earlier history…</div>
+      case 'begin':
+        return <div className="py-2 text-center text-xs text-gray-400">— Beginning of session —</div>
+      case 'model-switch':
+        return <ModelSwitchDivider to={modelName(row.toModel)} />
+      case 'rotation':
+        return <RotationDivider from={row.rot.from} to={row.rot.to} reason={row.rot.reason} />
+      case 'turn':
+        return (
+          <Turn
+            turn={row.turn}
+            isLastTurn={row.turn.id === lastTurnId}
+            toolDetailMode={toolDetailMode}
+            thinkingCollapsed={thinkingCollapsed}
+            // The open block only ever lives in the last turn; pass null to the
+            // rest so their memoized render stays stable across deltas.
+            streamingBlockId={row.turn.id === lastTurnId ? streamingBlockId : null}
+            onAnswer={onAnswer}
+            subAgents={subAgents}
+            sessionModel={model}
+          />
+        )
+    }
+  }
 
   return (
     <div
       ref={containerRef}
       onScroll={handleScroll}
+      data-testid="transcript-scroll"
       // overflow-x-hidden is the backstop: an overflow-y-auto box makes
       // overflow-x compute to auto, so any descendant wider than the pane (a
       // stray wide image/embed) would scroll the WHOLE pane sideways. Wrappable
@@ -137,56 +184,21 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
       // this clips anything else to the pane instead of scrolling it.
       className="flex-1 overflow-y-auto overflow-x-hidden"
     >
-      {/* Inner wrapper so the ResizeObserver above measures content height; the
-          scroll container itself has a fixed flex height and never reports growth. */}
-      <div ref={contentRef}>
-        {/* Older-page loading spinner */}
-        {loadingOlder && (
-          <div className="py-2 text-center text-xs text-gray-400">Loading earlier history…</div>
-        )}
-        {/* Beginning-of-session marker — only shown when earliestTurn is explicitly 0 (live view at start) */}
-        {turns.length > 0 && earliestTurn === 0 && (
-          <div className="py-2 text-center text-xs text-gray-400">— Beginning of session —</div>
-        )}
-
-        {/* Rotations that occurred before any turn arrived */}
-        {top.map((r, i) => (
-          <RotationDivider key={`rot-top-${i}`} from={r.from} to={r.to} reason={r.reason} />
-        ))}
-
-        {turns.map((turn, idx) => {
-          // Show a switch divider when this turn's model differs from the previous
-          // turn that had a known model. Only assistant turns carry a model; the
-          // first model-bearing turn shows no divider (nothing to differ from).
-          let prevModel: string | null = null
-          for (let i = idx - 1; i >= 0; i--) {
-            if (turns[i].model) { prevModel = turns[i].model ?? null; break }
-          }
-          const showSwitch = !!turn.model && !!prevModel && turn.model !== prevModel
-          return (
-          <Fragment key={turn.id}>
-            {showSwitch && <ModelSwitchDivider to={modelName(turn.model)} />}
-            <Turn
-              turn={turn}
-              isLastTurn={idx === turns.length - 1}
-              toolDetailMode={toolDetailMode}
-              thinkingCollapsed={thinkingCollapsed}
-              // The open block only ever lives in the last turn; pass null to the
-              // rest so their memoized render stays stable across deltas.
-              streamingBlockId={idx === turns.length - 1 ? streamingBlockId : null}
-              onAnswer={onAnswer}
-              subAgents={subAgents}
-              sessionModel={model}
-            />
-            {(byTurn.get(turn.id) ?? []).map((r, i) => (
-              <RotationDivider key={`rot-${turn.id}-${i}`} from={r.from} to={r.to} reason={r.reason} />
-            ))}
-          </Fragment>
-          )
-        })}
-
-        {orphans.map((r, i) => (
-          <RotationDivider key={`rot-orphan-${i}`} from={r.from} to={r.to} reason={r.reason} />
+      {/* The spacer reserves the full virtual height so the scrollbar reflects the
+          whole transcript; only the windowed rows are mounted, absolutely
+          positioned at their measured offsets. The ResizeObserver above watches
+          this element, so its height (=== getTotalSize()) driving the pin is the
+          same signal the render-all version got from real content growth. */}
+      <div ref={contentRef} style={{ height: totalSize, position: 'relative', width: '100%' }}>
+        {virtualRows.map((vi) => (
+          <div
+            key={vi.key}
+            data-index={vi.index}
+            ref={virtualizer.measureElement}
+            style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${vi.start}px)` }}
+          >
+            {renderRow(rows[vi.index])}
+          </div>
         ))}
       </div>
     </div>
