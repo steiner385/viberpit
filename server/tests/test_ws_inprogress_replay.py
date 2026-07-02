@@ -57,3 +57,69 @@ def test_replay_trims_in_progress_turn_when_active(tmp_path, monkeypatch):
     batch = next(m for m in sent if m.get("type") == "batch")
     users = [e for e in batch["events"] if e.get("type") == "user"]
     assert [u["text"] for u in users] == ["first"]   # "second" (in-progress) trimmed
+
+
+def _write_in_progress_only_transcript(tmp_path):
+    """A transcript whose ONLY content is the in-progress turn — the shape produced
+    by a short/just-resumed session. drop_incomplete_turn trims this to nothing."""
+    rows = [
+        {"type": "user", "uuid": "u1", "message": {"role": "user", "content": "only"}},
+        {"type": "assistant", "uuid": "a1",
+         "message": {"role": "assistant", "model": "m",
+                     "content": [{"type": "text", "text": "partial"}]}},
+    ]
+    p = tmp_path / "y.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in rows))
+    return str(p)
+
+
+def test_live_attach_resets_even_when_trimmed_history_is_empty(tmp_path):
+    """Regression (#390): a LIVE attach whose trimmed history window is empty must
+    STILL send a replayReset before replayComplete. The in-progress turn is re-supplied
+    by the live stream; without the reset the client renders it under a stale
+    "Beginning of session" state and double-appends it on reconnect."""
+    path = _write_in_progress_only_transcript(tmp_path)
+
+    class Orch:
+        async def transcript_path(self, sid): return path
+    sent = []
+    async def send(msg): sent.append(msg)
+
+    asyncio.run(
+        wsmod._run_replay_and_complete(Orch(), send, "s1", drop_incomplete=True)  # type: ignore[attr-defined]
+    )
+
+    # The history window is empty (only turn trimmed), but a reset is mandatory.
+    reset_seen = any(
+        m.get("type") == "replayReset"
+        or (m.get("type") == "batch"
+            and any(e.get("type") == "replayReset" for e in m.get("events", [])))
+        for m in sent
+    )
+    assert reset_seen, f"live attach must emit a replayReset even on empty history; got {sent}"
+    # replayComplete must still fire so the client's loading spinner clears.
+    assert any(m.get("type") == "replayComplete" for m in sent)
+
+
+def test_idle_attach_empty_transcript_does_not_reset(tmp_path):
+    """Guard the fix's scope: a NON-live attach (drop_incomplete=False) with no
+    transcript must NOT emit a spurious replayReset — only replayComplete."""
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("")
+
+    class Orch:
+        async def transcript_path(self, sid): return str(empty)
+    sent = []
+    async def send(msg): sent.append(msg)
+
+    asyncio.run(
+        wsmod._run_replay_and_complete(Orch(), send, "s1", drop_incomplete=False)  # type: ignore[attr-defined]
+    )
+
+    assert not any(
+        m.get("type") == "replayReset"
+        or (m.get("type") == "batch"
+            and any(e.get("type") == "replayReset" for e in m.get("events", [])))
+        for m in sent
+    ), f"idle empty attach must not reset; got {sent}"
+    assert any(m.get("type") == "replayComplete" for m in sent)
