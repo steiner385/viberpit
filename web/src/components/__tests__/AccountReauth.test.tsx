@@ -165,7 +165,7 @@ describe('AccountRow — Re-authenticate button', () => {
     expect(screen.getByRole('button', { name: /re-authenticate kindash/i })).toBeInTheDocument()
   })
 
-  it('does not show "Re-authenticate" button for ok account', async () => {
+  it('shows a subtle reauth icon button (not the amber label) for ok account', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })],
@@ -175,7 +175,13 @@ describe('AccountRow — Re-authenticate button', () => {
     render(<Dashboard />, { wrapper })
     await switchToAccountsTab(user)
 
-    expect(screen.queryByRole('button', { name: /re-authenticate kindash/i })).not.toBeInTheDocument()
+    // ok accounts are re-authenticatable via the quiet icon affordance,
+    // reachable by accessible name...
+    const reauthButton = screen.getByRole('button', { name: /re-authenticate kindash/i })
+    expect(reauthButton).toBeInTheDocument()
+    // ...but not via the loud amber "Re-authenticate" text label (that variant
+    // is reserved for needs-reauth / needs-relogin accounts).
+    expect(reauthButton).not.toHaveTextContent(/re-authenticate/i)
   })
 
   it('clicking Re-authenticate calls the POST hook', async () => {

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Callable
+from typing import Callable, Iterable
 
 from ccswitch import gitrepos
 
@@ -145,6 +145,25 @@ def _issue_comment(ref: str, body: str, *, gh_run: GhRun) -> bool:
     return getattr(proc, "returncode", 1) == 0
 
 
+def ensure_claim_labels(repos: Iterable[str], *, gh_run: GhRun = gitrepos._run_gh) -> None:
+    """Self-provision the runner's claim/handoff labels in each repo.
+
+    The runner OWNS ``in-progress`` (its lock) and ``needs-human`` (its give-up
+    handoff). ``gh issue edit --add-label`` fails on a repo that has never had the
+    label, so without this a claim can never succeed on a fresh repo and nothing
+    is ever spawned. ``gh label create --force`` is idempotent (creates when
+    missing, updates otherwise). Best-effort: a provisioning failure must not
+    crash the claim — the subsequent add-label call surfaces the real error.
+    """
+    for repo in dict.fromkeys(repos):  # de-dupe, preserve first-seen order
+        for name in (IN_PROGRESS_LABEL, NEEDS_HUMAN_LABEL):
+            try:
+                gh_run(["label", "create", name, "--repo", repo, "--color", "ededed",
+                        "--description", "ccswitch backlog-runner", "--force"])
+            except Exception:  # pragma: no cover — provisioning must never raise
+                log.warning("backlog_github.ensure_label_failed repo=%s name=%s", repo, name)
+
+
 def claim_batch(batch, *, gh_run: GhRun = gitrepos._run_gh,
                 comment: str | None = None) -> bool:
     """Atomically claim every issue in ``batch`` by adding ``in-progress``.
@@ -154,6 +173,10 @@ def claim_batch(batch, *, gh_run: GhRun = gitrepos._run_gh,
     rolled back (best-effort) and ``False`` is returned.  Returns ``True`` only
     when every issue was labeled (and commented, if requested).
     """
+    # Self-provision the claim labels first: on a repo that has never had them,
+    # `gh issue edit --add-label` would otherwise fail and no issue could ever be
+    # claimed (the silent "runs but never spawns" failure).
+    ensure_claim_labels([_split_ref(ref)[0] for ref in batch.issues], gh_run=gh_run)
     claimed: list[str] = []
     for ref in batch.issues:
         if not _issue_edit(ref, add=IN_PROGRESS_LABEL, gh_run=gh_run):

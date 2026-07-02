@@ -65,6 +65,9 @@ class CreateSessionRequest(BaseModel):
     branch: str | None = None
     permissionMode: str | None = None
     attachmentIds: list[str] | None = None
+    # Model alias/id to start the session on (e.g. "opus", "fable"). None / "default"
+    # → the account default; the value is applied to the driver once it starts.
+    model: str | None = None
 
 
 class RenameSessionRequest(BaseModel):
@@ -318,6 +321,7 @@ async def create_session(
             permission_mode=body.permissionMode or "interactive",
             attachment_ids=body.attachmentIds,
             name_is_auto=name_is_auto,
+            model=body.model,
         )
     except ValueError as exc:
         return JSONResponse(

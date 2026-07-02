@@ -464,6 +464,7 @@ class SessionOrchestrator:
         name_is_auto: bool = True,
         origin: str | None = None,
         origin_ref: str | None = None,
+        model: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
 
@@ -554,6 +555,14 @@ class SessionOrchestrator:
             suggester=self._suggester,
         )
         await driver.start()
+        # Apply the chosen model before the first prompt runs (initial prompt is
+        # deferred until a client attaches, so this always lands on turn one). The
+        # "default" alias / empty means "account default" → leave the driver as-is.
+        model = (model or "").strip() or None
+        if model and model != "default":
+            await driver.set_model(model)
+        else:
+            model = None
         self._drivers[session_id] = driver
         if initial_prompt:
             # Defer sending the initial prompt until the first WebSocket client
@@ -582,6 +591,7 @@ class SessionOrchestrator:
                 name_is_auto=name_is_auto,
                 origin=origin,
                 origin_ref=origin_ref,
+                model=model,
             )
             db.add(row)
 
@@ -604,6 +614,7 @@ class SessionOrchestrator:
             usage_unverified=usage_unverified,
             origin=origin,
             origin_ref=origin_ref,
+            model=model,
         )
         self._records[session_id] = record
         log_event(log, logging.INFO, "session.start",
@@ -900,9 +911,22 @@ class SessionOrchestrator:
         """Real selection: label-gated ``gh`` candidate query → LLM rank → batch.
 
         Runs entirely through the injected ``gh_run`` seam (default the real
-        ``gh`` shell-out) and the Haiku ranking; returns a ``Batch`` or ``None``."""
-        from server.automations.backlog_runner import select_batch
-        return await select_batch(config, gh_run=self._gh_run)
+        ``gh`` shell-out) and the Haiku ranking; returns a ``Batch`` or ``None``.
+
+        The ranking is a one-shot SDK call, and the DAEMON process has no
+        ``CLAUDE_CONFIG_DIR`` — so ``rank_issues`` would fall back to the default
+        (often usage-capped) account and fail every tick, silently discarding the
+        LLM ranking. Bind it to a healthy account's config dir so ranking actually
+        works; a ``None`` account leaves the default and lets the pure fallback
+        (lowest-number ordering) take over."""
+        import functools
+        from server.automations.backlog_runner import select_batch, rank_issues
+        rank = rank_issues
+        acct = await self._backlog_healthy_account()
+        if acct is not None:
+            from ccswitch import paths
+            rank = functools.partial(rank_issues, _config_dir=str(paths.account_cfg_dir(acct)))
+        return await select_batch(config, gh_run=self._gh_run, rank=rank)
 
     async def _backlog_claim(self, batch) -> bool:
         """Atomically claim every issue in *batch* (add the ``in-progress`` label).

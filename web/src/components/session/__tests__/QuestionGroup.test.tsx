@@ -53,6 +53,15 @@ describe('QuestionGroup', () => {
     expect(screen.getByText(/question 1 of 3/i)).toBeInTheDocument()
     // …and the snap track is scrolled to the start, not snapped to the last card
     expect(screen.getByTestId('question-carousel').scrollLeft).toBe(0)
+    // Regression guard (jsdom has no scroll-snap engine, so runtime scrollLeft
+    // can't catch this): the track must use `proximity`, not `mandatory`.
+    // `mandatory` forces the container to always rest on a snap point and
+    // re-resolves the target on every relayout (trackH application, card
+    // expansion), which the browser can resolve to the *last* card — the exact
+    // jump this test's name forbids.
+    const track = screen.getByTestId('question-carousel')
+    expect(track.className).toMatch(/snap-proximity/)
+    expect(track.className).not.toMatch(/snap-mandatory/)
   })
 
   it('disables submit until all questions are answered', async () => {

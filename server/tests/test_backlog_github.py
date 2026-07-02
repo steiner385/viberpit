@@ -114,6 +114,28 @@ def test_claim_batch_labels_every_issue_returns_true():
         assert c[c.index("--add-label") + 1] == "in-progress"
 
 
+def test_claim_batch_provisions_claim_labels_before_adding():
+    """The runner self-provisions ``in-progress``/``needs-human`` (idempotent,
+    ``--force``) BEFORE the add-label edits — otherwise a repo that never had the
+    label rejects ``--add-label`` and no issue can ever be claimed (the silent
+    "runs but never spawns" failure). Deduped per repo."""
+    fake = FakeGh()
+    batch = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2"], repo="o/r")
+
+    ok = claim_batch(batch, gh_run=fake)
+
+    assert ok is True
+    creates = [c for c in fake.calls if c[:2] == ["label", "create"]]
+    made = {(c[2], c[c.index("--repo") + 1]) for c in creates}
+    assert made == {("in-progress", "o/r"), ("needs-human", "o/r")}  # deduped per repo
+    for c in creates:
+        assert "--force" in c  # idempotent: create-or-update
+    # All provisioning precedes the first add-label edit.
+    first_edit = next(i for i, c in enumerate(fake.calls) if c[:2] == ["issue", "edit"])
+    last_create = max(i for i, c in enumerate(fake.calls) if c[:2] == ["label", "create"])
+    assert last_create < first_edit
+
+
 def test_claim_batch_with_comment_posts_comment_per_issue():
     fake = FakeGh()
     batch = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2"], repo="o/r")
