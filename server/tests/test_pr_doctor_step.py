@@ -59,6 +59,16 @@ class _StubPoller:
         return None
 
 
+class _StubPopulation:
+    """Empty population poller — these tests drive an explicit per-branch cache."""
+
+    def all(self):
+        return {}
+
+    def cached(self, repo: str):
+        return ()
+
+
 async def _init_pr_doctor_db(tmp_path) -> None:
     from server.db import init_db
     from server.automations.registry import registry
@@ -76,6 +86,7 @@ def _build_orch(pr, *, has_driver=True):
     orch._pushed_pr = set()
     orch._pr_doctor_ctx = AutomationContext("pr-doctor")
     orch._pr_poller = _StubPoller(pr)  # type: ignore[assignment]
+    orch._pr_population = _StubPopulation()  # type: ignore[assignment]
     orch._drivers = {"sess1": object()} if has_driver else {}  # type: ignore[dict-item]
     orch._gh_run = gitrepos._run_gh  # replaced by a recorder per-test
     return orch

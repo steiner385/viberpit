@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import types
+from dataclasses import replace
 
 from server.github.pr_status import PullRequestInfo
 from server.sessions.types import SessionRecord
@@ -65,6 +66,19 @@ class _StubPoller:
         return self._cache.get((repo, branch))
 
 
+class _StubPopulation:
+    """Population poller stub: all open PRs per repo (keyed by repo)."""
+
+    def __init__(self, by_repo: dict[str, tuple[PullRequestInfo, ...]] | None = None):
+        self._by_repo = by_repo or {}
+
+    def all(self):
+        return dict(self._by_repo)
+
+    def cached(self, repo: str):
+        return self._by_repo.get(repo, ())
+
+
 async def _init_pr_doctor_db(tmp_path) -> None:
     from server.db import init_db
     from server.automations.registry import registry
@@ -72,12 +86,13 @@ async def _init_pr_doctor_db(tmp_path) -> None:
     await registry.ensure_rows()
 
 
-def _build_orch(cache, pairs, *, records=None, drivers=None):
+def _build_orch(cache, pairs, *, records=None, drivers=None, population=None):
     """Minimal orchestrator with a multi-entry cache + fixed pair list.
 
     ``_pr_pairs`` is stubbed to return ``pairs`` (bypasses the DB/live-branch
-    union so the sweep test drives an exact cache), and ``pr_for`` reads the
-    stub poller.
+    union so the sweep test drives an exact cache), ``pr_for`` reads the stub
+    poller, and ``_pr_population`` is a stub (empty by default) so
+    ``_pr_doctor_scope_pairs`` widens the set to repo-wide open PRs.
     """
     import server.sessions.orchestrator as orch_mod
     from ccswitch import gitrepos
@@ -88,6 +103,7 @@ def _build_orch(cache, pairs, *, records=None, drivers=None):
     orch._pushed_pr = set()
     orch._pr_doctor_ctx = AutomationContext("pr-doctor")
     orch._pr_poller = _StubPoller(cache)  # type: ignore[assignment]
+    orch._pr_population = _StubPopulation(population)  # type: ignore[assignment]
     orch._drivers = drivers if drivers is not None else {"sess1": object()}
     orch._gh_run = gitrepos._run_gh
 
@@ -120,6 +136,35 @@ async def _set_config(config: dict) -> None:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+def test_actionable_counts_population_only_failing_pr(tmp_path):
+    """A red PR that NO ccswitch session authored (absent from ``_pr_pairs`` and
+    the per-branch cache) is still counted: PR Doctor scans every open PR in the
+    population cache. An UNSTABLE-failing PR stays excluded (classify unchanged)."""
+
+    async def run():
+        await _init_pr_doctor_db(tmp_path)
+
+        failing = _pr(number=383, checks="failing", merge_state_status="BLOCKED")
+        failing = replace(failing, head_ref="human/feature")
+        unstable = _pr(number=395, checks="failing", merge_state_status="UNSTABLE")
+        unstable = replace(unstable, head_ref="human/unstable")
+
+        # No authoring session: empty records, empty per-branch cache, empty _pr_pairs.
+        orch = _build_orch(
+            cache={}, pairs=[], records={},
+            population={"o/r": (failing, unstable)},
+        )
+
+        actionable = await orch.pr_doctor_actionable()
+        numbers = {a["number"] for a in actionable}
+        assert 383 in numbers           # population-only failing PR is recognized
+        assert 395 not in numbers       # UNSTABLE-failing stays non-actionable
+        kind = next(a["kind"] for a in actionable if a["number"] == 383)
+        assert kind == "failing_ci"
+
+    asyncio.run(run())
+
 
 def test_sweep_out_of_date_fires_mechanical_without_checks_transition(monkeypatch, tmp_path):
     """A BEHIND PR with PASSING checks (no CI transition) → the sweep dispatches

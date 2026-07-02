@@ -51,7 +51,8 @@ async def _seed_row(automation_id: str = "backlog-runner") -> None:
 
 def build_loop(*, mode="auto", config=None, clock=None,
                candidates=None, healthy="a", in_flight_counter=None,
-               pr_status=None, pr_doctor_active=True, claim_result=True):
+               pr_status=None, pr_doctor_active=True, claim_result=True,
+               candidate_count=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .claims /
@@ -117,6 +118,9 @@ def build_loop(*, mode="auto", config=None, clock=None,
     async def reconcile(claimed_refs, live_refs):
         rec.reconciles.append((list(claimed_refs), set(live_refs)))
 
+    async def count_candidates():
+        return candidate_count if candidate_count is not None else 0
+
     loop = BacklogRunnerLoop(
         ctx,
         select_batch=select_batch,
@@ -131,6 +135,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
         release=release,
         needs_human=needs_human,
         reconcile=reconcile,
+        count_candidates=count_candidates if candidate_count is not None else None,
     )
     return loop, rec, ctx
 
@@ -142,6 +147,25 @@ def batch(primary: str, issues=None) -> Batch:
 # --------------------------------------------------------------------------- #
 # Tests                                                                        #
 # --------------------------------------------------------------------------- #
+
+def test_eligible_reflects_candidate_count_even_when_saturated(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'elig.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("r#1")],
+            candidate_count=7,          # GitHub says 7 ready issues exist
+        )
+        await loop.tick()               # fills the single slot
+        counts = getattr(ctx, "backlog_counts", {})
+        assert counts.get("eligible") == 7
+        assert counts.get("in_flight") == 1
+
+    asyncio.run(run())
+
 
 def test_tops_up_to_max_concurrent_and_no_further(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'a.db'}"

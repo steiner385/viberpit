@@ -109,6 +109,7 @@ class PullRequestInfo:
     checks_detail: tuple[CheckDetail, ...] = ()
     stage: str = ""  # open-stage classifier output: 'ci' | 'ready' | 'parked' | ''
     repo: str = ""  # nameWithOwner, e.g. "owner/name"; populated by the population poller
+    head_ref: str = ""  # PR head branch (headRefName); lets PR Doctor dispatch on population PRs
     eta_seconds: int | None = None
     eta_percent: int | None = None
     eta_overdue: bool = False
@@ -135,6 +136,7 @@ class PullRequestInfo:
             "checks_detail": [c.to_dict() for c in self.checks_detail],
             "stage": self.stage,
             "repo": self.repo,
+            "head_ref": self.head_ref,
             "eta_seconds": self.eta_seconds,
             "eta_percent": self.eta_percent,
             "eta_overdue": self.eta_overdue,
@@ -164,6 +166,7 @@ class PullRequestInfo:
             checks_detail=tuple(CheckDetail.from_dict(c) for c in d.get("checks_detail", [])),
             stage=d.get("stage", ""),
             repo=d.get("repo", ""),
+            head_ref=d.get("head_ref", ""),
             eta_seconds=d.get("eta_seconds"),
             eta_percent=d.get("eta_percent"),
             eta_overdue=d.get("eta_overdue", False),
@@ -213,7 +216,7 @@ def _alias(i: int) -> str:
 # Shared PR-node selection so build_pr_query (per-branch) and the population
 # query (per-repo) can never drift in which fields they fetch.
 _PR_NODE_FIELDS = (
-    "number url title state isDraft updatedAt mergedAt headRefOid mergeStateStatus mergeable\n"
+    "number url title state isDraft updatedAt mergedAt headRefName headRefOid mergeStateStatus mergeable\n"
     "      autoMergeRequest { enabledAt }\n"
     "      commits(last: 1) { nodes { commit { statusCheckRollup { state\n"
     "        contexts(first: 100) { nodes {\n"
@@ -522,6 +525,7 @@ def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
         title=pr.get("title", ""),
         deployed=("production" in deployed_envs),
         head_sha=pr.get("headRefOid", ""),
+        head_ref=pr.get("headRefName", ""),
         is_draft=bool(pr.get("isDraft")),
         merged=(state == "merged"),
         updated_at=pr.get("updatedAt", ""),
