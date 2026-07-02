@@ -278,6 +278,9 @@ class SessionOrchestrator:
         # Session-ids currently in a push-worthy state (AUT-02 debounce): push fires once
         # on entry; cleared when the session transitions out so re-entry fires again.
         self._pushed: set[str] = set()
+        # Backlog-runner session-ids we've scheduled a completion auto-archive for,
+        # so repeated ``complete`` status emits schedule the archive exactly once.
+        self._auto_archiving: set[str] = set()
         # (repo, branch) pairs whose PR is currently in a failing-CI state (M2b.2 debounce):
         # push fires once on entry into failing; cleared on recovery so a re-break re-fires.
         self._pushed_pr: set[tuple[str, str]] = set()
@@ -831,6 +834,41 @@ class SessionOrchestrator:
         await self._maybe_push(session_id, status)
         if completed_turn:
             await self._maybe_apply_auto_name(session_id)
+        self._maybe_autoarchive_completed(session_id, status, rec)
+
+    def _maybe_autoarchive_completed(self, session_id: str, status: str, rec) -> None:
+        """Schedule a completion auto-archive for a finished backlog-runner session.
+
+        When the agent signals it's done, ``derive_status`` yields ``complete``
+        (distinct from a plain ``done`` turn). A spawned session otherwise never
+        reaches a terminal DB state, so its driver/worktree would linger and its
+        slot stay occupied. Archiving frees all of that; the sweep then reclaims
+        the slot. Scheduled (not awaited) because archive stops THIS driver while
+        we're inside its ``on_status`` callback; idempotent via ``_auto_archiving``.
+        Scoped to backlog-runner (pr-doctor fix sessions are short and re-spawn on
+        demand, so they don't need this)."""
+        if status != "complete":
+            return
+        if rec is None or getattr(rec, "origin", None) != "backlog-runner":
+            return
+        if session_id in self._auto_archiving:
+            return
+        self._auto_archiving.add(session_id)
+        asyncio.create_task(self._auto_archive_completed(session_id),
+                            name="backlog-autoarchive")
+
+    async def _auto_archive_completed(self, session_id: str) -> None:
+        """Archive a completed backlog-runner session + log it to the activity feed.
+        A failure clears the guard so a later ``complete`` emit can retry."""
+        try:
+            await self.archive_session(session_id)
+        except Exception:
+            log.warning("backlog_runner.autoarchive_failed id=%s", session_id, exc_info=True)
+            self._auto_archiving.discard(session_id)
+            return
+        await self._backlog_ctx.emit(
+            "info", f"archived completed run {session_id}",
+            kind="archived", session_id=session_id)
 
     async def _persist_context_usage(self, session_id: str, used_tokens: int, max_tokens: int) -> None:
         """Driver ``on_context_usage`` callback: persist the exact context-window occupancy.
@@ -1067,13 +1105,14 @@ class SessionOrchestrator:
         """True once the runner session *session_id* has reached a terminal state.
 
         Reads the DB row (restart-safe; the in-memory record may be gone) and
-        treats ``status == 'ended'`` as ended so the sweep can charge an attempt
-        for a session that finished without a mergeable PR."""
+        treats any terminal status — ``ended`` OR ``archived`` — as ended, so the
+        sweep can charge an attempt / give up for a session that finished (and
+        was completion-auto-archived) without a mergeable PR."""
         from sqlalchemy import select as _select
         async with db_session() as db:
             status = (await db.execute(_select(DbSession.status).where(
                 DbSession.id == session_id))).scalar_one_or_none()
-        return status == "ended"
+        return status in INACTIVE_SESSION_STATUSES
 
     async def _backlog_spawn(self, batch, account: str):
         """Spawn a de-duped runner session for *batch*, seeded with the implement
