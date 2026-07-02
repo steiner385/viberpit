@@ -142,7 +142,7 @@ def test_driver_calls_on_context_usage_callback():
             f.result(session_id="sess-1", uuid="t1")]
     captured: list[tuple] = []
 
-    def make(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
         return FakeSDKClient(msgs, on_can_use_tool=can_use_tool, context_usage=cu)
 
     async def on_ctx(sid, used, mx):
