@@ -31,6 +31,7 @@ import { SettingsPanel } from './settings/SettingsPanel'
 import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
 import { PipelineView } from './PipelineView'
+import { AdoptPanel } from './AdoptPanel'
 import { AutomationView } from './AutomationView'
 import { InsightsView } from './InsightsView'
 import { ReviewView } from './ReviewView'
@@ -53,6 +54,7 @@ import {
   usePermanentDeleteSession,
   useGithubRepos,
   useSendPrompt,
+  useConfig,
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
 import { toast } from 'sonner'
@@ -123,6 +125,7 @@ export function DesktopShell() {
     useSessionOrdering(sessions, sessionSearch.matchedIds)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const reposQuery = useGithubRepos()
+  const { data: config } = useConfig()
 
   const createSession = useCreateSession()
   const renameSession = useRenameSession()
@@ -433,6 +436,11 @@ export function DesktopShell() {
           onExpand={expandGroup}
           onCollapse={collapseGroup}
         />
+
+        {/* Untracked-session adoption, mirroring the mobile Dashboard's Sessions
+            tab: same component + same feature flag, mounted at the bottom of the
+            session list so wide screens (≥1024px) can adopt sessions too. */}
+        {config?.adoptionEnabled && <AdoptPanel />}
       </div>
     </aside>
   )

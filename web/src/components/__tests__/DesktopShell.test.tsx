@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { DesktopShell } from '../DesktopShell'
 import * as hooks from '@/api/hooks'
 import { toast } from 'sonner'
-import type { Account, Session } from '@/api/types'
+import type { Account, Session, AdoptionCandidate } from '@/api/types'
 
 vi.mock('@/ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/ws/client')>()
@@ -30,6 +30,7 @@ vi.mock('@/api/hooks', () => ({
   useArchivedSessions: vi.fn(), useUnarchiveSession: vi.fn(), usePermanentDeleteSession: vi.fn(),
   useModels: vi.fn(), useSendPrompt: vi.fn(), useFixPr: vi.fn(),
   usePendingDeploy: vi.fn(), useDeployStatus: vi.fn(), useStartDeploy: vi.fn(),
+  useConfig: vi.fn(), useAdoptable: vi.fn(), useAdoptSession: vi.fn(),
   useAutomations: vi.fn(() => ({ data: [] })),
   useSessionsViewing: vi.fn(),
   QK: { accounts: ['accounts'], sessions: ['sessions'], archived: ['archived-sessions'], config: ['config'], githubRepos: ['github-repos'], githubBranches: (r?: string) => ['github-branches', r], settings: ['settings'] },
@@ -67,6 +68,11 @@ function setup() {
   vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
   vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
   vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+  // Adoption is a feature-flagged sidebar panel; default it off so most tests
+  // don't render AdoptPanel. Adoption hooks are stubbed empty for the flag-on case.
+  vi.mocked(hooks.useConfig).mockReturnValue({ data: { adoptionEnabled: false } } as ReturnType<typeof hooks.useConfig>)
+  vi.mocked(hooks.useAdoptable).mockReturnValue({ data: { candidates: [] } } as ReturnType<typeof hooks.useAdoptable>)
+  vi.mocked(hooks.useAdoptSession).mockReturnValue(NOOP as never)
 }
 
 function renderDesktopShell() {
@@ -277,5 +283,25 @@ describe('DesktopShell', () => {
     rerender(<DesktopShell />)
     // Auto-clear effect should remove the banner
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  // Regression for #44: the desktop sidebar must surface untracked-session
+  // adoption (AdoptPanel), matching the mobile Dashboard's Sessions tab.
+  it('renders the AdoptPanel in the sidebar when adoption is enabled', () => {
+    const candidate: AdoptionCandidate = {
+      pid: 5, account: 'work', cwd: '/home/u/repo', claudeSessionId: 'aaa',
+      name: 'Untracked Work', mapped: true, tracked: false, skipReason: null,
+      lastActivity: new Date().toISOString(), pidAlive: true,
+    }
+    vi.mocked(hooks.useConfig).mockReturnValue({ data: { adoptionEnabled: true } } as ReturnType<typeof hooks.useConfig>)
+    vi.mocked(hooks.useAdoptable).mockReturnValue({ data: { candidates: [candidate] } } as ReturnType<typeof hooks.useAdoptable>)
+    renderDesktopShell()
+    expect(screen.getByRole('heading', { name: /untracked sessions/i })).toBeInTheDocument()
+    expect(screen.getByText('Untracked Work')).toBeInTheDocument()
+  })
+
+  it('omits the AdoptPanel when adoption is disabled', () => {
+    renderDesktopShell()
+    expect(screen.queryByRole('heading', { name: /untracked sessions/i })).not.toBeInTheDocument()
   })
 })
