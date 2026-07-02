@@ -164,9 +164,10 @@ interface SpawnedSessionsSectionProps {
   id: string
   enabled: boolean
   onOpenSession?: (id: string) => void
+  onReviewSession?: (id: string) => void
 }
 
-function SpawnedSessionsSection({ id, enabled, onOpenSession }: SpawnedSessionsSectionProps) {
+function SpawnedSessionsSection({ id, enabled, onOpenSession, onReviewSession }: SpawnedSessionsSectionProps) {
   const sessions = useAutomationSessions(id, enabled)
   const list = sessions.data ?? []
   const activeCount = list.filter((s) => !INACTIVE_SESSION_STATUSES.has(s.status)).length
@@ -184,7 +185,9 @@ function SpawnedSessionsSection({ id, enabled, onOpenSession }: SpawnedSessionsS
               <li key={s.id} className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => onOpenSession?.(s.id)}
+                  // Inactive (ended/archived) sessions have no live driver, so the
+                  // live-attach route 404s — route them to the read-only review view.
+                  onClick={() => (INACTIVE_SESSION_STATUSES.has(s.status) ? onReviewSession : onOpenSession)?.(s.id)}
                   className="text-blue-600 hover:underline text-left"
                 >
                   {s.name}
@@ -242,9 +245,10 @@ function ActionablePrsSection({ enabled }: { enabled: boolean }) {
 
 // --- Main card ---------------------------------------------------------------
 
-export function AutomationCard({ automation: a, onOpenSession }: {
+export function AutomationCard({ automation: a, onOpenSession, onReviewSession }: {
   automation: Automation
   onOpenSession?: (id: string) => void
+  onReviewSession?: (id: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const patch = usePatchAutomation()
@@ -317,7 +321,7 @@ export function AutomationCard({ automation: a, onOpenSession }: {
                 </ul>}
           </section>
           {a.id === 'pr-doctor' && <ActionablePrsSection enabled={open} />}
-          <SpawnedSessionsSection id={a.id} enabled={open} onOpenSession={onOpenSession} />
+          <SpawnedSessionsSection id={a.id} enabled={open} onOpenSession={onOpenSession} onReviewSession={onReviewSession} />
           {a.configSchema.length > 0 && <ConfigPanel automation={a} />}
         </div>
       )}

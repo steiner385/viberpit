@@ -135,6 +135,26 @@ describe('App routing', () => {
     expect(screen.getByRole('button', { name: /back to dashboard/i })).toBeInTheDocument()
   })
 
+  it('redirects /session/:id to /review/:id for an archived session', async () => {
+    // An archived session has no live driver, so the live-attach route 404s. The
+    // route must redirect it to the read-only review view instead (safety net for
+    // links — e.g. automation activity-log entries — that carry no status).
+    vi.mocked(api.get).mockImplementation((path: string) => {
+      if (path === '/sessions') return Promise.resolve(MOCK_SESSIONS)
+      if (path === '/sessions/archived') return Promise.resolve([
+        { id: 'arch-1', name: 'Implement issue 16', account: 'alice', cwd: '/tmp/x',
+          claudeSessionId: 'c-1', permissionMode: 'default',
+          createdAt: '2026-06-01T10:00:00Z', archivedAt: '2026-06-02T10:00:00Z' },
+      ])
+      if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
+      return Promise.resolve([])
+    })
+    renderAt('/session/arch-1')
+    await waitFor(() => {
+      expect(screen.getByTestId('pathname')).toHaveTextContent('/review/arch-1')
+    })
+  })
+
   it('opens a session from the list and updates the URL', async () => {
     const user = userEvent.setup()
     renderAt('/sessions')
