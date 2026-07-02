@@ -46,7 +46,7 @@ def test_drain_exception_emits_error_event_with_detail():
     assert "token expired mid-stream" in err.message
 
 def _factory(msgs):
-    def make(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
         return FakeSDKClient(msgs, on_can_use_tool=can_use_tool)
     return make
 

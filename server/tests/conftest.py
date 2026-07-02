@@ -56,6 +56,61 @@ def _redirect_state_off_production():
 _redirect_state_off_production()
 
 
+# --------------------------------------------------------------------------- #
+# Auth env must not leak from the dev machine into tests.                      #
+#                                                                              #
+# A developer box runs with CCSWITCH_TAILNET_ALLOWLIST set to the owner's own  #
+# identity (and a non-loopback CCSWITCH_HOST). get_settings() reads both fresh  #
+# (uncached), so verify_identity() rejects the tests' synthetic identities      #
+# (e.g. wstest@example.com) — WS/HTTP handshakes close 1008/401 — and the boot  #
+# gate refuses an empty allowlist on a non-loopback bind. The suite then passes #
+# in CI (env unset) but fails locally. Establish the same permissive baseline   #
+# ~25 test files already set individually: CCSWITCH_DEV=1 + empty allowlist =    #
+# "any identity passes". Tests that exercise the allowlist / boot gate override  #
+# this explicitly via monkeypatch / patch.dict(clear=True).                      #
+os.environ["CCSWITCH_TAILNET_ALLOWLIST"] = ""
+os.environ["CCSWITCH_DEV"] = "1"
+
+
+# --------------------------------------------------------------------------- #
+# A live session daemon on the dev box must not leak into tests.              #
+#                                                                             #
+# create_app() (when a test doesn't inject an orchestrator) probes the        #
+# DEFAULT_SOCKET_PATH. On a machine actually running ccswitch, that socket    #
+# exists → create_app either flips to remote mode or hard-fails with          #
+# "refusing in-process fallback" (the split-brain guard). CI has no daemon,   #
+# so those tests pass there but fail locally. Point the default socket at a   #
+# path that cannot exist, so the ambient probe reports "no daemon on this     #
+# host" (the CI/in-process default).                                          #
+#                                                                             #
+# We patch the PATH, not _daemon_present/_daemon_compatible: the latter       #
+# compose (_daemon_compatible calls _daemon_present internally), so stubbing  #
+# them breaks tests that probe a real socket they serve themselves            #
+# (test_remote_default). Redirecting only the default path leaves the real    #
+# functions intact for any explicit endpoint a test provides. Tests that      #
+# exercise remote mode set CCSWITCH_SESSIOND_SOCKET explicitly, bypassing     #
+# the default-path branch entirely.                                           #
+import pytest
+
+
+# Test modules that exercise the daemon/IPC layer itself assert on the real
+# DEFAULT_SOCKET_PATH (value, precedence, live-socket probing), so the redirect
+# below must NOT apply to them. They manage their own daemon/socket state.
+_DAEMON_LAYER_MODULE_PREFIXES = ("test_ipc_", "test_remote_", "test_daemon_")
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_session_daemon(request, monkeypatch):
+    modname = request.node.module.__name__.rsplit(".", 1)[-1]
+    if modname.startswith(_DAEMON_LAYER_MODULE_PREFIXES):
+        return
+    import server.ipc.paths as _paths
+    monkeypatch.setattr(
+        _paths, "DEFAULT_SOCKET_PATH", "/nonexistent/ccswitch-tests-no-daemon.sock",
+        raising=False,
+    )
+
+
 # Enable asyncio mode for all tests in this package
 def pytest_configure(config):
     config.addinivalue_line(
