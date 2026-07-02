@@ -31,6 +31,8 @@ import { SettingsPanel } from './settings/SettingsPanel'
 import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
 import { PipelineView } from './PipelineView'
+import { AutomationView } from './AutomationView'
+import { InsightsView } from './InsightsView'
 import { ReviewView } from './ReviewView'
 import { SidebarResizer } from './SidebarResizer'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
@@ -59,7 +61,7 @@ import { useSessionSearch } from '@/session/useSessionSearch'
 import { useListNavigation } from '@/session/useListNavigation'
 import { nextVisibleSessionId } from '@/session/nextAfterArchive'
 
-type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline'
+type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline' | 'automation' | 'insights'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
 
 // ── Session subtree (rendered only under SessionRuntimeProvider) ──────────────
@@ -343,7 +345,7 @@ export function DesktopShell() {
     >
       {/* Tab bar */}
       <div role="tablist" aria-label="Dashboard sections" className="flex gap-1 border-b border-gray-200 dark:border-gray-700 px-2">
-        {(['sessions', 'accounts', 'pipeline', 'archived'] as TabId[]).map((t) => (
+        {(['sessions', 'accounts', 'pipeline', 'archived', 'automation', 'insights'] as TabId[]).map((t) => (
           <button
             key={t}
             role="tab"
@@ -444,6 +446,10 @@ export function DesktopShell() {
       : <div className="p-4 overflow-y-auto h-full"><ArchivedManager onReviewSession={setReviewId} /></div>
   } else if (tab === 'pipeline') {
     mainPane = <div className="p-4 overflow-y-auto h-full"><PipelineView /></div>
+  } else if (tab === 'automation') {
+    mainPane = <div className="p-4 overflow-y-auto h-full"><AutomationView /></div>
+  } else if (tab === 'insights') {
+    mainPane = <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
   } else {
     mainPane = selection.type === 'session'
       ? <MainPaneSession sessionId={selection.id} onClosed={() => setSelection(advanceFrom(selection.id))} />
