@@ -108,6 +108,32 @@ def test_replay_skips_meta_skill_body(tmp_path):
     assert results and results[0].payload["content"] == "Launching skill: x"
 
 
+def test_replay_skips_task_notification_delivery(tmp_path):
+    """When a background task (a `run_in_background` Bash / Task / Monitor) ends, the
+    harness delivers a `<task-notification>` block as a plain-string `type:"user"`
+    entry (NOT flagged `isMeta`). That is harness plumbing — the live view drops it
+    (the translator forwards only tool_result blocks from user messages), so replay
+    must not render it as a raw user bubble either. A sibling real user turn still shows."""
+    p = tmp_path / "notif.jsonl"
+    notif = ("<task-notification>\n<task-id>bafenk8xx</task-id>\n"
+             "<tool-use-id>toolu_019</tool-use-id>\n<status>killed</status>\n"
+             "<summary>Background command \"sleep 120\" was stopped</summary>\n"
+             "</task-notification>")
+    rows = [
+        {"type": "user", "uuid": "u1",
+         "message": {"role": "user", "content": "keep an eye on PR #10863"}},
+        {"type": "user", "uuid": "u2",
+         "message": {"role": "user", "content": notif}},
+    ]
+    p.write_text("\n".join(json.dumps(r) for r in rows))
+    out = _parse(str(p), 20)
+    texts = [getattr(e, "text", None) for e in out]
+    assert not any(t and "<task-notification>" in t for t in texts), \
+        "task-notification delivery must not render as a user bubble"
+    user_evs = [e for e in out if e.to_wire()["type"] == "user"]
+    assert [e.text for e in user_evs] == ["keep an eye on PR #10863"]
+
+
 def test_replay_skips_sidechain_entries(tmp_path):
     p = tmp_path / "t.jsonl"
     rows = [
