@@ -274,6 +274,14 @@ async def _lifespan(app: FastAPI):
 
         await app.state.orchestrator.stop()
 
+    # Dispose the DB engine LAST — after every DB user (auditor, orchestrator,
+    # sessions) has stopped — while this loop is still alive, so the pooled
+    # aiosqlite connection's worker thread is joined cleanly instead of leaking a
+    # connection bound to a soon-to-close loop (the "Event loop is closed" flood).
+    from server.db import dispose_db
+    with contextlib.suppress(Exception):
+        await dispose_db()
+
 
 def create_app(
     orchestrator: SessionOrchestrator | None = None,
