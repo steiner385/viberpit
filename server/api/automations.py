@@ -3,14 +3,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from server.auth.middleware import current_identity
 from server.automations.base import validate_config
 from server.automations.context import AutomationContext
 from server.automations.registry import registry
 from server.db import get_db
-from server.db.models import Automation as AutomationRow, Session as DbSession
+from server.db.models import (
+    INACTIVE_SESSION_STATUSES,
+    Automation as AutomationRow,
+    Session as DbSession,
+)
 
 router = APIRouter(prefix="/api/automations", tags=["automations"])
 
@@ -55,6 +59,13 @@ def _automation_or_404(automation_id: str):
 
 @router.get("")
 async def list_automations(_identity: str = Depends(current_identity), db=Depends(get_db)) -> list[dict]:
+    # Count live (non-ended/-archived) spawned sessions per automation in one grouped
+    # query, so the list can show "N active" without a follow-up call per card.
+    active_counts = dict((await db.execute(
+        select(DbSession.origin, func.count())
+        .where(DbSession.origin.is_not(None),
+               DbSession.status.notin_(INACTIVE_SESSION_STATUSES))
+        .group_by(DbSession.origin))).all())
     out = []
     for a in registry.all():
         row = await _row(db, a.id)
@@ -65,6 +76,7 @@ async def list_automations(_identity: str = Depends(current_identity), db=Depend
             "configSchema": [f.to_dict() for f in a.config_schema],
             "config": row.config or {},
             "lastActiveAt": row.last_active_at.isoformat() if row.last_active_at else None,
+            "activeSessions": int(active_counts.get(a.id, 0)),
         })
     return out
 
