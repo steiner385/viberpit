@@ -1,6 +1,39 @@
+import ast
 import asyncio
+from pathlib import Path
+
 import pytest
 from server.sessions.remote import RemoteDriver, RemoteOrchestrator
+
+_SERVER = Path(__file__).resolve().parent.parent
+# Every source file that receives a driver and calls methods on it. The confirmed
+# #164 AttributeError was in suggestions.kick_idle_suggestions, reached from ws.py —
+# both must be scanned so the two driver surfaces can't silently drift again.
+_DRIVER_CALLERS = (_SERVER / "bridge" / "ws.py", _SERVER / "sessions" / "suggestions.py")
+
+
+def _driver_members_used(*paths: Path) -> set[str]:
+    """Collect every driver member accessed at RUNTIME in *paths* — real
+    ``driver.<name>`` attribute reads and ``getattr(driver, "<name>")`` calls (the
+    local param is named ``driver`` in every helper ws.py hands the object to).
+
+    Parsed via ``ast`` rather than regex so docstrings/comments that merely *mention*
+    ``driver.identity`` aren't mistaken for call sites. This is the ws-reachable
+    driver surface RemoteDriver must cover in daemon mode."""
+    names: set[str] = set()
+    for p in paths:
+        tree = ast.parse(p.read_text())
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name) and node.value.id == "driver"):
+                names.add(node.attr)
+            elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                  and node.func.id == "getattr" and len(node.args) >= 2
+                  and isinstance(node.args[0], ast.Name) and node.args[0].id == "driver"
+                  and isinstance(node.args[1], ast.Constant)
+                  and isinstance(node.args[1].value, str)):
+                names.add(node.args[1].value)
+    return names
 
 
 class _FakeClient:
@@ -24,6 +57,28 @@ class _FakeClient:
 
     def subscribe(self, session_id, since=None):
         return self._gen()
+
+
+def test_remote_driver_covers_every_ws_reachable_driver_member():
+    """Lock the daemon-mode driver surface to the in-process one (#164).
+
+    In remote mode ws.py drives a RemoteDriver shim instead of the in-process
+    SessionDriver. Any ``driver.*`` call site in ws.py (or a helper it hands the
+    driver to) that RemoteDriver doesn't implement explodes with AttributeError
+    ONLY in remote mode — the confirmed instance was seed_idle_suggestions, silently
+    breaking idle suggestions in prod. This scans the real call sites and fails if a
+    new one is added without a matching RemoteDriver method/attr, so the surfaces
+    can't drift again."""
+    used = _driver_members_used(*_DRIVER_CALLERS)
+    assert "events" in used and "current_status" in used, (
+        "static scan found no driver.* usages — the regex or call sites moved")
+    d = RemoteDriver(_FakeClient([]), "s1")
+    missing = sorted(name for name in used if not hasattr(d, name))
+    assert not missing, (
+        f"RemoteDriver is missing driver members ws.py/helpers call: {missing}. "
+        "Remote (daemon) mode will AttributeError at those call sites — add the "
+        "method (or an RPC proxy) to RemoteDriver in server/sessions/remote.py."
+    )
 
 
 def test_remote_driver_queue_wire_matches_local_shape():
