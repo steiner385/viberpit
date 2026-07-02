@@ -141,6 +141,26 @@ describe('AutomationCard', () => {
       expect(onOpenSession).toHaveBeenCalledWith('sess-1')
     })
 
+    it('reviews an archived spawned session via onReviewSession (not onOpenSession)', () => {
+      const onOpenSession = vi.fn()
+      const onReviewSession = vi.fn()
+      mockBasicHooks()
+      vi.spyOn(hooks, 'useAutomationSessions').mockReturnValue({
+        data: [{ id: 'sess-2', name: 'Implement issue 16', status: 'archived', originRef: 'owner/repo#16' }],
+      } as unknown as ReturnType<typeof hooks.useAutomationSessions>)
+
+      render(<MemoryRouter>
+        <AutomationCard automation={PR_DOCTOR} onOpenSession={onOpenSession} onReviewSession={onReviewSession} />
+      </MemoryRouter>)
+      fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
+
+      fireEvent.click(screen.getByRole('button', { name: 'Implement issue 16' }))
+      // Archived sessions have no live driver — they must open the read-only review
+      // route, not the live-attach route (which would 404 with SESSION_NOT_FOUND).
+      expect(onReviewSession).toHaveBeenCalledWith('sess-2')
+      expect(onOpenSession).not.toHaveBeenCalled()
+    })
+
     it('calls useAutomationSessions with card id and enabled=true when expanded', () => {
       const useAutoSessions = vi.spyOn(hooks, 'useAutomationSessions').mockReturnValue(
         { data: [] } as unknown as ReturnType<typeof hooks.useAutomationSessions>)

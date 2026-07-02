@@ -8,7 +8,7 @@ import { GlobalUpdateBanner } from './components/GlobalUpdateBanner'
 import { useMediaQuery } from './lib/useMediaQuery'
 import { DeployControllerProvider } from './lib/deployController'
 import { DeployOverlay } from './components/DeployOverlay'
-import { useSessions } from './api/hooks'
+import { useSessions, useArchivedSessions } from './api/hooks'
 import { useSessionOrdering } from './session/useSessionOrdering'
 import { nextVisibleSessionId } from './session/nextAfterArchive'
 
@@ -56,6 +56,7 @@ function SessionRoute() {
   const navigate = useNavigate()
   const location = useLocation()
   const { data: sessions = [] } = useSessions()
+  const { data: archived = [] } = useArchivedSessions()
   // Persisted sort/group order (no search filter — the search box isn't reachable
   // from inside a full-screen session). Same order the list showed.
   const { orderedSessions } = useSessionOrdering(sessions)
@@ -64,6 +65,13 @@ function SessionRoute() {
   // on a normal open / refresh / deep-link, in which case nothing is seeded.
   const initialPrompt = (location.state as { initialPrompt?: string } | null)?.initialPrompt
   if (!sessionId) return <Navigate to="/sessions" replace />
+  // An archived session has no live driver, so the live-attach route dead-ends on
+  // SESSION_NOT_FOUND. Redirect to the read-only review view (where the Archived
+  // tab already sends archived sessions). Safety net for links that carry no status
+  // — e.g. automation activity-log entries and stale bookmarks.
+  if (archived.some((s) => s.id === sessionId)) {
+    return <Navigate to={`/review/${sessionId}`} replace />
+  }
   const handleDone = () => {
     const next = nextVisibleSessionId(orderedSessions.map((s) => s.id), sessionId)
     navigate(next ? `/session/${next}` : '/sessions')
