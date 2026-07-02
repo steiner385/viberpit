@@ -28,8 +28,25 @@ async def test_real_xvfb_x11vnc_rfb_handshake(tmp_path):
     assert spec is not None
 
     port = await mgr.ensure_vnc("S")
-    reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    banner = await asyncio.wait_for(reader.read(12), 5)
+
+    # ensure_vnc() returns as soon as x11vnc is *spawned*; the process binds its
+    # RFB port a moment later (~1s here), so an immediate connect races the bind
+    # and gets ConnectionRefused. Poll until the banner arrives or we hit the
+    # deadline — mirroring how a real VNC client would reconnect.
+    async def _read_banner():
+        while True:
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            except (ConnectionRefusedError, OSError):
+                await asyncio.sleep(0.1)
+                continue
+            banner = await reader.read(12)
+            if banner:
+                return banner, writer
+            writer.close()  # x11vnc accepted then dropped before ready — retry
+            await asyncio.sleep(0.1)
+
+    banner, writer = await asyncio.wait_for(_read_banner(), 10)
     assert banner.startswith(b"RFB "), f"expected RFB banner, got {banner!r}"
     writer.close()
     await mgr.stop_display("S")
