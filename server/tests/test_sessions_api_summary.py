@@ -16,7 +16,7 @@ def test_record_to_dict_includes_summary():
         id="s1", name="n", account="a", repo=None, status="in_progress",
         name_is_auto=True, detached=False, adopted_in_place=False, sub_agents=None,
         created_at=None, last_turn_at=None, account_pinned=False, model=None,
-        active_goal=None, usage_unverified=False, updated_at_iso=None,
+        active_goal=None, usage_unverified=False, updated_at_iso=None, rev_at=None,
     )
     d = _record_to_dict(rec, summary="Refactoring auth")
     assert d["summary"] == "Refactoring auth"
@@ -27,7 +27,7 @@ def test_record_to_dict_summary_defaults_empty():
         id="s1", name="n", account="a", repo=None, status="idle",
         name_is_auto=True, detached=False, adopted_in_place=False, sub_agents=None,
         created_at=None, last_turn_at=None, account_pinned=False, model=None,
-        active_goal=None, usage_unverified=False, updated_at_iso=None,
+        active_goal=None, usage_unverified=False, updated_at_iso=None, rev_at=None,
     )
     assert _record_to_dict(rec)["summary"] == ""
 
@@ -62,6 +62,7 @@ def _make_fake_record():
         status="idle", name_is_auto=True, detached=False, adopted_in_place=False,
         sub_agents=None, created_at=None, last_turn_at=None, account_pinned=False,
         model=None, active_goal=None, usage_unverified=False, updated_at_iso=None,
+        rev_at=None,
         # cwd=None so _resolve_repo short-circuits to record.repo (None → "Scratch")
         cwd=None,
     )
