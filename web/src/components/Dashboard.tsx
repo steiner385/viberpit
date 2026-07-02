@@ -1010,7 +1010,9 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       )}
 
       {/* Automation panel */}
-      {activeTab === 'automation' && <AutomationView />}
+      {activeTab === 'automation' && (
+        <AutomationView onOpenSession={onOpenSession ? (id) => onOpenSession(id) : undefined} />
+      )}
 
       {/* Insights panel */}
       {activeTab === 'insights' && (

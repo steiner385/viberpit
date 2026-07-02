@@ -36,7 +36,7 @@ from ccswitch.configdir import compose
 from ccswitch.paths import shared_base
 from server.audit import record_audit
 from server.db import db_session
-from server.db.models import Session as DbSession
+from server.db.models import INACTIVE_SESSION_STATUSES, Session as DbSession
 from server.sessions import adopt as _adopt
 from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions.archive_move import move_into_archive
@@ -1600,7 +1600,7 @@ class SessionOrchestrator:
         async with db_session() as db:
             rows = (await db.execute(
                 sa_select(DbSession).where(
-                DbSession.status.notin_(["ended", "archived"])
+                DbSession.status.notin_(INACTIVE_SESSION_STATUSES)
             )
             )).scalars().all()
         from .background_tasks import is_parked

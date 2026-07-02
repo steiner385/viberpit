@@ -10,7 +10,7 @@ const PR_DOCTOR: Automation = {
   id: 'pr-doctor', name: 'PR Doctor', description: 'watches CI',
   enabled: false, mode: 'propose', modes: ['off', 'auto', 'propose'],
   status: { text: 'idle', level: 'idle', counts: null },
-  configSchema: [], config: {}, lastActiveAt: null,
+  configSchema: [], config: {}, lastActiveAt: null, activeSessions: 0,
 }
 
 const WITH_SCHEMA: Automation = {
@@ -70,6 +70,40 @@ describe('AutomationCard', () => {
     expect(mutate).toHaveBeenCalledWith({ id: 'pr-doctor', body: { enabled: true } })
   })
 
+  // --- Active-session header badge ---
+
+  describe('Active-session badge', () => {
+    it('shows the active count in the collapsed header when > 0', () => {
+      mockBasicHooks()
+      render(<MemoryRouter><AutomationCard automation={{ ...PR_DOCTOR, activeSessions: 3 }} /></MemoryRouter>)
+      // Visible without expanding.
+      expect(screen.getByText('3 active')).toBeInTheDocument()
+    })
+
+    it('omits the badge when there are no active sessions', () => {
+      mockBasicHooks()
+      render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
+      expect(screen.queryByText(/\bactive\b/)).not.toBeInTheDocument()
+    })
+  })
+
+  // --- Activity log ---
+
+  describe('Activity log', () => {
+    it('opens the linked session via onOpenSession when a log line is clicked', () => {
+      const onOpenSession = vi.fn()
+      mockBasicHooks()
+      vi.spyOn(hooks, 'useAutomationEvents').mockReturnValue({
+        data: [{ ts: '2026-07-02T10:11:12Z', level: 'info', kind: 'spawned',
+                 summary: 'spawned fixer', target: null, sessionId: 'sess-9' }],
+      } as unknown as ReturnType<typeof hooks.useAutomationEvents>)
+      render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} onOpenSession={onOpenSession} /></MemoryRouter>)
+      fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
+      fireEvent.click(screen.getByRole('button', { name: 'spawned fixer' }))
+      expect(onOpenSession).toHaveBeenCalledWith('sess-9')
+    })
+  })
+
   // --- Spawned sessions section ---
 
   describe('Spawned sessions', () => {
@@ -81,7 +115,8 @@ describe('AutomationCard', () => {
       expect(screen.getByText('No sessions spawned.')).toBeInTheDocument()
     })
 
-    it('renders a session row with a router Link when data is present', () => {
+    it('opens a spawned session via onOpenSession (not the router) when clicked', () => {
+      const onOpenSession = vi.fn()
       vi.spyOn(hooks, 'usePatchAutomation').mockReturnValue(
         { mutate: vi.fn() } as unknown as ReturnType<typeof hooks.usePatchAutomation>)
       vi.spyOn(hooks, 'useAutomationEvents').mockReturnValue(
@@ -96,13 +131,14 @@ describe('AutomationCard', () => {
       vi.spyOn(hooks, 'usePrDoctorFix').mockReturnValue(
         { mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.usePrDoctorFix>)
 
-      render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
+      render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} onOpenSession={onOpenSession} /></MemoryRouter>)
       fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
 
-      const link = screen.getByRole('link', { name: 'Fix PR #42' })
-      expect(link).toBeInTheDocument()
-      expect(link).toHaveAttribute('href', '/session/sess-1')
+      const openBtn = screen.getByRole('button', { name: 'Fix PR #42' })
+      expect(openBtn).toBeInTheDocument()
       expect(screen.getByText('· in_progress')).toBeInTheDocument()
+      fireEvent.click(openBtn)
+      expect(onOpenSession).toHaveBeenCalledWith('sess-1')
     })
 
     it('calls useAutomationSessions with card id and enabled=true when expanded', () => {

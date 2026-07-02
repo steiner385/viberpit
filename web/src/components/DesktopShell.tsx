@@ -447,7 +447,7 @@ export function DesktopShell() {
   } else if (tab === 'pipeline') {
     mainPane = <div className="p-4 overflow-y-auto h-full"><PipelineView /></div>
   } else if (tab === 'automation') {
-    mainPane = <div className="p-4 overflow-y-auto h-full"><AutomationView /></div>
+    mainPane = <div className="p-4 overflow-y-auto h-full"><AutomationView onOpenSession={focusSession} /></div>
   } else if (tab === 'insights') {
     mainPane = <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
   } else {

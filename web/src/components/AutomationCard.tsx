@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import {
   useAutomationEvents, useAutomationSessions, useGithubRepos, usePatchAutomation,
@@ -156,30 +155,40 @@ function ConfigPanel({ automation: a }: ConfigPanelProps) {
 
 // --- Spawned sessions section ------------------------------------------------
 
+// Session statuses that mean the spawned session is no longer live. Mirrors the
+// backend's INACTIVE_SESSION_STATUSES (server/db/models.py), which drives the
+// automation's activeSessions count — kept in sync so the list agrees with the badge.
+const INACTIVE_SESSION_STATUSES = new Set(['ended', 'archived'])
+
 interface SpawnedSessionsSectionProps {
   id: string
   enabled: boolean
+  onOpenSession?: (id: string) => void
 }
 
-function SpawnedSessionsSection({ id, enabled }: SpawnedSessionsSectionProps) {
+function SpawnedSessionsSection({ id, enabled, onOpenSession }: SpawnedSessionsSectionProps) {
   const sessions = useAutomationSessions(id, enabled)
   const list = sessions.data ?? []
+  const activeCount = list.filter((s) => !INACTIVE_SESSION_STATUSES.has(s.status)).length
 
   return (
     <section>
-      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Spawned Sessions</h4>
+      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">
+        Spawned Sessions{list.length > 0 && ` (${activeCount} active)`}
+      </h4>
       {list.length === 0
         ? <p className="text-sm text-muted-foreground">No sessions spawned.</p>
         : (
           <ul className="space-y-1 text-sm">
             {list.map((s) => (
               <li key={s.id} className="flex items-center gap-2">
-                <Link
-                  to={`/session/${s.id}`}
-                  className="text-blue-600 hover:underline"
+                <button
+                  type="button"
+                  onClick={() => onOpenSession?.(s.id)}
+                  className="text-blue-600 hover:underline text-left"
                 >
                   {s.name}
-                </Link>
+                </button>
                 <span className="text-muted-foreground">· {s.status}</span>
               </li>
             ))}
@@ -233,9 +242,11 @@ function ActionablePrsSection({ enabled }: { enabled: boolean }) {
 
 // --- Main card ---------------------------------------------------------------
 
-export function AutomationCard({ automation: a }: { automation: Automation }) {
+export function AutomationCard({ automation: a, onOpenSession }: {
+  automation: Automation
+  onOpenSession?: (id: string) => void
+}) {
   const [open, setOpen] = useState(false)
-  const navigate = useNavigate()
   const patch = usePatchAutomation()
   const events = useAutomationEvents(a.id, open)
 
@@ -248,7 +259,14 @@ export function AutomationCard({ automation: a }: { automation: Automation }) {
           onClick={() => setOpen((v) => !v)}
           className="text-left flex-1"
         >
-          <div className="font-medium">{a.name}</div>
+          <div className="flex items-center gap-2">
+            <span className="font-medium">{a.name}</span>
+            {a.activeSessions > 0 && (
+              <span className="text-xs tabular-nums rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 px-2 py-0.5 leading-none">
+                {a.activeSessions} active
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <span className={cn('inline-block w-2 h-2 rounded-full', LEVEL_DOT[a.status.level])} />
             {a.status.text}
@@ -290,7 +308,7 @@ export function AutomationCard({ automation: a }: { automation: Automation }) {
                       {e.sessionId
                         ? <button
                             type="button"
-                            onClick={() => navigate(`/session/${e.sessionId}`)}
+                            onClick={() => onOpenSession?.(e.sessionId!)}
                             className="text-blue-600 hover:underline text-left"
                           >{e.summary}</button>
                         : <span>{e.summary}</span>}
@@ -299,7 +317,7 @@ export function AutomationCard({ automation: a }: { automation: Automation }) {
                 </ul>}
           </section>
           {a.id === 'pr-doctor' && <ActionablePrsSection enabled={open} />}
-          <SpawnedSessionsSection id={a.id} enabled={open} />
+          <SpawnedSessionsSection id={a.id} enabled={open} onOpenSession={onOpenSession} />
           {a.configSchema.length > 0 && <ConfigPanel automation={a} />}
         </div>
       )}

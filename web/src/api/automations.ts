@@ -26,6 +26,8 @@ export interface Automation {
   configSchema: ConfigField[]
   config: Record<string, unknown>
   lastActiveAt: string | null
+  /** Count of sessions this automation spawned that are still live (not ended/archived). */
+  activeSessions: number
 }
 
 export interface AutomationEvent {

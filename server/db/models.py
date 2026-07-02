@@ -26,6 +26,13 @@ class Base(DeclarativeBase):
     pass
 
 
+# Session.status values that mean the session is no longer live: 'ended' (the
+# process is gone) and 'archived' (cwd moved out, kept for review). Everything
+# else — idle / in_progress / limited / etc — counts as an active session.
+# Single source of truth: import this instead of re-inlining the string set.
+INACTIVE_SESSION_STATUSES: frozenset[str] = frozenset({"ended", "archived"})
+
+
 class Session(Base):
     """An active (or ended) Claude session managed by ccswitch-web."""
 
