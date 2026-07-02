@@ -59,14 +59,26 @@ _RESUME_TIMEOUT = 90.0
 async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -> None:
     """Forward a driver's live events into *out_q* as wire dicts.
 
-    A crash in the stream must not leave the UI silent: convert the exception into
-    an ``error`` frame and enqueue it so the client learns the live stream died
-    instead of staring at a frozen transcript. Cancellation is normal (detach).
+    Each dict is stamped with the owning ``sessionId`` and a per-session monotonic
+    ``seq`` so the client can (a) discard events from a session it is no longer
+    viewing and (b) detect a hole and self-heal via re-attach. A single event that
+    fails to serialize must not silence the whole stream: skip it but still advance
+    ``seq`` so the gap is visible. A crash in the generator becomes an ``error`` frame.
     """
     with bind_session(session_id):
+        seq = 0
         try:
             async for e in driver.events():
-                out_q.put_nowait(e.to_wire())
+                try:
+                    wire = e.to_wire()
+                except Exception:
+                    log.exception("ws.to_wire session=%s", session_id)
+                    seq += 1  # consume a seq so the client sees a gap and re-attaches
+                    continue
+                wire["sessionId"] = session_id
+                wire["seq"] = seq
+                seq += 1
+                out_q.put_nowait(wire)
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -77,6 +89,19 @@ async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -
                 f"The live session stream stopped unexpectedly. {type(exc).__name__}: {detail[:500]}",
                 turn_id=None,
             ).to_wire())
+
+
+def _redact_buffer(buf: list[dict]) -> list[dict]:
+    """Redact each outbound event; drop any event whose redaction raises instead of
+    letting one bad event kill the batcher task (which would freeze the socket).
+    A dropped event leaves a seq hole, so the client self-heals."""
+    out: list[dict] = []
+    for e in buf:
+        try:
+            out.append(redact_event(e))
+        except Exception:
+            log.exception("ws.redact: dropping unredactable event type=%s", e.get("type"))
+    return out
 
 
 async def _run_replay_and_complete(orchestrator, send, session_id: str,
@@ -171,9 +196,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                             buf.append(out_q.get_nowait())
                         except asyncio.QueueEmpty:
                             break
-                    # Redact each event dict before transmission.
-                    redacted_buf = [redact_event(e) for e in buf]
-                    await _send({"type": "batch", "events": redacted_buf})
+                    await _send({"type": "batch", "events": _redact_buffer(buf)})
             except asyncio.CancelledError:
                 return
 
