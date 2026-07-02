@@ -45,6 +45,27 @@ async def test_forward_live_stamps_seq_and_session_id():
 
 
 @pytest.mark.asyncio
+async def test_forward_live_resyncs_on_daemon_gap():
+    """A daemon replay-gap sentinel (issue #185) must NOT be forwarded to the client
+    as an event — instead it consumes a seq, leaving a hole the client's liveBatch
+    gap-healing detects → detach+attach → full transcript replay from disk. Without
+    this the edge view silently stays behind durable storage after a ring eviction."""
+    from server.bridge.ws import _forward_live
+    from server.ipc import protocol as proto
+    out_q: asyncio.Queue = asyncio.Queue()
+    driver = _FakeDriver([
+        _FakeEvent({"type": "textDelta", "text": "a"}),
+        _FakeEvent({"type": proto.GAP, "stream": "sess-1", "lost": 3, "oldest": 9}),
+        _FakeEvent({"type": "textDelta", "text": "c"}),
+    ])
+    await _forward_live(driver, out_q, "sess-1")
+    got = [out_q.get_nowait(), out_q.get_nowait()]
+    assert out_q.empty()  # the gap sentinel itself is never forwarded
+    assert [e["text"] for e in got] == ["a", "c"]
+    assert [e["seq"] for e in got] == [0, 2]  # seq 1 consumed by the gap → visible hole
+
+
+@pytest.mark.asyncio
 async def test_forward_live_gap_on_to_wire_failure():
     """A single bad event must not kill the stream, and must leave a seq hole
     so the client self-heals."""
