@@ -828,10 +828,16 @@ def _client_with_account(d):
     """
     _seed_slot("account1")
     usage_fn = _make_usage_fn({"account1": make_usage(session=10.0, weekly=20.0)})
+    # File-backed DB (not ``:memory:``): these tests write then read across
+    # requests (create → archive → unarchive), and an in-memory DB gives each
+    # pooled connection its OWN empty database, so a create on one connection is
+    # invisible to a read on another — an order-dependent flake (``succeeded: []``
+    # / "Event loop is closed" cascade) once prior tests churn the pool. A real
+    # file in the temp home dir is shared by every connection. See test_settings.
     with patch("ccswitch.accounts.usage_for", side_effect=usage_fn), \
          patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
          patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "account1"), \
-         patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+         patch.dict(os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{d / 'ccswitch.db'}"}):
         (d / "cfg" / "account1").mkdir(parents=True, exist_ok=True)
         from server.sessions.orchestrator import SessionOrchestrator
         from server.app import create_app
