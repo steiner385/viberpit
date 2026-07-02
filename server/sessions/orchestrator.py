@@ -747,6 +747,7 @@ class SessionOrchestrator:
         turn_at = datetime.utcnow() if status in ACTIVITY_STATUSES else None
         if rec is not None:
             rec.status = status
+            rec.updated_at = datetime.utcnow()   # row-write token; bumps on EVERY persist (see rev_at)
             if turn_at is not None:
                 rec.last_turn_at = turn_at
         async with db_session() as db:
@@ -767,7 +768,8 @@ class SessionOrchestrator:
         # WS bridge forwards lifecycle frames top-level so the client's status handler
         # (_patchSessionStatus) patches the cached session record.
         self._publish_event({"type": "status", "sessionId": session_id, "status": status,
-                             "updatedAt": rec.updated_at_iso if rec is not None else None})
+                             "updatedAt": rec.updated_at_iso if rec is not None else None,
+                             "revAt": rec.rev_at if rec is not None else None})
         await self._maybe_push(session_id, status)
         if completed_turn:
             await self._maybe_apply_auto_name(session_id)

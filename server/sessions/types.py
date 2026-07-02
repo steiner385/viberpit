@@ -66,6 +66,15 @@ class SessionRecord:
         the HTTP serializer (api/sessions.py), and the live WS status event (orchestrator)."""
         return iso_utc(self.last_turn_at or self.created_at)
 
+    @property
+    def rev_at(self) -> str | None:
+        """Monotonic per-session ordering token for client poll↔WS reconciliation: the
+        row-write time (`updated_at`, bumped on EVERY status persist), serialized. Distinct
+        from `updated_at_iso` (freshness = last_turn_at). The client keeps whichever of the
+        poll and the live WS patch carries the newer `rev_at`, so a stale in-flight poll
+        cannot overwrite a fresher live status."""
+        return iso_utc(self.updated_at)
+
     def to_dict(self) -> dict:
         # `updatedAt` is the "active … ago" / last-activity time, matching the HTTP
         # serializer (server/api/sessions.py `_record_to_dict`): the last turn's response,
@@ -82,6 +91,7 @@ class SessionRecord:
             "createdAt": iso_utc(self.created_at),
             "updatedAt": self.updated_at_iso,
             "lastTurnAt": iso_utc(self.last_turn_at),
+            "revAt": self.rev_at,
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
             "accountPinned": self.account_pinned,
@@ -97,10 +107,7 @@ class SessionRecord:
         from datetime import datetime
         created = d.get("createdAt")
         last_turn = d.get("lastTurnAt")
-        # `updated_at` (raw row-write column) is daemon-internal and not carried over RPC:
-        # `to_dict`'s `updatedAt` now means the last-activity time, and the edge never reads
-        # `record.updated_at`. Reconstructing it from `updatedAt` would wrongly stamp the
-        # last-activity time onto the row-write field — leave it unset.
+        rev = d.get("revAt")
         return cls(
             id=d["id"], name=d["name"], account=d["account"],
             claude_session_id=d["claudeSessionId"], cols=d["cols"], rows=d["rows"],
@@ -110,6 +117,7 @@ class SessionRecord:
             permission_mode=d.get("permissionMode", "interactive"),
             created_at=datetime.fromisoformat(created) if created else None,
             last_turn_at=datetime.fromisoformat(last_turn) if last_turn else None,
+            updated_at=datetime.fromisoformat(rev) if rev else None,
             adopted_in_place=d.get("adoptedInPlace", False),
             model=d.get("model"),
             account_pinned=d.get("accountPinned", False),

@@ -16,6 +16,7 @@ import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
 import { isSessionsViewing, setSessionsViewing } from './sessionsViewing'
+import { reconcileSessions } from '@/session/reconcile'
 import { toast } from 'sonner'
 
 // Query keys
@@ -65,6 +66,9 @@ export function useSessions() {
     queryFn: () => api.get<Session[]>(isSessionsViewing() ? '/sessions?viewing=1' : '/sessions'),
     staleTime: 3_000,
     refetchInterval: 5_000,
+    // Version-guarded merge: a stale in-flight poll must not overwrite a session the WS
+    // patched to a newer revAt. reconcileSessions keeps the newer of cache vs poll per id.
+    structuralSharing: (prev, next) => reconcileSessions(prev as Session[] | undefined, next as Session[]),
   })
   const data = useMemo<Session[] | undefined>(() => {
     if (pending.length === 0) return query.data

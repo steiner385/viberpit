@@ -80,6 +80,9 @@ export interface Session {
   summary?: string
   /** Active /goal condition for this session; null/absent = no goal. */
   activeGoal?: string | null
+  /** Row-write timestamp used to order poll vs. WS updates; bumped on every status persist.
+   *  Distinct from updatedAt (freshness). */
+  revAt?: string | null
   /** The PRs authored from this session's branches. */
   prs: PullRequestInfo[]
   /** True when the session was created without a verified usage read (optimistic pick). */

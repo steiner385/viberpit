@@ -13,10 +13,11 @@ import type { SessionEvent } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
 import { clientLogger } from '@/obs/logger'
 import { createGapState, resetSeq, handleLiveBatch, type GapState } from './liveBatch'
+import { shouldApplyRev } from '@/session/reconcile'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
-export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string }
+export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string }
 export interface WsUsageMsg        { type: 'usage';         account: string; session: { pct: number; resetsAt: string | null }; weekly: { pct: number; resetsAt: string | null } }
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null }
@@ -342,7 +343,7 @@ export class SessionSocket {
     switch (msg.type) {
       case 'status':
         this._emit('status', msg)
-        this._patchSessionStatus(msg.sessionId, msg.status as Session['status'], msg.updatedAt)
+        this._patchSessionStatus(msg.sessionId, msg.status as Session['status'], msg.updatedAt, msg.revAt)
         break
       case 'usage':
         this._emit('usage', msg)
@@ -400,16 +401,20 @@ export class SessionSocket {
 
   // ── TanStack Query cache patching ────────────────────────────────────────────
 
-  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string) {
+  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string) {
     const qc = this._queryClient
     if (!qc) return
     qc.setQueryData<Session[]>(QK.sessions, (old) => {
       if (!old) return old
-      // Use the server's authoritative updatedAt (last_turn_at-based). When the frame
-      // omits it, leave the cached value untouched — never fabricate from the client clock.
-      return old.map((s) => s.id === sessionId
-        ? { ...s, status, ...(updatedAt ? { updatedAt } : {}) }
-        : s)
+      return old.map((s) => {
+        if (s.id !== sessionId) return s
+        // Version guard: ignore a status frame strictly older than what's cached (a stale
+        // or duplicate frame that raced a newer poll/patch). Missing tokens → apply.
+        if (!shouldApplyRev(revAt, s.revAt)) return s
+        return { ...s, status,
+                 ...(updatedAt ? { updatedAt } : {}),
+                 ...(revAt ? { revAt } : {}) }
+      })
     })
   }
 
