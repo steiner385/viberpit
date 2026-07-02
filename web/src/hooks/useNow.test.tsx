@@ -44,3 +44,12 @@ describe('useNow', () => {
     expect(result.current).toBe(2_050_000) // immediate catch-up on return
   })
 })
+
+it('does not tick while active is false', () => {
+  vi.useFakeTimers()
+  const { result } = renderHook(() => useNow(1000, false))
+  expect(result.current).toBe(0)
+  act(() => { vi.advanceTimersByTime(3000) })
+  expect(result.current).toBe(0)   // frozen — the gate suppressed all ticks
+  vi.useRealTimers()
+})

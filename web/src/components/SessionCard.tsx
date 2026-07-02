@@ -14,6 +14,7 @@ import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
 import { useMediaQuery } from '@/lib/useMediaQuery'
 import { useSwipeAction } from '@/lib/useSwipeAction'
+import { useNow } from '@/hooks/useNow'
 import type { Session, Account } from '@/api/types'
 
 // Shared sizing for the per-session icon buttons: 44px tap target on touch,
@@ -109,6 +110,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   }, [listMode, selected])
 
   const repoLabel = formatRepoLabel(session.repo)
+  const now = useNow()
 
   // Touch-only swipe actions. lg = the app's desktop breakpoint (App.tsx); jsdom
   // reports false → mobile, so tests exercise this branch by default.
@@ -426,7 +428,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 className="ml-auto flex-shrink-0 text-xs text-gray-400 dark:text-gray-500 tabular-nums"
                 title={`Last active ${new Date(session.updatedAt).toLocaleString()}`}
               >
-                active {relTime(session.updatedAt)}
+                active {relTime(session.updatedAt, now || undefined)}
               </span>
             )}
           </div>
