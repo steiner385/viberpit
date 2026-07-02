@@ -54,6 +54,17 @@ def _default_ready_check(display: int, run_dir: str = "/tmp") -> bool:
     return Path(run_dir, ".X11-unix", f"X{display}").exists()
 
 
+def _default_vnc_ready_check(port: int) -> bool:
+    """True once something accepts a TCP connection on the RFB port (i.e. x11vnc
+    has finished binding). Called off the event loop via asyncio.to_thread."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
 @dataclass
 class DisplaySpec:
     session_id: str
@@ -86,7 +97,8 @@ class X11Manager:
     def __init__(self, allocator: DisplayAllocator, *, resolution: str, max_browsers: int,
                  vnc_idle_timeout_s: float = 1800.0,
                  spawn=asyncio.create_subprocess_exec, ready_check=None, run_dir: str = "/tmp",
-                 ready_timeout_s: float = 2.0, ready_interval_s: float = 0.05) -> None:
+                 ready_timeout_s: float = 2.0, ready_interval_s: float = 0.05,
+                 vnc_ready_check=None, vnc_ready_timeout_s: float = 5.0) -> None:
         self._allocator = allocator
         self._resolution = resolution
         self._max_browsers = max_browsers
@@ -96,6 +108,10 @@ class X11Manager:
         self._ready_check = ready_check or (lambda d: _default_ready_check(d, run_dir))
         self._ready_timeout_s = ready_timeout_s
         self._ready_interval_s = ready_interval_s
+        # Readiness probe for the VNC RFB port (x11vnc binds asynchronously after
+        # spawn). Injectable for tests, mirroring ready_check.
+        self._vnc_ready_check = vnc_ready_check or _default_vnc_ready_check
+        self._vnc_ready_timeout_s = vnc_ready_timeout_s
         self._specs: dict[str, DisplaySpec] = {}
         self._lock = asyncio.Lock()
         self._idle_tasks: set = set()
@@ -198,19 +214,40 @@ class X11Manager:
             return
         await asyncio.gather(*(self.stop_display(sid) for sid in sids), return_exceptions=True)
 
+    async def _await_vnc_ready(self, port: int) -> bool:
+        deadline = self._vnc_ready_timeout_s
+        waited = 0.0
+        while True:
+            if await asyncio.to_thread(self._vnc_ready_check, port):
+                return True
+            if waited >= deadline:
+                return False
+            await asyncio.sleep(self._ready_interval_s)
+            waited += self._ready_interval_s
+
     async def ensure_vnc(self, session_id: str) -> int | None:
         async with self._lock:
             spec = self._specs.get(session_id)
             if spec is None:
                 return None
-            if spec.x11vnc is None:
+            just_spawned = spec.x11vnc is None
+            if just_spawned:
                 spec.x11vnc = await self._spawn(
                     "x11vnc", "-display", f":{spec.lease.display}",
                     "-rfbport", str(spec.lease.rfbport), "-localhost", "-nopw",
                     "-auth", spec.xauthority, "-forever", "-shared", "-quiet",
                     stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
                 )
-            return spec.lease.rfbport
+        # x11vnc binds its RFB port asynchronously *after* spawn, so a caller that
+        # connects the instant ensure_vnc() returns races the bind and gets
+        # ConnectionRefused. Wait for the port to accept connections before
+        # returning — done OUTSIDE the lock so a first-attach wait can't stall
+        # start_display / other sessions. Best-effort: on timeout we log and still
+        # return the port (unchanged contract; the caller may retry).
+        if just_spawned and not await self._await_vnc_ready(spec.lease.rfbport):
+            log.warning("x11: VNC port %d for session %s not accepting connections after %.1fs",
+                        spec.lease.rfbport, session_id, self._vnc_ready_timeout_s)
+        return spec.lease.rfbport
 
     async def attach(self, session_id: str) -> int | None:
         spec = self._specs.get(session_id)
