@@ -11,8 +11,10 @@ from .selector import AllAccountsBusy
 
 
 def _fmt_reset(iso: str | None, tz: str) -> str:
+    # No active window (resets_at is None => 0% used) reads as a clear "fresh"
+    # state rather than a bare dash, per issue #16 acceptance criteria.
     if not iso:
-        return "-"
+        return "fresh"
     return datetime.fromisoformat(iso).astimezone(ZoneInfo(tz)).strftime("%a %-I:%M %p %Z")
 
 
