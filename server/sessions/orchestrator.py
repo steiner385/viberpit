@@ -308,6 +308,7 @@ class SessionOrchestrator:
             claim=self._backlog_claim,
             spawn=self._backlog_spawn,
             count_in_flight=self._backlog_count_in_flight,
+            count_candidates=self._backlog_count_candidates,
             healthy_account=self._backlog_healthy_account,
             pr_status_for=self._backlog_pr_status_for,
             pr_doctor_active=self._backlog_pr_doctor_active,
@@ -1113,6 +1114,20 @@ class SessionOrchestrator:
             status = (await db.execute(_select(DbSession.status).where(
                 DbSession.id == session_id))).scalar_one_or_none()
         return status in INACTIVE_SESSION_STATUSES
+
+    async def _backlog_count_candidates(self) -> int:
+        """Count of eligible, unclaimed OPEN issues in configured repos.
+
+        The honest backlog gauge for the Automation card — independent of how many
+        runner slots are free (a saturated runner still reports the real depth)."""
+        from server.automations.backlog_github import query_candidates
+        _mode, config = await self._backlog_read_config()
+        try:
+            cands = await asyncio.to_thread(query_candidates, config, gh_run=self._gh_run)
+        except Exception:  # pragma: no cover — a gh failure must not break the tick
+            log.warning("orchestrator._backlog_count_candidates_failed", exc_info=True)
+            return 0
+        return len(cands)
 
     async def _backlog_spawn(self, batch, account: str):
         """Spawn a de-duped runner session for *batch*, seeded with the implement

@@ -1,7 +1,14 @@
 # Backlog eligibility + PR Doctor scope + archived-slot recycling — Design
 
 **Date:** 2026-07-02
-**Status:** Approved (design), pending implementation plan
+**Status:** Approved. **Fix C (archived-slot recycling) DROPPED during implementation** —
+superseded by PR #421 ("auto-archive a spawned session when it signals completion"), which
+merged after this design was written. #421 already auto-archives completed backlog sessions and
+makes `_backlog_session_ended` treat `archived` as terminal so the sweep reclaims the slot —
+delivering the archived-capacity behavior this design's Fix C aimed for (and #421 deliberately
+charges an attempt / escalates to needs-human for a completed run with no PR, which the original
+Fix C would have contradicted). Only **Fix A** (PR Doctor repo-wide scope) and **Fix B** (true
+eligible count) were implemented. Fix A/B sections below stand; Fix C is retained only as a record.
 
 ## Problem
 

@@ -260,6 +260,9 @@ SelectBatch = Callable[[dict], Awaitable["Batch | None"]]
 Claim = Callable[["Batch"], Awaitable[bool]]
 Spawn = Callable[["Batch", str], Awaitable[Any]]
 CountInFlight = Callable[[], Awaitable[int]]
+# True count of eligible, unclaimed OPEN issues — the honest backlog gauge for
+# the Automation card, independent of how many runner slots are free.
+CountCandidates = Callable[[], Awaitable[int]]
 HealthyAccount = Callable[[], Awaitable["str | None"]]
 PrStatusFor = Callable[[str], Awaitable["PullRequestInfo | None"]]
 PrDoctorActive = Callable[[str], Awaitable[bool]]
@@ -330,6 +333,7 @@ class BacklogRunnerLoop:
         needs_human: NeedsHuman | None = None,
         session_ended: SessionEnded | None = None,
         reconcile: Reconcile | None = None,
+        count_candidates: CountCandidates | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
@@ -345,11 +349,11 @@ class BacklogRunnerLoop:
         self._needs_human = needs_human or _stub_needs_human  # add needs-human + remove
         self._session_ended = session_ended         # (session_id) -> bool | None
         self._reconcile = reconcile                 # (claimed_refs, live_refs) -> None
+        self._count_candidates = count_candidates    # -> int (true eligible backlog size)
         self._lock = asyncio.Lock()
         self._spawns_today: list[float] = []        # spawn timestamps within the rolling day
         self._circuit_open_emitted = False          # debounce the circuit_open event
         self._no_account_emitted = False            # debounce the skipped_no_account event
-        self._last_eligible = 0                      # last-seen eligible candidate count
 
     async def tick(self) -> None:
         async with self._lock:
@@ -393,9 +397,18 @@ class BacklogRunnerLoop:
             needs_human = sum(1 for s in states.values() if s.get("gave_up"))
         except Exception:  # pragma: no cover — defensive
             states = {}
+        # The honest backlog gauge: the true count of eligible, unclaimed issues,
+        # independent of how many runner slots are free (a saturated runner still
+        # reports real depth). Best-effort — a query failure reports 0.
+        eligible = 0
+        if self._count_candidates is not None:
+            try:
+                eligible = await self._count_candidates()
+            except Exception:  # pragma: no cover — a count read must not stall the tick
+                eligible = 0
         setattr(self._ctx, "backlog_counts", {
             "in_flight": in_flight,
-            "eligible": self._last_eligible,
+            "eligible": eligible,
             "needs_human": needs_human,
         })
 
@@ -455,9 +468,7 @@ class BacklogRunnerLoop:
             self._no_account_emitted = False  # an account is available again
             batch = await self._select_batch(config)
             if batch is None:
-                self._last_eligible = 0  # no candidates this tick
                 return  # no candidates
-            self._last_eligible = max(self._last_eligible, len(batch.issues))
             st = await self._ctx.get_target_state(batch.primary)
             if st.get("gave_up"):
                 continue

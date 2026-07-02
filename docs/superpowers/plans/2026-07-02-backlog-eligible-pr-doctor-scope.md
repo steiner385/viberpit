@@ -21,7 +21,16 @@
 
 ---
 
-### Task 1: Fix C — an archived spawned session frees its runner slot
+### Task 1: Fix C — an archived spawned session frees its runner slot  — DROPPED (superseded by PR #421)
+
+> **NOT IMPLEMENTED.** PR #421 ("auto-archive a spawned session when it signals completion")
+> merged after this plan was written and already delivers archived-slot recycling: it
+> auto-archives completed backlog sessions and treats `archived` as terminal in
+> `_backlog_session_ended`, so the sweep reclaims the slot. It deliberately charges an
+> attempt / escalates to needs-human for a completed run with no PR — which the Fix C below
+> would have contradicted. Implementing Fix C would be a parallel, conflicting implementation,
+> so it was dropped. The task text is retained only as a record.
+
 
 **Files:**
 - Modify: `server/automations/backlog_runner.py` (constructor seam + `_session_alive` + `_sweep_one`)
