@@ -28,9 +28,11 @@ export function allPhasesDone(deploy: DeployProgress | undefined): boolean {
 }
 
 export function deployOutcome(deploy: DeployProgress | undefined): 'success' | 'failure' {
+  // A lost session (restore.failed) is NOT a deploy failure: the backend keeps the
+  // RESUME phase DONE, never sets error, and never rolls back — the upgrade completed.
+  // Those sessions are surfaced as a warning on the success screen instead.
   const failed = !!deploy?.error
     || DEPLOY_PHASES.some(p => phaseState(deploy, p.key) === 'failed')
-    || (deploy?.restore?.failed?.length ?? 0) > 0
   if (failed) return 'failure'
   return allPhasesDone(deploy) ? 'success' : 'failure'
 }

@@ -32,6 +32,12 @@ export function DeployOverlay() {
           <div className="text-center py-6">
             <div className="text-3xl">✓</div>
             <p className="mt-2 font-medium">Deployed{shortSha && <span className="font-mono text-sm text-gray-500"> · {shortSha}</span>}</p>
+            {deploy?.restore?.failed?.length ? (
+              <p className="mt-2 text-sm text-amber-600 dark:text-amber-400">
+                {deploy.restore.failed.length} session{deploy.restore.failed.length === 1 ? '' : 's'} couldn’t be resumed:{' '}
+                <span className="font-mono">{deploy.restore.failed.join(', ')}</span>
+              </p>
+            ) : null}
           </div>
         ) : intent === 'held-failure' ? (
           <div>
