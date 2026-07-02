@@ -23,7 +23,7 @@ class Translator:
     def __init__(self):
         self.session_id: str | None = None
         self._turn_ids: dict[str | None, str] = {}   # parent_tool_use_id -> turn id (None = main)
-        self._open: set = set()                       # agent keys that emitted TurnStart
+        self._open: set[str | None] = set()           # agent keys that emitted TurnStart
         self._turn_id: str = ""                       # mirror of main turn id (driver._turn compat)
         self._seen_tools: set[str] = set()
         self._turn_text: str = ""
