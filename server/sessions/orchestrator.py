@@ -842,15 +842,22 @@ class SessionOrchestrator:
         return effective, config
 
     async def _backlog_count_in_flight(self) -> int:
-        """Restart-safe in-flight count: non-terminal sessions this automation
-        owns (``origin == 'backlog-runner'``), read fresh from the DB every tick
-        so a process restart re-derives the true count (never cached)."""
-        from sqlalchemy import func, select
-        async with db_session() as db:
-            return (await db.execute(
-                select(func.count()).select_from(DbSession).where(
-                    DbSession.origin == "backlog-runner",
-                    DbSession.status != "ended"))).scalar_one()
+        """Restart-safe in-flight count: active (not-given-up) durable target
+        states this automation holds, read fresh from the DB every tick.
+
+        A run occupies a slot from claim until the sweep frees it — merged /
+        handed off to PR Doctor / gave-up — which is EXACTLY when the target state
+        is deleted (or marked ``gave_up``). Counting active target states makes a
+        freed slot recycle immediately.
+
+        This deliberately does NOT count session rows: a spawned session never
+        reaches a terminal DB status on its own (``ended`` is only set on daemon
+        shutdown), so a finished-but-lingering ``done``/``idle``/``archived``
+        session used to keep holding its slot forever and the runner stopped
+        spawning new work. Target states are the authoritative slot ledger the
+        sweep already maintains."""
+        states = await self._backlog_ctx.list_target_states()
+        return sum(1 for st in states.values() if not st.get("gave_up"))
 
     async def _backlog_healthy_account(self) -> str | None:
         """A non-quarantined, non-limited account with headroom, or None.
