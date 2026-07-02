@@ -34,7 +34,7 @@ def make_steps(*, ci="green", healthy=True, changed=None):
         calls.rolled_back = True
     mod.rollback_to = rollback
     def publish(sha, gh_api_json=None):
-        calls.published = True; return True
+        calls.published = True; return None
     mod.publish_deployment = publish
     return mod, calls
 
