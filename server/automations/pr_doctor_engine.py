@@ -36,7 +36,14 @@ def classify(info: PullRequestInfo) -> str | None:
     if info.merge_state_status == "DRAFT" or info.is_draft:
         return None
     if info.merge_state_status == "BLOCKED":
-        return "blocked"  # review/required gate — notify only (non-goal to approve)
+        # BLOCKED gates the merge, but the CAUSE splits two ways: a failing
+        # *required* status check (branch protection) vs. a required review/
+        # approval. A failing check is exactly what PR Doctor fixes, so only the
+        # non-failing case is the human gate we merely notify about — otherwise a
+        # branch-protected repo (the common case) would never get an auto-fix.
+        if info.checks == "failing":
+            return "failing_ci"
+        return "blocked"  # review/approval gate — notify only (non-goal to approve)
     if info.mergeable == "CONFLICTING" or info.merge_state_status == "DIRTY":
         return "merge_conflict"
     if info.merge_state_status == "BEHIND":
