@@ -97,6 +97,14 @@ describe('DesktopShell', () => {
     expect(screen.getByRole('heading', { name: /^accounts$/i })).toBeInTheDocument()
   })
 
+  it('exposes the Automation and Insights tabs (wide-shell parity with the routed Dashboard)', () => {
+    // Regression: these tabs existed only on the narrow routed Dashboard, so on
+    // wide screens (which render DesktopShell) they were unreachable.
+    render(<DesktopShell />, { wrapper })
+    expect(screen.getByRole('tab', { name: /automation/i })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /insights/i })).toBeInTheDocument()
+  })
+
   it('deleting a session opens a confirm dialog; the mutation runs only on confirm', async () => {
     const user = userEvent.setup()
     const deleteMutate = vi.fn()
