@@ -84,6 +84,24 @@ but is wrong, fix it in place — adding a parallel "correct" copy *is* the anti
 
 Skill: `eliminating-parallel-implementations`.
 
+### Don't re-derive a verdict one layer already computed — defer to it
+
+A close cousin of the parallel-implementations bug: two layers each judge the *same outcome* from
+raw fields and reach **different conclusions**. The classic shape is a client re-computing a
+status the server already decided — e.g. the deploy backend deliberately treats a session that
+can't be resumed as a non-fatal *warning* (keeps the phase `DONE`, never sets `error`, never rolls
+back), but the frontend's `deployOutcome()` re-judged the raw `restore.failed` list and escalated
+it to a hard "Upgrade failed" (#404). Backend said success-with-warning; frontend said failure;
+the user saw a red modal over a deploy that actually completed.
+- When one layer owns a decision (success/failure, valid/invalid, allowed/denied), downstream
+  layers should **consume that verdict**, not recompute their own from the same inputs — the copies
+  drift and disagree.
+- The tell that you're about to add a second judge: you're reading the *same underlying fields* the
+  authoritative layer read, to re-answer a question it already answered. Surface its answer instead.
+- Sibling audit: when you find one, grep for other places the client re-derives server-owned status
+  (`*Outcome`, `is*Failed`, status maps built from raw response fields) and route them through the
+  authoritative field too.
+
 ### Purge replaced code in the same change — no half-dead code
 
 When you replace a file, route, model, or function, delete the old version in the **same PR**. A
