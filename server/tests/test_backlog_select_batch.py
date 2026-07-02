@@ -131,6 +131,59 @@ async def test_select_batch_rank_never_called_when_single_candidate():
 
 
 # --------------------------------------------------------------------------- #
+# Per-repo fairness (repo_load)                                                #
+# --------------------------------------------------------------------------- #
+
+_MULTI_REPO = [
+    {"ref": "o/a#1", "number": 1, "repo": "o/a", "title": "a-one"},
+    {"ref": "o/b#2", "number": 2, "repo": "o/b", "title": "b-two"},
+]
+
+
+@pytest.mark.asyncio
+async def test_select_batch_prefers_least_loaded_repo():
+    """The ranker top-picks o/a#1, but o/a already has active runs and o/b has
+    none → fairness re-biases the primary to the idle repo o/b."""
+    config = make_config(enabled_repos=["o/a", "o/b"], max_issues_per_pr=1)
+    result = await select_batch(
+        config,
+        query=canned_query(_MULTI_REPO),
+        rank=lambda cs, cfg: ["o/a#1", "o/b#2"],
+        repo_load={"o/a": 3, "o/b": 0},
+    )
+    assert result is not None
+    assert result.primary == "o/b#2"  # least-loaded repo wins the freed slot
+    assert result.repo == "o/b"
+
+
+@pytest.mark.asyncio
+async def test_repo_load_preserves_rank_within_a_repo():
+    """Fairness is a stable re-ordering: within one repo the ranker order stands."""
+    config = make_config(max_issues_per_pr=1)
+    result = await select_batch(
+        config,
+        query=canned_query(CANDIDATES),  # all o/r
+        rank=lambda cs, cfg: ["o/r#9", "o/r#5", "o/r#2"],
+        repo_load={"o/r": 5},
+    )
+    assert result is not None
+    assert result.primary == "o/r#9"  # single repo → ranker priority unchanged
+
+
+@pytest.mark.asyncio
+async def test_no_repo_load_keeps_ranker_order():
+    """Absent repo_load (the default) leaves selection exactly as before."""
+    config = make_config(enabled_repos=["o/a", "o/b"], max_issues_per_pr=1)
+    result = await select_batch(
+        config,
+        query=canned_query(_MULTI_REPO),
+        rank=lambda cs, cfg: ["o/a#1", "o/b#2"],
+    )
+    assert result is not None
+    assert result.primary == "o/a#1"  # ranker's top pick, no fairness applied
+
+
+# --------------------------------------------------------------------------- #
 # FakeGh wiring (gh_run injected)                                             #
 # --------------------------------------------------------------------------- #
 
