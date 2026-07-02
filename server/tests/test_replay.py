@@ -1,10 +1,109 @@
 import asyncio
 import json
 from pathlib import Path
-from server.sessions.replay import replay_events, _parse
-from server.sessions.events import ToolCall, ToolResult
+from server.sessions.replay import replay_events, replay_window, _parse
+from server.sessions.events import ToolCall, ToolResult, TextDelta, ThinkingDelta
 
 FIX = Path(__file__).parent / "fixtures" / "transcript.jsonl"
+
+
+def _write_layout_b(root: Path, sid: str, *, main_cwd: str, sub_cwd: str | None = None):
+    """Materialize a Layout-B session on disk under a fake ``projects`` tree.
+
+    Main transcript at ``projects/<main_cwd>/<sid>.jsonl`` spawns one Task
+    (tool-use id ``toolu_task``); the sub-agent's own thread lives in
+    ``projects/<sub_cwd>/<sid>/subagents/agent-1.jsonl`` (+ ``.meta.json``).
+    ``sub_cwd`` defaults to ``main_cwd`` (sibling); pass a different value to
+    exercise the cross-cwd join (main checkout vs. worktree). Returns the main
+    transcript path.
+    """
+    projects = root / "projects"
+    main_dir = projects / main_cwd
+    main_dir.mkdir(parents=True, exist_ok=True)
+    main_path = main_dir / f"{sid}.jsonl"
+    main_path.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "user", "uuid": "u1", "message": {"role": "user", "content": "go"}},
+        {"type": "assistant", "uuid": "a1", "message": {"model": "claude", "content": [
+            {"type": "tool_use", "id": "toolu_task", "name": "Task",
+             "input": {"subagent_type": "Explore", "description": "look"}}]}},
+        {"type": "user", "uuid": "u2", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_task", "content": "sub done"}]}},
+    ]))
+    sub_dir = projects / (sub_cwd or main_cwd) / sid / "subagents"
+    sub_dir.mkdir(parents=True, exist_ok=True)
+    (sub_dir / "agent-1.jsonl").write_text("\n".join(json.dumps(r) for r in [
+        {"type": "user", "isSidechain": True, "uuid": "s0", "parentUuid": None,
+         "message": {"role": "user", "content": "the sub-agent prompt"}},
+        {"type": "assistant", "isSidechain": True, "uuid": "s1", "parentUuid": "s0",
+         "message": {"model": "claude", "content": [
+             {"type": "thinking", "thinking": "let me search"},
+             {"type": "text", "text": "searching now"},
+             {"type": "tool_use", "id": "g1", "name": "Grep", "input": {"pattern": "x"}}]}},
+        {"type": "user", "isSidechain": True, "uuid": "s2", "parentUuid": "s1",
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "g1", "content": "match"}]}},
+    ]))
+    (sub_dir / "agent-1.meta.json").write_text(json.dumps(
+        {"agentType": "Explore", "description": "look", "toolUseId": "toolu_task"}))
+    return str(main_path)
+
+
+def test_replay_window_reconstructs_subagent_thread(tmp_path):
+    """On reattach, each sub-agent's internal turns (text/thinking/tool calls +
+    results) are reconstructed from its ``subagents/agent-*.jsonl`` sidecar and
+    tagged with the spawning Task's tool-use id, so the reducer routes them into
+    the Task card — matching the live view."""
+    main = _write_layout_b(tmp_path, "sess1", main_cwd="-cwd-a")
+    evs = asyncio.run(replay_window(main)).events
+
+    # Internal steps carry the Task tool-use id (meta.toolUseId → parentToolUseId).
+    sub_tools = [e for e in evs if isinstance(e, ToolCall) and e.parent_tool_use_id == "toolu_task"]
+    assert [e.name for e in sub_tools] == ["Grep"]
+    sub_text = [e for e in evs if isinstance(e, TextDelta) and e.parent_tool_use_id == "toolu_task"]
+    assert any("searching now" in e.text for e in sub_text)
+    sub_think = [e for e in evs if isinstance(e, ThinkingDelta) and e.parent_tool_use_id == "toolu_task"]
+    assert any("let me search" in e.text for e in sub_think)
+    sub_res = [e for e in evs if isinstance(e, ToolResult) and e.parent_tool_use_id == "toolu_task"]
+    assert any(e.tool_id == "g1" for e in sub_res)
+
+    # The spawning Task call stays on the MAIN thread (untagged).
+    main_task = [e for e in evs if isinstance(e, ToolCall) and e.name == "Task"]
+    assert main_task and main_task[0].parent_tool_use_id is None
+
+    # The sub-agent's own prompt is NOT rendered as a bubble (mirrors live, where
+    # the prompt is already the Task card's input).
+    assert not any(getattr(e, "text", None) == "the sub-agent prompt" for e in evs)
+
+
+def test_replay_window_subagent_cross_cwd_join(tmp_path):
+    """The main transcript and the ``subagents/`` dir can live under DIFFERENT
+    encoded-cwd dirs (main checkout vs. worktree). The session-id is the join
+    key, so reconstruction still finds the sidecar."""
+    main = _write_layout_b(tmp_path, "sess2", main_cwd="-cwd-main", sub_cwd="-cwd-worktree")
+    evs = asyncio.run(replay_window(main)).events
+    sub_tools = [e for e in evs if isinstance(e, ToolCall) and e.parent_tool_use_id == "toolu_task"]
+    assert [e.name for e in sub_tools] == ["Grep"]
+
+
+def test_replay_events_excludes_subagents(tmp_path):
+    """``replay_events`` feeds the sub-agent SUMMARY + suggestions, which must stay
+    main-only — reconstructing nested threads there would corrupt the summary.
+    Only ``replay_window`` (the reattach/UI path) reconstructs sub-agent threads."""
+    main = _write_layout_b(tmp_path, "sess3", main_cwd="-cwd-a")
+    evs = asyncio.run(replay_events(main))
+    assert not any(getattr(e, "parent_tool_use_id", None) for e in evs)
+
+
+def test_replay_window_scopes_subagents_to_task_in_window(tmp_path):
+    """A sub-agent sidecar whose ``toolUseId`` has no matching Task tool-call in
+    the replayed window is not reconstructed (nothing to attach it to)."""
+    main = _write_layout_b(tmp_path, "sess4", main_cwd="-cwd-a")
+    # Rewrite the meta to reference a Task id that never appears in the main window.
+    meta = Path(main).parent / "sess4" / "subagents" / "agent-1.meta.json"
+    meta.write_text(json.dumps(
+        {"agentType": "Explore", "description": "look", "toolUseId": "toolu_absent"}))
+    evs = asyncio.run(replay_window(main)).events
+    assert not any(getattr(e, "parent_tool_use_id", None) for e in evs)
 
 def test_replay_emits_summary_events():
     out = asyncio.run(replay_events(str(FIX)))
