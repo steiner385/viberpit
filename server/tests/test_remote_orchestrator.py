@@ -2,7 +2,7 @@ import asyncio
 import types
 from unittest import mock
 import pytest
-from server.ipc.client import DaemonClient, DaemonUnavailable
+from server.ipc.client import DaemonClient, DaemonError, DaemonUnavailable
 from server.ipc.daemon import create_daemon_app
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.sessions.orchestrator import SessionOrchestrator
@@ -80,6 +80,66 @@ async def test_prs_for_over_uds():
             await ro.aclose()
     assert [p.number for p in got] == [1, 2]
     assert empty == []
+
+
+@pytest.mark.asyncio
+async def test_run_command_translates_daemon_keyerror_back_to_keyerror():
+    """Unknown-slash-command parity across the IPC boundary (#164).
+
+    In-process, orchestrator.run_command raises KeyError(name) for an unknown command
+    and ws.py's `except KeyError` renders a clean "unknown command" result. But an
+    exception's *type* doesn't survive the RPC round-trip — it collapses to
+    DaemonError — so without translation the remote path fell through to the generic
+    "command failed" branch. RemoteOrchestrator must reconstitute the KeyError so the
+    remote surface behaves identically to the local one."""
+    class _KeyErrClient:
+        async def call(self, method, **params):
+            raise DaemonError("KeyError", "'bogus'")
+
+    ro = RemoteOrchestrator(_KeyErrClient())
+    with pytest.raises(KeyError):
+        await ro.run_command("s1", "bogus", "")
+
+
+@pytest.mark.asyncio
+async def test_run_command_passes_through_non_keyerror_daemon_errors():
+    """A non-KeyError daemon failure must NOT be masquerade as an unknown command —
+    it stays a DaemonError so ws.py reports the generic failure, matching the
+    in-process path (where only KeyError means 'unknown command')."""
+    class _BoomClient:
+        async def call(self, method, **params):
+            raise DaemonError("ValueError", "boom")
+
+    ro = RemoteOrchestrator(_BoomClient())
+    with pytest.raises(DaemonError):
+        await ro.run_command("s1", "cmd", "")
+
+
+@pytest.mark.asyncio
+async def test_run_command_unknown_over_uds_surfaces_keyerror():
+    """End-to-end: a real unknown command over the real daemon IPC surfaces a
+    KeyError on the edge (the daemon envelope carries type=KeyError). This proves the
+    whole path — daemon raise → error envelope → DaemonError → translation — so ws.py
+    can render 'unknown command' in daemon mode exactly as it does in-process."""
+    app, orch = _build_app()
+
+    class _NoCmdDriver:
+        async def server_info(self):
+            return {}  # empty catalog → every non-synthetic command is unknown
+
+    orch._drivers["s1"] = _NoCmdDriver()
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            with pytest.raises(KeyError):
+                await ro.run_command("s1", "totally-bogus-cmd-xyz", "")
+            # A session with no live driver is NOT an error — it returns a clean
+            # "not live" notice (return value crosses IPC losslessly, no exception).
+            notice = await ro.run_command("no-such-session", "anything", "")
+        finally:
+            await ro.aclose()
+    assert notice["render"] == "notice"
+    assert "isn't live" in notice["data"]["text"]
 
 
 @pytest.mark.asyncio

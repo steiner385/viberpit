@@ -9,6 +9,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from ccswitch.oauth import Usage
+from server.ipc.client import DaemonError
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
@@ -231,7 +232,21 @@ class RemoteOrchestrator:
         return await self._client.call("command_catalog", session_id=session_id)
 
     async def run_command(self, session_id, name, args):
-        return await self._client.call("run_command", session_id=session_id, name=name, args=args)
+        """Proxy run_command, faithfully reconstituting the in-process error contract.
+
+        The daemon-side orchestrator.run_command raises ``KeyError(name)`` for an
+        unknown command, and ws.py distinguishes that ("unknown command" chip) from a
+        generic failure ("command failed") solely by the exception *type*. But an
+        exception's type doesn't survive the RPC boundary — it collapses to a
+        DaemonError whose ``err_type`` carries the original class name. Re-raise a
+        KeyError so the remote path renders identically to the local one; any other
+        DaemonError propagates unchanged (still the generic-failure branch)."""
+        try:
+            return await self._client.call("run_command", session_id=session_id, name=name, args=args)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            raise
 
     async def latest_suggestions(self, session_id: str) -> list[str]:
         r = await self._client.call("latest_suggestions", session_id=session_id)
