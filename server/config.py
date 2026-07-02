@@ -49,6 +49,13 @@ try:
         max_browsers: int = Field(default=6, alias="CCSWITCH_MAX_BROWSERS")
         vnc_port_base: int = Field(default=6100, alias="CCSWITCH_VNC_PORT_BASE")
         xvfb_resolution: str = Field(default="1280x800x24", alias="CCSWITCH_XVFB_RESOLUTION")
+        # Pass --no-sandbox to the managed Chromium. A conscious security downgrade for
+        # hosts where kernel.apparmor_restrict_unprivileged_userns=1 would otherwise FATAL
+        # it at startup (quickstart §8b); keep OFF unless the host requires it (issue #136).
+        chromium_no_sandbox: bool = Field(default=False, alias="CCSWITCH_CHROMIUM_NO_SANDBOX")
+        # Grace window (s) after spawning a managed browser before reporting success, so a
+        # startup-FATAL launch isn't counted as live. 0 disables the check.
+        browser_liveness_s: float = Field(default=0.3, alias="CCSWITCH_BROWSER_LIVENESS_S")
         vnc_idle_timeout_s: float = Field(default=1800.0, alias="CCSWITCH_VNC_IDLE_TIMEOUT_S")
         log_level: str = Field(default="INFO", alias="CCSWITCH_LOG_LEVEL")
         log_dir: str = Field(
@@ -143,6 +150,12 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         xvfb_resolution: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_XVFB_RESOLUTION", "1280x800x24")
+        )
+        chromium_no_sandbox: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CHROMIUM_NO_SANDBOX", "false").lower() in ("1","true","yes","on")
+        )
+        browser_liveness_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_BROWSER_LIVENESS_S", "0.3"))
         )
         vnc_idle_timeout_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("CCSWITCH_VNC_IDLE_TIMEOUT_S", "1800"))

@@ -4,12 +4,29 @@ import asyncio
 import logging
 import os
 import secrets
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from server.sessions.adopt import _proc_lister, terminate_process_tree
 
 log = logging.getLogger("server.x11")
+
+# Chromium ships under several command names across distros/packaging: Debian/Ubuntu
+# apt ("chromium"), older Ubuntu ("chromium-browser"), the snap transitional wrapper,
+# and Google's own builds ("google-chrome"/"-stable"). Managed launch resolves the
+# first that exists rather than hardcoding "chromium" (issue #136).
+CHROMIUM_CANDIDATES = ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable")
+
+
+def resolve_chromium() -> str | None:
+    """Return the first Chromium-family binary on PATH, or None if none is installed."""
+    for cand in CHROMIUM_CANDIDATES:
+        found = shutil.which(cand)
+        if found:
+            return found
+    return None
 
 
 class PoolExhausted(RuntimeError):
@@ -73,6 +90,7 @@ class DisplaySpec:
     xvfb: object | None = None
     x11vnc: object | None = None
     browsers: list = field(default_factory=list)   # managed Chromium procs
+    browser_profiles: list = field(default_factory=list)  # auto-minted --user-data-dir dirs to rm on teardown
     vnc_clients: int = 0
     debug_port: int | None = None
 
@@ -98,13 +116,23 @@ class X11Manager:
                  vnc_idle_timeout_s: float = 1800.0,
                  spawn=asyncio.create_subprocess_exec, ready_check=None, run_dir: str = "/tmp",
                  ready_timeout_s: float = 2.0, ready_interval_s: float = 0.05,
-                 vnc_ready_check=None, vnc_ready_timeout_s: float = 5.0) -> None:
+                 vnc_ready_check=None, vnc_ready_timeout_s: float = 5.0,
+                 no_sandbox: bool = False, chromium_cmd: str = "chromium",
+                 browser_liveness_s: float = 0.0) -> None:
         self._allocator = allocator
         self._resolution = resolution
         self._max_browsers = max_browsers
         self._vnc_idle_timeout_s = vnc_idle_timeout_s
         self._spawn = spawn
         self._run_dir = run_dir
+        # Managed-browser launch posture (issue #136):
+        #   no_sandbox      — opt into --no-sandbox for AppArmor-userns-restricted hosts
+        #   chromium_cmd    — resolved binary (distros vary; see resolve_chromium)
+        #   browser_liveness_s — post-spawn grace before trusting the launch; 0 disables
+        #                        (kept 0 by default so unit tests stay synchronous)
+        self._no_sandbox = no_sandbox
+        self._chromium_cmd = chromium_cmd
+        self._browser_liveness_s = browser_liveness_s
         self._ready_check = ready_check or (lambda d: _default_ready_check(d, run_dir))
         self._ready_timeout_s = ready_timeout_s
         self._ready_interval_s = ready_interval_s
@@ -189,6 +217,8 @@ class X11Manager:
                     await asyncio.to_thread(terminate_process_tree, pid)
             except Exception:
                 log.exception("x11: browser tree kill failed")
+        for prof in spec.browser_profiles:
+            self._cleanup_profile(prof)
         await _terminate(spec.x11vnc)
         await _terminate(spec.xvfb)
         for p in (spec.xauthority,
@@ -285,15 +315,27 @@ class X11Manager:
         spec = self._specs.get(session_id)
         if spec is None or len(spec.browsers) >= self._max_browsers:
             return False
-        argv = ["chromium",
+        argv = [self._chromium_cmd,
                 "--disable-dev-shm-usage", "--no-first-run", "--start-maximized"]
+        # --no-sandbox is a conscious downgrade (quickstart §8b): only when the host's
+        # userns restriction would otherwise FATAL Chromium at zygote init.
+        if self._no_sandbox:
+            argv.append("--no-sandbox")
         if debug_port:
             port = spec.lease.rfbport + 1000
             argv.append(f"--remote-debugging-port={port}")
             argv.append("--remote-allow-origins=*")
             spec.debug_port = port
-        if profile_dir is not None:
-            argv.append(f"--user-data-dir={profile_dir}")
+        # Each managed launch needs its OWN profile: Chromium enforces one process per
+        # --user-data-dir, so two sessions sharing the default profile hand off to the
+        # first's singleton and the second exits without a window. Callers that want a
+        # persistent profile (reauth passkey flow) pass profile_dir explicitly; the
+        # default "Open a browser" path mints a throwaway dir cleaned up on teardown.
+        auto_profile: str | None = None
+        if profile_dir is None:
+            auto_profile = tempfile.mkdtemp(prefix=f"ccswitch-prof-{session_id}-", dir=self._run_dir)
+            profile_dir = auto_profile
+        argv.append(f"--user-data-dir={profile_dir}")
         if url:
             argv.append(url)
         env = dict(os.environ, DISPLAY=f":{spec.lease.display}", XAUTHORITY=spec.xauthority)
@@ -302,10 +344,34 @@ class X11Manager:
                                      stdout=asyncio.subprocess.DEVNULL,
                                      stderr=asyncio.subprocess.DEVNULL)
         except FileNotFoundError:
-            log.exception("x11: chromium missing")
+            log.exception("x11: chromium binary %r missing", self._chromium_cmd)
+            self._cleanup_profile(auto_profile)
+            return False
+        # A forked process is not a rendered window: a sandbox-FATAL Chromium exits
+        # milliseconds after spawn. Give it a grace window and refuse to report success
+        # (or count it in metrics) if it already died — a dead launch must not look healthy.
+        if not await self._await_browser_alive(proc):
+            log.warning("x11: managed browser for session %s exited during startup (rc=%s)",
+                        session_id, getattr(proc, "returncode", "?"))
+            self._cleanup_profile(auto_profile)
             return False
         spec.browsers.append(proc)
+        if auto_profile is not None:
+            spec.browser_profiles.append(auto_profile)
         return True
+
+    async def _await_browser_alive(self, proc) -> bool:
+        """Best-effort liveness: True unless the process exits within the grace window.
+        With browser_liveness_s == 0 the check is skipped (unit tests stay synchronous)."""
+        if self._browser_liveness_s <= 0:
+            return True
+        await asyncio.sleep(self._browser_liveness_s)
+        return getattr(proc, "returncode", None) is None
+
+    @staticmethod
+    def _cleanup_profile(path: str | None) -> None:
+        if path:
+            shutil.rmtree(path, ignore_errors=True)
 
     def debug_port_for(self, session_id: str) -> int | None:
         spec = self._specs.get(session_id)
@@ -418,9 +484,6 @@ class X11Manager:
             return True
 
 
-import shutil  # noqa: E402 — kept here so the module stays importable without shutil at top-level scope
-
-
 def build_x11_manager(settings) -> "X11Manager | None":
     """Factory: return None when disabled or when binaries are missing (fail-loud warning)."""
     if not getattr(settings, "enable_xvfb", False):
@@ -433,10 +496,22 @@ def build_x11_manager(settings) -> "X11Manager | None":
             missing,
         )
         return None
+    # Chromium is only needed for the managed "Open a browser" action; Xvfb/x11vnc still
+    # serve agent-launched browsers, so a missing binary is a loud warning, not a disable.
+    chromium = resolve_chromium()
+    if chromium is None:
+        log.warning(
+            "x11: no Chromium-family binary on PATH %s — 'Open a browser' will fail. "
+            "Install one: playwright install --with-deps chromium (or apt install chromium).",
+            CHROMIUM_CANDIDATES,
+        )
     alloc = DisplayAllocator(settings.display_start, settings.display_count, settings.vnc_port_base)
     return X11Manager(
         alloc,
         resolution=settings.xvfb_resolution,
         max_browsers=settings.max_browsers,
         vnc_idle_timeout_s=settings.vnc_idle_timeout_s,
+        no_sandbox=getattr(settings, "chromium_no_sandbox", False),
+        chromium_cmd=chromium or "chromium",
+        browser_liveness_s=getattr(settings, "browser_liveness_s", 0.3),
     )
