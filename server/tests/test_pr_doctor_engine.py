@@ -23,6 +23,16 @@ def test_classify_blocked_is_review():
     assert classify(_pr(merge_state_status="BLOCKED")) == "blocked"
 
 
+def test_classify_blocked_with_failing_required_check_is_failing_ci():
+    # GitHub reports merge_state_status=BLOCKED for a failing *required* check
+    # (branch protection), not only for a review/approval gate. A failing check
+    # is fixable, so it must classify as failing_ci — otherwise PR Doctor only
+    # ever notifies and never fixes branch-protected PRs (the common case).
+    assert classify(_pr(merge_state_status="BLOCKED", checks="failing")) == "failing_ci"
+    # BLOCKED with non-failing checks is a genuine review/approval gate → notify.
+    assert classify(_pr(merge_state_status="BLOCKED", checks="passing")) == "blocked"
+
+
 def test_classify_conflict_via_mergeable_or_dirty():
     assert classify(_pr(mergeable="CONFLICTING")) == "merge_conflict"
     assert classify(_pr(merge_state_status="DIRTY")) == "merge_conflict"
