@@ -289,16 +289,30 @@ export class SessionSocket {
     this._emit('connectionStateChange', state)
   }
 
-  /** Self-heal a detected live-stream gap by re-attaching the active session, which
-   *  triggers the server's replayReset → replay → replayComplete rebuild. Rate-limited
-   *  so a persistently gappy stream cannot storm the server with re-attaches. */
+  /** Self-heal a detected live-stream gap by detaching then re-attaching the active
+   *  session, which triggers the server's replayReset → replay → replayComplete rebuild.
+   *
+   *  WHY detach before attach: the server's _handle_attach opens with
+   *  `if session_id in live_tasks: return` — so a bare re-attach of an already-live
+   *  session is a no-op: no replayReset, no replay, no replayComplete, gap not healed.
+   *  Sending detach first removes the session from live_tasks (cancels only THIS
+   *  socket's forwarding task; the driver keeps running and buffering). The subsequent
+   *  attach then passes the guard and runs the full LIVE-attach path.  The server
+   *  processes frames sequentially (single awaited receive loop), so detach fully
+   *  completes before attach — no race.
+   *
+   *  We use raw _send() rather than the public detach()/attach() methods because those
+   *  mutate _activeSessionId; the heal must leave it intact.
+   *
+   *  Rate-limited so a persistently gappy stream cannot storm the server. */
   private _healActiveSession() {
     const sid = this._activeSessionId
     if (!sid) return
     const now = Date.now()
     if (now - this._lastHealAt < SessionSocket.HEAL_COOLDOWN_MS) return
     this._lastHealAt = now
-    clientLogger.warn('ws gap detected — re-attaching to heal transcript', { sessionId: sid })
+    clientLogger.warn('ws gap detected — healing transcript via detach+attach', { sessionId: sid })
+    this._send({ type: 'detach', sessionId: sid })
     this._send({ type: 'attach', sessionId: sid })
   }
 
