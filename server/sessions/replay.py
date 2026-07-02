@@ -75,7 +75,14 @@ def _build_events(path: str) -> tuple[list, object | None]:
             # etc. Rendering them makes the skill's own prompt look like the user's
             # (or our) message — suppress the bubble. (Any tool_results on the entry
             # still emit below; in practice these meta entries carry only text.)
-            if (text or imgs) and not o.get("isMeta"):
+            #
+            # A background task's termination is delivered the same way — a plain-string
+            # `type:"user"` entry holding a `<task-notification>` block — but is NOT
+            # flagged `isMeta`. It is still harness plumbing (the live translator drops
+            # it, forwarding only tool_result blocks from user messages), so suppress its
+            # raw-XML bubble too. The tool_result-carried form still renders in its card.
+            is_task_notification = text.lstrip().startswith("<task-notification>")
+            if (text or imgs) and not o.get("isMeta") and not is_task_notification:
                 out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
                                           images=imgs or None, ts=ts))
             for r in results:
