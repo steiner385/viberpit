@@ -247,6 +247,35 @@ def test_sweep_skips_terminal_and_healthy(monkeypatch, tmp_path):
     asyncio.run(run())
 
 
+def test_sweep_stashes_failing_count_for_status(monkeypatch, tmp_path):
+    """After a sweep the pr-doctor ctx carries a live ``pr_doctor_counts`` so
+    ``PrDoctor.status(ctx)`` renders 'watching N failing PR(s)' instead of always
+    'idle'. Counts are stashed regardless of mode (a display, not an action)."""
+
+    async def run():
+        await _init_pr_doctor_db(tmp_path)
+        await _set_mode(monkeypatch, "off")  # off: no recovery, but counts still stash
+        failing = _pr(number=7, checks="failing")
+        healthy = _pr(number=8, state="open", checks="passing",
+                      merge_state_status="CLEAN", mergeable="MERGEABLE")
+        cache = {("o/r", "feat/a"): failing, ("o/r", "feat/b"): healthy}
+        orch = _build_orch(cache, [("o/r", "feat/a"), ("o/r", "feat/b")],
+                           records={}, drivers={})
+
+        await orch._pr_doctor_sweep()
+
+        counts = getattr(orch._pr_doctor_ctx, "pr_doctor_counts", None)
+        assert counts is not None
+        assert counts["failing"] == 1  # only the failing-CI PR is actionable
+
+        from server.automations.pr_doctor import PrDoctor
+        status = PrDoctor().status(orch._pr_doctor_ctx).to_dict()
+        assert status["level"] == "active"
+        assert "watching 1" in status["text"]
+
+    asyncio.run(run())
+
+
 def test_sweep_per_pr_error_does_not_abort(monkeypatch, tmp_path):
     """One PR whose _pr_doctor_step raises must not abort the sweep: the second,
     healthy PR is still reached (best-effort per-PR isolation)."""

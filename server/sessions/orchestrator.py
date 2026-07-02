@@ -1065,11 +1065,27 @@ class SessionOrchestrator:
         *interval* seconds while the automation is enabled; a disabled row makes
         each tick idle-and-sweep (mode=='off') cheaply."""
         while True:
-            try:
-                await self._backlog_loop.tick()
-            except Exception:  # pragma: no cover — tick() already swallows; belt+braces
-                log.warning("backlog_runner.tick_loop_error", exc_info=True)
+            await self._backlog_tick_once()
             await asyncio.sleep(interval)
+
+    async def _backlog_tick_once(self) -> None:
+        """One control-loop tick plus a ``last_active_at`` heartbeat. Extracted
+        from the interval loop so tests can drive a single iteration.
+
+        The heartbeat fires only while the automation is ENABLED (effective mode
+        != 'off'), giving the card a fresh "last active" the way pr-doctor already
+        gets one; a disabled row is intentionally left to go stale. Best-effort —
+        neither the tick nor the heartbeat may crash the loop."""
+        try:
+            await self._backlog_loop.tick()
+        except Exception:  # pragma: no cover — tick() already swallows; belt+braces
+            log.warning("backlog_runner.tick_loop_error", exc_info=True)
+        try:
+            mode, _ = await self._backlog_read_config()
+            if mode != "off":
+                await self._bump_automation_active("backlog-runner")
+        except Exception:  # pragma: no cover — a heartbeat failure must not stall
+            log.debug("backlog_runner.bump_active_failed", exc_info=True)
 
     async def _pr_doctor_config(self) -> dict:
         """The pr-doctor row's config merged onto the PrDoctor schema defaults.
@@ -1096,18 +1112,21 @@ class SessionOrchestrator:
             # back to pure schema defaults.
             return validate_config(PrDoctor.config_schema, {})
 
-    async def _pr_doctor_bump_active(self) -> None:
-        """Best-effort ``last_active_at`` heartbeat on the pr-doctor row."""
+    async def _bump_automation_active(self, automation_id: str) -> None:
+        """Best-effort ``last_active_at`` heartbeat on an automation row.
+
+        Shared by pr-doctor (per poll-cycle) and the backlog runner (per enabled
+        tick) so the card's "last active" reflects a live loop for either."""
         try:
             from sqlalchemy import update as sa_update
             from server.db.models import Automation
             from datetime import datetime, timezone
             async with db_session() as db:
                 await db.execute(sa_update(Automation)
-                                 .where(Automation.id == "pr-doctor")
+                                 .where(Automation.id == automation_id)
                                  .values(last_active_at=datetime.now(timezone.utc)))
         except Exception:
-            log.debug("pr_doctor.bump_active_failed", exc_info=True)
+            log.debug("automation.bump_active_failed id=%s", automation_id, exc_info=True)
 
     async def _on_pr_change(
         self, repo: str, branch: str, old_checks: str | None, new_checks: str
@@ -1204,6 +1223,18 @@ class SessionOrchestrator:
                 await self._pr_doctor_step(repo, branch, info, rec=rec)
             except Exception:
                 log.warning("orchestrator._pr_doctor_sweep_step_failed", exc_info=True)
+        # Stash a live summary on the ctx so ``PrDoctor.status(ctx)`` renders
+        # "watching N failing PR(s)" instead of always "idle" (parity with the
+        # backlog runner's ``_stash_counts``). Reuses ``pr_doctor_actionable`` —
+        # the canonical "PRs with a real recovery mode" computation — rather than
+        # a parallel counter. Best-effort: a count read must not break the sweep.
+        try:
+            actionable = await self.pr_doctor_actionable()
+            # ``setattr`` (not a typed attribute) mirrors the backlog runner's
+            # ``_stash_counts`` — the ctx carries dynamic per-automation summaries.
+            setattr(self._pr_doctor_ctx, "pr_doctor_counts", {"failing": len(actionable)})
+        except Exception:  # pragma: no cover — defensive: never break the sweep
+            log.debug("pr_doctor.stash_counts_failed", exc_info=True)
 
     async def _pr_doctor_step(
         self, repo: str, branch: str, info: PullRequestInfo, *, rec=None
@@ -1234,7 +1265,7 @@ class SessionOrchestrator:
 
         mode = await self._pr_autofix_mode()
         config = await self._pr_doctor_config()
-        await self._pr_doctor_bump_active()
+        await self._bump_automation_active("pr-doctor")
 
         # Terminal (merged/closed): clear per-target state and stop.
         if engine.target_terminal(info):
@@ -2044,6 +2075,32 @@ class SessionOrchestrator:
                     return r
                 fallback = fallback or r
         return fallback
+
+    def automation_statuses(self) -> dict[str, dict]:
+        """Rendered live status per automation id, for the automations list.
+
+        The HTTP layer talks to an async adapter (or the remote daemon proxy) and
+        cannot reach the in-process ``AutomationContext`` objects where each loop
+        stashes its live ``*_counts`` every tick. So status rendering — which
+        reads those counts — happens HERE, where the ctx objects live, and ships a
+        plain ``{id: status_dict}`` map across the boundary. Without this the list
+        endpoint could only pass ``ctx=None`` and every badge showed a hardcoded
+        "idle". Best-effort per automation: a render error falls back to that
+        automation's idle status so one bad automation can't blank the whole list.
+        """
+        from server.automations.registry import registry
+        ctxs = {
+            "pr-doctor": getattr(self, "_pr_doctor_ctx", None),
+            "backlog-runner": getattr(self, "_backlog_ctx", None),
+        }
+        out: dict[str, dict] = {}
+        for a in registry.all():
+            try:
+                out[a.id] = a.status(ctx=ctxs.get(a.id)).to_dict()
+            except Exception:  # pragma: no cover — one bad automation must not blank the list
+                log.debug("automation_statuses.render_failed id=%s", a.id, exc_info=True)
+                out[a.id] = a.status(ctx=None).to_dict()
+        return out
 
     async def pr_doctor_actionable(self) -> list[dict]:
         """PRs in the current poll cache with a real recovery mode, for the card.

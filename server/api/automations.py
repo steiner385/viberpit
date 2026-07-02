@@ -58,7 +58,8 @@ def _automation_or_404(automation_id: str):
 
 
 @router.get("")
-async def list_automations(_identity: str = Depends(current_identity), db=Depends(get_db)) -> list[dict]:
+async def list_automations(request: Request, _identity: str = Depends(current_identity),
+                           db=Depends(get_db)) -> list[dict]:
     # Count live (non-ended/-archived) spawned sessions per automation in one grouped
     # query, so the list can show "N active" without a follow-up call per card.
     active_counts = dict((await db.execute(
@@ -66,13 +67,23 @@ async def list_automations(_identity: str = Depends(current_identity), db=Depend
         .where(DbSession.origin.is_not(None),
                DbSession.status.notin_(INACTIVE_SESSION_STATUSES))
         .group_by(DbSession.origin))).all())
+    # Live badge status is rendered by the orchestrator (only it can reach the
+    # in-process ctx where each loop stashes its counts). Best-effort: if the
+    # orchestrator is unreachable, fall back to the idle status per automation.
+    statuses: dict = {}
+    orch = getattr(request.app.state, "sessions", None)
+    if orch is not None:
+        try:
+            statuses = await orch.automation_statuses()
+        except Exception:
+            statuses = {}
     out = []
     for a in registry.all():
         row = await _row(db, a.id)
         out.append({
             "id": a.id, "name": a.name, "description": a.description,
             "enabled": row.enabled, "mode": row.mode, "modes": list(a.modes),
-            "status": a.status(ctx=None).to_dict(),
+            "status": statuses.get(a.id) or a.status(ctx=None).to_dict(),
             "configSchema": [f.to_dict() for f in a.config_schema],
             "config": row.config or {},
             "lastActiveAt": row.last_active_at.isoformat() if row.last_active_at else None,
