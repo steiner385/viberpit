@@ -26,6 +26,24 @@ def test_behind_lists_commits_and_ci():
     assert st.commits[0]["subject"] == "feat x" and st.ci == "pending"
 
 
+def test_diverged_checkout_is_not_behind():
+    # SHAs differ but origin/master carries nothing we lack (log live..target is empty):
+    # the deployed checkout is ahead of or diverged from origin/master. There is nothing
+    # to deploy, so behind must be False — otherwise the banner shows "Deploy now" with
+    # "0 changes pending deploy". CI is never consulted (no commit to gate).
+    ci_calls: list[str] = []
+
+    def ci_fn(sha: str) -> str:
+        ci_calls.append(sha)
+        return "green"
+
+    g = FakeGit("ahead", "behind", [])
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+    assert st.behind is False and st.commits == []
+    assert st.live_sha == "ahead" and st.target_sha == "behind"
+    assert ci_calls == []
+
+
 @pytest.mark.asyncio
 async def test_detect_loop_tick_updates_state():
     g = FakeGit("a", "b", [{"sha": "1", "subject": "s", "author": "t", "iso": "i"}])
