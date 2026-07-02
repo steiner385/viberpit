@@ -58,13 +58,20 @@ class SessionRecord:
     context_used_tokens: int | None = None
     context_max_tokens: int | None = None
 
+    @property
+    def updated_at_iso(self) -> str | None:
+        """The 'active … ago' wire timestamp: the last turn's response, falling back to
+        creation. NOT the raw `updated_at` row-write column (which any write bumps → the
+        '0s ago' pin). Single source for the dashboard freshness label — used by to_dict,
+        the HTTP serializer (api/sessions.py), and the live WS status event (orchestrator)."""
+        return iso_utc(self.last_turn_at or self.created_at)
+
     def to_dict(self) -> dict:
         # `updatedAt` is the "active … ago" / last-activity time, matching the HTTP
         # serializer (server/api/sessions.py `_record_to_dict`): the last turn's response,
         # falling back to creation — NOT the raw `updated_at` row-write column (which any
         # write bumps → the "0s ago" pin). `lastTurnAt` below carries the raw turn time so
         # `from_dict` restores it faithfully over RPC.
-        active = self.last_turn_at or self.created_at
         return {
             "id": self.id, "name": self.name, "account": self.account,
             "claudeSessionId": self.claude_session_id, "cols": self.cols, "rows": self.rows,
@@ -73,7 +80,7 @@ class SessionRecord:
             "status": self.status, "nameIsAuto": self.name_is_auto,
             "permissionMode": self.permission_mode,
             "createdAt": iso_utc(self.created_at),
-            "updatedAt": iso_utc(active),
+            "updatedAt": self.updated_at_iso,
             "lastTurnAt": iso_utc(self.last_turn_at),
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,

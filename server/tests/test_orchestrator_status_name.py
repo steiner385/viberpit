@@ -65,7 +65,10 @@ def test_persist_status_broadcasts_status_event(tmp_path):
         await orch._persist_status("s1", "waiting_input")
         return q.get_nowait()
     event = asyncio.run(run())
-    assert event == {"type": "status", "sessionId": "s1", "status": "waiting_input"}
+    assert event["type"] == "status"
+    assert event["sessionId"] == "s1"
+    assert event["status"] == "waiting_input"
+    assert "updatedAt" in event  # live-push now carries the authoritative freshness timestamp
 
 
 def test_persist_status_ended_does_not_broadcast(tmp_path):
@@ -208,7 +211,10 @@ def test_persist_status_waiting_external_broadcasts_overlaid_status(tmp_path):
         await orch._persist_status("s1", "done")
         return q.get_nowait()
     event = asyncio.run(run())
-    assert event == {"type": "status", "sessionId": "s1", "status": "waiting_external"}
+    assert event["type"] == "status"
+    assert event["sessionId"] == "s1"
+    assert event["status"] == "waiting_external"
+    assert "updatedAt" in event  # live-push now carries the authoritative freshness timestamp
 
 
 def test_rename_pins_name_is_auto_false(tmp_path):

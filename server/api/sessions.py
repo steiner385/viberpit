@@ -128,7 +128,7 @@ def _record_to_dict(
         # than null (which the client would parse as epoch 0 → "20627d ago"). iso_utc
         # tags the naive UTC column with a +00:00 offset so the browser doesn't reparse
         # it as local time (which lands it in the future → clamped back to "0s ago").
-        "updatedAt": iso_utc(record.last_turn_at or record.created_at),
+        "updatedAt": record.updated_at_iso,
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
         "latestSuggestions": list(suggestions or []),
