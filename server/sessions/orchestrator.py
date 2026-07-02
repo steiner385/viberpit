@@ -929,7 +929,24 @@ class SessionOrchestrator:
         if acct is not None:
             from ccswitch import paths
             rank = functools.partial(rank_issues, _config_dir=str(paths.account_cfg_dir(acct)))
-        return await select_batch(config, gh_run=self._gh_run, rank=rank)
+        repo_load = await self._backlog_repo_load()
+        return await select_batch(config, gh_run=self._gh_run, rank=rank,
+                                  repo_load=repo_load)
+
+    async def _backlog_repo_load(self) -> dict[str, int]:
+        """Active runs per repo, derived from durable target states — the input to
+        the runner's per-repo fairness. Mirrors ``_backlog_count_in_flight``'s
+        active-state basis (skips ``gave_up`` guard rows) but split by repo, so a
+        freed slot goes to the repo currently carrying the fewest runs."""
+        states = await self._backlog_ctx.list_target_states()
+        load: dict[str, int] = {}
+        for st in states.values():
+            if st.get("gave_up"):
+                continue
+            repo = st.get("repo")
+            if repo:
+                load[repo] = load.get(repo, 0) + 1
+        return load
 
     async def _backlog_claim(self, batch) -> bool:
         """Atomically claim every issue in *batch* (add the ``in-progress`` label).

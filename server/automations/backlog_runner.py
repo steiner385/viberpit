@@ -149,6 +149,7 @@ async def select_batch(
     query: Callable[..., list[dict]] = query_candidates,
     rank: Callable[..., Any] = rank_issues,
     gh_run: "GhRun | None" = None,
+    repo_load: "dict[str, int] | None" = None,
 ) -> "Batch | None":
     """Assemble a ``Batch`` from live GitHub candidates ranked by the LLM.
 
@@ -167,6 +168,11 @@ async def select_batch(
         async) function so the real model is NEVER called.
     gh_run:
         Injectable GitHub API runner (forwarded to ``query``).
+    repo_load:
+        Optional ``{repo: active_run_count}`` map. When given, the primary is
+        biased toward the repo with the FEWEST active runs (per-repo fairness) so
+        a big backlog in one repo can't monopolise every slot. Absent/empty →
+        selection is exactly the LLM ranking, unchanged.
 
     Returns
     -------
@@ -189,10 +195,23 @@ async def select_batch(
             result = await result
         ranked = list(result or [])
 
+    ranking: Callable[..., list[str]] = lambda cs: ranked  # noqa: E731
+    if repo_load:
+        # Per-repo fairness: STABLE-reorder the effective priority order (ranked,
+        # else lowest-number fallback) by ascending active-run count, so the
+        # lightest repo's highest-priority issue becomes the primary while
+        # priority WITHIN a repo is preserved. Resolve the fallback here (not in
+        # rank_and_batch) so fairness also applies when the LLM ranking is empty.
+        by_ref = {c["ref"]: c for c in candidates}
+        order = [r for r in ranked if r in by_ref] or [
+            c["ref"] for c in sorted(candidates, key=lambda c: c["number"])]
+        order = sorted(order, key=lambda ref: repo_load.get(by_ref[ref]["repo"], 0))
+        ranking = lambda cs, _o=order: _o  # noqa: E731
+
     return rank_and_batch(
         candidates,
         max(1, int(config.get("max_issues_per_pr") or 1)),
-        lambda cs: ranked,
+        ranking,
     )
 
 
