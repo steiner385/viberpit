@@ -316,6 +316,14 @@ class SessionOrchestrator:
             reconcile=self._backlog_reconcile,
         )
         self._backlog_task: asyncio.Task | None = None
+        # Fire-and-forget task registry (issue #405). Every detached ``create_task``
+        # (persist, rotation, recovery, summary/proposal refresh, backlog nudge …) is
+        # routed through ``_spawn`` so ``stop()`` can cancel+await ALL of them. An
+        # untracked task that outlives its owning app/test keeps a live reference to
+        # ``db_session`` — which resolves the module-global ``_session_factory`` at
+        # call time — so a late fire writes into whatever DB is *currently* installed,
+        # i.e. the NEXT test's, corrupting it (the CI-only batch-test flake).
+        self._bg_tasks: set[asyncio.Task] = set()
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
@@ -361,6 +369,27 @@ class SessionOrchestrator:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    def _spawn(self, coro, *, name: str | None = None) -> asyncio.Task:
+        """Schedule a fire-and-forget coroutine and track it for teardown (#405).
+
+        Use this for every detached task the orchestrator owns instead of a bare
+        ``asyncio.create_task`` whose handle is discarded. Tracked tasks are
+        cancelled+awaited by ``stop()``, so none can survive its owning app/test to
+        write into a later test's DB. The done-callback discards the handle so a
+        completed task is not retained.
+        """
+        task = asyncio.create_task(coro, name=name)
+        # Lazy-init tolerates a partially-constructed orchestrator (some tests build
+        # one via ``__new__`` without running ``__init__``). Bind the callback to this
+        # exact set so a completed task removes itself even if the attribute is later
+        # rebound.
+        tasks = getattr(self, "_bg_tasks", None)
+        if tasks is None:
+            tasks = self._bg_tasks = set()
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
 
     async def start(self) -> None:
         """Start the usage poller, the rotation monitor and the titling sweep."""
@@ -431,7 +460,7 @@ class SessionOrchestrator:
                 pass
             self._pr_branch_task = None
         for attr in ("_titling_task", "_rotation_task", "_stall_task",
-                     "_token_refresh_task", "_backlog_task"):
+                     "_token_refresh_task", "_backlog_task", "_drain_timer"):
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
@@ -440,6 +469,25 @@ class SessionOrchestrator:
                 except asyncio.CancelledError:
                     pass
                 setattr(self, attr, None)
+        # Cancel+await every tracked fire-and-forget task (#405) so none survives to
+        # write into a later app/test's DB. Snapshot first: a task's done-callback
+        # mutates ``_bg_tasks`` as it settles.
+        pending = [t for t in self._bg_tasks if not t.done()]
+        for t in pending:
+            t.cancel()
+        for t in pending:
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
+        self._bg_tasks.clear()
+        # Close any still-live driver so its stream/pump (which invokes the persist
+        # callbacks that write to the DB) cannot outlive teardown. In production the
+        # app shutdown closes sessions before stop(); when it doesn't (e.g. the X11
+        # manager is absent, as in tests), this is the backstop.
+        for sid in list(self._drivers.keys()):
+            driver = self._drivers.pop(sid, None)
+            if driver is not None:
+                with contextlib.suppress(Exception):
+                    await driver.aclose()
         await self._poller.stop()
         await self._pr_poller.stop()
         await self._pr_population.stop()
@@ -689,7 +737,7 @@ class SessionOrchestrator:
         # never overlaps an in-progress tick.
         if record is not None and getattr(record, "origin", None) == "backlog-runner":
             try:
-                asyncio.create_task(self._backlog_loop.tick(), name="backlog-runner-nudge")
+                self._spawn(self._backlog_loop.tick(), name="backlog-runner-nudge")
             except Exception:  # pragma: no cover — scheduling must never break close
                 log.debug("backlog_runner.nudge_failed", exc_info=True)
 
@@ -2335,7 +2383,7 @@ class SessionOrchestrator:
         if self._draining:
             self._draining = False
             self._publish_event({"type": "updateCancelled"})
-            asyncio.create_task(self._clear_rearm_snapshots())
+            self._spawn(self._clear_rearm_snapshots(), name="clear-rearm-snapshots")
             if self._drain_timer is not None and not self._drain_timer.done():
                 self._drain_timer.cancel()
             self._drain_timer = None
@@ -2764,8 +2812,9 @@ class SessionOrchestrator:
         # Only schedule a background suggestion refresh when a suggester is available.
         if self._suggester is not None and session_id not in self._suggest_inflight:
             self._suggest_inflight.add(session_id)
-            asyncio.create_task(
-                self._generate_detached_suggestions(session_id, rec, path, signature)
+            self._spawn(
+                self._generate_detached_suggestions(session_id, rec, path, signature),
+                name=f"detached-suggestions-{session_id}",
             )
         # Cache miss or stale (transcript changed): serve only the proposal (if any)
         # rather than stale suggestions from an outdated transcript.
@@ -2877,7 +2926,8 @@ class SessionOrchestrator:
             and should_regenerate(viewing, cached, signature, now, rec.status)
         ):
             self._summary_inflight.add(session_id)
-            asyncio.create_task(self._generate_summary(session_id, rec, path, signature))
+            self._spawn(self._generate_summary(session_id, rec, path, signature),
+                        name=f"generate-summary-{session_id}")
         return cached[2] if cached else ""
 
     async def _generate_summary(self, session_id, rec, path, signature) -> None:
@@ -2941,7 +2991,8 @@ class SessionOrchestrator:
         if cached is None or (now - cached[0]) >= _ISSUE_TTL_S:
             if repo not in self._issue_inflight:
                 self._issue_inflight.add(repo)
-                asyncio.create_task(self._refresh_issue_proposal(repo))
+                self._spawn(self._refresh_issue_proposal(repo),
+                            name=f"refresh-issue-proposal-{repo}")
         text = cached[1] if cached is not None else None
         # Release this session's prior claim and prune claims for sessions that are no
         # longer idle/done (so an issue frees up once its session moves on or is removed).
@@ -2996,7 +3047,8 @@ class SessionOrchestrator:
         # Cache miss or stale: schedule a background refresh if not already in-flight.
         if key not in self._review_inflight:
             self._review_inflight.add(key)
-            asyncio.create_task(self._refresh_review_proposal(repo, number, title))
+            self._spawn(self._refresh_review_proposal(repo, number, title),
+                        name=f"refresh-review-proposal-{repo}#{number}")
         # Return stale value if available, else None.
         return cached[1] if cached is not None else None
 
@@ -3220,7 +3272,7 @@ class SessionOrchestrator:
                     if record.account_pinned:
                         log.info("rotation.skip_pinned session=%s account=%s", record.id, account)
                         record.status = "limited"
-                        asyncio.create_task(
+                        self._spawn(
                             self._persist_status(record.id, "limited"),
                             name=f"limited-{record.id}",
                         )
@@ -3234,7 +3286,7 @@ class SessionOrchestrator:
                         account,
                         session_pct,
                     )
-                    asyncio.create_task(
+                    self._spawn(
                         self._do_rotate(record),
                         name=f"rotate-{record.id}",
                     )
@@ -3258,7 +3310,7 @@ class SessionOrchestrator:
         record = self._records.get(session_id)
         if record is None or session_id not in self._drivers:
             return
-        asyncio.create_task(
+        self._spawn(
             self._recover_session(record, kind, retry_after),
             name=f"recover-{session_id}",
         )
@@ -3391,7 +3443,8 @@ class SessionOrchestrator:
         except Exception:
             log.warning("recover.mark_needs_reauth failed account=%s", account, exc_info=True)
         with contextlib.suppress(RuntimeError):  # no running loop in some sync callers/tests
-            asyncio.create_task(self._mark_needs_reauth_audit(account))
+            self._spawn(self._mark_needs_reauth_audit(account),
+                        name=f"mark-needs-reauth-{account}")
 
     async def _mark_needs_reauth_audit(self, account: str) -> None:
         """Write an account.needs_reauth audit row for the in-session 401 flip site."""
