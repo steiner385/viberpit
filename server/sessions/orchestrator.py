@@ -900,9 +900,22 @@ class SessionOrchestrator:
         """Real selection: label-gated ``gh`` candidate query → LLM rank → batch.
 
         Runs entirely through the injected ``gh_run`` seam (default the real
-        ``gh`` shell-out) and the Haiku ranking; returns a ``Batch`` or ``None``."""
-        from server.automations.backlog_runner import select_batch
-        return await select_batch(config, gh_run=self._gh_run)
+        ``gh`` shell-out) and the Haiku ranking; returns a ``Batch`` or ``None``.
+
+        The ranking is a one-shot SDK call, and the DAEMON process has no
+        ``CLAUDE_CONFIG_DIR`` — so ``rank_issues`` would fall back to the default
+        (often usage-capped) account and fail every tick, silently discarding the
+        LLM ranking. Bind it to a healthy account's config dir so ranking actually
+        works; a ``None`` account leaves the default and lets the pure fallback
+        (lowest-number ordering) take over."""
+        import functools
+        from server.automations.backlog_runner import select_batch, rank_issues
+        rank = rank_issues
+        acct = await self._backlog_healthy_account()
+        if acct is not None:
+            from ccswitch import paths
+            rank = functools.partial(rank_issues, _config_dir=str(paths.account_cfg_dir(acct)))
+        return await select_batch(config, gh_run=self._gh_run, rank=rank)
 
     async def _backlog_claim(self, batch) -> bool:
         """Atomically claim every issue in *batch* (add the ``in-progress`` label).
