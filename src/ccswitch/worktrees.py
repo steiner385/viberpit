@@ -165,6 +165,54 @@ def _short(session_id: str) -> str:
     return session_id.split("-")[0] or session_id
 
 
+def _registered_worktrees(repo_top: str) -> set[str]:
+    """Absolute paths of every worktree git currently has an admin record for."""
+    r = _run(["git", "-C", repo_top, "worktree", "list", "--porcelain"])
+    paths: set[str] = set()
+    if r.returncode == 0:
+        for line in r.stdout.splitlines():
+            if line.startswith("worktree "):
+                paths.add(os.path.abspath(line[len("worktree "):].strip()))
+    return paths
+
+
+def clear_stale_registration(repo_top: str, path: str | Path) -> None:
+    """Drop ONLY the git admin record for `path`, scoped to that one worktree.
+
+    Replaces the repo-global ``git worktree prune``, which reaped a *sibling*
+    session's live worktree whenever git deemed it prunable at that instant
+    (issue #177). We touch exactly `path`: if git still has a registration for it
+    AND its working dir is gone, force-remove just that one record. ``-f -f``
+    clears even a *locked* missing record (session worktrees are locked on
+    create). A still-present dir is left alone — never destroy a live tree; the
+    caller's ``worktree add`` will instead surface the collision. No other
+    session is ever considered.
+
+    Used on two paths that both leave a stale registration behind: create-time
+    reuse of a crashed session's dest, and archive (which *moves* the working dir
+    out from under git rather than removing it via git).
+    """
+    p = Path(path)
+    if os.path.abspath(str(p)) not in _registered_worktrees(repo_top):
+        return
+    if p.exists():
+        return
+    _run(["git", "-C", repo_top, "worktree", "remove", "-f", "-f", str(p)])
+
+
+def _lock_worktree(repo_top: str, dest: Path) -> None:
+    """Lock a freshly-created session worktree so a sibling session's global
+    ``git worktree prune`` can never reap its admin record mid-session (#177).
+
+    Best-effort: a lock failure is logged, not raised — the worktree is fully
+    usable unlocked, just less protected against a concurrent prune.
+    """
+    r = _run(["git", "-C", repo_top, "worktree", "lock", "--reason",
+              "ccswitch live session", str(dest)])
+    if r.returncode != 0:
+        log.warning("worktree.lock_failed path=%s err=%s", dest, r.stderr.strip())
+
+
 def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_root: str) -> WorktreeInfo:
     """Create an isolated per-session worktree and return its info.
 
@@ -191,9 +239,10 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
     dest = worktrees_base(repo_root) / repo_name / _short(session_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    # Drop admin records for any worktree dirs that were deleted out from under git
-    # (e.g. a previous crash) so a reused path doesn't collide.
-    _run(["git", "-C", repo_top, "worktree", "prune"])
+    # Clear ONLY a stale record at our own `dest` (a prior crash that reused this
+    # short-session id) so the path can be reused. NOT a repo-global prune: that
+    # reaped a sibling session's live worktree (issue #177).
+    clear_stale_registration(repo_top, dest)
 
     # Fetch-first (best-effort): a session should start from the true remote tip,
     # so when origin is configured we fetch and (below) base on remote refs. But a
@@ -215,6 +264,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         else:
             rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach", str(dest)])
         if rd.returncode == 0:
+            _lock_worktree(repo_top, dest)
             log.info("worktree.create_detached repo=%s path=%s", repo_name, dest)
             return WorktreeInfo(str(dest), None, is_child=False, repo=repo_top)
         raise WorktreeError(f"git worktree add --detach failed: {rd.stderr.strip()}")
@@ -227,6 +277,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         r = _run(["git", "-C", repo_top, "worktree", "add", "-b", child,
                   str(dest), "--", f"origin/{branch}"])
         if r.returncode == 0:
+            _lock_worktree(repo_top, dest)
             log.info("worktree.create_child repo=%s base=origin/%s child=%s path=%s",
                      repo_name, branch, child, dest)
             return WorktreeInfo(str(dest), child, is_child=True, repo=repo_top)
@@ -238,6 +289,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
     # be parsed as a git option (belt-and-suspenders with the '-' prefix guard above).
     r = _run(["git", "-C", repo_top, "worktree", "add", str(dest), "--", branch])
     if r.returncode == 0:
+        _lock_worktree(repo_top, dest)
         log.info("worktree.create repo=%s branch=%s path=%s", repo_name, branch, dest)
         return WorktreeInfo(str(dest), branch, is_child=False, repo=repo_top)
 
@@ -245,6 +297,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
     child = f"ccswitch/{branch}-{_short(session_id)}"
     r2 = _run(["git", "-C", repo_top, "worktree", "add", "-b", child, str(dest), "--", branch])
     if r2.returncode == 0:
+        _lock_worktree(repo_top, dest)
         log.info("worktree.create_child repo=%s base=%s child=%s path=%s",
                  repo_name, branch, child, dest)
         return WorktreeInfo(str(dest), child, is_child=True, repo=repo_top)
@@ -282,14 +335,18 @@ def remove_worktree(worktree_path: str) -> bool:
     branch_r = _run(["git", "-C", wt, "rev-parse", "--abbrev-ref", "HEAD"])
     branch = branch_r.stdout.strip() if branch_r.returncode == 0 else ""
 
+    # Session worktrees are locked on create (#177); `git worktree remove` refuses
+    # a locked tree, so unlock first. Harmless no-op for an older unlocked worktree.
+    _run(["git", "-C", repo_top, "worktree", "unlock", wt])
     rm = _run(["git", "-C", repo_top, "worktree", "remove", wt])
     if rm.returncode != 0:
         log.warning("worktree.remove_failed path=%s err=%s", wt, rm.stderr.strip())
         return False
 
     # Tidy up the session child branch we created (only the ccswitch/* ones).
+    # `remove` already deregisters this worktree; no global prune (it could reap a
+    # sibling session's live worktree — #177).
     if branch.startswith("ccswitch/"):
         _run(["git", "-C", repo_top, "branch", "-D", branch])
-    _run(["git", "-C", repo_top, "worktree", "prune"])
     log.info("worktree.remove path=%s branch=%s", wt, branch)
     return True

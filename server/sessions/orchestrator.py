@@ -3692,6 +3692,19 @@ class SessionOrchestrator:
         dest = archive_dir() / session_id
         cwd_path: Path | None = Path(record.cwd) if (record and record.cwd) else None
 
+        # Resolve the shared clone BEFORE the move, while the worktree is still a
+        # valid git dir, so we can scope-deregister exactly this path afterward
+        # (never a global prune — issue #177).
+        repo_top: str | None = None
+        if cwd_path and cwd_path.exists() and worktrees.is_git_repo(str(cwd_path)):
+            common = subprocess.run(
+                ["git", "-C", str(cwd_path), "rev-parse",
+                 "--path-format=absolute", "--git-common-dir"],
+                capture_output=True, text=True,
+            )
+            if common.returncode == 0:
+                repo_top = os.path.dirname(common.stdout.strip().rstrip("/"))
+
         if cwd_path and cwd_path.exists():
             try:
                 outcome = await asyncio.to_thread(move_into_archive, cwd_path, dest)
@@ -3714,22 +3727,18 @@ class SessionOrchestrator:
         else:
             log.info("session.archive id=%s cwd missing or unknown, skip move", session_id)
 
-        # Best-effort: prune stale git worktree registrations.
-        if cwd_path:
-            def _prune_worktree() -> None:
-                try:
-                    r = subprocess.run(
-                        ["git", "-C", str(cwd_path.parent), "worktree", "prune"],
-                        capture_output=True, timeout=10,
-                    )
-                    if r.returncode != 0:
-                        log.debug(
-                            "session.archive_worktree_prune_failed id=%s stderr=%s",
-                            session_id, r.stderr,
-                        )
-                except Exception:
-                    pass
-            await asyncio.to_thread(_prune_worktree)
+        # Best-effort: drop THIS session's now-stale worktree registration, scoped
+        # to its own path. NOT a global `git worktree prune`: that reaped a sibling
+        # session's live worktree (issue #177), and it can no longer clean up our
+        # own record anyway now that session worktrees are locked on create.
+        if repo_top and cwd_path:
+            try:
+                await asyncio.to_thread(
+                    worktrees.clear_stale_registration, repo_top, str(cwd_path)
+                )
+            except Exception:
+                log.debug("session.archive_worktree_deregister_failed id=%s",
+                          session_id, exc_info=True)
 
         # Mark archived in DB.
         async with db_session() as db:
