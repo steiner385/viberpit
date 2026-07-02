@@ -180,10 +180,14 @@ def test_initial_prompt_deferred_until_first_attach(ws_env_ip):
         ws.send_text(json.dumps({"type": "attach", "sessionId": session_id2}))
 
         # After attach, the pending initial prompt should have been sent.
-        # Collect until we see the user echo (or turnEnd from the response).
+        # Drain through the *whole* first turn: the user echo and the assistant
+        # response stream as separate WS frames, so stopping at the user echo
+        # races the assistant frames. Drain to the turn's terminal event
+        # (turnEnd) so both the echo and the response are buffered before we
+        # assert on them.
         all_events: list[dict] = []
         all_events.extend(_drain_events(ws, until_type="replayComplete", timeout=5.0))
-        all_events.extend(_drain_events(ws, until_type="user", timeout=5.0))
+        all_events.extend(_drain_events(ws, until_type="turnEnd", timeout=5.0))
 
         types = [e.get("type") for e in all_events]
 
