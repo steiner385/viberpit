@@ -12,6 +12,7 @@ import { QK } from '@/api/hooks'
 import type { SessionEvent } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
 import { clientLogger } from '@/obs/logger'
+import { createGapState, resetSeq, handleLiveBatch, type GapState } from './liveBatch'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
@@ -81,6 +82,9 @@ export class SessionSocket {
   private _updatePending = false
   private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[] }[] = []
   private static readonly MAX_PENDING = 50
+  private _gap: GapState = createGapState()
+  private _lastHealAt = 0
+  private static readonly HEAL_COOLDOWN_MS = 2_000
 
   constructor(url: string = '/ws') {
     this.url = url
@@ -285,6 +289,19 @@ export class SessionSocket {
     this._emit('connectionStateChange', state)
   }
 
+  /** Self-heal a detected live-stream gap by re-attaching the active session, which
+   *  triggers the server's replayReset → replay → replayComplete rebuild. Rate-limited
+   *  so a persistently gappy stream cannot storm the server with re-attaches. */
+  private _healActiveSession() {
+    const sid = this._activeSessionId
+    if (!sid) return
+    const now = Date.now()
+    if (now - this._lastHealAt < SessionSocket.HEAL_COOLDOWN_MS) return
+    this._lastHealAt = now
+    clientLogger.warn('ws gap detected — re-attaching to heal transcript', { sessionId: sid })
+    this._send({ type: 'attach', sessionId: sid })
+  }
+
   private _scheduleReconnect() {
     if (this._destroyed || this._reconnectTimer !== null) return
     const delay = Math.min(
@@ -324,11 +341,21 @@ export class SessionSocket {
       case 'error':
         this._emit('error', msg)
         break
-      case 'batch':
+      case 'batch': {
+        // A replayReset (reconnect replay) re-baselines the active session's seq.
         for (const e of msg.events) {
-          this._emit('sessionEvent', e)
+          if ((e as { type: string }).type === 'replayReset' && this._activeSessionId) {
+            resetSeq(this._gap, this._activeSessionId)
+          }
         }
+        const { dispatch, needsHeal } = handleLiveBatch(msg.events, {
+          activeSessionId: this._activeSessionId,
+          state: this._gap,
+        })
+        for (const e of dispatch) this._emit('sessionEvent', e)
+        if (needsHeal) this._healActiveSession()
         break
+      }
       case 'commands':
         this._emit('commands', msg)
         break
