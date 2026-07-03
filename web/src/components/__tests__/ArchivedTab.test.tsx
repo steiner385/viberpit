@@ -34,6 +34,7 @@ vi.mock('@/api/hooks', () => ({
   useGithubBranches: vi.fn(),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
+  useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
   useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAutomations: vi.fn(() => ({ data: [] })),
   useReauthAccount: vi.fn(),

@@ -217,6 +217,14 @@ export function useSendPrompt() {
   })
 }
 
+export function useSetAutopilotPaused() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string; paused: boolean }>({
+    mutationFn: ({ id, paused }) => api.post<Session>(`/sessions/${id}/autopilot`, { paused }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
 export function useFixPr() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, { id: string; number: number }>({
