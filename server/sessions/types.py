@@ -48,6 +48,7 @@ class SessionRecord:
     model: str | None = None         # persisted model alias/id; None = account default
     account_pinned: bool = False      # user pinned the account (skips usage-ceiling rotation)
     active_goal: str | None = None    # active /goal condition; None = no goal
+    autopilot_paused: bool = False    # per-session autopilot opt-out (True = pinned to manual)
     usage_unverified: bool = False    # transient: account picked without a usage read (optimistic)
     authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
     # Last EXACT context-window occupancy from the SDK (the `/context` data), refreshed
@@ -96,6 +97,7 @@ class SessionRecord:
             "model": self.model,
             "accountPinned": self.account_pinned,
             "activeGoal": self.active_goal,
+            "autopilotPaused": self.autopilot_paused,
             "usageUnverified": self.usage_unverified,
             "authoredBranches": list(self.authored_branches),
             "contextUsedTokens": self.context_used_tokens,
@@ -122,6 +124,7 @@ class SessionRecord:
             model=d.get("model"),
             account_pinned=d.get("accountPinned", False),
             active_goal=d.get("activeGoal"),
+            autopilot_paused=bool(d.get("autopilotPaused", False)),
             usage_unverified=d.get("usageUnverified", False),
             authored_branches=list(d.get("authoredBranches") or []),
             context_used_tokens=d.get("contextUsedTokens"),

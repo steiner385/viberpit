@@ -134,6 +134,7 @@ def _record_to_dict(
         "model": getattr(record, "model", None),
         "latestSuggestions": list(suggestions or []),
         "activeGoal": getattr(record, "active_goal", None),
+        "autopilotPaused": getattr(record, "autopilot_paused", False),
         "prs": [p.to_dict() for p in (prs or [])],
         "usageUnverified": getattr(record, "usage_unverified", False),
         "summary": summary or "",

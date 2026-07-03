@@ -1964,6 +1964,7 @@ class SessionOrchestrator:
                 model=getattr(row, "model", None),
                 account_pinned=bool(getattr(row, "account_pinned", False)),
                 active_goal=getattr(row, "active_goal", None),
+                autopilot_paused=bool(getattr(row, "autopilot_paused", False)),
                 branch=branch,
                 authored_branches=list(getattr(row, "authored_branches", None) or []),
                 context_used_tokens=getattr(row, "context_used_tokens", None),
@@ -3802,6 +3803,19 @@ class SessionOrchestrator:
             from sqlalchemy import update as sa_update
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(active_goal=goal)
+            )
+
+    async def set_autopilot_paused(self, session_id: str, paused: bool) -> None:
+        """Pin a session to manual (paused=True) or return it to autopilot governance.
+        Mirrors the in-memory record and persists so the opt-out survives rehydrate."""
+        record = self._records.get(session_id)
+        if record is not None:
+            record.autopilot_paused = paused
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id)
+                .values(autopilot_paused=paused)
             )
 
     async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str) -> None:

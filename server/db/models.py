@@ -90,6 +90,9 @@ class Session(Base):
     # Active /goal condition for this session (the built-in Claude Code goal feature).
     # NULL = no active goal. Nullable so init_db backfills on dev SQLite without a migration.
     active_goal: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Per-session autopilot opt-out. NULL/False = governed by autopilot; True = pinned to
+    # manual. Nullable so init_db backfills on dev SQLite without a migration.
+    autopilot_paused: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     # True once the user manually pinned the account: usage-ceiling rotation skips
     # the session (it goes 'limited' at the ceiling instead). Hard 401/429 recovery
     # still rotates and clears the pin. Nullable for the same backfill reason.
