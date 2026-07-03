@@ -69,3 +69,68 @@ def matches_denylist(tool_name: str, tool_input: dict, extra_patterns: list[str]
         except re.error:
             continue
     return None
+
+
+_HOUR = 3600.0
+
+
+def fingerprint(ctx: DecisionContext) -> str:
+    """Stable identity of a stuck state, for loop detection."""
+    s = ctx.stuck or {}
+    head = (s.get("tool_name") or s.get("question")
+            or (s.get("plan_text") or "")[:60] or s.get("kind") or "")
+    return f"{s.get('kind')}|{head}|{ctx.effective_goal}"
+
+
+def _hourly_count(ledger: dict, now: float) -> int:
+    return sum(1 for t in ledger.get("hour_actions", []) if t > now - _HOUR)
+
+
+def pre_decide(ctx: DecisionContext, config: dict, now: float) -> Decision | None:
+    """Hard-rule pre-filter. Returns a forced Decision (deny/escalate/skip) or None
+    to defer the judgement to the LLM decider. Precedence per the spec."""
+    ledger = ctx.ledger or {}
+    stuck = ctx.stuck or {}
+
+    # 2. Destructive deny-list (permission/plan only).
+    if stuck.get("kind") in ("permission", "plan"):
+        rule = matches_denylist(stuck.get("tool_name", ""), stuck.get("tool_input", {}),
+                                config.get("extra_deny_patterns", []))
+        if rule is not None:
+            return Decision(action="deny", reason=f"deny-list:{rule}")
+
+    # 5. Per-session hourly budget.
+    if _hourly_count(ledger, now) >= config["max_actions_per_session_per_hour"]:
+        return Decision(action="skip", reason="hourly budget exhausted")
+
+    # 7. Loop detection.
+    if (ledger.get("last_fingerprint") == fingerprint(ctx)
+            and ledger.get("repeat_count", 0) >= config["loop_repeat_limit"]):
+        return Decision(action="escalate", reason="loop: identical stuck state repeated")
+
+    # 8. Recovery attempt cap.
+    if (stuck.get("kind") == "needs_attention"
+            and ledger.get("recovery_attempts", 0) >= config["recovery_max_attempts"]):
+        return Decision(action="escalate", reason="recovery attempts exhausted")
+
+    return None  # defer to the LLM decider
+
+
+def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Decision:
+    """Second net: the untrusted decider may never upgrade a rule-denied tool to
+    approve, index a non-existent option, or emit an empty nudge."""
+    stuck = ctx.stuck or {}
+    if decision.action == "approve":
+        if not config.get("allow_tool_approvals", True):
+            return Decision(action="escalate", reason="approvals disabled")
+        if stuck.get("kind") in ("permission", "plan") and matches_denylist(
+                stuck.get("tool_name", ""), stuck.get("tool_input", {}),
+                config.get("extra_deny_patterns", [])):
+            return Decision(action="escalate", reason="approve blocked by deny-list")
+    if decision.action == "answer":
+        opts = stuck.get("options") or []
+        if decision.answer_index is None or not (0 <= decision.answer_index < len(opts)):
+            return Decision(action="escalate", reason="answer_index out of range")
+    if decision.action == "nudge" and not (decision.prompt or "").strip():
+        return Decision(action="escalate", reason="empty nudge prompt")
+    return decision
