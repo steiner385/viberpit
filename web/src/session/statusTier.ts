@@ -1,6 +1,6 @@
 import {
   Loader2, CircleAlert, HelpCircle, Eye, Check, CheckCircle2,
-  AlertTriangle, X, Clock, Minimize2, Hourglass,
+  AlertTriangle, X, Clock, Minimize2, Hourglass, RotateCcw,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
 
@@ -41,6 +41,21 @@ const FALLBACK: StatusPresentation = {
   tier: 'your-turn', label: 'Ready', Icon: Clock, textClass: CALM,
 }
 
+// Issue #434: a session whose in-flight turn was dropped by a daemon wedge/restart comes
+// back idle (rehydrate normalizes mid-turn → idle) — but that's not a calm "Ready", it needs
+// the user to re-send to resume. Surface the cause + remedy directly as an actionable
+// needs-you pill instead of a generic "Ready"/"Turn failed". Only overrides the resting
+// states a restart can strand (idle / needs_attention), never a live/working turn.
+const INTERRUPTED_BY_RESTART: StatusPresentation = {
+  tier: 'needs-you', label: 'Interrupted — re-send to resume', Icon: RotateCcw, textClass: NEEDS_YOU,
+}
+const RESTART_STRANDABLE = new Set(['idle', 'needs_attention'])
+
+export interface StatusPresentationOpts {
+  /** The session's turn was dropped by a daemon restart (Session.interruptedByRestart). */
+  interruptedByRestart?: boolean
+}
+
 // DIAGNOSTIC (temporary): any status string not in PRESENTATION renders as the
 // calm "Ready" fallback — visually indistinguishable from a genuine idle session.
 // Record each *novel* unknown string once so we can tell a transport/vocabulary
@@ -49,7 +64,12 @@ const FALLBACK: StatusPresentation = {
 // false-"Ready" question is settled.
 const seenUnknownStatuses = new Set<string>()
 
-export function statusPresentation(state: string): StatusPresentation {
+export function statusPresentation(
+  state: string, opts?: StatusPresentationOpts,
+): StatusPresentation {
+  if (opts?.interruptedByRestart && RESTART_STRANDABLE.has(state)) {
+    return INTERRUPTED_BY_RESTART
+  }
   const hit = PRESENTATION[state]
   if (!hit && !seenUnknownStatuses.has(state)) {
     seenUnknownStatuses.add(state)

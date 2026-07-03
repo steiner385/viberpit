@@ -7,7 +7,7 @@ import {
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
 import type { AccountStatus, SessionStatus } from '@/api/types'
-import { statusPresentation, statusTier } from '@/session/statusTier'
+import { statusPresentation } from '@/session/statusTier'
 
 // ── UsageBadge ──────────────────────────────────────────────────────────────
 
@@ -121,17 +121,18 @@ const ACCOUNT_STATUS_MAP: Record<AccountStatus, StatusConfig> = {
 interface StatusPillProps {
   status: AnyStatus
   className?: string
+  /** Issue #434: relabel a restart-stranded session as "re-send to resume". */
+  interruptedByRestart?: boolean
 }
 
-export function StatusPill({ status, className }: StatusPillProps) {
+export function StatusPill({ status, className, interruptedByRestart }: StatusPillProps) {
   // Account statuses have their own vocabulary; session statuses use the shared map.
   const account = (ACCOUNT_STATUS_MAP as Record<string, StatusConfig>)[status]
   const { label, Icon, textClass, pulse } = account
     ? { ...account, pulse: false }
     : (() => {
-        const p = statusPresentation(status)
-        const tier = statusTier(status)
-        return { label: p.label, Icon: p.Icon, textClass: p.textClass, pulse: tier === 'needs-you' || tier === 'error' }
+        const p = statusPresentation(status, { interruptedByRestart })
+        return { label: p.label, Icon: p.Icon, textClass: p.textClass, pulse: p.tier === 'needs-you' || p.tier === 'error' }
       })()
 
   return (

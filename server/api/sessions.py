@@ -141,6 +141,7 @@ def _record_to_dict(
         "autopilotPaused": getattr(record, "autopilot_paused", False),
         "prs": [p.to_dict() for p in (prs or [])],
         "usageUnverified": getattr(record, "usage_unverified", False),
+        "interruptedByRestart": getattr(record, "interrupted_by_restart", False),
         "summary": summary or "",
     }
 

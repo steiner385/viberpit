@@ -354,7 +354,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               forced the repo label to a few characters. They remain reachable in
               the session detail view. */}
           <div className="flex flex-shrink-0 items-center gap-2">
-            <StatusPill status={session.status} />
+            <StatusPill status={session.status} interruptedByRestart={session.interruptedByRestart} />
             {session.activeGoal && (
               <span
                 data-testid="card-goal"
