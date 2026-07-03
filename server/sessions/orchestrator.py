@@ -4060,6 +4060,7 @@ class SessionOrchestrator:
             model=getattr(row, "model", None),
             account_pinned=bool(getattr(row, "account_pinned", False)),
             active_goal=getattr(row, "active_goal", None),
+            autopilot_paused=bool(getattr(row, "autopilot_paused", False)),
         )
         self._records[session_id] = record
         log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)

@@ -55,3 +55,29 @@ def test_set_autopilot_paused_persists(tmp_path):
             assert row.autopilot_paused is True
 
     asyncio.run(run())
+
+
+def test_unarchive_preserves_autopilot_paused(tmp_path):
+    """Unarchiving a paused session must carry the opt-out into the live record —
+    not just leave it in the DB until the next rehydrate."""
+    async def run():
+        from server.db import init_db, db_session
+        from server.db.models import Session as DbSession
+        import server.sessions.orchestrator as orch_mod
+
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'unarchive.db'}")
+        cwd = str(tmp_path / "wt")
+        async with db_session() as db:
+            db.add(DbSession(id="s1", name="n", account_name="a", cwd=cwd,
+                             status="archived", autopilot_paused=True))
+
+        orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
+        orch._records = {}
+
+        rec = await orch.unarchive("s1")
+
+        assert rec is not None
+        assert rec.autopilot_paused is True                 # carried into the live record
+        assert orch._records["s1"].autopilot_paused is True
+
+    asyncio.run(run())
