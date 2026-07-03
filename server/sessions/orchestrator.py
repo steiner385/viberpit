@@ -1344,7 +1344,46 @@ class SessionOrchestrator:
         return DecisionContext(
             session_id=session_id, status=rec.status, account=rec.account, repo=rec.repo,
             branch=getattr(rec, "branch", None), effective_goal=goal_text,
-            goal_source=goal_source, stuck=stuck, transcript_tail=[], ledger={})
+            goal_source=goal_source, stuck=stuck,
+            transcript_tail=await self._autopilot_transcript_tail(session_id), ledger={})
+
+    async def _autopilot_transcript_tail(self, session_id: str,
+                                         *, turns: int = 6, max_entries: int = 12,
+                                         max_chars: int = 400) -> list[dict]:
+        """Compact tail of the session transcript for the autopilot decider.
+
+        An empty tail starves the decider into 'not enough information' escalations
+        (prod, 2026-07-03), so this is load-bearing context, not decoration. Flattens
+        the last few replayed turns into small {role, text} dicts, merging consecutive
+        assistant deltas. Best-effort: any failure returns [] (the decider still runs,
+        it just decides with less)."""
+        import json as _json
+        from server.sessions.events import TextDelta, ToolCall, UserMessage
+        try:
+            window = await self.transcript_window(session_id, limit=turns)
+        except Exception:
+            log.debug("autopilot.transcript_tail failed sid=%s", session_id, exc_info=True)
+            return []
+        if window is None:
+            return []
+        tail: list[dict] = []
+        for e in window.events:
+            if isinstance(e, UserMessage) and (e.text or "").strip():
+                tail.append({"role": "user", "text": e.text[:max_chars]})
+            elif isinstance(e, TextDelta) and (e.text or "").strip():
+                # Replay emits one delta per content block — merge consecutive
+                # assistant text so one reply reads as one entry.
+                if tail and tail[-1]["role"] == "assistant":
+                    tail[-1]["text"] = (tail[-1]["text"] + e.text)[:max_chars]
+                else:
+                    tail.append({"role": "assistant", "text": e.text[:max_chars]})
+            elif isinstance(e, ToolCall):
+                try:
+                    arg_head = _json.dumps(e.input, default=str)[:160]
+                except Exception:
+                    arg_head = str(e.input)[:160]
+                tail.append({"role": "tool", "text": f"{e.name} {arg_head}"})
+        return tail[-max_entries:]
 
     async def _autopilot_apply(self, session_id: str, decision, ctx=None) -> bool:
         """Perform an autopilot Decision through the existing session seams under the

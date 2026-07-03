@@ -21,22 +21,55 @@ def _default_sdk_query_fn():
 
 
 def _build_prompt(ctx: DecisionContext) -> str:
-    return json.dumps({
+    payload = json.dumps({
         "status": ctx.status,
         "effective_goal": ctx.effective_goal,
         "goal_source": ctx.goal_source,
         "stuck": ctx.stuck,
         "transcript_tail": ctx.transcript_tail[-12:],
     }, indent=2, default=str)
+    # The format demand must live in the USER prompt too (the proven rank_issues
+    # pattern): a system-prompt-only instruction drifts under weak context and the
+    # model answers in prose instead of the decision object (prod, 2026-07-03).
+    return (payload + "\n\nDecide the single next action for this session. "
+            "Reply with ONLY the JSON decision object "
+            '{"action", "answer_index", "prompt", "reason"} — '
+            "no prose, no preamble, no code fences.")
+
+
+def _extract_decision_obj(raw: str) -> dict | None:
+    """Find the first action-bearing JSON object in a possibly-prose reply.
+
+    Scans every '{' with raw_decode so stray braces in surrounding prose and
+    multiple objects can't break parsing (the greedy find/rfind slice raised
+    "Extra data" on real replies). Fenced blocks need no special-casing — the
+    scan lands on the object inside the fence."""
+    dec = json.JSONDecoder()
+    idx = 0
+    while True:
+        start = raw.find("{", idx)
+        if start == -1:
+            return None
+        try:
+            obj, _end = dec.raw_decode(raw, start)
+        except ValueError:
+            idx = start + 1
+            continue
+        if isinstance(obj, dict) and "action" in obj:
+            return obj
+        idx = start + 1
 
 
 def _parse(raw: str) -> Decision:
-    start, end = raw.find("{"), raw.rfind("}")
-    if start == -1 or end <= start:
+    obj = _extract_decision_obj(raw)
+    if obj is None:
+        # Log the reply head: without it a production parse failure is undiagnosable
+        # (every escalation reads "no-json" with no evidence of what the model said).
+        log.warning("autopilot.decider unparseable reply (head): %r", raw[:400])
         return Decision(action="escalate", reason="decider-failed:no-json")
-    obj = json.loads(raw[start:end + 1])
     action = obj.get("action")
     if action not in _VALID_ACTIONS:
+        log.warning("autopilot.decider bad action %r (head): %r", action, raw[:400])
         return Decision(action="escalate", reason=f"decider-failed:bad-action:{action}")
     ai = obj.get("answer_index")
     return Decision(action=action,
