@@ -10,6 +10,10 @@
   `needs_human` handoff conventions.
 - `2026-06-22-goal-conformance-and-indicators-design.md` — the existing `active_goal`
   (`/goal`) field autopilot reuses as the highest-authority goal signal.
+- `2026-07-02-inferred-session-goals-design.md` — **companion feature (optional dependency).**
+  Adds the LLM-inferred middle tier to `effective_goal()`. Autopilot ships and works without
+  it (degrading to explicit-goal → initial-prompt); when it lands, completion judgement gets
+  sharper for sessions with no explicit `/goal`.
 
 ## Problem
 
@@ -33,9 +37,9 @@ state correctly and drives every governed session toward its goal.
 - Decisions gated by **hard-rule guardrails** (safety-critical, code-defined, non-negotiable)
   with an **LLM decider** for judgment calls, informed by a versioned guidance doc.
 - A per-session **opt-out** so any session can be pinned to manual.
-- "Complete" = the session's **effective goal** is met (explicit `/goal`, else an
-  LLM-inferred goal, else the initial prompt), judged against that goal — not a fixed
-  workflow milestone.
+- "Complete" = the session's **effective goal** is met, judged against that goal — not a fixed
+  workflow milestone. The goal is resolved through a single `effective_goal()` helper (explicit
+  `/goal`, else the initial prompt; a companion feature adds an LLM-inferred middle tier).
 - Restart-safe, non-reentrant, and fully testable with **no network, no real model, no real
   sessions** (all I/O seams injected, mirroring `BacklogRunnerLoop`).
 
@@ -221,31 +225,27 @@ changed at runtime. It encodes *how autopilot decides*, distinct from coding sty
 It explicitly references (does not duplicate) `CLAUDE.md` and the constitution as the source
 of truth for the standards themselves.
 
-## Effective goal & goal intelligence
+## Effective goal
 
 Autopilot needs a goal to judge completion. There must be **one** answer to "what is this
-session's goal," so a single helper defines precedence (avoids a parallel goal concept):
+session's goal," so autopilot introduces a single resolver helper (any parallel goal lookup is
+the anti-pattern to avoid). In this feature it has **two tiers**:
 
 ```
 def effective_goal(record) -> tuple[str, str]:   # (goal_text, source)
-    if record.active_goal:      return record.active_goal, "explicit"      # user /goal — wins
-    if record.inferred_goal:    return record.inferred_goal, "inferred"    # LLM-derived
+    if record.active_goal:  return record.active_goal, "explicit"          # user /goal — wins
     return record.initial_prompt_summary, "initial_prompt"                  # fallback
 ```
 
 - **`active_goal`** — existing field; the built-in `/goal` condition (explicit human intent),
   highest authority. Reused as-is; not duplicated.
-- **`inferred_goal`** — **new nullable column** on `Session` (+ `SessionRecord` +
-  `_record_to_dict` `inferredGoal`). Nullable ⇒ `init_db` backfills on dev SQLite, no
-  migration (per CLAUDE.md). Maintained by a **goal-intelligence sweep** `_goal_monitor`
-  (peer of `_titling_monitor`): a cheap LLM pass over the initial prompt + transcript tail
-  writes/refreshes a one-sentence goal at turn boundaries and periodically, persisted through
-  the existing `_persist_goal`-style path. Best-effort; a failure leaves the prior value.
-- The frontend already shows a `/goal` pill; `inferredGoal` can render as a lighter "inferred"
-  tooltip variant (optional, non-blocking — reuses the existing pill styling).
+- **fallback** — a summary of the session's initial prompt when no `/goal` is set.
 
-This keeps `active_goal` authoritative and `inferred_goal` complementary; all reads go through
-`effective_goal()`.
+The companion feature `2026-07-02-inferred-session-goals-design.md` **inserts a middle
+`"inferred"` tier into this same helper** (an LLM-derived `inferred_goal`) — it edits
+`effective_goal()` in place rather than adding a second resolver. Autopilot is written against
+the helper's *contract* (`(text, source)`), so it needs no change when that tier appears;
+sessions without an explicit `/goal` simply get a sharper completion judgement.
 
 ## Durable state & loop prevention
 
@@ -329,23 +329,22 @@ All seams injected — **no network, no real model, no real sessions.**
 3. **`AutopilotLoop.tick` (injected seams):** propose vs auto (propose emits, never mutates);
    `mode=off` and `_draining` no-op; governed-session filtering (paused/terminal excluded);
    nudge + interval never double-act (lock); ledger increments + fingerprint recorded.
-4. **Goal intelligence:** `effective_goal` precedence (explicit > inferred > initial);
-   `_goal_monitor` writes `inferred_goal` via canned model fn; failure leaves prior value.
+4. **Effective goal:** `effective_goal` precedence (explicit `/goal` wins; else initial-prompt
+   fallback); contract returns `(text, source)`.
 5. **Daemon parity:** `set_autopilot_paused` present on `RemoteOrchestrator` + registered RPC
    (breadth test).
-6. **Serialization / web:** `inferredGoal` + `autopilotPaused` round-trip the nullable
-   columns; `SessionCard` opt-out toggle (vitest); `tsc --noEmit` + `eslint` green in `web/`.
+6. **Serialization / web:** `autopilotPaused` round-trips the nullable column; `SessionCard`
+   opt-out toggle (vitest); `tsc --noEmit` + `eslint` green in `web/`.
 7. **CI gates:** ruff + mypy + pytest locally before PR (mypy is an easily-missed gate).
 
 ## Build order
 
 1. `autopilot_policy.py` (pure guardrails) + its unit tests — the safety core, TDD-first.
 2. `autopilot_decider.py` + `autopilot_guidance.md` + decider tests (canned `_query_fn`).
-3. `Autopilot` metadata + `config_schema`; register in `registry.py` (gets UI + config free).
-4. `AutopilotLoop` + injected orchestrator seams + `_autopilot_tick_loop` + `_persist_status`
+3. `effective_goal()` helper (2-tier: explicit `/goal` → initial-prompt summary) + tests.
+4. `Autopilot` metadata + `config_schema`; register in `registry.py` (gets UI + config free).
+5. `AutopilotLoop` + injected orchestrator seams + `_autopilot_tick_loop` + `_persist_status`
    nudge; loop tests.
-5. Goal intelligence: `inferred_goal` column + `SessionRecord`/serialization + `_goal_monitor`
-   + `effective_goal()` helper; tests.
 6. Per-session opt-out: `autopilot_paused` column + `set_autopilot_paused` + RemoteOrchestrator
    proxy/RPC + `SessionCard` toggle; tests + daemon-parity test.
 7. Full suite (ruff + mypy + pytest + vitest + tsc + eslint) green; PR, ready + auto-merge.
