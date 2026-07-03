@@ -18,9 +18,12 @@ export function DeployPanel() {
 
   // A prior deploy that failed only at the preflight CI gate is stale once CI is green again.
   const preflightStale = !running && phases.preflight === 'failed' && ci === 'green'
-  // Compact, persistent failure fallback for a past (non-running) deploy after the overlay closed.
-  const showFailure = !running && !preflightStale
-    && (!!deploy?.error || failedResume > 0)
+  // A past deploy error is actionable only while commits still await deploy. A restart/health-gate
+  // failure rolls back to the previous version, so once the checkout is caught up or ahead of origin
+  // (behind=false) the error is pure history — hide it. Session-resume failures are independent (a
+  // successful daemon deploy leaves behind=false yet may have lost sessions) and always surface.
+  const showError = !running && !preflightStale && behind && !!deploy?.error
+  const showFailure = showError || (!running && failedResume > 0)
 
   if (!behind && !showFailure) return null
   const canDeploy = behind && !running && ci === 'green'
@@ -59,7 +62,7 @@ export function DeployPanel() {
       )}
       {showFailure && (
         <div className="mt-2 border-t border-amber-200 pt-2">
-          {deploy?.error && <p className="text-xs text-red-600">{deploy.error}</p>}
+          {showError && <p className="text-xs text-red-600">{deploy?.error}</p>}
           {failedResume ? (
             <p className="mt-1 text-xs text-red-600">
               {failedResume} session{failedResume === 1 ? '' : 's'} failed to resume — open them to retry:{' '}

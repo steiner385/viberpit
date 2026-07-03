@@ -85,6 +85,33 @@ describe('DeployPanel', () => {
     expect(screen.getByText(/CI verdict=red/i)).toBeInTheDocument()
   })
 
+  it('hides a past deploy error once nothing is pending (behind=false)', () => {
+    // A health-gate failure rolls back to the previous version, so the app is genuinely
+    // on old code — but with no commits left to deploy the error is pure history. Hide it.
+    mockHooks({ behind: false, commits: [], ci: 'green' },
+              { running: false, phases: { restart: 'failed' }, warnings: [], error: 'restart: health gate failed' })
+    const { container } = render(<DeployPanel />)
+    expect(screen.queryByText(/health gate failed/i)).not.toBeInTheDocument()
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('keeps showing a past deploy error while commits still await deploy', () => {
+    mockHooks({ behind: true, commits: [{ sha: 'a', subject: 's', author: 't', iso: 'i' }], ci: 'green' },
+              { running: false, phases: { restart: 'failed' }, warnings: [], error: 'restart: health gate failed' })
+    render(<DeployPanel />)
+    expect(screen.getByText(/health gate failed/i)).toBeInTheDocument()
+  })
+
+  it('still flags failed session resumes even when nothing is pending', () => {
+    // Session-resume failures are independent of pending commits (a successful daemon
+    // deploy leaves behind=false yet may have lost sessions) — they must survive the hide.
+    mockHooks({ behind: false, commits: [], ci: 'green' },
+              { running: false, phases: { resume: 'done' }, warnings: [],
+                restore: { restored: ['s1'], failed: ['s2'] }, error: null })
+    render(<DeployPanel />)
+    expect(screen.getByText(/1 session.*failed to resume/i)).toBeInTheDocument()
+  })
+
   it('auto-dismisses a stale preflight failure once live CI goes green', () => {
     // The last deploy failed at the CI gate (verdict was pending/red at the time);
     // the live poller now reports green, so the frozen failure is superseded.
