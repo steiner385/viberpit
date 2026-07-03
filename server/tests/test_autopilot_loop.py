@@ -54,7 +54,7 @@ def _loop(ctx, *, mode="auto", governed=("s1",), decision=Decision(action="appro
     async def decide_fn(dc):
         return decision
 
-    async def apply(sid, d):
+    async def apply(sid, d, ctx=None):
         applied.append((sid, d.action))
         return d.action in ("approve", "deny", "answer", "nudge")
 
@@ -137,7 +137,7 @@ async def test_non_mutating_nudge_still_escalates():
     applied: list = []
     loop = _loop(ctx, decision=Decision(action="nudge", prompt="keep going"), applied=applied)
 
-    async def apply_never_lands(sid, d):
+    async def apply_never_lands(sid, d, ctx=None):
         applied.append((sid, d.action))
         return False  # the nudge never actually mutates
     loop._apply = apply_never_lands

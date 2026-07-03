@@ -67,3 +67,41 @@ def test_apply_noops_for_terminal_actions(tmp_path):
         assert await orch._autopilot_apply("missing", Decision(action="complete")) is False
         assert await orch._autopilot_apply("missing", Decision(action="skip")) is False
     asyncio.run(run())
+
+
+def _perm_ctx(perm_id, command):
+    from server.automations.autopilot_policy import DecisionContext
+    return DecisionContext(
+        session_id="s1", status="waiting_input", account="a", repo=None, branch=None,
+        effective_goal="g", goal_source="explicit",
+        stuck={"kind": "permission", "perm_id": perm_id,
+               "tool_name": "Bash", "tool_input": {"command": command}},
+        transcript_tail=[], ledger={})
+
+
+def test_apply_resolves_decide_time_perm_and_rechecks_denylist(tmp_path):
+    """TOCTOU guard: apply resolves exactly the decide-time perm_id, and a
+    deny-listed command can never be approved even if it reaches apply."""
+    async def run():
+        orch = _bare_orch()
+        calls: list = []
+
+        async def _ensure(sid, ident=None):
+            return object()
+
+        orch.ensure_driver = _ensure
+        orch.resolve_permission = (
+            lambda sid, pid, decision, ident: calls.append((pid, decision)) or True)
+
+        # Safe perm → approved via the SAME perm_id passed in (no re-fetch).
+        assert await orch._autopilot_apply(
+            "s1", Decision(action="approve"), _perm_ctx("P1", "pytest")) is True
+        assert calls == [("P1", True)]
+
+        # A destructive command reaching apply is blocked by the deny-list re-check;
+        # resolve_permission is never called.
+        calls.clear()
+        assert await orch._autopilot_apply(
+            "s1", Decision(action="approve"), _perm_ctx("P2", "git push --force")) is False
+        assert calls == []
+    asyncio.run(run())

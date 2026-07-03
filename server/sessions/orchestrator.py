@@ -1332,16 +1332,27 @@ class SessionOrchestrator:
             branch=getattr(rec, "branch", None), effective_goal=goal_text,
             goal_source=goal_source, stuck=stuck, transcript_tail=[], ledger={})
 
-    async def _autopilot_apply(self, session_id: str, decision) -> bool:
+    async def _autopilot_apply(self, session_id: str, decision, ctx=None) -> bool:
         """Perform an autopilot Decision through the existing session seams under the
-        system identity. Returns True only when a mutation actually happened."""
+        system identity. Returns True only when a mutation actually happened.
+
+        Acts ONLY on the decide-time ``ctx`` (the stuck payload pre_decide +
+        post_validate already validated) — never a freshly re-read one, so a new
+        pending permission the session surfaced during the decider's await window can
+        never be approved without passing the guardrails (TOCTOU safety)."""
         from server.sessions.types import SYSTEM_IDENTITY
+        from server.automations.autopilot_policy import matches_denylist
         act = decision.action
         if act in ("escalate", "complete", "skip"):
             return False
-        ctx = await self._autopilot_get_context(session_id)
-        stuck = ctx.stuck if ctx else {}
+        stuck = ctx.stuck if ctx is not None else {}
         if act in ("approve", "deny") and stuck.get("perm_id"):
+            # Defense-in-depth: re-check the exact perm being approved against the
+            # deny-list right before resolving, so an approve can never slip a
+            # destructive command through even if the payload changed shape.
+            if act == "approve" and matches_denylist(
+                    stuck.get("tool_name", ""), stuck.get("tool_input", {}), []):
+                return False
             await self.ensure_driver(session_id, SYSTEM_IDENTITY)
             return bool(self.resolve_permission(
                 session_id, stuck["perm_id"], act == "approve", SYSTEM_IDENTITY))

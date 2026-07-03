@@ -69,7 +69,7 @@ class AutopilotLoop:
                  read_config: Callable[[], Awaitable[tuple[str, dict]]],
                  list_governed: Callable[[], Awaitable[list[str]]],
                  get_context: Callable[[str], Awaitable[DecisionContext | None]],
-                 apply: Callable[[str, Decision], Awaitable[bool]],
+                 apply: Callable[[str, Decision, "DecisionContext | None"], Awaitable[bool]],
                  decide_fn: Callable[[DecisionContext], Awaitable[Decision]],
                  clock: Callable[[], float]) -> None:
         self._ctx = ctx
@@ -147,7 +147,11 @@ class AutopilotLoop:
                                  detail={"action": decision.action, "reason": decision.reason})
             return False, False
 
-        acted = await self._apply(sid, decision)
+        # Pass the DECIDE-TIME context to apply so it resolves exactly the
+        # permission/question that pre_decide + post_validate just validated — never
+        # a freshly re-read one (which could be a new, un-vetted pending permission
+        # the session surfaced during the decider's await window).
+        acted = await self._apply(sid, decision, ctx)
         if acted:
             self._day_actions.append(now)
             await self._charge(sid, ledger, ctx, decision, now)
