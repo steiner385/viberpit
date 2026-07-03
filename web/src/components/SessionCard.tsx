@@ -452,11 +452,17 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           hover-capable devices (desktop) they shrink to a denser 32px and stay
           hidden until the row is hovered, focused, or selected — so the meta row
           gets the full card width instead of fighting three permanent buttons.
-          On mobile (< lg) only Resume stays inline; the rest are `hidden lg:flex`
-          (see the secondary-actions group below) and live in the detail view. */}
+          On mobile (< lg) only Resume stays inline; the rest are `hidden lg:*`
+          (see the secondary-actions group below) and live in the detail view.
+          On desktop the buttons lay out as a 3-column grid so the (up to six)
+          controls fold into two rows — halving the horizontal footprint they
+          steal from the meta row. The secondary group uses `lg:contents` so its
+          five children flow into this grid directly rather than as one wide
+          flex child. */}
       <div
         className={cn(
           'flex flex-shrink-0 items-center gap-0.5 transition-opacity',
+          'lg:grid lg:grid-cols-3 lg:justify-items-center',
           '[@media(hover:hover)]:opacity-0',
           '[@media(hover:hover)]:group-hover:opacity-100',
           '[@media(hover:hover)]:group-focus-within:opacity-100',
@@ -484,8 +490,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         {/* Secondary actions group — desktop-only. Suggestions/rename/archive/
             delete each render a 44px tap target with no hover to retreat behind,
             so on a phone they consumed most of the card width. Gating the group
-            to `lg:` leaves Resume as the single inline action on mobile. */}
-        <div data-testid="card-secondary-actions" className="hidden lg:flex items-center gap-0.5">
+            to `lg:` leaves Resume as the single inline action on mobile.
+            `lg:contents` dissolves this wrapper on desktop so its buttons become
+            direct children of the parent action grid (two rows), while staying
+            `hidden` (as a box) on mobile. */}
+        <div data-testid="card-secondary-actions" className="hidden lg:contents">
         {!isBusy && (
           <div className="relative flex items-center">
             <button
