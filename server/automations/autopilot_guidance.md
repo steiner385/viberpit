@@ -29,3 +29,12 @@ Bias to **escalate** whenever unsure. Safety beats progress.
 ## Completion
 - `complete` only when the effective goal is genuinely met (for a code task: an open PR
   with auto-merge armed), not merely because a turn ended.
+
+## `complete` status (the session emitted its own completion marker)
+- This is a STRONG goal-met signal — the agent declared it finished. Confirm it against the
+  effective goal:
+  - Goal genuinely satisfied (code task: an open PR with auto-merge armed) → `complete`
+    (autopilot archives it).
+  - Marker was premature — the goal clearly demands more (no PR opened, tests still failing) →
+    `nudge` toward the remaining work.
+  - Only `escalate` when you genuinely can't tell.

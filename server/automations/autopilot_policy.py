@@ -5,9 +5,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-# Statuses autopilot may act on (everything else is left alone).
+# Statuses autopilot may act on (everything else is left alone). `complete` is the
+# agent's own completion marker — the strongest goal-met signal — so it MUST be
+# actionable: the decider confirms the goal is met and archives the session (or nudges
+# a premature marker toward the remaining work). Without it a well-behaved session that
+# signals completion strands in `complete` forever, archived by no one.
 ACTIONABLE_STATUSES = frozenset({
     "done", "idle", "waiting_input", "waiting_question", "ready_review", "needs_attention",
+    "complete",
 })
 
 # Hard-coded destructive-command deny-list (regex, matched against a Bash command
