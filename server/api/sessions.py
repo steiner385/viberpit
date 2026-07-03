@@ -74,6 +74,10 @@ class RenameSessionRequest(BaseModel):
     name: str
 
 
+class AutopilotPauseRequest(BaseModel):
+    paused: bool
+
+
 class AdoptRequest(BaseModel):
     claudeSessionId: str
 
@@ -595,6 +599,28 @@ async def rename_session(
         )
     await orch.rename_session(session_id, body.name)
     # Re-fetch (rename_session updates in place)
+    updated = await orch.get_session(session_id)
+    final = updated or record
+    return _record_to_dict(final, repo=await _resolve_repo(final))
+
+
+@router.post("/{session_id}/autopilot")
+async def set_autopilot_paused(
+    session_id: str,
+    body: AutopilotPauseRequest,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Pin a session to manual (paused=true) or return it to autopilot governance.
+    Returns the updated session record, or 404 if unknown."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    await orch.set_autopilot_paused(session_id, body.paused)
     updated = await orch.get_session(session_id)
     final = updated or record
     return _record_to_dict(final, repo=await _resolve_repo(final))

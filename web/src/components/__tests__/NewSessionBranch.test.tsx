@@ -23,6 +23,7 @@ vi.mock('@/api/hooks', () => ({
   useModels: vi.fn(() => ({ data: [{ id: 'default', label: 'Default' }, { id: 'opus', label: 'Opus' }, { id: 'fable', label: 'Fable' }] })),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
+  useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
   useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAutomations: vi.fn(() => ({ data: [] })),
   useReauthAccount: vi.fn(),

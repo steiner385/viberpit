@@ -80,6 +80,8 @@ export interface Session {
   summary?: string
   /** Active /goal condition for this session; null/absent = no goal. */
   activeGoal?: string | null
+  /** Per-session autopilot opt-out; true = pinned to manual, false/absent = governed. */
+  autopilotPaused?: boolean
   /** Row-write timestamp used to order poll vs. WS updates; bumped on every status persist.
    *  Distinct from updatedAt (freshness). */
   revAt?: string | null

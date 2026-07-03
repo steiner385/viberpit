@@ -55,9 +55,11 @@ interface SessionCardProps {
   prAutofixMode?: string
   /** Called when the user taps "Fix PR #N" — parent owns the mutation. */
   onFixPr?: (id: string, number: number) => void
+  /** Called when the user toggles this session's autopilot opt-out — parent owns the mutation. */
+  onToggleAutopilot?: (id: string, paused: boolean) => void
 }
 
-export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot }: SessionCardProps) {
   const articleRef = useRef<HTMLElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const subAgents = session.subAgents ?? []
@@ -363,6 +365,16 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 <span className="truncate">Goal</span>
               </span>
             )}
+            {session.autopilotPaused && (
+              <span
+                data-testid="card-autopilot-badge"
+                className="hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                title="Autopilot paused — this session is on manual"
+              >
+                <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
+                <span className="truncate">Manual</span>
+              </span>
+            )}
             {session.origin && (
               <Link
                 to="/automation"
@@ -534,6 +546,27 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               </div>
             )}
           </div>
+        )}
+        {onToggleAutopilot && (
+          <button
+            type="button"
+            data-testid="card-autopilot"
+            className={cn(actionBtn,
+              session.autopilotPaused
+                ? 'text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700'
+                : 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20',
+              'focus-visible:ring-blue-500')}
+            aria-label={session.autopilotPaused
+              ? `Autopilot paused for session ${session.name} — resume`
+              : `Autopilot on for session ${session.name} — pause`}
+            aria-pressed={!session.autopilotPaused}
+            title={session.autopilotPaused
+              ? 'Autopilot paused — click to resume'
+              : 'Autopilot on — click to pause'}
+            onClick={() => onToggleAutopilot(session.id, !session.autopilotPaused)}
+          >
+            <Bot size={16} aria-hidden="true" />
+          </button>
         )}
         <button
           type="button"

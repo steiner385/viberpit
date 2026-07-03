@@ -30,6 +30,12 @@ def test_session_record_roundtrips_autopilot_paused():
     assert d2["autopilotPaused"] is False
 
 
+def test_record_to_dict_serializes_autopilot_paused():
+    from server.api.sessions import _record_to_dict
+    assert _record_to_dict(_rec(autopilot_paused=True), repo=None)["autopilotPaused"] is True
+    assert _record_to_dict(_rec(), repo=None)["autopilotPaused"] is False
+
+
 def test_set_autopilot_paused_persists(tmp_path):
     async def run():
         from server.db import init_db, db_session
