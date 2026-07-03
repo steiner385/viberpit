@@ -105,3 +105,61 @@ def test_apply_resolves_decide_time_perm_and_rechecks_denylist(tmp_path):
             "s1", Decision(action="approve"), _perm_ctx("P2", "git push --force")) is False
         assert calls == []
     asyncio.run(run())
+
+
+def test_get_context_populates_transcript_tail(tmp_path):
+    """The decider is only as good as its input: get_context must carry a compact
+    transcript tail (the deployed empty-tail starved the model into prose/escalate)."""
+    async def run():
+        from server.sessions.types import SessionRecord
+        from server.sessions.events import TextDelta, ToolCall, UserMessage, ToolKind
+        from server.sessions.replay import ReplayWindow
+
+        orch = _bare_orch()
+        orch._records = {"s1": SessionRecord(
+            id="s1", name="Implement and ship issue #10282", account="a",
+            claude_session_id="", cols=80, rows=24, cwd="/tmp",
+            status="needs_attention")}
+        orch._registry = None  # no driver → no pending perms
+        orch.pending_questions = lambda sid: []
+
+        async def fake_window(session_id, *, before=None, limit=20):
+            return ReplayWindow(events=[
+                UserMessage(turn_id="t1", text="Please implement issue #10282"),
+                ToolCall(turn_id="t1", tool_id="x", name="Bash",
+                         kind=ToolKind.BASH, input={"command": "pytest -q"}),
+                TextDelta(turn_id="t1", text="Tests failed with 2 errors in auth.py"),
+            ], earliest_turn=0, total_turns=1)
+        orch.transcript_window = fake_window
+
+        ctx = await orch._autopilot_get_context("s1")
+        assert ctx is not None
+        tail = ctx.transcript_tail
+        assert tail, "transcript_tail must not be empty when a transcript exists"
+        text_blob = " ".join(str(e) for e in tail)
+        assert "issue #10282" in text_blob          # user intent present
+        assert "Tests failed" in text_blob          # last assistant signal present
+        assert all(len(str(e)) < 800 for e in tail)  # entries stay compact
+
+    asyncio.run(run())
+
+
+def test_get_context_tail_empty_on_window_failure(tmp_path):
+    """Best-effort: a transcript read failure degrades to an empty tail, never an error."""
+    async def run():
+        from server.sessions.types import SessionRecord
+        orch = _bare_orch()
+        orch._records = {"s1": SessionRecord(
+            id="s1", name="n", account="a", claude_session_id="",
+            cols=80, rows=24, cwd="/tmp", status="done")}
+        orch._registry = None
+        orch.pending_questions = lambda sid: []
+
+        async def boom(session_id, *, before=None, limit=20):
+            raise RuntimeError("transcript unreadable")
+        orch.transcript_window = boom
+
+        ctx = await orch._autopilot_get_context("s1")
+        assert ctx is not None and ctx.transcript_tail == []
+
+    asyncio.run(run())
