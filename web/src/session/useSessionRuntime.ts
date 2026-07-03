@@ -34,6 +34,10 @@ export interface SessionRuntime {
   /** Re-send the attach frame for this session (used to recover a stuck load). */
   reattach: () => void
   title: string
+  /** The reckoned goal autopilot drives toward (effective_goal resolver), for the header. */
+  goal: string | null
+  /** Where the reckoned goal came from: "explicit" | "inferred" | "initial_prompt". */
+  goalSource: string | null
   account: string
   quota: {
     sessionPct: number
