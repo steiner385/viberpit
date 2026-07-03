@@ -131,6 +131,12 @@ class AutopilotLoop:
         if decision.action == "skip":
             await self._record_fingerprint(sid, ledger, ctx)
             return False, False
+        if decision.action == "complete":
+            # The goal is met — stop advancing this session. Never mutate; emit a
+            # terminal marker so the activity feed shows why it went quiet.
+            await self._ctx.emit("info", f"{sid}: goal met — {decision.reason}",
+                                 kind="complete", session_id=sid)
+            return False, False
         if decision.action == "escalate":
             await self._escalate(sid, ledger, decision)
             return False, True
@@ -148,6 +154,11 @@ class AutopilotLoop:
             await self._ctx.emit("info", f"{sid}: {decision.action} — {decision.reason}",
                                  kind="acted", session_id=sid,
                                  detail={"action": decision.action})
+        else:
+            # The action did not mutate (e.g. a nudge that never landed). Still
+            # accumulate the stuck-state fingerprint so loop detection can escalate
+            # a session that would otherwise be nudged forever without progress.
+            await self._record_fingerprint(sid, ledger, ctx)
         return acted, False
 
     async def _record_fingerprint(self, sid: str, ledger: dict, ctx: DecisionContext) -> None:

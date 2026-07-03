@@ -116,3 +116,34 @@ async def test_loop_detection_escalates_after_repeats():
     assert ("s1", "escalate") not in loop._applied[:3]
     st = ctx.states.get("s1", {})
     assert st.get("repeat_count", 0) >= 3
+
+
+@pytest.mark.asyncio
+async def test_complete_emits_and_does_not_apply():
+    ctx = FakeCtx()
+    loop = _loop(ctx, decision=Decision(action="complete", reason="goal met"))
+    await loop.tick()
+    # 'complete' must never mutate — apply is never called ...
+    assert loop._applied == []
+    # ... and a terminal 'complete' marker is emitted for the feed.
+    assert any(kind == "complete" for _, _, kind in ctx.emits)
+
+
+@pytest.mark.asyncio
+async def test_non_mutating_nudge_still_escalates():
+    """A nudge whose apply() keeps returning False (never lands) must still
+    accumulate the fingerprint and eventually escalate — not loop forever."""
+    ctx = FakeCtx()
+    applied: list = []
+    loop = _loop(ctx, decision=Decision(action="nudge", prompt="keep going"), applied=applied)
+
+    async def apply_never_lands(sid, d):
+        applied.append((sid, d.action))
+        return False  # the nudge never actually mutates
+    loop._apply = apply_never_lands
+
+    for _ in range(4):
+        await loop.tick()
+    # loop detection fired despite apply() always returning False
+    assert any(kind == "escalated" for _, _, kind in ctx.emits)
+    assert ctx.states.get("s1", {}).get("escalated") is True
