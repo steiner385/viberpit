@@ -118,6 +118,15 @@ async def test_loop_detection_escalates_after_repeats():
     assert st.get("repeat_count", 0) >= 3
 
 
+def test_actionable_statuses_includes_complete():
+    """A session that emits its completion marker reaches `complete` status — the
+    strongest goal-met signal. It MUST be actionable so the decider can judge it and
+    archive a goal-met session; otherwise a well-behaved session strands in `complete`
+    forever, archived by no one (backlog-runner has a separate path; humans do not)."""
+    from server.automations.autopilot_policy import ACTIONABLE_STATUSES
+    assert "complete" in ACTIONABLE_STATUSES
+
+
 @pytest.mark.asyncio
 async def test_complete_emits_and_does_not_apply():
     ctx = FakeCtx()

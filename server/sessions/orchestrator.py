@@ -1321,6 +1321,12 @@ class SessionOrchestrator:
         for sid, rec in list(self._records.items()):
             if rec.status not in ACTIONABLE_STATUSES:
                 continue
+            # A completed backlog-runner session is owned by the dedicated auto-archive
+            # path (`_maybe_autoarchive_completed`); governing it here too would let two
+            # paths race to archive the same session. Autopilot owns every OTHER
+            # completed session (human-created, pr-doctor, etc.).
+            if rec.status == "complete" and getattr(rec, "origin", None) == "backlog-runner":
+                continue
             if getattr(rec, "autopilot_paused", False):
                 continue
             if repos and rec.repo not in repos:

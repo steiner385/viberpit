@@ -69,6 +69,34 @@ def test_apply_noops_for_terminal_actions(tmp_path):
     asyncio.run(run())
 
 
+def test_list_governed_includes_complete_but_not_backlog_runner(tmp_path):
+    """A `complete`-status session is governed so the decider can archive a goal-met
+    session — EXCEPT a backlog-runner one, which the dedicated auto-archive path owns
+    (`_maybe_autoarchive_completed`). Governing both would double-archive the same
+    session from two racing paths."""
+    async def run():
+        from server.sessions.types import SessionRecord
+        await _init_db(tmp_path)
+        orch = _bare_orch()
+
+        def _rec(sid, status, origin=None):
+            return SessionRecord(id=sid, name="n", account="a", claude_session_id="",
+                                 cols=80, rows=24, cwd="/tmp", status=status, origin=origin)
+
+        orch._records = {
+            "human_complete": _rec("human_complete", "complete"),
+            "backlog_complete": _rec("backlog_complete", "complete", origin="backlog-runner"),
+            "done": _rec("done", "done"),
+            "working": _rec("working", "in_progress"),
+        }
+        governed = set(await orch._autopilot_list_governed())
+        assert "human_complete" in governed        # decider judges it → archives if goal met
+        assert "done" in governed                  # unchanged behaviour
+        assert "backlog_complete" not in governed  # owned by the backlog auto-archive path
+        assert "working" not in governed           # in_progress is never actionable
+    asyncio.run(run())
+
+
 def _perm_ctx(perm_id, command):
     from server.automations.autopilot_policy import DecisionContext
     return DecisionContext(
