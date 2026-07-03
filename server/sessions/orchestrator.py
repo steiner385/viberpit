@@ -320,6 +320,21 @@ class SessionOrchestrator:
             reconcile=self._backlog_reconcile,
         )
         self._backlog_task: asyncio.Task | None = None
+        # Autopilot control loop: advances every governed session through its stuck
+        # states each tick (also nudged from _persist_status). All seams injected so
+        # the loop stays testable; the seam methods live on this orchestrator.
+        from server.automations.autopilot import AutopilotLoop
+        self._autopilot_ctx = AutomationContext("autopilot")
+        self._autopilot_loop = AutopilotLoop(
+            self._autopilot_ctx,
+            read_config=self._autopilot_read_config,
+            list_governed=self._autopilot_list_governed,
+            get_context=self._autopilot_get_context,
+            apply=self._autopilot_apply,
+            decide_fn=self._autopilot_decide,
+            clock=time.monotonic,
+        )
+        self._autopilot_task: asyncio.Task | None = None
         # Fire-and-forget task registry (issue #405). Every detached ``create_task``
         # (persist, rotation, recovery, summary/proposal refresh, backlog nudge …) is
         # routed through ``_spawn`` so ``stop()`` can cancel+await ALL of them. An
@@ -417,6 +432,10 @@ class SessionOrchestrator:
         # terminal-watch sweep). A disabled row makes each tick a cheap sweep.
         self._backlog_task = asyncio.create_task(
             self._backlog_tick_loop(interval=60.0), name="backlog-runner-loop"
+        )
+        # Autopilot control loop: one tick per interval plus status-change nudges.
+        self._autopilot_task = asyncio.create_task(
+            self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
         )
 
     async def _refresh_idle_tokens_once(self) -> None:
@@ -836,6 +855,15 @@ class SessionOrchestrator:
         if completed_turn:
             await self._maybe_apply_auto_name(session_id)
         self._maybe_autoarchive_completed(session_id, status, rec)
+        # Nudge autopilot when a session enters an actionable state so a stuck session
+        # is advanced immediately, not only on the next interval tick. Best-effort; the
+        # loop is non-reentrant so this never overlaps an in-progress tick.
+        from server.automations.autopilot_policy import ACTIONABLE_STATUSES
+        if status in ACTIONABLE_STATUSES and getattr(self, "_autopilot_loop", None) is not None:
+            try:
+                self._spawn(self._autopilot_loop.tick(), name="autopilot-nudge")
+            except Exception:  # pragma: no cover — scheduling must never break status persist
+                log.debug("autopilot.nudge_failed", exc_info=True)
 
     def _maybe_autoarchive_completed(self, session_id: str, status: str, rec) -> None:
         """Schedule a completion auto-archive for a finished backlog-runner session.
@@ -1222,6 +1250,130 @@ class SessionOrchestrator:
                 await self._bump_automation_active("backlog-runner")
         except Exception:  # pragma: no cover — a heartbeat failure must not stall
             log.debug("backlog_runner.bump_active_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Autopilot control-loop dependencies (injected into AutopilotLoop)
+    # ------------------------------------------------------------------
+
+    async def _autopilot_read_config(self) -> tuple[str, dict]:
+        """The autopilot row's (mode, config) merged onto schema defaults. Returns
+        'off' when disabled, invalid, OR while draining (autopilot must never fight a
+        deploy drain)."""
+        from server.automations.autopilot import Autopilot
+        from server.automations.base import validate_config
+        from sqlalchemy import select
+        from server.db.models import Automation
+        enabled, mode, raw = False, None, {}
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "autopilot"))).scalar_one_or_none()
+                if row is not None:
+                    enabled, mode, raw = bool(row.enabled), row.mode, dict(row.config or {})
+        except Exception:
+            log.debug("autopilot.config.load_failed", exc_info=True)
+        try:
+            config = validate_config(Autopilot.config_schema, raw)
+        except ValueError:
+            config = validate_config(Autopilot.config_schema, {})
+        effective = mode if (enabled and mode in ("propose", "auto")) else "off"
+        if getattr(self, "_draining", False):
+            effective = "off"
+        return effective, config
+
+    async def _autopilot_list_governed(self) -> list[str]:
+        """Session ids autopilot may act on this tick: non-terminal, not opted-out,
+        in an actionable status, and (if enabled_repos is set) in one of those repos."""
+        from server.automations.autopilot_policy import ACTIONABLE_STATUSES
+        _mode, config = await self._autopilot_read_config()
+        repos = set(config.get("enabled_repos") or [])
+        out: list[str] = []
+        for sid, rec in list(self._records.items()):
+            if rec.status not in ACTIONABLE_STATUSES:
+                continue
+            if getattr(rec, "autopilot_paused", False):
+                continue
+            if repos and rec.repo not in repos:
+                continue
+            out.append(sid)
+        return out
+
+    async def _autopilot_get_context(self, session_id: str):
+        """Assemble the pure DecisionContext for a governed session: its effective
+        goal plus the pending permission / plan / question payload driving its status."""
+        from server.automations.autopilot_policy import DecisionContext
+        from server.sessions.goals import effective_goal
+        rec = self._records.get(session_id)
+        if rec is None:
+            return None
+        goal_text, goal_source = effective_goal(rec)
+        stuck: dict = {"kind": rec.status}
+        reg = getattr(self, "_registry", None)
+        perms = reg.pending(session_id) if reg is not None else []
+        plan = next((p for p in perms if p.get("tool") == "ExitPlanMode"), None)
+        other = next((p for p in perms if p.get("tool") != "ExitPlanMode"), None)
+        if plan is not None:
+            stuck = {"kind": "plan", "perm_id": plan["permId"],
+                     "tool_name": "ExitPlanMode", "tool_input": plan.get("input", {}),
+                     "plan_text": str(plan.get("input", {}))}
+        elif other is not None:
+            stuck = {"kind": "permission", "perm_id": other["permId"],
+                     "tool_name": other["tool"], "tool_input": other.get("input", {})}
+        else:
+            qs = self.pending_questions(session_id)
+            if qs:
+                q = qs[0]
+                stuck = {"kind": "question", "question_id": q["question_id"],
+                         "question": q.get("question", ""), "options": q.get("options", []),
+                         "multi_select": q.get("multi_select", False)}
+        return DecisionContext(
+            session_id=session_id, status=rec.status, account=rec.account, repo=rec.repo,
+            branch=getattr(rec, "branch", None), effective_goal=goal_text,
+            goal_source=goal_source, stuck=stuck, transcript_tail=[], ledger={})
+
+    async def _autopilot_apply(self, session_id: str, decision) -> bool:
+        """Perform an autopilot Decision through the existing session seams under the
+        system identity. Returns True only when a mutation actually happened."""
+        from server.sessions.types import SYSTEM_IDENTITY
+        act = decision.action
+        if act in ("escalate", "complete", "skip"):
+            return False
+        ctx = await self._autopilot_get_context(session_id)
+        stuck = ctx.stuck if ctx else {}
+        if act in ("approve", "deny") and stuck.get("perm_id"):
+            await self.ensure_driver(session_id, SYSTEM_IDENTITY)
+            return bool(self.resolve_permission(
+                session_id, stuck["perm_id"], act == "approve", SYSTEM_IDENTITY))
+        if act == "answer" and stuck.get("question_id") is not None:
+            await self.ensure_driver(session_id, SYSTEM_IDENTITY)
+            opts = stuck.get("options") or []
+            idx = decision.answer_index or 0
+            selected = [opts[idx]] if 0 <= idx < len(opts) else []
+            return bool(self.answer_question(
+                session_id, stuck["question_id"], selected, SYSTEM_IDENTITY, "option"))
+        if act == "nudge" and decision.prompt:
+            await self.ensure_driver(session_id, SYSTEM_IDENTITY)
+            result = await self.send_prompt(session_id, decision.prompt)
+            return result == "sent"
+        return False
+
+    async def _autopilot_decide(self, ctx):
+        """Wrap the one-shot LLM decider, passing the account's config dir when resolvable."""
+        from server.automations.autopilot_decider import decide
+        try:
+            cfg_dir = str(compose(ctx.account))
+        except Exception:  # pragma: no cover — fall back to the process env config dir
+            cfg_dir = None
+        return await decide(ctx, _config_dir=cfg_dir)
+
+    async def _autopilot_tick_loop(self, interval: float) -> None:
+        """Periodic driver for the autopilot control loop (also nudged on status change)."""
+        while True:
+            try:
+                await self._autopilot_loop.tick()
+            except Exception:  # pragma: no cover — tick() already swallows; belt+braces
+                log.warning("autopilot.tick_loop_error", exc_info=True)
+            await asyncio.sleep(interval)
 
     async def _pr_doctor_config(self) -> dict:
         """The pr-doctor row's config merged onto the PrDoctor schema defaults.
