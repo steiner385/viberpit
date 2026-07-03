@@ -17,7 +17,7 @@ import { shouldApplyRev } from '@/session/reconcile'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
-export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string }
+export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string; interruptedByRestart?: boolean }
 export interface WsUsageMsg        { type: 'usage';         account: string; session: { pct: number; resetsAt: string | null }; weekly: { pct: number; resetsAt: string | null } }
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null }
@@ -343,7 +343,7 @@ export class SessionSocket {
     switch (msg.type) {
       case 'status':
         this._emit('status', msg)
-        this._patchSessionStatus(msg.sessionId, msg.status as Session['status'], msg.updatedAt, msg.revAt)
+        this._patchSessionStatus(msg.sessionId, msg.status as Session['status'], msg.updatedAt, msg.revAt, msg.interruptedByRestart)
         break
       case 'usage':
         this._emit('usage', msg)
@@ -401,7 +401,7 @@ export class SessionSocket {
 
   // ── TanStack Query cache patching ────────────────────────────────────────────
 
-  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string) {
+  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string, interruptedByRestart?: boolean) {
     const qc = this._queryClient
     if (!qc) return
     qc.setQueryData<Session[]>(QK.sessions, (old) => {
@@ -413,7 +413,10 @@ export class SessionSocket {
         if (!shouldApplyRev(revAt, s.revAt)) return s
         return { ...s, status,
                  ...(updatedAt ? { updatedAt } : {}),
-                 ...(revAt ? { revAt } : {}) }
+                 ...(revAt ? { revAt } : {}),
+                 // Issue #434: the status frame carries the live restart-interruption flag
+                 // (cleared on resume) so the pill relabels without waiting for the 5s poll.
+                 ...(interruptedByRestart !== undefined ? { interruptedByRestart } : {}) }
       })
     })
   }

@@ -9,6 +9,7 @@ import { AllLimitedBanner } from './AllLimitedBanner'
 import { UpdatePendingBanner } from './UpdatePendingBanner'
 import { useInputHold } from '@/hooks/useInputHold'
 import { SettingsPanel } from './settings/SettingsPanel'
+import { DaemonHealthIndicator } from './DaemonHealthIndicator'
 import { DispatchBar } from './DispatchBar'
 import { useGlobalListNav } from './useGlobalListNav'
 import { useGlobalHelpKey } from './useGlobalHelpKey'
@@ -873,9 +874,12 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           className="flex flex-1 min-h-0 flex-col gap-3"
         >
           <div className="flex items-center justify-between">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              Sessions
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                Sessions
+              </h2>
+              <DaemonHealthIndicator />
+            </div>
             <div className="flex items-center gap-2">
               <Button
                 size="sm"

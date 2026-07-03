@@ -846,6 +846,11 @@ class SessionOrchestrator:
             rec.updated_at = datetime.utcnow()   # row-write token; bumps on EVERY persist (see rev_at)
             if turn_at is not None:
                 rec.last_turn_at = turn_at
+            # The session is doing something again → the "interrupted by daemon restart,
+            # re-send to resume" hint (issue #434) is resolved. Clear it on any non-idle
+            # status so the card stops nagging once the user re-sends.
+            if status != "idle":
+                rec.interrupted_by_restart = False
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             values: dict = {"status": status}
@@ -865,7 +870,9 @@ class SessionOrchestrator:
         # (_patchSessionStatus) patches the cached session record.
         self._publish_event({"type": "status", "sessionId": session_id, "status": status,
                              "updatedAt": rec.updated_at_iso if rec is not None else None,
-                             "revAt": rec.rev_at if rec is not None else None})
+                             "revAt": rec.rev_at if rec is not None else None,
+                             "interruptedByRestart": (
+                                 rec.interrupted_by_restart if rec is not None else False)})
         await self._maybe_push(session_id, status)
         if completed_turn:
             await self._maybe_apply_auto_name(session_id)
@@ -1997,8 +2004,13 @@ class SessionOrchestrator:
         for row in rows:
             if row.id in self._records:
                 continue
-            # A pre-crash live status has no driver anymore → normalize to idle.
-            status = "idle" if row.status in ("working", "in_progress", "condensing") else row.status
+            # A pre-crash live status has no driver anymore → normalize to idle. When we
+            # DO normalize (the row was mid-turn), the daemon restart dropped an in-flight
+            # turn — flag it (issue #434) so the dashboard says "interrupted by daemon
+            # restart — re-send to resume" instead of a generic idle card. Transient: the
+            # flag lives only on this in-memory record and clears on the next turn.
+            was_midturn = row.status in ("working", "in_progress", "condensing")
+            status = "idle" if was_midturn else row.status
             # Backfill the PR-join branch for legacy sessions created before the
             # branch was persisted (NULL column). Derive it once from the session's
             # worktree and write it back so the column becomes the source of truth.
@@ -2033,6 +2045,7 @@ class SessionOrchestrator:
                 authored_branches=list(getattr(row, "authored_branches", None) or []),
                 context_used_tokens=getattr(row, "context_used_tokens", None),
                 context_max_tokens=getattr(row, "context_max_tokens", None),
+                interrupted_by_restart=was_midturn,
             )
             added += 1
             log_event(log, logging.INFO, "session.reattach",

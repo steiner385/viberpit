@@ -10,6 +10,7 @@ import {
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
   DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, MergeTrainState, CheckInsights,
+  DaemonHealth,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
@@ -40,6 +41,7 @@ export const QK = {
   pipelineInsights: (repo?: string, window?: string) =>
     ['pipeline-insights', repo, window] as const,
   prDoctorActionable: ['pr-doctor-actionable'] as const,
+  daemonHealth: ['daemon-health'] as const,
 }
 
 export function useModels() {
@@ -47,6 +49,17 @@ export function useModels() {
     queryKey: QK.models,
     queryFn: () => api.get<ModelOption[]>('/models'),
     staleTime: 5 * 60_000,   // curated list rarely changes
+  })
+}
+
+/** Issue #434: poll daemon lifecycle health for the dashboard indicator + restart toast.
+ *  Cheap payload; 15s cadence matches the server-side poll granularity. */
+export function useDaemonHealth() {
+  return useQuery<DaemonHealth>({
+    queryKey: QK.daemonHealth,
+    queryFn: () => api.get<DaemonHealth>('/daemon/health'),
+    staleTime: 10_000,
+    refetchInterval: 15_000,
   })
 }
 

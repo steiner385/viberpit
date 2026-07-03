@@ -193,6 +193,19 @@ async def _lifespan(app: FastAPI):
     if not remote_mode:
         await app.state.orchestrator.start()
 
+    # Daemon-health monitor (issue #434): in remote mode the edge polls the daemon's /info
+    # epoch to make wedge→watchdog-restart events visible in the dashboard. In-process mode
+    # has no separate daemon, so there's nothing to watch.
+    app.state.daemon_health = None
+    if remote_mode:
+        from server.ipc.client import DaemonClient
+        from server.sessions.daemon_health import DaemonHealthMonitor
+        _dh_client = DaemonClient(app.state.daemon_endpoint)
+        app.state._daemon_health_client = _dh_client
+        monitor = DaemonHealthMonitor(info_fn=_dh_client.info)
+        monitor.start()
+        app.state.daemon_health = monitor
+
     # Sweep stale X lock/socket files AND reap orphaned Xvfb/x11vnc/chrome left by a
     # prior SIGKILLed shutdown (issue #206 — the self-healing startup half).
     if getattr(app.state, "x11", None) is not None:
@@ -231,6 +244,11 @@ async def _lifespan(app: FastAPI):
     import contextlib
     with contextlib.suppress(Exception):
         app.state.auth_failure_auditor.stop()
+    if getattr(app.state, "daemon_health", None) is not None:
+        with contextlib.suppress(Exception):
+            await app.state.daemon_health.stop()
+        with contextlib.suppress(Exception):
+            await app.state._daemon_health_client.aclose()
     await app.state.reauth.shutdown()
     if remote_mode:
         # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
@@ -470,6 +488,17 @@ def create_app(
                 return {"enabled": False}
         x11 = getattr(app.state, "x11", None)
         return x11.metrics() if x11 else {"enabled": False}
+
+    @app.get("/api/daemon/health")
+    async def daemon_health(_identity: str = Depends(current_identity)) -> dict:
+        # Issue #434: surface daemon lifecycle health (restart count / uptime / epoch) so a
+        # wedge→watchdog-restart is self-evident. Only meaningful in remote mode — in-process
+        # runs have no separate daemon to watch.
+        monitor = getattr(app.state, "daemon_health", None)
+        if monitor is None:
+            return {"available": False, "epoch": None, "startedAt": None,
+                    "uptimeSec": None, "restartCount24h": 0, "lastRestartAt": None}
+        return monitor.snapshot()
 
     from fastapi import Body, HTTPException  # noqa: PLC0415 — local import avoids top-level churn
 

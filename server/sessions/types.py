@@ -50,6 +50,12 @@ class SessionRecord:
     active_goal: str | None = None    # active /goal condition; None = no goal
     autopilot_paused: bool = False    # per-session autopilot opt-out (True = pinned to manual)
     usage_unverified: bool = False    # transient: account picked without a usage read (optimistic)
+    # transient (issue #434): set by rehydrate() when this session's mid-turn status
+    # (working/in_progress/condensing) was normalized to idle on daemon boot — i.e. a
+    # daemon restart dropped its in-flight turn. Lets the dashboard label it "interrupted
+    # by daemon restart — re-send to resume" instead of a generic idle/"Turn failed" card.
+    # Cleared on the next turn (see SessionOrchestrator._persist_status). Never persisted.
+    interrupted_by_restart: bool = False
     authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
     # Last EXACT context-window occupancy from the SDK (the `/context` data), refreshed
     # each turn. Persisted + replayed on attach so a reloaded/idle session shows real
@@ -99,6 +105,7 @@ class SessionRecord:
             "activeGoal": self.active_goal,
             "autopilotPaused": self.autopilot_paused,
             "usageUnverified": self.usage_unverified,
+            "interruptedByRestart": self.interrupted_by_restart,
             "authoredBranches": list(self.authored_branches),
             "contextUsedTokens": self.context_used_tokens,
             "contextMaxTokens": self.context_max_tokens,
@@ -126,6 +133,7 @@ class SessionRecord:
             active_goal=d.get("activeGoal"),
             autopilot_paused=bool(d.get("autopilotPaused", False)),
             usage_unverified=d.get("usageUnverified", False),
+            interrupted_by_restart=d.get("interruptedByRestart", False),
             authored_branches=list(d.get("authoredBranches") or []),
             context_used_tokens=d.get("contextUsedTokens"),
             context_max_tokens=d.get("contextMaxTokens"),

@@ -89,6 +89,9 @@ export interface Session {
   prs: PullRequestInfo[]
   /** True when the session was created without a verified usage read (optimistic pick). */
   usageUnverified?: boolean
+  /** Issue #434: the session's in-flight turn was dropped by a daemon wedge/restart (it
+   *  came back idle via rehydrate). The dashboard labels it "re-send to resume". Transient. */
+  interruptedByRestart?: boolean
   /** The automation_id that spawned this session (e.g. 'pr-doctor'); null/absent = human-created. */
   origin?: string | null
   /** The automation's reference key (e.g. 'owner/repo#123'); null/absent when origin is absent. */
@@ -294,6 +297,23 @@ export interface DeployProgress {
 export interface DeployStatusResponse {
   pending: PendingDeploy
   deploy: DeployProgress
+}
+
+/** Issue #434: daemon lifecycle health for the dashboard indicator. Mirrors the
+ *  DaemonHealthMonitor snapshot from GET /api/daemon/health. `available` is false in
+ *  in-process (dev) mode, which has no separate daemon to watch. */
+export interface DaemonHealth {
+  available: boolean
+  /** Current daemon process epoch (`<start_ms_hex>-<pid>-<uuid8>`); null when unavailable. */
+  epoch: string | null
+  /** ISO time the current daemon generation started; null when unknown. */
+  startedAt: string | null
+  /** Seconds the current daemon generation has been up; null when unknown. */
+  uptimeSec: number | null
+  /** Restarts observed by the edge in the last 24h (0 = healthy/steady). */
+  restartCount24h: number
+  /** ISO time of the most recent observed restart (or the watchdog file), null if none. */
+  lastRestartAt: string | null
 }
 
 export interface ApiError {
