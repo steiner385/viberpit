@@ -216,10 +216,20 @@ class DaemonClient:
                             # (issue #185): `lost` events were evicted before we reconnected.
                             # Surface it loudly — the in-session view for this stream is now
                             # behind durable storage and should be resynced from the transcript.
+                            stream = frame.get("stream")
                             log.warning(
                                 "ipc: replay gap on %s — %s event(s) lost before seq %s; "
                                 "in-memory view is incomplete (resync from disk)",
-                                frame.get("stream"), frame.get("lost"), frame.get("oldest"))
+                                stream, frame.get("lost"), frame.get("oldest"))
+                            # Propagate the gap to local subscribers as a control event so
+                            # the consumer (RemoteDriver → ws._forward_live) can trigger a
+                            # from-disk resync. Logging alone left the edge view silently
+                            # behind durable storage. seq=None: a gap is not a real event, so
+                            # it must NOT advance the resume watermark.
+                            self._deliver(stream, {
+                                "type": proto.GAP, "stream": stream,
+                                "lost": frame.get("lost"), "oldest": frame.get("oldest"),
+                            })
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — drop/connect failures → retry

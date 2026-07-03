@@ -19,11 +19,12 @@ const subThread: SubThread = {
 describe('ToolCallCard sub-agent thread', () => {
   it('renders the nested sub-agent transcript when expanded', async () => {
     render(<ToolCallCard block={taskBlock} subThread={subThread} />)
-    // Collapsed by default: nested text not visible yet.
-    expect(screen.queryByText('sub-agent says hello')).not.toBeInTheDocument()
+    // Collapsed by default: the region uses `hidden={!subOpen}` (parity with the
+    // sibling args/result panels), so the nested text is in the DOM but not visible.
+    expect(screen.getByText('sub-agent says hello')).not.toBeVisible()
     // Expand the sub-agent region.
     await userEvent.click(screen.getByRole('button', { name: /sub-agent activity/i }))
-    expect(screen.getByText('sub-agent says hello')).toBeInTheDocument()
+    expect(screen.getByText('sub-agent says hello')).toBeVisible()
   })
 
   it('does not render a sub-agent region for a non-Task tool', () => {

@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -24,6 +24,13 @@ def _utcnow() -> datetime:
 
 class Base(DeclarativeBase):
     pass
+
+
+# Session.status values that mean the session is no longer live: 'ended' (the
+# process is gone) and 'archived' (cwd moved out, kept for review). Everything
+# else — idle / in_progress / limited / etc — counts as an active session.
+# Single source of truth: import this instead of re-inlining the string set.
+INACTIVE_SESSION_STATUSES: frozenset[str] = frozenset({"ended", "archived"})
 
 
 class Session(Base):
@@ -87,6 +94,11 @@ class Session(Base):
     # the session (it goes 'limited' at the ceiling instead). Hard 401/429 recovery
     # still rotates and clears the pin. Nullable for the same backfill reason.
     account_pinned: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    # Provenance: the automation id that spawned this session (NULL = human-created),
+    # and what it was spawned for (e.g. "owner/name#412"). Nullable so init_db backfills
+    # on the dev SQLite DB without a migration. See server/automations/.
+    origin: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    origin_ref: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     # Generic row-write time: bumped on EVERY update (status, sub-agents, branch, name,
     # model, pin…). Used for the archived-sessions list's "archived at" only — NOT the
@@ -173,6 +185,33 @@ class Attachment(Base):
     )
 
 
+class MergeQueueObservation(Base):
+    """One row per PR per poll snapshot for the merge-train widget (M-Track-10).
+
+    All non-key columns are NULLABLE so init_db backfills them on existing dev
+    DBs without a migration. The store groups rows by captured_at to reconstruct
+    Observation objects for the pure derivation in merge_train.py.
+    """
+
+    __tablename__ = "merge_queue_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # repo/captured_at/pr_number are always written (never null); the column stays
+    # nullable=True so init_db backfills existing dev DBs without a migration, but the
+    # Python attribute is typed non-optional since the store never reads a null here.
+    repo: Mapped[str] = mapped_column(String, nullable=True, index=True)
+    captured_at: Mapped[int] = mapped_column(Integer, nullable=True, index=True)
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=True)
+    position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    state: Mapped[str | None] = mapped_column(String, nullable=True)
+    enqueued_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    batch_head_oid: Mapped[str | None] = mapped_column(String, nullable=True)
+    group_checks: Mapped[str | None] = mapped_column(String, nullable=True)
+    checks_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    checks_done: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    eta_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class AppSettings(Base):
     """Single-row application settings (singleton id='singleton')."""
 
@@ -185,6 +224,53 @@ class AppSettings(Base):
     default_tool_detail: Mapped[str | None] = mapped_column(String, nullable=True)
     compaction_ewma_ms: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     compaction_samples: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
-    # 'off' | 'propose' | 'auto' — how to react when a session's PR fails CI.
-    # Nullable: init_db backfills nullable columns; code defaults NULL → 'propose'.
-    pr_autofix_mode: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class Automation(Base):
+    """Registry state for one code-defined automation. Identity (name, schema,
+    behavior) lives in server/automations/; this row stores only mutable state."""
+
+    __tablename__ = "automation"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # stable slug
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    mode: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    config: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # Heartbeat the automation bumps while alive; lets the UI flag a stalled loop.
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class AutomationEvent(Base):
+    """One row in an automation's append-only, capped activity feed."""
+
+    __tablename__ = "automation_event"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    automation_id: Mapped[str] = mapped_column(
+        String, ForeignKey("automation.id"), nullable=False, index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, index=True)
+    level: Mapped[str] = mapped_column(String, nullable=False, default="info")  # info/warn/error
+    # Queryable event code: detected/attempted/recovered/escalated/gave_up/spawned/skipped_duplicate.
+    kind: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    summary: Mapped[str] = mapped_column(String, nullable=False)
+    target: Mapped[str | None] = mapped_column(String, nullable=True, default=None)  # display-only
+    session_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True, default=None)
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+
+
+class AutomationTargetState(Base):
+    """Durable per-target state (retry counters, loop-guard, 'gave up') keyed by
+    (automation_id, target). The automation deletes a row when its target reaches
+    terminal rest (e.g. PR merged), so the table does not grow unbounded."""
+
+    __tablename__ = "automation_target_state"
+
+    automation_id: Mapped[str] = mapped_column(
+        String, ForeignKey("automation.id"), primary_key=True)
+    target: Mapped[str] = mapped_column(String, primary_key=True)
+    state: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)

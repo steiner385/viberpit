@@ -207,9 +207,10 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
           </button>
           <div
             id={subRegionId}
+            hidden={!subOpen}
             className="border-t border-gray-200 dark:border-gray-700 bg-indigo-50/30 dark:bg-indigo-950/10 pl-2"
           >
-            {subOpen && subThread.turns.map((t) => (
+            {subThread.turns.map((t) => (
               <Turn
                 key={t.id}
                 turn={t}

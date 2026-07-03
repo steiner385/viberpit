@@ -9,6 +9,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from ccswitch.oauth import Usage
+from server.ipc.client import DaemonError
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
@@ -33,12 +34,17 @@ class RemoteDriver:
     ws.py needs ``.events()`` (an async generator of objects with ``.to_wire()``),
     ``.current_status()`` (sync, returns str), and ``.queued()`` (sync, returns list).
     """
-    def __init__(self, client, session_id: str, status="idle", queued=None, head_seq=None):
+    def __init__(self, client, session_id: str, status="idle", queued=None, head_seq=None,
+                 resume_since=None, turn_active=False):
         self._client = client
         self._session_id = session_id
         self._status = status
         self._queued = queued or []
         self._head_seq = head_seq
+        # Where to resume the daemon topic: while a turn is open this is just before its
+        # user message, so the whole in-progress turn replays from the ring; else from-now.
+        self._resume_since = resume_since if resume_since is not None else head_seq
+        self.turn_active = bool(turn_active)
         self._bg_tasks: set[asyncio.Task] = set()
 
     def current_status(self) -> str:
@@ -89,7 +95,7 @@ class RemoteDriver:
         task.add_done_callback(_done)
 
     async def events(self):
-        async for wire in self._client.subscribe(self._session_id, since=self._head_seq):
+        async for wire in self._client.subscribe(self._session_id, since=self._resume_since):
             yield _WireEvent(wire)
 
 
@@ -128,6 +134,16 @@ class RemoteOrchestrator:
         r = await self._client.call("all_repos_stage_models")
         return {k: StageModel.from_dict(v) for k, v in (r.get("models") or {}).items()}
 
+    async def all_merge_trains(self) -> "dict":
+        """Resolve per-repo MergeTrainState (the merge-train widget) from the daemon."""
+        from server.pipeline.merge_train import MergeTrainState
+        r = await self._client.call("all_merge_trains")
+        return {k: MergeTrainState.from_dict(v) for k, v in (r.get("trains") or {}).items()}
+
+    async def check_insights(self, repo: str, window: str) -> dict:
+        """Resolve per-repo Check Health insights from the daemon (already JSON-safe)."""
+        return await self._client.call("check_insights", repo=repo, window=window)
+
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
         """Inject the branch-aware fix prompt for PR #pr_number via the daemon.
 
@@ -136,6 +152,23 @@ class RemoteOrchestrator:
         "no_session" / "no_pr" / "not_actionable").
         """
         return await self._client.call("request_pr_fix", session_id=session_id, pr_number=pr_number)
+
+    async def automation_statuses(self) -> "dict[str, dict]":
+        """Rendered live status per automation id (badge text/level), via the daemon."""
+        return await self._client.call("automation_statuses")
+
+    async def pr_doctor_actionable(self) -> "list[dict]":
+        """Actionable PRs (real recovery mode) for the PR Doctor card, via the daemon."""
+        r = await self._client.call("pr_doctor_actionable")
+        return r.get("prs") or []
+
+    async def pr_doctor_fix(self, repo: str, number: int, kind: str) -> str:
+        """Trigger a one-tap PR Doctor recovery for PR #number via the daemon."""
+        return await self._client.call("pr_doctor_fix", repo=repo, number=number, kind=kind)
+
+    async def backlog_runner_implement(self, primary: str) -> str:
+        """Propose-tap: claim + spawn the batch for *primary* via the daemon."""
+        return await self._client.call("backlog_runner_implement", primary=primary)
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)
@@ -153,7 +186,9 @@ class RemoteOrchestrator:
         r = await self._client.call("ensure_driver", session_id=session_id, identity=identity)
         if not r["found"]:
             return None
-        return RemoteDriver(self._client, session_id, status=r["status"], queued=r["queued"], head_seq=r.get("head_seq"))
+        return RemoteDriver(self._client, session_id, status=r["status"], queued=r["queued"],
+                            head_seq=r.get("head_seq"), resume_since=r.get("resume_since"),
+                            turn_active=r.get("turn_active", False))
 
     async def archive_session(self, session_id):
         return await self._client.call("archive_session", session_id=session_id)
@@ -197,7 +232,21 @@ class RemoteOrchestrator:
         return await self._client.call("command_catalog", session_id=session_id)
 
     async def run_command(self, session_id, name, args):
-        return await self._client.call("run_command", session_id=session_id, name=name, args=args)
+        """Proxy run_command, faithfully reconstituting the in-process error contract.
+
+        The daemon-side orchestrator.run_command raises ``KeyError(name)`` for an
+        unknown command, and ws.py distinguishes that ("unknown command" chip) from a
+        generic failure ("command failed") solely by the exception *type*. But an
+        exception's type doesn't survive the RPC boundary — it collapses to a
+        DaemonError whose ``err_type`` carries the original class name. Re-raise a
+        KeyError so the remote path renders identically to the local one; any other
+        DaemonError propagates unchanged (still the generic-failure branch)."""
+        try:
+            return await self._client.call("run_command", session_id=session_id, name=name, args=args)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            raise
 
     async def latest_suggestions(self, session_id: str) -> list[str]:
         r = await self._client.call("latest_suggestions", session_id=session_id)

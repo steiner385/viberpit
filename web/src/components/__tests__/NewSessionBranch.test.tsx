@@ -20,9 +20,11 @@ vi.mock('@/api/hooks', () => ({
   useDeleteAccount: vi.fn(),
   useGithubRepos: vi.fn(),
   useGithubBranches: vi.fn(),
+  useModels: vi.fn(() => ({ data: [{ id: 'default', label: 'Default' }, { id: 'opus', label: 'Opus' }, { id: 'fable', label: 'Fable' }] })),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
   useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAutomations: vi.fn(() => ({ data: [] })),
   useReauthAccount: vi.fn(),
   useReauthStatus: vi.fn(),
   useCancelReauth: vi.fn(),
@@ -124,5 +126,41 @@ describe('New Session dialog — branch default selection', () => {
     const branchSelect = dialog.getByLabelText(/^branch/i) as HTMLSelectElement
     await user.selectOptions(branchSelect, 'dev')
     expect(branchSelect.value).toBe('dev')
+  })
+
+  it('defaults the model select to "Default" and offers Fable', async () => {
+    const user = userEvent.setup()
+    render(<Dashboard />, { wrapper })
+
+    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
+    const dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+
+    const modelSelect = dialog.getByLabelText(/^model/i) as HTMLSelectElement
+    expect(modelSelect.value).toBe('default')
+    expect(within(modelSelect).getByRole('option', { name: 'Fable' })).toBeInTheDocument()
+  })
+
+  it('submits the chosen model, and omits it when left on "Default"', async () => {
+    const user = userEvent.setup()
+    render(<Dashboard />, { wrapper })
+
+    // Default → model omitted from the payload (account default).
+    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
+    let dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+    await user.click(dialog.getByRole('button', { name: /^create$/i }))
+    expect(NOOP.mutate).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ model: expect.anything() }),
+      expect.anything(),
+    )
+
+    // Pick Fable → forwarded as model: 'fable'.
+    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
+    dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+    await user.selectOptions(dialog.getByLabelText(/^model/i), 'fable')
+    await user.click(dialog.getByRole('button', { name: /^create$/i }))
+    expect(NOOP.mutate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: 'fable' }),
+      expect.anything(),
+    )
   })
 })

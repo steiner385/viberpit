@@ -148,6 +148,39 @@ def test_create_session_api_forwards_identity_and_permission_mode(wt_setup):
     )
 
 
+def _registered_worktrees(repo: str) -> set[str]:
+    out = subprocess.run(
+        ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+        capture_output=True, text=True,
+    ).stdout
+    return {
+        os.path.abspath(line[len("worktree "):].strip())
+        for line in out.splitlines() if line.startswith("worktree ")
+    }
+
+
+def test_archive_session_deregisters_own_worktree_but_not_sibling(wt_setup):
+    """Archiving one session scope-deregisters ONLY its own worktree; a sibling's
+    live registration must survive (regression for issue #177 in the archive path,
+    which previously ran a repo-global `git worktree prune`)."""
+    orch, client, repo, _repo_root = wt_setup
+
+    a = client.portal.call(lambda: orch.create_session("arch-a", cwd=str(repo), branch="feature"))
+    b = client.portal.call(lambda: orch.create_session("arch-b", cwd=str(repo), branch="feature"))
+
+    before = _registered_worktrees(str(repo))
+    assert os.path.abspath(a.cwd) in before
+    assert os.path.abspath(b.cwd) in before
+
+    client.portal.call(lambda: orch.archive_session(a.id))
+
+    after = _registered_worktrees(str(repo))
+    assert os.path.abspath(a.cwd) not in after, \
+        "archived session's own worktree registration was not cleared"
+    assert os.path.abspath(b.cwd) in after, \
+        "archiving a session reaped a sibling's live worktree (#177)"
+
+
 def test_repo_session_without_branch_gets_own_detached_worktree(wt_setup):
     """A repo session with NO branch (e.g. from the bottom dispatch slot) must still
     run in its own isolated worktree — never the shared clone — and two such sessions

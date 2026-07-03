@@ -145,8 +145,9 @@ class DeployController:
                 self._set(Phase.RESUME, PhaseState.DONE)
 
             # --- publish (best-effort) ---
-            if not await asyncio.to_thread(self._steps.publish_deployment, remote):
-                self.status.warnings.append("could not publish GitHub deployment")
+            publish_err = await asyncio.to_thread(self._steps.publish_deployment, remote)
+            if publish_err:
+                self.status.warnings.append(f"could not publish GitHub deployment: {publish_err}")
             return self.status
         except DeployError as e:
             self._set(Phase[e.phase.upper()], PhaseState.FAILED)

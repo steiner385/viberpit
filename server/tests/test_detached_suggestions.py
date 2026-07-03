@@ -35,6 +35,9 @@ def _stub_replay(monkeypatch):
     monkeypatch.setattr(orch_mod, "replay_events", fake_replay, raising=False)
     monkeypatch.setattr(orch_mod, "last_turn_context", lambda events: ("hi", "done"), raising=False)
     monkeypatch.setattr(orch_mod, "compose", lambda account: "/cfg/" + account, raising=False)
+    # acquire_valid_token reads cred files that don't exist in the test fixture;
+    # stub it out so the token-pre-validation added in the PR is a no-op here.
+    monkeypatch.setattr(orch_mod.ccswitch_accounts, "acquire_valid_token", lambda name: None)
 
 
 async def _await_until_cached(orch, sid, tries=50):

@@ -80,10 +80,17 @@ export interface Session {
   summary?: string
   /** Active /goal condition for this session; null/absent = no goal. */
   activeGoal?: string | null
+  /** Row-write timestamp used to order poll vs. WS updates; bumped on every status persist.
+   *  Distinct from updatedAt (freshness). */
+  revAt?: string | null
   /** The PRs authored from this session's branches. */
   prs: PullRequestInfo[]
   /** True when the session was created without a verified usage read (optimistic pick). */
   usageUnverified?: boolean
+  /** The automation_id that spawned this session (e.g. 'pr-doctor'); null/absent = human-created. */
+  origin?: string | null
+  /** The automation's reference key (e.g. 'owner/repo#123'); null/absent when origin is absent. */
+  originRef?: string | null
   /** Client-only: true while an optimistic create placeholder awaits the server. Never sent by the server. */
   pending?: boolean
 }
@@ -196,6 +203,71 @@ export interface PipelinePr extends PullRequestInfo {
   session: { id: string; name: string } | null
   /** Per-node placement states for this PR's position on its repo's stage track. */
   node_states?: { id: string; state: NodeState }[]
+}
+
+export interface TrainBuild {
+  pr_number: number
+  percent: number | null
+  eta_seconds: number | null
+}
+
+export interface MergeTrainState {
+  repo: string
+  depth: number
+  trains_per_hour: number | null
+  batch_success_pct: number | null
+  ejects_24h: number
+  oldest_wait_seconds: number | null
+  failing: number[]
+  building: TrainBuild | null
+  blocked: number[]
+  awaiting_qa: number
+  awaiting_prod: number
+  merges_next: TrainBuild | null
+}
+
+export interface CheckDurationStat {
+  check_name: string
+  event: string
+  p50: number
+  p90: number
+  ratio: number | null
+  n: number
+}
+
+export interface CheckFlakeStat {
+  check_name: string
+  event: string
+  flake_pct: number
+  flaky_commits: number
+  total_commits: number
+  n: number
+}
+
+export interface CheckRegressionStat {
+  check_name: string
+  event: string
+  prior_p50: number
+  recent_p50: number
+  ratio: number
+  since: string
+}
+
+export interface RunnerWaitStat {
+  event: string
+  p50: number
+  p90: number
+  prev_p50: number | null
+  n: number
+}
+
+export interface CheckInsights {
+  repo: string
+  window: string
+  slowest: CheckDurationStat[]
+  flakiest: CheckFlakeStat[]
+  regressions: CheckRegressionStat[]
+  runner_wait_health: RunnerWaitStat[]
 }
 
 export interface ModelOption { id: string; label: string }

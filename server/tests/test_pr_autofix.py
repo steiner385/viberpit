@@ -57,17 +57,32 @@ class _StubPoller:
 
 
 def _build_orch(pr: PullRequestInfo, *, has_driver: bool = True):
-    """Build a minimal SessionOrchestrator with only the attributes Task-3 touches."""
+    """Build a minimal SessionOrchestrator with only the attributes Task-3 touches.
+
+    The auto-fix loop guard now lives in the durable pr-doctor automation target
+    state (automation_target_state), so the orch carries a real AutomationContext
+    bound to whichever DB the caller already initialised for the test.
+    """
     import server.sessions.orchestrator as orch_mod
+    from server.automations.context import AutomationContext
 
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
     orch._records = {"sess1": _make_record()}
     orch._pushed_pr = set()
-    orch._pr_fix_attempts = set()
+    orch._pr_doctor_ctx = AutomationContext("pr-doctor")
     orch._pr_poller = _StubPoller(pr)  # type: ignore[assignment]  # stub stands in for PrStatusPoller
     # Sentinel driver object — only presence in the dict matters.
     orch._drivers = {"sess1": object()} if has_driver else {}  # type: ignore[dict-item]
     return orch
+
+
+async def _init_pr_doctor_db(tmp_path) -> None:
+    """Init a per-test file DB and ensure the pr-doctor automation row exists so
+    the durable loop-guard target-state writes/reads have a table to land in."""
+    from server.db import init_db
+    from server.automations.registry import registry
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'autofix.db'}")
+    await registry.ensure_rows()
 
 
 # ---------------------------------------------------------------------------
@@ -150,13 +165,37 @@ def orch_with_failing_pr_no_driver(monkeypatch):
 
     monkeypatch.setattr(orch_mod.push_mod, "notify", fake_notify)
 
+    # No live driver → the SessionFix branch now spawns a fresh de-duped session.
+    # Record spawns (returning a fake record with an id) so no real create_session
+    # / worktree runs.
+    import types as _types
+    spawns: list[dict] = []
+    _seen: dict[str, object] = {}
+
+    async def fake_spawn(*, origin_ref, dedupe_key=None, **kwargs):
+        key = dedupe_key or origin_ref
+        if key in _seen:
+            return _seen[key]
+        rec = _types.SimpleNamespace(id="spawned-1")
+        _seen[key] = rec
+        spawns.append({"origin_ref": origin_ref, "dedupe_key": dedupe_key, **kwargs})
+        return rec
+
+    orch._pr_doctor_ctx.spawn_session = fake_spawn  # type: ignore[method-assign]
+
+    # Resolve the clone cwd off a fake so the spawn path runs without real git/gh.
+    def _fake_ensure_clone(repo_root, name_with_owner, url):
+        return "/fake/clone/o__r"
+
+    monkeypatch.setattr(orch_mod.gitrepos, "ensure_clone", _fake_ensure_clone, raising=True)
+
     # Default mode: propose (tests override to "auto" as needed).
     async def _mode_propose(self_):
         return "propose"
 
     monkeypatch.setattr(orch_mod.SessionOrchestrator, "_pr_autofix_mode", _mode_propose, raising=True)
 
-    return orch, sent, pushed
+    return orch, sent, pushed, spawns
 
 
 # ---------------------------------------------------------------------------
@@ -199,9 +238,10 @@ async def test_request_pr_fix_unknown_session(orch_with_failing_pr):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_auto_mode_injects_once_per_failure_event(orch_with_failing_pr, monkeypatch):
+async def test_auto_mode_injects_once_per_failure_event(orch_with_failing_pr, monkeypatch, tmp_path):
     import server.sessions.orchestrator as orch_mod
 
+    await _init_pr_doctor_db(tmp_path)
     orch, sent = orch_with_failing_pr
 
     # Switch mode to "auto"
@@ -225,12 +265,13 @@ async def test_auto_mode_injects_once_per_failure_event(orch_with_failing_pr, mo
 
 
 @pytest.mark.asyncio
-async def test_auto_mode_pending_interloper_does_not_re_arm(orch_with_failing_pr, monkeypatch):
+async def test_auto_mode_pending_interloper_does_not_re_arm(orch_with_failing_pr, monkeypatch, tmp_path):
     """A transient failing→pending→failing CI cycle (the real path while a pushed
     fix re-runs) must NOT re-arm the guard — only a genuine ``passing`` does.
     Otherwise a PR the agent can't fix loops on every CI run."""
     import server.sessions.orchestrator as orch_mod
 
+    await _init_pr_doctor_db(tmp_path)
     orch, sent = orch_with_failing_pr
 
     async def _mode_auto(self_):
@@ -255,9 +296,10 @@ async def test_auto_mode_pending_interloper_does_not_re_arm(orch_with_failing_pr
 
 
 @pytest.mark.asyncio
-async def test_off_mode_never_injects(orch_with_failing_pr, monkeypatch):
+async def test_off_mode_never_injects(orch_with_failing_pr, monkeypatch, tmp_path):
     import server.sessions.orchestrator as orch_mod
 
+    await _init_pr_doctor_db(tmp_path)
     orch, sent = orch_with_failing_pr
 
     async def _mode_off(self_):
@@ -270,9 +312,10 @@ async def test_off_mode_never_injects(orch_with_failing_pr, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_propose_mode_never_auto_injects(orch_with_failing_pr, monkeypatch):
+async def test_propose_mode_never_auto_injects(orch_with_failing_pr, monkeypatch, tmp_path):
     import server.sessions.orchestrator as orch_mod
 
+    await _init_pr_doctor_db(tmp_path)
     orch, sent = orch_with_failing_pr
 
     async def _mode_propose(self_):
@@ -285,10 +328,11 @@ async def test_propose_mode_never_auto_injects(orch_with_failing_pr, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_auto_mode_no_live_driver_falls_back(orch_with_failing_pr_no_driver, monkeypatch):
+async def test_auto_mode_no_live_driver_falls_back(orch_with_failing_pr_no_driver, monkeypatch, tmp_path):
     import server.sessions.orchestrator as orch_mod
 
-    orch, sent, pushed = orch_with_failing_pr_no_driver
+    await _init_pr_doctor_db(tmp_path)
+    orch, sent, pushed, spawns = orch_with_failing_pr_no_driver
 
     async def _mode_auto(self_):
         return "auto"
@@ -296,5 +340,11 @@ async def test_auto_mode_no_live_driver_falls_back(orch_with_failing_pr_no_drive
     monkeypatch.setattr(orch_mod.SessionOrchestrator, "_pr_autofix_mode", _mode_auto, raising=True)
 
     await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-    assert sent == []  # no injection without a live driver
-    assert any("PR broke" in t for t in pushed)  # fell back to the notification
+    # No live driver → spawn a fresh de-duped fix session (recovery took action),
+    # so no inject into the (nonexistent) driver and no break notification.
+    assert sent == []
+    assert len(spawns) == 1
+    assert spawns[0]["origin_ref"] == "o/r#7"
+    assert spawns[0]["dedupe_key"] == "o/r#7"
+    assert "gh pr checkout 7" in spawns[0]["initial_prompt"]
+    assert pushed == []  # recovery fired → skip the redundant break notification

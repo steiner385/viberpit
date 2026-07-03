@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
+import { useNow } from '@/hooks/useNow'
 import { agentDuration } from './subAgentDuration'
 import type { SubAgent, SubAgentStatus } from '@/session/selectors'
 
@@ -15,25 +15,14 @@ const STATUS_LABEL: Record<SubAgentStatus, string> = {
   failed: 'failed',
 }
 
-/** A `Date.now()` that re-ticks every second while `active`, else stays put. */
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!active) return
-    const id = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(id)
-  }, [active])
-  return now
-}
-
 interface Props {
   subAgents: SubAgent[]
 }
 
 /** Presentational list of sub-agents (derived from Task tool calls). */
 export function SubAgentList({ subAgents }: Props) {
-  // Only keep a 1s timer alive while something is actually running.
-  const now = useNow(subAgents.some((a) => a.status === 'running'))
+  // Only tick while something is actually running (and the tab is visible).
+  const now = useNow(1000, subAgents.some((a) => a.status === 'running'))
   return (
     <ul className="flex flex-col gap-1 py-1" aria-label="Sub-agents">
       {subAgents.map((a) => {

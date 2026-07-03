@@ -12,10 +12,12 @@ import { QK } from '@/api/hooks'
 import type { SessionEvent } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
 import { clientLogger } from '@/obs/logger'
+import { createGapState, resetSeq, handleLiveBatch, type GapState } from './liveBatch'
+import { shouldApplyRev } from '@/session/reconcile'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
-export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string }
+export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string }
 export interface WsUsageMsg        { type: 'usage';         account: string; session: { pct: number; resetsAt: string | null }; weekly: { pct: number; resetsAt: string | null } }
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null }
@@ -81,6 +83,9 @@ export class SessionSocket {
   private _updatePending = false
   private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[] }[] = []
   private static readonly MAX_PENDING = 50
+  private _gap: GapState = createGapState()
+  private _lastHealAt = 0
+  private static readonly HEAL_COOLDOWN_MS = 2_000
 
   constructor(url: string = '/ws') {
     this.url = url
@@ -285,6 +290,33 @@ export class SessionSocket {
     this._emit('connectionStateChange', state)
   }
 
+  /** Self-heal a detected live-stream gap by detaching then re-attaching the active
+   *  session, which triggers the server's replayReset → replay → replayComplete rebuild.
+   *
+   *  WHY detach before attach: the server's _handle_attach opens with
+   *  `if session_id in live_tasks: return` — so a bare re-attach of an already-live
+   *  session is a no-op: no replayReset, no replay, no replayComplete, gap not healed.
+   *  Sending detach first removes the session from live_tasks (cancels only THIS
+   *  socket's forwarding task; the driver keeps running and buffering). The subsequent
+   *  attach then passes the guard and runs the full LIVE-attach path.  The server
+   *  processes frames sequentially (single awaited receive loop), so detach fully
+   *  completes before attach — no race.
+   *
+   *  We use raw _send() rather than the public detach()/attach() methods because those
+   *  mutate _activeSessionId; the heal must leave it intact.
+   *
+   *  Rate-limited so a persistently gappy stream cannot storm the server. */
+  private _healActiveSession() {
+    const sid = this._activeSessionId
+    if (!sid) return
+    const now = Date.now()
+    if (now - this._lastHealAt < SessionSocket.HEAL_COOLDOWN_MS) return
+    this._lastHealAt = now
+    clientLogger.warn('ws gap detected — healing transcript via detach+attach', { sessionId: sid })
+    this._send({ type: 'detach', sessionId: sid })
+    this._send({ type: 'attach', sessionId: sid })
+  }
+
   private _scheduleReconnect() {
     if (this._destroyed || this._reconnectTimer !== null) return
     const delay = Math.min(
@@ -311,7 +343,7 @@ export class SessionSocket {
     switch (msg.type) {
       case 'status':
         this._emit('status', msg)
-        this._patchSessionStatus(msg.sessionId, msg.status as Session['status'])
+        this._patchSessionStatus(msg.sessionId, msg.status as Session['status'], msg.updatedAt, msg.revAt)
         break
       case 'usage':
         this._emit('usage', msg)
@@ -324,11 +356,21 @@ export class SessionSocket {
       case 'error':
         this._emit('error', msg)
         break
-      case 'batch':
+      case 'batch': {
+        // A replayReset (reconnect replay) re-baselines the active session's seq.
         for (const e of msg.events) {
-          this._emit('sessionEvent', e)
+          if ((e as { type: string }).type === 'replayReset' && this._activeSessionId) {
+            resetSeq(this._gap, this._activeSessionId)
+          }
         }
+        const { dispatch, needsHeal } = handleLiveBatch(msg.events, {
+          activeSessionId: this._activeSessionId,
+          state: this._gap,
+        })
+        for (const e of dispatch) this._emit('sessionEvent', e)
+        if (needsHeal) this._healActiveSession()
         break
+      }
       case 'commands':
         this._emit('commands', msg)
         break
@@ -359,21 +401,30 @@ export class SessionSocket {
 
   // ── TanStack Query cache patching ────────────────────────────────────────────
 
-  private _patchSessionStatus(sessionId: string, status: Session['status']) {
+  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string) {
     const qc = this._queryClient
     if (!qc) return
     qc.setQueryData<Session[]>(QK.sessions, (old) => {
       if (!old) return old
-      return old.map((s) => s.id === sessionId ? { ...s, status, updatedAt: new Date().toISOString() } : s)
+      return old.map((s) => {
+        if (s.id !== sessionId) return s
+        // Version guard: ignore a status frame strictly older than what's cached (a stale
+        // or duplicate frame that raced a newer poll/patch). Missing tokens → apply.
+        if (!shouldApplyRev(revAt, s.revAt)) return s
+        return { ...s, status,
+                 ...(updatedAt ? { updatedAt } : {}),
+                 ...(revAt ? { revAt } : {}) }
+      })
     })
   }
 
   private _patchSessionAccount(sessionId: string, accountName: string) {
     const qc = this._queryClient
     if (!qc) return
+    // A rotation is not a fresh turn — update the account only, never updatedAt.
     qc.setQueryData<Session[]>(QK.sessions, (old) => {
       if (!old) return old
-      return old.map((s) => s.id === sessionId ? { ...s, accountName, updatedAt: new Date().toISOString() } : s)
+      return old.map((s) => s.id === sessionId ? { ...s, accountName } : s)
     })
   }
 

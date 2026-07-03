@@ -52,7 +52,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         if app.state.pumped.get(session_id) is not driver:
             app.state.pumped[session_id] = driver
             asyncio.create_task(_pump(session_id, driver), name=f"pump-{session_id}")
-        return {"found": True, "status": driver.current_status(), "queued": driver.queued(), "head_seq": app.state.head_seq(session_id)}
+        return {"found": True, "status": driver.current_status(), "queued": driver.queued(),
+                "head_seq": app.state.head_seq(session_id),
+                "resume_since": app.state.resume_since(session_id),
+                "turn_active": app.state.turn_open_for(session_id)}
 
     async def list_sessions(params: dict) -> dict:
         return {"sessions": [r.to_dict() for r in orch.list_sessions()]}
@@ -91,6 +94,18 @@ def register_orchestrator_rpc(app, orch) -> None:
             models = await models
         return {"models": {k: v.to_dict() for k, v in models.items()}}
 
+    async def all_merge_trains(params: dict) -> dict:
+        trains = orch.all_merge_trains()
+        if inspect.isawaitable(trains):
+            trains = await trains
+        return {"trains": {k: v.to_dict() for k, v in trains.items()}}
+
+    async def check_insights(params: dict) -> dict:
+        result = orch.check_insights(params["repo"], params.get("window", "7d"))
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
     register_rpc(app, "ensure_driver", ensure_driver)
     register_rpc(app, "list_sessions", list_sessions)
     register_rpc(app, "get_session", get_session)
@@ -98,8 +113,15 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "send_prompt", send_prompt)
     register_rpc(app, "pr_for", pr_for)
     register_rpc(app, "prs_for", prs_for)
+    async def pr_doctor_actionable(params: dict) -> dict:
+        prs = await orch.pr_doctor_actionable()
+        return {"prs": prs}
+
     register_rpc(app, "all_prs", all_prs)
     register_rpc(app, "all_repos_stage_models", all_repos_stage_models)
+    register_rpc(app, "all_merge_trains", all_merge_trains)
+    register_rpc(app, "check_insights", check_insights)
+    register_rpc(app, "pr_doctor_actionable", pr_doctor_actionable)
 
     async def _maybe_await(r):
         return await r if inspect.isawaitable(r) else r
@@ -114,7 +136,8 @@ def register_orchestrator_rpc(app, orch) -> None:
         "begin_drain", "drain_status",
         "live_session_load", "live_session_counts",
         "snapshot_deploy", "restore_deploy",
-        "request_pr_fix",
+        "request_pr_fix", "pr_doctor_fix", "backlog_runner_implement",
+        "automation_statuses",
     ]
 
     def _make_simple(method_name):

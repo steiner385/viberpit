@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState } from 'react'
-import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench, Bot } from 'lucide-react'
 import { toast } from 'sonner'
 import { matchListShortcut } from '@/lib/shortcuts'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
@@ -13,6 +14,7 @@ import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
 import { useMediaQuery } from '@/lib/useMediaQuery'
 import { useSwipeAction } from '@/lib/useSwipeAction'
+import { useNow } from '@/hooks/useNow'
 import type { Session, Account } from '@/api/types'
 
 // Shared sizing for the per-session icon buttons: 44px tap target on touch,
@@ -108,6 +110,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   }, [listMode, selected])
 
   const repoLabel = formatRepoLabel(session.repo)
+  const now = useNow()
 
   // Touch-only swipe actions. lg = the app's desktop breakpoint (App.tsx); jsdom
   // reports false → mobile, so tests exercise this branch by default.
@@ -360,6 +363,18 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 <span className="truncate">Goal</span>
               </span>
             )}
+            {session.origin && (
+              <Link
+                to="/automation"
+                data-testid="card-provenance"
+                onClick={(e) => e.stopPropagation()}
+                className="hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 hover:bg-violet-200 dark:hover:bg-violet-900/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-w-[12rem]"
+                title={`Created by automation: ${session.origin}`}
+              >
+                <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
+                <span className="truncate">Created by {session.origin === 'pr-doctor' ? 'PR Doctor' : session.origin}</span>
+              </Link>
+            )}
             {session.prs?.length > 0 && (
               <span data-testid="card-prs" className="hidden lg:inline-flex items-center">
                 <PrList prs={session.prs} />
@@ -413,7 +428,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 className="ml-auto flex-shrink-0 text-xs text-gray-400 dark:text-gray-500 tabular-nums"
                 title={`Last active ${new Date(session.updatedAt).toLocaleString()}`}
               >
-                active {relTime(session.updatedAt)}
+                active {relTime(session.updatedAt, now || undefined)}
               </span>
             )}
           </div>

@@ -5,6 +5,7 @@ Alembic is the migration path for Postgres production (see server/db/migrations/
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -180,6 +181,15 @@ async def init_db(db_url: str | None = None) -> None:
     global _engine, _session_factory
     settings = get_settings()
     url = db_url or settings.db_url
+    # Dispose any prior engine before replacing it, so its pooled aiosqlite
+    # connection (and worker thread) don't leak. This is the fallback for callers
+    # that re-init without a clean shutdown (chiefly tests, which build a fresh
+    # in-memory DB per app); the primary teardown is dispose_db() on app shutdown.
+    # Best-effort: an engine bound to an already-closed event loop can't clean up
+    # gracefully, and that path is exactly what dispose_db() exists to avoid.
+    if _engine is not None:
+        with contextlib.suppress(Exception):
+            await _engine.dispose()
     _engine = _make_engine(url)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     async with _engine.begin() as conn:
@@ -188,6 +198,23 @@ async def init_db(db_url: str | None = None) -> None:
             await conn.run_sync(_reconcile_sqlite_columns)
             await conn.run_sync(_assert_no_schema_drift)
             await conn.run_sync(_normalize_pending_rearm_null)
+
+
+async def dispose_db() -> None:
+    """Dispose the engine and clear the session factory (app shutdown / test teardown).
+
+    Must run while the owning event loop is still alive so the pooled aiosqlite
+    connection's worker thread is joined cleanly. Skipping this — as the app did
+    before — leaves one connection per app bound to a loop that then closes; its
+    later cleanup callback fires `RuntimeError: Event loop is closed`, and across a
+    full test run those leaked connections/threads pile up (100+ per run).
+    """
+    global _engine, _session_factory
+    if _engine is not None:
+        with contextlib.suppress(Exception):
+            await _engine.dispose()
+    _engine = None
+    _session_factory = None
 
 
 @asynccontextmanager

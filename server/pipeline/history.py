@@ -36,6 +36,83 @@ class Expected:
     n: int
 
 
+@dataclass(frozen=True)
+class CheckDurationStat:
+    check_name: str
+    event: str
+    p50: float
+    p90: float
+    ratio: float | None
+    n: int
+
+    def to_dict(self) -> dict:
+        return {"check_name": self.check_name, "event": self.event, "p50": self.p50,
+                "p90": self.p90, "ratio": self.ratio, "n": self.n}
+
+
+@dataclass(frozen=True)
+class CheckFlakeStat:
+    check_name: str
+    event: str
+    flake_pct: float
+    flaky_commits: int
+    total_commits: int
+    n: int
+
+    def to_dict(self) -> dict:
+        return {"check_name": self.check_name, "event": self.event,
+                "flake_pct": self.flake_pct, "flaky_commits": self.flaky_commits,
+                "total_commits": self.total_commits, "n": self.n}
+
+
+_FLAKE_PASS = {"success"}
+_FLAKE_FAIL = {"failure", "cancelled", "timed_out", "error", "action_required"}
+
+_REG_RECENT_K = 10
+_REG_PRIOR_N = 20
+_REG_MIN = 30
+_REG_RATIO = 1.5
+_REG_MIN_DELTA = 60.0
+
+
+@dataclass(frozen=True)
+class CheckRegressionStat:
+    check_name: str
+    event: str
+    prior_p50: float
+    recent_p50: float
+    ratio: float
+    since: str
+
+    def to_dict(self) -> dict:
+        return {
+            "check_name": self.check_name,
+            "event": self.event,
+            "prior_p50": self.prior_p50,
+            "recent_p50": self.recent_p50,
+            "ratio": self.ratio,
+            "since": self.since,
+        }
+
+
+@dataclass(frozen=True)
+class RunnerWaitStat:
+    event: str
+    p50: float
+    p90: float
+    prev_p50: float | None
+    n: int
+
+    def to_dict(self) -> dict:
+        return {
+            "event": self.event,
+            "p50": self.p50,
+            "p90": self.p90,
+            "prev_p50": self.prev_p50,
+            "n": self.n,
+        }
+
+
 def _parse_iso_ms(iso: str) -> float:
     """ms since epoch from an ISO-8601 string (tolerant of trailing Z)."""
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000.0
@@ -78,6 +155,137 @@ class HistoryStore:
             (repo, event, cutoff),
         ).fetchall()
         return [r["check_name"] for r in rows]
+
+    def slowest_checks(
+        self, repo: str, since_iso: str, limit: int = 10, event: str | None = None,
+    ) -> "list[CheckDurationStat]":
+        q = ("SELECT check_name, event, duration_secs FROM check_durations "
+             "WHERE repo=? AND conclusion='SUCCESS' AND completed_at >= ?")
+        args: list = [repo, since_iso]
+        if event is not None:
+            q += " AND event=?"
+            args.append(event)
+        groups: dict[tuple[str, str], list[float]] = {}
+        for r in self._conn.execute(q, args).fetchall():
+            if r["duration_secs"] is None:
+                continue
+            groups.setdefault((r["check_name"], r["event"] or ""), []).append(
+                float(r["duration_secs"]))
+        stats: list[CheckDurationStat] = []
+        for (name, ev), vals in groups.items():
+            s = sorted(vals)
+            p50 = percentile(s, 0.5)
+            p90 = percentile(s, 0.9)
+            stats.append(CheckDurationStat(
+                check_name=name, event=ev, p50=p50, p90=p90,
+                ratio=(p90 / p50) if p50 else None, n=len(s)))
+        stats.sort(key=lambda x: x.p50, reverse=True)
+        return stats[:limit]
+
+    def flakiest_checks(
+        self, repo: str, since_iso: str, limit: int = 10, event: str | None = None,
+    ) -> "list[CheckFlakeStat]":
+        q = ("SELECT check_name, event, head_sha, conclusion FROM check_durations "
+             "WHERE repo=? AND completed_at >= ?")
+        args: list = [repo, since_iso]
+        if event is not None:
+            q += " AND event=?"
+            args.append(event)
+        # (check, event) -> head_sha -> {"pass": bool, "fail": bool}
+        by_check: dict[tuple[str, str], dict[str, dict[str, bool]]] = {}
+        totals: dict[tuple[str, str], int] = {}
+        for r in self._conn.execute(q, args).fetchall():
+            key = (r["check_name"], r["event"] or "")
+            totals[key] = totals.get(key, 0) + 1
+            c = (r["conclusion"] or "").lower()
+            commits = by_check.setdefault(key, {})
+            flags = commits.setdefault(r["head_sha"] or "", {"pass": False, "fail": False})
+            if c in _FLAKE_PASS:
+                flags["pass"] = True
+            elif c in _FLAKE_FAIL:
+                flags["fail"] = True
+        stats: list[CheckFlakeStat] = []
+        for key, commits in by_check.items():
+            decided = [f for f in commits.values() if f["pass"] or f["fail"]]
+            total = len(decided)
+            if total == 0:
+                continue
+            flaky = sum(1 for f in decided if f["pass"] and f["fail"])
+            stats.append(CheckFlakeStat(
+                check_name=key[0], event=key[1], flake_pct=100.0 * flaky / total,
+                flaky_commits=flaky, total_commits=total, n=totals[key]))
+        stats.sort(key=lambda x: (x.flake_pct, x.flaky_commits), reverse=True)
+        return stats[:limit]
+
+    def duration_regressions(self, repo: str) -> list[CheckRegressionStat]:
+        """Checks whose rolling-median SUCCESS duration stepped up (Plotroom
+        measureDurationStep). Window-independent: last 10 vs prior 20 samples."""
+        pairs = self._conn.execute(
+            "SELECT DISTINCT check_name, event FROM check_durations WHERE repo=?",
+            (repo,),
+        ).fetchall()
+        out: list[CheckRegressionStat] = []
+        for p in pairs:
+            rows = self._conn.execute(
+                "SELECT duration_secs, completed_at FROM check_durations "
+                "WHERE repo=? AND check_name=? AND event=? AND conclusion='SUCCESS' "
+                "ORDER BY completed_at DESC LIMIT ?",
+                (repo, p["check_name"], p["event"], _REG_MIN),
+            ).fetchall()
+            if len(rows) < _REG_MIN:
+                continue
+            durs = [float(r["duration_secs"]) for r in rows]
+            recent = median(durs[:_REG_RECENT_K])
+            prior = median(durs[_REG_RECENT_K:_REG_MIN])
+            if prior <= 0:
+                continue
+            ratio = recent / prior
+            if ratio < _REG_RATIO or (recent - prior) < _REG_MIN_DELTA:
+                continue
+            out.append(
+                CheckRegressionStat(
+                    check_name=p["check_name"],
+                    event=p["event"],
+                    prior_p50=prior,
+                    recent_p50=recent,
+                    ratio=ratio,
+                    since=rows[_REG_RECENT_K - 1]["completed_at"],
+                )
+            )
+        out.sort(key=lambda s: s.ratio, reverse=True)
+        return out
+
+    def runner_wait_health(
+        self, repo: str, since_iso: str, prev_since_iso: str
+    ) -> list[RunnerWaitStat]:
+        """Per-event runner pickup wait p50/p90 over the current window, with the
+        prior equal-length window's p50 for a delta. Rows at exactly since_iso are
+        current."""
+        rows = self._conn.execute(
+            "SELECT event, wait_secs, started_at FROM runner_waits "
+            "WHERE repo=? AND started_at >= ?",
+            (repo, prev_since_iso),
+        ).fetchall()
+        cur: dict[str, list[float]] = {}
+        prev: dict[str, list[float]] = {}
+        for r in rows:
+            w = float(r["wait_secs"])
+            bucket = cur if r["started_at"] >= since_iso else prev
+            bucket.setdefault(r["event"], []).append(w)
+        out: list[RunnerWaitStat] = []
+        for ev in sorted(cur):
+            c = sorted(cur[ev])
+            pv = sorted(prev.get(ev, []))
+            out.append(
+                RunnerWaitStat(
+                    event=ev,
+                    p50=percentile(c, 0.5),
+                    p90=percentile(c, 0.9),
+                    prev_p50=percentile(pv, 0.5) if pv else None,
+                    n=len(c),
+                )
+            )
+        return out
 
     def expected_runner_wait(self, repo: str, name: str, event: str) -> float | None:
         rows = self._conn.execute(

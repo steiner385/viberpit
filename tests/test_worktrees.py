@@ -145,6 +145,92 @@ class WorktreeTests(unittest.TestCase):
         self.assertIn("invalid branch name", str(ctx.exception))
 
 
+class WorktreeLockingTests(unittest.TestCase):
+    """Regression tests for #177 — a sibling session's cleanup must never reap a
+    live session's worktree admin record.
+
+    Two mechanisms are exercised: (1) every session worktree is `git worktree
+    lock`'d on create, so a global `git worktree prune` skips it; (2) create-time
+    cleanup is scoped to the session's own `dest`, so it never touches a sibling.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = self.root / "myrepo"
+        _make_repo(self.repo, branch="main")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _porcelain(self) -> str:
+        return subprocess.run(
+            ["git", "-C", str(self.repo), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True,
+        ).stdout
+
+    def _is_registered(self, path: str) -> bool:
+        target = os.path.abspath(path)
+        for line in self._porcelain().splitlines():
+            if line.startswith("worktree "):
+                if os.path.abspath(line[len("worktree "):].strip()) == target:
+                    return True
+        return False
+
+    def test_created_worktree_is_locked(self) -> None:
+        """Item 1: a freshly-created session worktree is locked so prune skips it."""
+        info = worktrees.create_worktree(str(self.repo), None, "aaaaaaaa-0001", str(self.root))
+        r = subprocess.run(
+            ["git", "-C", info.path, "worktree", "list", "--porcelain"],
+            capture_output=True, text=True,
+        ).stdout
+        # The block for our dest carries a `locked` marker.
+        self.assertIn("locked", r, "expected the session worktree to be git-locked")
+
+    def test_locked_worktree_survives_prune_after_dir_loss(self) -> None:
+        """The exact #177 reap: a worktree whose dir vanished (SIGKILL'd restart)
+        is normally prunable, but locking makes `git worktree prune` skip it."""
+        info = worktrees.create_worktree(str(self.repo), None, "aaaaaaaa-0001", str(self.root))
+        # Simulate the crash: the working dir is gone but the admin record remains.
+        subprocess.run(["rm", "-rf", info.path], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "prune"], check=True)
+        self.assertTrue(
+            self._is_registered(info.path),
+            "a locked worktree must survive a global prune even with its dir deleted",
+        )
+
+    def test_creating_sibling_does_not_reap_live_worktree(self) -> None:
+        """End-to-end #177: session A is live; creating session B must not drop A's
+        admin registration (old code's global prune reaped a prunable A)."""
+        a = worktrees.create_worktree(str(self.repo), None, "aaaaaaaa-0001", str(self.root))
+        # Put A into the prunable state the SIGKILL'd restart produced.
+        subprocess.run(["rm", "-rf", a.path], check=True)
+        # A sibling session starts — its create must not touch A.
+        worktrees.create_worktree(str(self.repo), None, "bbbbbbbb-0002", str(self.root))
+        self.assertTrue(
+            self._is_registered(a.path),
+            "creating a sibling session reaped a live session's worktree (#177)",
+        )
+
+    def test_reuses_stale_dest_path(self) -> None:
+        """Item 2: scoped cleanup clears a stale (locked, dir-gone) record at the
+        session's OWN dest so the same short-session id can be reused."""
+        a = worktrees.create_worktree(str(self.repo), None, "aaaaaaaa-0001", str(self.root))
+        dest = a.path
+        subprocess.run(["rm", "-rf", dest], check=True)   # stale locked record at dest
+        # Same session id → same dest path; create must clear the stale record and succeed.
+        b = worktrees.create_worktree(str(self.repo), None, "aaaaaaaa-0001", str(self.root))
+        self.assertEqual(os.path.abspath(b.path), os.path.abspath(dest))
+        self.assertTrue(os.path.isdir(b.path))
+
+    def test_remove_unlocks_and_removes_locked_worktree(self) -> None:
+        """Teardown must unlock the (now-locked) worktree before removing it."""
+        info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
+        self.assertTrue(worktrees.remove_worktree(info.path))
+        self.assertFalse(os.path.isdir(info.path))
+        self.assertFalse(self._is_registered(info.path))
+
+
 class WorktreeFreshFromOriginTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

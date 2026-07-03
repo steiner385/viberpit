@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from server.github.pr_status import PullRequestInfo
 
-# The single source of truth for the pr_autofix_mode vocabulary. The settings
-# API validates against the same set (kept in sync there for the HTTP layer).
+# The single source of truth for the pr-doctor mode vocabulary. The orchestrator
+# validates the pr-doctor automation registry row's `mode` against this set.
 VALID_AUTOFIX_MODES: frozenset[str] = frozenset({"off", "propose", "auto"})
 
 
@@ -30,5 +30,36 @@ def build_pr_fix_prompt(repo: str, pr: PullRequestInfo) -> str:
         f"job locally (run the relevant tests/lint/build).\n"
         f"3. Fix the root cause, commit, and push so CI re-runs.\n"
         f"4. Briefly report what was broken and what you changed.\n\n"
+        f"PR: {pr.url}"
+    )
+
+
+def build_conflict_fix_prompt(repo: str, pr: PullRequestInfo) -> str:
+    """A system-originated prompt instructing the owning session to resolve a
+    merge conflict on a PR.
+
+    Branch-aware, mirroring ``build_pr_fix_prompt``: ccswitch's completion
+    workflow moves the worktree onto a fresh feat/* branch after opening a PR, so
+    the worktree HEAD is usually NOT on the PR's branch by the time a conflict is
+    detected. The prompt therefore tells the agent to check the PR branch out
+    FIRST, then rebase onto (or merge) the base branch, resolve the conflicts,
+    run the tests, commit, and push. Pure (no I/O), returns a string.
+    """
+    return (
+        f"Your pull request {repo}#{pr.number} (\"{pr.title}\") has a MERGE CONFLICT "
+        f"with its base branch and cannot be merged. Resolve it.\n\n"
+        f"Steps:\n"
+        f"1. Check out the PR branch first — your worktree HEAD may have moved on: "
+        f"`gh pr checkout {pr.number}`.\n"
+        f"2. Bring in the base branch and rebase onto it (prefer rebase; fall back to "
+        f"merge if a rebase is unwieldy): `git fetch origin` then "
+        f"`git rebase origin/<base>` (or `git merge origin/<base>`).\n"
+        f"3. Resolve every conflict by hand — reconcile both sides, don't blindly "
+        f"discard either. Remove all conflict markers.\n"
+        f"4. Run the tests/lint/build to confirm the resolution is correct.\n"
+        f"5. Commit the resolution and push (a rebase needs "
+        f"`git push --force-with-lease`; a merge is a normal `git push`) so the PR "
+        f"becomes mergeable and CI re-runs.\n"
+        f"6. Briefly report which files conflicted and how you reconciled them.\n\n"
         f"PR: {pr.url}"
     )

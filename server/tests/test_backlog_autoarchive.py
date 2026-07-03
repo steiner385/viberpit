@@ -1,0 +1,105 @@
+"""A completed backlog-runner session auto-archives itself.
+
+Spawned sessions never reach a terminal DB state on their own, so a finished run
+kept its live driver/worktree and (with target-state counting) held its slot
+until the sweep freed it. When the agent signals completion — the derived status
+becomes ``complete`` (see status.derive_status) — the orchestrator should archive
+the session: stop the driver, release the worktree, and let the sweep reclaim the
+slot. Only backlog-runner sessions, only on ``complete`` (not a plain ``done``
+turn), and only once.
+"""
+from __future__ import annotations
+
+import asyncio
+
+from server.sessions.types import SessionRecord
+
+
+def _rec(sid="s1", *, origin="backlog-runner"):
+    r = SessionRecord(id=sid, name="run", account="a", claude_session_id="",
+                      cols=80, rows=24, cwd="/tmp", repo="o/r", branch="feat/x")
+    r.origin = origin
+    return r
+
+
+def _orch(records):
+    import server.sessions.orchestrator as orch_mod
+    from server.automations.context import AutomationContext
+    orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
+    orch._records = records
+    orch._auto_archiving = set()
+    orch._backlog_ctx = AutomationContext("backlog-runner")
+    archived: list[str] = []
+
+    async def _spy_archive(session_id):
+        archived.append(session_id)
+
+    orch.archive_session = _spy_archive  # type: ignore[method-assign]
+    return orch, archived
+
+
+def test_completed_backlog_session_is_archived():
+    async def run():
+        orch, archived = _orch({"s1": _rec("s1")})
+        orch._maybe_autoarchive_completed("s1", "complete", orch._records["s1"])
+        await asyncio.sleep(0)  # let the scheduled task run
+        await asyncio.sleep(0)
+        assert archived == ["s1"]
+
+    asyncio.run(run())
+
+
+def test_plain_done_turn_is_not_archived():
+    async def run():
+        orch, archived = _orch({"s1": _rec("s1")})
+        orch._maybe_autoarchive_completed("s1", "done", orch._records["s1"])
+        await asyncio.sleep(0)
+        assert archived == []  # only an explicit completion signal archives
+
+    asyncio.run(run())
+
+
+def test_human_session_is_not_archived():
+    async def run():
+        orch, archived = _orch({"s1": _rec("s1", origin=None)})
+        orch._maybe_autoarchive_completed("s1", "complete", orch._records["s1"])
+        await asyncio.sleep(0)
+        assert archived == []  # human-created sessions are never auto-archived
+
+    asyncio.run(run())
+
+
+def test_double_complete_archives_once():
+    async def run():
+        orch, archived = _orch({"s1": _rec("s1")})
+        orch._maybe_autoarchive_completed("s1", "complete", orch._records["s1"])
+        orch._maybe_autoarchive_completed("s1", "complete", orch._records["s1"])
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert archived == ["s1"]  # idempotent guard
+
+    asyncio.run(run())
+
+
+def test_session_ended_treats_archived_as_terminal(tmp_path):
+    """The sweep's session-ended probe must see an auto-archived session as ended
+    (INACTIVE_SESSION_STATUSES), so its give-up / attempt bookkeeping fires."""
+    async def run():
+        from server.db import init_db, db_session
+        from server.db.models import Session as DbSession
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'ended.db'}")
+        import server.sessions.orchestrator as orch_mod
+        orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
+        async with db_session() as db:
+            db.add(DbSession(id="arch", name="x", account_name="a", cwd="/tmp",
+                             status="archived", origin="backlog-runner"))
+            db.add(DbSession(id="live", name="y", account_name="a", cwd="/tmp",
+                             status="idle", origin="backlog-runner"))
+            db.add(DbSession(id="end", name="z", account_name="a", cwd="/tmp",
+                             status="ended", origin="backlog-runner"))
+
+        assert await orch._backlog_session_ended("arch") is True
+        assert await orch._backlog_session_ended("end") is True
+        assert await orch._backlog_session_ended("live") is False
+
+    asyncio.run(run())

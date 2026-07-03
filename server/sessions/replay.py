@@ -2,6 +2,7 @@ from __future__ import annotations
 import json, asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from . import events as ev
 
 
@@ -22,41 +23,111 @@ class ReplayWindow:
     total_turns: int = 0
 
 
-def _build_events(path: str) -> tuple[list, object | None]:
-    """Parse the full JSONL into (events, meta_event). No trimming."""
-    lines = []
-    with open(path, errors="ignore") as f:
+def _read_jsonl(path: str) -> list:
+    """Yield the well-formed JSON objects from a transcript ``.jsonl``, skipping
+    blank/garbage lines. Returns [] if the file is missing or unreadable."""
+    out: list = []
+    try:
+        f = open(path, errors="ignore")
+    except OSError:
+        return out
+    with f:
         for raw in f:
             raw = raw.strip()
             if not raw:
                 continue
             try:
-                lines.append(json.loads(raw))
+                o = json.loads(raw)
             except json.JSONDecodeError:
                 continue
+            if isinstance(o, dict):
+                out.append(o)
+    return out
+
+
+def _content_blocks(msg: dict) -> list[dict]:
+    """Normalize a message's ``content`` to a list of dict blocks.
+
+    Claude transcripts use TWO shapes: a plain string (common for user turns,
+    e.g. ``"content": "tell me a lullaby"``) OR a list of content blocks. Coercing
+    to a list of dict blocks keeps the iterators below from choking on a str (which
+    would iterate characters → ``b.get()`` AttributeError → blank replay)."""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    if isinstance(content, list):
+        return [b for b in content if isinstance(b, dict)]
+    return []
+
+
+def _assistant_block_events(content: list[dict], uuid, ts, pid: str | None) -> list:
+    """Emit the text / thinking / tool-call events for one assistant message's
+    blocks, tagged with ``pid`` (None for the main thread, else the spawning
+    Task's tool-use id for a sub-agent). Shared by the main and sub-agent parsers
+    so the block-level decoding lives in ONE place."""
+    out: list = []
+    for b in content:
+        t = b.get("type")
+        if t == "text":
+            out.append(ev.TextDelta(uuid, b.get("text", ""), uuid, parent_tool_use_id=pid, ts=ts))
+        elif t == "thinking":
+            out.append(ev.ThinkingDelta(uuid, b.get("thinking", ""), uuid, parent_tool_use_id=pid, ts=ts))
+        elif t == "tool_use":
+            if b.get("name") == "AskUserQuestion" and pid is None:
+                # Mirror the live translator: AskUserQuestion is presented as the
+                # selectable QuestionCard via Question events, never a raw ToolCall
+                # (which renders the input as JSON). Reconstruct the Question event(s)
+                # from the tool_use input so a detached / reloaded session shows the
+                # question, not the raw JSON. (Sub-agents can't prompt the user, so
+                # under a pid this falls through to a normal ToolCall — which also keeps
+                # the untagged Question event from leaking into the main thread.)
+                for qi, q in enumerate((b.get("input") or {}).get("questions") or []):
+                    if not isinstance(q, dict):
+                        continue
+                    opts = [o2 if isinstance(o2, dict) else {"label": str(o2)}
+                            for o2 in (q.get("options") or [])]
+                    out.append(ev.Question(
+                        question_id=f"{b.get('id') or uuid}-{qi}",
+                        turn_id=uuid,
+                        header=q.get("header", ""),
+                        question=q.get("question", ""),
+                        options=opts,
+                        multi_select=bool(q.get("multiSelect", False)),
+                        ts=ts,
+                    ))
+            else:
+                out.append(ev.ToolCall(uuid, b.get("id", ""), b.get("name", ""),
+                                       ev.tool_kind(b.get("name", "")), b.get("input", {}), uuid,
+                                       parent_tool_use_id=pid, ts=ts))
+    return out
+
+
+def _tool_result_events(content: list[dict], uuid, ts, pid: str | None) -> list:
+    """Emit ToolResult events for a user message's tool_result blocks, tagged with
+    ``pid``. Shared by the main and sub-agent parsers."""
+    return [ev.ToolResult(r["tool_use_id"], not r.get("is_error", False),
+                          {"content": r.get("content")}, uuid, parent_tool_use_id=pid, ts=ts)
+            for r in content if r.get("type") == "tool_result"]
+
+
+def _build_events(path: str) -> tuple[list, object | None]:
+    """Parse the full main JSONL into (events, meta_event). No trimming.
+
+    Sub-agent (``isSidechain``) entries are skipped here: for Layout-A single-file
+    transcripts this keeps their steps out of the main thread; for Layout-B they
+    live in separate sidecar files that ``_subagent_events`` reconstructs."""
     out: list = []
     meta_event = None
-    for o in lines:
+    for o in _read_jsonl(path):
         if o.get("isSidechain"):
             continue
         typ = o.get("type")
         msg = o.get("message") or {}
-        # Claude transcripts use TWO shapes for `content`: a plain string (common for
-        # user turns, e.g. "content": "tell me a lullaby") OR a list of content blocks.
-        # Normalize to a list of dict blocks so the iterators below never choke on a
-        # str (which would iterate characters → b.get() AttributeError → blank replay).
-        content = msg.get("content")
-        if isinstance(content, str):
-            content = [{"type": "text", "text": content}]
-        elif isinstance(content, list):
-            content = [b for b in content if isinstance(b, dict)]
-        else:
-            content = []
+        content = _content_blocks(msg)
         uuid = o.get("uuid")
         ts = _ts_ms(o)
         if typ == "user":
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
-            results = [b for b in content if b.get("type") == "tool_result"]
             imgs = []
             for b in content:
                 if b.get("type") == "image":
@@ -75,12 +146,17 @@ def _build_events(path: str) -> tuple[list, object | None]:
             # etc. Rendering them makes the skill's own prompt look like the user's
             # (or our) message — suppress the bubble. (Any tool_results on the entry
             # still emit below; in practice these meta entries carry only text.)
-            if (text or imgs) and not o.get("isMeta"):
+            #
+            # A background task's termination is delivered the same way — a plain-string
+            # `type:"user"` entry holding a `<task-notification>` block — but is NOT
+            # flagged `isMeta`. It is still harness plumbing (the live translator drops
+            # it, forwarding only tool_result blocks from user messages), so suppress its
+            # raw-XML bubble too. The tool_result-carried form still renders in its card.
+            is_task_notification = text.lstrip().startswith("<task-notification>")
+            if (text or imgs) and not o.get("isMeta") and not is_task_notification:
                 out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
                                           images=imgs or None, ts=ts))
-            for r in results:
-                out.append(ev.ToolResult(r["tool_use_id"], not r.get("is_error", False),
-                                         {"content": r.get("content")}, uuid, ts=ts))
+            out.extend(_tool_result_events(content, uuid, ts, None))
         elif typ == "assistant":
             # Reconstruct the model once (status strip needs it after re-attach).
             model = msg.get("model")
@@ -93,43 +169,82 @@ def _build_events(path: str) -> tuple[list, object | None]:
             # sessions show the model-switch divider when the model changes mid-session.
             if model:
                 out.append(ev.TurnModel(turn_id=uuid, model=model))
-            for b in content:
-                t = b.get("type")
-                if t == "text":
-                    out.append(ev.TextDelta(uuid, b.get("text", ""), uuid, ts=ts))
-                elif t == "thinking":
-                    out.append(ev.ThinkingDelta(uuid, b.get("thinking", ""), uuid, ts=ts))
-                elif t == "tool_use":
-                    if b.get("name") == "AskUserQuestion":
-                        # Mirror the live translator: AskUserQuestion is presented as
-                        # the selectable QuestionCard via Question events, never a raw
-                        # ToolCall (which renders the input as JSON). Reconstruct the
-                        # Question event(s) from the tool_use input so a detached /
-                        # reloaded session shows the question, not the raw JSON.
-                        for qi, q in enumerate((b.get("input") or {}).get("questions") or []):
-                            if not isinstance(q, dict):
-                                continue
-                            opts = [o2 if isinstance(o2, dict) else {"label": str(o2)}
-                                    for o2 in (q.get("options") or [])]
-                            out.append(ev.Question(
-                                question_id=f"{b.get('id') or uuid}-{qi}",
-                                turn_id=uuid,
-                                header=q.get("header", ""),
-                                question=q.get("question", ""),
-                                options=opts,
-                                multi_select=bool(q.get("multiSelect", False)),
-                                ts=ts,
-                            ))
-                    else:
-                        out.append(ev.ToolCall(uuid, b.get("id", ""), b.get("name", ""),
-                                               ev.tool_kind(b.get("name", "")), b.get("input", {}), uuid, ts=ts))
+            out.extend(_assistant_block_events(content, uuid, ts, None))
             usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
             out.append(ev.TurnEnd(uuid, usage, None, uuid))
     return out, meta_event
 
 
-def _window(path: str, before: int | None, limit: int) -> ReplayWindow:
+def _subagent_events(main_path: str, task_ids: set[str]) -> list:
+    """Reconstruct each sub-agent's own thread (Layout B) for the Task tool-use ids
+    in ``task_ids``, emitting its internal turns tagged with the spawning Task's
+    tool-use id so the existing reducer routing (``state.subAgents[toolId]``) renders
+    them inside the Task card — no frontend change, matching the live view.
+
+    Sidecars live at ``<projects>/<encoded-cwd>/<session-id>/subagents/agent-*.jsonl``
+    with an ``agent-*.meta.json`` carrying ``{agentType, description, toolUseId}``.
+    The main transcript and the ``subagents/`` dir can live under DIFFERENT
+    encoded-cwd dirs (main checkout vs. worktree), so we glob across ALL encoded-cwd
+    dirs joining on the session-id, and dedupe by toolUseId (the same sub-agent may
+    be recorded under more than one cwd).
+
+    No TurnEnd is emitted for a sub-agent turn: it is not a block-event (so it never
+    reaches the sub-thread) and, carrying a pid, would only clobber the main thread's
+    usage snapshot. The sub-agent's own prompt is likewise not rendered as a user
+    bubble — it is already the Task card's input (mirrors the live path, which
+    forwards only tool_results from a sub-agent's user messages)."""
+    if not task_ids:
+        return []
+    try:
+        main = Path(main_path)
+        sid = main.stem
+        projects_root = main.parent.parent
+    except (OSError, ValueError):
+        return []
+    events: list = []
+    seen: set[str] = set()
+    try:
+        metas = sorted(projects_root.glob(f"*/{sid}/subagents/*.meta.json"))
+    except OSError:
+        return []
+    for meta_path in metas:
+        try:
+            meta = json.loads(meta_path.read_text(errors="ignore"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        tuid = meta.get("toolUseId") if isinstance(meta, dict) else None
+        if not isinstance(tuid, str) or tuid not in task_ids or tuid in seen:
+            continue
+        seen.add(tuid)
+        agent_path = meta_path.parent / (meta_path.name[: -len(".meta.json")] + ".jsonl")
+        for o in _read_jsonl(str(agent_path)):
+            typ = o.get("type")
+            msg = o.get("message") or {}
+            content = _content_blocks(msg)
+            uuid = o.get("uuid")
+            ts = _ts_ms(o)
+            if typ == "assistant":
+                events.append(ev.TurnStart(turn_id=uuid, src_uuid=uuid, parent_tool_use_id=tuid))
+                model = msg.get("model")
+                if model:
+                    events.append(ev.TurnModel(turn_id=uuid, model=model, parent_tool_use_id=tuid))
+                events.extend(_assistant_block_events(content, uuid, ts, tuid))
+            elif typ == "user":
+                events.extend(_tool_result_events(content, uuid, ts, tuid))
+    return events
+
+
+def _window(path: str, before: int | None, limit: int, drop_incomplete_turn: bool = False,
+            include_subagents: bool = False) -> ReplayWindow:
     out, meta_event = _build_events(path)
+    if drop_incomplete_turn:
+        # Drop the trailing in-progress logical turn: everything from the last real
+        # UserMessage onward. The live driver buffer / daemon ring owns that turn, and
+        # its blocks are flushed to disk mid-stream, so keeping them here duplicates.
+        last_user = max((i for i, e in enumerate(out) if isinstance(e, ev.UserMessage)),
+                        default=None)
+        if last_user is not None:
+            out = out[:last_user]
     starts = [i for i, e in enumerate(out) if isinstance(e, ev.TurnStart)]
     ends   = [i for i, e in enumerate(out) if isinstance(e, ev.TurnEnd)]
     total = len(starts)
@@ -145,18 +260,31 @@ def _window(path: str, before: int | None, limit: int) -> ReplayWindow:
     slice_lo = 0 if start == 0 else ends[start - 1] + 1
     slice_hi = starts[end] if end < total else len(out)
     window = out[slice_lo:slice_hi]
+    if include_subagents:
+        # Reconstruct sub-agent threads for exactly the Task calls in THIS window
+        # (scoping to the window naturally excludes sub-agents of trimmed turns).
+        # Appended after the main slice: the reducer routes by parentToolUseId, so
+        # position is irrelevant — the Task card renders wherever its call sits.
+        task_ids = {e.tool_id for e in window if isinstance(e, ev.ToolCall)}
+        window = window + _subagent_events(path, task_ids)
     if meta_event is not None:
         window = [meta_event] + window
     return ReplayWindow(events=window, earliest_turn=start, total_turns=total)
 
 
 def _parse(path: str, max_turns: int) -> list:
-    """Back-compat: last `max_turns` turns as a flat event list."""
+    """Back-compat: last `max_turns` turns as a flat event list.
+
+    Main-thread only (no sub-agent reconstruction) — this feeds the sub-agent
+    SUMMARY and suggestion generators, which must not see nested sub-agent turns."""
     return _window(path, before=None, limit=max_turns).events
 
 
-async def replay_window(jsonl_path: str, *, before: int | None = None, limit: int = 20) -> ReplayWindow:
-    return await asyncio.to_thread(_window, jsonl_path, before, limit)
+async def replay_window(jsonl_path: str, *, before: int | None = None, limit: int = 20,
+                        drop_incomplete_turn: bool = False) -> ReplayWindow:
+    # The reattach / transcript-window UI path: reconstruct sub-agent threads so a
+    # completed sub-agent shows its internal turns inside its Task card, as it does live.
+    return await asyncio.to_thread(_window, jsonl_path, before, limit, drop_incomplete_turn, True)
 
 
 async def replay_events(jsonl_path: str, *, max_turns: int = 20) -> list:

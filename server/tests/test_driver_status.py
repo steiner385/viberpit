@@ -35,17 +35,20 @@ def _make_driver():
 async def test_live_status_uses_rich_vocabulary():
     d = _make_driver()
     await d.start()
+    # Subscribe BEFORE send_prompt: Status is a control event, broadcast to current
+    # subscribers only (not buffered/replayed to a late subscriber), so the turn-start
+    # 'in_progress' would be missed if we subscribed after the prompt.
+    out_q: asyncio.Queue = asyncio.Queue()
+    d._subscribers.add(out_q)
     statuses: list[str] = []
 
-    async def collect():
-        async for e in d.events():
-            if isinstance(e, ev.Status):
-                statuses.append(e.state)
-            if isinstance(e, ev.TurnEnd):
-                break
-
     await d.send_prompt("go")
-    await asyncio.wait_for(collect(), timeout=5.0)
+    if d._pump:
+        await d._pump
+    while not out_q.empty():
+        e = out_q.get_nowait()
+        if isinstance(e, ev.Status):
+            statuses.append(e.state)
     await d.aclose()
 
     # No legacy 'working'/'idle' wire values; the active turn reports in_progress.
@@ -68,7 +71,7 @@ class _RaisingClient(FakeSDKClient):
 
 
 def _factory(msgs):
-    def make(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
         return FakeSDKClient(msgs, on_can_use_tool=can_use_tool)
     return make
 

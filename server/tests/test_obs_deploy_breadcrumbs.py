@@ -179,7 +179,7 @@ def _make_deploy_controller(*, daemon_enabled=True, daemon_changed=True,
     )
     steps_mod.restart_units.return_value = []
     steps_mod.wait_healthy.return_value = True
-    steps_mod.publish_deployment.return_value = True
+    steps_mod.publish_deployment.return_value = None
 
     drain_mod = MagicMock()
     drain_mod.drain_and_wait = AsyncMock(return_value=drain_result)

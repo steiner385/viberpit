@@ -31,6 +31,9 @@ import { SettingsPanel } from './settings/SettingsPanel'
 import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
 import { PipelineView } from './PipelineView'
+import { AdoptPanel } from './AdoptPanel'
+import { AutomationView } from './AutomationView'
+import { InsightsView } from './InsightsView'
 import { ReviewView } from './ReviewView'
 import { SidebarResizer } from './SidebarResizer'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
@@ -51,6 +54,7 @@ import {
   usePermanentDeleteSession,
   useGithubRepos,
   useSendPrompt,
+  useConfig,
 } from '@/api/hooks'
 import { setLastRepo } from '@/lib/lastRepo'
 import { toast } from 'sonner'
@@ -59,7 +63,7 @@ import { useSessionSearch } from '@/session/useSessionSearch'
 import { useListNavigation } from '@/session/useListNavigation'
 import { nextVisibleSessionId } from '@/session/nextAfterArchive'
 
-type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline'
+type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline' | 'automation' | 'insights'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
 
 // ── Session subtree (rendered only under SessionRuntimeProvider) ──────────────
@@ -121,6 +125,7 @@ export function DesktopShell() {
     useSessionOrdering(sessions, sessionSearch.matchedIds)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const reposQuery = useGithubRepos()
+  const { data: config } = useConfig()
 
   const createSession = useCreateSession()
   const renameSession = useRenameSession()
@@ -343,7 +348,7 @@ export function DesktopShell() {
     >
       {/* Tab bar */}
       <div role="tablist" aria-label="Dashboard sections" className="flex gap-1 border-b border-gray-200 dark:border-gray-700 px-2">
-        {(['sessions', 'accounts', 'pipeline', 'archived'] as TabId[]).map((t) => (
+        {(['sessions', 'accounts', 'pipeline', 'archived', 'automation', 'insights'] as TabId[]).map((t) => (
           <button
             key={t}
             role="tab"
@@ -431,6 +436,11 @@ export function DesktopShell() {
           onExpand={expandGroup}
           onCollapse={collapseGroup}
         />
+
+        {/* Untracked-session adoption, mirroring the mobile Dashboard's Sessions
+            tab: same component + same feature flag, mounted at the bottom of the
+            session list so wide screens (≥1024px) can adopt sessions too. */}
+        {config?.adoptionEnabled && <AdoptPanel />}
       </div>
     </aside>
   )
@@ -444,6 +454,10 @@ export function DesktopShell() {
       : <div className="p-4 overflow-y-auto h-full"><ArchivedManager onReviewSession={setReviewId} /></div>
   } else if (tab === 'pipeline') {
     mainPane = <div className="p-4 overflow-y-auto h-full"><PipelineView /></div>
+  } else if (tab === 'automation') {
+    mainPane = <div className="p-4 overflow-y-auto h-full"><AutomationView onOpenSession={focusSession} /></div>
+  } else if (tab === 'insights') {
+    mainPane = <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
   } else {
     mainPane = selection.type === 'session'
       ? <MainPaneSession sessionId={selection.id} onClosed={() => setSelection(advanceFrom(selection.id))} />

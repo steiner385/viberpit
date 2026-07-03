@@ -1,12 +1,21 @@
 # server/tests/test_x11_manager.py
+import os
+
 import pytest
-from server.sessions.x11manager import DisplayAllocator, X11Manager
+from server.sessions.x11manager import DisplayAllocator, X11Manager, resolve_chromium
 
 class FakeProc:
     def __init__(self): self.pid = 4242; self._terminated = False; self.returncode = None
     def terminate(self): self._terminated = True; self.returncode = 0
     def kill(self): self.returncode = -9
     async def wait(self): return self.returncode if self.returncode is not None else 0
+
+
+class DeadProc(FakeProc):
+    """A process that already exited (e.g. Chromium FATAL on `No usable sandbox!`)."""
+    def __init__(self, code: int = 1):
+        super().__init__()
+        self.returncode = code
 
 @pytest.mark.asyncio
 async def test_start_display_injects_env_when_ready(tmp_path):
@@ -15,7 +24,7 @@ async def test_start_display_injects_env_when_ready(tmp_path):
         spawned.append(argv); return FakeProc()
     mgr = X11Manager(DisplayAllocator(100, 4, 6100), resolution="800x600x24",
                      max_browsers=2, spawn=fake_spawn,
-                     ready_check=lambda d: True, run_dir=str(tmp_path))
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
     spec = await mgr.start_display("sess-1")
     assert spec is not None
     env = mgr.env_for("sess-1")
@@ -41,7 +50,7 @@ async def test_stop_display_idempotent(tmp_path):
     async def fake_spawn(*argv, **kw): return FakeProc()
     mgr = X11Manager(DisplayAllocator(100, 4, 6100), resolution="800x600x24",
                      max_browsers=2, spawn=fake_spawn,
-                     ready_check=lambda d: True, run_dir=str(tmp_path))
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
     await mgr.start_display("sess-1")
     await mgr.stop_display("sess-1")
     await mgr.stop_display("sess-1")  # no raise
@@ -52,17 +61,50 @@ async def test_ensure_vnc_spawns_x11vnc_once(tmp_path):
     spawned=[]
     async def fake_spawn(*argv, **kw): spawned.append(argv[0]); return FakeProc()
     mgr = X11Manager(DisplayAllocator(100,2,6100), resolution="800x600x24", max_browsers=2,
-                     spawn=fake_spawn, ready_check=lambda d: True, run_dir=str(tmp_path))
+                     spawn=fake_spawn, ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
     await mgr.start_display("S")
     p1 = await mgr.ensure_vnc("S"); p2 = await mgr.ensure_vnc("S")
     assert p1 == p2 == 6100
     assert spawned.count("x11vnc") == 1
 
 @pytest.mark.asyncio
+async def test_ensure_vnc_waits_for_port_bind(tmp_path):
+    """ensure_vnc polls vnc_ready_check until the RFB port binds before returning,
+    so a caller that connects immediately doesn't race x11vnc's async bind."""
+    async def fake_spawn(*argv, **kw): return FakeProc()
+    calls = {"n": 0}
+    def not_ready_then_ready(_port):
+        calls["n"] += 1
+        return calls["n"] >= 3   # refused twice, then bound
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24", max_browsers=2,
+                     spawn=fake_spawn, ready_check=lambda d: True,
+                     vnc_ready_check=not_ready_then_ready, ready_interval_s=0.01,
+                     vnc_ready_timeout_s=1.0, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    port = await mgr.ensure_vnc("S")
+    assert port == 6100
+    assert calls["n"] >= 3          # it actually waited for readiness
+    before = calls["n"]
+    assert await mgr.ensure_vnc("S") == 6100   # reuses bound x11vnc, no re-probe
+    assert calls["n"] == before
+
+@pytest.mark.asyncio
+async def test_ensure_vnc_returns_port_even_if_never_ready(tmp_path):
+    """Best-effort: if the port never binds within the deadline, ensure_vnc still
+    returns the port (unchanged contract) rather than hanging or erroring."""
+    async def fake_spawn(*argv, **kw): return FakeProc()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24", max_browsers=2,
+                     spawn=fake_spawn, ready_check=lambda d: True,
+                     vnc_ready_check=lambda p: False, ready_interval_s=0.01,
+                     vnc_ready_timeout_s=0.05, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    assert await mgr.ensure_vnc("S") == 6100
+
+@pytest.mark.asyncio
 async def test_launch_browser_respects_cap(tmp_path):
     async def fake_spawn(*argv, **kw): return FakeProc()
     mgr = X11Manager(DisplayAllocator(100,2,6100), resolution="800x600x24", max_browsers=1,
-                     spawn=fake_spawn, ready_check=lambda d: True, run_dir=str(tmp_path))
+                     spawn=fake_spawn, ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
     await mgr.start_display("S")
     assert await mgr.launch_browser("S", "https://example.com") is True
     assert await mgr.launch_browser("S", None) is False  # cap=1
@@ -74,7 +116,7 @@ async def test_xvfb_screen_geometry_comes_from_resolution(tmp_path):
         spawned.append(argv); return FakeProc()
     mgr = X11Manager(DisplayAllocator(100, 1, 6100), resolution="1280x800x24",
                      max_browsers=1, spawn=fake_spawn,
-                     ready_check=lambda d: True, run_dir=str(tmp_path))
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
     await mgr.start_display("sess-geom")
     xvfb_argv = next(a for a in spawned if a[0] == "Xvfb")
     assert "1280x800x24" in xvfb_argv, xvfb_argv
@@ -86,7 +128,7 @@ async def test_stop_all_terminates_every_display(tmp_path):
     async def fake_spawn(*argv, **kw): return FakeProc()
     mgr = X11Manager(DisplayAllocator(100, 4, 6100), resolution="800x600x24",
                      max_browsers=2, spawn=fake_spawn,
-                     ready_check=lambda d: True, run_dir=str(tmp_path))
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
     await mgr.start_display("a")
     await mgr.start_display("b")
     assert mgr.display_for("a") is not None and mgr.display_for("b") is not None
@@ -103,7 +145,7 @@ async def test_stop_all_resilient_to_one_failure(tmp_path):
     async def fake_spawn(*argv, **kw): return FakeProc()
     mgr = X11Manager(DisplayAllocator(100, 4, 6100), resolution="800x600x24",
                      max_browsers=2, spawn=fake_spawn,
-                     ready_check=lambda d: True, run_dir=str(tmp_path))
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
     await mgr.start_display("a")
     await mgr.start_display("b")
 
@@ -132,7 +174,7 @@ def _mgr(tmp_path):
     async def fake_spawn(*argv, **kw): return FakeProc()
     return X11Manager(DisplayAllocator(100, 4, 6100), resolution="800x600x24",
                       max_browsers=2, spawn=fake_spawn,
-                      ready_check=lambda d: True, run_dir=str(tmp_path))
+                      ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
 
 
 def test_sweep_orphan_kills_in_range_xvfb(tmp_path):
@@ -210,7 +252,7 @@ async def test_launch_browser_no_debug_port_by_default(tmp_path):
         return FakeProc()
     mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
                      max_browsers=2, spawn=fake_spawn,
-                     ready_check=lambda d: True, run_dir=str(tmp_path))
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
     await mgr.start_display("S")
     result = await mgr.launch_browser("S", "http://x")
     assert result is True
@@ -229,7 +271,7 @@ async def test_launch_browser_opt_in_debug_port(tmp_path):
     # DisplayAllocator(100, 2, 6100) → first display=100, rfbport=6100
     mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
                      max_browsers=2, spawn=fake_spawn,
-                     ready_check=lambda d: True, run_dir=str(tmp_path))
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
     await mgr.start_display("S")
     result = await mgr.launch_browser("S", "http://x", debug_port=True)
     assert result is True
@@ -248,9 +290,158 @@ async def test_launch_browser_persistent_profile(tmp_path):
         return FakeProc()
     mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
                      max_browsers=2, spawn=fake_spawn,
-                     ready_check=lambda d: True, run_dir=str(tmp_path))
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
     await mgr.start_display("S")
     result = await mgr.launch_browser("S", "http://x", profile_dir="/tmp/p")
     assert result is True
     chromium_argv = next(a for a in spawned if a[0] == "chromium")
     assert "--user-data-dir=/tmp/p" in chromium_argv
+
+
+# --- issue #136: --no-sandbox, per-launch profile isolation, dead-launch liveness ---
+
+def _spawn_collector():
+    spawned = []
+    async def fake_spawn(*argv, **kw):
+        spawned.append(argv)
+        return FakeProc()
+    return spawned, fake_spawn
+
+
+@pytest.mark.asyncio
+async def test_launch_browser_no_sandbox_absent_by_default(tmp_path):
+    """The secure default keeps the Chromium sandbox on — no --no-sandbox in argv."""
+    spawned, fake_spawn = _spawn_collector()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn,
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    assert await mgr.launch_browser("S", "http://x") is True
+    chromium_argv = next(a for a in spawned if a[0] == "chromium")
+    assert "--no-sandbox" not in chromium_argv
+
+
+@pytest.mark.asyncio
+async def test_launch_browser_no_sandbox_opt_in(tmp_path):
+    """no_sandbox=True passes --no-sandbox so AppArmor-userns-restricted hosts render."""
+    spawned, fake_spawn = _spawn_collector()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn, no_sandbox=True,
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    assert await mgr.launch_browser("S", "http://x") is True
+    chromium_argv = next(a for a in spawned if a[0] == "chromium")
+    assert "--no-sandbox" in chromium_argv
+
+
+@pytest.mark.asyncio
+async def test_launch_browser_isolated_profile_by_default(tmp_path):
+    """Without an explicit profile_dir each managed launch gets its own --user-data-dir
+    under run_dir, so concurrent browsers never hand off to a sibling's singleton."""
+    spawned, fake_spawn = _spawn_collector()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn,
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    assert await mgr.launch_browser("S", "http://a") is True
+    assert await mgr.launch_browser("S", "http://b") is True
+    dirs = []
+    for a in spawned:
+        if a[0] != "chromium":
+            continue
+        udd = next((arg for arg in a if arg.startswith("--user-data-dir=")), None)
+        assert udd is not None, a
+        path = udd.split("=", 1)[1]
+        assert path.startswith(str(tmp_path))   # under run_dir
+        assert os.path.isdir(path)              # actually created
+        dirs.append(path)
+    assert len(dirs) == 2 and dirs[0] != dirs[1]   # isolated, unique per launch
+
+
+@pytest.mark.asyncio
+async def test_launch_browser_explicit_profile_not_auto_created(tmp_path):
+    """An explicit profile_dir is honored verbatim — no throwaway temp dir is minted."""
+    spawned, fake_spawn = _spawn_collector()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn,
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    assert await mgr.launch_browser("S", "http://x", profile_dir="/tmp/explicit") is True
+    chromium_argv = next(a for a in spawned if a[0] == "chromium")
+    udds = [arg for arg in chromium_argv if arg.startswith("--user-data-dir=")]
+    assert udds == ["--user-data-dir=/tmp/explicit"]   # exactly one, the caller's
+
+
+@pytest.mark.asyncio
+async def test_launch_browser_dead_launch_reports_failure(tmp_path):
+    """A browser that FATAL-exits at startup must NOT count as a live launch:
+    return False, browser_count stays 0, and the auto profile dir is cleaned up."""
+    created_dirs = []
+    async def fake_spawn(*argv, **kw):
+        udd = next((a for a in argv if a.startswith("--user-data-dir=")), None)
+        if udd:
+            created_dirs.append(udd.split("=", 1)[1])
+        return DeadProc()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn, browser_liveness_s=0.01,
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    assert await mgr.launch_browser("S", "http://x") is False
+    assert mgr.metrics()["browser_count"] == 0
+    # the throwaway profile dir must not be left behind
+    assert created_dirs and not any(os.path.exists(d) for d in created_dirs)
+
+
+@pytest.mark.asyncio
+async def test_launch_browser_live_launch_passes_liveness(tmp_path):
+    """A browser still running after the liveness window counts as success."""
+    spawned, fake_spawn = _spawn_collector()   # FakeProc stays alive (returncode None)
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn, browser_liveness_s=0.01,
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    assert await mgr.launch_browser("S", "http://x") is True
+    assert mgr.metrics()["browser_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_display_removes_auto_profile_dirs(tmp_path):
+    """Auto-minted per-launch profile dirs are torn down with the display."""
+    spawned, fake_spawn = _spawn_collector()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn,
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    await mgr.launch_browser("S", "http://x")
+    udd = next(arg.split("=", 1)[1] for a in spawned if a[0] == "chromium"
+               for arg in a if arg.startswith("--user-data-dir="))
+    assert os.path.isdir(udd)
+    await mgr.stop_display("S")
+    assert not os.path.exists(udd)
+
+
+@pytest.mark.asyncio
+async def test_launch_browser_uses_resolved_chromium_cmd(tmp_path):
+    """The manager execs its configured chromium command (hosts may only ship google-chrome)."""
+    spawned, fake_spawn = _spawn_collector()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn, chromium_cmd="google-chrome",
+                     ready_check=lambda d: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    assert await mgr.launch_browser("S", "http://x") is True
+    assert any(a[0] == "google-chrome" for a in spawned)
+
+
+def test_resolve_chromium_prefers_available_binary(monkeypatch):
+    """resolve_chromium walks candidates and returns the first on PATH."""
+    import server.sessions.x11manager as x11
+    monkeypatch.setattr(x11.shutil, "which",
+                        lambda b: "/usr/bin/google-chrome" if b == "google-chrome" else None)
+    assert resolve_chromium() == "/usr/bin/google-chrome"
+
+
+def test_resolve_chromium_none_when_absent(monkeypatch):
+    """No Chromium-family binary anywhere → None (preflight can warn)."""
+    import server.sessions.x11manager as x11
+    monkeypatch.setattr(x11.shutil, "which", lambda b: None)
+    assert resolve_chromium() is None

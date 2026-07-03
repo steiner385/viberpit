@@ -241,12 +241,21 @@ agents that open many tabs.
 ### (b) Chromium sandbox posture
 
 Keep the Chromium sandbox **on** (the default). Only use `--no-sandbox` if
-user-namespace cloning is restricted on the host (e.g., some container runtimes), and
-treat that as a conscious downgrade: the virtual browser may be logged into real accounts
-and is human-controllable from the web UI.
+user-namespace cloning is restricted on the host (e.g., some container runtimes, or
+Ubuntu 23.10+ with `kernel.apparmor_restrict_unprivileged_userns=1`), and treat that as
+a conscious downgrade: the virtual browser may be logged into real accounts and is
+human-controllable from the web UI. Symptom of the restriction: the managed launch
+FATALs at startup with `No usable sandbox!` and renders nothing.
 
-If you must disable the sandbox, document it in your deployment notes and restrict VNC
-access to trusted users only.
+The **secure** fix is a host change — enable unprivileged userns:
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`. If you can't change the
+host, set `CCSWITCH_CHROMIUM_NO_SANDBOX=1` to make the managed launch pass `--no-sandbox`.
+If you disable the sandbox, document it in your deployment notes and restrict VNC access
+to trusted users only.
+
+Note: managed launch now mints a fresh isolated `--user-data-dir` per browser and runs a
+short post-spawn liveness check (`CCSWITCH_BROWSER_LIVENESS_S`, default 0.3s), so a
+FATAL-at-startup launch reports failure instead of a phantom `browser_count`.
 
 ### (c) Shared cursor — no hard locking in v1
 

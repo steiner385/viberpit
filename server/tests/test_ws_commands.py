@@ -31,6 +31,9 @@ class FakeOrch:
 
     def __init__(self):
         self.ran: list[tuple[str, str]] = []
+        # _lifespan's shutdown branch iterates orchestrator._drivers to close
+        # live sessions; without it, teardown raises AttributeError.
+        self._drivers: dict = {}
 
     # -- lifecycle (app.py calls these in _lifespan) --
     async def rehydrate(self):

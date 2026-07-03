@@ -47,7 +47,7 @@ def test_drain_exception_emits_error_event_with_detail():
     assert "token expired mid-stream" in err.message
 
 def _factory(msgs):
-    def make(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
         return FakeSDKClient(msgs, on_can_use_tool=can_use_tool)
     return make
 
@@ -59,9 +59,16 @@ def test_driver_streams_turn_and_sets_session_id():
         d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
         await d.start()
+        # Subscribe BEFORE send_prompt so control events (Title, Status) emitted at
+        # turn start are captured — a late subscriber only replays transcript content.
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         await d.send_prompt("hi")
+        if d._pump:
+            await d._pump
         seen = []
-        async for e in d.events():
+        while not out_q.empty():
+            e = out_q.get_nowait()
             seen.append(e)
             if isinstance(e, TurnEnd):
                 break
@@ -257,10 +264,15 @@ def test_auto_title_emitted_on_first_prompt():
         d = SessionDriver("s5", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
         await d.start()
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         long_prompt = "A" * 60 + " extra stuff"
         await d.send_prompt(long_prompt)
+        if d._pump:
+            await d._pump
         events = []
-        async for e in d.events():
+        while not out_q.empty():
+            e = out_q.get_nowait()
             events.append(e)
             if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
@@ -303,19 +315,19 @@ def test_auto_title_only_fires_once():
         d = SessionDriver("s6", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
-        all_events = []
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         # First prompt: should emit Title
         await d.send_prompt("hello world")
-        async for e in d.events():
-            all_events.append(e)
-            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
-                break
+        if d._pump:
+            await d._pump
         # Second prompt: should NOT emit another Title
         await d.send_prompt("second query")
-        async for e in d.events():
-            all_events.append(e)
-            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
-                break
+        if d._pump:
+            await d._pump
+        all_events = []
+        while not out_q.empty():
+            all_events.append(out_q.get_nowait())
         await d.aclose()
         return all_events
 
@@ -333,9 +345,14 @@ def test_auto_title_first_line_only():
         d = SessionDriver("s7", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
         await d.start()
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         await d.send_prompt("First line\nSecond line that should be ignored")
+        if d._pump:
+            await d._pump
         events = []
-        async for e in d.events():
+        while not out_q.empty():
+            e = out_q.get_nowait()
             events.append(e)
             if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
                 break
@@ -357,6 +374,8 @@ def test_askuserquestion_blocks_emits_question_and_returns_deny_with_answer():
     async def run():
         d = SessionDriver("sq", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         # Start the can_use_tool call in a background task — it will block until answered.
         tool_input = {"questions": [{"header": "Choose", "question": "Favourite?",
                                      "options": [{"label": "Option A", "description": ""},
@@ -369,8 +388,8 @@ def test_askuserquestion_blocks_emits_question_and_returns_deny_with_answer():
         await asyncio.sleep(0)
 
         # A Question event must have been placed in the output queue.
-        assert not d._out.empty(), "expected ev.Question in output queue"
-        q_event = d._out.get_nowait()
+        assert not out_q.empty(), "expected ev.Question in output queue"
+        q_event = out_q.get_nowait()
         assert isinstance(q_event, Question), f"expected Question, got {type(q_event)}"
         assert q_event.question == "Favourite?"
         assert q_event.header == "Choose"
@@ -425,6 +444,8 @@ def test_askuserquestion_multi_question_single_call():
     async def run():
         d = SessionDriver("sq-multi", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         tool_input = {
             "questions": [
                 {"header": "H1", "question": "Q1?",
@@ -440,8 +461,8 @@ def test_askuserquestion_multi_question_single_call():
 
         # Collect Question events from the output queue.
         q_events = []
-        while not d._out.empty():
-            ev_item = d._out.get_nowait()
+        while not out_q.empty():
+            ev_item = out_q.get_nowait()
             if isinstance(ev_item, Question):
                 q_events.append(ev_item)
 
@@ -471,14 +492,16 @@ def test_askuserquestion_options_normalized_from_strings():
     async def run():
         d = SessionDriver("sq-str-opts", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         tool_input = {"questions": [{"question": "Pick one",
                                      "options": ["Alpha", "Beta"], "multiSelect": False}]}
         callback_task = asyncio.create_task(d._can_use_tool("AskUserQuestion", tool_input))
         await asyncio.sleep(0)
         await asyncio.sleep(0)
 
-        assert not d._out.empty()
-        q_event = d._out.get_nowait()
+        assert not out_q.empty()
+        q_event = out_q.get_nowait()
         assert isinstance(q_event, Question)
         assert q_event.options[0] == {"label": "Alpha"}
         assert q_event.options[1] == {"label": "Beta"}
@@ -516,6 +539,8 @@ def test_queue_update_emitted_when_enqueuing():
     async def run():
         d = SessionDriver("qu1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         await d.start()
         await d.send_prompt("first")          # starts immediately (no QueueUpdate)
         await d.send_prompt("second")         # enqueued → QueueUpdate(["second"])
@@ -523,8 +548,8 @@ def test_queue_update_emitted_when_enqueuing():
 
         # Drain what's in _out right now (non-blocking)
         events = []
-        while not d._out.empty():
-            events.append(d._out.get_nowait())
+        while not out_q.empty():
+            events.append(out_q.get_nowait())
 
         await d.aclose()
         return events
@@ -556,6 +581,8 @@ def test_cancel_queued_removes_item_and_emits_queue_update():
     async def run():
         d = SessionDriver("qc1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         await d.start()
         await d.send_prompt("first")     # running
         await d.send_prompt("second")    # queued[0]
@@ -563,8 +590,8 @@ def test_cancel_queued_removes_item_and_emits_queue_update():
         assert d.queued() == ["second", "third"]
 
         # Drain enqueue events emitted so far
-        while not d._out.empty():
-            d._out.get_nowait()
+        while not out_q.empty():
+            out_q.get_nowait()
 
         result = await d.cancel_queued(0)
         assert result is True
@@ -572,8 +599,8 @@ def test_cancel_queued_removes_item_and_emits_queue_update():
 
         # The QueueUpdate and Status should have been emitted
         events = []
-        while not d._out.empty():
-            events.append(d._out.get_nowait())
+        while not out_q.empty():
+            events.append(out_q.get_nowait())
 
         queue_updates = [e for e in events if isinstance(e, QueueUpdate)]
         statuses = [e for e in events if isinstance(e, Status)]
@@ -605,19 +632,21 @@ def test_cancel_queued_out_of_range_returns_false():
     async def run():
         d = SessionDriver("qc2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         await d.start()
         await d.send_prompt("first")
         await d.send_prompt("second")
         # Drain setup events
-        while not d._out.empty():
-            d._out.get_nowait()
+        while not out_q.empty():
+            out_q.get_nowait()
 
         result_neg = await d.cancel_queued(-1)
         result_oob = await d.cancel_queued(5)
         assert result_neg is False
         assert result_oob is False
         # No events emitted for invalid indices
-        assert d._out.empty()
+        assert out_q.empty()
 
         await d.aclose()
 
@@ -658,12 +687,14 @@ def test_askuserquestion_freeform_framing():
     async def run():
         d = SessionDriver("sq-ff", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         tool_input = {"questions": [{"header": "Choose", "question": "Favourite?",
                                      "options": [{"label": "Option A"}], "multiSelect": False}]}
         callback_task = asyncio.create_task(d._can_use_tool("AskUserQuestion", tool_input))
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        q_event = d._out.get_nowait()
+        q_event = out_q.get_nowait()
         assert isinstance(q_event, Question)
 
         d.answer_question(q_event.question_id, ["I prefer C, actually"], "me", mode="freeform")
@@ -683,12 +714,14 @@ def test_askuserquestion_chat_framing():
     async def run():
         d = SessionDriver("sq-chat", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         tool_input = {"questions": [{"header": "Choose", "question": "Favourite?",
                                      "options": [{"label": "Option A"}], "multiSelect": False}]}
         callback_task = asyncio.create_task(d._can_use_tool("AskUserQuestion", tool_input))
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        q_event = d._out.get_nowait()
+        q_event = out_q.get_nowait()
         assert isinstance(q_event, Question)
 
         d.answer_question(q_event.question_id, ["why are you asking this?"], "me", mode="chat")

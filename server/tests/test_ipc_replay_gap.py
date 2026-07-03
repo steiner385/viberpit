@@ -14,6 +14,7 @@ import pytest
 import websockets
 
 from server.ipc import protocol as proto
+from server.ipc.client import DaemonClient
 from server.ipc.daemon import create_daemon_app
 from server.tests.ipc_harness import serve_daemon_uds
 
@@ -69,6 +70,29 @@ async def test_subscribe_emits_gap_frame_when_anchor_evicted(monkeypatch):
     assert gap["lost"] == 2          # seq 1 and 2
     # The retained events still follow the gap signal.
     assert [f.get("seq") for f in frames[1:]] == [3, 4]
+
+
+@pytest.mark.asyncio
+async def test_client_delivers_gap_sentinel_to_subscribers(monkeypatch):
+    """The edge client must PROPAGATE a daemon gap frame to its local subscribers
+    (issue #185), not merely log it — so the consumer (RemoteDriver → ws._forward_live)
+    can resync the desynced view from disk. Previously the gap was log-only, leaving the
+    in-session transcript silently behind durable storage after a ring eviction."""
+    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "2")
+    app = create_daemon_app()
+    async with serve_daemon_uds(app) as sock:
+        for i in range(5):  # seq 0..4; retained = seq 3,4 (oldest = 3)
+            await app.state.publish("s1", {"type": str(i)})
+        client = DaemonClient(sock)
+        try:
+            stream = client.subscribe("s1", since=0)  # anchor predates oldest → gap
+            got = []
+            for _ in range(3):  # gap sentinel, then the 2 retained events
+                got.append(await asyncio.wait_for(stream.__anext__(), 2))
+        finally:
+            await client.aclose()
+    assert got[0] == {"type": proto.GAP, "stream": "s1", "lost": 2, "oldest": 3}
+    assert [e["type"] for e in got[1:]] == ["3", "4"]  # retained events still delivered
 
 
 @pytest.mark.asyncio

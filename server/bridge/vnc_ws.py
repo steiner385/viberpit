@@ -13,6 +13,29 @@ CLOSE_NOT_ENABLED = 4401
 CLOSE_NO_DISPLAY = 4404
 
 
+async def _open_rfb_connection(port: int, *, timeout: float = 2.0, interval: float = 0.05):
+    """Open a loopback TCP connection to x11vnc's RFB port, retrying on
+    ConnectionRefused for up to ``timeout`` seconds before giving up.
+
+    x11vnc is spawned lazily on the first attach and binds its RFB port
+    asynchronously (~1s later). X11Manager.ensure_vnc already waits for that
+    bind, but the wait is best-effort — under load or a slow x11vnc start it can
+    return an unbound port, and a single connect would then race the bind and
+    fail with ConnectionRefused, losing the first relay (issue #135). A short
+    bounded retry recovers in-process so the user never sees noVNC's
+    "Reconnecting…". Mirrors X11Manager._await_ready's poll-with-budget style.
+    """
+    waited = 0.0
+    while True:
+        try:
+            return await asyncio.open_connection("127.0.0.1", port)
+        except ConnectionRefusedError:
+            if waited >= timeout:
+                raise
+            await asyncio.sleep(interval)
+            waited += interval
+
+
 async def _relay(ws, tcp, idle: float = 30.0) -> None:
     """Flow-controlled bidirectional pump. Each direction awaits its write
     before reading more, bounding in-process buffering."""
@@ -155,7 +178,7 @@ def build_vnc_ws_router(
         await websocket.accept()
         port = await x11.attach(session_id)
         try:
-            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            reader, writer = await _open_rfb_connection(port)
             await _relay(websocket, _StreamAdapter(reader, writer))
         except Exception:
             log.exception("vnc: relay failed session=%s", session_id)

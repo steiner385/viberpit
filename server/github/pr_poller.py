@@ -59,6 +59,7 @@ class PrStatusPoller:
             | None
         ) = None
         self._on_change: Callable | None = None
+        self._on_cycle: Callable | None = None
         self._task: asyncio.Task | None = None
 
     def set_pairs_provider(
@@ -86,6 +87,17 @@ class PrStatusPoller:
         A callback that raises is swallowed so it never breaks the poll sweep.
         """
         self._on_change = fn
+
+    def set_on_cycle(self, fn: Callable) -> None:
+        """Register a callback invoked once per poll cycle, AFTER ``refresh_once``.
+
+        ``fn()`` takes no args and reads the (now-fresh) cache itself — this is the
+        per-cycle SWEEP hook PR Doctor uses to evaluate every tracked PR (including
+        non-CI failure modes like BEHIND/DIRTY that never fire a checks transition,
+        so ``on_change`` never sees them). May be a plain function or a coroutine
+        function. A callback that raises is swallowed so it never breaks the loop.
+        """
+        self._on_cycle = fn
 
     def cached(self, repo: str | None, branch: str | None) -> PullRequestInfo | None:
         if not repo or not branch:
@@ -143,6 +155,21 @@ class PrStatusPoller:
                 pass
             self._task = None
 
+    async def _fire_on_cycle(self) -> None:
+        """Invoke the per-cycle sweep hook defensively (mirrors ``on_change``).
+
+        Awaits an awaitable result; wraps everything in try/except so a sweep
+        error never aborts the poll loop.
+        """
+        if self._on_cycle is None:
+            return
+        try:
+            result = self._on_cycle()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            log.warning("pr_poller.on_cycle callback raised", exc_info=True)
+
     async def _loop(self) -> None:
         while True:
             delay = self._poll_interval * (1 + self._jitter_frac * self._rng())
@@ -151,3 +178,6 @@ class PrStatusPoller:
             await asyncio.sleep(delay)
             pairs = await self._resolve_pairs()
             await self.refresh_once(pairs)
+            # Post-cycle SWEEP hook: cache is now fresh. Fires regardless of any
+            # checks-transition so PR Doctor can catch non-CI failure modes.
+            await self._fire_on_cycle()

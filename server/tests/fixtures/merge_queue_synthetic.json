@@ -1,0 +1,65 @@
+{
+  "data": {
+    "r0": {
+      "mergeQueue": {
+        "entries": {
+          "nodes": [
+            {
+              "position": 1,
+              "state": "AWAITING_CHECKS",
+              "enqueuedAt": "2026-06-30T22:28:46Z",
+              "estimatedTimeToMerge": 720,
+              "headCommit": {
+                "oid": "aaa1",
+                "statusCheckRollup": {
+                  "state": "PENDING",
+                  "contexts": {
+                    "totalCount": 4,
+                    "nodes": [
+                      { "__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS" },
+                      { "__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS" },
+                      { "__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": null },
+                      { "__typename": "StatusContext", "state": "PENDING" }
+                    ]
+                  }
+                }
+              },
+              "pullRequest": { "number": 10824 }
+            },
+            {
+              "position": 2,
+              "state": "AWAITING_CHECKS",
+              "enqueuedAt": "2026-06-30T22:10:00Z",
+              "estimatedTimeToMerge": null,
+              "headCommit": {
+                "oid": "bbb2",
+                "statusCheckRollup": {
+                  "state": "FAILURE",
+                  "contexts": {
+                    "totalCount": 4,
+                    "nodes": [
+                      { "__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE" },
+                      { "__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS" }
+                    ]
+                  }
+                }
+              },
+              "pullRequest": { "number": 10823 }
+            },
+            {
+              "position": 3,
+              "state": "UNMERGEABLE",
+              "enqueuedAt": "2026-06-30T21:50:00Z",
+              "estimatedTimeToMerge": null,
+              "headCommit": {
+                "oid": "ccc3",
+                "statusCheckRollup": null
+              },
+              "pullRequest": { "number": 10805 }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -9,7 +9,7 @@ from server.tests.fakes import fake_sdk as f
 
 
 def _factory(msgs):
-    def make(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
         return FakeSDKClient(msgs, on_can_use_tool=can_use_tool)
     return make
 

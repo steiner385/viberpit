@@ -1,15 +1,22 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState, useRef, useCallback, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
+import {
+  fetchAutomations, fetchAutomationEvents, fetchSpawnedSessions, patchAutomation,
+  fetchPrDoctorActionable, postPrDoctorFix,
+  type Automation, type AutomationEvent, type AutomationPatch,
+  type PrDoctorActionablePr, type PrDoctorKind,
+} from './automations'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
-  DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel,
+  DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, MergeTrainState, CheckInsights,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
 import { isSessionsViewing, setSessionsViewing } from './sessionsViewing'
+import { reconcileSessions } from '@/session/reconcile'
 import { toast } from 'sonner'
 
 // Query keys
@@ -26,6 +33,13 @@ export const QK = {
   sessionSearch: (q: string, scope: string = 'live') => ['session-search', scope, q] as const,
   prs: ['prs'] as const,
   pipelineRepos: ['pipeline-repos'] as const,
+  automations: ['automations'] as const,
+  automationEvents: (id: string) => ['automation-events', id] as const,
+  automationSessions: (id: string) => ['automation-sessions', id] as const,
+  pipelineTrains: ['pipeline-trains'] as const,
+  pipelineInsights: (repo?: string, window?: string) =>
+    ['pipeline-insights', repo, window] as const,
+  prDoctorActionable: ['pr-doctor-actionable'] as const,
 }
 
 export function useModels() {
@@ -52,6 +66,9 @@ export function useSessions() {
     queryFn: () => api.get<Session[]>(isSessionsViewing() ? '/sessions?viewing=1' : '/sessions'),
     staleTime: 3_000,
     refetchInterval: 5_000,
+    // Version-guarded merge: a stale in-flight poll must not overwrite a session the WS
+    // patched to a newer revAt. reconcileSessions keeps the newer of cache vs poll per id.
+    structuralSharing: (prev, next) => reconcileSessions(prev as Session[] | undefined, next as Session[]),
   })
   const data = useMemo<Session[] | undefined>(() => {
     if (pending.length === 0) return query.data
@@ -123,7 +140,6 @@ export interface AppSettings {
   thinkingCollapsed: boolean
   repoRoot: string | null
   defaultToolDetail: ToolDetailMode
-  prAutofixMode: string
 }
 
 export function useSettings() {
@@ -150,6 +166,7 @@ export interface CreateSessionInput {
   branch?: string
   permissionMode?: string
   attachmentIds?: string[]
+  model?: string
 }
 
 export function useCreateSession() {
@@ -594,5 +611,68 @@ export function useStageModels() {
     queryFn: () => api.get<Record<string, StageModel>>('/pipeline/repos'),
     staleTime: 15_000,
     refetchInterval: 30_000,
+  })
+}
+
+export function useAutomations() {
+  return useQuery<Automation[]>({
+    queryKey: QK.automations, queryFn: fetchAutomations, staleTime: 10_000 })
+}
+
+export function useAutomationEvents(id: string, enabled = true) {
+  return useQuery<AutomationEvent[]>({
+    queryKey: QK.automationEvents(id), queryFn: () => fetchAutomationEvents(id),
+    enabled, staleTime: 10_000 })
+}
+
+export type SpawnedSession = { id: string; name: string; status: string; originRef: string | null }
+
+export function useAutomationSessions(id: string, enabled = true) {
+  return useQuery<SpawnedSession[]>({
+    queryKey: QK.automationSessions(id), queryFn: () => fetchSpawnedSessions(id),
+    enabled, staleTime: 10_000 })
+}
+
+export function usePatchAutomation() {
+  const qc = useQueryClient()
+  return useMutation<Automation, ApiRequestError, { id: string; body: AutomationPatch }>({
+    mutationFn: ({ id, body }) => patchAutomation(id, body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.automations }) },
+  })
+}
+
+export function useMergeTrains() {
+  return useQuery<Record<string, MergeTrainState>>({
+    queryKey: QK.pipelineTrains,
+    queryFn: () => api.get<Record<string, MergeTrainState>>('/pipeline/trains'),
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useCheckInsights(repo: string | undefined, window: string) {
+  return useQuery<CheckInsights>({
+    queryKey: QK.pipelineInsights(repo, window),
+    queryFn: () =>
+      api.get<CheckInsights>(
+        `/pipeline/insights/checks?repo=${encodeURIComponent(repo as string)}&window=${window}`),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+    enabled: !!repo,
+  })
+}
+
+export function usePrDoctorActionable(enabled = true) {
+  return useQuery<PrDoctorActionablePr[]>({
+    queryKey: QK.prDoctorActionable, queryFn: fetchPrDoctorActionable,
+    enabled, staleTime: 10_000 })
+}
+
+export function usePrDoctorFix() {
+  const qc = useQueryClient()
+  return useMutation<{ status: string }, ApiRequestError,
+    { repo: string; number: number; kind: PrDoctorKind }>({
+    mutationFn: (body) => postPrDoctorFix(body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.prDoctorActionable }) },
   })
 }

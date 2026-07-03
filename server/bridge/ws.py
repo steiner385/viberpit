@@ -34,6 +34,7 @@ from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
 from server.db import db_session
+from server.ipc import protocol as proto
 from server.ipc.client import DaemonUnavailable
 from server.obs.context import bind_session
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
@@ -59,14 +60,36 @@ _RESUME_TIMEOUT = 90.0
 async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -> None:
     """Forward a driver's live events into *out_q* as wire dicts.
 
-    A crash in the stream must not leave the UI silent: convert the exception into
-    an ``error`` frame and enqueue it so the client learns the live stream died
-    instead of staring at a frozen transcript. Cancellation is normal (detach).
+    Each dict is stamped with the owning ``sessionId`` and a per-session monotonic
+    ``seq`` so the client can (a) discard events from a session it is no longer
+    viewing and (b) detect a hole and self-heal via re-attach. A single event that
+    fails to serialize must not silence the whole stream: skip it but still advance
+    ``seq`` so the gap is visible. A crash in the generator becomes an ``error`` frame.
     """
     with bind_session(session_id):
+        seq = 0
         try:
             async for e in driver.events():
-                out_q.put_nowait(e.to_wire())
+                try:
+                    wire = e.to_wire()
+                except Exception:
+                    log.exception("ws.to_wire session=%s", session_id)
+                    seq += 1  # consume a seq so the client sees a gap and re-attaches
+                    continue
+                if wire.get("type") == proto.GAP:
+                    # A daemon replay-gap sentinel (issue #185): events were evicted from
+                    # the ring before the edge could deliver them, so this view is behind
+                    # disk. Don't forward the sentinel — consume a seq to leave a hole the
+                    # client's liveBatch gap-healing detects → detach+attach → full replay
+                    # from the transcript (the durable source of truth).
+                    log.warning("ws.live_stream: daemon replay gap session=%s lost=%s — "
+                                "forcing client resync from disk", session_id, wire.get("lost"))
+                    seq += 1
+                    continue
+                wire["sessionId"] = session_id
+                wire["seq"] = seq
+                seq += 1
+                out_q.put_nowait(wire)
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -77,6 +100,53 @@ async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -
                 f"The live session stream stopped unexpectedly. {type(exc).__name__}: {detail[:500]}",
                 turn_id=None,
             ).to_wire())
+
+
+def _redact_buffer(buf: list[dict]) -> list[dict]:
+    """Redact each outbound event; drop any event whose redaction raises instead of
+    letting one bad event kill the batcher task (which would freeze the socket).
+    A dropped event leaves a seq hole, so the client self-heals."""
+    out: list[dict] = []
+    for e in buf:
+        try:
+            out.append(redact_event(e))
+        except Exception:
+            log.exception("ws.redact: dropping unredactable event type=%s", e.get("type"))
+    return out
+
+
+async def _run_replay_and_complete(orchestrator, send, session_id: str,
+                                   drop_incomplete: bool = False) -> list:
+    """Replay the transcript (trimmed of the in-progress turn when drop_incomplete) as
+    one batch, then replayComplete. Returns the replayed events. See build_ws_router's
+    _replay_and_complete for the rationale (reset-leading batch, always-fire complete)."""
+    events: list = []
+    earliest_turn = 0
+    total_turns = 0
+    try:
+        path = await orchestrator.transcript_path(session_id)
+        if path:
+            window = await replay_window(path, drop_incomplete_turn=drop_incomplete)
+            events = window.events
+            earliest_turn = window.earliest_turn
+            total_turns = window.total_turns
+        # Lead the replay with a reset so a reconnect re-attach rebuilds the
+        # transcript cleanly instead of re-appending a duplicate copy (see the
+        # reducer's replayReset case). Send it whenever there is history to replay
+        # OR a live in-progress turn will follow (drop_incomplete): on a LIVE attach
+        # the in-progress turn is trimmed from THIS replay and re-supplied by the
+        # live stream, so when the trim leaves the history window empty we must STILL
+        # reset — otherwise the client renders the live turn under a stale
+        # "Beginning of session" state and double-appends it on the next reconnect
+        # (#390 regression: the old `if events:` guard skipped the reset here).
+        if events or drop_incomplete:
+            redacted_replay = [{"type": "replayReset"}]
+            redacted_replay += [redact_event(e.to_wire()) for e in events]
+            await send({"type": "batch", "events": redacted_replay})
+    except Exception:
+        log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
+    await send({"type": "replayComplete", "earliestTurn": earliest_turn, "totalTurns": total_turns})
+    return events
 
 
 def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
@@ -137,9 +207,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                             buf.append(out_q.get_nowait())
                         except asyncio.QueueEmpty:
                             break
-                    # Redact each event dict before transmission.
-                    redacted_buf = [redact_event(e) for e in buf]
-                    await _send({"type": "batch", "events": redacted_buf})
+                    await _send({"type": "batch", "events": _redact_buffer(buf)})
             except asyncio.CancelledError:
                 return
 
@@ -168,42 +236,15 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
         # Attach / detach
         # ------------------------------------------------------------------
 
-        async def _replay_and_complete(session_id: str) -> list:
-            """Replay the transcript (if any) as one batch frame, then replayComplete.
-
-            A transcript that can't be located or parsed must NOT crash the WS (which
-            would close the socket → client reconnect-loop on a blank screen) — skip the
-            history and continue. replayComplete ALWAYS fires so the client's loading
-            spinner clears, and now carries earliestTurn/totalTurns so the client knows
-            whether older history exists. Returns the replayed events (for idle-suggestion
-            seeding).
-            """
-            events: list = []
-            earliest_turn = 0
-            total_turns = 0
-            try:
-                path = await orchestrator.transcript_path(session_id)
-                if path:
-                    window = await replay_window(path)
-                    events = window.events
-                    earliest_turn = window.earliest_turn
-                    total_turns = window.total_turns
-                if events:
-                    # Lead the replay with a reset. attach is re-sent on every WS
-                    # reconnect (client.ts onopen), so the same transcript is replayed
-                    # repeatedly into a reducer that is never recreated. Streamed
-                    # text/thinking deltas are append-only, so without a reset each
-                    # reconnect re-appends a full copy of every assistant block — the
-                    # "sessions duplicating content" bug. The reset is the first event
-                    # of this single batch frame, so the client clears and rebuilds
-                    # atomically (no flicker, no duplication).
-                    redacted_replay = [{"type": "replayReset"}]
-                    redacted_replay += [redact_event(e.to_wire()) for e in events]
-                    await _send({"type": "batch", "events": redacted_replay})
-            except Exception:
-                log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
-            await _send({"type": "replayComplete", "earliestTurn": earliest_turn, "totalTurns": total_turns})
-            return events
+        async def _replay_and_complete(session_id: str, drop_incomplete: bool = False) -> list:
+            """Delegate to the module-level helper, binding this socket's orchestrator
+            and _send.  A transcript that can't be located or parsed must NOT crash the
+            WS — the helper swallows the error and always fires replayComplete so the
+            client's loading spinner clears.  Returns the replayed events (for
+            idle-suggestion seeding).  Pass drop_incomplete=True for a LIVE session
+            whose driver reports turn_active so the in-progress turn is owned solely by
+            the driver's events() buffer replay (no duplication)."""
+            return await _run_replay_and_complete(orchestrator, _send, session_id, drop_incomplete)
 
         async def _resume_driver_or_error(session_id: str):
             """Resume (or fetch) the live driver, bounded by _RESUME_TIMEOUT.
@@ -346,8 +387,8 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             # Send the deferred initial prompt (if any) now that the client is watching.
             # The prompt was stored in create_session instead of being sent immediately
             # so that its events stream live to this first attach rather than racing the
-            # transcript-file write or arriving before any consumer exists in
-            # driver._out. Only fires on the first attach (pop clears the entry);
+            # transcript-file write or arriving before any subscriber is registered on
+            # the driver. Only fires on the first attach (pop clears the entry);
             # reconnects fall through to live-stream only.
             pending_prompt = await orchestrator.pop_pending_initial_prompt(session_id)
             pending_attachment_ids = await orchestrator.pop_pending_initial_attachment_ids(session_id)
@@ -396,7 +437,8 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             driver = await _resume_driver_or_error(session_id)
             if driver is None:
                 return
-            events = await _replay_and_complete(session_id)
+            active = getattr(driver, "turn_active", False)
+            events = await _replay_and_complete(session_id, drop_incomplete=active)
             await _emit_live_extras(session_id, driver, events)
             _start_live_stream(session_id, driver)
 
