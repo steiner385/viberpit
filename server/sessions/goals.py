@@ -12,4 +12,7 @@ def effective_goal(record) -> tuple[str, str]:
     active = (getattr(record, "active_goal", None) or "").strip()
     if active:
         return active, "explicit"
+    inferred = (getattr(record, "inferred_goal", None) or "").strip()
+    if inferred:
+        return inferred, "inferred"
     return (getattr(record, "name", None) or "").strip(), "initial_prompt"

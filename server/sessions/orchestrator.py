@@ -351,6 +351,10 @@ class SessionOrchestrator:
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
+        # Inferred-goal sweep: per-session transcript-turn marker so a session whose
+        # transcript hasn't advanced is never re-billed for inference (cost gate).
+        self._goal_marker: dict[str, int] = {}
+        self._goal_task: asyncio.Task | None = None
         self._stall_task: asyncio.Task | None = None
         self._token_refresh_task: asyncio.Task | None = None
         self._pr_branch_task: asyncio.Task | None = None
@@ -435,6 +439,9 @@ class SessionOrchestrator:
         self._titling_task = asyncio.create_task(
             self._titling_monitor(), name="titling-monitor"
         )
+        self._goal_task = asyncio.create_task(
+            self._goal_monitor(), name="goal-inference-monitor"
+        )
         self._stall_task = asyncio.create_task(self._stall_loop(), name="stall-watchdog")
         self._token_refresh_task = asyncio.create_task(
             self._token_refresh_monitor(), name="token-refresh-monitor"
@@ -497,7 +504,7 @@ class SessionOrchestrator:
             except asyncio.CancelledError:
                 pass
             self._pr_branch_task = None
-        for attr in ("_titling_task", "_rotation_task", "_stall_task",
+        for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
                      "_token_refresh_task", "_backlog_task", "_autopilot_task",
                      "_drain_timer"):
             task = getattr(self, attr)
@@ -1993,6 +2000,54 @@ class SessionOrchestrator:
             await self._titling_sweep()
             await asyncio.sleep(self._titling_interval)
 
+    async def _infer_goal_for(self, session_id: str) -> "str | None":
+        """One-shot inferred-goal generation for a session (LLM; None on failure)."""
+        from server.sessions.goal_inference import infer_goal
+        rec = self._records.get(session_id)
+        if rec is None:
+            return None
+        tail = await self._autopilot_transcript_tail(session_id)
+        return await infer_goal(rec.name, tail,
+                                config_dir=str(compose(rec.account)), cwd=rec.cwd)
+
+    async def _goal_sweep(self) -> None:
+        """One inferred-goal pass: refresh Session.inferred_goal for every active
+        session whose transcript has ADVANCED since its last inference.
+
+        Skips sessions with an explicit /goal (explicit wins — inferring is wasted)
+        and never clobbers a prior inferred goal with a failed inference. Peer of
+        _titling_sweep; the goal is the middle tier of effective_goal(), which the
+        session header and autopilot's completion judgement read."""
+        from sqlalchemy import update as sa_update
+        for sid, rec in list(self._records.items()):
+            if rec.status in ("ended", "archived") or (rec.active_goal or "").strip():
+                continue
+            try:
+                window = await self.transcript_window(sid, limit=1)
+                if window is None or window.total_turns == 0:
+                    continue
+                if self._goal_marker.get(sid) == window.total_turns:
+                    continue  # transcript unchanged since last inference — skip (cost)
+                goal = await self._infer_goal_for(sid)
+                # Mark BEFORE checking the result so a failed inference is not
+                # retried every sweep on an idle session; the next real turn
+                # changes the marker and re-triggers.
+                self._goal_marker[sid] = window.total_turns
+                if not goal:
+                    continue  # keep the prior value — never clobber on failure
+                rec.inferred_goal = goal
+                async with db_session() as db:
+                    await db.execute(sa_update(DbSession).where(DbSession.id == sid)
+                                     .values(inferred_goal=goal))
+            except Exception:  # one session must never break the sweep
+                log.warning("goal sweep failed for %s", sid, exc_info=True)
+
+    async def _goal_monitor(self) -> None:
+        """Background loop: sweep inferred goals every ~2 minutes."""
+        while True:
+            await self._goal_sweep()
+            await asyncio.sleep(120.0)
+
     async def _persist_claude_session_id(self, session_id: str, claude_session_id: str) -> None:
         """Callback fired by the driver the first time it captures the Claude session id.
 
@@ -2041,6 +2096,7 @@ class SessionOrchestrator:
             model=getattr(row, "model", None),
             account_pinned=bool(getattr(row, "account_pinned", False)),
             active_goal=getattr(row, "active_goal", None),
+            inferred_goal=getattr(row, "inferred_goal", None),
             autopilot_paused=bool(getattr(row, "autopilot_paused", False)),
             authored_branches=list(getattr(row, "authored_branches", None) or []),
             context_used_tokens=getattr(row, "context_used_tokens", None),

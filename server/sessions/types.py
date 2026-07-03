@@ -49,6 +49,7 @@ class SessionRecord:
     model: str | None = None         # persisted model alias/id; None = account default
     account_pinned: bool = False      # user pinned the account (skips usage-ceiling rotation)
     active_goal: str | None = None    # active /goal condition; None = no goal
+    inferred_goal: str | None = None  # LLM-inferred goal (middle effective_goal tier)
     autopilot_paused: bool = False    # per-session autopilot opt-out (True = pinned to manual)
     usage_unverified: bool = False    # transient: account picked without a usage read (optimistic)
     # transient (issue #434): set by rehydrate() when this session's mid-turn status
@@ -105,6 +106,7 @@ class SessionRecord:
             "model": self.model,
             "accountPinned": self.account_pinned,
             "activeGoal": self.active_goal,
+            "inferredGoal": self.inferred_goal,
             "autopilotPaused": self.autopilot_paused,
             "usageUnverified": self.usage_unverified,
             "interruptedByRestart": self.interrupted_by_restart,
@@ -134,6 +136,7 @@ class SessionRecord:
             model=d.get("model"),
             account_pinned=d.get("accountPinned", False),
             active_goal=d.get("activeGoal"),
+            inferred_goal=d.get("inferredGoal"),
             autopilot_paused=bool(d.get("autopilotPaused", False)),
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),

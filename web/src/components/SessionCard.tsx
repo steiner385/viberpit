@@ -377,6 +377,18 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 <span className="truncate">Goal</span>
               </span>
             )}
+            {!session.activeGoal && session.goalSource === 'inferred' && session.effectiveGoal && (
+              /* Subdued variant: the goal is LLM-inferred, not user-set — outline
+                 styling distinguishes it from the solid explicit-/goal pill. */
+              <span
+                data-testid="card-goal-inferred"
+                className="hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800 text-indigo-500 dark:text-indigo-400 max-w-[12rem]"
+                title={`Goal (inferred): ${session.effectiveGoal}`}
+              >
+                <Target size={12} aria-hidden="true" className="flex-shrink-0" />
+                <span className="truncate">Goal</span>
+              </span>
+            )}
             {session.autopilotPaused && (
               <span
                 data-testid="card-autopilot-badge"

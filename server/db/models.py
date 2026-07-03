@@ -90,6 +90,10 @@ class Session(Base):
     # Active /goal condition for this session (the built-in Claude Code goal feature).
     # NULL = no active goal. Nullable so init_db backfills on dev SQLite without a migration.
     active_goal: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # LLM-inferred session goal (the middle tier of effective_goal): a one-line statement
+    # of what the session is driving toward, refreshed by the goal-inference sweep.
+    # NULL until first inferred. Nullable so init_db backfills without a migration.
+    inferred_goal: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Per-session autopilot opt-out. NULL/False = governed by autopilot; True = pinned to
     # manual. Nullable so init_db backfills on dev SQLite without a migration.
     autopilot_paused: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
