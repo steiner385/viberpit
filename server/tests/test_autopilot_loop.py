@@ -198,3 +198,42 @@ async def test_complete_archive_failure_is_best_effort():
     loop._archive = archive_boom
     await loop.tick()                                # must not raise
     assert any(kind == "complete" for _, _, kind in ctx.emits)
+
+
+@pytest.mark.asyncio
+async def test_escalation_emits_once_for_same_stuck_state():
+    """A session parked in a terminal escalated state must not spam the activity
+    feed: the same stuck-state escalation emits once, not once per tick."""
+    ctx = FakeCtx()
+    loop = _loop(ctx, decision=Decision(action="escalate", reason="needs a human"))
+    for _ in range(3):
+        await loop.tick()
+    escalations = [e for e in ctx.emits if e[2] == "escalated"]
+    assert len(escalations) == 1
+
+
+@pytest.mark.asyncio
+async def test_escalation_reemits_when_stuck_state_changes():
+    ctx = FakeCtx()
+    loop = _loop(ctx, decision=Decision(action="escalate", reason="needs a human"))
+    await loop.tick()
+
+    async def different_ctx(sid):
+        dc = _dc(sid)
+        dc.stuck = {"kind": "question", "question": "Deploy to prod?", "options": ["yes", "no"]}
+        return dc
+    loop._get_context = different_ctx
+    await loop.tick()
+    escalations = [e for e in ctx.emits if e[2] == "escalated"]
+    assert len(escalations) == 2                     # new stuck state → new information
+
+
+@pytest.mark.asyncio
+async def test_applied_action_clears_escalated_flag():
+    """Once autopilot successfully acts on a session again, it is no longer
+    'handed to a human' — a later escalation for the same state must re-emit."""
+    ctx = FakeCtx()
+    ctx.states["s1"] = {"escalated": True, "last_fingerprint": "stale", "repeat_count": 1}
+    loop = _loop(ctx, decision=Decision(action="approve", reason="safe"))
+    await loop.tick()
+    assert ctx.states["s1"].get("escalated") is False

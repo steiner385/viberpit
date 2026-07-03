@@ -156,7 +156,7 @@ class AutopilotLoop:
                     log.warning("autopilot.archive_failed sid=%s", sid, exc_info=True)
             return False, False
         if decision.action == "escalate":
-            await self._escalate(sid, ledger, decision)
+            await self._escalate(sid, ledger, ctx, decision)
             return False, True
 
         if mode == "propose":
@@ -200,12 +200,23 @@ class AutopilotLoop:
             recovery += 1
         new = dict(ledger)
         new.update(hour_actions=hour, last_fingerprint=fp, repeat_count=repeat,
-                   recovery_attempts=recovery)
+                   recovery_attempts=recovery,
+                   # A successful action means the session is being advanced again —
+                   # it is no longer "handed to a human", so a later escalation
+                   # (even for the same stuck state) is fresh information.
+                   escalated=False)
         await self._ctx.set_target_state(sid, new)
 
-    async def _escalate(self, sid: str, ledger: dict, decision: Decision) -> None:
+    async def _escalate(self, sid: str, ledger: dict, ctx: DecisionContext,
+                        decision: Decision) -> None:
+        # De-spam: a session already handed to a human for THIS stuck state stays
+        # escalated silently — re-emitting "needs human" every tick buries the feed.
+        # A changed fingerprint is new information and emits again.
+        fp = fingerprint(ctx)
+        if ledger.get("escalated") and ledger.get("last_fingerprint") == fp:
+            return
         new = dict(ledger)
-        new["escalated"] = True
+        new.update(escalated=True, last_fingerprint=fp)
         await self._ctx.set_target_state(sid, new)
         await self._ctx.emit("warn", f"{sid}: needs human — {decision.reason}",
                              kind="escalated", session_id=sid)
