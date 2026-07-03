@@ -4000,15 +4000,12 @@ class SessionOrchestrator:
         # Resolve the shared clone BEFORE the move, while the worktree is still a
         # valid git dir, so we can scope-deregister exactly this path afterward
         # (never a global prune — issue #177).
+        # Both git calls run off the event loop (asyncio.to_thread) — git subprocess
+        # startup can spike under load, and simultaneous archive of many sessions was
+        # blocking the event loop long enough to trip the health-check watchdog.
         repo_top: str | None = None
-        if cwd_path and cwd_path.exists() and worktrees.is_git_repo(str(cwd_path)):
-            common = subprocess.run(
-                ["git", "-C", str(cwd_path), "rev-parse",
-                 "--path-format=absolute", "--git-common-dir"],
-                capture_output=True, text=True,
-            )
-            if common.returncode == 0:
-                repo_top = os.path.dirname(common.stdout.strip().rstrip("/"))
+        if cwd_path and cwd_path.exists():
+            repo_top = await asyncio.to_thread(_resolve_git_common_dir, str(cwd_path))
 
         if cwd_path and cwd_path.exists():
             try:
@@ -4289,3 +4286,22 @@ class SessionOrchestrator:
             (restored if driver is not None else failed).append(sid)
         _deploy_snapshot.clear_snapshot(path=path)
         return {"restored": restored, "failed": failed}
+
+
+def _resolve_git_common_dir(path: str) -> str | None:
+    """Return the absolute common git dir's parent for the worktree at *path*, or None.
+
+    Combines the is-git-repo probe and the rev-parse into a single blocking call so
+    callers can offload both to asyncio.to_thread in one step — git subprocess startup
+    is non-trivial under load, and simultaneous archive of many sessions was blocking
+    the event loop long enough to trip the health-check watchdog.
+    """
+    if not worktrees.is_git_repo(path):
+        return None
+    r = subprocess.run(
+        ["git", "-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return None
+    return os.path.dirname(r.stdout.strip().rstrip("/"))
