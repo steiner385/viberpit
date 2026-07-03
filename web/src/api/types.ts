@@ -298,7 +298,10 @@ export interface DeployProgress {
   error: string | null
   warnings: string[]
   targetSha: string
-  restore?: { restored: string[]; failed: string[] }
+  // `failed`/`gaveUp` are the daemon's LIVE unresolved set (reconciled edge-side),
+  // not the controller's frozen deploy-time list — so the banner clears as autopilot
+  // recovers sessions. `gaveUp` = capped-out recovery, kept visible for a human.
+  restore?: { restored?: string[]; failed: string[]; gaveUp?: string[] }
 }
 
 export interface DeployStatusResponse {

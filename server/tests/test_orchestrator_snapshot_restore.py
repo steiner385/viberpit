@@ -16,6 +16,7 @@ class MiniOrch:
         self._drivers = drivers
         self._records = records
         self._resumable = resumable        # set of ids ensure_driver succeeds for
+        self._resume_recovery: dict[str, int] = {}   # restore_deploy enrolls failures here
         self.ensured: list[str] = []
 
     async def ensure_driver(self, session_id, identity="system"):

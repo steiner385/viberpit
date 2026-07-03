@@ -60,12 +60,32 @@ describe('DeployPanel', () => {
     expect(screen.queryByText('update')).not.toBeInTheDocument()
   })
 
-  it('flags sessions that failed to resume', () => {
+  it('flags sessions that failed to resume as auto-recovering', () => {
     mockHooks({ behind: false, commits: [], ci: 'green' },
               { running: false, phases: { resume: 'done' }, warnings: [],
                 restore: { restored: ['s1'], failed: ['s2', 's3'] } })
     render(<DeployPanel />)
     expect(screen.getByText(/2 session.*failed to resume/i)).toBeInTheDocument()
+    expect(screen.getByText(/autopilot is\s+recovering/i)).toBeInTheDocument()
+  })
+
+  it('clears the banner once autopilot has recovered every failed session', () => {
+    // The daemon-reconciled live set is now empty (all sessions came back) — with
+    // nothing pending and no error, the banner must disappear entirely.
+    mockHooks({ behind: false, commits: [], ci: 'green' },
+              { running: false, phases: { resume: 'done' }, warnings: [],
+                restore: { restored: ['s2', 's3'], failed: [], gaveUp: [] } })
+    const { container } = render(<DeployPanel />)
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('surfaces gave-up sessions distinctly for a human to retry or archive', () => {
+    mockHooks({ behind: false, commits: [], ci: 'green' },
+              { running: false, phases: { resume: 'done' }, warnings: [],
+                restore: { restored: [], failed: [], gaveUp: ['s9'] } })
+    render(<DeployPanel />)
+    expect(screen.getByText(/couldn.t be recovered/i)).toBeInTheDocument()
+    expect(screen.getByText('s9')).toBeInTheDocument()
   })
   it('renders nothing after a clean successful deploy (all phases done, no error/failures)', () => {
     mockHooks(

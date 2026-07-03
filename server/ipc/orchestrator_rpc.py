@@ -135,7 +135,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "latest_suggestions", "generate_suggestions_now", "seed_idle_suggestions", "latest_summary",
         "begin_drain", "drain_status",
         "live_session_load", "live_session_counts",
-        "snapshot_deploy", "restore_deploy",
+        "snapshot_deploy", "restore_deploy", "resume_recovery_status",
         "request_pr_fix", "pr_doctor_fix", "backlog_runner_implement",
         "automation_statuses",
     ]

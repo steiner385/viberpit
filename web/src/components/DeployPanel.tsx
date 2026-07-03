@@ -12,7 +12,12 @@ export function DeployPanel() {
   const behind = pending?.behind ?? false
   const running = deploy?.running ?? false
   const phases = deploy?.phases ?? {}
-  const failedResume = deploy?.restore?.failed?.length ?? 0
+  // `failed` = still being auto-recovered by autopilot; `gaveUp` = recovery capped
+  // out (needs a human). Both are the daemon's LIVE set — the banner clears itself as
+  // sessions come back, so no manual "open to retry" is needed for the transient case.
+  const failed = deploy?.restore?.failed ?? []
+  const gaveUp = deploy?.restore?.gaveUp ?? []
+  const unresolved = failed.length + gaveUp.length
   const count = pending?.commits.length ?? 0
   const ci = pending?.ci ?? 'unavailable'
 
@@ -23,7 +28,7 @@ export function DeployPanel() {
   // (behind=false) the error is pure history — hide it. Session-resume failures are independent (a
   // successful daemon deploy leaves behind=false yet may have lost sessions) and always surface.
   const showError = !running && !preflightStale && behind && !!deploy?.error
-  const showFailure = showError || (!running && failedResume > 0)
+  const showFailure = showError || (!running && unresolved > 0)
 
   if (!behind && !showFailure) return null
   const canDeploy = behind && !running && ci === 'green'
@@ -61,14 +66,22 @@ export function DeployPanel() {
         </ul>
       )}
       {showFailure && (
-        <div className="mt-2 border-t border-amber-200 pt-2">
+        <div className="mt-2 space-y-1 border-t border-amber-200 pt-2">
           {showError && <p className="text-xs text-red-600">{deploy?.error}</p>}
-          {failedResume ? (
+          {failed.length > 0 && (
             <p className="mt-1 text-xs text-red-600">
-              {failedResume} session{failedResume === 1 ? '' : 's'} failed to resume — open them to retry:{' '}
-              <span className="font-mono">{deploy?.restore?.failed?.join(', ')}</span>
+              {failed.length} session{failed.length === 1 ? '' : 's'} failed to resume — autopilot is
+              recovering {failed.length === 1 ? 'it' : 'them'}…{' '}
+              <span className="font-mono">{failed.join(', ')}</span>
             </p>
-          ) : null}
+          )}
+          {gaveUp.length > 0 && (
+            <p className="mt-1 text-xs text-red-600">
+              {gaveUp.length} session{gaveUp.length === 1 ? '' : 's'} couldn’t be recovered — open to
+              retry or archive:{' '}
+              <span className="font-mono">{gaveUp.join(', ')}</span>
+            </p>
+          )}
         </div>
       )}
     </div>

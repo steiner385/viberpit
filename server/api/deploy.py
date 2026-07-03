@@ -19,13 +19,34 @@ def get_deploy_client(request: Request) -> DeployControllerClient:
     return client
 
 
+async def _reconcile_restore_failed(request: Request, status: dict) -> None:
+    """Overwrite the controller's frozen ``restore.failed`` with the daemon's live
+    view. The controller records which sessions failed at deploy time and never
+    updates; the daemon is the single source of truth for which are *still* not
+    live, so the banner clears as recovery (auto-retry or manual open) drains them.
+    Best-effort: a daemon hiccup leaves the controller's list untouched."""
+    orch = getattr(request.app.state, "sessions", None)
+    if orch is None or not hasattr(orch, "resume_recovery_status"):
+        return
+    try:
+        live = await orch.resume_recovery_status()
+    except Exception:
+        return
+    restore = status.setdefault("deploy", {}).setdefault("restore", {})
+    restore["failed"] = live.get("failed", [])
+    restore["gaveUp"] = live.get("gaveUp", [])
+
+
 @router.get("/status")
 async def deploy_status(
+    request: Request,
     _identity: str = Depends(current_identity),
     client: DeployControllerClient = Depends(get_deploy_client),
 ) -> JSONResponse:
     try:
-        return JSONResponse(await client.get_status())
+        status = await client.get_status()
+        await _reconcile_restore_failed(request, status)
+        return JSONResponse(status)
     except DeployControllerUnavailable:
         # 503, not a 200 carrying deploy.error="controller unavailable". The frontend reads any
         # deploy.error as a terminal "Upgrade failed", so a transient blip (controller event loop
