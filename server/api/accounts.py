@@ -14,7 +14,9 @@ Response NEVER includes token/credential material (FR-023).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
@@ -38,6 +40,42 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
+
+# A single account's usage fetch must never stall or 500 the whole accounts list.
+# The daemon serves usage from the poller cache (cheap); this ceiling only trips
+# when the daemon control loop is wedged/slow — in which case that one account
+# degrades to "unknown" (None) rather than blocking the dashboard or bubbling a
+# raw ReadTimeout into an unhandled 500 (the GET /api/accounts wedge, incident
+# 2026-07-02). Overridable for tests / tuning.
+USAGE_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_USAGE_FETCH_TIMEOUT", "8.0"))
+
+
+async def _safe_usage(orch, name: str, timeout: float):
+    """Fetch one account's usage, degrading to None on timeout or any error.
+
+    Isolates a single slow/failing account so it can neither stall the other
+    accounts' fetches nor turn GET /api/accounts into a 500. ``usage=None`` is
+    already the wire contract for "unknown/failed fetch" (_usage_to_dict).
+    """
+    try:
+        return await asyncio.wait_for(orch.usage(name), timeout)
+    except asyncio.TimeoutError:
+        log.warning("usage fetch for %s timed out after %.1fs — degrading to None",
+                    name, timeout)
+        return None
+    except Exception:  # noqa: BLE001 — one account must never fail the whole list
+        log.warning("usage fetch for %s failed — degrading to None", name, exc_info=True)
+        return None
+
+
+async def _gather_usages(orch, names: list[str], timeout: float) -> dict[str, Any]:
+    """Fetch usage for many accounts concurrently, each isolated (None on failure).
+
+    Concurrent (not serial) so total latency is the slowest single account, not
+    the sum — and one hung account no longer blocks the rest behind it.
+    """
+    results = await asyncio.gather(*(_safe_usage(orch, n, timeout) for n in names))
+    return dict(zip(names, results))
 
 
 # ---------------------------------------------------------------------------
@@ -126,8 +164,11 @@ async def get_accounts(
     orch = _get_orchestrator(request)
     accounts_info = list_accounts()
 
-    # Fetch live usage for every account (poller dedupes concurrent fetches).
-    usages = {acct["name"]: await orch.usage(acct["name"]) for acct in accounts_info}
+    # Fetch live usage for every account concurrently, each isolated: a single
+    # wedged/slow account degrades to None instead of serially stalling the list
+    # or bubbling a raw ReadTimeout into a 500 (poller dedupes concurrent fetches).
+    usages = await _gather_usages(
+        orch, [acct["name"] for acct in accounts_info], USAGE_FETCH_TIMEOUT)
 
     # Live session counts (display) + weighted load (ranking input).
     counts = await orch.live_session_counts()
@@ -171,8 +212,9 @@ async def refresh_account(
 
     orch = _get_orchestrator(request)
 
-    # Force a fresh fetch (bypasses cache by going through the poller lock)
-    usage = await orch.usage(name)
+    # Force a fresh fetch (bypasses cache by going through the poller lock).
+    # Bounded + isolated: a wedged daemon degrades this to None rather than 500.
+    usage = await _safe_usage(orch, name, USAGE_FETCH_TIMEOUT)
 
     # Determine status and nickname from the ledger
     accounts_info = list_accounts()

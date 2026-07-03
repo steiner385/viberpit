@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from ccswitch.accounts import list_accounts
@@ -74,6 +76,15 @@ class UsagePoller:
         # Background task handle
         self._task: asyncio.Task[None] | None = None
 
+        # Dedicated, bounded thread pool for the blocking usage_fn. Isolating these
+        # off the process-wide default executor means a storm of slow/hanging upstream
+        # usage calls (e.g. Anthropic's usage endpoint 429ing and stalling) can saturate
+        # ONLY this pool — it can no longer starve the shared executor that the daemon's
+        # control path (DB writes, /healthz-adjacent work) depends on, which is how a
+        # usage stall could wedge the whole daemon (incident 2026-07-02).
+        self._executor_workers = int(os.environ.get("CCSWITCH_USAGE_POLLER_WORKERS", "4"))
+        self._executor: ThreadPoolExecutor | None = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -105,7 +116,8 @@ class UsagePoller:
         async with lock:
             loop = asyncio.get_running_loop()
             try:
-                result = await loop.run_in_executor(None, self._usage_fn, account)
+                result = await loop.run_in_executor(
+                    self._ensure_executor(), self._usage_fn, account)
             except Exception:
                 # The usage_fn contract is to return None on failure, but a
                 # malformed credential slot or other unexpected fault can still
@@ -161,6 +173,17 @@ class UsagePoller:
         except ValueError:
             pass
 
+    def _ensure_executor(self) -> ThreadPoolExecutor:
+        """Return the dedicated usage executor, creating it on first use.
+
+        Lazy + recreatable so get() works before start() and after a stop()/start()
+        cycle (stop() tears the pool down to release its threads at teardown).
+        """
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=self._executor_workers, thread_name_prefix="usage-poller")
+        return self._executor
+
     async def start(self) -> None:
         """Start the background polling loop (idempotent)."""
         if self._task is not None and not self._task.done():
@@ -168,7 +191,12 @@ class UsagePoller:
         self._task = asyncio.create_task(self._loop(), name="usage-poller")
 
     async def stop(self) -> None:
-        """Cancel the background loop and wait for it to finish."""
+        """Cancel the background loop and tear down the dedicated executor.
+
+        ``cancel_futures=True`` drops queued (not-yet-started) fetches; ``wait=False``
+        means we don't block teardown on an in-flight blocking usage_fn hung on a slow
+        socket — the point is that a stalled usage fetch must never delay shutdown.
+        """
         if self._task is not None:
             self._task.cancel()
             try:
@@ -176,6 +204,9 @@ class UsagePoller:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None
 
     # ------------------------------------------------------------------
     # Internal
