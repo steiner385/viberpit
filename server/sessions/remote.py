@@ -9,7 +9,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from ccswitch.oauth import Usage
-from server.ipc.client import DaemonError
+from server.ipc.client import DaemonError, DaemonUnavailable
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
@@ -17,6 +17,11 @@ from server.github.pr_status import PullRequestInfo
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 
 log = logging.getLogger(__name__)
+
+# Usage is served from the daemon's poller cache — a cheap read. Bound it tightly
+# so a wedged/slow daemon degrades one account to "unknown" fast instead of tying
+# up the edge for the 30s client default (incident 2026-07-02).
+USAGE_RPC_TIMEOUT = 5.0
 
 
 class _WireEvent:
@@ -287,7 +292,12 @@ class RemoteOrchestrator:
             return None
 
     async def usage(self, name):
-        r = await self._client.call("usage", name=name)
+        try:
+            r = await self._client.call("usage", name=name, timeout=USAGE_RPC_TIMEOUT)
+        except DaemonUnavailable:
+            # Wedged/slow daemon → treat as unknown usage rather than 500 the caller.
+            log.warning("usage RPC for %s unavailable — returning None", name)
+            return None
         return Usage.from_dict(r["usage"]) if r["usage"] is not None else None
 
     async def pending_permissions(self, session_id):

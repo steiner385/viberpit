@@ -349,6 +349,12 @@ class SessionOrchestrator:
         self._draining: bool = False
         self._drain_started_at: float = 0.0
         self._drain_timer: asyncio.Task | None = None
+        # Set at stop(): the daemon is tearing down (deploy or watchdog restart). While
+        # true, a turn dropped by our own driver teardown must NOT run failure recovery
+        # or escalate to needs_attention — rehydrate() on the next boot normalizes the
+        # row's live status to idle (resumable). Without this, a watchdog restart mid-turn
+        # left every in-flight session stranded as needs_attention (incident 2026-07-02).
+        self._shutting_down: bool = False
 
     def _oat_env(self, session_id: str) -> dict:
         """Return {CLAUDE_CODE_OAUTH_TOKEN: <token>} for the session's account, or {}."""
@@ -460,6 +466,10 @@ class SessionOrchestrator:
 
     async def stop(self) -> None:
         """Stop the titling sweep, rotation monitor and usage poller."""
+        # Mark teardown FIRST, before any driver is closed below: a turn dropped by
+        # our own aclose() must not trip failure recovery → needs_attention. Leave the
+        # row for rehydrate() to normalize to idle (resumable) on the next boot.
+        self._shutting_down = True
         if self._pr_branch_task is not None:
             self._pr_branch_task.cancel()
             try:
@@ -3440,6 +3450,12 @@ class SessionOrchestrator:
                                           retry_after: float | None) -> None:
         """Driver callback: a turn failed with a recoverable kind. Recover off the
         event loop so the driver's drain is never blocked."""
+        if self._shutting_down:
+            # Daemon teardown (deploy / watchdog restart) is dropping this turn — not a
+            # real failure. Skip recovery so we don't escalate to needs_attention; the
+            # next boot's rehydrate() brings the session back as idle (resumable).
+            log.info("recover.skip_shutdown session=%s kind=%s", session_id, kind)
+            return
         record = self._records.get(session_id)
         if record is None or session_id not in self._drivers:
             return

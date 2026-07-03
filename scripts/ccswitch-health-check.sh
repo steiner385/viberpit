@@ -24,6 +24,7 @@ PROBE_RETRIES="${CCSWITCH_PROBE_RETRIES:-3}"
 PROBE_TIMEOUT="${CCSWITCH_PROBE_TIMEOUT:-5}"
 RESTART_COOLDOWN="${CCSWITCH_RESTART_COOLDOWN:-300}"        # >=1 auto-restart per 5 min
 STARTUP_GRACE="${CCSWITCH_STARTUP_GRACE:-60}"              # don't restart a still-booting daemon
+DRAIN_WAIT="${CCSWITCH_DRAIN_WAIT:-20}"                    # best-effort graceful-drain budget before a wedge restart
 ALERT_WEBHOOK="${CCSWITCH_ALERT_WEBHOOK:-}"
 STATE_DIR="${CCSWITCH_HEALTH_STATE_DIR:-/var/lib/ccswitch/health}"
 
@@ -51,6 +52,33 @@ probe_ok() {
   curl -fsS -m "$PROBE_TIMEOUT" --unix-socket "$SOCK" http://daemon/healthz 2>/dev/null \
     | grep -q '"status"'
 }
+
+# Best-effort graceful drain before a hard restart. begin_drain snapshots each
+# live session's in-flight prompt + background tasks (pending_rearm) so the
+# post-restart rehydrate can resume them, and refuses new turns; we then wait up
+# to DRAIN_WAIT for in-flight turns to finish (drain_status == "ready"). If the
+# socket is truly wedged these RPCs just fail fast and we restart anyway — so this
+# is strictly an improvement: a merely slow/overloaded daemon (the common near-
+# wedge) keeps its turns instead of orphaning them to needs_attention. The daemon
+# self-clears the drain after ~600s, so a restart that never lands can't wedge it.
+rpc() {  # rpc <method> — POST an empty-param RPC to the sessiond socket
+  curl -fsS -m "$PROBE_TIMEOUT" --unix-socket "$SOCK" \
+    -X POST "http://daemon/rpc/$1" -H 'content-type: application/json' -d '{}' 2>/dev/null
+}
+graceful_drain() {
+  rpc begin_drain >/dev/null || return 0   # wedged/unreachable → skip, restart as before
+  local deadline=$(( $(now) + DRAIN_WAIT )) state
+  while [ "$(now)" -lt "$deadline" ]; do
+    state=$(rpc drain_status | python3 -c \
+      'import sys,json; print(json.load(sys.stdin).get("result",{}).get("state",""))' 2>/dev/null)
+    if [ "$state" = "ready" ]; then
+      log "graceful drain reached 'ready' — restarting cleanly"
+      return 0
+    fi
+    sleep 2
+  done
+  log "graceful drain did not reach 'ready' within ${DRAIN_WAIT}s — restarting anyway"
+}
 healthy=0
 for _ in $(seq 1 "$PROBE_RETRIES"); do
   if probe_ok; then healthy=1; break; fi
@@ -71,6 +99,8 @@ elif systemctl is-active --quiet ccswitch-daemon.service; then
     log "daemon active only ${age}s (< ${STARTUP_GRACE}s grace) — still booting, deferring wedge check"
   elif [ $(( t - last )) -ge "$RESTART_COOLDOWN" ]; then
     log "daemon socket unresponsive after ${PROBE_RETRIES} probes — restarting ccswitch-daemon.service"
+    # Preserve in-flight turns when the daemon is slow-but-responsive; no-op when truly wedged.
+    graceful_drain
     if sudo -n systemctl restart ccswitch-daemon.service 2>/dev/null; then
       echo "$t" > "$rf"
       alert daemon-wedged "control plane was wedged (socket unresponsive); auto-restarted $(date -Is)"

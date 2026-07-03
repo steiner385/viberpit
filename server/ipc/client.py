@@ -79,11 +79,21 @@ class DaemonClient:
         self._epoch: str | None = None                    # daemon PROC_EPOCH; change ⇒ restart
         self._started = False
 
-    async def call(self, method: str, **params) -> dict:
+    async def call(self, method: str, *, timeout: float | None = None, **params) -> dict:
+        """Invoke an RPC. ``timeout`` overrides the client default for this call.
+
+        A wedged/slow daemon surfaces as a typed ``DaemonUnavailable`` — NOT a raw
+        ``httpx.ReadTimeout`` bubbling to an unhandled ASGI 500 (the GET /api/accounts
+        wedge, incident 2026-07-02). Callers on the control path (usage, counts) pass a
+        short timeout so one wedged daemon can't tie up the edge for the full 30s.
+        """
+        post_kwargs = {} if timeout is None else {"timeout": timeout}
         try:
-            resp = await self._http.post(f"/rpc/{method}", json=params)
+            resp = await self._http.post(f"/rpc/{method}", json=params, **post_kwargs)
         except httpx.ConnectError as exc:
             raise DaemonUnavailable(str(exc)) from exc
+        except httpx.TimeoutException as exc:
+            raise DaemonUnavailable(f"{method} timed out: {exc}") from exc
         body = resp.json()
         if "error" in body:
             err = body["error"]
