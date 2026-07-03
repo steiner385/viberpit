@@ -79,6 +79,11 @@ _ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "conden
 _TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — the context "
                         "may be full. Send a message to retry, or /compact to free space.")
 
+# Bounded auto-recovery attempts for a session that failed to resume after a
+# daemon-affecting deploy. Past this the session is kept visible (flagged gave-up)
+# but no longer retried — retrying a worktree-deleted / repo-gone session is futile.
+RESUME_RECOVERY_MAX_ATTEMPTS = 3
+
 # Top-tier "needs you" and "crashed/failed" statuses that warrant an outbound push alert.
 # Derived from the same vocabulary as server/sessions/status.py — not a parallel list.
 PUSH_STATUSES: frozenset[str] = frozenset(
@@ -188,6 +193,12 @@ class SessionOrchestrator:
         self._title_fn: Callable = title_fn or self._default_title_fn
         self._registry = PermissionRegistry()
         self._drivers: dict[str, SessionDriver] = {}
+        # Sessions that failed to re-launch after a daemon-affecting deploy:
+        # session_id -> attempts so far. Seeded by restore_deploy, drained by the
+        # daemon's recovery pass (_recover_resume_failures_once). Deploy-scoped and
+        # in-memory by design — a fresh deploy rebuilds it; a crash loses it exactly
+        # as the deploy controller loses its own frozen 'failed' list.
+        self._resume_recovery: dict[str, int] = {}
         # Detached-session next-prompt suggestions: session_id -> (transcript mtime, items).
         # Generated from the on-disk transcript without resuming the driver (see
         # latest_suggestions / _generate_detached_suggestions). Cached even when empty so
@@ -1480,6 +1491,13 @@ class SessionOrchestrator:
     async def _autopilot_tick_loop(self, interval: float) -> None:
         """Periodic driver for the autopilot control loop (also nudged on status change)."""
         while True:
+            try:
+                # Deploy-resume recovery runs here in the always-on LOOP — before the
+                # mode-gated tick() — so dropped sessions recover even when autopilot
+                # governance is off ('all failed sessions, always').
+                await self._recover_resume_failures_once()
+            except Exception:  # pragma: no cover — recovery must never stall the loop
+                log.warning("deploy.resume.recover_failed", exc_info=True)
             try:
                 await self._autopilot_loop.tick()
             except Exception:  # pragma: no cover — tick() already swallows; belt+braces
@@ -4374,7 +4392,11 @@ class SessionOrchestrator:
         return {"live": live}
 
     async def restore_deploy(self, *, path: str | None = None) -> dict:
-        """RESUME step: eagerly re-launch each snapshotted session in the fresh daemon."""
+        """RESUME step: eagerly re-launch each snapshotted session in the fresh daemon.
+
+        A session that fails this first attempt is enrolled in ``_resume_recovery``
+        so the daemon keeps retrying it (see _recover_resume_failures_once) instead
+        of leaving it stuck behind a sticky 'open to retry' banner."""
         restored: list[str] = []
         failed: list[str] = []
         for entry in _deploy_snapshot.read_snapshot(path=path):
@@ -4383,9 +4405,53 @@ class SessionOrchestrator:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
             except Exception:
                 driver = None
-            (restored if driver is not None else failed).append(sid)
+            if driver is not None:
+                restored.append(sid)
+            else:
+                failed.append(sid)
+                self._resume_recovery[sid] = 0   # enroll for daemon-side retry
         _deploy_snapshot.clear_snapshot(path=path)
         return {"restored": restored, "failed": failed}
+
+    def _prune_recovered(self) -> None:
+        """Drop any enrolled id that now has a live driver — covers a session a human
+        revived via the manual 'open to retry' path before the recovery pass ran."""
+        for sid in [s for s in self._resume_recovery if s in self._drivers]:
+            self._resume_recovery.pop(sid, None)
+
+    async def _recover_resume_failures_once(self) -> None:
+        """One daemon-side pass over sessions that failed to resume after a deploy.
+
+        Retries ensure_driver for each still-enrolled session; a success drops it
+        (the banner clears), a failure charges an attempt. Runs unconditionally on
+        the autopilot tick cadence — NOT gated on autopilot's governance mode — so
+        every dropped session is recovered, not just governed ones. Capped at
+        RESUME_RECOVERY_MAX_ATTEMPTS: a permanently-broken session stays enrolled
+        (flagged gave-up by resume_recovery_status) but stops burning retries."""
+        self._prune_recovered()
+        for sid, attempts in list(self._resume_recovery.items()):
+            if attempts >= RESUME_RECOVERY_MAX_ATTEMPTS:
+                continue
+            try:
+                driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
+            except Exception:
+                driver = None
+            if driver is not None:
+                self._resume_recovery.pop(sid, None)
+                log_event(log, logging.INFO, "deploy.resume.recovered", session_id=sid)
+            else:
+                self._resume_recovery[sid] = attempts + 1
+
+    def resume_recovery_status(self) -> dict:
+        """Live view of unresolved deploy-resume failures for the banner.
+
+        ``failed`` = still being retried; ``gaveUp`` = capped out (kept visible so a
+        human sees a permanently-broken session). Prunes now-live ids first so the
+        banner clears the moment a session comes back — by auto-retry or manual open."""
+        self._prune_recovered()
+        m = RESUME_RECOVERY_MAX_ATTEMPTS
+        return {"failed": [s for s, a in self._resume_recovery.items() if a < m],
+                "gaveUp": [s for s, a in self._resume_recovery.items() if a >= m]}
 
 
 def _resolve_git_common_dir(path: str) -> str | None:

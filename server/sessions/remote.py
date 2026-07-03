@@ -162,6 +162,11 @@ class RemoteOrchestrator:
         """Rendered live status per automation id (badge text/level), via the daemon."""
         return await self._client.call("automation_statuses")
 
+    async def resume_recovery_status(self) -> "dict":
+        """Live deploy-resume failure set ({failed, gaveUp}) for the banner, via the
+        daemon — the single source of truth for which sessions are still not live."""
+        return await self._client.call("resume_recovery_status")
+
     async def pr_doctor_actionable(self) -> "list[dict]":
         """Actionable PRs (real recovery mode) for the PR Doctor card, via the daemon."""
         r = await self._client.call("pr_doctor_actionable")

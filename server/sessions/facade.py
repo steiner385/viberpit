@@ -65,6 +65,7 @@ class InProcessOrchestratorAdapter:
     async def all_repos_stage_models(self): return await _maybe_await(self._orch.all_repos_stage_models())
     async def request_pr_fix(self, *a, **k): return await _maybe_await(self._orch.request_pr_fix(*a, **k))
     async def automation_statuses(self, *a, **k): return await _maybe_await(self._orch.automation_statuses(*a, **k))
+    async def resume_recovery_status(self, *a, **k): return await _maybe_await(self._orch.resume_recovery_status(*a, **k))
     async def pr_doctor_actionable(self, *a, **k): return await _maybe_await(self._orch.pr_doctor_actionable(*a, **k))
     async def pr_doctor_fix(self, *a, **k): return await _maybe_await(self._orch.pr_doctor_fix(*a, **k))
     async def backlog_runner_implement(self, *a, **k): return await _maybe_await(self._orch.backlog_runner_implement(*a, **k))
