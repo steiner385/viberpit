@@ -113,6 +113,8 @@ def _record_to_dict(
     ``summary`` is the one-line status summary for the session (from
     ``orch.latest_summary``). Defaults to "" when omitted or unavailable.
     """
+    from server.sessions.goals import effective_goal
+    goal_text, goal_source = effective_goal(record)
     return {
         "id": record.id,
         "name": record.name,
@@ -138,6 +140,10 @@ def _record_to_dict(
         "model": getattr(record, "model", None),
         "latestSuggestions": list(suggestions or []),
         "activeGoal": getattr(record, "active_goal", None),
+        # The reckoned goal autopilot drives toward, resolved through the single
+        # effective_goal() helper (explicit /goal wins, else the title fallback).
+        "effectiveGoal": goal_text,
+        "goalSource": goal_source,
         "autopilotPaused": getattr(record, "autopilot_paused", False),
         "prs": [p.to_dict() for p in (prs or [])],
         "usageUnverified": getattr(record, "usage_unverified", False),

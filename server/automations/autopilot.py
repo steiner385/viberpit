@@ -71,7 +71,8 @@ class AutopilotLoop:
                  get_context: Callable[[str], Awaitable[DecisionContext | None]],
                  apply: Callable[[str, Decision, "DecisionContext | None"], Awaitable[bool]],
                  decide_fn: Callable[[DecisionContext], Awaitable[Decision]],
-                 clock: Callable[[], float]) -> None:
+                 clock: Callable[[], float],
+                 archive: Callable[[str], Awaitable[bool]] | None = None) -> None:
         self._ctx = ctx
         self._read_config = read_config
         self._list_governed = list_governed
@@ -79,6 +80,7 @@ class AutopilotLoop:
         self._apply = apply
         self._decide_fn = decide_fn
         self._clock = clock
+        self._archive = archive          # goal met → archive the session (auto mode)
         self._lock = asyncio.Lock()
         self._day_actions: list[float] = []
         self._circuit_emitted = False
@@ -132,10 +134,26 @@ class AutopilotLoop:
             await self._record_fingerprint(sid, ledger, ctx)
             return False, False
         if decision.action == "complete":
-            # The goal is met — stop advancing this session. Never mutate; emit a
-            # terminal marker so the activity feed shows why it went quiet.
+            # The goal is met — this session is finished. In auto mode archive it
+            # (reversible; unarchive exists) via the archive seam — NEVER via apply,
+            # which stays reserved for validated in-session actions. In propose mode
+            # only surface the proposal. Either way the loop stops advancing it.
+            if mode == "propose":
+                await self._ctx.emit(
+                    "info", f"{sid}: propose archive — goal met: {decision.reason}",
+                    kind="proposed", session_id=sid,
+                    detail={"action": "complete", "reason": decision.reason})
+                return False, False
             await self._ctx.emit("info", f"{sid}: goal met — {decision.reason}",
                                  kind="complete", session_id=sid)
+            if self._archive is not None:
+                try:
+                    await self._archive(sid)
+                    # Terminal rest: drop the ledger row so the table stays bounded
+                    # (mirrors the backlog runner deleting target-state on merge).
+                    await self._ctx.delete_target_state(sid)
+                except Exception:  # best-effort — a failed archive must not crash the tick
+                    log.warning("autopilot.archive_failed sid=%s", sid, exc_info=True)
             return False, False
         if decision.action == "escalate":
             await self._escalate(sid, ledger, decision)

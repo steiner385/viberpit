@@ -285,6 +285,10 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   // same value shown on the dashboard card) so the two stay consistent. Fall
   // back to a live transcript `title` event, then the sessionId prefix.
   const title = sessionRecord?.name ?? state.title ?? sessionId.slice(0, 8)
+  // The reckoned goal autopilot drives toward, shown beside the title in the
+  // header (SessionGoalText hides it when it's just the title fallback).
+  const goal = sessionRecord?.effectiveGoal ?? null
+  const goalSource = sessionRecord?.goalSource ?? null
   const latestRotation =
     state.rotations.length > 0 ? state.rotations[state.rotations.length - 1].to : null
   const account = latestRotation ?? sessionRecord?.accountName ?? '—'
@@ -336,6 +340,8 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     connectionState,
     reattach,
     title,
+    goal,
+    goalSource,
     account,
     quota,
     contextPct,

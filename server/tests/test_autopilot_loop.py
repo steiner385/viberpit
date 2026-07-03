@@ -147,3 +147,54 @@ async def test_non_mutating_nudge_still_escalates():
     # loop detection fired despite apply() always returning False
     assert any(kind == "escalated" for _, _, kind in ctx.emits)
     assert ctx.states.get("s1", {}).get("escalated") is True
+
+
+@pytest.mark.asyncio
+async def test_complete_auto_archives_and_clears_ledger():
+    """Goal met in auto mode → the session is archived (via the archive seam,
+    never via apply) and its ledger row is deleted (terminal rest)."""
+    ctx = FakeCtx()
+    ctx.states["s1"] = {"repeat_count": 2}          # pre-existing ledger to clear
+    archived: list = []
+
+    async def archive(sid):
+        archived.append(sid)
+        return True
+
+    loop = _loop(ctx, decision=Decision(action="complete", reason="goal met"))
+    loop._archive = archive
+    await loop.tick()
+    assert archived == ["s1"]
+    assert loop._applied == []                       # apply never invoked
+    assert "s1" not in ctx.states                    # ledger cleared
+    assert any(kind == "complete" for _, _, kind in ctx.emits)
+
+
+@pytest.mark.asyncio
+async def test_complete_in_propose_mode_only_proposes_archive():
+    ctx = FakeCtx()
+    archived: list = []
+
+    async def archive(sid):
+        archived.append(sid)
+        return True
+
+    loop = _loop(ctx, mode="propose", decision=Decision(action="complete", reason="goal met"))
+    loop._archive = archive
+    await loop.tick()
+    assert archived == []                            # no mutation in propose mode
+    assert any(kind == "proposed" for _, _, kind in ctx.emits)
+
+
+@pytest.mark.asyncio
+async def test_complete_archive_failure_is_best_effort():
+    """An archive failure must not crash the tick; the complete marker still lands."""
+    ctx = FakeCtx()
+
+    async def archive_boom(sid):
+        raise RuntimeError("archive failed")
+
+    loop = _loop(ctx, decision=Decision(action="complete", reason="goal met"))
+    loop._archive = archive_boom
+    await loop.tick()                                # must not raise
+    assert any(kind == "complete" for _, _, kind in ctx.emits)

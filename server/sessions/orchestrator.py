@@ -337,6 +337,7 @@ class SessionOrchestrator:
             apply=self._autopilot_apply,
             decide_fn=self._autopilot_decide,
             clock=time.monotonic,
+            archive=self._autopilot_archive,
         )
         self._autopilot_task: asyncio.Task | None = None
         # Fire-and-forget task registry (issue #405). Every detached ``create_task``
@@ -1437,6 +1438,12 @@ class SessionOrchestrator:
         except Exception:  # pragma: no cover — fall back to the process env config dir
             cfg_dir = None
         return await decide(ctx, _config_dir=cfg_dir)
+
+    async def _autopilot_archive(self, session_id: str) -> bool:
+        """Archive a goal-met session (the loop's terminal-rest seam). Reversible —
+        the session moves to the Archived tab and can be unarchived."""
+        await self.archive_session(session_id)
+        return True
 
     async def _autopilot_tick_loop(self, interval: float) -> None:
         """Periodic driver for the autopilot control loop (also nudged on status change)."""

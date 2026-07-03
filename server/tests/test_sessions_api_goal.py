@@ -17,3 +17,15 @@ def test_record_to_dict_includes_active_goal():
 def test_record_to_dict_active_goal_none_by_default():
     d = _record_to_dict(_rec(), repo=None)
     assert d["activeGoal"] is None
+
+
+def test_record_to_dict_includes_effective_goal_and_source():
+    d = _record_to_dict(_rec(active_goal="ship the PR"), repo=None)
+    assert d["effectiveGoal"] == "ship the PR"
+    assert d["goalSource"] == "explicit"
+
+
+def test_record_to_dict_effective_goal_falls_back_to_name():
+    d = _record_to_dict(_rec(name="Fix login bug"), repo=None)
+    assert d["effectiveGoal"] == "Fix login bug"
+    assert d["goalSource"] == "initial_prompt"
