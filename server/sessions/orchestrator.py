@@ -483,7 +483,8 @@ class SessionOrchestrator:
                 pass
             self._pr_branch_task = None
         for attr in ("_titling_task", "_rotation_task", "_stall_task",
-                     "_token_refresh_task", "_backlog_task", "_drain_timer"):
+                     "_token_refresh_task", "_backlog_task", "_autopilot_task",
+                     "_drain_timer"):
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
