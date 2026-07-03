@@ -141,6 +141,7 @@ def _record_to_dict(
         "model": getattr(record, "model", None),
         "latestSuggestions": list(suggestions or []),
         "activeGoal": getattr(record, "active_goal", None),
+        "inferredGoal": getattr(record, "inferred_goal", None),
         # The reckoned goal autopilot drives toward, resolved through the single
         # effective_goal() helper (explicit /goal wins, else the title fallback).
         "effectiveGoal": goal_text,

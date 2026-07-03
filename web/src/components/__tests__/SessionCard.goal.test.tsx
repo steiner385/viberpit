@@ -42,3 +42,23 @@ describe('SessionCard goal badge', () => {
     expect(screen.queryByText('Goal')).not.toBeInTheDocument()
   })
 })
+
+describe('SessionCard inferred goal badge', () => {
+  it('shows a subdued Goal pill with tooltip when the goal is inferred', () => {
+    renderCard({ ...base, effectiveGoal: 'Ship the referral schema PR', goalSource: 'inferred' })
+    const pill = screen.getByTitle('Goal (inferred): Ship the referral schema PR')
+    expect(pill).toBeInTheDocument()
+    expect(pill).toHaveTextContent('Goal')
+  })
+
+  it('explicit /goal pill takes precedence over the inferred variant', () => {
+    renderCard({ ...base, activeGoal: 'ship it', effectiveGoal: 'ship it', goalSource: 'explicit' })
+    expect(screen.getByTitle('Goal: ship it')).toBeInTheDocument()
+    expect(screen.queryByTitle(/inferred/)).not.toBeInTheDocument()
+  })
+
+  it('no pill when the goal is just the title fallback', () => {
+    renderCard({ ...base, effectiveGoal: base.name, goalSource: 'initial_prompt' })
+    expect(screen.queryByText('Goal')).not.toBeInTheDocument()
+  })
+})

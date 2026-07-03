@@ -34,7 +34,8 @@ def test_rehydrate_preserves_origin_and_assisted_by(tmp_path):
     async def run():
         await _seed(tmp_path, "reh.db", status="done",
                     origin="backlog-runner", origin_ref="o/r#1",
-                    assisted_by="autopilot", repo="o/r")
+                    assisted_by="autopilot", repo="o/r",
+                    inferred_goal="Ship the widget PR")
         orch = _bare_orch()
         await orch.rehydrate()
         rec = orch._records["s1"]
@@ -42,6 +43,7 @@ def test_rehydrate_preserves_origin_and_assisted_by(tmp_path):
         assert rec.origin_ref == "o/r#1"
         assert rec.assisted_by == "autopilot"
         assert rec.repo == "o/r"
+        assert rec.inferred_goal == "Ship the widget PR"   # row-mapped once, in _record_from_row
     asyncio.run(run())
 
 
