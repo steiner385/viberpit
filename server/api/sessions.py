@@ -122,6 +122,7 @@ def _record_to_dict(
         "repo": record.repo if repo is _UNSET else repo,
         "origin": getattr(record, "origin", None),
         "originRef": getattr(record, "origin_ref", None),
+        "assistedBy": getattr(record, "assisted_by", None),
         "status": record.status,
         "nameIsAuto": getattr(record, "name_is_auto", True),
         "detached": record.detached,

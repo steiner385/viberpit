@@ -86,6 +86,9 @@ export interface Session {
   goalSource?: string | null
   /** Per-session autopilot opt-out; true = pinned to manual, false/absent = governed. */
   autopilotPaused?: boolean
+  /** Automation that has acted on this human-created session (e.g. "autopilot").
+   *  Distinct from origin (spawned-by). Drives the violet provenance badge. */
+  assistedBy?: string | null
   /** Row-write timestamp used to order poll vs. WS updates; bumped on every status persist.
    *  Distinct from updatedAt (freshness). */
   revAt?: string | null

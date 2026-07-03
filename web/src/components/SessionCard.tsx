@@ -30,6 +30,18 @@ const actionBtn = cn(
   'active:scale-90 active:duration-75',
 )
 
+// Human-readable labels for automation ids in the provenance badge — one map for
+// spawned-by and assisted-by (the pr-doctor special case previously lived inline).
+const AUTOMATION_LABELS: Record<string, string> = {
+  'pr-doctor': 'PR Doctor',
+  'backlog-runner': 'Backlog Runner',
+  autopilot: 'Autopilot',
+}
+
+function automationLabel(id: string): string {
+  return AUTOMATION_LABELS[id] ?? id
+}
+
 interface SessionCardProps {
   session: Session
   account: Account | undefined
@@ -375,16 +387,24 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 <span className="truncate">Manual</span>
               </span>
             )}
-            {session.origin && (
+            {(session.origin || session.assistedBy) && (
+              /* Provenance: one violet badge for any automation involvement.
+                 Spawned-by (origin) outranks assisted-by when both apply. */
               <Link
                 to="/automation"
                 data-testid="card-provenance"
                 onClick={(e) => e.stopPropagation()}
                 className="hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 hover:bg-violet-200 dark:hover:bg-violet-900/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-w-[12rem]"
-                title={`Created by automation: ${session.origin}`}
+                title={session.origin
+                  ? `Created by automation: ${session.origin}`
+                  : `Assisted by automation: ${session.assistedBy}`}
               >
                 <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
-                <span className="truncate">Created by {session.origin === 'pr-doctor' ? 'PR Doctor' : session.origin}</span>
+                <span className="truncate">
+                  {session.origin
+                    ? `Created by ${automationLabel(session.origin)}`
+                    : `Assisted by ${automationLabel(session.assistedBy!)}`}
+                </span>
               </Link>
             )}
             {session.prs?.length > 0 && (

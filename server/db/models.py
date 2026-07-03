@@ -102,6 +102,10 @@ class Session(Base):
     # on the dev SQLite DB without a migration. See server/automations/.
     origin: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     origin_ref: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Provenance (assist): the automation id that has acted on this HUMAN-created
+    # session (e.g. "autopilot" after its first successful nudge/approval). Distinct
+    # from `origin` (spawned-by). NULL = never assisted. Nullable for init_db backfill.
+    assisted_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     # Generic row-write time: bumped on EVERY update (status, sub-agents, branch, name,
     # model, pin…). Used for the archived-sessions list's "archived at" only — NOT the
