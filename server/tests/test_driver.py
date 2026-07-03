@@ -817,10 +817,12 @@ def test_emit_error_puts_errorevent():
     async def run_with_last_turn_id():
         d = SessionDriver("ee1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         await d.start()
         d._last_turn_id = "t7"  # simulate post-drain state where translator already reset
         await d.emit_error("turn_dropped_cap", "gave up")
-        return _drain_queue(d._out)
+        return _drain_queue(out_q)
 
     out = asyncio.run(run_with_last_turn_id())
     err = next(e for e in out if isinstance(e, ev.ErrorEvent))
@@ -830,10 +832,12 @@ def test_emit_error_puts_errorevent():
     async def run_without_last_turn_id():
         d = SessionDriver("ee2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
         await d.start()
         # _last_turn_id is "" (empty) — falls back to self._turn()
         await d.emit_error("turn_dropped_cap", "gave up")
-        return _drain_queue(d._out)
+        return _drain_queue(out_q)
 
     out2 = asyncio.run(run_without_last_turn_id())
     err2 = next(e for e in out2 if isinstance(e, ev.ErrorEvent))

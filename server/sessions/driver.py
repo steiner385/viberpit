@@ -537,7 +537,7 @@ class SessionDriver:
         Anchors to _last_turn_id (set on TurnEnd, not cleared by _reset_turn_flags)
         so the give-up card lands in the same transcript row as the Recovering cards,
         even though the translator's _turn_id has already been reset by drain time."""
-        await self._out.put(ev.ErrorEvent(code, message, turn_id=self._last_turn_id or self._turn()))
+        self._emit(ev.ErrorEvent(code, message, turn_id=self._last_turn_id or self._turn()))
 
     async def _drain(self):
         try:
@@ -586,7 +586,7 @@ class SessionDriver:
                             # red error; the orchestrator pauses with a red surface only
                             # if the resend cap is hit.
                             self._note_progress(e)
-                            await self._out.put(ev.Recovering(
+                            self._emit(ev.Recovering(
                                 turn_id=e.turn_id, message=_RECOVERING_MSG))
                             continue
                     if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
