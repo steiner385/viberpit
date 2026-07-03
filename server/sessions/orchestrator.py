@@ -337,6 +337,7 @@ class SessionOrchestrator:
             apply=self._autopilot_apply,
             decide_fn=self._autopilot_decide,
             clock=time.monotonic,
+            archive=self._autopilot_archive,
         )
         self._autopilot_task: asyncio.Task | None = None
         # Fire-and-forget task registry (issue #405). Every detached ``create_task``
@@ -1406,6 +1407,7 @@ class SessionOrchestrator:
         if act in ("escalate", "complete", "skip"):
             return False
         stuck = ctx.stuck if ctx is not None else {}
+        ok = False
         if act in ("approve", "deny") and stuck.get("perm_id"):
             # Defense-in-depth: re-check the exact perm being approved against the
             # deny-list right before resolving, so an approve can never slip a
@@ -1414,20 +1416,38 @@ class SessionOrchestrator:
                     stuck.get("tool_name", ""), stuck.get("tool_input", {}), []):
                 return False
             await self.ensure_driver(session_id, SYSTEM_IDENTITY)
-            return bool(self.resolve_permission(
+            ok = bool(self.resolve_permission(
                 session_id, stuck["perm_id"], act == "approve", SYSTEM_IDENTITY))
-        if act == "answer" and stuck.get("question_id") is not None:
+        elif act == "answer" and stuck.get("question_id") is not None:
             await self.ensure_driver(session_id, SYSTEM_IDENTITY)
             opts = stuck.get("options") or []
             idx = decision.answer_index or 0
             selected = [opts[idx]] if 0 <= idx < len(opts) else []
-            return bool(self.answer_question(
+            ok = bool(self.answer_question(
                 session_id, stuck["question_id"], selected, SYSTEM_IDENTITY, "option"))
-        if act == "nudge" and decision.prompt:
+        elif act == "nudge" and decision.prompt:
             await self.ensure_driver(session_id, SYSTEM_IDENTITY)
-            result = await self.send_prompt(session_id, decision.prompt)
-            return result == "sent"
-        return False
+            ok = (await self.send_prompt(session_id, decision.prompt)) == "sent"
+        if ok:
+            await self._autopilot_mark_assisted(session_id)
+        return ok
+
+    async def _autopilot_mark_assisted(self, session_id: str) -> None:
+        """Stamp assist provenance the first time autopilot successfully acts on a
+        session (drives the purple 'Assisted by Autopilot' badge). Idempotent and
+        best-effort — a provenance write must never fail an applied action."""
+        rec = self._records.get(session_id)
+        if rec is not None and getattr(rec, "assisted_by", None):
+            return
+        if rec is not None:
+            rec.assisted_by = "autopilot"
+        try:
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                                 .values(assisted_by="autopilot"))
+        except Exception:  # pragma: no cover — best-effort provenance
+            log.debug("autopilot.mark_assisted_failed sid=%s", session_id, exc_info=True)
 
     async def _autopilot_decide(self, ctx):
         """Wrap the one-shot LLM decider, passing the account's config dir when resolvable."""
@@ -1437,6 +1457,12 @@ class SessionOrchestrator:
         except Exception:  # pragma: no cover — fall back to the process env config dir
             cfg_dir = None
         return await decide(ctx, _config_dir=cfg_dir)
+
+    async def _autopilot_archive(self, session_id: str) -> bool:
+        """Archive a goal-met session (the loop's terminal-rest seam). Reversible —
+        the session moves to the Archived tab and can be unarchived."""
+        await self.archive_session(session_id)
+        return True
 
     async def _autopilot_tick_loop(self, interval: float) -> None:
         """Periodic driver for the autopilot control loop (also nudged on status change)."""
@@ -1984,6 +2010,45 @@ class SessionOrchestrator:
                 .values(claude_session_id=claude_session_id)
             )
 
+    def _record_from_row(self, row, **overrides) -> SessionRecord:
+        """Single source of truth for rebuilding an in-memory SessionRecord from a
+        DB row (rehydrate + unarchive). Every row-backed field maps HERE, once — the
+        previous hand-maintained parallel constructions drifted and silently dropped
+        fields (origin/origin_ref vanished on restart, autopilot_paused on unarchive:
+        the purple provenance badge disappearing after a redeploy was this bug).
+        Call sites pass only their genuine differences as ``overrides``."""
+        fields = dict(
+            id=row.id,
+            name=row.name,
+            account=row.account_name,
+            claude_session_id=row.claude_session_id or "",
+            cols=80,
+            rows=24,
+            cwd=row.cwd,
+            repo=row.repo,
+            branch=getattr(row, "branch", None),
+            origin=getattr(row, "origin", None),
+            origin_ref=getattr(row, "origin_ref", None),
+            assisted_by=getattr(row, "assisted_by", None),
+            detached=True,
+            status=row.status,
+            name_is_auto=row.name_is_auto,
+            permission_mode=row.permission_mode,
+            created_at=row.created_at,
+            updated_at=getattr(row, "updated_at", None),
+            last_turn_at=getattr(row, "last_turn_at", None),
+            adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
+            model=getattr(row, "model", None),
+            account_pinned=bool(getattr(row, "account_pinned", False)),
+            active_goal=getattr(row, "active_goal", None),
+            autopilot_paused=bool(getattr(row, "autopilot_paused", False)),
+            authored_branches=list(getattr(row, "authored_branches", None) or []),
+            context_used_tokens=getattr(row, "context_used_tokens", None),
+            context_max_tokens=getattr(row, "context_max_tokens", None),
+        )
+        fields.update(overrides)
+        return SessionRecord(**fields)
+
     async def rehydrate(self) -> int:
         """Rebuild detached SessionRecords from non-ended DB rows (lazy: no drivers).
 
@@ -2020,33 +2085,11 @@ class SessionOrchestrator:
                 if derived:
                     branch = derived
                     backfilled[row.id] = derived
-            self._records[row.id] = SessionRecord(
-                id=row.id,
-                name=row.name,
-                account=row.account_name,
-                claude_session_id=row.claude_session_id or "",
-                cols=80,
-                rows=24,
-                cwd=row.cwd,
-                repo=row.repo,
-                detached=True,
-                status=status,
-                name_is_auto=row.name_is_auto,
-                permission_mode=row.permission_mode,
-                created_at=row.created_at,
-                updated_at=getattr(row, "updated_at", None),
-                last_turn_at=getattr(row, "last_turn_at", None),
-                adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
-                model=getattr(row, "model", None),
-                account_pinned=bool(getattr(row, "account_pinned", False)),
-                active_goal=getattr(row, "active_goal", None),
-                autopilot_paused=bool(getattr(row, "autopilot_paused", False)),
-                branch=branch,
-                authored_branches=list(getattr(row, "authored_branches", None) or []),
-                context_used_tokens=getattr(row, "context_used_tokens", None),
-                context_max_tokens=getattr(row, "context_max_tokens", None),
-                interrupted_by_restart=was_midturn,
-            )
+            # interrupted_by_restart (#434) is a TRANSIENT in-memory flag, not a
+            # row-backed field — so it threads through as a call-site override
+            # rather than living in _record_from_row's row mapping.
+            self._records[row.id] = self._record_from_row(
+                row, status=status, branch=branch, interrupted_by_restart=was_midturn)
             added += 1
             log_event(log, logging.INFO, "session.reattach",
                       session_id=row.id,
@@ -4135,25 +4178,7 @@ class SessionOrchestrator:
                 .values(status="idle")
             )
 
-        record = SessionRecord(
-            id=row.id,
-            name=row.name,
-            account=row.account_name,
-            claude_session_id=row.claude_session_id or "",
-            cols=80,
-            rows=24,
-            cwd=row.cwd,
-            detached=True,
-            status="idle",
-            permission_mode=row.permission_mode,
-            created_at=row.created_at,
-            updated_at=getattr(row, "updated_at", None),
-            last_turn_at=getattr(row, "last_turn_at", None),
-            model=getattr(row, "model", None),
-            account_pinned=bool(getattr(row, "account_pinned", False)),
-            active_goal=getattr(row, "active_goal", None),
-            autopilot_paused=bool(getattr(row, "autopilot_paused", False)),
-        )
+        record = self._record_from_row(row, status="idle")
         self._records[session_id] = record
         log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)
         return record

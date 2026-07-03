@@ -20,6 +20,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Plus, Settings, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { SessionGoalText } from './session/SessionGoalText'
 import { SessionList } from './SessionList'
 import { SessionListControls } from './SessionListControls'
 import { DispatchBar } from './DispatchBar'
@@ -76,7 +77,10 @@ export function MainPaneSession({ sessionId, onClosed }: { sessionId: string; on
         'flex items-center gap-3 px-3 py-2 flex-shrink-0',
         'bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700',
       )}>
-        <span className="flex-1 text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{rt.title}</span>
+        <span className="flex-1 min-w-0 flex items-baseline gap-2">
+          <span className="min-w-0 text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{rt.title}</span>
+          <SessionGoalText goal={rt.goal} source={rt.goalSource} title={rt.title} />
+        </span>
         <SessionActions
           sessionId={sessionId}
           sessionName={rt.title}

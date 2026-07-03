@@ -36,6 +36,7 @@ class SessionRecord:
     branch: str | None = None        # per-session worktree branch (joins to PR headRefName)
     origin: str | None = None        # automation_id that spawned this session (None = human-created)
     origin_ref: str | None = None    # automation's reference key (e.g. "owner/repo#123")
+    assisted_by: str | None = None   # automation_id that has acted on this session (e.g. "autopilot")
     detached: bool = False           # True for rehydrated sessions with no live driver
     status: str = "idle"             # idle / in_progress / condensing / waiting_input / ready_review / done / waiting_external / limited / ended
     name_is_auto: bool = True        # False once the user manually renames the session
@@ -93,6 +94,7 @@ class SessionRecord:
             "claudeSessionId": self.claude_session_id, "cols": self.cols, "rows": self.rows,
             "cwd": self.cwd, "repo": self.repo, "branch": self.branch, "detached": self.detached,
             "origin": self.origin, "origin_ref": self.origin_ref,
+            "assistedBy": self.assisted_by,
             "status": self.status, "nameIsAuto": self.name_is_auto,
             "permissionMode": self.permission_mode,
             "createdAt": iso_utc(self.created_at),
@@ -122,6 +124,7 @@ class SessionRecord:
             claude_session_id=d["claudeSessionId"], cols=d["cols"], rows=d["rows"],
             cwd=d["cwd"], repo=d.get("repo"), branch=d.get("branch"), detached=d.get("detached", False),
             origin=d.get("origin"), origin_ref=d.get("origin_ref"),
+            assisted_by=d.get("assistedBy"),
             status=d.get("status", "idle"), name_is_auto=d.get("nameIsAuto", True),
             permission_mode=d.get("permissionMode", "interactive"),
             created_at=datetime.fromisoformat(created) if created else None,

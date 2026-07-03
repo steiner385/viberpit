@@ -62,3 +62,23 @@ describe('SessionCard provenance badge', () => {
     expect(screen.queryByTestId('card-provenance')).not.toBeInTheDocument()
   })
 })
+
+describe('SessionCard assisted-by badge', () => {
+  it('shows the same violet provenance badge when autopilot assisted the session', () => {
+    renderCard({ ...base, assistedBy: 'autopilot' })
+    const badge = screen.getByTestId('card-provenance')
+    expect(badge).toHaveTextContent('Assisted by Autopilot')
+    expect(badge).toHaveAttribute('title', 'Assisted by automation: autopilot')
+    expect(badge.className).toMatch(/violet/)
+  })
+
+  it('spawned-by takes precedence when both origin and assistedBy are set', () => {
+    renderCard({ ...base, origin: 'backlog-runner', assistedBy: 'autopilot' })
+    expect(screen.getByTestId('card-provenance')).toHaveTextContent(/Created by/)
+  })
+
+  it('no badge when neither origin nor assistedBy is set', () => {
+    renderCard(base)
+    expect(screen.queryByTestId('card-provenance')).not.toBeInTheDocument()
+  })
+})

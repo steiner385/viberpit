@@ -142,7 +142,9 @@ A plain dict/dataclass, no live objects, so the decider and guardrails are pure:
 
 Applied via: `approve/deny` → `resolve_permission`; `answer` → `answer_question`
 (plans are answered the same way the UI approves an `ExitPlanMode`); `nudge`/recover →
-`send_prompt`; `complete` → `emit` "goal met" and stop (leave the session at rest);
+`send_prompt`; `complete` → `emit` "goal met", then in `auto` mode **archive the
+session** (reversible; via a dedicated `archive` seam — never through `apply`) and
+delete its ledger row; in `propose` mode only propose the archive;
 `escalate` → `emit` + mark `needs_human` in the ledger (no mutation).
 
 ## Decision engine — GUARDRAILS (the centerpiece)

@@ -147,3 +147,93 @@ async def test_non_mutating_nudge_still_escalates():
     # loop detection fired despite apply() always returning False
     assert any(kind == "escalated" for _, _, kind in ctx.emits)
     assert ctx.states.get("s1", {}).get("escalated") is True
+
+
+@pytest.mark.asyncio
+async def test_complete_auto_archives_and_clears_ledger():
+    """Goal met in auto mode → the session is archived (via the archive seam,
+    never via apply) and its ledger row is deleted (terminal rest)."""
+    ctx = FakeCtx()
+    ctx.states["s1"] = {"repeat_count": 2}          # pre-existing ledger to clear
+    archived: list = []
+
+    async def archive(sid):
+        archived.append(sid)
+        return True
+
+    loop = _loop(ctx, decision=Decision(action="complete", reason="goal met"))
+    loop._archive = archive
+    await loop.tick()
+    assert archived == ["s1"]
+    assert loop._applied == []                       # apply never invoked
+    assert "s1" not in ctx.states                    # ledger cleared
+    assert any(kind == "complete" for _, _, kind in ctx.emits)
+
+
+@pytest.mark.asyncio
+async def test_complete_in_propose_mode_only_proposes_archive():
+    ctx = FakeCtx()
+    archived: list = []
+
+    async def archive(sid):
+        archived.append(sid)
+        return True
+
+    loop = _loop(ctx, mode="propose", decision=Decision(action="complete", reason="goal met"))
+    loop._archive = archive
+    await loop.tick()
+    assert archived == []                            # no mutation in propose mode
+    assert any(kind == "proposed" for _, _, kind in ctx.emits)
+
+
+@pytest.mark.asyncio
+async def test_complete_archive_failure_is_best_effort():
+    """An archive failure must not crash the tick; the complete marker still lands."""
+    ctx = FakeCtx()
+
+    async def archive_boom(sid):
+        raise RuntimeError("archive failed")
+
+    loop = _loop(ctx, decision=Decision(action="complete", reason="goal met"))
+    loop._archive = archive_boom
+    await loop.tick()                                # must not raise
+    assert any(kind == "complete" for _, _, kind in ctx.emits)
+
+
+@pytest.mark.asyncio
+async def test_escalation_emits_once_for_same_stuck_state():
+    """A session parked in a terminal escalated state must not spam the activity
+    feed: the same stuck-state escalation emits once, not once per tick."""
+    ctx = FakeCtx()
+    loop = _loop(ctx, decision=Decision(action="escalate", reason="needs a human"))
+    for _ in range(3):
+        await loop.tick()
+    escalations = [e for e in ctx.emits if e[2] == "escalated"]
+    assert len(escalations) == 1
+
+
+@pytest.mark.asyncio
+async def test_escalation_reemits_when_stuck_state_changes():
+    ctx = FakeCtx()
+    loop = _loop(ctx, decision=Decision(action="escalate", reason="needs a human"))
+    await loop.tick()
+
+    async def different_ctx(sid):
+        dc = _dc(sid)
+        dc.stuck = {"kind": "question", "question": "Deploy to prod?", "options": ["yes", "no"]}
+        return dc
+    loop._get_context = different_ctx
+    await loop.tick()
+    escalations = [e for e in ctx.emits if e[2] == "escalated"]
+    assert len(escalations) == 2                     # new stuck state → new information
+
+
+@pytest.mark.asyncio
+async def test_applied_action_clears_escalated_flag():
+    """Once autopilot successfully acts on a session again, it is no longer
+    'handed to a human' — a later escalation for the same state must re-emit."""
+    ctx = FakeCtx()
+    ctx.states["s1"] = {"escalated": True, "last_fingerprint": "stale", "repeat_count": 1}
+    loop = _loop(ctx, decision=Decision(action="approve", reason="safe"))
+    await loop.tick()
+    assert ctx.states["s1"].get("escalated") is False

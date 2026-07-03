@@ -19,6 +19,7 @@ import { useSessionRuntime } from '@/session/useSessionRuntime'
 import { useSessionNeighbors } from '@/session/useSessionNeighbors'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { SessionComposer } from './SessionComposer'
+import { SessionGoalText } from './SessionGoalText'
 import { SessionBody } from './SessionBody'
 import { CommandResultOverlay } from './CommandResultOverlay'
 import { SessionActions } from '@/components/session/SessionActions'
@@ -169,7 +170,10 @@ export function SessionView({ sessionId, onBack, onDone, onNavigateSession, init
           </button>
         )}
 
-        <span className="flex-1 text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
+        <span className="flex-1 min-w-0 flex items-baseline gap-2">
+          <span className="min-w-0 text-sm font-semibold text-gray-100 truncate">{rt.title}</span>
+          <SessionGoalText goal={rt.goal} source={rt.goalSource} title={rt.title} />
+        </span>
 
         {hasNeighbors && (
           <button

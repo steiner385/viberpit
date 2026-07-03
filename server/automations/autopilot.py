@@ -71,7 +71,8 @@ class AutopilotLoop:
                  get_context: Callable[[str], Awaitable[DecisionContext | None]],
                  apply: Callable[[str, Decision, "DecisionContext | None"], Awaitable[bool]],
                  decide_fn: Callable[[DecisionContext], Awaitable[Decision]],
-                 clock: Callable[[], float]) -> None:
+                 clock: Callable[[], float],
+                 archive: Callable[[str], Awaitable[bool]] | None = None) -> None:
         self._ctx = ctx
         self._read_config = read_config
         self._list_governed = list_governed
@@ -79,6 +80,7 @@ class AutopilotLoop:
         self._apply = apply
         self._decide_fn = decide_fn
         self._clock = clock
+        self._archive = archive          # goal met → archive the session (auto mode)
         self._lock = asyncio.Lock()
         self._day_actions: list[float] = []
         self._circuit_emitted = False
@@ -132,13 +134,29 @@ class AutopilotLoop:
             await self._record_fingerprint(sid, ledger, ctx)
             return False, False
         if decision.action == "complete":
-            # The goal is met — stop advancing this session. Never mutate; emit a
-            # terminal marker so the activity feed shows why it went quiet.
+            # The goal is met — this session is finished. In auto mode archive it
+            # (reversible; unarchive exists) via the archive seam — NEVER via apply,
+            # which stays reserved for validated in-session actions. In propose mode
+            # only surface the proposal. Either way the loop stops advancing it.
+            if mode == "propose":
+                await self._ctx.emit(
+                    "info", f"{sid}: propose archive — goal met: {decision.reason}",
+                    kind="proposed", session_id=sid,
+                    detail={"action": "complete", "reason": decision.reason})
+                return False, False
             await self._ctx.emit("info", f"{sid}: goal met — {decision.reason}",
                                  kind="complete", session_id=sid)
+            if self._archive is not None:
+                try:
+                    await self._archive(sid)
+                    # Terminal rest: drop the ledger row so the table stays bounded
+                    # (mirrors the backlog runner deleting target-state on merge).
+                    await self._ctx.delete_target_state(sid)
+                except Exception:  # best-effort — a failed archive must not crash the tick
+                    log.warning("autopilot.archive_failed sid=%s", sid, exc_info=True)
             return False, False
         if decision.action == "escalate":
-            await self._escalate(sid, ledger, decision)
+            await self._escalate(sid, ledger, ctx, decision)
             return False, True
 
         if mode == "propose":
@@ -182,12 +200,23 @@ class AutopilotLoop:
             recovery += 1
         new = dict(ledger)
         new.update(hour_actions=hour, last_fingerprint=fp, repeat_count=repeat,
-                   recovery_attempts=recovery)
+                   recovery_attempts=recovery,
+                   # A successful action means the session is being advanced again —
+                   # it is no longer "handed to a human", so a later escalation
+                   # (even for the same stuck state) is fresh information.
+                   escalated=False)
         await self._ctx.set_target_state(sid, new)
 
-    async def _escalate(self, sid: str, ledger: dict, decision: Decision) -> None:
+    async def _escalate(self, sid: str, ledger: dict, ctx: DecisionContext,
+                        decision: Decision) -> None:
+        # De-spam: a session already handed to a human for THIS stuck state stays
+        # escalated silently — re-emitting "needs human" every tick buries the feed.
+        # A changed fingerprint is new information and emits again.
+        fp = fingerprint(ctx)
+        if ledger.get("escalated") and ledger.get("last_fingerprint") == fp:
+            return
         new = dict(ledger)
-        new["escalated"] = True
+        new.update(escalated=True, last_fingerprint=fp)
         await self._ctx.set_target_state(sid, new)
         await self._ctx.emit("warn", f"{sid}: needs human — {decision.reason}",
                              kind="escalated", session_id=sid)
