@@ -2,6 +2,7 @@ import asyncio
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.events import TurnEnd, Status, Title, QueueUpdate, UserMessage, ErrorEvent
+import server.sessions.events as ev
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
 from claude_agent_sdk import TextBlock
@@ -765,3 +766,80 @@ def test_queue_wire_includes_images_for_queued_prompt():
     wire = asyncio.run(run())
     assert wire == [{"text": "second",
                      "images": [{"url": "/api/attachments/a", "mime": "image/png", "name": "s.png"}]}]
+
+
+# ── Recovering / emit_error ──────────────────────────────────────────────────
+
+def _drain_queue(q):
+    """Drain an asyncio.Queue and return all items as a list."""
+    out = []
+    while not q.empty():
+        out.append(q.get_nowait())
+    return out
+
+
+def test_dropped_turn_emits_recovering_not_error():
+    """A turn_dropped ErrorEvent should become a Recovering event, not a red error."""
+    # Build a ResultMessage that the translator renders as
+    # ErrorEvent(code="execution_error", raw_message="[ede_diagnostic] ... stop_reason=null")
+    msgs = [
+        f.stream_start(uuid="t1"),
+        f.result(uuid="t1", subtype="error_during_execution", is_error=True,
+                 errors=["[ede_diagnostic] result_type=user last_content_type=n/a "
+                         "stop_reason=null"]),
+    ]
+
+    async def run():
+        d = SessionDriver("rec1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
+        await d.start()
+        await d.send_prompt("go")
+        # Collect until the turn ends (drain completes and idle status is emitted).
+        out = []
+        async for e in d.events():
+            out.append(e)
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete", "needs_attention"):
+                break
+        await d.aclose()
+        return out
+
+    out = asyncio.run(run())
+    kinds = [type(e).__name__ for e in out]
+    assert "Recovering" in kinds
+    assert "ErrorEvent" not in kinds  # red error suppressed for dropped turn
+
+
+def test_emit_error_puts_errorevent():
+    """emit_error() anchors ErrorEvent to _last_turn_id (the dropped turn's real id),
+    falling back to self._turn() when _last_turn_id is empty."""
+    msgs = [f.result(uuid="t1")]  # minimal: just enough for the driver to init
+
+    async def run_with_last_turn_id():
+        d = SessionDriver("ee1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
+        await d.start()
+        d._last_turn_id = "t7"  # simulate post-drain state where translator already reset
+        await d.emit_error("turn_dropped_cap", "gave up")
+        return _drain_queue(out_q)
+
+    out = asyncio.run(run_with_last_turn_id())
+    err = next(e for e in out if isinstance(e, ev.ErrorEvent))
+    assert err.code == "turn_dropped_cap"
+    assert err.turn_id == "t7", f"expected turn_id='t7', got {err.turn_id!r}"
+
+    async def run_without_last_turn_id():
+        d = SessionDriver("ee2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
+        await d.start()
+        # _last_turn_id is "" (empty) — falls back to self._turn()
+        await d.emit_error("turn_dropped_cap", "gave up")
+        return _drain_queue(out_q)
+
+    out2 = asyncio.run(run_without_last_turn_id())
+    err2 = next(e for e in out2 if isinstance(e, ev.ErrorEvent))
+    assert err2.code == "turn_dropped_cap"
+    assert err2.turn_id == "turn"  # _turn() fallback when _last_turn_id is empty

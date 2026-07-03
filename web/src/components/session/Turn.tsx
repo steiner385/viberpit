@@ -8,6 +8,7 @@ import { ToolCallCard } from './ToolCallCard'
 import { ToolGroup } from './ToolGroup'
 import { QuestionCard } from './QuestionCard'
 import { ErrorCard } from './ErrorCard'
+import { RecoveringCard } from './RecoveringCard'
 import { BlockRow } from './BlockRow'
 
 interface Props {
@@ -93,6 +94,8 @@ export const Turn = memo(function Turn({
             )
           case 'error':
             return <BlockRow key={block.id} ts={rowTs}><ErrorCard code={block.code} message={block.message} resetsAt={block.resetsAt} /></BlockRow>
+          case 'recovering':
+            return <BlockRow key={block.id} ts={rowTs}><RecoveringCard message={block.message} /></BlockRow>
           default:
             return null
         }

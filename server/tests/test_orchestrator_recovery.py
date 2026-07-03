@@ -5,6 +5,8 @@ side-effecting helpers spied, plus the real RecoveryState (quarantine + cap).
 """
 import asyncio
 
+import pytest
+
 from server.sessions import orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.selection import AllAccountsBusy, Picked
@@ -17,7 +19,9 @@ def _make_orch():
     o._clock = lambda: 1000.0
     o.calls = []
 
-    async def spy_replay(record, retry_after):
+    async def spy_replay(record, retry_after, *, precompact=False):
+        if precompact:
+            o.calls.append(("compact", record.id))
         o.calls.append(("replay", record.id, retry_after))
 
     async def spy_rotate(record, reason):
@@ -365,8 +369,77 @@ def test_turn_dropped_stops_after_resend_cap():
     o = _make_orch(); rec = _rec(o)
     for _ in range(R.RESEND_CAP):
         o._recovery.record_resend("s1", now=1000.0)
+
+    class _CapDriver:
+        def __init__(self): self.errors: list = []
+        async def emit_error(self, code: str, message: str): self.errors.append((code, message))
+
+    cap_driver = _CapDriver()
+    o._drivers["s1"] = cap_driver
     asyncio.run(o._recover_session(rec, "turn_dropped", None))
-    assert o.calls == []  # cap reached → no resend, no pause/rotate
+    # cap reached → emit give-up error on driver + pause (no resend, no rotate)
+    assert cap_driver.errors == [("turn_dropped_cap", orch_mod._TURN_DROPPED_GIVEUP)]
+    assert ("pause", "s1", "turn_dropped_cap") in o.calls
+    assert not any(c[0] == "replay" for c in o.calls)
+
+
+def test_turn_dropped_ladder_escalation():
+    """(A) Decision-logic: 1st drop → plain resend; 2nd & 3rd → compact+resend; 4th → cap."""
+    o = _make_orch(); rec = _rec(o)
+
+    class _CapDriver:
+        def __init__(self): self.errors: list = []
+        async def emit_error(self, code: str, message: str): self.errors.append((code, message))
+
+    cap_driver = _CapDriver()
+    o._drivers["s1"] = cap_driver
+
+    # 1st drop → plain resend, no /compact
+    asyncio.run(o._recover_session(rec, "turn_dropped", None))
+    assert o.calls == [("replay", "s1", 0.0)]
+
+    # 2nd drop → /compact marker THEN resend
+    asyncio.run(o._recover_session(rec, "turn_dropped", None))
+    assert o.calls[-2:] == [("compact", "s1"), ("replay", "s1", 0.0)]
+
+    # 3rd drop → /compact marker THEN resend again
+    asyncio.run(o._recover_session(rec, "turn_dropped", None))
+    assert o.calls[-2:] == [("compact", "s1"), ("replay", "s1", 0.0)]
+
+    # 4th drop → cap reached: no further resend, give-up error + pause
+    replay_count_before = sum(1 for c in o.calls if c[0] == "replay")
+    asyncio.run(o._recover_session(rec, "turn_dropped", None))
+    assert sum(1 for c in o.calls if c[0] == "replay") == replay_count_before  # no new replay
+    assert cap_driver.errors == [("turn_dropped_cap", orch_mod._TURN_DROPPED_GIVEUP)]
+    assert ("pause", "s1", "turn_dropped_cap") in o.calls
+
+
+@pytest.mark.asyncio
+async def test_replay_same_account_precompact_ordering():
+    """(B) Ordering: when precompact=True, /compact is sent before the last prompt."""
+
+    class _FakeDriver:
+        def __init__(self): self.sent: list = []
+        async def send_prompt(self, text, images=None): self.sent.append(text)
+
+    o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
+    o._clock = lambda: 1000.0
+    rec = SessionRecord(id="s1", name="n", account="kindash", claude_session_id="c1",
+                        cols=80, rows=24, cwd="/tmp/x")
+    o._records["s1"] = rec
+
+    fake_driver = _FakeDriver()
+    o._drivers["s1"] = fake_driver
+    o._last_prompt["s1"] = "do the thing"
+
+    # precompact=True → /compact sent first, then the last prompt
+    await SessionOrchestrator._replay_same_account(o, rec, 0.0, precompact=True)
+    assert fake_driver.sent == ["/compact", "do the thing"]
+
+    # precompact=False → only the last prompt
+    fake_driver.sent.clear()
+    await SessionOrchestrator._replay_same_account(o, rec, 0.0, precompact=False)
+    assert fake_driver.sent == ["do the thing"]
 
 
 def test_recompose_forces_token_refresh_before_reassign(monkeypatch):

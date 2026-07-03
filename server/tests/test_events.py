@@ -89,3 +89,12 @@ def test_replay_can_override_ts():
     # Replay passes an explicit ts (may be None when the line lacks a timestamp).
     assert ev.TextDelta("t", "hi", ts=None).to_wire()["ts"] is None
     assert ev.TextDelta("t", "hi", ts=123.0).to_wire()["ts"] == 123.0
+
+
+def test_recovering_to_wire():
+    e = ev.Recovering(turn_id="t1", message="Recovering the dropped turn…")
+    w = e.to_wire()
+    assert w["type"] == "recovering"
+    assert w["turnId"] == "t1"
+    assert w["message"] == "Recovering the dropped turn…"
+    assert "ts" in w

@@ -411,6 +411,18 @@ describe('transcriptReducer', () => {
     expect(next).toBe(s)
   })
 
+  // ── recovering ───────────────────────────────────────────────────────────
+
+  it('recovering event appends a soft block and does NOT raise the error banner', () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' } as SessionEvent,
+      { type: 'recovering', turnId: 't1', message: 'Recovering the dropped turn…' } as SessionEvent,
+    ])
+    const turn = s.turns.find(t => t.id === 't1')!
+    expect(turn.blocks.some(b => b.kind === 'recovering')).toBe(true)
+    expect(s.error).toBeNull()
+  })
+
   // ── queueUpdate ────────────────────────────────────────────────────────────
 
   it('queueUpdate sets state.queued to the provided items', () => {

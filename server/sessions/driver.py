@@ -9,7 +9,7 @@ import uuid
 from typing import Callable
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from . import events as ev
-from .failure import classify
+from .failure import classify, TurnFailure
 from .translator import Translator
 from .permissions import PermissionRegistry
 from .questions import QuestionRegistry
@@ -37,6 +37,9 @@ _TURN_CONTENT = (ev.UserMessage, ev.TurnStart, ev.TurnModel, ev.SessionMeta,
 # How long aclose() waits for the CLI to flush its synthetic interrupt result for a
 # turn wedged mid-tool-call before giving up and cancelling the drain.
 _CLOSE_GRACE_SEC = 5.0
+
+# Soft notice text surfaced when a dropped turn is being auto-resent.
+_RECOVERING_MSG = "Recovering the dropped turn…"
 
 
 async def _aiter_one(message: dict):
@@ -506,13 +509,14 @@ class SessionDriver:
             log.warning("driver.sync_back failed (non-fatal) session=%s", self.session_id,
                         exc_info=True)
 
-    async def _maybe_signal_recovery(self, code: str, message: str) -> None:
+    async def _maybe_signal_recovery(self, code: str, message: str) -> "TurnFailure":
         """Classify a turn-failure surface; if recoverable, emit TurnFailure and notify
-        the orchestrator. Retry-After comes from the error text, falling back to a
-        RateLimitEvent reset observed this turn (resets_at - now)."""
+        the orchestrator. Returns the classification so the caller can adapt the UI
+        surface (e.g. soften a dropped turn). Retry-After comes from the error text,
+        falling back to a RateLimitEvent reset observed this turn (resets_at - now)."""
         failure = classify(code, message)
         if not failure.is_recoverable:
-            return
+            return failure
         retry_after = failure.retry_after
         if retry_after is None and self._last_rate_reset is not None:
             retry_after = max(0.0, float(self._last_rate_reset) - self._clock())
@@ -524,6 +528,16 @@ class SessionDriver:
             except Exception:
                 log.warning("driver.on_recoverable_failure failed session=%s",
                             self.session_id, exc_info=True)
+        return failure
+
+    async def emit_error(self, code: str, message: str) -> None:
+        """Surface a red error card anchored to the current turn. Used by the
+        orchestrator to explain an exhausted auto-recovery (the give-up surface).
+
+        Anchors to _last_turn_id (set on TurnEnd, not cleared by _reset_turn_flags)
+        so the give-up card lands in the same transcript row as the Recovering cards,
+        even though the translator's _turn_id has already been reset by drain time."""
+        self._emit(ev.ErrorEvent(code, message, turn_id=self._last_turn_id or self._turn()))
 
     async def _drain(self):
         try:
@@ -564,7 +578,17 @@ class SessionDriver:
                         self._last_turn_outcome = e.outcome
                         self._last_turn_id = e.turn_id
                     elif isinstance(e, ev.ErrorEvent):
-                        await self._maybe_signal_recovery(e.code, e.raw_message or e.message)
+                        failure = await self._maybe_signal_recovery(
+                            e.code, e.raw_message or e.message)
+                        if failure.kind == "turn_dropped":
+                            # Self-healing auto-resend is in flight (signalled above).
+                            # Show a soft "recovering" notice instead of the alarming
+                            # red error; the orchestrator pauses with a red surface only
+                            # if the resend cap is hit.
+                            self._note_progress(e)
+                            self._emit(ev.Recovering(
+                                turn_id=e.turn_id, message=_RECOVERING_MSG))
+                            continue
                     if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
                         self._turn_produced_output = True
                     self._note_progress(e)
