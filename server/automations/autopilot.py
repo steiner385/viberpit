@@ -3,7 +3,18 @@ states until their effective goal is met. Metadata + config here; the control lo
 (AutopilotLoop) is added in a later task."""
 from __future__ import annotations
 
+import asyncio
+import logging
+from typing import Awaitable, Callable
+
+from .autopilot_policy import (
+    Decision, DecisionContext, fingerprint, post_validate, pre_decide,
+)
 from .base import AutomationStatus, ConfigField
+
+log = logging.getLogger(__name__)
+
+_DAY = 24 * 3600.0
 
 
 class Autopilot:
@@ -46,3 +57,122 @@ class Autopilot:
     async def on_state_change(self, *, enabled, mode, config, ctx) -> None:
         # The orchestrator's loop reads mode/config each tick; nothing to start here.
         ...
+
+
+class AutopilotLoop:
+    """Restart-safe, non-reentrant control loop. Every I/O dependency is injected so
+    the whole decide/apply pipeline is testable with no network, model, or sessions.
+    tick() runs under a single lock — an interval tick and a status nudge must never
+    overlap (a session could otherwise be double-acted)."""
+
+    def __init__(self, ctx, *,
+                 read_config: Callable[[], Awaitable[tuple[str, dict]]],
+                 list_governed: Callable[[], Awaitable[list[str]]],
+                 get_context: Callable[[str], Awaitable[DecisionContext | None]],
+                 apply: Callable[[str, Decision], Awaitable[bool]],
+                 decide_fn: Callable[[DecisionContext], Awaitable[Decision]],
+                 clock: Callable[[], float]) -> None:
+        self._ctx = ctx
+        self._read_config = read_config
+        self._list_governed = list_governed
+        self._get_context = get_context
+        self._apply = apply
+        self._decide_fn = decide_fn
+        self._clock = clock
+        self._lock = asyncio.Lock()
+        self._day_actions: list[float] = []
+        self._circuit_emitted = False
+
+    async def tick(self) -> None:
+        async with self._lock:
+            try:
+                await self._run()
+            except Exception:  # pragma: no cover — a tick must never crash the loop
+                log.warning("autopilot.tick_failed", exc_info=True)
+
+    def _prune_day(self, now: float) -> None:
+        self._day_actions = [t for t in self._day_actions if t > now - _DAY]
+
+    async def _run(self) -> None:
+        mode, config = await self._read_config()
+        if mode == "off":
+            return
+        now = self._clock()
+        self._prune_day(now)
+        advancing = escalated = 0
+        for sid in await self._list_governed():
+            try:
+                acted, esc = await self._advance_one(sid, mode, config, now)
+                advancing += int(acted)
+                escalated += int(esc)
+            except Exception:  # one session must never stall the tick
+                log.warning("autopilot.session_failed sid=%s", sid, exc_info=True)
+        setattr(self._ctx, "autopilot_counts", {"advancing": advancing, "escalated": escalated})
+
+    async def _advance_one(self, sid: str, mode: str, config: dict, now: float) -> tuple[bool, bool]:
+        ctx = await self._get_context(sid)
+        if ctx is None:
+            return False, False
+        ledger = await self._ctx.get_target_state(sid)
+        ctx.ledger = ledger
+
+        # Global daily cap.
+        if len(self._day_actions) >= config["max_actions_per_day"]:
+            if not self._circuit_emitted:
+                self._circuit_emitted = True
+                await self._ctx.emit("warn", "daily action cap reached — pausing",
+                                     kind="circuit_open")
+            return False, False
+        self._circuit_emitted = False
+
+        decision = pre_decide(ctx, config, now)
+        if decision is None:
+            decision = post_validate(await self._decide_fn(ctx), ctx, config)
+        if decision.action == "skip":
+            await self._record_fingerprint(sid, ledger, ctx)
+            return False, False
+        if decision.action == "escalate":
+            await self._escalate(sid, ledger, decision)
+            return False, True
+
+        if mode == "propose":
+            await self._ctx.emit("info", f"{sid}: propose {decision.action} — {decision.reason}",
+                                 kind="proposed", session_id=sid,
+                                 detail={"action": decision.action, "reason": decision.reason})
+            return False, False
+
+        acted = await self._apply(sid, decision)
+        if acted:
+            self._day_actions.append(now)
+            await self._charge(sid, ledger, ctx, decision, now)
+            await self._ctx.emit("info", f"{sid}: {decision.action} — {decision.reason}",
+                                 kind="acted", session_id=sid,
+                                 detail={"action": decision.action})
+        return acted, False
+
+    async def _record_fingerprint(self, sid: str, ledger: dict, ctx: DecisionContext) -> None:
+        fp = fingerprint(ctx)
+        repeat = ledger.get("repeat_count", 0) + 1 if ledger.get("last_fingerprint") == fp else 1
+        new = dict(ledger)
+        new.update(last_fingerprint=fp, repeat_count=repeat)
+        await self._ctx.set_target_state(sid, new)
+
+    async def _charge(self, sid: str, ledger: dict, ctx: DecisionContext,
+                      decision: Decision, now: float) -> None:
+        fp = fingerprint(ctx)
+        repeat = ledger.get("repeat_count", 0) + 1 if ledger.get("last_fingerprint") == fp else 1
+        hour = [t for t in ledger.get("hour_actions", []) if t > now - 3600.0] + [now]
+        recovery = ledger.get("recovery_attempts", 0)
+        if ctx.stuck.get("kind") == "needs_attention" and decision.action == "nudge":
+            recovery += 1
+        new = dict(ledger)
+        new.update(hour_actions=hour, last_fingerprint=fp, repeat_count=repeat,
+                   recovery_attempts=recovery)
+        await self._ctx.set_target_state(sid, new)
+
+    async def _escalate(self, sid: str, ledger: dict, decision: Decision) -> None:
+        new = dict(ledger)
+        new["escalated"] = True
+        await self._ctx.set_target_state(sid, new)
+        await self._ctx.emit("warn", f"{sid}: needs human — {decision.reason}",
+                             kind="escalated", session_id=sid)
