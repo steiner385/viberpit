@@ -116,7 +116,7 @@ describe('SessionCard mobile declutter contract', () => {
   it('gates rename/archive/delete to desktop but keeps resume on mobile', () => {
     renderCard(rich)
     const secondary = screen.getByTestId('card-secondary-actions')
-    expect(secondary).toHaveClass('hidden', 'lg:flex')
+    expect(secondary).toHaveClass('hidden', 'lg:contents')
     expect(within(secondary).getByRole('button', { name: /rename session/i })).toBeInTheDocument()
     expect(within(secondary).getByRole('button', { name: /archive session/i })).toBeInTheDocument()
     expect(within(secondary).getByRole('button', { name: /delete session/i })).toBeInTheDocument()
