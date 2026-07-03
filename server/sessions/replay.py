@@ -153,7 +153,17 @@ def _build_events(path: str) -> tuple[list, object | None]:
             # it, forwarding only tool_result blocks from user messages), so suppress its
             # raw-XML bubble too. The tool_result-carried form still renders in its card.
             is_task_notification = text.lstrip().startswith("<task-notification>")
-            if (text or imgs) and not o.get("isMeta") and not is_task_notification:
+            # The CLI's auto-compaction summary ("This session is being continued from a
+            # previous conversation…") is a `type:"user"` entry flagged `isCompactSummary`
+            # / `isVisibleInTranscriptOnly` — NOT `isMeta`. It is a CLI-local artifact, not
+            # a real user prompt (the live stream never shows it). Emitting it as a
+            # UserMessage both renders a bogus giant bubble AND — because it is a
+            # UserMessage — becomes the `drop_incomplete_turn` boundary, so a live reattach
+            # would drop EVERY completed post-compaction turn (they live only on disk, not
+            # in the in-progress live buffer) and they vanish from the reloaded transcript.
+            is_compact_summary = bool(o.get("isCompactSummary"))
+            if (text or imgs) and not o.get("isMeta") and not is_task_notification \
+                    and not is_compact_summary:
                 out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
                                           images=imgs or None, ts=ts))
             out.extend(_tool_result_events(content, uuid, ts, None))
