@@ -30,3 +30,15 @@ def test_status_levels():
     assert st.level == "active" and "3 open" in st.text and "1 graduation" in st.text
     quiet = SimpleNamespace(cicd_doctor_counts={"open": 0, "candidates": 0})
     assert d.status(quiet).level == "idle"
+
+
+def test_status_errors():
+    d = CicdDoctor()
+    # errors with no open findings → warn (doctor is partially blind)
+    err_ctx = SimpleNamespace(cicd_doctor_counts={"open": 0, "candidates": 0, "errors": 2})
+    st = d.status(err_ctx)
+    assert st.level == "warn" and "2 repo error(s)" in st.text
+    # errors with open findings → active wins (but error count still visible in text)
+    both_ctx = SimpleNamespace(cicd_doctor_counts={"open": 1, "candidates": 0, "errors": 1})
+    st2 = d.status(both_ctx)
+    assert st2.level == "active" and "1 repo error(s)" in st2.text

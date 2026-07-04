@@ -46,11 +46,19 @@ class CicdDoctor:
         if not counts:
             return AutomationStatus(text="idle", level="idle")
         open_n, cand = counts.get("open", 0), counts.get("candidates", 0)
+        errors = counts.get("errors", 0)
         bits = [f"{open_n} open finding(s)"]
         if cand:
             bits.append(f"{cand} graduation candidate(s)")
-        return AutomationStatus(text=", ".join(bits),
-                                level="active" if open_n else "idle", counts=counts)
+        if errors:
+            bits.append(f"{errors} repo error(s)")
+        if open_n:
+            level = "active"
+        elif errors:
+            level = "warn"
+        else:
+            level = "idle"
+        return AutomationStatus(text=", ".join(bits), level=level, counts=counts)
 
     async def on_state_change(self, *, enabled: bool, mode: str | None,
                               config: dict, ctx: Any) -> None:
@@ -99,7 +107,7 @@ class CicdDoctorLoop:
         mode, config = await self._read_config()
         if mode == "off":
             return
-        open_total = candidates = 0
+        open_total = candidates = errors = 0
         for repo in await self._list_repos(config):
             try:
                 await self._ingest(repo)
@@ -108,10 +116,11 @@ class CicdDoctorLoop:
                 open_total += o
                 candidates += c
             except Exception:  # one repo must never stall the tick
+                errors += 1
                 log.warning("cicd_doctor.repo_failed repo=%s", repo, exc_info=True)
         await self._prune(config)
         setattr(self._ctx, "cicd_doctor_counts",
-                {"open": open_total, "candidates": candidates})
+                {"open": open_total, "candidates": candidates, "errors": errors})
 
     async def _ingest(self, repo: str) -> None:
         from sqlalchemy import select
@@ -198,12 +207,19 @@ class CicdDoctorLoop:
 
     async def _reconcile(self, repo: str, fresh: list, config: dict) -> tuple[int, int]:
         import json as _json
-        from sqlalchemy import select
+        from sqlalchemy import select, update as sa_update
         from server.db import db_session
         from server.db.models import CiFinding
         from server.db.models import _utcnow  # single source for tz-aware now
 
         fresh_by_fp = {f.fingerprint: f for f in fresh}
+
+        # Pass 1: compute all DB upserts/resolves; collect side effects for after commit.
+        to_emit: list[tuple] = []          # (level, summary, kind, target, detail)
+        to_file: list[tuple] = []          # (fingerprint, title, body)
+        to_close: list[int] = []           # issue numbers to close
+        open_n = candidates = 0
+
         async with db_session() as db:
             open_rows = (await db.execute(select(CiFinding).where(
                 CiFinding.repo == repo, CiFinding.status == "open"))).scalars().all()
@@ -214,26 +230,49 @@ class CicdDoctorLoop:
                     row = CiFinding(repo=repo, kind=f.kind, fingerprint=fp,
                                     status="open", title=f.title, detail=f.detail)
                     db.add(row)
-                    await db.flush()
-                    await self._ctx.emit("info", f"{repo}: {f.title}", kind="detected",
-                                         target=fp, detail=f.detail)
+                    to_emit.append(("info", f"{repo}: {f.title}", "detected", fp, f.detail))
                     if config.get("file_issues") and f.actionable:
                         body = (f"{f.title}\n\n```json\n"
                                 f"{_json.dumps(f.detail, indent=2)}\n```\n\n"
                                 "Filed by the ccswitch CI/CD Doctor (propose mode).")
-                        row.issue_number = await self._file_issue(repo, f.title, body)
+                        to_file.append((fp, f.title, body))
                 else:
                     row.title, row.detail, row.last_seen_at = f.title, f.detail, _utcnow()
+                    # FIX M1: retry filing for existing open rows that lost their issue
+                    # number due to a transient gh failure (makes docstring true).
+                    if (row.issue_number is None and config.get("file_issues")
+                            and f.actionable):
+                        body = (f"{f.title}\n\n```json\n"
+                                f"{_json.dumps(f.detail, indent=2)}\n```\n\n"
+                                "Filed by the ccswitch CI/CD Doctor (propose mode).")
+                        to_file.append((fp, f.title, body))
             for fp, row in open_by_fp.items():
                 if fp not in fresh_by_fp:
                     row.status, row.resolved_at = "resolved", _utcnow()
-                    await self._ctx.emit("info", f"{repo}: resolved — {row.title}",
-                                         kind="recovered", target=fp)
+                    to_emit.append(("info", f"{repo}: resolved — {row.title}",
+                                    "recovered", fp, None))
                     if row.issue_number:
-                        await self._close_issue(repo, row.issue_number)
-            await db.flush()
+                        to_close.append(row.issue_number)
             open_n = sum(1 for fp in fresh_by_fp)
             candidates = sum(1 for f in fresh_by_fp.values() if f.kind == "graduate_check")
+        # Pass 1 session committed; SQLite write lock released.
+
+        # Pass 2: run side effects now that the DB write lock is free.
+        for level, summary, kind, target, detail in to_emit:
+            await self._ctx.emit(level, summary, kind=kind, target=target, detail=detail)
+        for fp, title, body in to_file:
+            issue_number = await self._file_issue(repo, title, body)
+            if issue_number is not None:
+                # Write issue_number back in a short second session (match on fingerprint).
+                async with db_session() as db:
+                    await db.execute(
+                        sa_update(CiFinding)
+                        .where(CiFinding.repo == repo, CiFinding.fingerprint == fp,
+                               CiFinding.status == "open")
+                        .values(issue_number=issue_number))
+        for issue_number in to_close:
+            await self._close_issue(repo, issue_number)
+
         return open_n, candidates
 
     async def _prune(self, config: dict) -> None:

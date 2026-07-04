@@ -41,15 +41,18 @@ def list_completed_runs(repo: str, since_ts: float | None, *,
                         run=gitrepos._run_gh) -> list[dict]:
     date = ""
     if since_ts:
+        # Apply a 3-day lookback so runs created before since_ts but completed
+        # after it are not permanently dropped by a strict client-side cut.
+        lookback_ts = since_ts - 3 * 86400
         date = "&created=>=" + datetime.fromtimestamp(
-            since_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            lookback_ts, tz=timezone.utc).strftime("%Y-%m-%d")
     data = _json(run(["api", f"repos/{repo}/actions/runs"
                              f"?status=completed&per_page=100{date}"]))
     out = []
     for r in data.get("workflow_runs", []):
         created = _iso_ts(r.get("created_at")) or 0.0
-        if since_ts and created <= since_ts:
-            continue
+        # No strict client-side created <= since_ts filter: idempotence lives in
+        # _ingest's existing `seen` set (skips already-stored run ids).
         started, updated = _iso_ts(r.get("run_started_at")), _iso_ts(r.get("updated_at"))
         out.append({
             "id": r["id"], "workflow_path": r.get("path") or "",

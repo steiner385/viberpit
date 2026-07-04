@@ -15,7 +15,10 @@ def _ok(payload) -> SimpleNamespace:
     return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
 
 
-def test_list_completed_runs_normalizes_and_filters_cursor():
+def test_list_completed_runs_normalizes_and_3day_lookback():
+    """list_completed_runs applies a 3-day server-side lookback and returns all
+    runs the server returns (no strict client-side created <= since_ts filter).
+    Idempotence lives in _ingest's seen set, not here."""
     payload = {"workflow_runs": [
         {"id": 5, "path": ".github/workflows/ci.yml", "event": "pull_request",
          "head_sha": "abc", "head_branch": "feat", "conclusion": "success",
@@ -33,10 +36,13 @@ def test_list_completed_runs_normalizes_and_filters_cursor():
     from datetime import datetime, timezone
     cursor = datetime(2026, 6, 15, tzinfo=timezone.utc).timestamp()
     runs = list_completed_runs("o/r", cursor, run=fake_run)
-    assert [r["id"] for r in runs] == [5]           # cursor filters the June run
-    assert runs[0]["duration_s"] == 300.0
-    assert runs[0]["created_ts"] > cursor
+    # Both runs are returned — no client-side filtering; server uses 3-day lookback date.
+    assert [r["id"] for r in runs] == [4, 5]         # sorted by created_ts
+    assert runs[1]["duration_s"] == 300.0
     assert "actions/runs" in calls[0][1]
+    # The date qualifier uses since_ts - 3*86400, not since_ts itself.
+    lookback = datetime(2026, 6, 12, tzinfo=timezone.utc).strftime("%Y-%m-%d")
+    assert lookback in calls[0][1]
 
 
 def test_list_jobs_durations():

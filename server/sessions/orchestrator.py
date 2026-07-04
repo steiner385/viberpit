@@ -1335,18 +1335,11 @@ class SessionOrchestrator:
 
     async def _cicd_tick_once(self) -> None:
         """One tick + enabled-only last_active_at heartbeat (mirrors backlog)."""
-        from datetime import datetime, timezone
-        from sqlalchemy import select
-        from server.db.models import Automation
         await self._cicd_loop.tick()
         try:
             mode, _ = await self._cicd_read_config()
             if mode != "off":
-                async with db_session() as db:
-                    row = (await db.execute(select(Automation).where(
-                        Automation.id == "cicd-doctor"))).scalar_one_or_none()
-                    if row is not None:
-                        row.last_active_at = datetime.now(timezone.utc)
+                await self._bump_automation_active("cicd-doctor")
         except Exception:
             log.debug("cicd_doctor.heartbeat_failed", exc_info=True)
 
