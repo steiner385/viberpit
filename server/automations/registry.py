@@ -44,7 +44,9 @@ registry = AutomationRegistry()
 from .pr_doctor import PrDoctor  # noqa: E402  (register the built-in automations)
 from .backlog_runner import BacklogRunner  # noqa: E402
 from .autopilot import Autopilot  # noqa: E402
+from .cicd_doctor import CicdDoctor  # noqa: E402
 
 registry.register(PrDoctor())
 registry.register(BacklogRunner())
 registry.register(Autopilot())
+registry.register(CicdDoctor())
