@@ -30,6 +30,11 @@ class TriggerBody(BaseModel):
     kind: str
 
 
+class ConsolidateBody(BaseModel):
+    repo: str
+    numbers: list[int]
+
+
 async def _row(db, automation_id: str) -> AutomationRow:
     row = (await db.execute(
         select(AutomationRow).where(AutomationRow.id == automation_id))).scalar_one_or_none()
@@ -173,3 +178,23 @@ async def trigger_automation_action(automation_id: str, body: TriggerBody, reque
     if result.get("status") == "invalid_kind":
         raise HTTPException(status_code=422, detail=result.get("message", "invalid kind"))
     return result
+
+
+@router.get("/pr-doctor/consolidation")
+async def pr_doctor_consolidation(request: Request,
+                                  _identity: str = Depends(current_identity)) -> dict:
+    """Open PRs (per repo) + suggested consolidation clusters for the picker."""
+    _automation_or_404("pr-doctor")
+    orch = request.app.state.sessions
+    return await orch.consolidation_candidates()
+
+
+@router.post("/pr-doctor/consolidate")
+async def pr_doctor_consolidate(body: ConsolidateBody, request: Request,
+                                _identity: str = Depends(current_identity)) -> dict:
+    """Spawn one session to consolidate the selected PRs. Semantic rejections
+    (<2 PRs, closed PR) come back as graceful TriggerResults, not 4xx — only a
+    malformed body is a 422 (pydantic)."""
+    _automation_or_404("pr-doctor")
+    orch = request.app.state.sessions
+    return await orch.automation_consolidate(body.repo, body.numbers)
