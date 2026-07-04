@@ -58,6 +58,44 @@ jobs:
       - name: Lint
         run: npm run lint
       - name: Unit tests
-        run: npm run test
+        run: npm run test -- --reporter=default --reporter=junit --outputFile=test-results/vitest.xml
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-vitest
+          path: web/test-results/*.xml
+          retention-days: 30
       - name: Build
         run: npm run build
+
+  e2e:
+    # ADVISORY: intentionally NOT in branch-protection required checks. All 3
+    # specs mock the backend via page.route, so only the built frontend runs.
+    # The CI/CD Doctor tracks this job's stability and proposes graduation.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install deps
+        run: npm ci
+      - name: Install Playwright browser
+        run: npx playwright install chromium --with-deps
+      - name: Build
+        run: npm run build
+      - name: E2E tests
+        run: npx playwright test
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-e2e
+          path: web/test-results/*.xml
+          retention-days: 30
