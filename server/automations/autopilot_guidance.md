@@ -26,15 +26,16 @@ Bias to **escalate** whenever unsure. Safety beats progress.
 - Drive toward: tests+lint green → commit → push → PR ready → auto-merge armed.
 - Then judge the goal met.
 
-## Completion
-- `complete` only when the effective goal is genuinely met (for a code task: an open PR
-  with auto-merge armed), not merely because a turn ended.
+## Completion (uses `pr_facts` — verified PR state, do NOT infer from prose)
+`pr_facts` gives you the session's real PRs: `{has_repo, prs:[{number, state, is_draft, auto_merge_enabled}]}`.
+- An **armed** PR = `state:"open"`, `is_draft:false`, `auto_merge_enabled:true`. A **merged** PR means code landed.
+- `complete` ONLY when `pr_facts` shows an armed or merged PR, OR the goal is clearly
+  non-code (research / diagnosis / Q&A) and `has_repo` work isn't expected.
+- Code-oriented session (`has_repo:true`) with no armed PR → `nudge` toward tests+lint
+  green → commit → push → `gh pr ready` → `gh pr merge --squash --auto`. NEVER `complete`.
+- An open-but-un-armed PR is already force-nudged upstream; if you still see one, `nudge` to arm it.
 
 ## `complete` status (the session emitted its own completion marker)
-- This is a STRONG goal-met signal — the agent declared it finished. Confirm it against the
-  effective goal:
-  - Goal genuinely satisfied (code task: an open PR with auto-merge armed) → `complete`
-    (autopilot archives it).
-  - Marker was premature — the goal clearly demands more (no PR opened, tests still failing) →
-    `nudge` toward the remaining work.
-  - Only `escalate` when you genuinely can't tell.
+A STRONG signal the agent *believes* it is done — but confirm against `pr_facts`, not the
+marker alone. Armed/merged PR → `complete`. Premature marker (code goal, no armed PR) →
+`nudge` toward the remaining work. Only `escalate` when you genuinely can't tell.

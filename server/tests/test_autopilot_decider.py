@@ -92,3 +92,18 @@ def test_prompt_demands_json_only():
     from server.automations.autopilot_decider import _build_prompt
     p = _build_prompt(_ctx())
     assert "ONLY" in p and "JSON" in p
+
+
+from server.automations.autopilot_decider import _build_prompt
+from server.automations.autopilot_policy import DecisionContext
+from server.automations.completion_bar import PrFact, PrFacts
+
+
+def test_build_prompt_includes_pr_facts():
+    ctx = DecisionContext(
+        session_id="s1", status="complete", account="a", repo="o/r", branch="feat/x",
+        effective_goal="fix ci", goal_source="explicit", stuck={"kind": "complete"},
+        transcript_tail=[], ledger={},
+        pr_facts=PrFacts(has_repo=True, prs=(PrFact(7, "open", False, False, "u"),)))
+    prompt = _build_prompt(ctx)
+    assert "pr_facts" in prompt and "\"number\": 7" in prompt and "has_repo" in prompt
