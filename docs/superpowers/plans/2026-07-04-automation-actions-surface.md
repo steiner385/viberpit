@@ -656,19 +656,120 @@ git commit -m "feat(orchestrator): generic action dispatch + backlog candidate/c
 
 ---
 
-### Task 5: Generic API routes
+### Task 5: Generic API routes (daemon-safe)
 
 **Files:**
-- Modify: `server/api/automations.py`
+- Modify: `server/sessions/orchestrator.py` (`automation_trigger` structured returns)
+- Modify: `server/sessions/remote.py` (RemoteOrchestrator proxies)
+- Modify: `server/sessions/facade.py` (delegations)
+- Modify: `server/ipc/orchestrator_rpc.py` (RPC registration)
+- Modify: `server/api/automations.py` (generic routes)
 - Test: `server/tests/test_automation_actions_api.py` (new)
 
 **Interfaces:**
-- Consumes: `orch.automation_actionable`, `orch.automation_trigger`, `orch.automation_action_kinds` (Task 4).
-- Produces: `GET /api/automations/{id}/actionable` → `list[dict]`; `POST /api/automations/{id}/trigger` (body `{item_id, kind}`) → `dict` (a `TriggerResult`). Unknown automation → 404; automation without a provider → 404; unknown kind → 422.
+- Consumes: `orch.automation_actionable(id)`, `orch.automation_trigger(id, item_id, kind)` (Task 4). `automation_action_kinds` stays an INTERNAL orchestrator helper (used by `automation_trigger`); the API no longer calls it, so it needs no proxy.
+- Produces: `GET /api/automations/{id}/actionable` → `list[dict]` (200; provider-less known automation → `[]`); `POST /api/automations/{id}/trigger` (body `{item_id, kind}`) → `dict`. Unknown automation id (not in registry) → 404 via `_automation_or_404`. Provider-less automation trigger → 404. Unknown kind → 422. These last two are derived from the `automation_trigger` result `status`, NOT from a separate sync call — so the API only calls two async, RPC-proxyable methods.
 
-- [ ] **Step 1: Write the failing test**
+**Why the redesign (daemon safety):** `server/tests/test_remote_orchestrator_breadth.py` AST-scans `server/api`, `server/bridge`, `server/auth` for `orch.*` call sites and fails CI if any called method lacks a callable on `RemoteOrchestrator`. A sync `automation_action_kinds` cannot be proxied over async RPC, so the API must not call it. Instead, `automation_trigger` returns a structured status the API maps to HTTP codes, and both async methods get proxy + RPC wiring mirroring the proven `pr_doctor_actionable` (list) and `automation_statuses` (dict) patterns.
 
-Create `server/tests/test_automation_actions_api.py`:
+- [ ] **Step 1: Make `automation_trigger` return structured no-provider / invalid-kind (RED first)**
+
+Add a focused orchestrator test. Create `server/tests/test_automation_trigger_validation.py`:
+
+```python
+import os
+from unittest.mock import patch
+
+import pytest
+
+from server.sessions.orchestrator import SessionOrchestrator
+from server.tests.fakes.fake_factory import fake_sdk_factory
+
+
+def _orch():
+    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
+                                 "CCSWITCH_DEV": "1"}):
+        return SessionOrchestrator(sdk_factory=fake_sdk_factory())
+
+
+@pytest.mark.asyncio
+async def test_trigger_no_provider_returns_structured_status():
+    r = await _orch().automation_trigger("cicd-doctor", "x", "y")
+    assert r["status"] == "no_provider"
+    assert r["level"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_trigger_invalid_kind_returns_structured_status():
+    r = await _orch().automation_trigger("pr-doctor", "owner/repo#1", "bogus")
+    assert r["status"] == "invalid_kind"
+    assert r["level"] == "error"
+```
+
+Run: `PYTHONPATH=.:src CCSWITCH_DEV=1 python3 -m pytest server/tests/test_automation_trigger_validation.py -v`
+Expected: FAIL — the Task-4 `automation_trigger` raises `KeyError` for no-provider and does not validate kind.
+
+- [ ] **Step 2: Replace `automation_trigger`'s body**
+
+In `server/sessions/orchestrator.py`, replace the Task-4 `automation_trigger` method with:
+
+```python
+    async def automation_trigger(self, automation_id: str, item_id: str, kind: str) -> dict:
+        """Dispatch a manual action; returns a TriggerResult dict, or a structured
+        error status the API maps to HTTP codes (no exceptions across the RPC seam)."""
+        provider = self._action_providers.get(automation_id)
+        if provider is None:
+            return {"status": "no_provider", "level": "error",
+                    "message": "automation has no action provider"}
+        if kind not in provider.valid_kinds:
+            return {"status": "invalid_kind", "level": "error",
+                    "message": f"invalid kind {kind!r}"}
+        return (await provider.trigger(item_id, kind)).to_dict()
+```
+
+Run: `PYTHONPATH=.:src CCSWITCH_DEV=1 python3 -m pytest server/tests/test_automation_trigger_validation.py server/tests/test_orchestrator_action_dispatch.py -v`
+Expected: PASS. (The Task-4 dispatch test asserted `automation_action_kinds`/`automation_actionable` behavior and did not assert the KeyError, so it stays green.)
+
+- [ ] **Step 3: Add RemoteOrchestrator proxies + facade delegations + RPC registration**
+
+In `server/sessions/remote.py`, add proxy methods next to the existing `pr_doctor_actionable`/`pr_doctor_fix` proxies. Mirror `pr_doctor_actionable` (which returns `{"prs": ...}` and unwraps) for the list method, and the simple str/dict proxies for the trigger:
+
+```python
+    async def automation_actionable(self, automation_id: str) -> "list[dict]":
+        """Actionable items for *automation_id*, via the daemon."""
+        r = await self._client.call("automation_actionable", automation_id=automation_id)
+        return r.get("items") or []
+
+    async def automation_trigger(self, automation_id: str, item_id: str, kind: str) -> dict:
+        """Trigger a manual action for an item on *automation_id*, via the daemon."""
+        return await self._client.call("automation_trigger", automation_id=automation_id,
+                                       item_id=item_id, kind=kind)
+```
+
+In `server/sessions/facade.py`, add delegations next to the existing `pr_doctor_actionable`/`pr_doctor_fix` lines:
+
+```python
+    async def automation_actionable(self, *a, **k): return await _maybe_await(self._orch.automation_actionable(*a, **k))
+    async def automation_trigger(self, *a, **k): return await _maybe_await(self._orch.automation_trigger(*a, **k))
+```
+
+In `server/ipc/orchestrator_rpc.py`: the list method needs a custom handler that wraps in a dict (mirror the existing `pr_doctor_actionable` handler that returns `{"prs": prs}`). Add near that handler:
+
+```python
+    async def automation_actionable(params: dict) -> dict:
+        items = await orch.automation_actionable(params["automation_id"])
+        return {"items": items}
+
+    register_rpc(app, "automation_actionable", automation_actionable)
+```
+
+The trigger method returns a JSON-safe dict, so add `"automation_trigger"` to the `_SIMPLE` list (alongside `"pr_doctor_fix"`, `"backlog_runner_implement"`, `"automation_statuses"`).
+
+> Do NOT add `automation_action_kinds` anywhere in remote/facade/rpc — it is internal and never called by the request layer, so the breadth test won't require it.
+
+- [ ] **Step 4: Write the API tests (RED)**
+
+Create `server/tests/test_automation_actions_api.py`. The fake orchestrator models the real `automation_trigger` contract (it returns whatever status the test needs); the API's job under test is routing + status→HTTP mapping:
 
 ```python
 import os
@@ -677,14 +778,10 @@ from unittest.mock import patch
 
 
 class _FakeOrch:
-    def __init__(self, *, actionable=None, result=None, kinds=frozenset({"failing_ci"})):
+    def __init__(self, *, actionable=None, result=None):
         self._actionable = actionable or []
         self._result = result or {"status": "spawned", "level": "ok", "message": "Spawned fix session"}
-        self._kinds = kinds
         self.trigger_calls = []
-
-    def automation_action_kinds(self, automation_id):
-        return self._kinds
 
     async def automation_actionable(self, automation_id):
         return self._actionable
@@ -719,7 +816,21 @@ def test_actionable_lists_items():
     assert r.json() == items
 
 
-def test_trigger_routes_and_returns_result():
+def test_actionable_provider_less_returns_empty():
+    # cicd-doctor is a real registry automation with no action provider → 200 [].
+    with _client(_FakeOrch(actionable=[])) as c:
+        r = c.get("/api/automations/cicd-doctor/actionable")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_actionable_unknown_automation_404():
+    with _client(_FakeOrch()) as c:
+        r = c.get("/api/automations/does-not-exist/actionable")
+    assert r.status_code == 404
+
+
+def test_trigger_ok_returns_result():
     orch = _FakeOrch()
     with _client(orch) as c:
         r = c.post("/api/automations/pr-doctor/trigger",
@@ -729,33 +840,28 @@ def test_trigger_routes_and_returns_result():
     assert orch.trigger_calls == [("pr-doctor", "o/r#7", "failing_ci")]
 
 
-def test_trigger_unknown_kind_422():
-    with _client(_FakeOrch(kinds=frozenset({"failing_ci"}))) as c:
+def test_trigger_invalid_kind_maps_422():
+    bad = {"status": "invalid_kind", "level": "error", "message": "invalid kind 'bogus'"}
+    with _client(_FakeOrch(result=bad)) as c:
         r = c.post("/api/automations/pr-doctor/trigger",
                    json={"item_id": "o/r#7", "kind": "bogus"})
     assert r.status_code == 422
 
 
-def test_actionable_provider_less_automation_404():
-    with _client(_FakeOrch(kinds=None)) as c:
-        r = c.get("/api/automations/cicd-doctor/actionable")
-    assert r.status_code == 404
-
-
-def test_actionable_unknown_automation_404():
-    with _client(_FakeOrch()) as c:
-        r = c.get("/api/automations/does-not-exist/actionable")
+def test_trigger_no_provider_maps_404():
+    bad = {"status": "no_provider", "level": "error", "message": "automation has no action provider"}
+    with _client(_FakeOrch(result=bad)) as c:
+        r = c.post("/api/automations/cicd-doctor/trigger",
+                   json={"item_id": "o/r#7", "kind": "failing_ci"})
     assert r.status_code == 404
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
-
 Run: `PYTHONPATH=.:src CCSWITCH_DEV=1 python3 -m pytest server/tests/test_automation_actions_api.py -v`
-Expected: FAIL — 404s on the new routes (routes not defined yet).
+Expected: FAIL — routes not defined yet.
 
-- [ ] **Step 3: Add the generic routes**
+- [ ] **Step 5: Add the generic API routes**
 
-In `server/api/automations.py`, add a request model near the top models:
+In `server/api/automations.py`, add a request model near the other models:
 
 ```python
 class TriggerBody(BaseModel):
@@ -763,46 +869,47 @@ class TriggerBody(BaseModel):
     kind: str
 ```
 
-Then add the routes (place them after `patch_automation`, before the pr-doctor-specific block that Task 6 removes):
+Then add the routes after `patch_automation` (before the pr-doctor-specific block Task 6 removes):
 
 ```python
 @router.get("/{automation_id}/actionable")
-async def automation_actionable(automation_id: str, request: Request,
-                                _identity: str = Depends(current_identity)) -> list[dict]:
+async def list_automation_actionable(automation_id: str, request: Request,
+                                     _identity: str = Depends(current_identity)) -> list[dict]:
     """Detected items an automation can act on now, for the card's action buttons."""
     _automation_or_404(automation_id)
     orch = request.app.state.sessions
-    if orch.automation_action_kinds(automation_id) is None:
-        raise HTTPException(status_code=404, detail="automation has no action provider")
     return await orch.automation_actionable(automation_id)
 
 
 @router.post("/{automation_id}/trigger")
-async def automation_trigger(automation_id: str, body: TriggerBody, request: Request,
-                             _identity: str = Depends(current_identity)) -> dict:
+async def trigger_automation_action(automation_id: str, body: TriggerBody, request: Request,
+                                    _identity: str = Depends(current_identity)) -> dict:
     """Fire one manual action on an actionable item; returns the TriggerResult."""
     _automation_or_404(automation_id)
     orch = request.app.state.sessions
-    kinds = orch.automation_action_kinds(automation_id)
-    if kinds is None:
-        raise HTTPException(status_code=404, detail="automation has no action provider")
-    if body.kind not in kinds:
-        raise HTTPException(status_code=422, detail=f"invalid kind {body.kind!r}")
-    return await orch.automation_trigger(automation_id, body.item_id, body.kind)
+    result = await orch.automation_trigger(automation_id, body.item_id, body.kind)
+    if result.get("status") == "no_provider":
+        raise HTTPException(status_code=404, detail=result.get("message", "no action provider"))
+    if result.get("status") == "invalid_kind":
+        raise HTTPException(status_code=422, detail=result.get("message", "invalid kind"))
+    return result
 ```
 
-> **Route ordering note:** FastAPI matches routes in declaration order. Declare these `/{automation_id}/actionable` and `/{automation_id}/trigger` routes AFTER any literal-path routes under the same prefix would be unaffected (they use distinct suffixes), but BEFORE Task 6 deletes the `/pr-doctor/actionable` literal route — during the transition both exist and FastAPI prefers the literal `/pr-doctor/actionable` match, which is harmless (same data). After Task 6 only the generic route remains.
-
-- [ ] **Step 4: Run test to verify it passes**
+> **Route ordering note:** During the transition both `/pr-doctor/actionable` (literal, removed in Task 6) and `/{automation_id}/actionable` (generic) exist; FastAPI prefers the literal match, which returns identical data. Harmless.
 
 Run: `PYTHONPATH=.:src CCSWITCH_DEV=1 python3 -m pytest server/tests/test_automation_actions_api.py -v`
-Expected: PASS (5 passed).
+Expected: PASS (6 passed).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Run the daemon breadth gate**
+
+Run: `PYTHONPATH=.:src CCSWITCH_DEV=1 python3 -m pytest server/tests/test_remote_orchestrator_breadth.py -v`
+Expected: PASS — the new API call sites (`orch.automation_actionable`, `orch.automation_trigger`) are covered by the proxies added in Step 3. If it reports a missing method, add the proxy it names (do NOT add it to `_LOCAL_ONLY` — these are genuinely request-layer methods).
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add server/api/automations.py server/tests/test_automation_actions_api.py
-git commit -m "feat(api): generic /automations/{id}/actionable + /trigger routes"
+git add server/sessions/orchestrator.py server/sessions/remote.py server/sessions/facade.py server/ipc/orchestrator_rpc.py server/api/automations.py server/tests/test_automation_trigger_validation.py server/tests/test_automation_actions_api.py
+git commit -m "feat(api): generic /automations/{id}/actionable + /trigger routes with daemon proxy wiring"
 ```
 
 ---
@@ -829,7 +936,8 @@ from unittest.mock import patch
 
 
 class _FakeOrch:
-    """Records automation_trigger calls; serves canned actionable/kinds."""
+    """Records automation_trigger calls; models the trigger status contract
+    (invalid kind → structured 'invalid_kind' status, as the real orchestrator does)."""
 
     def __init__(self, *, actionable=None,
                  result=None, kinds=frozenset({"failing_ci", "merge_conflict", "out_of_date"})):
@@ -838,13 +946,12 @@ class _FakeOrch:
         self._kinds = kinds
         self.trigger_calls = []
 
-    def automation_action_kinds(self, automation_id):
-        return self._kinds
-
     async def automation_actionable(self, automation_id):
         return self._actionable
 
     async def automation_trigger(self, automation_id, item_id, kind):
+        if kind not in self._kinds:
+            return {"status": "invalid_kind", "level": "error", "message": f"invalid kind {kind!r}"}
         self.trigger_calls.append((item_id, kind))
         return self._result
 
@@ -911,12 +1018,24 @@ In `server/api/automations.py`, delete: the `pr_doctor_actionable` route (`@rout
 
 - [ ] **Step 3: Delete the old orchestrator methods**
 
-In `server/sessions/orchestrator.py`, delete `async def pr_doctor_actionable`, `async def pr_doctor_fix`, and the `async def backlog_runner_implement` shim added in Task 4. Keep every private helper (`_pr_doctor_session_fix`, `_pr_doctor_mechanical`, `_pr_doctor_owning_rec`, `_pr_doctor_scope_pairs`, `backlog_runner_implement_core`, `backlog_candidates`).
+In `server/sessions/orchestrator.py`, delete `async def pr_doctor_actionable`, `async def pr_doctor_fix`, and the `async def backlog_runner_implement` shim added in Task 4. Keep every private helper (`_pr_doctor_session_fix`, `_pr_doctor_mechanical`, `_pr_doctor_owning_rec`, `_pr_doctor_scope_pairs`, `backlog_runner_implement_core`, `backlog_candidates`). **Keep `request_pr_fix`** — it is a separate live-session inject path still used by `_pr_doctor_session_fix`, not one of the deleted methods.
+
+- [ ] **Step 3b: Delete the now-dead daemon proxies for the removed methods**
+
+These three methods had RPC/proxy wiring that is now dead (nothing in the request layer calls them). Purge it in the same PR (no half-dead code):
+- `server/sessions/remote.py`: delete the `pr_doctor_actionable`, `pr_doctor_fix`, and `backlog_runner_implement` proxy methods. Keep `automation_actionable`/`automation_trigger` (Task 5) and `request_pr_fix`.
+- `server/sessions/facade.py`: delete the `pr_doctor_actionable`, `pr_doctor_fix`, `backlog_runner_implement` delegation lines. Keep the `automation_*` ones and `request_pr_fix`.
+- `server/ipc/orchestrator_rpc.py`: delete the explicit `pr_doctor_actionable` handler + its `register_rpc(app, "pr_doctor_actionable", ...)`, and remove `"pr_doctor_fix"` and `"backlog_runner_implement"` from the `_SIMPLE` list. Keep `"request_pr_fix"`, `"automation_statuses"`, and the Task-5 `automation_trigger`/`automation_actionable` registrations.
 
 - [ ] **Step 4: Verify nothing else references the deleted symbols**
 
 Run: `cd /mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/ccswitch/747d5970 && grep -rn "pr_doctor_fix\|pr_doctor_actionable\|backlog_runner_implement\b\|PrDoctorFixBody\|BacklogImplementBody\|_PR_DOCTOR_FIX_KINDS" server/ --include=*.py | grep -v test`
-Expected: no matches (empty output).
+Expected: no matches (empty output). Note: `request_pr_fix` and `backlog_runner_implement_core` must NOT appear in the results — the pattern (`pr_doctor_fix`, `backlog_runner_implement\b`) is written to exclude them; if either shows up, you deleted the wrong thing.
+
+- [ ] **Step 4b: Re-run the daemon breadth gate**
+
+Run: `PYTHONPATH=.:src CCSWITCH_DEV=1 python3 -m pytest server/tests/test_remote_orchestrator_breadth.py -v`
+Expected: PASS — removing the dead proxies alongside their only call sites keeps the request-layer/proxy sets consistent.
 
 - [ ] **Step 5: Run the backend suite for the touched areas**
 
@@ -926,8 +1045,8 @@ Expected: PASS. Then run any backlog API test that referenced `/backlog-runner/i
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/api/automations.py server/sessions/orchestrator.py server/tests/
-git commit -m "refactor(automations): remove one-off pr-doctor/backlog action routes; use generic path"
+git add server/api/automations.py server/sessions/orchestrator.py server/sessions/remote.py server/sessions/facade.py server/ipc/orchestrator_rpc.py server/tests/
+git commit -m "refactor(automations): remove one-off pr-doctor/backlog action routes + dead proxies; use generic path"
 ```
 
 ---
