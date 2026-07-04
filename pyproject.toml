@@ -29,6 +29,7 @@ server = [
     "pytest",
     "pytest-asyncio",
   "pytest-cov",
+    "pyyaml",
     "ruff",
     "mypy",
     "pydantic-settings",
@@ -55,3 +56,9 @@ ignore = [
 # unpacking (F841). Neither is a defect in test code.
 "**/tests/**" = ["E402", "F841"]
 "tests/**" = ["E402", "F841"]
+
+[tool.pytest.ini_options]
+testpaths = ["server/tests", "tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"

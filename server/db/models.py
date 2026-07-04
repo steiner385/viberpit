@@ -285,3 +285,74 @@ class AutomationTargetState(Base):
     state: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class CiRun(Base):
+    """One completed GitHub Actions workflow run (CI/CD Doctor sensing).
+    id is the GitHub run id (globally unique). All non-PK columns nullable so
+    init_db backfills the dev SQLite DB without a migration."""
+
+    __tablename__ = "ci_run"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    workflow_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    event: Mapped[str | None] = mapped_column(String, nullable=True)
+    head_sha: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    head_branch: Mapped[str | None] = mapped_column(String, nullable=True)
+    conclusion: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_ts: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
+    duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class CiJob(Base):
+    """One job (== status-check context) inside a CiRun. sha/branch/created_ts
+    are denormalized from the run so the analyzers query a single table."""
+
+    __tablename__ = "ci_job"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)  # GitHub job id
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    conclusion: Mapped[str | None] = mapped_column(String, nullable=True)
+    duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    head_sha: Mapped[str | None] = mapped_column(String, nullable=True)
+    head_branch: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_ts: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
+
+
+class CiTestResult(Base):
+    """One test-case outcome parsed from a run's JUnit artifact."""
+
+    __tablename__ = "ci_test_result"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    suite: Mapped[str | None] = mapped_column(String, nullable=True)
+    test_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    outcome: Mapped[str | None] = mapped_column(String, nullable=True)  # passed/failed/error/skipped
+    time_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    head_sha: Mapped[str | None] = mapped_column(String, nullable=True)
+    head_branch: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_ts: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
+
+
+class CiFinding(Base):
+    """A persistent CI/CD Doctor finding: fingerprint-deduped, lifecycle
+    open -> resolved. issue_number links the filed ci-doctor GitHub issue."""
+
+    __tablename__ = "ci_finding"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    kind: Mapped[str | None] = mapped_column(String, nullable=True)
+    fingerprint: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="open")
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=_utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
