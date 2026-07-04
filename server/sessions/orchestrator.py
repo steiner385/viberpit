@@ -352,6 +352,32 @@ class SessionOrchestrator:
             archive=self._autopilot_archive,
         )
         self._autopilot_task: asyncio.Task | None = None
+        # CI/CD Doctor control loop: system-level CI health (flaky tests, check
+        # graduation, waste). Real seams shell out to gh via asyncio.to_thread.
+        from server.automations.cicd_doctor import CicdDoctorLoop
+        from server.github import actions_api, ci_issues
+        self._cicd_ctx = AutomationContext("cicd-doctor")
+        self._cicd_loop = CicdDoctorLoop(
+            self._cicd_ctx,
+            read_config=self._cicd_read_config,
+            list_repos=self._cicd_list_repos,
+            fetch_runs=lambda repo, since: asyncio.to_thread(
+                actions_api.list_completed_runs, repo, since),
+            fetch_jobs=lambda repo, rid: asyncio.to_thread(
+                actions_api.list_jobs, repo, rid),
+            fetch_junit=lambda repo, rid: asyncio.to_thread(
+                actions_api.junit_artifacts, repo, rid),
+            fetch_repo_meta=lambda repo: asyncio.to_thread(
+                actions_api.repo_ci_meta, repo),
+            fetch_workflows=lambda repo, branch: asyncio.to_thread(
+                actions_api.workflow_texts, repo, branch),
+            file_issue=lambda repo, title, body: asyncio.to_thread(
+                ci_issues.create_issue, repo, title, body),
+            close_issue=lambda repo, n: asyncio.to_thread(
+                ci_issues.close_issue, repo, n),
+            clock=time.time,  # wall clock: created_ts from GitHub is epoch time
+        )
+        self._cicd_task: asyncio.Task | None = None
         # Fire-and-forget task registry (issue #405). Every detached ``create_task``
         # (persist, rotation, recovery, summary/proposal refresh, backlog nudge …) is
         # routed through ``_spawn`` so ``stop()`` can cancel+await ALL of them. An
@@ -467,6 +493,11 @@ class SessionOrchestrator:
         self._autopilot_task = asyncio.create_task(
             self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
         )
+        # CI/CD Doctor: slow cadence — CI history moves in minutes, not seconds,
+        # and each tick costs several REST calls per repo.
+        self._cicd_task = asyncio.create_task(
+            self._cicd_tick_loop(interval=900.0), name="cicd-doctor-loop"
+        )
 
     async def _refresh_idle_tokens_once(self) -> None:
         """Proactively refresh idle accounts' access tokens (best-effort).
@@ -518,7 +549,7 @@ class SessionOrchestrator:
             self._pr_branch_task = None
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
                      "_token_refresh_task", "_backlog_task", "_autopilot_task",
-                     "_drain_timer"):
+                     "_cicd_task", "_drain_timer"):
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
@@ -1292,6 +1323,67 @@ class SessionOrchestrator:
                 await self._bump_automation_active("backlog-runner")
         except Exception:  # pragma: no cover — a heartbeat failure must not stall
             log.debug("backlog_runner.bump_active_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # CI/CD Doctor control-loop dependencies (injected into CicdDoctorLoop)
+    # ------------------------------------------------------------------
+
+    async def _cicd_tick_loop(self, interval: float) -> None:
+        while True:
+            await self._cicd_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _cicd_tick_once(self) -> None:
+        """One tick + enabled-only last_active_at heartbeat (mirrors backlog)."""
+        from datetime import datetime, timezone
+        from sqlalchemy import select
+        from server.db.models import Automation
+        await self._cicd_loop.tick()
+        try:
+            mode, _ = await self._cicd_read_config()
+            if mode != "off":
+                async with db_session() as db:
+                    row = (await db.execute(select(Automation).where(
+                        Automation.id == "cicd-doctor"))).scalar_one_or_none()
+                    if row is not None:
+                        row.last_active_at = datetime.now(timezone.utc)
+        except Exception:
+            log.debug("cicd_doctor.heartbeat_failed", exc_info=True)
+
+    async def _cicd_read_config(self) -> tuple[str, dict]:
+        """(effective mode, validated config) for cicd-doctor; off + defaults on
+        any bad row so a corrupt config can never act."""
+        from sqlalchemy import select
+        from server.automations.base import validate_config
+        from server.automations.cicd_doctor import CicdDoctor
+        from server.db.models import Automation
+        enabled, mode, raw = False, None, {}
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "cicd-doctor"))).scalar_one_or_none()
+                if row is not None:
+                    enabled, mode = bool(row.enabled), row.mode
+                    raw = dict(row.config) if row.config else {}
+        except Exception:
+            log.debug("cicd_doctor.config.load_failed", exc_info=True)
+        try:
+            config = validate_config(CicdDoctor.config_schema, raw)
+        except ValueError:
+            config = validate_config(CicdDoctor.config_schema, {})
+        return (mode if (enabled and mode == "propose") else "off"), config
+
+    async def _cicd_list_repos(self, config: dict) -> list[str]:
+        """enabled_repos config, or every distinct repo ccswitch manages."""
+        from sqlalchemy import select
+        pinned = config.get("enabled_repos") or []
+        if pinned:
+            return list(pinned)
+        async with db_session() as db:
+            rows = (await db.execute(
+                select(DbSession.repo).where(DbSession.repo.is_not(None))
+                .distinct())).scalars().all()
+        return sorted(r for r in rows if r)
 
     # ------------------------------------------------------------------
     # Autopilot control-loop dependencies (injected into AutopilotLoop)
@@ -2642,6 +2734,8 @@ class SessionOrchestrator:
         ctxs = {
             "pr-doctor": getattr(self, "_pr_doctor_ctx", None),
             "backlog-runner": getattr(self, "_backlog_ctx", None),
+            "autopilot": getattr(self, "_autopilot_ctx", None),
+            "cicd-doctor": getattr(self, "_cicd_ctx", None),
         }
         out: dict[str, dict] = {}
         for a in registry.all():
