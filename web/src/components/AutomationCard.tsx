@@ -4,7 +4,7 @@ import {
   useAutomationEvents, useAutomationSessions, useGithubRepos, usePatchAutomation,
   usePrDoctorActionable, usePrDoctorFix,
 } from '@/api/hooks'
-import type { Automation, ConfigField, PrDoctorKind } from '@/api/automations'
+import type { Automation, AutomationPatch, ConfigField, PrDoctorKind } from '@/api/automations'
 
 const LEVEL_DOT: Record<string, string> = {
   idle: 'bg-gray-400', active: 'bg-blue-500', warn: 'bg-amber-500', error: 'bg-red-500',
@@ -291,7 +291,19 @@ export function AutomationCard({ automation: a, onOpenSession, onReviewSession }
           role="switch"
           aria-checked={a.enabled}
           aria-label={`${a.name} enabled`}
-          onClick={() => patch.mutate({ id: a.id, body: { enabled: !a.enabled } })}
+          onClick={() => {
+            const enabling = !a.enabled
+            const body: AutomationPatch = { enabled: enabling }
+            // A 2-mode automation (off/propose) hides the mode <select>, so the
+            // toggle is its only control: enabling with no active mode must also
+            // set one, else the row is enabled but stuck 'off'. Never stomp an
+            // already-chosen active mode (e.g. a 3-mode 'auto').
+            const active = a.modes.filter((m) => m !== 'off')
+            if (enabling && active.length > 0 && !active.includes(a.mode ?? '')) {
+              body.mode = active[0]
+            }
+            patch.mutate({ id: a.id, body })
+          }}
           className={cn('relative w-10 h-6 rounded-full transition-colors',
             a.enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600')}
         >

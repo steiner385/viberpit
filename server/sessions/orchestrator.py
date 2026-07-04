@@ -1364,7 +1364,13 @@ class SessionOrchestrator:
             config = validate_config(CicdDoctor.config_schema, raw)
         except ValueError:
             config = validate_config(CicdDoctor.config_schema, {})
-        return (mode if (enabled and mode == "propose") else "off"), config
+        # cicd-doctor is a 2-mode (off/propose) automation, so the UI hides the
+        # mode <select> and its toggle enables the row with mode left NULL. Resolve
+        # enabled + no explicit mode to the first non-off mode (the least-invasive
+        # active mode by convention), else an enabled row is stuck 'off' forever.
+        active = [m for m in CicdDoctor.modes if m != "off"]
+        effective = (mode if mode in active else active[0]) if enabled else "off"
+        return effective, config
 
     async def _cicd_list_repos(self, config: dict) -> list[str]:
         """enabled_repos config, or every distinct repo ccswitch manages."""
