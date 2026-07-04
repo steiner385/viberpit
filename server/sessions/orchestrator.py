@@ -1962,6 +1962,13 @@ class SessionOrchestrator:
                 name=f"pr-doctor fix {target}",
                 initial_prompt=prompt,
             )
+        except AllAccountsBusy:
+            # Every account is at/above the usage ceiling → defer, not fail. Attempt
+            # NOT consumed; surfaced to the user as a warn, not a silent no-op.
+            await self._pr_doctor_ctx.emit(
+                "warn", f"spawn deferred for {target}: all accounts at/above usage ceiling",
+                kind="spawn_failed", target=target)
+            return "ceiling", None
         except Exception as exc:
             # Spawn failed → error + notify, attempt NOT consumed.
             await self._pr_doctor_ctx.emit(
