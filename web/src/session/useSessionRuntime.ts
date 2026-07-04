@@ -98,7 +98,17 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
 
   // Attach / detach + subscribe to session events
   useEffect(() => {
-    const onEvent = (e: SessionEvent) => dispatch(e)
+    const onEvent = (e: SessionEvent) => {
+      // Ignore any event tagged for a DIFFERENT session. Replay frames (replayReset,
+      // replay content, replayComplete) are now stamped server-side with their owning
+      // sessionId, just like live events. A stale replay for a session the user has
+      // navigated away from must not reach this reducer — its replayReset would wipe
+      // this session's transcript to empty (the blank-on-navigation bug). Untagged
+      // frames (no sessionId) pass through unchanged.
+      const sid = (e as { sessionId?: string }).sessionId
+      if (sid && sid !== sessionId) return
+      dispatch(e)
+    }
     const onRotated = (msg: WsRotatedMsg) => {
       if (msg.sessionId !== sessionId) return
       // Route into the reducer so the rotation is anchored into the transcript

@@ -42,11 +42,27 @@ describe('handleLiveBatch', () => {
     expect(r.needsHeal).toBe(false)
   })
 
-  it('passes through events without seq/sessionId (replay/lifecycle) untouched', () => {
+  it('passes through untagged lifecycle events for the active session', () => {
     const state = createGapState()
-    const replayReset = { type: 'replayReset' } as SessionEvent
+    const replayReset = { type: 'replayReset', sessionId: 's1' } as unknown as SessionEvent
     const r = handleLiveBatch([replayReset], { activeSessionId: 's1', state })
     expect(r.dispatch).toEqual([replayReset])
+    expect(r.needsHeal).toBe(false)
+  })
+
+  it('drops a replayReset tagged for a non-active session (blank-on-navigation guard)', () => {
+    // A stale replay for session s2 arriving after the user navigated to s1 must NOT
+    // reach s1's reducer: its replayReset would wipe s1's transcript to empty. Now that
+    // the server tags replay frames with their sessionId, handleLiveBatch drops it.
+    const state = createGapState()
+    const r = handleLiveBatch(
+      [
+        { type: 'replayReset', sessionId: 's2' } as unknown as SessionEvent,
+        ev({ sessionId: 's2', text: 'stale history' }),
+      ],
+      { activeSessionId: 's1', state },
+    )
+    expect(r.dispatch).toHaveLength(0)
     expect(r.needsHeal).toBe(false)
   })
 })

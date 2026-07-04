@@ -140,12 +140,22 @@ async def _run_replay_and_complete(orchestrator, send, session_id: str,
         # "Beginning of session" state and double-appends it on the next reconnect
         # (#390 regression: the old `if events:` guard skipped the reset here).
         if events or drop_incomplete:
-            redacted_replay = [{"type": "replayReset"}]
-            redacted_replay += [redact_event(e.to_wire()) for e in events]
+            # Tag every replay frame with its owning sessionId, exactly as the live
+            # stream stamps _forward_live events. Without the tag the client routes
+            # replay frames by whichever session is subscribed when they arrive, not by
+            # identity — so a stale replay for session A landing just after the user
+            # navigates to B applies to B: the untagged replayReset wipes B's transcript
+            # and its history never returns (blank-on-navigation bug). Tagging lets the
+            # client (handleLiveBatch / useSessionRuntime.onEvent) drop a replay meant
+            # for a session it is no longer viewing.
+            redacted_replay = [{"type": "replayReset", "sessionId": session_id}]
+            redacted_replay += [{**redact_event(e.to_wire()), "sessionId": session_id}
+                                for e in events]
             await send({"type": "batch", "events": redacted_replay})
     except Exception:
         log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
-    await send({"type": "replayComplete", "earliestTurn": earliest_turn, "totalTurns": total_turns})
+    await send({"type": "replayComplete", "sessionId": session_id,
+                "earliestTurn": earliest_turn, "totalTurns": total_turns})
     return events
 
 
@@ -267,7 +277,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                              "message": "This session is taking too long to resume — the "
                                         "server may be busy. Try again in a moment.",
                              "sessionId": session_id})
-                await _send({"type": "replayComplete"})
+                await _send({"type": "replayComplete", "sessionId": session_id})
                 return None
             except DaemonUnavailable:
                 log.warning("ws.attach: session daemon unavailable for %s", session_id)
@@ -288,13 +298,13 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 await _send({"type": "error", "code": "SESSION_START_FAILED",
                              "message": f"Couldn't resume this session.{hint}",
                              "sessionId": session_id})
-                await _send({"type": "replayComplete"})
+                await _send({"type": "replayComplete", "sessionId": session_id})
                 return None
             if driver is None:
                 await _send({"type": "error", "code": "SESSION_NOT_FOUND",
                              "message": f"Session {session_id!r} not found",
                              "sessionId": session_id})
-                await _send({"type": "replayComplete"})
+                await _send({"type": "replayComplete", "sessionId": session_id})
                 return None
             return driver
 
