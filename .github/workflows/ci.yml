@@ -2,7 +2,14 @@ name: CI
 
 on:
   push:
+    branches: [master]
   pull_request:
+
+# One in-flight run per ref: a superseded PR push cancels the stale run.
+# master runs are never cancelled (deploys watch them).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   lint-and-test:
