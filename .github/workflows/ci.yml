@@ -19,6 +19,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install deps
         run: pip install -e ".[server]"
       - name: Ruff check
@@ -26,9 +28,16 @@ jobs:
       - name: Mypy
         run: mypy server/ --ignore-missing-imports
       - name: Core unit tests
-        run: python -m unittest discover -s tests
+        run: python -m pytest tests/ -q --junitxml=test-results/core.xml
       - name: Server tests
-        run: pytest server/tests/ -q
+        run: python -m pytest server/tests/ -q --junitxml=test-results/server.xml
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-python
+          path: test-results/*.xml
+          retention-days: 30
 
   frontend:
     runs-on: ubuntu-latest
