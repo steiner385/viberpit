@@ -64,12 +64,22 @@ describe('SessionCard provenance badge', () => {
 })
 
 describe('SessionCard assisted-by badge', () => {
-  it('shows the same violet provenance badge when autopilot assisted the session', () => {
+  it('shows an emerald provenance badge when autopilot is actively guiding the session', () => {
     renderCard({ ...base, assistedBy: 'autopilot' })
     const badge = screen.getByTestId('card-provenance')
     expect(badge).toHaveTextContent('Assisted by Autopilot')
     expect(badge).toHaveAttribute('title', 'Assisted by automation: autopilot')
+    // Recolored from the generic violet provenance to emerald so it reads as
+    // "the robot is driving this", consistent with the edge accent + live marker.
+    expect(badge.className).toMatch(/emerald/)
+    expect(badge.className).not.toMatch(/violet/)
+  })
+
+  it('keeps the badge violet for an autopilot-assisted session that is paused', () => {
+    renderCard({ ...base, assistedBy: 'autopilot', autopilotPaused: true })
+    const badge = screen.getByTestId('card-provenance')
     expect(badge.className).toMatch(/violet/)
+    expect(badge.className).not.toMatch(/emerald/)
   })
 
   it('spawned-by takes precedence when both origin and assistedBy are set', () => {

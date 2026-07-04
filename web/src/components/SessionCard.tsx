@@ -83,6 +83,14 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const suggestions = session.latestSuggestions ?? []
   const isBusy = statusTier(session.status) === 'busy'
 
+  // "Guided by autopilot": the robot has acted on this session (assistedBy) AND it
+  // isn't pinned to manual. The pause veto matters — a session can carry the
+  // autopilot provenance yet be paused now, so a green "being driven" signal would
+  // contradict the grey "Manual" badge. autopilotLive narrows that to "acting right
+  // now" (busy turn), which is what earns the pulse.
+  const guidedByAutopilot = session.assistedBy === 'autopilot' && !session.autopilotPaused
+  const autopilotLive = guidedByAutopilot && isBusy
+
   // Sparkle (✨) tap ALWAYS asks the LLM for a fresh next-prompt, then sends the
   // top result — never a cached value or a hard-coded fallback (those live only in
   // the dropdown). The backend lazily resumes a detached session before delivering.
@@ -201,6 +209,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         'group flex flex-col rounded-lg border border-gray-200 dark:border-gray-700',
         'bg-white dark:bg-gray-800 px-3 py-2 min-h-[44px]',
         'focus-within:ring-2 focus-within:ring-blue-500',
+        // Autopilot-driven cards get an emerald left edge so they pop out of the
+        // list at a glance — costs no horizontal space, so it reads identically on
+        // mobile and desktop. The side-specific border-l color wins over the base
+        // border-gray; the `selected` ring sits outside the border and is unaffected.
+        guidedByAutopilot && 'border-l-4 border-l-emerald-500 dark:border-l-emerald-400',
         selected && 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-950/30',
         !isWide && 'relative overflow-hidden', // clip the edge panels; mobile only so the desktop quick-reply menu is never clipped
       )}
@@ -308,6 +321,25 @@ export function SessionCard({ session, account, selected = false, listMode = fal
 
         {/* Row 1 — identity: title truncates, account chip pinned right. */}
         <div data-testid="card-identity" className="flex items-center gap-2 min-w-0">
+          {/* Autopilot marker — the mobile-visible eye-catcher (the provenance badge
+              below is desktop-only). Non-interactive, so it's safe inside the
+              open-session button. Pulses only while the robot is actively working
+              (autopilotLive), and degrades to a static glyph under reduced-motion. */}
+          {guidedByAutopilot && (
+            <span
+              data-testid="card-autopilot-active"
+              className={cn(
+                'flex-shrink-0 inline-flex items-center text-emerald-600 dark:text-emerald-400',
+                autopilotLive && !reduceMotion && 'animate-pulse',
+              )}
+              title={autopilotLive ? 'Autopilot active — working now' : 'Guided by Autopilot'}
+            >
+              <Bot size={14} aria-hidden="true" />
+              <span className="sr-only">
+                {autopilotLive ? 'Autopilot active, working now' : 'Guided by Autopilot'}
+              </span>
+            </span>
+          )}
           <span
             className="flex-1 min-w-0 truncate text-sm font-semibold text-gray-900 dark:text-gray-100"
             title={session.nameIsAuto ? 'Auto-named by Claude' : undefined}
@@ -406,7 +438,15 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 to="/automation"
                 data-testid="card-provenance"
                 onClick={(e) => e.stopPropagation()}
-                className="hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 hover:bg-violet-200 dark:hover:bg-violet-900/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-w-[12rem]"
+                className={cn(
+                  'hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-w-[12rem]',
+                  // Emerald when autopilot is actively guiding (matches the edge +
+                  // marker); generic violet for created-by/other automation, and for
+                  // an autopilot session that's paused (guidedByAutopilot is false).
+                  guidedByAutopilot && !session.origin
+                    ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-900/60'
+                    : 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 hover:bg-violet-200 dark:hover:bg-violet-900/60',
+                )}
                 title={session.origin
                   ? `Created by automation: ${session.origin}`
                   : `Assisted by automation: ${session.assistedBy}`}
