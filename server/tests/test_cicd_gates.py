@@ -8,11 +8,11 @@ TH = GateThresholds()
 
 
 def _stats(**kw) -> CheckStats:
-    base = dict(check="e2e", runs_total=50, window_days=30.0, flake_pct=0.5,
-                recent_flake_pct=0.0, default_branch_failures=0,
-                p95_duration_s=300.0, flake_rising=False)
+    base: dict = dict(check="e2e", runs_total=50, window_days=30.0, flake_pct=0.5,
+                      recent_flake_pct=0.0, default_branch_failures=0,
+                      p95_duration_s=300.0, flake_rising=False)
     base.update(kw)
-    return CheckStats(**base)  # type: ignore[arg-type]
+    return CheckStats(**base)
 
 
 def test_graduates_when_all_gates_pass():

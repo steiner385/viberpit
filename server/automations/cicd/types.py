@@ -58,7 +58,7 @@ class GateThresholds:
 @dataclass
 class CheckStats:
     """Rolling stability stats for one status-check context."""
-    check: str = ""
+    check: str
     runs_total: int = 0
     window_days: float = 0.0
     flake_pct: float = 0.0            # % of shas with BOTH success and failure
