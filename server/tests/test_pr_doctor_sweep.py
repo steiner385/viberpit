@@ -84,6 +84,14 @@ async def _init_pr_doctor_db(tmp_path) -> None:
     from server.automations.registry import registry
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'sweep.db'}")
     await registry.ensure_rows()
+    # The sweep dispatches recovery only when the pr-doctor row is enabled
+    # (ensure_rows seeds enabled=False); enable it for the action-path tests.
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Automation
+    async with db_session() as db:
+        await db.execute(
+            sa_update(Automation).where(Automation.id == "pr-doctor").values(enabled=True))
 
 
 def _build_orch(cache, pairs, *, records=None, drivers=None, population=None):

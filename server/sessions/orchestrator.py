@@ -1114,6 +1114,26 @@ class SessionOrchestrator:
                 return info
         return None
 
+    async def _pr_doctor_enabled(self) -> bool:
+        """True iff the pr-doctor automation row exists and is enabled.
+
+        Single source of truth for the enabled gate: a disabled (or missing) row
+        means PR Doctor takes NO autonomous recovery action. Consulted by
+        ``_pr_doctor_step`` — the one dispatcher both the per-cycle sweep and the
+        ``_on_pr_change`` callback funnel through — and by
+        ``_backlog_pr_doctor_active``. A DB error defaults to disabled (fail safe:
+        never act when we can't confirm the toggle is on)."""
+        from sqlalchemy import select
+        from server.db.models import Automation
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "pr-doctor"))).scalar_one_or_none()
+            return row is not None and bool(row.enabled)
+        except Exception:
+            log.debug("pr_doctor.enabled_check_failed", exc_info=True)
+            return False
+
     async def _backlog_pr_doctor_active(self, repo: str) -> bool:
         """True when PR Doctor is enabled and covers *repo* (empty scope = all).
 
@@ -1122,10 +1142,12 @@ class SessionOrchestrator:
         from sqlalchemy import select
         from server.db.models import Automation
         try:
+            if not await self._pr_doctor_enabled():
+                return False
             async with db_session() as db:
                 row = (await db.execute(select(Automation).where(
                     Automation.id == "pr-doctor"))).scalar_one_or_none()
-            if row is None or not row.enabled:
+            if row is None:
                 return False
             scope = (row.config or {}).get("enabled_repos") or []
             return not scope or repo in scope
@@ -1870,6 +1892,14 @@ class SessionOrchestrator:
         target re-arms for a later retry); only a real inject/spawn consumes one.
         """
         from server.automations import pr_doctor_engine as engine
+
+        # Enabled gate (single chokepoint for BOTH the per-cycle sweep and the
+        # _on_pr_change callback): a disabled automation takes no recovery action,
+        # exactly like 'off' mode. Status counts and the caller's "PR broke"
+        # notification still surface — only the autonomous inject/spawn/mechanical
+        # is suppressed.
+        if not await self._pr_doctor_enabled():
+            return False
 
         mode = await self._pr_autofix_mode()
         config = await self._pr_doctor_config()

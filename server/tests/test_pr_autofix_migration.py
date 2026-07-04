@@ -50,6 +50,15 @@ async def _init_db(tmp_path, name: str) -> None:
     from server.automations.registry import registry
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / name}")
     await registry.ensure_rows()
+    # PR Doctor's action paths (_on_pr_change → _pr_doctor_step) now gate on the
+    # enabled flag; ensure_rows seeds enabled=False, so enable it here. The mode
+    # column (asserted by the mode-read tests) is independent of this flag.
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Automation
+    async with db_session() as db:
+        await db.execute(
+            sa_update(Automation).where(Automation.id == "pr-doctor").values(enabled=True))
 
 
 def _build_orch(pr: PullRequestInfo, *, has_driver: bool = True):
