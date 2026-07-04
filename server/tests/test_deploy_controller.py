@@ -2,7 +2,7 @@ import pytest
 import threading
 from types import SimpleNamespace
 from server.deploy.controller import DeployController
-from server.deploy.types import PhaseState
+from server.deploy.types import Phase, PhaseState
 
 
 class FakeGit:
@@ -141,6 +141,11 @@ async def test_edge_only_skips_restore_but_snapshots():
     assert "snapshot_deploy" in rpc_calls
     assert "restore_deploy" not in rpc_calls
     assert st.error is None
+    # An edge-only deploy skips the restore RPC, but the RESUME phase still COMPLETED
+    # (there was nothing to restore). It must be recorded DONE — otherwise the frontend's
+    # allPhasesDone() gate sees a 'pending' resume and reports a spurious deploy failure.
+    assert st.phases["resume"] == PhaseState.DONE.value
+    assert all(st.phases[p.value] == PhaseState.DONE.value for p in Phase)
 
 @pytest.mark.asyncio
 async def test_blocking_steps_run_off_the_event_loop():
