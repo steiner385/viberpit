@@ -238,8 +238,8 @@ class CicdDoctorLoop:
                         to_file.append((fp, f.title, body))
                 else:
                     row.title, row.detail, row.last_seen_at = f.title, f.detail, _utcnow()
-                    # FIX M1: retry filing for existing open rows that lost their issue
-                    # number due to a transient gh failure (makes docstring true).
+                    # An open row with no issue number means a prior filing attempt
+                    # failed (e.g. transient gh error) — retry it this tick.
                     if (row.issue_number is None and config.get("file_issues")
                             and f.actionable):
                         body = (f"{f.title}\n\n```json\n"
