@@ -19,6 +19,9 @@ import { ArchivedManager } from './ArchivedManager'
 import { PipelineView } from './PipelineView'
 import { AutomationView } from './AutomationView'
 import { InsightsView } from './InsightsView'
+import { TabBar } from './TabBar'
+import { buildTabs } from './tabDefs'
+import { inFlightPrCount } from '@/session/prStatus'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import {
   useAccounts,
@@ -35,6 +38,7 @@ import {
   usePermanentDeleteSession,
   useConfig,
   useSendPrompt,
+  useAllPrs,
   type CreateSessionInput,
 } from '@/api/hooks'
 import { usePageVisible } from '@/hooks/usePageVisible'
@@ -534,37 +538,20 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   const newButtonRef = useRef<HTMLButtonElement>(null)
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
-  const sessionsTabRef = useRef<HTMLButtonElement>(null)
-  const accountsTabRef = useRef<HTMLButtonElement>(null)
-  const archivedTabRef = useRef<HTMLButtonElement>(null)
-  const pipelineTabRef = useRef<HTMLButtonElement>(null)
-  const automationTabRef = useRef<HTMLButtonElement>(null)
-  const insightsTabRef = useRef<HTMLButtonElement>(null)
-
-  const tabRefs: Record<TabId, React.RefObject<HTMLButtonElement | null>> = {
-    sessions: sessionsTabRef,
-    accounts: accountsTabRef,
-    archived: archivedTabRef,
-    pipeline: pipelineTabRef,
-    automation: automationTabRef,
-    insights: insightsTabRef,
-  }
-  const TAB_ORDER: TabId[] = ['sessions', 'accounts', 'pipeline', 'automation', 'insights', 'archived']
-
-  function handleTabKeyDown(e: React.KeyboardEvent, current: TabId) {
-    const idx = TAB_ORDER.indexOf(current)
-    if (e.key === 'ArrowRight') {
-      const next = TAB_ORDER[(idx + 1) % TAB_ORDER.length]
-      tabRefs[next].current?.focus()
-    } else if (e.key === 'ArrowLeft') {
-      const prev = TAB_ORDER[(idx - 1 + TAB_ORDER.length) % TAB_ORDER.length]
-      tabRefs[prev].current?.focus()
-    }
-  }
 
   const hasNeedsReauth = accounts.some(
     (a) => a.status === 'needs-reauth' || a.status === 'needs-relogin',
   )
+
+  // Live count badges for the tab strip (shared cache with the Pipeline tab).
+  const { data: prs = [] } = useAllPrs()
+  const tabs = buildTabs({
+    sessions: orderedSessions.length,
+    accounts: accounts.length,
+    pipeline: inFlightPrCount(prs),
+    archived: archivedSessions.length,
+    accountsAttention: hasNeedsReauth,
+  })
 
   // Auto-clear the all-limited banner once any account becomes selectable.
   // Done at render time (not in an effect) — React 18 batches synchronous setState
@@ -716,154 +703,16 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
       <DeployPanel />
 
-      {/* Tab bar */}
-      <div
-        role="tablist"
-        aria-label="Dashboard sections"
-        className="flex gap-1 border-b border-gray-200 dark:border-gray-700"
-      >
-        {/* Sessions tab */}
-        <button
-          ref={sessionsTabRef}
-          role="tab"
-          id="tab-sessions"
-          aria-selected={activeTab === 'sessions'}
-          aria-controls="tabpanel-sessions"
-          tabIndex={activeTab === 'sessions' ? 0 : -1}
-          onKeyDown={(e) => handleTabKeyDown(e, 'sessions')}
-          onClick={() => setActiveTab('sessions')}
-          className={cn(
-            'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
-            activeTab === 'sessions'
-              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
-              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
-          )}
-        >
-          Sessions
-        </button>
-
-        {/* Accounts tab */}
-        <button
-          ref={accountsTabRef}
-          role="tab"
-          id="tab-accounts"
-          aria-selected={activeTab === 'accounts'}
-          aria-controls="tabpanel-accounts"
-          tabIndex={activeTab === 'accounts' ? 0 : -1}
-          onKeyDown={(e) => handleTabKeyDown(e, 'accounts')}
-          onClick={() => setActiveTab('accounts')}
-          aria-label={hasNeedsReauth ? 'Accounts (needs attention)' : 'Accounts'}
-          className={cn(
-            'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
-            activeTab === 'accounts'
-              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
-              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
-          )}
-        >
-          Accounts
-          {hasNeedsReauth && (
-            <span
-              aria-hidden="true"
-              className="inline-block w-2 h-2 rounded-full bg-amber-500 dark:bg-amber-400"
-            />
-          )}
-        </button>
-
-        {/* Archived tab */}
-        <button
-          ref={archivedTabRef}
-          role="tab"
-          id="tab-archived"
-          aria-selected={activeTab === 'archived'}
-          aria-controls="tabpanel-archived"
-          tabIndex={activeTab === 'archived' ? 0 : -1}
-          onKeyDown={(e) => handleTabKeyDown(e, 'archived')}
-          onClick={() => setActiveTab('archived')}
-          aria-label={archivedSessions.length > 0 ? `Archived (${archivedSessions.length})` : 'Archived'}
-          className={cn(
-            'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
-            activeTab === 'archived'
-              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
-              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
-          )}
-        >
-          Archived
-          {archivedSessions.length > 0 && (
-            <span className="text-xs tabular-nums bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-full px-1.5 py-0.5 leading-none">
-              {archivedSessions.length}
-            </span>
-          )}
-        </button>
-
-        {/* Pipeline tab */}
-        <button
-          ref={pipelineTabRef}
-          role="tab"
-          id="tab-pipeline"
-          aria-selected={activeTab === 'pipeline'}
-          aria-controls="tabpanel-pipeline"
-          tabIndex={activeTab === 'pipeline' ? 0 : -1}
-          onKeyDown={(e) => handleTabKeyDown(e, 'pipeline')}
-          onClick={() => setActiveTab('pipeline')}
-          aria-label="Pipeline"
-          className={cn(
-            'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
-            activeTab === 'pipeline'
-              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
-              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
-          )}
-        >
-          Pipeline
-        </button>
-
-        {/* Automation tab */}
-        <button
-          ref={automationTabRef}
-          role="tab"
-          id="tab-automation"
-          aria-selected={activeTab === 'automation'}
-          aria-controls="tabpanel-automation"
-          tabIndex={activeTab === 'automation' ? 0 : -1}
-          onKeyDown={(e) => handleTabKeyDown(e, 'automation')}
-          onClick={() => setActiveTab('automation')}
-          aria-label="Automation"
-          className={cn(
-            'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
-            activeTab === 'automation'
-              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
-              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
-          )}
-        >
-          Automation
-        </button>
-
-        {/* Insights tab */}
-        <button
-          ref={insightsTabRef}
-          role="tab"
-          id="tab-insights"
-          aria-selected={activeTab === 'insights'}
-          aria-controls="tabpanel-insights"
-          tabIndex={activeTab === 'insights' ? 0 : -1}
-          onKeyDown={(e) => handleTabKeyDown(e, 'insights')}
-          onClick={() => setActiveTab('insights')}
-          aria-label="Insights"
-          className={cn(
-            'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
-            activeTab === 'insights'
-              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
-              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
-          )}
-        >
-          Insights
-        </button>
-      </div>
+      {/* Tab strip — horizontally scrollable so all sections stay reachable on a
+          narrow viewport. */}
+      <TabBar
+        tabs={tabs}
+        activeTab={activeTab}
+        onSelect={setActiveTab}
+        label="Dashboard sections"
+        panelId={(id) => `tabpanel-${id}`}
+        className="border-b border-gray-200 dark:border-gray-700"
+      />
 
       {/* Sessions panel */}
       {activeTab === 'sessions' && (

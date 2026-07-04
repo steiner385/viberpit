@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react'
 import { MainPaneSession } from '../DesktopShell'
 
 vi.mock('@/api/hooks', () => ({
+  useAllPrs: vi.fn(() => ({ data: [] })),
   useCloseSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   usePermanentDeleteSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   // SessionActions calls this unconditionally (rules of hooks); the desktop
