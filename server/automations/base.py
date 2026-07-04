@@ -1,7 +1,7 @@
 """Automation contract value types + pure config validation (no I/O)."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 FIELD_TYPES = {"bool", "int", "string", "enum", "repo-multiselect"}
@@ -32,6 +32,42 @@ class AutomationStatus:
 
     def to_dict(self) -> dict:
         return {"text": self.text, "level": self.level, "counts": self.counts}
+
+
+@dataclass
+class ActionSpec:
+    """One trigger button on an actionable item."""
+    kind: str
+    label: str
+    style: str = "default"  # "default" | "risky" (risky → confirm + distinct color)
+
+    def to_dict(self) -> dict:
+        return {"kind": self.kind, "label": self.label, "style": self.style}
+
+
+@dataclass
+class ActionableItem:
+    """One row in an automation's actionable list."""
+    id: str
+    title: str
+    subtitle: str | None = None
+    url: str | None = None
+    actions: list[ActionSpec] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "title": self.title, "subtitle": self.subtitle,
+                "url": self.url, "actions": [a.to_dict() for a in self.actions]}
+
+
+@dataclass
+class TriggerResult:
+    """The outcome of a manual trigger — surfaced to the user as toast + inline."""
+    status: str          # machine-readable (e.g. "spawned", "ceiling", "failed")
+    level: str           # "ok" | "warn" | "error"
+    message: str         # human-readable
+
+    def to_dict(self) -> dict:
+        return {"status": self.status, "level": self.level, "message": self.message}
 
 
 def _type_ok(field_type: str, value: Any) -> bool:
@@ -79,3 +115,12 @@ class Automation(Protocol):
     def status(self, ctx: "Any") -> AutomationStatus: ...
     async def on_state_change(self, *, enabled: bool, mode: str | None,
                               config: dict, ctx: "Any") -> None: ...
+
+
+@runtime_checkable
+class ActionProvider(Protocol):
+    """An automation's manual-action surface: list items, trigger one action."""
+    valid_kinds: frozenset[str]
+
+    async def actionable(self) -> list[ActionableItem]: ...
+    async def trigger(self, item_id: str, kind: str) -> TriggerResult: ...
