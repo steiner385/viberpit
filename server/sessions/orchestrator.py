@@ -2884,6 +2884,18 @@ class SessionOrchestrator:
                     "message": f"invalid kind {kind!r}"}
         return (await provider.trigger(item_id, kind)).to_dict()
 
+    async def automation_consolidate(self, repo: str, numbers: list[int]) -> dict:
+        """Public seam for the consolidate API route — delegates to the
+        pr-doctor provider so the outcome mapping stays in one place."""
+        from typing import cast
+        from server.automations.action_providers import PrDoctorActionProvider
+        raw = self._action_providers.get("pr-doctor")
+        if raw is None:
+            return {"status": "no_provider", "level": "error",
+                    "message": "no action provider"}
+        provider = cast(PrDoctorActionProvider, raw)
+        return (await provider.consolidate(repo, numbers)).to_dict()
+
     async def refresh_authored_branches(self) -> None:
         """Union each live session's reflog+live branches into its record, persist changes.
 
