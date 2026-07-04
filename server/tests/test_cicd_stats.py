@@ -88,3 +88,11 @@ def test_gate_thresholds_from_config_all_fields():
     assert th.demote_window_days == 3.0
     assert th.retire_days == 90.0
     assert th.flaky_test_min_pct == 1.0
+
+
+def test_check_stats_timed_out_counts_as_failure():
+    now = 100 * DAY
+    jobs = [_j("e2e", "s1", "timed_out", now - 2 * DAY, branch="master"),
+            _j("e2e", "s2", "success", now - 1 * DAY)]
+    st = check_stats(jobs, default_branch="master", now_ts=now, demote_window_days=7.0)["e2e"]
+    assert st.default_branch_failures == 1

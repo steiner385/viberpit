@@ -6,7 +6,7 @@ from collections import defaultdict
 
 from .types import CheckStats, JobObs, TestObs
 
-_FAIL = {"failed", "error", "failure"}
+_FAIL = {"failed", "error", "failure", "timed_out"}
 _PASS = {"passed", "success"}
 _DAY = 86400.0
 
@@ -65,7 +65,9 @@ def check_stats(jobs: list[JobObs], *, default_branch: str, now_ts: float,
             default_branch_failures=sum(
                 1 for o in master_shas.values() if (o & _FAIL) and not (o & _PASS)),
             # ceil, not floor: with few samples the slowest run must count
-            # (p95 of [60,60,60,120] is 120, not 60).
+            # (p95 of [60,60,60,120] is 120, not 60). Deliberately NOT
+            # server/pipeline/history.percentile — that is a verbatim Plotroom
+            # mirror with floor-style indexing; do not "unify" them.
             p95_duration_s=durations[min(len(durations) - 1,
                                          math.ceil(0.95 * (len(durations) - 1)))]
             if durations else 0.0,

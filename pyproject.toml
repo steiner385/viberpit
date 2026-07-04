@@ -29,6 +29,7 @@ server = [
     "pytest",
     "pytest-asyncio",
   "pytest-cov",
+    "pyyaml",
     "ruff",
     "mypy",
     "pydantic-settings",
