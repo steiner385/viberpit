@@ -141,7 +141,9 @@ async def load_archived_rows(session_factory) -> list[dict]:
 
 async def main(argv: "list[str] | None" = None) -> int:
     import argparse
-    from server.db import db_session
+    import os
+    import sys
+    from server.db import db_session, init_db
     from server.ipc.client import DaemonClient, DaemonUnavailable
     from server.ipc.paths import sessiond_endpoint
     from server.sessions.remote import RemoteOrchestrator
@@ -150,6 +152,16 @@ async def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="report only; do not unarchive premature sessions")
     args = parser.parse_args(argv)
+
+    db_url = os.environ.get("CCSWITCH_DB_URL")
+    if not db_url:
+        print(
+            "error: CCSWITCH_DB_URL must be set to the daemon's database URL "
+            "(the audit reads archived sessions from it).",
+            file=sys.stderr,
+        )
+        return 2
+    await init_db(db_url=db_url)
 
     rows = await load_archived_rows(db_session)
 

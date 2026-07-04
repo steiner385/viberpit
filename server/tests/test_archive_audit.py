@@ -109,3 +109,48 @@ def test_load_archived_rows_maps_fields():
     rows = asyncio.run(aa.load_archived_rows(FakeFactory()))
     assert rows[0]["id"] == "s1" and rows[0]["goal"] == "fix ci"
     assert rows[0]["authored_branches"] == ["feat/x", "feat/y"]
+
+
+# ---------------------------------------------------------------------------
+# main() integration tests
+# ---------------------------------------------------------------------------
+
+def test_main_dry_run_returns_0_with_archived_row(tmp_path, monkeypatch):
+    """main(--dry-run) against a real temp-file DB with one archived row returns 0."""
+    import uuid
+    from server.db import init_db, db_session, dispose_db
+    from server.db.models import Session as DbSession
+
+    db_file = tmp_path / "audit_test.db"
+    db_url = f"sqlite+aiosqlite:///{db_file}"
+    monkeypatch.setenv("CCSWITCH_DB_URL", db_url)
+    monkeypatch.setattr(aa, "_real_gh", lambda repo, branch: [])
+
+    async def run():
+        await init_db(db_url=db_url)
+        # Insert one archived session row
+        async with db_session() as db:
+            row = DbSession(
+                id=str(uuid.uuid4()),
+                name="test-session",
+                account_name="test-account",
+                status="archived",
+                cwd="/tmp",
+                repo="o/r",
+                branch="feat/fix-ci",
+                authored_branches=["feat/fix-ci"],
+                active_goal="fix ci",
+            )
+            db.add(row)
+        rc = await aa.main(["--dry-run"])
+        await dispose_db()
+        return rc
+
+    assert asyncio.run(run()) == 0
+
+
+def test_main_returns_2_when_db_url_unset(monkeypatch):
+    """main() returns 2 (not a crash) when CCSWITCH_DB_URL is not set."""
+    monkeypatch.delenv("CCSWITCH_DB_URL", raising=False)
+    rc = asyncio.run(aa.main(["--dry-run"]))
+    assert rc == 2
