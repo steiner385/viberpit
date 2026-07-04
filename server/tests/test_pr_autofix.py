@@ -83,6 +83,13 @@ async def _init_pr_doctor_db(tmp_path) -> None:
     from server.automations.registry import registry
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'autofix.db'}")
     await registry.ensure_rows()
+    # PR Doctor acts only when its row is enabled (ensure_rows seeds enabled=False).
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Automation
+    async with db_session() as db:
+        await db.execute(
+            sa_update(Automation).where(Automation.id == "pr-doctor").values(enabled=True))
 
 
 # ---------------------------------------------------------------------------

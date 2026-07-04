@@ -74,6 +74,19 @@ async def _init_pr_doctor_db(tmp_path) -> None:
     from server.automations.registry import registry
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'doctor.db'}")
     await registry.ensure_rows()
+    # PR Doctor acts only when its row is enabled; ensure_rows seeds enabled=False,
+    # so turn it on for the action tests below.
+    await _set_enabled(True)
+
+
+async def _set_enabled(enabled: bool) -> None:
+    """Flip the pr-doctor row's ``enabled`` flag (the autonomous-action gate)."""
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Automation
+    async with db_session() as db:
+        await db.execute(
+            sa_update(Automation).where(Automation.id == "pr-doctor").values(enabled=enabled))
 
 
 def _build_orch(pr, *, has_driver=True):
@@ -172,6 +185,36 @@ async def test_failing_ci_auto_live_driver_injects(monkeypatch, tmp_path):
 
     events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
     assert any(e["kind"] == "attempted" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_disabled_row_takes_no_action_even_in_auto(monkeypatch, tmp_path):
+    """The enabled gate: a DISABLED pr-doctor row takes NO recovery action even
+    with mode=auto and a fixable failing_ci PR + live driver. No inject, no
+    attempt recorded, no ``attempted`` event — parity with 'off' mode. This is
+    the single chokepoint that also covers the sweep and _on_pr_change."""
+    await _init_pr_doctor_db(tmp_path)   # enables the row...
+    await _set_enabled(False)            # ...now turn it back off (the gate under test)
+    await _set_mode(monkeypatch, "auto")
+
+    pr = _pr(checks="failing", head_sha="sha1")
+    orch = _build_orch(pr, has_driver=True)
+    sent: list[str] = []
+
+    async def fake_send(session_id, text):
+        sent.append(text)
+        return "sent"
+
+    orch.send_prompt = fake_send  # type: ignore[method-assign]
+
+    took = await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"])
+    assert took is False                 # gated out before any dispatch
+    assert sent == []                    # no session inject
+    st = await orch._pr_doctor_ctx.get_target_state("o/r#7")
+    assert st.get("attempts", 0) == 0    # no attempt consumed
+    assert st.get("last_action_sha") is None
+    events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+    assert not any(e["kind"] == "attempted" for e in events)
 
 
 def _patch_ensure_clone(monkeypatch, *, path="/fake/clone/o__r", raises=None):
