@@ -283,6 +283,13 @@ class SessionOrchestrator:
             merge_queue_sink=_merge_queue_sink,
         )
         self._pr_population.set_repos_provider(self._pr_repos)
+        from server.automations.action_providers import (
+            PrDoctorActionProvider, BacklogRunnerActionProvider,
+        )
+        self._action_providers = {
+            "pr-doctor": PrDoctorActionProvider(self),
+            "backlog-runner": BacklogRunnerActionProvider(self),
+        }
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
         # Sessions whose cwd has vanished — warned once so the titling sweep doesn't
@@ -1254,7 +1261,7 @@ class SessionOrchestrator:
             detail={"issues": batch.issues},
         )
 
-    async def backlog_runner_implement(self, primary: str) -> str:
+    async def backlog_runner_implement_core(self, primary: str) -> str:
         """Propose-tap: claim (if needed) + spawn the batch for *primary*.
 
         Re-queries the current label-gated candidate set, pins a batch on
@@ -1296,6 +1303,15 @@ class SessionOrchestrator:
             "claimed": True,
         })
         return "spawned"
+
+    async def backlog_candidates(self) -> list[dict]:
+        """Current label-gated backlog candidate dicts ({ref, repo, title, url})."""
+        from server.automations.backlog_github import query_candidates
+        _mode, config = await self._backlog_read_config()
+        return await asyncio.to_thread(query_candidates, config, gh_run=self._gh_run)
+
+    async def backlog_runner_implement(self, primary: str) -> str:
+        return await self.backlog_runner_implement_core(primary)
 
     async def _backlog_tick_loop(self, interval: float) -> None:
         """Periodic driver for the backlog-runner control loop. Runs a tick every
@@ -2751,6 +2767,23 @@ class SessionOrchestrator:
                 log.debug("automation_statuses.render_failed id=%s", a.id, exc_info=True)
                 out[a.id] = a.status(ctx=None).to_dict()
         return out
+
+    def automation_action_kinds(self, automation_id: str):
+        """Valid action kinds for *automation_id*, or None if it has no provider."""
+        provider = self._action_providers.get(automation_id)
+        return provider.valid_kinds if provider is not None else None
+
+    async def automation_actionable(self, automation_id: str) -> list[dict]:
+        provider = self._action_providers.get(automation_id)
+        if provider is None:
+            return []
+        return [it.to_dict() for it in await provider.actionable()]
+
+    async def automation_trigger(self, automation_id: str, item_id: str, kind: str) -> dict:
+        provider = self._action_providers.get(automation_id)
+        if provider is None:
+            raise KeyError(automation_id)
+        return (await provider.trigger(item_id, kind)).to_dict()
 
     async def pr_doctor_actionable(self) -> list[dict]:
         """PRs in the current poll cache with a real recovery mode, for the card.
