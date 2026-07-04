@@ -17,7 +17,7 @@ const CI_ACTIVE = [{ id: 'ci', state: 'active' as const }, { id: 'ready', state:
 
 function solidWidth(container: HTMLElement): number {
   const band = container.querySelector('[data-testid="ci-band"]')
-  const solid = band?.querySelector('span') as HTMLElement
+  const solid = band?.querySelector('[data-band="solid"]') as HTMLElement
   return parseFloat(solid.style.width) // "NN%" → NN
 }
 
@@ -126,7 +126,7 @@ describe('StageTrack live tick', () => {
         etaSeconds={300} etaLowSeconds={200} etaHighSeconds={600} etaPercent={50} />,
     )
     act(() => { vi.advanceTimersByTime(0) })
-    const solid = container.querySelector('[data-testid="ci-band"] span') as HTMLElement
+    const solid = container.querySelector('[data-testid="ci-band"] [data-band="solid"]') as HTMLElement
     expect(solid.className).toContain('bg-amber-500')
     expect(solid.style.width).toBe('100%')
   })
