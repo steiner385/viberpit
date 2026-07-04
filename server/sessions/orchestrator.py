@@ -286,7 +286,8 @@ class SessionOrchestrator:
         from server.automations.action_providers import (
             PrDoctorActionProvider, BacklogRunnerActionProvider,
         )
-        self._action_providers = {
+        from server.automations.base import ActionProvider
+        self._action_providers: dict[str, ActionProvider] = {
             "pr-doctor": PrDoctorActionProvider(self),
             "backlog-runner": BacklogRunnerActionProvider(self),
         }
