@@ -172,6 +172,16 @@ class RemoteOrchestrator:
         r = await self._client.call("pr_doctor_actionable")
         return r.get("prs") or []
 
+    async def automation_actionable(self, automation_id: str) -> "list[dict]":
+        """Actionable items for *automation_id*, via the daemon."""
+        r = await self._client.call("automation_actionable", automation_id=automation_id)
+        return r.get("items") or []
+
+    async def automation_trigger(self, automation_id: str, item_id: str, kind: str) -> dict:
+        """Trigger a manual action for an item on *automation_id*, via the daemon."""
+        return await self._client.call("automation_trigger", automation_id=automation_id,
+                                       item_id=item_id, kind=kind)
+
     async def pr_doctor_fix(self, repo: str, number: int, kind: str) -> str:
         """Trigger a one-tap PR Doctor recovery for PR #number via the daemon."""
         return await self._client.call("pr_doctor_fix", repo=repo, number=number, kind=kind)

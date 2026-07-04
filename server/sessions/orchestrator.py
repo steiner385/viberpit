@@ -2780,9 +2780,15 @@ class SessionOrchestrator:
         return [it.to_dict() for it in await provider.actionable()]
 
     async def automation_trigger(self, automation_id: str, item_id: str, kind: str) -> dict:
+        """Dispatch a manual action; returns a TriggerResult dict, or a structured
+        error status the API maps to HTTP codes (no exceptions across the RPC seam)."""
         provider = self._action_providers.get(automation_id)
         if provider is None:
-            raise KeyError(automation_id)
+            return {"status": "no_provider", "level": "error",
+                    "message": "automation has no action provider"}
+        if kind not in provider.valid_kinds:
+            return {"status": "invalid_kind", "level": "error",
+                    "message": f"invalid kind {kind!r}"}
         return (await provider.trigger(item_id, kind)).to_dict()
 
     async def pr_doctor_actionable(self) -> list[dict]:

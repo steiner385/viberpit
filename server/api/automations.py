@@ -25,6 +25,11 @@ class PatchBody(BaseModel):
     config: dict | None = None
 
 
+class TriggerBody(BaseModel):
+    item_id: str
+    kind: str
+
+
 class PrDoctorFixBody(BaseModel):
     repo: str
     number: int
@@ -196,3 +201,28 @@ async def cicd_doctor_findings(status: str = "open", repo: str | None = None,
              "firstSeenAt": f.first_seen_at.isoformat() if f.first_seen_at else None,
              "lastSeenAt": f.last_seen_at.isoformat() if f.last_seen_at else None}
             for f in rows]
+
+
+# Generic routes: registered AFTER all literal-path routes so FastAPI's first-match
+# routing lets specific paths like /pr-doctor/actionable take priority during transition.
+@router.get("/{automation_id}/actionable")
+async def list_automation_actionable(automation_id: str, request: Request,
+                                     _identity: str = Depends(current_identity)) -> list[dict]:
+    """Detected items an automation can act on now, for the card's action buttons."""
+    _automation_or_404(automation_id)
+    orch = request.app.state.sessions
+    return await orch.automation_actionable(automation_id)
+
+
+@router.post("/{automation_id}/trigger")
+async def trigger_automation_action(automation_id: str, body: TriggerBody, request: Request,
+                                    _identity: str = Depends(current_identity)) -> dict:
+    """Fire one manual action on an actionable item; returns the TriggerResult."""
+    _automation_or_404(automation_id)
+    orch = request.app.state.sessions
+    result = await orch.automation_trigger(automation_id, body.item_id, body.kind)
+    if result.get("status") == "no_provider":
+        raise HTTPException(status_code=404, detail=result.get("message", "no action provider"))
+    if result.get("status") == "invalid_kind":
+        raise HTTPException(status_code=422, detail=result.get("message", "invalid kind"))
+    return result

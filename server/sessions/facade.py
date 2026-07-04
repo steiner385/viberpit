@@ -69,3 +69,5 @@ class InProcessOrchestratorAdapter:
     async def pr_doctor_actionable(self, *a, **k): return await _maybe_await(self._orch.pr_doctor_actionable(*a, **k))
     async def pr_doctor_fix(self, *a, **k): return await _maybe_await(self._orch.pr_doctor_fix(*a, **k))
     async def backlog_runner_implement(self, *a, **k): return await _maybe_await(self._orch.backlog_runner_implement(*a, **k))
+    async def automation_actionable(self, *a, **k): return await _maybe_await(self._orch.automation_actionable(*a, **k))
+    async def automation_trigger(self, *a, **k): return await _maybe_await(self._orch.automation_trigger(*a, **k))

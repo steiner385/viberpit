@@ -123,6 +123,12 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "check_insights", check_insights)
     register_rpc(app, "pr_doctor_actionable", pr_doctor_actionable)
 
+    async def automation_actionable(params: dict) -> dict:
+        items = await orch.automation_actionable(params["automation_id"])
+        return {"items": items}
+
+    register_rpc(app, "automation_actionable", automation_actionable)
+
     async def _maybe_await(r):
         return await r if inspect.isawaitable(r) else r
 
@@ -137,7 +143,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "live_session_load", "live_session_counts",
         "snapshot_deploy", "restore_deploy", "resume_recovery_status",
         "request_pr_fix", "pr_doctor_fix", "backlog_runner_implement",
-        "automation_statuses",
+        "automation_statuses", "automation_trigger",
     ]
 
     def _make_simple(method_name):
