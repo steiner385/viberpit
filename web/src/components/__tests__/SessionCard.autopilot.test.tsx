@@ -57,3 +57,41 @@ describe('SessionCard autopilot toggle', () => {
     expect(screen.queryByTestId('card-autopilot')).not.toBeInTheDocument()
   })
 })
+
+describe('SessionCard autopilot active indicator', () => {
+  it('shows the live robot marker when autopilot assisted the session', () => {
+    renderCard({ ...base, assistedBy: 'autopilot' })
+    expect(screen.getByTestId('card-autopilot-active')).toBeInTheDocument()
+  })
+
+  it('adds an emerald edge accent to the card when guided by autopilot', () => {
+    const { container } = renderCard({ ...base, assistedBy: 'autopilot' })
+    expect(container.querySelector('article')?.className).toMatch(/border-l-emerald/)
+  })
+
+  it('vetoes the marker and edge accent when autopilot is paused', () => {
+    const { container } = renderCard({ ...base, assistedBy: 'autopilot', autopilotPaused: true })
+    expect(screen.queryByTestId('card-autopilot-active')).not.toBeInTheDocument()
+    expect(container.querySelector('article')?.className).not.toMatch(/border-l-emerald/)
+  })
+
+  it('shows no marker when the session was not assisted by autopilot', () => {
+    renderCard(base)
+    expect(screen.queryByTestId('card-autopilot-active')).not.toBeInTheDocument()
+  })
+
+  it('does not treat other automations as autopilot', () => {
+    renderCard({ ...base, assistedBy: 'pr-doctor' })
+    expect(screen.queryByTestId('card-autopilot-active')).not.toBeInTheDocument()
+  })
+
+  it('pulses the marker only while the session is actively working', () => {
+    renderCard({ ...base, assistedBy: 'autopilot', status: 'in_progress' })
+    expect(screen.getByTestId('card-autopilot-active').className).toMatch(/animate-pulse/)
+  })
+
+  it('does not pulse when guided but idle', () => {
+    renderCard({ ...base, assistedBy: 'autopilot', status: 'idle' })
+    expect(screen.getByTestId('card-autopilot-active').className).not.toMatch(/animate-pulse/)
+  })
+})
