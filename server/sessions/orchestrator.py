@@ -1998,6 +1998,104 @@ class SessionOrchestrator:
             kind="attempted", target=target, session_id=sid)
         return "spawned", sid
 
+    async def consolidation_candidates(self, repo: str | None = None) -> dict:
+        """Open, non-draft PRs per repo (from the population cache, within
+        pr-doctor scope) as ConsolidationCandidate dicts + suggested clusters.
+        Read-only; the picker calls this. Broader than _pr_doctor_scope_pairs
+        (every open PR, not just session-authored ones)."""
+        from server.automations.consolidation_engine import (
+            ConsolidationCandidate, derive_scope, suggest_clusters)
+        scope = await self._pr_doctor_scope()          # set[str] | None (None = all)
+        out: dict[str, dict] = {}
+        for r, prs in self._pr_population.all().items():
+            if scope is not None and r not in scope:
+                continue
+            if repo is not None and r != repo:
+                continue
+            cands = [
+                ConsolidationCandidate(
+                    number=p.number, title=p.title, url=p.url, checks=p.checks,
+                    mergeable=p.mergeable, updated_at=p.updated_at,
+                    scope=derive_scope(p.title))
+                for p in prs if p.state == "open" and not p.is_draft
+            ]
+            if not cands:
+                continue
+            out[r] = {"candidates": [c.to_dict() for c in cands],
+                      "clusters": [cl.to_dict() for cl in suggest_clusters(cands)]}
+        return {"repos": out}
+
+    async def _pr_doctor_consolidate(
+        self, repo: str, numbers: list[int]
+    ) -> tuple[str, str | None]:
+        """Spawn ONE session to consolidate the given PRs. Validates the
+        selection, resolves each PR from the population cache, seeds the
+        consolidation prompt, and de-dups on the sorted number set. Mirrors
+        _pr_doctor_session_fix's clone/spawn/ceiling handling. Returns
+        (status, session_id)."""
+        from sqlalchemy import select
+        from server.automations.consolidation_engine import (
+            ConsolidationCandidate, validate_selection)
+        from server.sessions.pr_fix import build_consolidation_prompt
+        from server.config import get_settings
+
+        want = sorted({int(n) for n in numbers})
+        by_number = {p.number: p for p in self._pr_population.cached(repo)}
+        prs = [by_number[n] for n in want
+               if n in by_number and by_number[n].state == "open"
+               and not by_number[n].is_draft]
+        if len(prs) != len(want):
+            return "not_actionable", None
+        cands = [ConsolidationCandidate(
+            number=p.number, title=p.title, url=p.url, checks=p.checks,
+            mergeable=p.mergeable, updated_at=p.updated_at, scope="") for p in prs]
+        err = validate_selection(cands)
+        if err is not None:
+            return err, None                      # "too_few"
+
+        target = f"consolidate:{repo}#{'+'.join(str(n) for n in want)}"
+        # Pre-check the dedupe: a live consolidation session for this exact set →
+        # duplicate (skip a needless clone + second spawn).
+        async with db_session() as db:
+            existing = (await db.execute(select(DbSession).where(
+                DbSession.origin == "pr-doctor",
+                DbSession.origin_ref == target,
+                DbSession.status != "ended"))).scalars().first()
+        if existing is not None:
+            return "duplicate", existing.id
+
+        prompt = build_consolidation_prompt(repo, "master", prs)
+        url = f"https://github.com/{repo}.git"
+        try:
+            cwd = await asyncio.to_thread(
+                gitrepos.ensure_clone, get_settings().repo_root, repo, url)
+        except (gitrepos.CloneError, gitrepos.GhError) as exc:
+            await self._pr_doctor_ctx.emit(
+                "error", f"clone failed for {target}: {exc}",
+                kind="spawn_failed", target=target)
+            return "clone_failed", None
+        try:
+            rec = await self._pr_doctor_ctx.spawn_session(
+                origin_ref=target, dedupe_key=target, repo=repo,
+                account=None, cwd=cwd,
+                name=f"pr-doctor consolidate {repo} ({len(prs)} PRs)",
+                initial_prompt=prompt)
+        except AllAccountsBusy:
+            await self._pr_doctor_ctx.emit(
+                "warn", f"consolidate deferred for {target}: all accounts at/above usage ceiling",
+                kind="spawn_failed", target=target)
+            return "ceiling", None
+        except Exception as exc:  # noqa: BLE001
+            await self._pr_doctor_ctx.emit(
+                "error", f"consolidate spawn failed for {target}: {exc}",
+                kind="spawn_failed", target=target)
+            return "spawn_failed", None
+        sid = getattr(rec, "id", None)
+        await self._pr_doctor_ctx.emit(
+            "info", f"consolidation spawned for {target}",
+            kind="attempted", target=target, session_id=sid)
+        return "spawned", sid
+
     async def _pr_doctor_mechanical(self, repo: str, info, kind: str) -> bool:
         """Run a mechanical (no-session) recovery action via the gh CLI seam.
 
