@@ -63,3 +63,34 @@ def build_conflict_fix_prompt(repo: str, pr: PullRequestInfo) -> str:
         f"6. Briefly report which files conflicted and how you reconciled them.\n\n"
         f"PR: {pr.url}"
     )
+
+
+def build_consolidation_prompt(repo: str, base: str, prs: list[PullRequestInfo]) -> str:
+    """A system-originated prompt instructing a fresh session to consolidate
+    several open PRs into ONE new PR (saving CI). Pure (no I/O).
+
+    Mirrors build_pr_fix_prompt/build_conflict_fix_prompt: explicit, branch-aware,
+    and self-contained because no human will attach to steer the session."""
+    nums = ", ".join(f"#{p.number}" for p in prs)
+    listing = "\n".join(f"  - #{p.number} \"{p.title}\" ({p.url})" for p in prs)
+    closes = " ".join(f"Closes #{p.number}" for p in prs)
+    branch = f"consolidate/{'-'.join(str(p.number) for p in prs)}"
+    return (
+        f"Consolidate {len(prs)} open pull requests in {repo} into ONE new PR to "
+        f"save CI. The PRs to combine ({nums}):\n{listing}\n\n"
+        f"Steps:\n"
+        f"1. `git fetch origin`, then create a fresh branch off the base: "
+        f"`git checkout -b {branch} origin/{base}`.\n"
+        f"2. Bring each PR's changes onto this branch — `gh pr checkout <n>` to "
+        f"inspect, then cherry-pick or merge its commits. Resolve conflicts by "
+        f"reconciling BOTH sides (never blindly discard). Run the tests/lint/build "
+        f"after each so you know which PR introduced any breakage.\n"
+        f"3. Push the branch and open ONE consolidated PR whose body summarizes the "
+        f"combined change and lists every original with a closing keyword: {closes}\n"
+        f"4. Close each original PR with a linking comment — for each number run "
+        f"`gh pr close <n> --comment \"Superseded by the consolidated PR.\"`.\n"
+        f"5. Follow the project completion workflow: the branch is already off "
+        f"origin/{base}; open the PR non-draft and arm auto-merge "
+        f"(`gh pr merge --squash --auto`).\n"
+        f"6. Report the consolidated PR number and which originals you closed."
+    )

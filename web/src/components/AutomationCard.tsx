@@ -6,6 +6,7 @@ import {
   useAutomationActionable, useAutomationTrigger,
 } from '@/api/hooks'
 import type { Automation, AutomationPatch, ConfigField, ActionSpec } from '@/api/automations'
+import { ConsolidatePanel } from './ConsolidatePanel'
 
 const LEVEL_DOT: Record<string, string> = {
   idle: 'bg-gray-400', active: 'bg-blue-500', warn: 'bg-amber-500', error: 'bg-red-500',
@@ -373,6 +374,7 @@ export function AutomationCard({ automation: a, onOpenSession, onReviewSession }
                 </ul>}
           </section>
           <AutomationActions automationId={a.id} enabled={open} />
+          {a.id === 'pr-doctor' && <ConsolidatePanel enabled={open} />}
           <SpawnedSessionsSection id={a.id} enabled={open} onOpenSession={onOpenSession} onReviewSession={onReviewSession} />
           {a.configSchema.length > 0 && <ConfigPanel automation={a} />}
         </div>

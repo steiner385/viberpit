@@ -87,9 +87,30 @@ class PrDoctorActionProvider:
         status, _sid = await self._orch._pr_doctor_session_fix(repo, branch, info, kind, rec)
         return _pr_result(status)
 
+    async def consolidate(self, repo: str, numbers: list[int]) -> TriggerResult:
+        status, _sid = await self._orch._pr_doctor_consolidate(repo, numbers)
+        return _consolidate_result(status)
+
 
 def _pr_result(status: str) -> TriggerResult:
     level, message = _PR_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
+    return TriggerResult(status=status, level=level, message=message)
+
+
+_CONSOLIDATE_STATUS_MAP = {
+    "spawned": ("ok", "Spawned consolidation session"),
+    "duplicate": ("warn", "Already consolidating this set"),
+    "too_few": ("warn", "Select at least 2 PRs"),
+    "not_actionable": ("warn", "One or more PRs are no longer open"),
+    "ceiling": ("warn", "All accounts at/above usage ceiling — try later"),
+    "clone_failed": ("error", "Clone failed — see the automation feed"),
+    "spawn_failed": ("error", "Spawn failed — see the automation feed"),
+}
+
+
+def _consolidate_result(status: str) -> TriggerResult:
+    level, message = _CONSOLIDATE_STATUS_MAP.get(
+        status, ("error", "Consolidation failed — see the feed"))
     return TriggerResult(status=status, level=level, message=message)
 
 
