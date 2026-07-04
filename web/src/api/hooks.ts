@@ -4,8 +4,9 @@ import { api, ApiRequestError } from './client'
 import {
   fetchAutomations, fetchAutomationEvents, fetchSpawnedSessions, patchAutomation,
   fetchAutomationActionable, postAutomationTrigger,
+  fetchConsolidation, postConsolidate,
   type Automation, type AutomationEvent, type AutomationPatch,
-  type ActionableItem, type TriggerResult,
+  type ActionableItem, type TriggerResult, type ConsolidationView,
 } from './automations'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
@@ -41,6 +42,7 @@ export const QK = {
   pipelineInsights: (repo?: string, window?: string) =>
     ['pipeline-insights', repo, window] as const,
   automationActionable: (id: string) => ['automation-actionable', id] as const,
+  consolidation: ['automation-consolidation'] as const,
   daemonHealth: ['daemon-health'] as const,
 }
 
@@ -695,5 +697,26 @@ export function useAutomationTrigger(id: string) {
   return useMutation<TriggerResult, ApiRequestError, { item_id: string; kind: string }>({
     mutationFn: (body) => postAutomationTrigger(id, body),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.automationActionable(id) }) },
+  })
+}
+
+export function useConsolidation(enabled = true) {
+  return useQuery<ConsolidationView>({
+    queryKey: QK.consolidation,
+    queryFn: fetchConsolidation,
+    enabled,
+    staleTime: 10_000,
+  })
+}
+
+export function useConsolidate() {
+  const qc = useQueryClient()
+  return useMutation<TriggerResult, ApiRequestError, { repo: string; numbers: number[] }>({
+    mutationFn: (body) => postConsolidate(body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.consolidation })
+      qc.invalidateQueries({ queryKey: QK.automationActionable('pr-doctor') })
+      qc.invalidateQueries({ queryKey: QK.automationSessions('pr-doctor') })
+    },
   })
 }

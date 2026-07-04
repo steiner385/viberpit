@@ -101,3 +101,35 @@ export function postAutomationTrigger(
 ): Promise<TriggerResult> {
   return api.post<TriggerResult>(`/automations/${id}/trigger`, body)
 }
+
+// --- PR-doctor consolidation -------------------------------------------------
+
+export interface ConsolidationCandidate {
+  number: number
+  title: string
+  url: string
+  checks: string
+  mergeable: string
+  updated_at: string
+  scope: string
+}
+
+export interface ConsolidationCluster {
+  numbers: number[]
+  rationale: string
+  risk: 'low' | 'risky'
+}
+
+export interface ConsolidationView {
+  repos: Record<string, { candidates: ConsolidationCandidate[]; clusters: ConsolidationCluster[] }>
+}
+
+export function fetchConsolidation(): Promise<ConsolidationView> {
+  return api.get<ConsolidationView>('/automations/pr-doctor/consolidation')
+}
+
+export function postConsolidate(
+  body: { repo: string; numbers: number[] },
+): Promise<TriggerResult> {
+  return api.post<TriggerResult>('/automations/pr-doctor/consolidate', body)
+}
