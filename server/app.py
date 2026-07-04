@@ -2,7 +2,6 @@ from contextlib import asynccontextmanager
 import asyncio
 import logging
 import os
-import signal
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
@@ -175,18 +174,15 @@ async def _lifespan(app: FastAPI):
     # Sweep stale reauth-tmp dirs (from crashed previous runs)
     app.state.reauth.sweep_stale()
 
-    # Register SIGTERM/SIGINT handlers to cleanly cancel any running reauth
-    loop = asyncio.get_running_loop()
-
-    def _handle_signal(sig):
-        loop.create_task(app.state.reauth.shutdown())
-
-    try:
-        loop.add_signal_handler(signal.SIGTERM, _handle_signal, signal.SIGTERM)
-        loop.add_signal_handler(signal.SIGINT, _handle_signal, signal.SIGINT)
-    except (NotImplementedError, RuntimeError):
-        # Signal handlers are not available on Windows or in some test contexts
-        pass
+    # NOTE: do NOT install SIGTERM/SIGINT handlers here. uvicorn installs its own
+    # handle_exit signal handlers (via loop.add_signal_handler) BEFORE it runs this
+    # lifespan startup; registering ours would overwrite them, so SIGTERM would no
+    # longer set uvicorn's should_exit and the server never begins graceful shutdown.
+    # systemd then SIGKILLs the process at TimeoutStopSec on every deploy restart —
+    # and this lifespan's own shutdown branch (session close + X11 sweep) never runs,
+    # resurrecting the leaked-display bug (#206). Any running reauth is a background
+    # task that gets cancelled by app.state.reauth.shutdown() in the shutdown branch
+    # below, so no early-cancel signal handler is needed.
 
     # Start the singleton orchestrator (usage poller + rotation monitor).
     # In remote mode the daemon runs these, not the edge.

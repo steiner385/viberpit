@@ -1,4 +1,6 @@
+import asyncio
 import os
+import signal
 from unittest import mock
 from server.app import create_app
 from server.sessions.facade import InProcessOrchestratorAdapter
@@ -61,3 +63,34 @@ async def test_remote_lifespan_skips_orchestrator_and_closes_facade(tmp_path):
             assert app.state.remote_mode is True
             assert app.state.orchestrator is None
         assert closed.get("called") is True
+
+
+@pytest.mark.asyncio
+async def test_lifespan_does_not_install_signal_handlers(tmp_path):
+    """Regression (deploy SIGKILL): the edge lifespan must NOT register its own
+    SIGTERM/SIGINT handlers. uvicorn installs handle_exit via loop.add_signal_handler
+    before running lifespan startup; a handler registered here overwrites it, so
+    SIGTERM never sets uvicorn's should_exit — the server hangs until systemd SIGKILLs
+    it at TimeoutStopSec on every deploy restart, and this lifespan's own shutdown
+    (session close + X11 sweep) never runs. Any running reauth is cancelled by the
+    shutdown branch's reauth.shutdown(), so no signal handler is needed here."""
+    env = {
+        "CCSWITCH_SESSIOND_SOCKET": str(tmp_path / "dead.sock"),  # no daemon listening
+        "CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}",
+        "CCSWITCH_DEV": "1",
+    }
+    loop = asyncio.get_running_loop()
+    added: list[int] = []
+    orig_add = loop.add_signal_handler
+
+    def _spy(sig, cb, *args):
+        added.append(sig)
+        return orig_add(sig, cb, *args)
+
+    with mock.patch.dict(os.environ, env), mock.patch.object(loop, "add_signal_handler", _spy):
+        app = create_app()
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert signal.SIGTERM not in added, "lifespan clobbered uvicorn's SIGTERM handler"
+    assert signal.SIGINT not in added, "lifespan clobbered uvicorn's SIGINT handler"
