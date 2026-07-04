@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
+    from server.automations.completion_bar import PrFacts
     from server.github.pr_status import PipelinePr
     from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
@@ -1380,7 +1381,7 @@ class SessionOrchestrator:
             transcript_tail=await self._autopilot_transcript_tail(session_id), ledger={},
             pr_facts=self._autopilot_pr_facts(rec))
 
-    def _autopilot_pr_facts(self, rec) -> "object":
+    def _autopilot_pr_facts(self, rec) -> "PrFacts":
         """Verified PR ground-truth for a governed session, from the poller cache
         only (no new I/O). Mirrors request_pr_fix: check every authored branch plus
         the scratch branch, dedupe by PR number."""
