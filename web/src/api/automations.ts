@@ -70,24 +70,34 @@ export function patchAutomation(id: string, body: AutomationPatch): Promise<Auto
   return api.patch<Automation>(`/automations/${id}`, body)
 }
 
-// --- PR Doctor propose surface (one-tap actions) -----------------------------
+// --- Generic automation actionable/trigger surface ---------------------------
 
-export type PrDoctorKind = 'out_of_date' | 'failing_ci' | 'merge_conflict'
+export interface ActionSpec {
+  kind: string
+  label: string
+  style: 'default' | 'risky'
+}
 
-export interface PrDoctorActionablePr {
-  repo: string
-  number: number
-  kind: PrDoctorKind
-  url: string
+export interface ActionableItem {
+  id: string
   title: string
+  subtitle?: string | null
+  url?: string | null
+  actions: ActionSpec[]
 }
 
-export function fetchPrDoctorActionable(): Promise<PrDoctorActionablePr[]> {
-  return api.get<PrDoctorActionablePr[]>('/automations/pr-doctor/actionable')
+export interface TriggerResult {
+  status: string
+  level: 'ok' | 'warn' | 'error'
+  message: string
 }
 
-export function postPrDoctorFix(
-  body: { repo: string; number: number; kind: PrDoctorKind },
-): Promise<{ status: string }> {
-  return api.post<{ status: string }>('/automations/pr-doctor/fix', body)
+export function fetchAutomationActionable(id: string): Promise<ActionableItem[]> {
+  return api.get<ActionableItem[]>(`/automations/${id}/actionable`)
+}
+
+export function postAutomationTrigger(
+  id: string, body: { item_id: string; kind: string },
+): Promise<TriggerResult> {
+  return api.post<TriggerResult>(`/automations/${id}/trigger`, body)
 }
