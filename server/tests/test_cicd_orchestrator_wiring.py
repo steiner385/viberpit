@@ -14,7 +14,10 @@ def _orch():
 
 def test_read_config_off_unless_enabled_with_mode(tmp_path):
     async def run():
-        await init_db()
+        # Per-test file DB: a bare init_db() joins the suite-shared DB, where an
+        # earlier test's registry.ensure_rows() already created the cicd-doctor
+        # row -> UNIQUE constraint failure (order-dependent, CI-only).
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
         from server.sessions.orchestrator import SessionOrchestrator
         orch = _orch()
         mode, config = await SessionOrchestrator._cicd_read_config(orch)
@@ -30,7 +33,7 @@ def test_read_config_off_unless_enabled_with_mode(tmp_path):
 
 def test_list_repos_config_overrides_managed(tmp_path):
     async def run():
-        await init_db()
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
         from server.sessions.orchestrator import SessionOrchestrator
         orch = _orch()
         async with db_session() as db:
