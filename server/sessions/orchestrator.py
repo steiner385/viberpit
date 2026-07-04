@@ -1310,9 +1310,6 @@ class SessionOrchestrator:
         _mode, config = await self._backlog_read_config()
         return await asyncio.to_thread(query_candidates, config, gh_run=self._gh_run)
 
-    async def backlog_runner_implement(self, primary: str) -> str:
-        return await self.backlog_runner_implement_core(primary)
-
     async def _backlog_tick_loop(self, interval: float) -> None:
         """Periodic driver for the backlog-runner control loop. Runs a tick every
         *interval* seconds while the automation is enabled; a disabled row makes
@@ -1768,11 +1765,11 @@ class SessionOrchestrator:
                 log.warning("orchestrator._pr_doctor_sweep_step_failed", exc_info=True)
         # Stash a live summary on the ctx so ``PrDoctor.status(ctx)`` renders
         # "watching N failing PR(s)" instead of always "idle" (parity with the
-        # backlog runner's ``_stash_counts``). Reuses ``pr_doctor_actionable`` —
-        # the canonical "PRs with a real recovery mode" computation — rather than
-        # a parallel counter. Best-effort: a count read must not break the sweep.
+        # backlog runner's ``_stash_counts``). Delegates to ``automation_actionable``
+        # — the generic action-provider path — rather than a parallel counter.
+        # Best-effort: a count read must not break the sweep.
         try:
-            actionable = await self.pr_doctor_actionable()
+            actionable = await self.automation_actionable("pr-doctor")
             # ``setattr`` (not a typed attribute) mirrors the backlog runner's
             # ``_stash_counts`` — the ctx carries dynamic per-automation summaries.
             setattr(self._pr_doctor_ctx, "pr_doctor_counts", {"failing": len(actionable)})
@@ -1861,11 +1858,12 @@ class SessionOrchestrator:
             took_action = False
         elif isinstance(action, engine.Propose):
             # Propose surface is LIVE: the one-tap action row is served by
-            # ``pr_doctor_actionable`` (which re-classifies the live poll cache) and
-            # actioned by ``pr_doctor_fix``. This emitted ``proposed`` event is
-            # observability-only — it records the intent on the activity feed with
-            # no auto side effect (does not consume an attempt, so it is NOT a
-            # "took_action"; the caller still fires the debounced notify).
+            # ``automation_actionable("pr-doctor")`` and triggered via
+            # ``automation_trigger("pr-doctor", item_id, kind)``. This emitted
+            # ``proposed`` event is observability-only — it records the intent on
+            # the activity feed with no auto side effect (does not consume an
+            # attempt, so it is NOT a "took_action"; the caller still fires the
+            # debounced notify).
             await self._pr_doctor_ctx.emit(
                 "info", f"proposed {action.kind} fix for {target}",
                 kind="proposed", target=target)
@@ -1878,9 +1876,10 @@ class SessionOrchestrator:
             # else: gh failed → attempt NOT consumed; re-arms next poll.
         elif isinstance(action, engine.SessionFix):
             # Delegate to the shared inject-or-spawn executor (single source of
-            # truth for both the auto path here and the manual one-tap
-            # ``pr_doctor_fix``). It returns ``"sent"``/``"spawned"`` on a real
-            # injection (which consumes an attempt) or a transient/error status.
+            # truth for both the auto path here and the manual one-tap trigger
+            # via ``automation_trigger("pr-doctor", item_id, kind)``). It returns
+            # ``"sent"``/``"spawned"`` on a real injection (which consumes an
+            # attempt) or a transient/error status.
             status, _ = await self._pr_doctor_session_fix(
                 repo, branch, info, action.kind, rec)
             if status in ("sent", "spawned"):
@@ -1903,7 +1902,7 @@ class SessionOrchestrator:
         """Inject-or-spawn a session-driven PR fix — the shared session executor.
 
         Single source of truth for both the auto path (``_pr_doctor_step``) and
-        the manual one-tap propose action (``pr_doctor_fix``). Selects the
+        the manual one-tap propose action (``automation_trigger("pr-doctor", ...)``). Selects the
         branch-aware first prompt by *kind*; if the owning session is a LIVE
         driver it injects via the same send-prompt path (``request_pr_fix`` for
         failing_ci to preserve the old re-resolve+gate behaviour, direct
@@ -2723,9 +2722,9 @@ class SessionOrchestrator:
     def _pr_doctor_owning_rec(self, repo: str, branch: str):
         """The live session record that authored *branch* in *repo*, or None.
 
-        Used by ``pr_doctor_fix`` to route the session executor at a LIVE driver
-        when the owning session is still running (inject) vs. a fresh spawn when
-        it is gone. Prefers a record with a live driver.
+        Used by ``_pr_doctor_session_fix`` to route the session executor at a
+        LIVE driver when the owning session is still running (inject) vs. a fresh
+        spawn when it is gone. Prefers a record with a live driver.
         """
         fallback = None
         for r in self._records.values():
@@ -2790,68 +2789,6 @@ class SessionOrchestrator:
             return {"status": "invalid_kind", "level": "error",
                     "message": f"invalid kind {kind!r}"}
         return (await provider.trigger(item_id, kind)).to_dict()
-
-    async def pr_doctor_actionable(self) -> list[dict]:
-        """PRs in the current poll cache with a real recovery mode, for the card.
-
-        Iterates the ``(repo, branch)`` pairs from ``_pr_pairs`` and their cached
-        ``pr_for`` PullRequestInfo, runs the pure engine ``classify`` on each, and
-        returns the ones whose failure mode is a genuine recovery action
-        (``merge_conflict`` / ``out_of_date`` / ``failing_ci`` — not None or the
-        notify-only ``blocked``). Deduped by PR number. Each item is
-        ``{repo, number, kind, url, title}``.
-        """
-        from server.automations import pr_doctor_engine as engine
-        pairs = await self._pr_doctor_scope_pairs()
-        by_number: dict[tuple[str, int], dict] = {}
-        for repo, branch in pairs:
-            info = self.pr_for(repo, branch) or self._pr_population_pr(repo, branch)
-            if info is None:
-                continue
-            kind = engine.classify(info)
-            if kind not in ("merge_conflict", "out_of_date", "failing_ci"):
-                continue
-            by_number.setdefault((repo, info.number), {
-                "repo": repo,
-                "number": info.number,
-                "kind": kind,
-                "url": info.url,
-                "title": info.title,
-            })
-        return sorted(by_number.values(), key=lambda d: (d["repo"], d["number"]))
-
-    async def pr_doctor_fix(self, repo: str, number: int, kind: str) -> str:
-        """One-tap manual recovery for PR *number* in *repo* — the propose action.
-
-        Resolves the cached PR (via ``_pr_pairs`` / ``pr_for``), gates on an
-        ACTIONABLE (open/draft) state — a terminal merged/closed PR is a no-op
-        returning ``"not_actionable"`` — then runs the SAME executor the auto path
-        uses for *kind*: ``out_of_date`` → the mechanical update-branch executor;
-        ``failing_ci`` / ``merge_conflict`` → the shared session inject-or-spawn
-        executor with the kind-appropriate prompt. Returns a status string. Does
-        NOT reimplement the executors (shares them with ``_pr_doctor_step``).
-        """
-        info = None
-        branch = None
-        for r, br in await self._pr_pairs():
-            if r != repo:
-                continue
-            cached = self.pr_for(repo, br)
-            if cached is not None and cached.number == number:
-                info, branch = cached, br
-                break
-        if info is None or branch is None:
-            return "no_pr"
-        # Gate on an actionable (open/draft) state — never act on a terminal PR.
-        if info.state not in ("open", "draft"):
-            return "not_actionable"
-        if kind == "out_of_date":
-            ok = await self._pr_doctor_mechanical(repo, info, kind)
-            return "updated" if ok else "failed"
-        # failing_ci / merge_conflict → shared session executor.
-        rec = self._pr_doctor_owning_rec(repo, branch)
-        status, _ = await self._pr_doctor_session_fix(repo, branch, info, kind, rec)
-        return status
 
     async def refresh_authored_branches(self) -> None:
         """Union each live session's reflog+live branches into its record, persist changes.

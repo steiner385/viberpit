@@ -416,7 +416,7 @@ async def _events(kind: str):
 
 
 # --------------------------------------------------------------------------- #
-# Endpoint: POST /backlog-runner/implement                                     #
+# Endpoint: POST /backlog-runner/trigger (generic action surface)              #
 # --------------------------------------------------------------------------- #
 
 H = {"Tailscale-User-Login": "testuser@example.com"}
@@ -424,12 +424,14 @@ H = {"Tailscale-User-Login": "testuser@example.com"}
 
 class _FakeOrch:
     def __init__(self, status="spawned"):
-        self.status = status
-        self.calls: list[str] = []
+        self._status = status
+        self.calls: list[tuple[str, str, str]] = []
 
-    async def backlog_runner_implement(self, primary: str) -> str:
-        self.calls.append(primary)
-        return self.status
+    async def automation_trigger(self, automation_id: str, item_id: str, kind: str) -> dict:
+        self.calls.append((automation_id, item_id, kind))
+        level = "ok" if self._status == "spawned" else "warn"
+        message = "Spawned implementation session" if self._status == "spawned" else "No longer a current candidate"
+        return {"status": self._status, "level": level, "message": message}
 
 
 def _client(orch):
@@ -457,26 +459,28 @@ def _client(orch):
 
 def test_implement_requires_auth():
     with _client(_FakeOrch()) as c:
-        r = c.post("/api/automations/backlog-runner/implement", json={"primary": "o/r#1"})
+        r = c.post("/api/automations/backlog-runner/trigger",
+                   json={"item_id": "o/r#1", "kind": "implement"})
         assert r.status_code == 401
 
 
 def test_implement_spawns_on_valid_primary():
     orch = _FakeOrch(status="spawned")
     with _client(orch) as c:
-        r = c.post("/api/automations/backlog-runner/implement",
-                   json={"primary": "o/r#1"}, headers=H)
+        r = c.post("/api/automations/backlog-runner/trigger",
+                   json={"item_id": "o/r#1", "kind": "implement"}, headers=H)
         assert r.status_code == 200
-        assert r.json() == {"status": "spawned"}
-        assert orch.calls == ["o/r#1"]
+        assert r.json()["status"] == "spawned"
+        assert orch.calls == [("backlog-runner", "o/r#1", "implement")]
 
 
-def test_implement_unknown_primary_404():
+def test_implement_unknown_primary_returns_warn_status():
     orch = _FakeOrch(status="unknown")
     with _client(orch) as c:
-        r = c.post("/api/automations/backlog-runner/implement",
-                   json={"primary": "o/r#999"}, headers=H)
-        assert r.status_code == 404
+        r = c.post("/api/automations/backlog-runner/trigger",
+                   json={"item_id": "o/r#999", "kind": "implement"}, headers=H)
+        assert r.status_code == 200
+        assert r.json()["status"] == "unknown"
 
 
 # --------------------------------------------------------------------------- #

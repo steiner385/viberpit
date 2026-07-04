@@ -167,11 +167,6 @@ class RemoteOrchestrator:
         daemon — the single source of truth for which sessions are still not live."""
         return await self._client.call("resume_recovery_status")
 
-    async def pr_doctor_actionable(self) -> "list[dict]":
-        """Actionable PRs (real recovery mode) for the PR Doctor card, via the daemon."""
-        r = await self._client.call("pr_doctor_actionable")
-        return r.get("prs") or []
-
     async def automation_actionable(self, automation_id: str) -> "list[dict]":
         """Actionable items for *automation_id*, via the daemon."""
         r = await self._client.call("automation_actionable", automation_id=automation_id)
@@ -181,14 +176,6 @@ class RemoteOrchestrator:
         """Trigger a manual action for an item on *automation_id*, via the daemon."""
         return await self._client.call("automation_trigger", automation_id=automation_id,
                                        item_id=item_id, kind=kind)
-
-    async def pr_doctor_fix(self, repo: str, number: int, kind: str) -> str:
-        """Trigger a one-tap PR Doctor recovery for PR #number via the daemon."""
-        return await self._client.call("pr_doctor_fix", repo=repo, number=number, kind=kind)
-
-    async def backlog_runner_implement(self, primary: str) -> str:
-        """Propose-tap: claim + spawn the batch for *primary* via the daemon."""
-        return await self._client.call("backlog_runner_implement", primary=primary)
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)

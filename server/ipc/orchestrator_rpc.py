@@ -113,15 +113,11 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "send_prompt", send_prompt)
     register_rpc(app, "pr_for", pr_for)
     register_rpc(app, "prs_for", prs_for)
-    async def pr_doctor_actionable(params: dict) -> dict:
-        prs = await orch.pr_doctor_actionable()
-        return {"prs": prs}
 
     register_rpc(app, "all_prs", all_prs)
     register_rpc(app, "all_repos_stage_models", all_repos_stage_models)
     register_rpc(app, "all_merge_trains", all_merge_trains)
     register_rpc(app, "check_insights", check_insights)
-    register_rpc(app, "pr_doctor_actionable", pr_doctor_actionable)
 
     async def automation_actionable(params: dict) -> dict:
         items = await orch.automation_actionable(params["automation_id"])
@@ -142,7 +138,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "begin_drain", "drain_status",
         "live_session_load", "live_session_counts",
         "snapshot_deploy", "restore_deploy", "resume_recovery_status",
-        "request_pr_fix", "pr_doctor_fix", "backlog_runner_implement",
+        "request_pr_fix",
         "automation_statuses", "automation_trigger",
     ]
 

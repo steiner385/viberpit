@@ -19,7 +19,7 @@ _PR_KIND_LABEL = {
 }
 _PR_RISKY = {"merge_conflict"}
 
-# status → (level, message). Statuses come from pr_doctor_fix's shared executors:
+# status → (level, message). Statuses come from the pr-doctor session/mechanical executors:
 #   session executor: sent | spawned | ceiling | transient | clone_failed | spawn_failed
 #   mechanical:       updated | failed
 #   gates:            no_pr | not_actionable

@@ -30,21 +30,6 @@ class TriggerBody(BaseModel):
     kind: str
 
 
-class PrDoctorFixBody(BaseModel):
-    repo: str
-    number: int
-    kind: str
-
-
-class BacklogImplementBody(BaseModel):
-    primary: str
-
-
-# The failure kinds the propose surface can act on (matches the pure engine's
-# recovery modes; ``blocked`` is notify-only and never a one-tap action).
-_PR_DOCTOR_FIX_KINDS = {"out_of_date", "failing_ci", "merge_conflict"}
-
-
 async def _row(db, automation_id: str) -> AutomationRow:
     row = (await db.execute(
         select(AutomationRow).where(AutomationRow.id == automation_id))).scalar_one_or_none()
@@ -145,42 +130,6 @@ async def patch_automation(automation_id: str, body: PatchBody,
             "config": row.config or {}}
 
 
-@router.get("/pr-doctor/actionable")
-async def pr_doctor_actionable(request: Request,
-                               _identity: str = Depends(current_identity)) -> list[dict]:
-    """PRs with a real recovery mode, for the PR Doctor card's one-tap actions."""
-    _automation_or_404("pr-doctor")
-    orch = request.app.state.sessions
-    return await orch.pr_doctor_actionable()
-
-
-@router.post("/pr-doctor/fix")
-async def pr_doctor_fix(body: PrDoctorFixBody, request: Request,
-                        _identity: str = Depends(current_identity)) -> dict:
-    """Trigger a one-tap PR Doctor recovery action for an actionable PR."""
-    _automation_or_404("pr-doctor")
-    if body.kind not in _PR_DOCTOR_FIX_KINDS:
-        raise HTTPException(status_code=422, detail=f"invalid kind {body.kind!r}")
-    orch = request.app.state.sessions
-    status = await orch.pr_doctor_fix(body.repo, body.number, body.kind)
-    return {"status": status}
-
-
-@router.post("/backlog-runner/implement")
-async def backlog_runner_implement(body: BacklogImplementBody, request: Request,
-                                   _identity: str = Depends(current_identity)) -> dict:
-    """Propose-tap: claim (if needed) + spawn the runner batch for *primary*.
-
-    404 when *primary* is not a current candidate; otherwise returns the spawn
-    status (``spawned`` / ``exists`` / ``claim_failed`` / ``no_account``)."""
-    _automation_or_404("backlog-runner")
-    orch = request.app.state.sessions
-    status = await orch.backlog_runner_implement(body.primary)
-    if status == "unknown":
-        raise HTTPException(status_code=404, detail="unknown primary or not a current candidate")
-    return {"status": status}
-
-
 @router.get("/cicd-doctor/findings")
 async def cicd_doctor_findings(status: str = "open", repo: str | None = None,
                                _identity: str = Depends(current_identity),
@@ -203,8 +152,6 @@ async def cicd_doctor_findings(status: str = "open", repo: str | None = None,
             for f in rows]
 
 
-# Generic routes: registered AFTER all literal-path routes so FastAPI's first-match
-# routing lets specific paths like /pr-doctor/actionable take priority during transition.
 @router.get("/{automation_id}/actionable")
 async def list_automation_actionable(automation_id: str, request: Request,
                                      _identity: str = Depends(current_identity)) -> list[dict]:
