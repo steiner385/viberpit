@@ -53,6 +53,10 @@ function mockBasicHooks(mutate = vi.fn()) {
     { data: [] } as unknown as ReturnType<typeof hooks.useAutomationActionable>)
   vi.spyOn(hooks, 'useAutomationTrigger').mockReturnValue(
     { mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useAutomationTrigger>)
+  vi.spyOn(hooks, 'useConsolidation').mockReturnValue(
+    { data: undefined, isLoading: false } as unknown as ReturnType<typeof hooks.useConsolidation>)
+  vi.spyOn(hooks, 'useConsolidate').mockReturnValue(
+    { mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useConsolidate>)
 }
 
 describe('AutomationCard', () => {
@@ -160,6 +164,10 @@ describe('AutomationCard', () => {
         { data: [] } as unknown as ReturnType<typeof hooks.useAutomationActionable>)
       vi.spyOn(hooks, 'useAutomationTrigger').mockReturnValue(
         { mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useAutomationTrigger>)
+      vi.spyOn(hooks, 'useConsolidation').mockReturnValue(
+        { data: undefined, isLoading: false } as unknown as ReturnType<typeof hooks.useConsolidation>)
+      vi.spyOn(hooks, 'useConsolidate').mockReturnValue(
+        { mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useConsolidate>)
 
       render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} onOpenSession={onOpenSession} /></MemoryRouter>)
       fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
@@ -204,6 +212,10 @@ describe('AutomationCard', () => {
         { data: [] } as unknown as ReturnType<typeof hooks.useAutomationActionable>)
       vi.spyOn(hooks, 'useAutomationTrigger').mockReturnValue(
         { mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useAutomationTrigger>)
+      vi.spyOn(hooks, 'useConsolidation').mockReturnValue(
+        { data: undefined, isLoading: false } as unknown as ReturnType<typeof hooks.useConsolidation>)
+      vi.spyOn(hooks, 'useConsolidate').mockReturnValue(
+        { mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useConsolidate>)
 
       render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
       fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
