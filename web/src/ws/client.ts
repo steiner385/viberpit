@@ -357,10 +357,15 @@ export class SessionSocket {
         this._emit('error', msg)
         break
       case 'batch': {
-        // A replayReset (reconnect replay) re-baselines the active session's seq.
+        // A replayReset re-baselines its OWN session's seq. Route by the frame's
+        // tagged sessionId (falling back to the active session for legacy untagged
+        // frames) so a stale replay for a session we've navigated away from can't
+        // clobber the active session's gap baseline.
         for (const e of msg.events) {
-          if ((e as { type: string }).type === 'replayReset' && this._activeSessionId) {
-            resetSeq(this._gap, this._activeSessionId)
+          const meta = e as { type: string; sessionId?: string }
+          if (meta.type === 'replayReset') {
+            const sid = meta.sessionId ?? this._activeSessionId
+            if (sid) resetSeq(this._gap, sid)
           }
         }
         const { dispatch, needsHeal } = handleLiveBatch(msg.events, {

@@ -17,8 +17,8 @@ export interface EvSessionMeta   { type: 'sessionMeta';   model: string; session
 export interface EvTurnModel     { type: 'turnModel';     turnId: string; model: string; parentToolUseId?: string | null }
 export interface EvTitle         { type: 'title';         title: string; source: string }
 export interface EvStatus        { type: 'status';        state: string; count: number }
-export interface EvReplayReset   { type: 'replayReset' }
-export interface EvReplayComplete { type: 'replayComplete'; earliestTurn?: number; totalTurns?: number }
+export interface EvReplayReset   { type: 'replayReset'; sessionId?: string }
+export interface EvReplayComplete { type: 'replayComplete'; sessionId?: string; earliestTurn?: number; totalTurns?: number }
 export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null; turnId?: string | null; ts?: number }
 export interface QueuedItem      { text: string; images: { url: string; mime: string; name: string }[] }
 export interface EvQueueUpdate   { type: 'queueUpdate';   items: QueuedItem[] }

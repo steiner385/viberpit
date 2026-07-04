@@ -101,6 +101,38 @@ def test_live_attach_resets_even_when_trimmed_history_is_empty(tmp_path):
     assert any(m.get("type") == "replayComplete" for m in sent)
 
 
+def test_replay_frames_are_tagged_with_session_id(tmp_path):
+    """Every replay frame — the replayReset, each replay content event, and the
+    trailing replayComplete — must carry its owning ``sessionId``, exactly like the
+    live stream stamps ``_forward_live`` events.
+
+    Without this tag the client routes replay frames by whichever session happens to
+    be subscribed when they arrive (see handleLiveBatch / useSessionRuntime.onEvent),
+    not by identity. A stale replay batch for session A that lands just after the user
+    navigates to B is then applied to B: the untagged replayReset wipes B's transcript
+    to empty and B's history never returns (the "transcript goes blank on navigation"
+    bug). Tagging lets the client drop a replay meant for a session it is no longer
+    viewing."""
+    path = _write_transcript(tmp_path)
+
+    class Orch:
+        async def transcript_path(self, sid): return path
+    sent = []
+    async def send(msg): sent.append(msg)
+
+    asyncio.run(
+        wsmod._run_replay_and_complete(Orch(), send, "sess-A", drop_incomplete=False)  # type: ignore[attr-defined]
+    )
+
+    batch = next(m for m in sent if m.get("type") == "batch")
+    for e in batch["events"]:
+        assert e.get("sessionId") == "sess-A", \
+            f"replay event {e.get('type')!r} missing/mismatched sessionId: {e}"
+    complete = next(m for m in sent if m.get("type") == "replayComplete")
+    assert complete.get("sessionId") == "sess-A", \
+        f"replayComplete missing sessionId: {complete}"
+
+
 def test_idle_attach_empty_transcript_does_not_reset(tmp_path):
     """Guard the fix's scope: a NON-live attach (drop_incomplete=False) with no
     transcript must NOT emit a spurious replayReset — only replayComplete."""
