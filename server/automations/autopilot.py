@@ -134,6 +134,11 @@ class AutopilotLoop:
             await self._record_fingerprint(sid, ledger, ctx)
             return False, False
         if decision.action == "complete":
+            # A human unarchived this session — it must NEVER be auto-archived again
+            # (the user's standing decision outranks the goal-met signal). Surface the
+            # met goal once, then stop; autopilot keeps helping it in every other way.
+            if ctx.no_auto_archive:
+                return await self._decline_archive(sid, ledger, ctx, decision)
             # The goal is met — this session is finished. In auto mode archive it
             # (reversible; unarchive exists) via the archive seam — NEVER via apply,
             # which stays reserved for validated in-session actions. In propose mode
@@ -182,6 +187,24 @@ class AutopilotLoop:
             # a session that would otherwise be nudged forever without progress.
             await self._record_fingerprint(sid, ledger, ctx)
         return acted, False
+
+    async def _decline_archive(self, sid: str, ledger: dict, ctx: DecisionContext,
+                               decision: Decision) -> tuple[bool, bool]:
+        """Goal met, but the session was manually unarchived → never auto-archive it.
+        Surface the completion ONCE (deduped on the stuck fingerprint, mirroring the
+        escalate de-spam) so the feed isn't buried every tick, and stop advancing it."""
+        fp = fingerprint(ctx)
+        if ledger.get("archive_declined") and ledger.get("last_fingerprint") == fp:
+            return False, False
+        new = dict(ledger)
+        new.update(archive_declined=True, last_fingerprint=fp)
+        await self._ctx.set_target_state(sid, new)
+        await self._ctx.emit(
+            "info", f"{sid}: goal met — not auto-archiving (you unarchived this)",
+            kind="proposed", session_id=sid,
+            detail={"action": "complete", "reason": decision.reason,
+                    "suppressed": "manual-unarchive"})
+        return False, False
 
     async def _record_fingerprint(self, sid: str, ledger: dict, ctx: DecisionContext) -> None:
         fp = fingerprint(ctx)

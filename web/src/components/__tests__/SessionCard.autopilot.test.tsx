@@ -40,6 +40,19 @@ describe('SessionCard autopilot toggle', () => {
     expect(screen.getByTestId('card-autopilot-badge')).toHaveTextContent('Manual')
   })
 
+  it('shows a passive "Auto-archive off" badge for a manually-unarchived session', () => {
+    renderCard({ ...base, autoArchiveOptOut: 'manual-unarchive' })
+    const badge = screen.getByTestId('card-no-autoarchive-badge')
+    expect(badge).toHaveTextContent('Auto-archive off')
+    // Passive indicator — not a button/link (a11y: no nested interactive in the row).
+    expect(badge.tagName).toBe('SPAN')
+  })
+
+  it('omits the auto-archive badge when the session is still eligible', () => {
+    renderCard({ ...base, autoArchiveOptOut: null })
+    expect(screen.queryByTestId('card-no-autoarchive-badge')).toBeNull()
+  })
+
   it('requests the opposite state on click', () => {
     const onToggle = vi.fn()
     renderCard({ ...base, autopilotPaused: false }, onToggle)

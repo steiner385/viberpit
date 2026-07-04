@@ -431,6 +431,18 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 <span className="truncate">Manual</span>
               </span>
             )}
+            {session.autoArchiveOptOut && (
+              /* Passive indicator (not interactive — a11y): this session was manually
+                 unarchived, so autopilot will never auto-archive it again. */
+              <span
+                data-testid="card-no-autoarchive-badge"
+                className="hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
+                title="Auto-archive off — you unarchived this session, so autopilot won't archive it again"
+              >
+                <Archive size={12} aria-hidden="true" className="flex-shrink-0" />
+                <span className="truncate">Auto-archive off</span>
+              </span>
+            )}
             {(session.origin || session.assistedBy) && (
               /* Provenance: one violet badge for any automation involvement.
                  Spawned-by (origin) outranks assisted-by when both apply. */

@@ -31,7 +31,7 @@ def _orch(records):
     orch._backlog_ctx = AutomationContext("backlog-runner")
     archived: list[str] = []
 
-    async def _spy_archive(session_id):
+    async def _spy_archive(session_id, *, archived_by="user", context=None):
         archived.append(session_id)
 
     orch.archive_session = _spy_archive  # type: ignore[method-assign]
@@ -65,6 +65,20 @@ def test_human_session_is_not_archived():
         orch._maybe_autoarchive_completed("s1", "complete", orch._records["s1"])
         await asyncio.sleep(0)
         assert archived == []  # human-created sessions are never auto-archived
+
+    asyncio.run(run())
+
+
+def test_manually_unarchived_backlog_session_is_not_re_archived():
+    """A human unarchived this run (sticky opt-out) → completion must NOT re-archive it."""
+    async def run():
+        rec = _rec("s1")
+        rec.auto_archive_opt_out_reason = "manual-unarchive"
+        orch, archived = _orch({"s1": rec})
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert archived == []  # the sticky opt-out wins over the completion signal
 
     asyncio.run(run())
 

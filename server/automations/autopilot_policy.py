@@ -44,6 +44,12 @@ class DecisionContext:
     transcript_tail: list[dict] = field(default_factory=list)
     ledger: dict = field(default_factory=dict)
     pr_facts: "PrFacts | None" = None   # verified PR ground-truth (None = unknown)
+    # True when a human unarchived this session: the loop surfaces a met goal but NEVER
+    # auto-archives it again (only archiving is suppressed — other help continues).
+    no_auto_archive: bool = False
+    # Compact caution string ("N recent auto-archives in this repo were manually reversed…")
+    # fed to the decider so the auto-archive judgement learns from prior reversals. None = none.
+    reversal_hint: str | None = None
 
 
 @dataclass

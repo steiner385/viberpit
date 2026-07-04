@@ -147,6 +147,7 @@ def _record_to_dict(
         "effectiveGoal": goal_text,
         "goalSource": goal_source,
         "autopilotPaused": getattr(record, "autopilot_paused", False),
+        "autoArchiveOptOut": getattr(record, "auto_archive_opt_out_reason", None),
         "prs": [p.to_dict() for p in (prs or [])],
         "usageUnverified": getattr(record, "usage_unverified", False),
         "interruptedByRestart": getattr(record, "interrupted_by_restart", False),
