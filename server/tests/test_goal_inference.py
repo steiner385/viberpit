@@ -6,8 +6,23 @@ import asyncio
 
 import pytest
 
-from server.sessions.goal_inference import infer_goal
+from server.sessions.goal_inference import _INSTRUCTION, _SYSTEM_PROMPT, infer_goal
 from server.sessions.types import SessionRecord
+
+
+def test_prompt_targets_terminal_shipped_state():
+    """The inferred goal must be the terminal shipped outcome (implemented + PR armed),
+    not an intermediate artifact — a design doc / spec / plan is a means, not the goal.
+    Guards against reverting to 'the deliverable it is driving toward', which let the
+    model report a design-doc step as the end goal (screenshot report, 2026-07)."""
+    sys_l = _SYSTEM_PROMPT.lower()
+    assert "terminal" in sys_l
+    assert "pull request" in sys_l or "pr " in sys_l
+    # Intermediate artifacts are explicitly demoted to means, not goal.
+    assert "design doc" in sys_l and "means" in sys_l
+    # The only escape hatch is an explicitly narrower initial request/title.
+    assert "explicitly" in sys_l and "scope" in sys_l
+    assert "terminal" in _INSTRUCTION.lower()
 
 
 def _fake_query(reply_text):
