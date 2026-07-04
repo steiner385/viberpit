@@ -51,8 +51,9 @@ Research corrections to initial assumptions:
 
 ### 1c. Aspirational checks — no tooling exists (Doctor proposes; NOT onboarded in v1)
 
-- **Lighthouse** (perf/a11y audit of the built dashboard) — nothing installed. Once
-  alive, the Doctor files a proposal issue to wire it as advisory.
+- **Lighthouse** (perf/a11y audit of the built dashboard) — nothing installed. A
+  `ci-doctor` proposal issue is filed once manually at rollout (v1 has no
+  "missing check you never had" analyzer — YAGNI); wiring it is its own small PR.
 - **Storybook / visual regression** — zero stories, zero config. Adopting Storybook is a
   product decision, not CI wiring; out of v1 scope entirely.
 
@@ -149,7 +150,7 @@ A check graduates advisory→blocking only when ALL hold over the stability wind
 | Repo scope | `enabled_repos` repo-multiselect; empty = all ccswitch-managed repos (matches PR Doctor/Autopilot). |
 | Granularity | Test-level from the start (user decision) — requires JUnit emission (prerequisite PR ①). |
 | Modes | off / propose in v1; auto (Phase C) executes transitions and fixes. |
-| Config schema | `enabled_repos`, five graduation-gate thresholds, demotion + retirement thresholds, tick interval, `file_issues: bool` (off = DB findings + feed only). |
+| Config schema | `enabled_repos`, five graduation-gate thresholds, demotion + retirement thresholds, history retention, `file_issues: bool` (off = DB findings + feed only). Tick interval is hardcoded (~15 min) like every other automation loop — not config. |
 
 ### 4e. Prerequisite CI wiring (small companion PRs; Doctor is blind without ①)
 
