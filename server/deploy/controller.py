@@ -143,6 +143,13 @@ class DeployController:
                 except Exception:
                     self.status.warnings.append("session restore call failed")
                 self._set(Phase.RESUME, PhaseState.DONE)
+            else:
+                # Edge-only deploy: the daemon never restarted, so no sessions were dropped
+                # and there is nothing to restore. The phase still COMPLETED (trivially) —
+                # record it DONE. If left unset, the frontend's allPhasesDone() gate reads the
+                # missing phase as 'pending' and reports a spurious deploy *failure* even though
+                # nothing failed and deploy.error is None.
+                self._set(Phase.RESUME, PhaseState.DONE)
 
             # --- publish (best-effort) ---
             publish_err = await asyncio.to_thread(self._steps.publish_deployment, remote)
