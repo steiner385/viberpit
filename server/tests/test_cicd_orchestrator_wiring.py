@@ -31,6 +31,35 @@ def test_read_config_off_unless_enabled_with_mode(tmp_path):
     asyncio.run(run())
 
 
+def test_read_config_enabled_without_mode_defaults_to_propose(tmp_path):
+    """A 2-mode automation (off/propose) has no mode <select> in the UI, so the
+    toggle enables it with mode left NULL. Enabled + no explicit mode must resolve
+    to the first non-off mode, else the loop is stuck 'off' forever."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        from server.sessions.orchestrator import SessionOrchestrator
+        orch = _orch()
+        async with db_session() as db:
+            db.add(Automation(id="cicd-doctor", enabled=True, mode=None))
+            await db.flush()
+        mode, _ = await SessionOrchestrator._cicd_read_config(orch)
+        assert mode == "propose"
+    asyncio.run(run())
+
+
+def test_read_config_disabled_is_off_even_with_mode(tmp_path):
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        from server.sessions.orchestrator import SessionOrchestrator
+        orch = _orch()
+        async with db_session() as db:
+            db.add(Automation(id="cicd-doctor", enabled=False, mode="propose"))
+            await db.flush()
+        mode, _ = await SessionOrchestrator._cicd_read_config(orch)
+        assert mode == "off"
+    asyncio.run(run())
+
+
 def test_list_repos_config_overrides_managed(tmp_path):
     async def run():
         await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")

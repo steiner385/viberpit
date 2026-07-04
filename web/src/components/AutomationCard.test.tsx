@@ -70,6 +70,32 @@ describe('AutomationCard', () => {
     expect(mutate).toHaveBeenCalledWith({ id: 'pr-doctor', body: { enabled: true } })
   })
 
+  it('enabling a 2-mode automation with no mode also sets the active mode', () => {
+    // CI/CD Doctor (off/propose) hides the mode <select>, so the toggle must
+    // carry the mode — else it enables with mode NULL and stays stuck 'off'.
+    const mutate = vi.fn()
+    mockBasicHooks(mutate)
+    const cicd: Automation = {
+      ...PR_DOCTOR, id: 'cicd-doctor', name: 'CI/CD Doctor',
+      enabled: false, mode: null, modes: ['off', 'propose'],
+    }
+    render(<MemoryRouter><AutomationCard automation={cicd} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('switch'))
+    expect(mutate).toHaveBeenCalledWith({ id: 'cicd-doctor', body: { enabled: true, mode: 'propose' } })
+  })
+
+  it('disabling never sends a mode', () => {
+    const mutate = vi.fn()
+    mockBasicHooks(mutate)
+    const cicd: Automation = {
+      ...PR_DOCTOR, id: 'cicd-doctor', name: 'CI/CD Doctor',
+      enabled: true, mode: 'propose', modes: ['off', 'propose'],
+    }
+    render(<MemoryRouter><AutomationCard automation={cicd} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('switch'))
+    expect(mutate).toHaveBeenCalledWith({ id: 'cicd-doctor', body: { enabled: false } })
+  })
+
   // --- Active-session header badge ---
 
   describe('Active-session badge', () => {
