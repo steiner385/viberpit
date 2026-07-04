@@ -17,13 +17,20 @@ _MAX_GOAL_CHARS = 200
 
 _SYSTEM_PROMPT = (
     "You distill coding sessions into goal statements. Given a session's title and a "
-    "transcript excerpt, state the session's concrete end goal — the deliverable or "
-    "end state it is driving toward (e.g. a merged PR, a fixed bug, a shipped feature)."
+    "transcript excerpt, state the session's TERMINAL end state — the fully shipped "
+    "outcome the work drives toward: the feature implemented and verified with a pull "
+    "request opened and armed to merge. Intermediate steps — writing a design doc, "
+    "spec, or plan, investigating, or recommending an approach — are means to that end, "
+    "NOT the goal; project past them to the shipped result. State the destination, not "
+    "the current step. Only stop short of a merged PR if the session's title/initial "
+    "request explicitly scopes the work to just that artifact (e.g. 'write a design "
+    "doc, do not implement')."
 )
 
 _INSTRUCTION = (
-    "Reply with ONLY one sentence (under 120 characters) stating what this session is "
-    "trying to accomplish. Imperative mood. No preamble, no quotes."
+    "Reply with ONLY one sentence (under 120 characters) stating the session's terminal "
+    "shipped outcome (implemented + PR armed to merge), unless the title explicitly "
+    "scopes it narrower. Imperative mood. No preamble, no quotes."
 )
 
 
