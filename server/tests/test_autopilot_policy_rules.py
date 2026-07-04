@@ -76,3 +76,32 @@ def test_post_validate_rejects_out_of_range_answer():
 def test_post_validate_rejects_empty_nudge():
     out = post_validate(Decision(action="nudge", prompt="  "), _ctx(status="done"), CONFIG)
     assert out.action == "escalate"
+
+
+from server.automations.completion_bar import PrFact, PrFacts
+
+
+def _armed_facts():
+    return PrFacts(has_repo=True, prs=(PrFact(1, "open", False, True, "u"),))
+
+
+def _unarmed_facts():
+    return PrFacts(has_repo=True, prs=(PrFact(1, "open", False, False, "u"),))
+
+
+def test_complete_with_unarmed_pr_is_downgraded_to_nudge():
+    ctx = _ctx(status="complete", stuck={"kind": "complete"}, pr_facts=_unarmed_facts())
+    d = post_validate(Decision(action="complete", reason="agent said done"), ctx, CONFIG)
+    assert d.action == "nudge" and d.prompt
+
+
+def test_complete_with_armed_pr_survives():
+    ctx = _ctx(status="complete", stuck={"kind": "complete"}, pr_facts=_armed_facts())
+    d = post_validate(Decision(action="complete", reason="armed"), ctx, CONFIG)
+    assert d.action == "complete"
+
+
+def test_complete_with_no_pr_facts_is_left_to_decider():
+    ctx = _ctx(status="complete", stuck={"kind": "complete"})  # pr_facts defaults None
+    d = post_validate(Decision(action="complete", reason="x"), ctx, CONFIG)
+    assert d.action == "complete"
