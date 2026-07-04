@@ -97,6 +97,22 @@ class Session(Base):
     # Per-session autopilot opt-out. NULL/False = governed by autopilot; True = pinned to
     # manual. Nullable so init_db backfills on dev SQLite without a migration.
     autopilot_paused: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # Sticky auto-archive opt-out. NULL = eligible for auto-archive; a reason string
+    # ("manual-unarchive") = a human unarchived this session, so autopilot and the
+    # backlog-runner must NEVER auto-archive it again (only archiving is blocked — other
+    # autopilot help continues). Nullable so init_db backfills without a migration.
+    auto_archive_opt_out_reason: Mapped[str | None] = mapped_column(
+        String, nullable=True, default=None)
+    # Provenance of the LAST archive: "user" | "autopilot" | "backlog-runner". Lets
+    # unarchive detect that an AUTO archive was just reversed (→ a learning heuristic).
+    # Cleared on unarchive. Nullable so init_db backfills without a migration.
+    archived_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Snapshot of the decision features at AUTO-archive time ({repo, goal, goal_source,
+    # pr_state, reason}); copied into an `archive_reversed` autopilot event on unarchive so
+    # the auto-archive algorithm can learn which sessions it wrongly archived. none_as_null
+    # so clearing via None persists SQL NULL. Nullable so init_db backfills without a migration.
+    archive_context: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
     # True once the user manually pinned the account: usage-ceiling rotation skips
     # the session (it goes 'limited' at the ceiling instead). Hard 401/429 recovery
     # still rotates and clears the pin. Nullable for the same backfill reason.

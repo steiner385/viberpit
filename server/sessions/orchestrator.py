@@ -961,6 +961,9 @@ class SessionOrchestrator:
             return
         if rec is None or getattr(rec, "origin", None) != "backlog-runner":
             return
+        # A human unarchived this run → honor the sticky opt-out and never re-archive it.
+        if getattr(rec, "auto_archive_opt_out_reason", None):
+            return
         if session_id in self._auto_archiving:
             return
         self._auto_archiving.add(session_id)
@@ -970,8 +973,15 @@ class SessionOrchestrator:
     async def _auto_archive_completed(self, session_id: str) -> None:
         """Archive a completed backlog-runner session + log it to the activity feed.
         A failure clears the guard so a later ``complete`` emit can retry."""
+        rec = self._records.get(session_id)
+        context = {
+            "repo": getattr(rec, "repo", None) if rec is not None else None,
+            "goal": getattr(rec, "origin_ref", None) if rec is not None else None,
+            "goal_source": "backlog-runner",
+            "reason": "backlog-runner: run complete",
+        }
         try:
-            await self.archive_session(session_id)
+            await self.archive_session(session_id, archived_by="backlog-runner", context=context)
         except Exception:
             log.warning("backlog_runner.autoarchive_failed id=%s", session_id, exc_info=True)
             self._auto_archiving.discard(session_id)
@@ -1484,7 +1494,49 @@ class SessionOrchestrator:
             branch=getattr(rec, "branch", None), effective_goal=goal_text,
             goal_source=goal_source, stuck=stuck,
             transcript_tail=await self._autopilot_transcript_tail(session_id), ledger={},
-            pr_facts=self._autopilot_pr_facts(rec))
+            pr_facts=self._autopilot_pr_facts(rec),
+            no_auto_archive=bool(getattr(rec, "auto_archive_opt_out_reason", None)),
+            reversal_hint=await self._autopilot_reversal_hint(rec.repo))
+
+    async def _autopilot_reversal_hint(self, repo: str | None) -> str | None:
+        """Summarize recent manual reversals of auto-archives into a compact caution the
+        decider weighs before it calls `complete`. Repo-scoped when the session has a repo
+        (a reversal in THIS repo is the strongest signal); otherwise global. Best-effort:
+        any failure returns None (the decider still runs, just without the hint).
+
+        --- Tunable heuristic (the learning policy lives here) -------------------------
+        How far back to look, whether to scope by repo, and how the count/goals are phrased
+        all shape how cautious autopilot becomes. Adjust freely — the loop and decider don't
+        depend on the exact wording, only that a non-None string means "be more careful"."""
+        from datetime import datetime, timedelta
+        from sqlalchemy import select as sa_select
+        from server.db.models import AutomationEvent
+        LOOKBACK_DAYS = 30
+        MAX_EXAMPLES = 3
+        try:
+            since = datetime.utcnow() - timedelta(days=LOOKBACK_DAYS)
+            stmt = (sa_select(AutomationEvent)
+                    .where(AutomationEvent.automation_id == "autopilot",
+                           AutomationEvent.kind == "archive_reversed",
+                           AutomationEvent.ts >= since)
+                    .order_by(AutomationEvent.ts.desc())
+                    .limit(50))
+            if repo:
+                stmt = stmt.where(AutomationEvent.target == repo)
+            async with db_session() as db:
+                rows = (await db.execute(stmt)).scalars().all()
+        except Exception:  # pragma: no cover — a hint failure must never stall a decision
+            log.debug("autopilot.reversal_hint failed", exc_info=True)
+            return None
+        if not rows:
+            return None
+        scope = f"in {repo}" if repo else "across all repos"
+        goals = [str(g)[:80] for r in rows[:MAX_EXAMPLES]
+                 if isinstance(r.detail, dict) and (g := r.detail.get("goal"))]
+        tail = f" Recent reversed goals: {'; '.join(goals)}." if goals else ""
+        return (f"CAUTION: {len(rows)} recently auto-archived session(s) {scope} were "
+                f"manually unarchived — the goal-met call was wrong there. Hold `complete` "
+                f"to a clearly met goal (armed/merged PR, or non-code work).{tail}")
 
     def _autopilot_pr_facts(self, rec) -> "PrFacts":
         """Verified PR ground-truth for a governed session, from the poller cache
@@ -1608,8 +1660,23 @@ class SessionOrchestrator:
 
     async def _autopilot_archive(self, session_id: str) -> bool:
         """Archive a goal-met session (the loop's terminal-rest seam). Reversible —
-        the session moves to the Archived tab and can be unarchived."""
-        await self.archive_session(session_id)
+        the session moves to the Archived tab and can be unarchived.
+
+        Snapshots the decision features (goal, repo, PR state) so that if a human later
+        unarchives it, `unarchive` can record a reversal heuristic the auto-archive
+        algorithm learns from. Stamps provenance archived_by='autopilot'."""
+        context = None
+        rec = self._records.get(session_id)
+        if rec is not None:
+            from server.sessions.goals import effective_goal
+            goal_text, goal_source = effective_goal(rec)
+            pr = self._autopilot_pr_facts(rec)
+            context = {
+                "repo": rec.repo, "goal": goal_text, "goal_source": goal_source,
+                "pr_state": pr.to_prompt() if pr is not None else None,
+                "reason": "autopilot: goal met",
+            }
+        await self.archive_session(session_id, archived_by="autopilot", context=context)
         return True
 
     async def _autopilot_tick_loop(self, interval: float) -> None:
@@ -2255,6 +2322,7 @@ class SessionOrchestrator:
             active_goal=getattr(row, "active_goal", None),
             inferred_goal=getattr(row, "inferred_goal", None),
             autopilot_paused=bool(getattr(row, "autopilot_paused", False)),
+            auto_archive_opt_out_reason=getattr(row, "auto_archive_opt_out_reason", None),
             authored_branches=list(getattr(row, "authored_branches", None) or []),
             context_used_tokens=getattr(row, "context_used_tokens", None),
             context_max_tokens=getattr(row, "context_max_tokens", None),
@@ -4190,13 +4258,18 @@ class SessionOrchestrator:
     # Archive / unarchive / permanent-delete
     # ------------------------------------------------------------------
 
-    async def archive_session(self, session_id: str) -> None:
+    async def archive_session(self, session_id: str, *, archived_by: str = "user",
+                              context: dict | None = None) -> None:
         """Archive a session: stop driver, move cwd into archive_dir, status='archived'.
 
         The DB row is KEPT (status='archived'). The working directory is moved to
         archive_dir()/<session_id>/ so it can be reviewed or unarchived later.
         If the cwd is missing (already gone), skip the move but still mark archived.
         Git worktree registrations are pruned best-effort after the move.
+
+        ``archived_by`` records provenance ("user" | "autopilot" | "backlog-runner") and
+        ``context`` snapshots the decision features for AUTO archives, so a later manual
+        unarchive can tell an auto-archive was reversed and record a learning heuristic.
         """
         from ccswitch.paths import archive_dir
 
@@ -4275,7 +4348,7 @@ class SessionOrchestrator:
             await db.execute(
                 sa_update(DbSession)
                 .where(DbSession.id == session_id)
-                .values(status="archived")
+                .values(status="archived", archived_by=archived_by, archive_context=context)
             )
         prev_status = record.status if record is not None else None
         log_event(log, logging.INFO, "session.terminal",
@@ -4341,18 +4414,54 @@ class SessionOrchestrator:
 
         await asyncio.to_thread(_restore)
 
+        # Capture the archive provenance BEFORE we clear it, so we can tell whether this
+        # unarchive is REVERSING an automated archive (→ a learning heuristic).
+        prev_archived_by = getattr(row, "archived_by", None)
+        prev_context = getattr(row, "archive_context", None)
+
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             await db.execute(
                 sa_update(DbSession)
                 .where(DbSession.id == session_id)
-                .values(status="idle")
+                # Restore to idle AND pin the sticky opt-out: a manually-unarchived
+                # session is never auto-archived again. Clear the now-consumed provenance.
+                .values(status="idle", auto_archive_opt_out_reason="manual-unarchive",
+                        archived_by=None, archive_context=None)
             )
 
-        record = self._record_from_row(row, status="idle")
+        # Heuristic capture: an unarchive that reverses an AUTO archive is a signal the
+        # auto-archive judgement was wrong. Record it (with the captured decision features)
+        # so the decider can grow more cautious — see _autopilot_reversal_hint.
+        if prev_archived_by in ("autopilot", "backlog-runner"):
+            await self._record_archive_reversal(session_id, prev_archived_by, prev_context)
+
+        record = self._record_from_row(
+            row, status="idle", auto_archive_opt_out_reason="manual-unarchive")
         self._records[session_id] = record
         log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)
         return record
+
+    async def _record_archive_reversal(self, session_id: str, archived_by: str,
+                                       context: dict | None) -> None:
+        """Append an `archive_reversed` event to the autopilot feed when a human undoes an
+        automated archive. This is the durable, append-only heuristic store the auto-archive
+        algorithm learns from (queried repo-scoped by _autopilot_reversal_hint). Best-effort:
+        a heuristic write must never fail the unarchive."""
+        ctx = (context or {})
+        detail = {
+            "archived_by": archived_by,
+            "repo": ctx.get("repo"),
+            "goal": ctx.get("goal"),
+            "goal_source": ctx.get("goal_source"),
+            "pr_state": ctx.get("pr_state"),
+            "reason": ctx.get("reason"),
+        }
+        repo = ctx.get("repo") or "?"
+        await self._autopilot_ctx.emit(
+            "info", f"auto-archive reversed ({archived_by}) — {repo}",
+            kind="archive_reversed", session_id=session_id, target=ctx.get("repo"),
+            detail=detail)
 
     async def permanent_delete(self, session_id: str) -> bool:
         """Permanently delete a session: remove archive folder + DB row.

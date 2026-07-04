@@ -86,6 +86,9 @@ export interface Session {
   goalSource?: string | null
   /** Per-session autopilot opt-out; true = pinned to manual, false/absent = governed. */
   autopilotPaused?: boolean
+  /** Sticky auto-archive opt-out reason (e.g. "manual-unarchive"); set when a human
+   *  unarchived the session, so autopilot never auto-archives it again. Null/absent = eligible. */
+  autoArchiveOptOut?: string | null
   /** Automation that has acted on this human-created session (e.g. "autopilot").
    *  Distinct from origin (spawned-by). Drives the violet provenance badge. */
   assistedBy?: string | null

@@ -39,3 +39,10 @@ Bias to **escalate** whenever unsure. Safety beats progress.
 A STRONG signal the agent *believes* it is done — but confirm against `pr_facts`, not the
 marker alone. Armed/merged PR → `complete`. Premature marker (code goal, no armed PR) →
 `nudge` toward the remaining work. Only `escalate` when you genuinely can't tell.
+
+## `reversal_hint` (learned from past mistakes — weigh it before `complete`)
+When present, this string reports sessions you auto-archived that a human then manually
+unarchived — i.e. your prior `complete` calls were wrong in this context. Treat it as a
+raised bar: demand a clearer goal-met signal (armed/merged PR, or unambiguous non-code
+completion) before `complete`; when the evidence is merely suggestive, prefer `nudge` or
+`escalate`. Absent hint → judge normally.

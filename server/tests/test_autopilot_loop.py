@@ -26,16 +26,16 @@ class FakeCtx:
         return dict(self.states)
 
 
-def _dc(sid="s1"):
+def _dc(sid="s1", *, no_auto_archive=False):
     return DecisionContext(session_id=sid, status="waiting_input", account="a", repo=None,
                            branch=None, effective_goal="g", goal_source="explicit",
                            stuck={"kind": "permission", "tool_name": "Bash",
                                   "tool_input": {"command": "pytest"}},
-                           transcript_tail=[], ledger={})
+                           transcript_tail=[], ledger={}, no_auto_archive=no_auto_archive)
 
 
 def _loop(ctx, *, mode="auto", governed=("s1",), decision=Decision(action="approve", reason="ok"),
-          applied=None, config=None):
+          applied=None, config=None, no_auto_archive=False):
     cfg = config or {"allow_tool_approvals": True, "max_actions_per_session_per_hour": 12,
                      "max_actions_per_day": 300, "recovery_max_attempts": 2,
                      "loop_repeat_limit": 3, "human_defer_seconds": 120,
@@ -49,7 +49,7 @@ def _loop(ctx, *, mode="auto", governed=("s1",), decision=Decision(action="appro
         return list(governed)
 
     async def get_context(sid):
-        return _dc(sid)
+        return _dc(sid, no_auto_archive=no_auto_archive)
 
     async def decide_fn(dc):
         return decision
@@ -207,6 +207,44 @@ async def test_complete_archive_failure_is_best_effort():
     loop._archive = archive_boom
     await loop.tick()                                # must not raise
     assert any(kind == "complete" for _, _, kind in ctx.emits)
+
+
+@pytest.mark.asyncio
+async def test_complete_does_not_archive_when_opted_out():
+    """A manually-unarchived session (no_auto_archive) whose goal is met must NEVER be
+    auto-archived — the loop surfaces the completion as a proposal and stops."""
+    ctx = FakeCtx()
+    archived: list = []
+
+    async def archive(sid):
+        archived.append(sid)
+        return True
+
+    loop = _loop(ctx, decision=Decision(action="complete", reason="goal met"),
+                 no_auto_archive=True)
+    loop._archive = archive
+    await loop.tick()
+    assert archived == []                                # opt-out blocks auto-archive
+    assert loop._applied == []                           # and never mutates the session
+    assert any(kind == "proposed" for _, _, kind in ctx.emits)
+
+
+@pytest.mark.asyncio
+async def test_opted_out_complete_is_deduped_across_ticks():
+    """The 'not auto-archiving' proposal must surface ONCE for a stable stuck state, not
+    every tick — mirrors the escalate de-spam so the feed isn't buried."""
+    ctx = FakeCtx()
+
+    async def archive(sid):
+        return True
+
+    loop = _loop(ctx, decision=Decision(action="complete", reason="goal met"),
+                 no_auto_archive=True)
+    loop._archive = archive
+    await loop.tick()
+    await loop.tick()
+    proposed = [e for e in ctx.emits if e[2] == "proposed"]
+    assert len(proposed) == 1                            # deduped on the fingerprint
 
 
 @pytest.mark.asyncio

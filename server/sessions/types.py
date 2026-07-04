@@ -51,6 +51,9 @@ class SessionRecord:
     active_goal: str | None = None    # active /goal condition; None = no goal
     inferred_goal: str | None = None  # LLM-inferred goal (middle effective_goal tier)
     autopilot_paused: bool = False    # per-session autopilot opt-out (True = pinned to manual)
+    # Sticky auto-archive opt-out reason. None = eligible for auto-archive; "manual-unarchive"
+    # = a human unarchived this session, so it is never auto-archived again (see orchestrator).
+    auto_archive_opt_out_reason: str | None = None
     usage_unverified: bool = False    # transient: account picked without a usage read (optimistic)
     # transient (issue #434): set by rehydrate() when this session's mid-turn status
     # (working/in_progress/condensing) was normalized to idle on daemon boot — i.e. a
@@ -108,6 +111,7 @@ class SessionRecord:
             "activeGoal": self.active_goal,
             "inferredGoal": self.inferred_goal,
             "autopilotPaused": self.autopilot_paused,
+            "autoArchiveOptOut": self.auto_archive_opt_out_reason,
             "usageUnverified": self.usage_unverified,
             "interruptedByRestart": self.interrupted_by_restart,
             "authoredBranches": list(self.authored_branches),
@@ -138,6 +142,7 @@ class SessionRecord:
             active_goal=d.get("activeGoal"),
             inferred_goal=d.get("inferredGoal"),
             autopilot_paused=bool(d.get("autopilotPaused", False)),
+            auto_archive_opt_out_reason=d.get("autoArchiveOptOut"),
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),
             authored_branches=list(d.get("authoredBranches") or []),
