@@ -56,3 +56,35 @@ def test_check_stats_flake_rising():
             jobs.append(_j("e2e", sha, "failure", ts))
     st = check_stats(jobs, default_branch="master", now_ts=now, demote_window_days=7.0)["e2e"]
     assert st.flake_rising is True
+
+
+def test_gate_thresholds_from_config_defaults_and_coercion():
+    from server.automations.cicd.types import GateThresholds
+    assert GateThresholds.from_config({}) == GateThresholds()
+    th = GateThresholds.from_config({"min_runs": 10, "max_flake_pct": 3})
+    assert th.min_runs == 10 and isinstance(th.min_runs, int)
+    assert th.max_flake_pct == 3.0 and isinstance(th.max_flake_pct, float)
+    assert th.retire_days == 60.0  # untouched default
+
+
+def test_gate_thresholds_from_config_all_fields():
+    from server.automations.cicd.types import GateThresholds
+    config = {
+        "min_window_days": 14,
+        "min_runs": 20,
+        "max_flake_pct": 1.5,
+        "max_p95_minutes": 5.0,
+        "demote_flake_pct": 4.0,
+        "demote_window_days": 3.0,
+        "retire_days": 90,
+        "flaky_test_min_pct": 1.0,
+    }
+    th = GateThresholds.from_config(config)
+    assert th.min_window_days == 14.0
+    assert th.min_runs == 20
+    assert th.max_flake_pct == 1.5
+    assert th.max_p95_minutes == 5.0
+    assert th.demote_flake_pct == 4.0
+    assert th.demote_window_days == 3.0
+    assert th.retire_days == 90.0
+    assert th.flaky_test_min_pct == 1.0

@@ -40,11 +40,19 @@ class GateThresholds:
     @classmethod
     def from_config(cls, config: dict) -> "GateThresholds":
         """Build from a validated automation config dict; missing keys keep defaults."""
-        keys = {f: config[f] for f in (
-            "min_window_days", "min_runs", "max_flake_pct", "max_p95_minutes",
-            "demote_flake_pct", "demote_window_days", "retire_days",
-            "flaky_test_min_pct") if f in config}
-        return cls(**{k: (int(v) if k == "min_runs" else float(v)) for k, v in keys.items()})
+        def _f(key: str, default: float) -> float:
+            return float(config[key]) if key in config else default
+
+        return cls(
+            min_window_days=_f("min_window_days", cls.min_window_days),
+            min_runs=int(config["min_runs"]) if "min_runs" in config else cls.min_runs,
+            max_flake_pct=_f("max_flake_pct", cls.max_flake_pct),
+            max_p95_minutes=_f("max_p95_minutes", cls.max_p95_minutes),
+            demote_flake_pct=_f("demote_flake_pct", cls.demote_flake_pct),
+            demote_window_days=_f("demote_window_days", cls.demote_window_days),
+            retire_days=_f("retire_days", cls.retire_days),
+            flaky_test_min_pct=_f("flaky_test_min_pct", cls.flaky_test_min_pct),
+        )
 
 
 @dataclass
