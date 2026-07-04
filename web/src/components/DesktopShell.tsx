@@ -56,7 +56,11 @@ import {
   useGithubRepos,
   useSendPrompt,
   useConfig,
+  useAllPrs,
 } from '@/api/hooks'
+import { TabBar } from './TabBar'
+import { buildTabs } from './tabDefs'
+import { inFlightPrCount } from '@/session/prStatus'
 import { setLastRepo } from '@/lib/lastRepo'
 import { toast } from 'sonner'
 import { useSessionOrdering } from '@/session/useSessionOrdering'
@@ -327,6 +331,17 @@ export function DesktopShell() {
     (a) => a.status === 'needs-reauth' || a.status === 'needs-relogin',
   )
 
+  // Live count badges for the header tabs (shared cache — the Pipeline tab reads
+  // the same useAllPrs query, so this adds no extra fetch).
+  const { data: prs = [] } = useAllPrs()
+  const tabs = buildTabs({
+    sessions: orderedSessions.length,
+    accounts: accounts.length,
+    pipeline: inFlightPrCount(prs),
+    archived: archivedSessions.length,
+    accountsAttention: hasNeedsReauth,
+  })
+
   // Auto-clear the all-limited banner once any account becomes selectable.
   // Done at render time (not in an effect) — React 18 batches synchronous setState
   // calls during render and re-renders synchronously when state changes.
@@ -348,41 +363,10 @@ export function DesktopShell() {
   const sidebar = (
     <aside
       style={{ width: sidebarWidth }}
-      className="shrink-0 flex flex-col min-h-0"
+      className="shrink-0 flex flex-col min-h-0 border-t border-gray-200 dark:border-gray-700"
     >
-      {/* Tab bar */}
-      <div role="tablist" aria-label="Dashboard sections" className="flex gap-1 border-b border-gray-200 dark:border-gray-700 px-2">
-        {(['sessions', 'accounts', 'pipeline', 'archived', 'automation', 'insights'] as TabId[]).map((t) => (
-          <button
-            key={t}
-            role="tab"
-            aria-selected={tab === t}
-            aria-label={
-              t === 'accounts' && hasNeedsReauth ? 'Accounts (needs attention)'
-              : t === 'archived' && archivedSessions.length > 0 ? `Archived (${archivedSessions.length})`
-              : t.charAt(0).toUpperCase() + t.slice(1)
-            }
-            onClick={() => { setTab(t); if (t !== 'archived') setReviewId(null) }}
-            className={cn(
-              'px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-              tab === t
-                ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
-                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
-            )}
-          >
-            {t.charAt(0).toUpperCase() + t.slice(1)}
-            {t === 'accounts' && hasNeedsReauth && (
-              <span aria-hidden="true" className="inline-block w-2 h-2 rounded-full bg-amber-500 dark:bg-amber-400" />
-            )}
-            {t === 'archived' && archivedSessions.length > 0 && (
-              <span className="text-xs tabular-nums bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-full px-1.5 py-0.5 leading-none">
-                {archivedSessions.length}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
+      {/* Tabs now live in the app header (see shell below); the sidebar is a pure
+          session-list column. */}
 
       {/* Session list with permanent New Session slot */}
       <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
@@ -506,9 +490,20 @@ export function DesktopShell() {
   )
   const shell = (
     <div className="flex flex-col h-screen bg-background text-foreground">
-      <header className="flex items-center justify-between px-4 py-2 border-b border-border flex-shrink-0">
-        <h1 className="text-lg font-bold tracking-tight">ccswitch</h1>
-        <div className="flex items-center gap-1">
+      <header className="flex items-stretch justify-between border-b border-border flex-shrink-0">
+        <div className="flex items-center px-4 shrink-0">
+          <h1 className="text-lg font-bold tracking-tight">ccswitch</h1>
+        </div>
+        {/* Tabs span the header, between the logo and the action icons. `min-w-0`
+            lets the strip shrink and scroll rather than shove the icons off-screen. */}
+        <TabBar
+          tabs={tabs}
+          activeTab={tab}
+          onSelect={(t) => { setTab(t); if (t !== 'archived') setReviewId(null) }}
+          label="Dashboard sections"
+          className="flex-1 min-w-0 items-stretch px-2"
+        />
+        <div className="flex items-center gap-1 px-2 shrink-0">
           <button
             type="button"
             onClick={() => setShowHelp(true)}

@@ -13,6 +13,15 @@ export function isActionablePrState(state: PullRequestInfo['state']): boolean {
 }
 
 /**
+ * Count of PRs still *in flight* — open or draft — i.e. the pipeline's active
+ * workload. Routes through {@link isActionablePrState} so "in flight" and
+ * "actionable" can never drift apart. Drives the Pipeline tab's count badge.
+ */
+export function inFlightPrCount(prs?: PullRequestInfo[] | null): number {
+  return prs?.reduce((n, pr) => n + (isActionablePrState(pr.state) ? 1 : 0), 0) ?? 0
+}
+
+/**
  * Single source of truth for "this session has a PR whose checks are failing
  * AND that's still worth the user's attention".
  *

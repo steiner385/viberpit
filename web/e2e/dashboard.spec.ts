@@ -157,6 +157,41 @@ test.describe('T044 — Dashboard', () => {
     await expect(page.getByRole('button', { name: /send message/i })).toBeVisible()
   })
 
+  test('mobile: all header tabs are reachable and badges render', async ({ page }) => {
+    await page.goto('/sessions')
+
+    // Wait for the shell to settle.
+    await expect(page.getByText('Work session')).toBeVisible()
+
+    // All six sections render as tabs in the strip — nothing is dropped on a
+    // narrow viewport.
+    const tablist = page.getByRole('tablist', { name: /dashboard sections/i })
+    await expect(tablist.getByRole('tab')).toHaveCount(6)
+    for (const name of [/sessions/i, /accounts/i, /pipeline/i, /archived/i, /automation/i, /insights/i]) {
+      await expect(tablist.getByRole('tab', { name })).toHaveCount(1)
+    }
+
+    // Count badges follow the "Archived 111" pattern: 1 live session, 1 account.
+    await expect(tablist.getByRole('tab', { name: /sessions \(1\)/i })).toBeVisible()
+    await expect(tablist.getByRole('tab', { name: /accounts \(1\)/i })).toBeVisible()
+
+    // The strip itself scrolls horizontally rather than widening the page, so the
+    // body never overflows the viewport.
+    const bodyWidth = await page.evaluate(() => document.body.scrollWidth)
+    const viewportWidth = await page.evaluate(() => window.innerWidth)
+    expect(bodyWidth).toBeLessThanOrEqual(viewportWidth)
+
+    // An off-screen tab (last in the strip) is still reachable: scroll to it,
+    // click it, and confirm it activates. This is the core "reachable on mobile"
+    // guarantee.
+    const insights = tablist.getByRole('tab', { name: /insights/i })
+    await insights.scrollIntoViewIfNeeded()
+    await insights.click()
+    await expect(insights).toHaveAttribute('aria-selected', 'true')
+
+    await page.screenshot({ path: 'test-results/mobile-header-tabs.png' })
+  })
+
   test('session view composer send button is ≥44px tall', async ({ page }) => {
     await page.goto('/sessions')
 
