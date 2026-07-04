@@ -862,12 +862,16 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         </div>
       )}
 
-      {/* Automation panel */}
+      {/* Automation panel — own scroll region, like every sibling panel: the tab
+          area is a clipped flex column (flex-1 min-h-0), so without this an
+          expanded automation card overflows with nowhere to scroll on mobile. */}
       {activeTab === 'automation' && (
-        <AutomationView
-          onOpenSession={onOpenSession ? (id) => onOpenSession(id) : undefined}
-          onReviewSession={onReviewSession ? handleReview : undefined}
-        />
+        <div className="flex-1 min-h-0 overflow-y-auto pb-4">
+          <AutomationView
+            onOpenSession={onOpenSession ? (id) => onOpenSession(id) : undefined}
+            onReviewSession={onReviewSession ? handleReview : undefined}
+          />
+        </div>
       )}
 
       {/* Insights panel */}

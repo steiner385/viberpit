@@ -90,4 +90,22 @@ describe('Automation tab', () => {
     expect(panel).toBeTruthy()
     expect(panel.id).toBe('tabpanel-automation')
   })
+
+  it('renders the automation panel inside a vertical scroll container (mobile scroll fix)', () => {
+    // In the mobile Dashboard, the tab area is a fixed-height flex column
+    // (flex-1 min-h-0). Every tab panel must be its own overflow-y-auto region
+    // or its content — e.g. an expanded automation card — overflows the clipped
+    // parent with nowhere to scroll. The automation panel used to be mounted
+    // bare, unlike its accounts/archived/pipeline/insights siblings.
+    render(
+      <MemoryRouter>
+        <Dashboard activeTab="automation" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
+      </MemoryRouter>,
+      { wrapper },
+    )
+    const panel = screen.getByRole('tabpanel', { hidden: false })
+    const scroller = panel.closest('.overflow-y-auto')
+    expect(scroller).not.toBeNull()
+    expect(scroller!.className).toContain('min-h-0')
+  })
 })
