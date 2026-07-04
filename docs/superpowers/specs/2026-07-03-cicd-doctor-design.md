@@ -130,9 +130,12 @@ A check graduates advisory→blocking only when ALL hold over the stability wind
 
 ### 4c. Pipeline per tick: Ingest → Analyze → Report
 
-- **Ingest**: new tables `ci_run`, `ci_job`, `ci_test_result`, `ci_check_state`,
+- **Ingest**: new tables `ci_run`, `ci_job`, `ci_test_result`,
   `ci_finding` (new columns nullable, per the dev-SQLite backfill rule). One cursor per
-  repo so history is pulled exactly once.
+  repo so history is pulled exactly once. *(Deviation from earlier draft: `ci_check_state`
+  was removed — check-tier is read live from the branch-protection API on each tick rather
+  than persisted, keeping the tier truth centralized in GitHub as the single source of
+  truth per §4d.)*
 - **Analyze**: pure functions `(stored history, config) → findings` — flake computation,
   duration regression, waste detection, state-machine verdicts. No I/O inside analyzers;
   fully unit-testable (constitution V).

@@ -13,6 +13,9 @@ __pycache__/
 .credentials.json
 .coverage
 
+# pytest --junitxml output at repo root (e.g. PYTHONPATH=.:src pytest --junitxml=test-results/core.xml)
+test-results/
+
 # web/ frontend
 web/node_modules
 web/dist
