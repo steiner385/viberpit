@@ -1,7 +1,8 @@
 # server/tests/test_autopilot_decider.py
 import pytest
 from server.automations.autopilot_policy import DecisionContext
-from server.automations.autopilot_decider import decide
+from server.automations.autopilot_decider import decide, _build_prompt
+from server.automations.completion_bar import PrFact, PrFacts
 
 
 def _ctx():
@@ -93,10 +94,6 @@ def test_prompt_demands_json_only():
     p = _build_prompt(_ctx())
     assert "ONLY" in p and "JSON" in p
 
-
-from server.automations.autopilot_decider import _build_prompt
-from server.automations.autopilot_policy import DecisionContext
-from server.automations.completion_bar import PrFact, PrFacts
 
 
 def test_build_prompt_includes_pr_facts():
