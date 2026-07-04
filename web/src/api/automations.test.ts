@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
-  fetchAutomations, patchAutomation, fetchPrDoctorActionable, postPrDoctorFix,
+  fetchAutomations, patchAutomation, fetchAutomationActionable, postAutomationTrigger,
 } from './automations'
 
 afterEach(() => vi.restoreAllMocks())
@@ -24,22 +24,23 @@ describe('automations api', () => {
     expect(init.method).toBe('PATCH')
   })
 
-  it('fetchPrDoctorActionable GETs the actionable list', async () => {
-    const data = [{ repo: 'o/r', number: 7, kind: 'failing_ci', url: 'https://x/7', title: 't' }]
+  it('fetchAutomationActionable GETs the actionable list', async () => {
+    const data = [{ id: 'o/r#7', title: 't', subtitle: null, url: 'https://x/7',
+      actions: [{ kind: 'failing_ci', label: 'Fix CI', style: 'default' }] }]
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-    const out = await fetchPrDoctorActionable()
-    expect(out[0].number).toBe(7)
+    const out = await fetchAutomationActionable('pr-doctor')
+    expect(out[0].id).toBe('o/r#7')
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/automations/pr-doctor/actionable', expect.anything())
   })
 
-  it('postPrDoctorFix POSTs the fix body', async () => {
+  it('postAutomationTrigger POSTs the trigger body', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ status: 'sent' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-    const out = await postPrDoctorFix({ repo: 'o/r', number: 7, kind: 'failing_ci' })
+      new Response(JSON.stringify({ status: 'sent', level: 'ok', message: 'ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    const out = await postAutomationTrigger('pr-doctor', { item_id: 'o/r#7', kind: 'failing_ci' })
     expect(out.status).toBe('sent')
     const [url, init] = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(url).toBe('/api/automations/pr-doctor/fix')
+    expect(url).toBe('/api/automations/pr-doctor/trigger')
     expect(init.method).toBe('POST')
   })
 })

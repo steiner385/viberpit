@@ -80,6 +80,7 @@ def _build_orch(pr, *, has_driver=True):
     import server.sessions.orchestrator as orch_mod
     from ccswitch import gitrepos
     from server.automations.context import AutomationContext
+    from server.automations.action_providers import PrDoctorActionProvider
 
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
     orch._records = {"sess1": _make_record()}
@@ -89,6 +90,7 @@ def _build_orch(pr, *, has_driver=True):
     orch._pr_population = _StubPopulation()  # type: ignore[assignment]
     orch._drivers = {"sess1": object()} if has_driver else {}  # type: ignore[dict-item]
     orch._gh_run = gitrepos._run_gh  # replaced by a recorder per-test
+    orch._action_providers = {"pr-doctor": PrDoctorActionProvider(orch)}
     return orch
 
 
@@ -718,7 +720,9 @@ async def test_out_of_date_mechanical_gh_failure(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Task 5: propose-surface executors (pr_doctor_fix / pr_doctor_actionable)
+# Task 5/6: propose-surface executors via generic dispatch
+# (previously pr_doctor_fix / pr_doctor_actionable — now automation_trigger /
+#  automation_actionable; logic lives in PrDoctorActionProvider)
 # ---------------------------------------------------------------------------
 
 async def _pr_pairs_stub(orch, pairs):
@@ -730,8 +734,8 @@ async def _pr_pairs_stub(orch, pairs):
 
 @pytest.mark.asyncio
 async def test_pr_doctor_fix_out_of_date_runs_mechanical(monkeypatch, tmp_path):
-    """pr_doctor_fix(out_of_date) on an actionable PR → the SAME mechanical
-    update-branch executor runs (gh called), returns 'updated'."""
+    """automation_trigger(out_of_date) on an actionable PR → the SAME mechanical
+    update-branch executor runs (gh called), result status is 'updated'."""
     import types
     await _init_pr_doctor_db(tmp_path)
 
@@ -747,16 +751,16 @@ async def test_pr_doctor_fix_out_of_date_runs_mechanical(monkeypatch, tmp_path):
 
     orch._gh_run = fake_gh_run  # type: ignore[assignment]
 
-    status = await orch.pr_doctor_fix("o/r", 7, "out_of_date")
-    assert status == "updated"
+    result = await orch.automation_trigger("pr-doctor", "o/r#7", "out_of_date")
+    assert result["status"] == "updated"
     assert len(gh_calls) == 1
     assert "update-branch" in " ".join(gh_calls[0])
 
 
 @pytest.mark.asyncio
 async def test_pr_doctor_fix_failing_ci_injects_live_driver(monkeypatch, tmp_path):
-    """pr_doctor_fix(failing_ci) with a live owning driver → the shared session
-    executor injects via request_pr_fix (send_prompt), returns 'sent'."""
+    """automation_trigger(failing_ci) with a live owning driver → the shared session
+    executor injects via request_pr_fix (send_prompt), result status is 'sent'."""
     await _init_pr_doctor_db(tmp_path)
 
     pr = _pr(checks="failing", head_sha="sha1")
@@ -770,8 +774,8 @@ async def test_pr_doctor_fix_failing_ci_injects_live_driver(monkeypatch, tmp_pat
 
     orch.send_prompt = fake_send  # type: ignore[method-assign]
 
-    status = await orch.pr_doctor_fix("o/r", 7, "failing_ci")
-    assert status == "sent"
+    result = await orch.automation_trigger("pr-doctor", "o/r#7", "failing_ci")
+    assert result["status"] == "sent"
     assert len(sent) == 1
     assert "gh pr checkout 7" in sent[0]
 
@@ -795,26 +799,26 @@ async def test_pr_doctor_fix_terminal_pr_is_noop(monkeypatch, tmp_path):
 
     orch.send_prompt = fake_send  # type: ignore[method-assign]
 
-    status = await orch.pr_doctor_fix("o/r", 7, "out_of_date")
-    assert status == "not_actionable"
+    result = await orch.automation_trigger("pr-doctor", "o/r#7", "out_of_date")
+    assert result["status"] == "not_actionable"
     assert gh_calls == []
     assert sent == []
 
 
 @pytest.mark.asyncio
 async def test_pr_doctor_fix_unknown_pr(monkeypatch, tmp_path):
-    """No cached PR for the number → 'no_pr'."""
+    """No cached PR for the number → 'no_pr' status via automation_trigger."""
     await _init_pr_doctor_db(tmp_path)
     pr = _pr(number=7)
     orch = _build_orch(pr, has_driver=True)
     await _pr_pairs_stub(orch, [("o/r", "feat/x")])
-    status = await orch.pr_doctor_fix("o/r", 999, "failing_ci")
-    assert status == "no_pr"
+    result = await orch.automation_trigger("pr-doctor", "o/r#999", "failing_ci")
+    assert result["status"] == "no_pr"
 
 
 @pytest.mark.asyncio
 async def test_pr_doctor_actionable_lists_real_recovery_modes(monkeypatch, tmp_path):
-    """pr_doctor_actionable classifies each cached PR and returns only real
+    """automation_actionable classifies each cached PR and returns only real
     recovery modes (failing_ci/out_of_date/merge_conflict), not healthy/blocked."""
     await _init_pr_doctor_db(tmp_path)
 
@@ -832,9 +836,12 @@ async def test_pr_doctor_actionable_lists_real_recovery_modes(monkeypatch, tmp_p
     orch.pr_for = lambda repo, br: cache.get((repo, br))  # type: ignore[method-assign]
     await _pr_pairs_stub(orch, list(cache.keys()))
 
-    out = await orch.pr_doctor_actionable()
-    by_num = {d["number"]: d for d in out}
-    assert set(by_num) == {7, 9}  # healthy #11 excluded
-    assert by_num[7]["kind"] == "failing_ci"
-    assert by_num[9]["kind"] == "out_of_date"
-    assert by_num[7]["url"] and by_num[7]["title"]
+    out = await orch.automation_actionable("pr-doctor")
+    # out is list of ActionableItem dicts: {id, title, subtitle, url, actions}
+    by_id = {d["id"]: d for d in out}
+    assert "o/r#7" in by_id   # failing PR included
+    assert "o/r#9" in by_id   # behind PR included
+    assert "o/r#11" not in by_id  # healthy PR excluded
+    assert by_id["o/r#7"]["actions"][0]["kind"] == "failing_ci"
+    assert by_id["o/r#9"]["actions"][0]["kind"] == "out_of_date"
+    assert by_id["o/r#7"]["url"] and by_id["o/r#7"]["title"]

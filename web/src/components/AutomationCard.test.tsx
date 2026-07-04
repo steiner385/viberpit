@@ -5,6 +5,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { AutomationCard } from './AutomationCard'
 import * as hooks from '@/api/hooks'
 import type { Automation } from '@/api/automations'
+import { toast } from 'sonner'
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
+}))
 
 const PR_DOCTOR: Automation = {
   id: 'pr-doctor', name: 'PR Doctor', description: 'watches CI',
@@ -45,10 +49,10 @@ function mockBasicHooks(mutate = vi.fn()) {
     { data: [] } as unknown as ReturnType<typeof hooks.useAutomationSessions>)
   vi.spyOn(hooks, 'useGithubRepos').mockReturnValue(
     { data: MOCK_REPOS, isLoading: false, isError: false } as unknown as ReturnType<typeof hooks.useGithubRepos>)
-  vi.spyOn(hooks, 'usePrDoctorActionable').mockReturnValue(
-    { data: [] } as unknown as ReturnType<typeof hooks.usePrDoctorActionable>)
-  vi.spyOn(hooks, 'usePrDoctorFix').mockReturnValue(
-    { mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.usePrDoctorFix>)
+  vi.spyOn(hooks, 'useAutomationActionable').mockReturnValue(
+    { data: [] } as unknown as ReturnType<typeof hooks.useAutomationActionable>)
+  vi.spyOn(hooks, 'useAutomationTrigger').mockReturnValue(
+    { mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useAutomationTrigger>)
 }
 
 describe('AutomationCard', () => {
@@ -152,10 +156,10 @@ describe('AutomationCard', () => {
       } as unknown as ReturnType<typeof hooks.useAutomationSessions>)
       vi.spyOn(hooks, 'useGithubRepos').mockReturnValue(
         { data: [], isLoading: false } as unknown as ReturnType<typeof hooks.useGithubRepos>)
-      vi.spyOn(hooks, 'usePrDoctorActionable').mockReturnValue(
-        { data: [] } as unknown as ReturnType<typeof hooks.usePrDoctorActionable>)
-      vi.spyOn(hooks, 'usePrDoctorFix').mockReturnValue(
-        { mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.usePrDoctorFix>)
+      vi.spyOn(hooks, 'useAutomationActionable').mockReturnValue(
+        { data: [] } as unknown as ReturnType<typeof hooks.useAutomationActionable>)
+      vi.spyOn(hooks, 'useAutomationTrigger').mockReturnValue(
+        { mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useAutomationTrigger>)
 
       render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} onOpenSession={onOpenSession} /></MemoryRouter>)
       fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
@@ -196,10 +200,10 @@ describe('AutomationCard', () => {
         { data: [] } as unknown as ReturnType<typeof hooks.useAutomationEvents>)
       vi.spyOn(hooks, 'useGithubRepos').mockReturnValue(
         { data: [], isLoading: false } as unknown as ReturnType<typeof hooks.useGithubRepos>)
-      vi.spyOn(hooks, 'usePrDoctorActionable').mockReturnValue(
-        { data: [] } as unknown as ReturnType<typeof hooks.usePrDoctorActionable>)
-      vi.spyOn(hooks, 'usePrDoctorFix').mockReturnValue(
-        { mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.usePrDoctorFix>)
+      vi.spyOn(hooks, 'useAutomationActionable').mockReturnValue(
+        { data: [] } as unknown as ReturnType<typeof hooks.useAutomationActionable>)
+      vi.spyOn(hooks, 'useAutomationTrigger').mockReturnValue(
+        { mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useAutomationTrigger>)
 
       render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
       fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
@@ -299,46 +303,78 @@ describe('AutomationCard', () => {
     })
   })
 
-  // --- Actionable PRs section (propose surface) ---
+  // --- AutomationActions section ---
 
-  describe('Actionable PRs', () => {
-    it('renders a kind-labeled button per actionable PR and fixes on click', () => {
-      const fixMutate = vi.fn()
-      mockBasicHooks()
-      vi.spyOn(hooks, 'usePrDoctorActionable').mockReturnValue({
-        data: [
-          { repo: 'owner/repo-a', number: 42, kind: 'out_of_date', url: 'https://x/42', title: 'behind PR' },
-          { repo: 'owner/repo-a', number: 43, kind: 'failing_ci', url: 'https://x/43', title: 'red CI' },
-        ],
-      } as unknown as ReturnType<typeof hooks.usePrDoctorActionable>)
-      vi.spyOn(hooks, 'usePrDoctorFix').mockReturnValue(
-        { mutate: fixMutate, isPending: false } as unknown as ReturnType<typeof hooks.usePrDoctorFix>)
-
-      render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
-      fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
-
-      expect(screen.getByText('behind PR')).toBeInTheDocument()
-      const updateBtn = screen.getByRole('button', { name: 'Update branch' })
-      expect(updateBtn).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Fix CI' })).toBeInTheDocument()
-
-      fireEvent.click(updateBtn)
-      expect(fixMutate).toHaveBeenCalledWith({ repo: 'owner/repo-a', number: 42, kind: 'out_of_date' })
+  describe('AutomationActions', () => {
+    beforeEach(() => {
+      vi.mocked(toast.success).mockClear()
+      vi.mocked(toast.warning).mockClear()
+      vi.mocked(toast.error).mockClear()
     })
 
-    it('shows empty state when there are no actionable PRs', () => {
-      mockBasicHooks()
+    const ITEMS = [
+      { id: 'owner/repo#42', title: 'behind PR', subtitle: null, url: 'https://x/42',
+        actions: [{ kind: 'out_of_date', label: 'Update branch', style: 'default' }] },
+      { id: 'owner/repo#43', title: 'red CI', subtitle: null, url: 'https://x/43',
+        actions: [{ kind: 'failing_ci', label: 'Fix CI', style: 'default' }] },
+      { id: 'owner/repo#44', title: 'conflicted', subtitle: null, url: 'https://x/44',
+        actions: [{ kind: 'merge_conflict', label: 'Resolve conflicts', style: 'risky' }] },
+    ]
+
+    function mockActions(mutateAsync: ReturnType<typeof vi.fn>) {
+      vi.spyOn(hooks, 'useAutomationActionable').mockReturnValue(
+        { data: ITEMS } as unknown as ReturnType<typeof hooks.useAutomationActionable>)
+      vi.spyOn(hooks, 'useAutomationTrigger').mockReturnValue(
+        { mutateAsync, isPending: false } as unknown as ReturnType<typeof hooks.useAutomationTrigger>)
+    }
+
+    function expand() {
       render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
       fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
-      expect(screen.getByText('No actionable PRs.')).toBeInTheDocument()
+    }
+
+    it('renders a button per action and triggers on click', async () => {
+      const mutateAsync = vi.fn().mockResolvedValue(
+        { status: 'spawned', level: 'ok', message: 'Spawned fix session' })
+      mockBasicHooks(); mockActions(mutateAsync)
+      expand()
+      expect(screen.getByText('red CI')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Fix CI' }))
+      expect(mutateAsync).toHaveBeenCalledWith({ item_id: 'owner/repo#43', kind: 'failing_ci' })
+      await screen.findByText('Spawned fix session')
+      expect(toast.success).toHaveBeenCalledWith('Spawned fix session')
     })
 
-    it('is absent for a non-pr-doctor automation', () => {
+    it('surfaces a warn outcome (usage ceiling) without a success toast', async () => {
+      const mutateAsync = vi.fn().mockResolvedValue(
+        { status: 'ceiling', level: 'warn', message: 'All accounts at/above usage ceiling — try later' })
+      mockBasicHooks(); mockActions(mutateAsync)
+      expand()
+      fireEvent.click(screen.getByRole('button', { name: 'Fix CI' }))
+      await screen.findByText(/usage ceiling/)
+      expect(toast.warning).toHaveBeenCalledWith('All accounts at/above usage ceiling — try later')
+      expect(toast.success).not.toHaveBeenCalled()
+    })
+
+    it('requires a confirm step for a risky action', async () => {
+      const mutateAsync = vi.fn().mockResolvedValue(
+        { status: 'spawned', level: 'ok', message: 'Spawned fix session' })
+      mockBasicHooks(); mockActions(mutateAsync)
+      expand()
+      fireEvent.click(screen.getByRole('button', { name: 'Resolve conflicts' }))
+      expect(mutateAsync).not.toHaveBeenCalled()               // first click = arm confirm
+      fireEvent.click(screen.getByRole('button', { name: /Confirm/ }))
+      expect(mutateAsync).toHaveBeenCalledWith({ item_id: 'owner/repo#44', kind: 'merge_conflict' })
+    })
+
+    it('shows empty state when there are no actionable items', () => {
+      vi.spyOn(hooks, 'useAutomationActionable').mockReturnValue(
+        { data: [] } as unknown as ReturnType<typeof hooks.useAutomationActionable>)
+      vi.spyOn(hooks, 'useAutomationTrigger').mockReturnValue(
+        { mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useAutomationTrigger>)
       mockBasicHooks()
-      const OTHER: Automation = { ...PR_DOCTOR, id: 'backlog-runner', name: 'Backlog Runner' }
-      render(<MemoryRouter><AutomationCard automation={OTHER} /></MemoryRouter>)
-      fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
-      expect(screen.queryByText('Actionable PRs')).not.toBeInTheDocument()
+      expand()
+      expect(screen.getByText('No actionable items.')).toBeInTheDocument()
     })
   })
 })

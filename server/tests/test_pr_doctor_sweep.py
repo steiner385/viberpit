@@ -97,6 +97,7 @@ def _build_orch(cache, pairs, *, records=None, drivers=None, population=None):
     import server.sessions.orchestrator as orch_mod
     from ccswitch import gitrepos
     from server.automations.context import AutomationContext
+    from server.automations.action_providers import PrDoctorActionProvider
 
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
     orch._records = records if records is not None else {"sess1": _make_record()}
@@ -106,6 +107,7 @@ def _build_orch(cache, pairs, *, records=None, drivers=None, population=None):
     orch._pr_population = _StubPopulation(population)  # type: ignore[assignment]
     orch._drivers = drivers if drivers is not None else {"sess1": object()}
     orch._gh_run = gitrepos._run_gh
+    orch._action_providers = {"pr-doctor": PrDoctorActionProvider(orch)}
 
     async def _pairs():
         return list(pairs)
@@ -156,11 +158,12 @@ def test_actionable_counts_population_only_failing_pr(tmp_path):
             population={"o/r": (failing, unstable)},
         )
 
-        actionable = await orch.pr_doctor_actionable()
-        numbers = {a["number"] for a in actionable}
-        assert 383 in numbers           # population-only failing PR is recognized
-        assert 395 not in numbers       # UNSTABLE-failing stays non-actionable
-        kind = next(a["kind"] for a in actionable if a["number"] == 383)
+        actionable = await orch.automation_actionable("pr-doctor")
+        # New shape: [{id, title, url, actions: [{kind, ...}]}]
+        ids = {a["id"] for a in actionable}
+        assert "o/r#383" in ids          # population-only failing PR is recognized
+        assert "o/r#395" not in ids      # UNSTABLE-failing stays non-actionable
+        kind = next(a["actions"][0]["kind"] for a in actionable if a["id"] == "o/r#383")
         assert kind == "failing_ci"
 
     asyncio.run(run())

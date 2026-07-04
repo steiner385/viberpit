@@ -3,9 +3,9 @@ import { useEffect, useMemo, useState, useRef, useCallback, useSyncExternalStore
 import { api, ApiRequestError } from './client'
 import {
   fetchAutomations, fetchAutomationEvents, fetchSpawnedSessions, patchAutomation,
-  fetchPrDoctorActionable, postPrDoctorFix,
+  fetchAutomationActionable, postAutomationTrigger,
   type Automation, type AutomationEvent, type AutomationPatch,
-  type PrDoctorActionablePr, type PrDoctorKind,
+  type ActionableItem, type TriggerResult,
 } from './automations'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
@@ -40,7 +40,7 @@ export const QK = {
   pipelineTrains: ['pipeline-trains'] as const,
   pipelineInsights: (repo?: string, window?: string) =>
     ['pipeline-insights', repo, window] as const,
-  prDoctorActionable: ['pr-doctor-actionable'] as const,
+  automationActionable: (id: string) => ['automation-actionable', id] as const,
   daemonHealth: ['daemon-health'] as const,
 }
 
@@ -683,17 +683,17 @@ export function useCheckInsights(repo: string | undefined, window: string) {
   })
 }
 
-export function usePrDoctorActionable(enabled = true) {
-  return useQuery<PrDoctorActionablePr[]>({
-    queryKey: QK.prDoctorActionable, queryFn: fetchPrDoctorActionable,
+export function useAutomationActionable(id: string, enabled = true) {
+  return useQuery<ActionableItem[]>({
+    queryKey: QK.automationActionable(id),
+    queryFn: () => fetchAutomationActionable(id),
     enabled, staleTime: 10_000 })
 }
 
-export function usePrDoctorFix() {
+export function useAutomationTrigger(id: string) {
   const qc = useQueryClient()
-  return useMutation<{ status: string }, ApiRequestError,
-    { repo: string; number: number; kind: PrDoctorKind }>({
-    mutationFn: (body) => postPrDoctorFix(body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.prDoctorActionable }) },
+  return useMutation<TriggerResult, ApiRequestError, { item_id: string; kind: string }>({
+    mutationFn: (body) => postAutomationTrigger(id, body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.automationActionable(id) }) },
   })
 }

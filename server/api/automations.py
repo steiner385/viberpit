@@ -25,19 +25,9 @@ class PatchBody(BaseModel):
     config: dict | None = None
 
 
-class PrDoctorFixBody(BaseModel):
-    repo: str
-    number: int
+class TriggerBody(BaseModel):
+    item_id: str
     kind: str
-
-
-class BacklogImplementBody(BaseModel):
-    primary: str
-
-
-# The failure kinds the propose surface can act on (matches the pure engine's
-# recovery modes; ``blocked`` is notify-only and never a one-tap action).
-_PR_DOCTOR_FIX_KINDS = {"out_of_date", "failing_ci", "merge_conflict"}
 
 
 async def _row(db, automation_id: str) -> AutomationRow:
@@ -140,42 +130,6 @@ async def patch_automation(automation_id: str, body: PatchBody,
             "config": row.config or {}}
 
 
-@router.get("/pr-doctor/actionable")
-async def pr_doctor_actionable(request: Request,
-                               _identity: str = Depends(current_identity)) -> list[dict]:
-    """PRs with a real recovery mode, for the PR Doctor card's one-tap actions."""
-    _automation_or_404("pr-doctor")
-    orch = request.app.state.sessions
-    return await orch.pr_doctor_actionable()
-
-
-@router.post("/pr-doctor/fix")
-async def pr_doctor_fix(body: PrDoctorFixBody, request: Request,
-                        _identity: str = Depends(current_identity)) -> dict:
-    """Trigger a one-tap PR Doctor recovery action for an actionable PR."""
-    _automation_or_404("pr-doctor")
-    if body.kind not in _PR_DOCTOR_FIX_KINDS:
-        raise HTTPException(status_code=422, detail=f"invalid kind {body.kind!r}")
-    orch = request.app.state.sessions
-    status = await orch.pr_doctor_fix(body.repo, body.number, body.kind)
-    return {"status": status}
-
-
-@router.post("/backlog-runner/implement")
-async def backlog_runner_implement(body: BacklogImplementBody, request: Request,
-                                   _identity: str = Depends(current_identity)) -> dict:
-    """Propose-tap: claim (if needed) + spawn the runner batch for *primary*.
-
-    404 when *primary* is not a current candidate; otherwise returns the spawn
-    status (``spawned`` / ``exists`` / ``claim_failed`` / ``no_account``)."""
-    _automation_or_404("backlog-runner")
-    orch = request.app.state.sessions
-    status = await orch.backlog_runner_implement(body.primary)
-    if status == "unknown":
-        raise HTTPException(status_code=404, detail="unknown primary or not a current candidate")
-    return {"status": status}
-
-
 @router.get("/cicd-doctor/findings")
 async def cicd_doctor_findings(status: str = "open", repo: str | None = None,
                                _identity: str = Depends(current_identity),
@@ -196,3 +150,26 @@ async def cicd_doctor_findings(status: str = "open", repo: str | None = None,
              "firstSeenAt": f.first_seen_at.isoformat() if f.first_seen_at else None,
              "lastSeenAt": f.last_seen_at.isoformat() if f.last_seen_at else None}
             for f in rows]
+
+
+@router.get("/{automation_id}/actionable")
+async def list_automation_actionable(automation_id: str, request: Request,
+                                     _identity: str = Depends(current_identity)) -> list[dict]:
+    """Detected items an automation can act on now, for the card's action buttons."""
+    _automation_or_404(automation_id)
+    orch = request.app.state.sessions
+    return await orch.automation_actionable(automation_id)
+
+
+@router.post("/{automation_id}/trigger")
+async def trigger_automation_action(automation_id: str, body: TriggerBody, request: Request,
+                                    _identity: str = Depends(current_identity)) -> dict:
+    """Fire one manual action on an actionable item; returns the TriggerResult."""
+    _automation_or_404(automation_id)
+    orch = request.app.state.sessions
+    result = await orch.automation_trigger(automation_id, body.item_id, body.kind)
+    if result.get("status") == "no_provider":
+        raise HTTPException(status_code=404, detail=result.get("message", "no action provider"))
+    if result.get("status") == "invalid_kind":
+        raise HTTPException(status_code=422, detail=result.get("message", "invalid kind"))
+    return result

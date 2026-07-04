@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import {
   useAutomationEvents, useAutomationSessions, useGithubRepos, usePatchAutomation,
-  usePrDoctorActionable, usePrDoctorFix,
+  useAutomationActionable, useAutomationTrigger,
 } from '@/api/hooks'
-import type { Automation, AutomationPatch, ConfigField, PrDoctorKind } from '@/api/automations'
+import type { Automation, AutomationPatch, ConfigField, ActionSpec } from '@/api/automations'
 
 const LEVEL_DOT: Record<string, string> = {
   idle: 'bg-gray-400', active: 'bg-blue-500', warn: 'bg-amber-500', error: 'bg-red-500',
@@ -201,40 +202,79 @@ function SpawnedSessionsSection({ id, enabled, onOpenSession, onReviewSession }:
   )
 }
 
-// --- Actionable PRs section (PR Doctor propose surface) ----------------------
+// --- AutomationActions section -----------------------------------------------
 
-const KIND_LABEL: Record<PrDoctorKind, string> = {
-  out_of_date: 'Update branch',
-  merge_conflict: 'Resolve conflicts',
-  failing_ci: 'Fix CI',
+function outcomeToast(r: { level: string; message: string }) {
+  if (r.level === 'ok') toast.success(r.message)
+  else if (r.level === 'warn') toast.warning(r.message)
+  else toast.error(r.message)
 }
 
-function ActionablePrsSection({ enabled }: { enabled: boolean }) {
-  const actionable = usePrDoctorActionable(enabled)
-  const fix = usePrDoctorFix()
-  const list = actionable.data ?? []
+function ActionButton(
+  { item, action, automationId }:
+  { item: { id: string }; action: ActionSpec; automationId: string },
+) {
+  const trigger = useAutomationTrigger(automationId)
+  const [armed, setArmed] = useState(false)     // risky: first click arms confirm
+  const [outcome, setOutcome] = useState<{ level: string; message: string } | null>(null)
+  const busy = trigger.isPending
 
+  useEffect(() => {
+    if (!outcome) return
+    const id = setTimeout(() => setOutcome(null), 4000)
+    return () => clearTimeout(id)
+  }, [outcome])
+
+  async function fire() {
+    setArmed(false)
+    const r = await trigger.mutateAsync({ item_id: item.id, kind: action.kind })
+    setOutcome({ level: r.level, message: r.message })
+    outcomeToast(r)
+  }
+
+  function onClick() {
+    if (action.style === 'risky' && !armed) { setArmed(true); return }
+    void fire()
+  }
+
+  const base = 'rounded border px-2 py-1 text-xs font-semibold disabled:opacity-50'
+  const btnTone = action.style === 'risky'
+    ? 'border-red-300 text-red-700 hover:bg-red-600 hover:text-white hover:border-red-600'
+    : 'border-border hover:bg-primary hover:text-primary-foreground hover:border-primary'
+  return (
+    <span className="inline-flex items-center gap-2">
+      <button type="button" disabled={busy} onClick={onClick} className={`${base} ${btnTone}`}>
+        {busy ? 'Working…' : armed ? `Confirm ${action.label}?` : action.label}
+      </button>
+      {outcome && (() => {
+        const badgeTone = outcome.level === 'ok' ? 'text-green-700 bg-green-50'
+          : outcome.level === 'warn' ? 'text-amber-700 bg-amber-50'
+          : 'text-red-700 bg-red-50'
+        return <span className={`rounded px-2 py-1 text-xs font-semibold ${badgeTone}`}>{outcome.message}</span>
+      })()}
+    </span>
+  )
+}
+
+function AutomationActions({ automationId, enabled }: { automationId: string; enabled: boolean }) {
+  const actionable = useAutomationActionable(automationId, enabled)
+  const list = actionable.data ?? []
   return (
     <section>
-      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Actionable PRs</h4>
+      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Actionable items</h4>
       {list.length === 0
-        ? <p className="text-sm text-muted-foreground">No actionable PRs.</p>
+        ? <p className="text-sm text-muted-foreground">No actionable items.</p>
         : (
           <ul className="space-y-1 text-sm">
-            {list.map((pr) => (
-              <li key={`${pr.repo}#${pr.number}`} className="flex items-center gap-2">
+            {list.map((item) => (
+              <li key={item.id} className="flex items-center gap-2">
                 <span className="flex-1 truncate">
-                  <span className="text-muted-foreground tabular-nums">#{pr.number}</span>{' '}
-                  {pr.title}
+                  <span className="text-muted-foreground tabular-nums">{item.id.split('#')[1] ? `#${item.id.split('#')[1]}` : ''}</span>{' '}
+                  {item.title}
                 </span>
-                <button
-                  type="button"
-                  disabled={fix.isPending}
-                  onClick={() => fix.mutate({ repo: pr.repo, number: pr.number, kind: pr.kind })}
-                  className="rounded border border-border px-2 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
-                >
-                  {KIND_LABEL[pr.kind]}
-                </button>
+                {item.actions.map((action) => (
+                  <ActionButton key={action.kind} item={item} action={action} automationId={automationId} />
+                ))}
               </li>
             ))}
           </ul>
@@ -332,7 +372,7 @@ export function AutomationCard({ automation: a, onOpenSession, onReviewSession }
                   ))}
                 </ul>}
           </section>
-          {a.id === 'pr-doctor' && <ActionablePrsSection enabled={open} />}
+          <AutomationActions automationId={a.id} enabled={open} />
           <SpawnedSessionsSection id={a.id} enabled={open} onOpenSession={onOpenSession} onReviewSession={onReviewSession} />
           {a.configSchema.length > 0 && <ConfigPanel automation={a} />}
         </div>
