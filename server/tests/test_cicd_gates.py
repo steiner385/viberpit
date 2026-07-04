@@ -12,7 +12,7 @@ def _stats(**kw) -> CheckStats:
                 recent_flake_pct=0.0, default_branch_failures=0,
                 p95_duration_s=300.0, flake_rising=False)
     base.update(kw)
-    return CheckStats(**base)
+    return CheckStats(**base)  # type: ignore[arg-type]
 
 
 def test_graduates_when_all_gates_pass():
