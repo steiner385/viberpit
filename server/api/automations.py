@@ -174,3 +174,25 @@ async def backlog_runner_implement(body: BacklogImplementBody, request: Request,
     if status == "unknown":
         raise HTTPException(status_code=404, detail="unknown primary or not a current candidate")
     return {"status": status}
+
+
+@router.get("/cicd-doctor/findings")
+async def cicd_doctor_findings(status: str = "open", repo: str | None = None,
+                               _identity: str = Depends(current_identity),
+                               db=Depends(get_db)) -> list[dict]:
+    """CI/CD Doctor findings, newest first. Reads the DB directly — the loop's
+    state is all persisted, so no orchestrator round-trip is needed."""
+    from server.db.models import CiFinding
+    _automation_or_404("cicd-doctor")
+    stmt = select(CiFinding).order_by(CiFinding.last_seen_at.desc()).limit(200)
+    if status != "all":
+        stmt = stmt.where(CiFinding.status == status)
+    if repo is not None:
+        stmt = stmt.where(CiFinding.repo == repo)
+    rows = (await db.execute(stmt)).scalars().all()
+    return [{"id": f.id, "repo": f.repo, "kind": f.kind, "title": f.title,
+             "status": f.status, "detail": f.detail or {},
+             "issueNumber": f.issue_number,
+             "firstSeenAt": f.first_seen_at.isoformat() if f.first_seen_at else None,
+             "lastSeenAt": f.last_seen_at.isoformat() if f.last_seen_at else None}
+            for f in rows]
