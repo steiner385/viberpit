@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { bandSegments, pseudoElapsedFromPercent, liveElapsedS, isOverrun } from '@/lib/etaBand'
+import { bandSegments, pseudoElapsedFromPercent, liveElapsedS, isOverrun, expectedTotals, ganttScale, ganttSegments } from '@/lib/etaBand'
 
 describe('bandSegments', () => {
   it('computes solid/band/tick from elapsed + remaining bounds', () => {
@@ -42,5 +42,52 @@ describe('isOverrun', () => {
   it('is true once the delta reaches remHigh', () => {
     expect(isOverrun(60, 60)).toBe(true)
     expect(isOverrun(75, 60)).toBe(true)
+  })
+})
+
+describe('expectedTotals', () => {
+  it('adds remaining estimates onto the elapsed snapshot', () => {
+    expect(expectedTotals({ duration_seconds: 60, rem_low_seconds: 10, rem_nominal_seconds: 30, rem_high_seconds: 90 }))
+      .toEqual({ expLow: 70, expNominal: 90, expHigh: 150 })
+  })
+  it('returns null for absent remaining fields and treats null duration as 0', () => {
+    expect(expectedTotals({ duration_seconds: null })).toEqual({ expLow: null, expNominal: null, expHigh: null })
+    expect(expectedTotals({ duration_seconds: null, rem_high_seconds: 45 }).expHigh).toBe(45)
+  })
+})
+
+describe('ganttScale', () => {
+  it('is the max of elapsed and expHigh across all rows', () => {
+    const rows = [
+      { elapsed: 26, expLow: null, expNominal: null, expHigh: null },
+      { elapsed: 40, expLow: 60, expNominal: 120, expHigh: 180 },
+    ]
+    expect(ganttScale(rows)).toBe(180)
+  })
+  it('floors at 60 when everything is zero', () => {
+    expect(ganttScale([{ elapsed: 0, expLow: null, expNominal: null, expHigh: null }])).toBe(60)
+  })
+})
+
+describe('ganttSegments', () => {
+  it('normalizes fill against the shared scale so a 26s bar is ~0.14x a 180s scale', () => {
+    const seg = ganttSegments({ elapsed: 26, expLow: null, expNominal: null, expHigh: null }, 180)
+    expect(seg.fillPct).toBeCloseTo((26 / 180) * 100, 4)
+    expect(seg.bandLeftPct).toBeNull()
+    expect(seg.tickPct).toBeNull()
+  })
+  it('computes band + tick positions on the shared scale', () => {
+    const seg = ganttSegments({ elapsed: 40, expLow: 60, expNominal: 120, expHigh: 180 }, 180)
+    expect(seg.bandLeftPct).toBeCloseTo((60 / 180) * 100, 4)
+    expect(seg.bandWidthPct).toBeCloseTo(((180 - 60) / 180) * 100, 4)
+    expect(seg.tickPct).toBeCloseTo((120 / 180) * 100, 4)
+  })
+  it('forces a 15% stub for queued rows regardless of elapsed', () => {
+    expect(ganttSegments({ elapsed: 0, expLow: null, expNominal: null, expHigh: null }, 180, true).fillPct).toBe(15)
+  })
+  it('clamps fill and band to 100%', () => {
+    const seg = ganttSegments({ elapsed: 500, expLow: 400, expNominal: 450, expHigh: 500 }, 180)
+    expect(seg.fillPct).toBe(100)
+    expect(seg.bandLeftPct).toBe(100)
   })
 })
