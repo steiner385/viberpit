@@ -6,7 +6,9 @@ network."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import subprocess
 from typing import Awaitable, Callable
 
 from .completion_bar import BarVerdict, PrFact, PrFacts, met_bar
@@ -99,3 +101,83 @@ def format_report(results: list[dict]) -> str:
         lines.append(f"  [{r['bucket']:<9}] {r['id'][:8]}  {r['action']:<16} "
                      f"{r['goal'][:48]!r}  — {r['reason']}")
     return "\n".join(lines)
+
+
+def _real_gh(repo: str, branch: str) -> list[dict]:
+    """`gh pr list` for one head branch, all states. Returns [] on any gh failure —
+    the caller then buckets the session ambiguous (never a false 'premature')."""
+    try:
+        r = subprocess.run(
+            ["gh", "pr", "list", "--repo", repo, "--head", branch, "--state", "all",
+             "--json", "number,state,isDraft,autoMergeRequest,url"],
+            capture_output=True, text=True, timeout=30, check=True)
+    except Exception as exc:  # gh missing / auth / network / non-zero
+        log.warning("archive_audit gh pr list failed repo=%s head=%s: %s", repo, branch, exc)
+        return []
+    try:
+        return json.loads(r.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+
+
+async def load_archived_rows(session_factory) -> list[dict]:
+    """Load archived Session rows with the fields the audit needs (the list_archived
+    seam omits repo/branch/authored_branches/goal, so read the model directly).
+    session_factory() is an async context manager yielding a DB session."""
+    from sqlalchemy import select as sa_select
+    from server.db.models import Session as DbSession
+    from server.sessions.goals import effective_goal
+    async with session_factory() as db:
+        rows = (await db.execute(
+            sa_select(DbSession).where(DbSession.status == "archived"))).scalars().all()
+    out: list[dict] = []
+    for row in rows:
+        goal, source = effective_goal(row)
+        out.append({"id": row.id, "repo": row.repo, "branch": row.branch,
+                    "authored_branches": list(row.authored_branches or []),
+                    "goal": goal, "goal_source": source})
+    return out
+
+
+async def main(argv: "list[str] | None" = None) -> int:
+    import argparse
+    from server.db import db_session
+    from server.ipc.client import DaemonClient, DaemonUnavailable
+    from server.ipc.paths import sessiond_endpoint
+    from server.sessions.remote import RemoteOrchestrator
+
+    parser = argparse.ArgumentParser(description="Audit archived sessions vs the completion bar.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="report only; do not unarchive premature sessions")
+    args = parser.parse_args(argv)
+
+    rows = await load_archived_rows(db_session)
+
+    async def _noop(_sid):
+        return None
+
+    if args.dry_run:
+        results = await run_audit(rows, _real_gh, _noop, dry_run=True)
+        print(format_report(results))
+        return 0
+
+    client = DaemonClient(sessiond_endpoint())
+    try:
+        await client.info()   # pre-flight: no live daemon -> DaemonUnavailable
+    except DaemonUnavailable as exc:
+        # Never unarchive standalone — the live daemon wouldn't see it. Report only.
+        print(f"daemon unavailable ({exc}); reporting only. Start the daemon and re-run "
+              f"without --dry-run to unarchive the premature sessions below.")
+        results = await run_audit(rows, _real_gh, _noop, dry_run=True)
+        print(format_report(results))
+        return 0
+
+    orch = RemoteOrchestrator(client)
+    results = await run_audit(rows, _real_gh, lambda sid: orch.unarchive(sid), dry_run=False)
+    print(format_report(results))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover — thin CLI shell
+    import sys
+    raise SystemExit(asyncio.run(main(sys.argv[1:])))

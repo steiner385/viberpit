@@ -52,3 +52,60 @@ def test_dry_run_does_not_unarchive():
     gh = _gh_returning(_pr(state="OPEN", auto_merge=False))
     out = asyncio.run(aa.run_audit([_row("s1", "fix ci")], gh, unarchived.append, dry_run=True))
     assert out[0]["bucket"] == "premature" and unarchived == []
+
+
+def test_real_gh_parses_json(monkeypatch):
+    import subprocess
+    sample = '[{"number": 3, "state": "OPEN", "isDraft": false, "autoMergeRequest": null, "url": "u"}]'
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        class R:
+            stdout = sample
+            returncode = 0
+        assert "--head" in cmd and "--state" in cmd
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    out = aa._real_gh("o/r", "feat/x")
+    assert out[0]["number"] == 3
+
+
+def test_real_gh_returns_empty_on_error(monkeypatch):
+    import subprocess
+
+    def boom(*a, **k):
+        raise subprocess.CalledProcessError(1, "gh")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert aa._real_gh("o/r", "feat/x") == []
+
+
+def test_load_archived_rows_maps_fields():
+    class FakeRow:
+        id = "s1"; repo = "o/r"; branch = "feat/x"
+        authored_branches = ["feat/x", "feat/y"]
+        active_goal = "fix ci"; inferred_goal = None; name = "sess"
+
+    class FakeScalars:
+        def all(self):
+            return [FakeRow()]
+
+    class FakeResult:
+        def scalars(self):
+            return FakeScalars()
+
+    class FakeDb:
+        async def execute(self, _q):
+            return FakeResult()
+
+    class FakeFactory:
+        def __call__(self):
+            return self
+        async def __aenter__(self):
+            return FakeDb()
+        async def __aexit__(self, *a):
+            return False
+
+    rows = asyncio.run(aa.load_archived_rows(FakeFactory()))
+    assert rows[0]["id"] == "s1" and rows[0]["goal"] == "fix ci"
+    assert rows[0]["authored_branches"] == ["feat/x", "feat/y"]
