@@ -7,10 +7,18 @@
  *
  * These tests use Playwright's `routeWebSocket` to simulate server events.
  *
+ * Viewport note: tests use a mobile viewport (375×812) so that the app takes the
+ * routed mobile path where session navigation is URL-driven. The "Back to session
+ * list" button is present only in the mobile SessionView, not in the desktop
+ * DesktopShell's master-detail layout.
+ *
  * Run: npx playwright test e2e/rotation-reconnect.spec.ts
  */
 
 import { test, expect, type Page } from '@playwright/test'
+
+// Force the mobile routing branch for all tests in this file.
+test.use({ viewport: { width: 375, height: 812 } })
 
 const MOCK_SESSIONS = [
   {
@@ -36,12 +44,44 @@ const MOCK_ACCOUNTS = [
   },
 ]
 
+/**
+ * Intercept every /api/* request so the specs are fully backend-independent.
+ * See dashboard.spec.ts for implementation notes.
+ */
 async function interceptApi(page: Page) {
-  await page.route('/api/sessions', (route) => {
-    route.fulfill({ json: MOCK_SESSIONS })
-  })
-  await page.route('/api/accounts', (route) => {
-    route.fulfill({ json: MOCK_ACCOUNTS })
+  await page.route('**/api/**', (route) => {
+    const url = route.request().url()
+    const path = new URL(url).pathname
+
+    if (path === '/api/sessions') {
+      route.fulfill({ json: MOCK_SESSIONS })
+    } else if (path === '/api/accounts') {
+      route.fulfill({ json: MOCK_ACCOUNTS })
+    } else if (path === '/api/sessions/archived') {
+      route.fulfill({ json: [] })
+    } else if (path === '/api/models') {
+      route.fulfill({ json: [] })
+    } else if (path === '/api/settings') {
+      route.fulfill({ json: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null, defaultToolDetail: 'condensed' } })
+    } else if (path === '/api/config') {
+      route.fulfill({ json: { repoRoot: '', adoptionEnabled: false } })
+    } else if (path === '/api/daemon/health') {
+      route.fulfill({ json: { status: 'ok' } })
+    } else if (path === '/api/x11/metrics') {
+      route.fulfill({ json: { enabled: false } })
+    } else if (path === '/api/deploy/status') {
+      route.fulfill({ json: {
+        pending: null,
+        deploy: { running: false, phases: {}, error: null, warnings: [], targetSha: '' },
+      } })
+    } else if (path === '/api/automations') {
+      route.fulfill({ json: [] })
+    } else if (path.startsWith('/api/github')) {
+      route.fulfill({ json: [] })
+    } else {
+      // Generic fallback: empty array is safer than {} for collection endpoints.
+      route.fulfill({ json: [] })
+    }
   })
 }
 
@@ -51,7 +91,7 @@ test.describe('T045 — WebSocket reconnect + account rotation', () => {
 
     let wsConnection: ReturnType<Parameters<typeof page.routeWebSocket>[1]> | null = null
 
-    await page.routeWebSocket('/ws', (ws) => {
+    await page.routeWebSocket('**/ws', (ws) => {
       wsConnection = ws
       ws.onMessage((msg) => {
         const parsed = JSON.parse(msg.toString()) as { type: string; sessionId?: string }
@@ -67,7 +107,7 @@ test.describe('T045 — WebSocket reconnect + account rotation', () => {
       })
     })
 
-    await page.goto('/')
+    await page.goto('/sessions')
 
     // Open a session
     await expect(page.getByText('Work session')).toBeVisible()
@@ -82,7 +122,7 @@ test.describe('T045 — WebSocket reconnect + account rotation', () => {
     }
 
     // Set up a new WS handler that sends the replay again
-    await page.routeWebSocket('/ws', (ws) => {
+    await page.routeWebSocket('**/ws', (ws) => {
       ws.onMessage((msg) => {
         const parsed = JSON.parse(msg.toString()) as { type: string; sessionId?: string }
         if (parsed.type === 'attach') {
@@ -110,18 +150,30 @@ test.describe('T045 — WebSocket reconnect + account rotation', () => {
 
     await interceptApi(page)
 
-    await page.routeWebSocket('/ws', (ws) => {
+    await page.routeWebSocket('**/ws', (ws) => {
       wsConnection = ws
       ws.onMessage(() => {})
     })
 
-    await page.goto('/')
+    await page.goto('/sessions')
 
     // Verify initial account label
     await expect(page.getByText('Work session')).toBeVisible()
     await expect(page.getByText('alice')).toBeVisible()
 
-    // Send a `rotated` event via the WebSocket
+    // Open the session — this mounts useSessionRuntime which wires the query client
+    // to the WebSocket singleton. Without this step, the socket's _patchSessionAccount
+    // is a no-op because useSessionSocket (which calls setQueryClient) only runs when
+    // a session view is mounted.
+    await page.getByRole('button', { name: /open session work session/i }).click()
+    await expect(page.getByRole('button', { name: /back to session list/i })).toBeVisible()
+
+    // Go back to the session list with the socket wired
+    await page.getByRole('button', { name: /back to session list/i }).click()
+    await expect(page.getByText('Work session')).toBeVisible()
+
+    // Send a `rotated` event via the WebSocket — the socket now has a query client
+    // so _patchSessionAccount will update the TanStack Query cache immediately.
     if (wsConnection) {
       ;(wsConnection as { send: (msg: string) => void }).send(JSON.stringify({
         type: 'rotated',
