@@ -1,6 +1,6 @@
 import type { NodeState } from '@/api/types'
 
-export type CheckVisualState = 'done' | 'active' | 'failed' | 'pending' | 'overdue'
+export type CheckVisualState = 'done' | 'active' | 'failed' | 'pending' | 'overdue' | 'skipped' | 'queued'
 
 // Bar/fill classes for drill-down check rows.
 export function checkStateColor(state: CheckVisualState): string {
@@ -9,8 +9,22 @@ export function checkStateColor(state: CheckVisualState): string {
     case 'active': return 'bg-accent'
     case 'failed': return 'bg-red-500'
     case 'overdue': return 'bg-amber-500'
+    case 'skipped':
+    case 'queued':
     case 'pending':
     default: return 'bg-gray-300 dark:bg-gray-600'
+  }
+}
+
+// CVD-safe overlay applied on top of the fill color (see GanttBar). Plotroom values.
+export function checkStateTexture(state: CheckVisualState): string {
+  switch (state) {
+    case 'overdue':
+      return 'repeating-linear-gradient(90deg, transparent 0 4px, rgba(255,255,255,0.24) 4px 6px)'
+    case 'failed':
+      return 'repeating-linear-gradient(-45deg, rgba(255,255,255,0.30) 0 2px, transparent 2px 6px)'
+    default:
+      return ''
   }
 }
 

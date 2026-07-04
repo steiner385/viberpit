@@ -3,8 +3,10 @@ import { cn } from '@/lib/utils'
 import type { StageModel, NodeState } from '@/api/types'
 import { formatEta } from '@/lib/formatEta'
 import { nodeCircleClass } from '@/lib/checkState'
+import { checkStateTexture } from '@/lib/checkState'
 import { bandSegments, pseudoElapsedFromPercent, isOverrun } from '@/lib/etaBand'
 import { useNow } from '@/hooks/useNow'
+import { GanttBar } from '@/components/GanttBar'
 
 // Fallback skeleton shown when no model is available yet.
 const SKELETON_NODES = [
@@ -68,12 +70,19 @@ export function StageTrack({ model, states, updatedAt, etaSeconds, etaOverdue, e
               const overrun = isOverrun(liveDeltaS, etaHighSeconds ?? null)
               const bandColor = overrun ? 'bg-amber-500' : 'bg-accent'
               if (seg) {
+                const fillPct = overrun ? 100 : seg.solidPct
                 return (
-                  <div data-testid="ci-band" className="relative h-1.5 w-10 shrink-0 overflow-hidden rounded bg-gray-200 dark:bg-gray-700">
-                    <span className={cn('absolute inset-y-0 left-0 rounded-l', bandColor)} style={{ width: `${overrun ? 100 : seg.solidPct}%` }} aria-hidden />
-                    <span className={cn('absolute inset-y-0 opacity-30', bandColor)} style={{ left: `${seg.bandLeftPct}%`, width: `${seg.bandWidthPct}%` }} aria-hidden />
-                    <span className="absolute inset-y-[-1px] w-px bg-foreground" style={{ left: `${seg.tickPct}%` }} aria-hidden />
-                  </div>
+                  <GanttBar
+                    testId="ci-band"
+                    className="h-1.5 w-10 shrink-0"
+                    fillPct={fillPct}
+                    colorClass={bandColor}
+                    bandLeftPct={seg.bandLeftPct}
+                    bandWidthPct={seg.bandWidthPct}
+                    tickPct={seg.tickPct}
+                    textureImage={overrun ? checkStateTexture('overdue') : ''}
+                    ariaNow={fillPct}
+                  />
                 )
               }
               return <div className={cn('h-0.5 w-6 shrink-0', connectorClass(prev))} aria-hidden />
