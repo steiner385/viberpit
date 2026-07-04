@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .completion_bar import PrFacts
 
 # Statuses autopilot may act on (everything else is left alone). `complete` is the
 # agent's own completion marker — the strongest goal-met signal — so it MUST be
@@ -39,6 +43,7 @@ class DecisionContext:
     stuck: dict           # {kind, tool_name?, tool_input?, question?, options?, plan_text?}
     transcript_tail: list[dict] = field(default_factory=list)
     ledger: dict = field(default_factory=dict)
+    pr_facts: "PrFacts | None" = None   # verified PR ground-truth (None = unknown)
 
 
 @dataclass
@@ -138,4 +143,15 @@ def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Dec
             return Decision(action="escalate", reason="answer_index out of range")
     if decision.action == "nudge" and not (decision.prompt or "").strip():
         return Decision(action="escalate", reason="empty nudge prompt")
+    if decision.action == "complete" and ctx.pr_facts is not None:
+        # Deterministic backstop the untrusted decider cannot override: an open PR
+        # that is not armed is definitionally NOT the finished state (CLAUDE.md
+        # completion workflow). Downgrade to a nudge toward arming it. The "no PR at
+        # all" case is intentionally left to the fact-fed decider (goal judgment).
+        from .completion_bar import met_bar
+        verdict = met_bar(ctx.effective_goal, ctx.goal_source, ctx.pr_facts)
+        if not verdict.met and verdict.confidence == "high":
+            return Decision(action="nudge", prompt=verdict.remedy or
+                            "Open a PR and arm auto-merge before finishing.",
+                            reason=f"completion-gate: {verdict.reason}")
     return decision

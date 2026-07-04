@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
+    from server.automations.completion_bar import PrFacts
     from server.github.pr_status import PipelinePr
     from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
@@ -1377,7 +1378,25 @@ class SessionOrchestrator:
             session_id=session_id, status=rec.status, account=rec.account, repo=rec.repo,
             branch=getattr(rec, "branch", None), effective_goal=goal_text,
             goal_source=goal_source, stuck=stuck,
-            transcript_tail=await self._autopilot_transcript_tail(session_id), ledger={})
+            transcript_tail=await self._autopilot_transcript_tail(session_id), ledger={},
+            pr_facts=self._autopilot_pr_facts(rec))
+
+    def _autopilot_pr_facts(self, rec) -> "PrFacts":
+        """Verified PR ground-truth for a governed session, from the poller cache
+        only (no new I/O). Mirrors request_pr_fix: check every authored branch plus
+        the scratch branch, dedupe by PR number."""
+        from server.automations.completion_bar import PrFact, PrFacts
+        branches = list(getattr(rec, "authored_branches", None) or [])
+        if getattr(rec, "branch", None):
+            branches.append(rec.branch)
+        seen: dict[int, PrFact] = {}
+        for br in branches:
+            info = self.pr_for(rec.repo, br) if rec.repo else None
+            if info is not None and info.number not in seen:
+                seen[info.number] = PrFact(
+                    number=info.number, state=info.state, is_draft=info.is_draft,
+                    auto_merge_enabled=info.auto_merge_enabled, url=info.url)
+        return PrFacts(has_repo=bool(rec.repo), prs=tuple(seen.values()))
 
     async def _autopilot_transcript_tail(self, session_id: str,
                                          *, turns: int = 6, max_entries: int = 12,
