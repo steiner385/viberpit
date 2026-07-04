@@ -2768,11 +2768,6 @@ class SessionOrchestrator:
                 out[a.id] = a.status(ctx=None).to_dict()
         return out
 
-    def automation_action_kinds(self, automation_id: str):
-        """Valid action kinds for *automation_id*, or None if it has no provider."""
-        provider = self._action_providers.get(automation_id)
-        return provider.valid_kinds if provider is not None else None
-
     async def automation_actionable(self, automation_id: str) -> list[dict]:
         provider = self._action_providers.get(automation_id)
         if provider is None:

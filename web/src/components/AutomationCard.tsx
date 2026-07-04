@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import {
@@ -219,6 +219,12 @@ function ActionButton(
   const [outcome, setOutcome] = useState<{ level: string; message: string } | null>(null)
   const busy = trigger.isPending
 
+  useEffect(() => {
+    if (!outcome) return
+    const id = setTimeout(() => setOutcome(null), 4000)
+    return () => clearTimeout(id)
+  }, [outcome])
+
   async function fire() {
     setArmed(false)
     const r = await trigger.mutateAsync({ item_id: item.id, kind: action.kind })
@@ -231,21 +237,22 @@ function ActionButton(
     void fire()
   }
 
-  if (outcome) {
-    const tone = outcome.level === 'ok' ? 'text-green-700 bg-green-50'
-      : outcome.level === 'warn' ? 'text-amber-700 bg-amber-50'
-      : 'text-red-700 bg-red-50'
-    return <span className={`rounded px-2 py-1 text-xs font-semibold ${tone}`}>{outcome.message}</span>
-  }
-
   const base = 'rounded border px-2 py-1 text-xs font-semibold disabled:opacity-50'
-  const tone = action.style === 'risky'
+  const btnTone = action.style === 'risky'
     ? 'border-red-300 text-red-700 hover:bg-red-600 hover:text-white hover:border-red-600'
     : 'border-border hover:bg-primary hover:text-primary-foreground hover:border-primary'
   return (
-    <button type="button" disabled={busy} onClick={onClick} className={`${base} ${tone}`}>
-      {busy ? 'Working…' : armed ? `Confirm ${action.label}?` : action.label}
-    </button>
+    <span className="inline-flex items-center gap-2">
+      <button type="button" disabled={busy} onClick={onClick} className={`${base} ${btnTone}`}>
+        {busy ? 'Working…' : armed ? `Confirm ${action.label}?` : action.label}
+      </button>
+      {outcome && (() => {
+        const badgeTone = outcome.level === 'ok' ? 'text-green-700 bg-green-50'
+          : outcome.level === 'warn' ? 'text-amber-700 bg-amber-50'
+          : 'text-red-700 bg-red-50'
+        return <span className={`rounded px-2 py-1 text-xs font-semibold ${badgeTone}`}>{outcome.message}</span>
+      })()}
+    </span>
   )
 }
 
