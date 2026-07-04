@@ -178,7 +178,6 @@ def _assert_no_schema_drift(sync_conn) -> None:
 
 async def init_db(db_url: str | None = None) -> None:
     """Create tables (SQLite dev path) and initialise the session factory."""
-    import os
     global _engine, _session_factory
     settings = get_settings()
     url = db_url or settings.db_url
@@ -194,10 +193,6 @@ async def init_db(db_url: str | None = None) -> None:
     _engine = _make_engine(url)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     async with _engine.begin() as conn:
-        # In test mode, drop all tables before recreating them to ensure clean test
-        # isolation without losing the one-connection semantics of :memory: DBs.
-        if os.environ.get("CCSWITCH_DEV") == "1":
-            await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
         if url.startswith("sqlite"):
             await conn.run_sync(_reconcile_sqlite_columns)

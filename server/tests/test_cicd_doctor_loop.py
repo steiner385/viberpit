@@ -53,7 +53,7 @@ async def _async(v):
 
 def test_mode_off_ingests_nothing(tmp_path):
     async def run():
-        await init_db()
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
         ctx = AutomationContext("cicd-doctor")
         loop = _loop(ctx, runs=_runs(2), junit_by_run={}, mode="off")
         await loop.tick()
@@ -64,7 +64,7 @@ def test_mode_off_ingests_nothing(tmp_path):
 
 def test_ingest_is_cursor_idempotent(tmp_path):
     async def run():
-        await init_db()
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
         ctx = AutomationContext("cicd-doctor")
         loop = _loop(ctx, runs=_runs(2),
                      junit_by_run={1: [("junit-python", JUNIT_PASS)]})
@@ -80,7 +80,7 @@ def test_ingest_is_cursor_idempotent(tmp_path):
 
 def test_flaky_test_becomes_finding_and_issue(tmp_path):
     async def run():
-        await init_db()
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
         ctx = AutomationContext("cicd-doctor")
         issues: list[str] = []
         # Evidence volume matters: flaky_test_findings needs >=3 distinct shas.
@@ -118,7 +118,7 @@ def test_flaky_test_becomes_finding_and_issue(tmp_path):
 
 def test_non_reentrant(tmp_path):
     async def run():
-        await init_db()
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
         ctx = AutomationContext("cicd-doctor")
         loop = _loop(ctx, runs=_runs(1), junit_by_run={})
         await asyncio.gather(loop.tick(), loop.tick())  # must not double-ingest
