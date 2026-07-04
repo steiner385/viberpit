@@ -177,6 +177,14 @@ class RemoteOrchestrator:
         return await self._client.call("automation_trigger", automation_id=automation_id,
                                        item_id=item_id, kind=kind)
 
+    async def consolidation_candidates(self, repo: str | None = None) -> dict:
+        """Open PRs + suggested consolidation clusters, via the daemon."""
+        return await self._client.call("consolidation_candidates", repo=repo)
+
+    async def automation_consolidate(self, repo: str, numbers: list[int]) -> dict:
+        """Spawn a consolidation session for the selected PRs, via the daemon."""
+        return await self._client.call("automation_consolidate", repo=repo, numbers=numbers)
+
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)
         return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None

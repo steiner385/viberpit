@@ -140,6 +140,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "snapshot_deploy", "restore_deploy", "resume_recovery_status",
         "request_pr_fix",
         "automation_statuses", "automation_trigger",
+        "consolidation_candidates", "automation_consolidate",
     ]
 
     def _make_simple(method_name):
