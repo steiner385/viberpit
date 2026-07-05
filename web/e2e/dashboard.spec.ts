@@ -106,9 +106,12 @@ test.describe('T044 — Dashboard', () => {
     // Heading visible
     await expect(page.getByRole('heading', { name: /ccswitch/i })).toBeVisible()
 
-    // Session list loads
+    // Session list loads. Scope the account-badge check to the session card —
+    // the DispatchBar's Account dropdown also renders an "alice" <option>, so a
+    // page-wide getByText('alice') trips Playwright's strict mode.
     await expect(page.getByText('Work session')).toBeVisible()
-    await expect(page.getByText('alice')).toBeVisible()
+    const sessionCard = page.getByRole('button', { name: /open session work session/i })
+    await expect(sessionCard.getByText('alice')).toBeVisible()
   })
 
   test('clicking Open on a session opens the Terminal view', async ({ page }) => {

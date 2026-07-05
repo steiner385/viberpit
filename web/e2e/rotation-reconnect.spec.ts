@@ -157,9 +157,12 @@ test.describe('T045 — WebSocket reconnect + account rotation', () => {
 
     await page.goto('/sessions')
 
-    // Verify initial account label
+    // Verify initial account label. Scope to the session card — the DispatchBar's
+    // Account dropdown also renders "alice"/"bob" <option>s, so a page-wide
+    // getByText() trips Playwright's strict mode.
+    const sessionCard = page.getByRole('button', { name: /open session work session/i })
     await expect(page.getByText('Work session')).toBeVisible()
-    await expect(page.getByText('alice')).toBeVisible()
+    await expect(sessionCard.getByText('alice')).toBeVisible()
 
     // Open the session — this mounts useSessionRuntime which wires the query client
     // to the WebSocket singleton. Without this step, the socket's _patchSessionAccount
@@ -185,6 +188,6 @@ test.describe('T045 — WebSocket reconnect + account rotation', () => {
 
     // The session card should update to show the new account
     // (TanStack Query cache is patched by the WS client on `rotated` events)
-    await expect(page.getByText('bob')).toBeVisible({ timeout: 5000 })
+    await expect(sessionCard.getByText('bob')).toBeVisible({ timeout: 5000 })
   })
 })
