@@ -44,7 +44,16 @@ def test_list_status_reflects_live_ctx_counts():
     """The badge shows real status threaded from the orchestrator's live ctx —
     not a hardcoded 'idle'. Regression: list endpoint passed ``ctx=None``, so a
     busily-working runner always rendered idle."""
-    with _client() as c:
+    from unittest.mock import AsyncMock
+
+    from server.automations.backlog_runner import BacklogRunnerLoop
+
+    # The backlog loop ticks immediately at startup and ends each tick with
+    # ``_stash_counts``, which overwrites ``backlog_counts`` with real (zero)
+    # counts from the empty test DB — racing the fake counts injected below on
+    # slow runners (CI flake). Neuter the stash so the injected counts stand;
+    # the pr-doctor sweep needs no patch (its poller sleeps 75s before cycle 1).
+    with patch.object(BacklogRunnerLoop, "_stash_counts", new=AsyncMock()), _client() as c:
         # The HTTP layer talks to the async adapter; the live ctx lives on the
         # wrapped orchestrator (``._orch``) where the loops stash counts each tick.
         orch = c.app.state.sessions._orch
