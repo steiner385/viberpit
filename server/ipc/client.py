@@ -72,6 +72,12 @@ class DaemonClient:
         # overwrote, so a second subscriber silently starved the first — the live
         # transcript went dead until a detach/reattach forced a fresh disk replay.
         self._subscribers: dict[str, set[asyncio.Queue]] = {}
+        # queue -> events dropped since its last emitted GAP. A full queue drops its
+        # oldest event; the drop is otherwise invisible (the daemon watermark already
+        # advanced, so a reconnect never re-sends it). _iter drains this into ONE GAP
+        # per overflow burst so the consumer resyncs from disk. Keyed by identity;
+        # popped when the subscriber is discarded (single loop, no locking).
+        self._dropped: dict[asyncio.Queue, int] = {}
         self._ready: dict[str, asyncio.Event] = {}        # stream -> subscribed-on-daemon
         self._desired: set[str] = set()                   # streams to (re)subscribe on connect
         self._last_seq: dict[str, int] = {}               # stream -> highest delivered seq
@@ -111,6 +117,7 @@ class DaemonClient:
         """Register a new local subscriber queue for *stream* and return it."""
         q: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self._subscribers.setdefault(stream, set()).add(q)
+        self._dropped[q] = 0
         return q
 
     def subscribe(self, stream: str, since: int | None = None, maxsize: int = 1000):
@@ -178,6 +185,15 @@ class DaemonClient:
     async def _iter(self, stream: str, q: asyncio.Queue):
         try:
             while True:
+                lost = self._dropped.get(q, 0)
+                if lost:
+                    # This queue overflowed since we last drained it: emit ONE GAP for
+                    # the whole burst (not one per dropped event), then reset. Same wire
+                    # shape as the daemon ring-eviction GAP so ws._forward_live's existing
+                    # branch forces a from-disk resync. oldest=None: a local drop has no
+                    # daemon seq anchor. seq is untouched — a gap is not a real event.
+                    self._dropped[q] = 0
+                    yield {"type": proto.GAP, "stream": stream, "lost": lost, "oldest": None}
                 yield await q.get()
         finally:
             # Drop just THIS subscriber's queue; other subscribers on the stream keep
@@ -185,6 +201,7 @@ class DaemonClient:
             subs = self._subscribers.get(stream)
             if subs is not None:
                 subs.discard(q)
+            self._dropped.pop(q, None)
 
     def _deliver(self, stream: str, event: dict, seq: int | None = None) -> None:
         if seq is not None:
@@ -198,7 +215,11 @@ class DaemonClient:
                     q.get_nowait()  # drop oldest
                 except asyncio.QueueEmpty:
                     pass
-                log.warning("ipc: subscriber queue for %s full — dropped oldest", stream)
+                # Count the drop; _iter turns a non-zero count into one GAP for the
+                # consumer so the lost span is visible instead of silently vanishing.
+                self._dropped[q] = self._dropped.get(q, 0) + 1
+                log.warning("ipc: subscriber queue for %s full — dropped oldest (%d lost, GAP pending)",
+                            stream, self._dropped[q])
             q.put_nowait(event)
 
     async def _reader(self) -> None:

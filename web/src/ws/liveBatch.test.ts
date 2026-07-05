@@ -50,6 +50,39 @@ describe('handleLiveBatch', () => {
     expect(r.needsHeal).toBe(false)
   })
 
+  it('drops an exact duplicate frame (seq === prev) silently — no dispatch, no heal, lastSeq unchanged', () => {
+    const state = createGapState()
+    handleLiveBatch([ev({ seq: 0, sessionId: 's1' })], { activeSessionId: 's1', state })
+    const r = handleLiveBatch([ev({ seq: 0, sessionId: 's1', text: 'retransmit' })], {
+      activeSessionId: 's1',
+      state,
+    })
+    expect(r.dispatch).toHaveLength(0)
+    expect(r.needsHeal).toBe(false)
+    expect(state.lastSeq.get('s1')).toBe(0)
+  })
+
+  it('drops a stale frame (seq < prev) and flags a heal — the stream is confused', () => {
+    const state = createGapState()
+    handleLiveBatch([ev({ seq: 5, sessionId: 's1' })], { activeSessionId: 's1', state })
+    const r = handleLiveBatch([ev({ seq: 3, sessionId: 's1', text: 'stale' })], {
+      activeSessionId: 's1',
+      state,
+    })
+    expect(r.dispatch).toHaveLength(0)
+    expect(r.needsHeal).toBe(true)
+    expect(state.lastSeq.get('s1')).toBe(5)
+  })
+
+  it('still dispatches and heals a forward gap (existing behavior preserved)', () => {
+    const state = createGapState()
+    handleLiveBatch([ev({ seq: 0, sessionId: 's1' })], { activeSessionId: 's1', state })
+    const r = handleLiveBatch([ev({ seq: 2, sessionId: 's1' })], { activeSessionId: 's1', state })
+    expect(r.dispatch).toHaveLength(1)
+    expect(r.needsHeal).toBe(true)
+    expect(state.lastSeq.get('s1')).toBe(2)
+  })
+
   it('drops a replayReset tagged for a non-active session (blank-on-navigation guard)', () => {
     // A stale replay for session s2 arriving after the user navigated to s1 must NOT
     // reach s1's reducer: its replayReset would wipe s1's transcript to empty. Now that
