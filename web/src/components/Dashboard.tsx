@@ -196,7 +196,7 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
               Grouped so these "what am I launching" controls are discoverable together. */}
           <fieldset className="space-y-4 rounded-lg border border-gray-200 dark:border-gray-600 p-4">
             <legend className="px-1 text-sm font-medium text-gray-700 dark:text-gray-300">
-              Launch target
+              Session setup
             </legend>
 
             {/* Repository filter */}
@@ -283,7 +283,7 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
               {/* Account */}
               <div className="space-y-1">
                 <label htmlFor="new-session-account" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Account <span className="text-gray-400">(optional)</span>
+                  Account
                 </label>
                 <select
                   id="new-session-account"

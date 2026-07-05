@@ -37,7 +37,7 @@ reordering plus wrapper elements — no state, handler, hook, or API changes.
 
 ```
 Name
-┌─ Launch target ─────────────────────────────┐   ← subtle bordered group + heading
+┌─ Session setup ─────────────────────────────┐   ← subtle bordered group + heading
 │ Filter repos                                 │
 │ Repository                                    │
 │ Branch                                        │
@@ -56,7 +56,9 @@ Initial prompt
    to full-width on narrow phones so neither dropdown is cramped.
 3. **Group box:** wrap Filter repos + Repository + Branch + the Account/Model grid in a
    `<fieldset>` with a subtle border (matching existing `border-gray-200 dark:border-gray-600`
-   tokens, rounded) and a `<legend>` reading **"Launch target"**. Use a real
+   tokens, rounded) and a `<legend>` reading **"Session setup"** (a UX review
+   found "Launch target" undersold that Account/Model live in the box — "target"
+   reads as a destination). Use a real
    `fieldset`/`legend` for semantics/accessibility, styled to match the dialog. Reuse the
    existing `inputClass` for the selects — no new design tokens (single source of truth).
 
@@ -74,7 +76,7 @@ Initial prompt
 
 - `web/` → `vitest run`, `tsc --noEmit`, `eslint`.
 - Existing `Dashboard` test mocks stay valid (no new hooks introduced).
-- Add/adjust an assertion that Account and Model render inside the "Launch target" group,
+- Add/adjust an assertion that Account and Model render inside the "Session setup" group,
   and that Model now appears before "Tool approvals" in DOM order.
 - Manual check at mobile (<640px) and desktop widths: dropdowns stack vs. sit side-by-side;
   group border/legend renders in light and dark mode.

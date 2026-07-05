@@ -143,7 +143,7 @@ describe('New Session dialog — branch default selection', () => {
     expect(within(modelSelect).getByRole('option', { name: 'Fable' })).toBeInTheDocument()
   })
 
-  it('groups the repo chooser, account, and model under a "Launch target" fieldset', async () => {
+  it('groups the repo chooser, account, and model under a "Session setup" fieldset', async () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
 
@@ -151,7 +151,7 @@ describe('New Session dialog — branch default selection', () => {
     const dialog = within(screen.getByRole('dialog', { name: /new session/i }))
 
     // The launch-config controls live together in one accessible group.
-    const group = within(dialog.getByRole('group', { name: /launch target/i }))
+    const group = within(dialog.getByRole('group', { name: /session setup/i }))
     expect(group.getByLabelText(/^repository/i)).toBeInTheDocument()
     expect(group.getByLabelText(/^branch/i)).toBeInTheDocument()
     expect(group.getByLabelText(/^account/i)).toBeInTheDocument()
