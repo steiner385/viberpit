@@ -9,13 +9,13 @@
  * Behavior mirrors what SessionView previously did inline.
  */
 
-import { useEffect, useReducer, useState, useCallback, useRef } from 'react'
+import { useEffect, useMemo, useReducer, useState, useCallback, useRef } from 'react'
 import { useSessionSocket } from '@/ws/client'
 import type { ConnectionState, WsRotatedMsg, WsErrorMsg } from '@/ws/client'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { TranscriptState } from '@/session/reducer'
 import type { SessionEvent, Command } from '@/session/events'
-import { selectSubAgents } from '@/session/selectors'
+import { selectSubAgents, selectVisibleTurns, selectVisibleSubAgents } from '@/session/selectors'
 import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWindow'
 import { useSessions, useAccounts, useSettings } from '@/api/hooks'
 import type { ToolDetailMode } from '@/session/groupBlocks'
@@ -87,6 +87,24 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   } = useSessionSocket()
 
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
+
+  // Double-buffer: during a gap-heal/reconnect the reducer clears `turns`/`subAgents`
+  // and rebuilds them from the replay, but keeps the previously-rendered content in
+  // `staleTurns`/`staleSubAgents`. Route ALL view-facing transcript reads through the
+  // visible selectors at this single point, then hand the components a `state` whose
+  // `turns`/`subAgents` already reflect the double-buffer — so no component needs to
+  // know the heal is happening (no blank-then-rebuild flash). Outside a heal this is a
+  // no-op: the selectors return the live arrays and `viewState === state`.
+  const visibleTurns = selectVisibleTurns(state)
+  const visibleSubAgents = selectVisibleSubAgents(state)
+  const viewState: TranscriptState = useMemo(
+    () =>
+      visibleTurns === state.turns && visibleSubAgents === state.subAgents
+        ? state
+        : { ...state, turns: visibleTurns, subAgents: visibleSubAgents },
+    [state, visibleTurns, visibleSubAgents],
+  )
+
   const [mode, setMode] = useState('interactive')
   const [armedQuestionId, setArmedQuestionId] = useState<string | null>(null)
   const [commands, setCommands] = useState<Command[]>([])
@@ -270,21 +288,23 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     modeRef.current = mode
   }, [mode])
 
-  // Determine if any open permission/question block exists.
-  const hasOpenAction = state.turns.some((t) =>
+  // Determine if any open permission/question block exists. Read the VISIBLE turns
+  // (via viewState) so these action affordances stay in step with what's on screen
+  // during a heal, rather than flickering off while the replay rebuilds `turns`.
+  const hasOpenAction = viewState.turns.some((t) =>
     t.blocks.some((b) => b.kind === 'permission' || b.kind === 'question'),
   )
-  const hasOpenPermission = state.turns.some((t) => t.blocks.some((b) => b.kind === 'permission'))
+  const hasOpenPermission = viewState.turns.some((t) => t.blocks.some((b) => b.kind === 'permission'))
 
   // If the armed question is no longer present (resolved/replaced), disarm.
   useEffect(() => {
     if (!armedQuestionId) return
-    const stillOpen = state.turns.some((t) =>
+    const stillOpen = viewState.turns.some((t) =>
       t.blocks.some((b) => b.kind === 'question' && b.questionId === armedQuestionId),
     )
     // eslint-disable-next-line react-hooks/set-state-in-effect -- disarm in sync with transcript changes
     if (!stillOpen) setArmedQuestionId(null)
-  }, [state.turns, armedQuestionId])
+  }, [viewState.turns, armedQuestionId])
 
   // ── Status-strip derived data ──────────────────────────────────────────────
   // Account: the session record's account, overridden by the latest rotation.
@@ -323,7 +343,8 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   // from a live ResultMessage — that is a per-turn aggregate that reads 0%.
   const contextPct = remainingFromContextUsage(state.contextUsage)
     ?? remainingContextPct(state.usage, state.model)
-  const subAgents = selectSubAgents(state.turns)
+  // Sub-agent chips derive from the visible turns so they hold steady through a heal.
+  const subAgents = selectSubAgents(viewState.turns)
 
   // Re-send attach to recover from a stuck load (the SessionPlaceholder Retry).
   const reattach = useCallback(() => attach(sessionId), [attach, sessionId])
@@ -347,7 +368,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
 
   return {
     sessionId,
-    state,
+    state: viewState,
     mode,
     toolDetailMode,
     thinkingCollapsed,
