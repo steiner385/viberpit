@@ -37,30 +37,45 @@ def _json(proc) -> dict:  # type: ignore[return-value]
     return json.loads(proc.stdout)
 
 
+# First-tick backfill bound. Steady-state ticks carry a cursor and return well
+# under one page, so pagination stops after page 1; only the very first tick (no
+# cursor) can span multiple pages, and this caps that at MAX_BACKFILL_PAGES*100
+# runs — deliberately bounded so a repo with years of history never hammers the
+# API in a single tick (constitution III / anti-hammer, #451).
+MAX_BACKFILL_PAGES = 10
+
+
 def list_completed_runs(repo: str, since_ts: float | None, *,
-                        run=gitrepos._run_gh) -> list[dict]:
+                        run=gitrepos._run_gh, max_pages: int = MAX_BACKFILL_PAGES) -> list[dict]:
+    from urllib.parse import quote
     date = ""
     if since_ts:
         # Apply a 3-day lookback so runs created before since_ts but completed
         # after it are not permanently dropped by a strict client-side cut.
         lookback_ts = since_ts - 3 * 86400
-        date = "&created=>=" + datetime.fromtimestamp(
-            lookback_ts, tz=timezone.utc).strftime("%Y-%m-%d")
-    data = _json(run(["api", f"repos/{repo}/actions/runs"
-                             f"?status=completed&per_page=100{date}"]))
+        day = datetime.fromtimestamp(lookback_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        # URL-encode the qualifier: `>=` are reserved characters in a query string
+        # and must be percent-encoded (created=%3E%3DYYYY-MM-DD), not sent raw.
+        date = "&created=" + quote(f">={day}", safe="")
     out = []
-    for r in data.get("workflow_runs", []):
-        created = _iso_ts(r.get("created_at")) or 0.0
-        # No strict client-side created <= since_ts filter: idempotence lives in
-        # _ingest's existing `seen` set (skips already-stored run ids).
-        started, updated = _iso_ts(r.get("run_started_at")), _iso_ts(r.get("updated_at"))
-        out.append({
-            "id": r["id"], "workflow_path": r.get("path") or "",
-            "event": r.get("event") or "", "head_sha": r.get("head_sha") or "",
-            "head_branch": r.get("head_branch") or "",
-            "conclusion": r.get("conclusion") or "", "created_ts": created,
-            "duration_s": max(0.0, (updated - started)) if started and updated else 0.0,
-        })
+    for page in range(1, max_pages + 1):
+        data = _json(run(["api", f"repos/{repo}/actions/runs"
+                                 f"?status=completed&per_page=100&page={page}{date}"]))
+        runs = data.get("workflow_runs", [])
+        for r in runs:
+            created = _iso_ts(r.get("created_at")) or 0.0
+            # No strict client-side created <= since_ts filter: idempotence lives in
+            # _ingest's existing `seen` set (skips already-stored run ids).
+            started, updated = _iso_ts(r.get("run_started_at")), _iso_ts(r.get("updated_at"))
+            out.append({
+                "id": r["id"], "workflow_path": r.get("path") or "",
+                "event": r.get("event") or "", "head_sha": r.get("head_sha") or "",
+                "head_branch": r.get("head_branch") or "",
+                "conclusion": r.get("conclusion") or "", "created_ts": created,
+                "duration_s": max(0.0, (updated - started)) if started and updated else 0.0,
+            })
+        if len(runs) < 100:  # last (or only) page — steady-state ticks stop here
+            break
     out.sort(key=lambda r: r["created_ts"])
     return out
 
