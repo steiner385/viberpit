@@ -82,6 +82,8 @@ export function DispatchBar({
   // '' = Auto-select (let the backend pick). 'default' = the account's own model.
   const [account, setAccount] = useState('')
   const [model, setModel] = useState('default')
+  // Mobile-only disclosure for the Account/Model selects; desktop always shows all three.
+  const [showMore, setShowMore] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const att = useImageAttachments()
@@ -234,6 +236,10 @@ export function DispatchBar({
   )
   const selectLabelClass = 'text-xs text-gray-500 dark:text-gray-400'
 
+  // Account/Model are worth flagging when collapsed on mobile — a hidden
+  // non-default pick would otherwise silently steer the dispatch.
+  const hasNonDefaultPick = account !== '' || model !== 'default'
+
   return (
     <div
       className={cn(
@@ -244,11 +250,13 @@ export function DispatchBar({
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
     >
-      {/* Repo / account / model selector row — 3 across on desktop, stacked on mobile */}
+      {/* Repo / account / model selector row — 3 across on desktop; on mobile a
+          single line (repo + "more" toggle) with account/model behind the toggle */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-        {/* Repository */}
-        <div className="flex flex-col gap-1">
-          <label htmlFor="dispatch-bar-repo" className={selectLabelClass}>
+        {/* Repository + mobile-only more-options toggle */}
+        <div className="flex items-end gap-2">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <label htmlFor="dispatch-bar-repo" className={cn(selectLabelClass, 'hidden sm:block')}>
             Repository
           </label>
           <select
@@ -282,10 +290,36 @@ export function DispatchBar({
               </>
             )}
           </select>
+          </div>
+          <button
+            type="button"
+            aria-label="More options"
+            aria-expanded={showMore}
+            aria-controls="dispatch-bar-account dispatch-bar-model"
+            onClick={() => setShowMore((v) => !v)}
+            className={cn(
+              'sm:hidden relative flex-shrink-0 rounded-md px-3 py-2 text-sm min-h-[44px]',
+              'border border-gray-300 dark:border-gray-600',
+              'text-gray-600 dark:text-gray-300',
+              'hover:bg-gray-100 dark:hover:bg-gray-800',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+            )}
+          >
+            <span aria-hidden="true">⋯</span>
+            {!showMore && hasNonDefaultPick && (
+              <>
+                <span
+                  aria-hidden="true"
+                  className="absolute top-1 right-1 h-2 w-2 rounded-full bg-blue-500"
+                />
+                <span className="sr-only">Non-default account or model selected</span>
+              </>
+            )}
+          </button>
         </div>
 
         {/* Account — "" = Auto-select (usage-aware rotation picks one). */}
-        <div className="flex flex-col gap-1">
+        <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex')}>
           <label htmlFor="dispatch-bar-account" className={selectLabelClass}>
             Account
           </label>
@@ -304,7 +338,7 @@ export function DispatchBar({
         </div>
 
         {/* Model — "default" = the account's own model. */}
-        <div className="flex flex-col gap-1">
+        <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex')}>
           <label htmlFor="dispatch-bar-model" className={selectLabelClass}>
             Model
           </label>
