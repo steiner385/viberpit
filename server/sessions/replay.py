@@ -120,15 +120,20 @@ def _collapse_recovery_resend_dupes(out: list) -> list:
     I — never fork/patch the binary), so we cannot dedupe at write time; we suppress on
     replay so every disk-replay stops rendering ``[user X (no reply)] [user X] [reply]``.
 
-    Suppress the EARLIER of two user turns iff its text is IDENTICAL to the
-    immediately-FOLLOWING user turn AND it produced NO assistant/tool content between
-    the two (a dead "dropped turn" head). Intervening non-content lines (isMeta /
-    system / summary) emit no events in ``_build_events``, so the two dead-adjacent
-    UserMessages sit at consecutive indices; ANY real content event
-    (TurnStart/TextDelta/ToolCall/ToolResult/…) pushes them apart and correctly defeats
-    suppression — an interrupted turn whose partial output is genuine transcript must
-    keep rendering. The later turn carries the real completion and is kept; applied
-    across every adjacent pair so N consecutive dead resends collapse to the final one.
+    Suppress the EARLIER of two user turns iff its FULL identity — text AND images —
+    is IDENTICAL to the immediately-FOLLOWING user turn AND it produced NO
+    assistant/tool content between the two (a dead "dropped turn" head). A true
+    recovery resend re-persists the exact same prompt it failed to complete, images
+    included, so requiring image equality (not just text) keeps this from collapsing
+    two genuinely-different image-bearing turns that merely share caption text (e.g.
+    two blank-caption screenshots) — that would silently drop the first image.
+    Intervening non-content lines (isMeta / system / summary) emit no events in
+    ``_build_events``, so the two dead-adjacent UserMessages sit at consecutive
+    indices; ANY real content event (TurnStart/TextDelta/ToolCall/ToolResult/…) pushes
+    them apart and correctly defeats suppression — an interrupted turn whose partial
+    output is genuine transcript must keep rendering. The later turn carries the real
+    completion and is kept; applied across every adjacent pair so N consecutive dead
+    resends collapse to the final one.
 
     Distinct from the trailing-incomplete-turn drop (``drop_incomplete_turn`` /
     ``_is_in_progress_user``): this runs on SETTLED history anywhere in the file; that
@@ -136,7 +141,7 @@ def _collapse_recovery_resend_dupes(out: list) -> list:
     user_idx = [i for i, e in enumerate(out) if isinstance(e, ev.UserMessage)]
     drop: set[int] = set()
     for a, b in zip(user_idx, user_idx[1:]):
-        if b == a + 1 and out[a].text == out[b].text:
+        if b == a + 1 and out[a].text == out[b].text and out[a].images == out[b].images:
             drop.add(a)
     if not drop:
         return out

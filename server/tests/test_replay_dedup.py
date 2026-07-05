@@ -25,6 +25,14 @@ def _user(uuid, text):
     return {"type": "user", "uuid": uuid, "message": {"role": "user", "content": text}}
 
 
+def _user_with_image(uuid, text, data):
+    # Mirrors the CLI's on-disk image-block shape (see test_replay_images.py).
+    content = [{"type": "text", "text": text}] if text else []
+    content.append({"type": "image", "source": {"type": "base64",
+                                                  "media_type": "image/png", "data": data}})
+    return {"type": "user", "uuid": uuid, "message": {"role": "user", "content": content}}
+
+
 def _assistant(uuid, text):
     return {"type": "assistant", "uuid": uuid,
             "message": {"role": "assistant", "model": "claude-x",
@@ -72,6 +80,33 @@ def test_different_texts_kept(tmp_path):
     rows = [_user("u1", "X"), _user("u2", "Y"), _assistant("a1", "done")]
     events = _events(_write(tmp_path, rows))
     assert _user_texts(events) == ["X", "Y"]
+
+
+def test_same_text_different_images_both_kept(tmp_path):
+    """[user "" +imgA][user "" +imgB] same (empty) text, DIFFERENT images → both kept.
+
+    A true recovery resend re-persists the identical prompt, images included. Two
+    adjacent turns that merely share caption text (here both blank) but carry
+    different images are NOT a resend duplicate — collapsing them would silently
+    drop the first image."""
+    rows = [_user_with_image("u1", "", "QUJD"), _user_with_image("u2", "", "WFla"),
+            _assistant("a1", "done")]
+    events = _events(_write(tmp_path, rows))
+    user_events = [e for e in events if isinstance(e, ev.UserMessage)]
+    assert [e.turn_id for e in user_events] == ["u1", "u2"]
+    assert user_events[0].images[0]["url"] == "data:image/png;base64,QUJD"
+    assert user_events[1].images[0]["url"] == "data:image/png;base64,WFla"
+
+
+def test_same_text_same_images_collapses(tmp_path):
+    """[user X +imgA][user X +imgA] identical text AND images → the dead head still
+    collapses (the recovery-resend shape is unaffected by the image-equality check)."""
+    rows = [_user_with_image("u1", "X", "QUJD"), _user_with_image("u2", "X", "QUJD"),
+            _assistant("a1", "done")]
+    events = _events(_write(tmp_path, rows))
+    user_events = [e for e in events if isinstance(e, ev.UserMessage)]
+    assert [e.turn_id for e in user_events] == ["u2"]
+    assert user_events[0].images[0]["url"] == "data:image/png;base64,QUJD"
 
 
 def test_n_consecutive_resends_collapse_to_one(tmp_path):
