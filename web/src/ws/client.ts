@@ -12,7 +12,7 @@ import { QK } from '@/api/hooks'
 import type { SessionEvent } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
 import { clientLogger } from '@/obs/logger'
-import { createGapState, handleLiveBatch, type GapState } from './liveBatch'
+import { createGapState, handleLiveBatch, catchUpCursor, type GapState } from './liveBatch'
 import { shouldApplyRev } from '@/session/reconcile'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
@@ -123,9 +123,11 @@ export class SessionSocket {
         this._reconnectAttempt = 0
         this._stableTimer = null
       }, CONNECTION_STABLE_MS)
-      // Re-attach active session so server replays session history
+      // Re-attach active session so the server resumes the transcript. Include the
+      // wave-3 catch-up cursor when the source stream stayed contiguous — the server
+      // then catches us up from the daemon ring (resumeOk) instead of a full replay.
       if (this._activeSessionId) {
-        this._send({ type: 'attach', sessionId: this._activeSessionId })
+        this._send(this._attachFrame(this._activeSessionId))
       }
       if (this._pendingPrompts.length) this._flushPending()
     }
@@ -314,7 +316,20 @@ export class SessionSocket {
     this._lastHealAt = now
     clientLogger.warn('ws gap detected — healing transcript via detach+attach', { sessionId: sid })
     this._send({ type: 'detach', sessionId: sid })
-    this._send({ type: 'attach', sessionId: sid })
+    // Catch-up cursor when contiguous → server resumes from the ring (resumeOk); a gap
+    // that broke contiguity (the usual heal trigger) yields null → full replay.
+    this._send(this._attachFrame(sid))
+  }
+
+  /** Build an `attach` frame, adding the wave-3 `sinceSrcSeq` catch-up cursor when the
+   *  session's source stream has stayed contiguous (see catchUpCursor). Omitting the
+   *  cursor makes the server full-replay from the durable transcript — the safe default,
+   *  used for the initial user-initiated attach and whenever contiguity is unknown/broken. */
+  private _attachFrame(sessionId: string): { type: 'attach'; sessionId: string; sinceSrcSeq?: number } {
+    const cursor = catchUpCursor(this._gap, sessionId)
+    return cursor !== null
+      ? { type: 'attach', sessionId, sinceSrcSeq: cursor }
+      : { type: 'attach', sessionId }
   }
 
   private _scheduleReconnect() {

@@ -127,6 +127,20 @@ def register_orchestrator_rpc(app, orch) -> None:
                 # disk's last user entry can belong to a PREVIOUS, completed turn).
                 "turn_started_at": app.state.turn_started_at(session_id)}
 
+    async def ring_covers(params: dict) -> dict:
+        # Wave-3 cursor catch-up coverage probe: can the daemon ring replay this stream
+        # from `since` (the browser's contiguous srcSeq cursor) with no GAP? Pure read of
+        # the ring state — the edge (RemoteOrchestrator.ring_covers) decides resumeOk vs
+        # full replay off the boolean, BEFORE anything is enqueued.
+        covered = app.state.ring_covers(params["session_id"], params.get("since"))
+        return {"covered": bool(covered)}
+
+    async def ring_tail(params: dict) -> dict:
+        # One-shot ring snapshot after `since` for the cursor catch-up: the edge replays
+        # these (then continues on the shared live fan-out, deduping by seq). See
+        # daemon.ring_tail for why a snapshot RPC rather than a since-override subscribe.
+        return app.state.ring_tail(params["session_id"], params.get("since"))
+
     async def list_sessions(params: dict) -> dict:
         return {"sessions": [r.to_dict() for r in orch.list_sessions()]}
 
@@ -177,6 +191,8 @@ def register_orchestrator_rpc(app, orch) -> None:
         return result
 
     register_rpc(app, "ensure_driver", ensure_driver)
+    register_rpc(app, "ring_covers", ring_covers)
+    register_rpc(app, "ring_tail", ring_tail)
     register_rpc(app, "list_sessions", list_sessions)
     register_rpc(app, "get_session", get_session)
     register_rpc(app, "create_session", create_session)

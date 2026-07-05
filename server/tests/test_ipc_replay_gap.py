@@ -109,6 +109,71 @@ async def test_no_gap_frame_when_anchor_within_buffer(monkeypatch):
     assert [f["seq"] for f in frames] == [1, 2]
 
 
+# ---------------------------------------------------------------------------
+# ring_covers — the wave-3 cursor-catchup coverage probe (audit W2.3). It must
+# agree EXACTLY with the subscribe-time GAP test: covered iff a subscribe(since=)
+# would replay the whole tail with no GAP. Plus the epoch guard: a cursor AHEAD of
+# head (a stale srcSeq from a previous daemon process whose seq space reset) is
+# never covered by the fresh low ring.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ring_covers_true_when_anchor_within_window(monkeypatch):
+    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "8")
+    app = create_daemon_app()
+    async with serve_daemon_uds(app):
+        for i in range(5):  # seq 0..4 all retained (oldest=0, head=4)
+            await app.state.publish("s1", {"type": str(i)})
+    rc = app.state.ring_covers
+    assert rc("s1", 4) is True   # fully caught up (== head): subscribe replays nothing, no gap
+    assert rc("s1", 2) is True   # tail 3,4 replays, no gap
+    assert rc("s1", 0) is True   # since+1 == oldest+1 > oldest, covered
+
+
+@pytest.mark.asyncio
+async def test_ring_covers_false_when_anchor_evicted(monkeypatch):
+    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "2")
+    app = create_daemon_app()
+    async with serve_daemon_uds(app):
+        for i in range(5):  # seq 0..4; retained = 3,4 (oldest=3)
+            await app.state.publish("s1", {"type": str(i)})
+    rc = app.state.ring_covers
+    # since+1 < oldest → the in-between events were evicted → NOT covered (== the exact
+    # subscribe-time GAP condition; probe and real subscribe can never disagree).
+    assert rc("s1", 0) is False
+    assert rc("s1", 1) is False
+    assert rc("s1", 2) is True   # since+1 == oldest(3) → boundary, still covered
+
+
+@pytest.mark.asyncio
+async def test_ring_covers_false_when_anchor_ahead_of_head(monkeypatch):
+    """Epoch-reset guard: a browser srcSeq cursor can only exceed head after a daemon
+    restart (per-process seq space resets to 0). Its stale high cursor must NOT be treated
+    as covered by the fresh low ring — else a catch-up would resume past every real event."""
+    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "8")
+    app = create_daemon_app()
+    async with serve_daemon_uds(app):
+        for i in range(3):  # seq 0..2 (head=2)
+            await app.state.publish("s1", {"type": str(i)})
+    rc = app.state.ring_covers
+    assert rc("s1", 2) is True    # == head
+    assert rc("s1", 3) is False   # ahead of head → stale cursor → full replay
+    assert rc("s1", 5000) is False
+
+
+@pytest.mark.asyncio
+async def test_ring_covers_false_for_fresh_or_empty(monkeypatch):
+    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "8")
+    app = create_daemon_app()
+    async with serve_daemon_uds(app):
+        rc = app.state.ring_covers
+        assert rc("never-seen", 3) is False   # no ring at all → can't guarantee coverage
+        await app.state.publish("s1", {"type": "0"})
+        assert rc("s1", None) is False         # fresh anchor is never a catch-up cursor
+        assert rc("s1", -1) is False
+
+
 @pytest.mark.asyncio
 async def test_no_gap_frame_on_fresh_subscribe(monkeypatch):
     """since=-1 (or None) is a fresh attach, never a gap even if events were dropped."""
