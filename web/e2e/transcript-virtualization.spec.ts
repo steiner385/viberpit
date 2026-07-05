@@ -37,18 +37,22 @@ function buildTranscriptEvents() {
     events.push({ type: 'textDelta', turnId: asstId, text: `Assistant reply number ${i}` })
     events.push({ type: 'turnEnd', turnId: asstId })
   }
-  events.push({ type: 'replayComplete', earliestTurn: 0, totalTurns: EXCHANGES * 2 })
   return events
 }
 
 async function mockTranscript(page: Page) {
   // ReviewView only fetches the transcript; stub the rest defensively so nothing
-  // hangs the app shell if a route pulls sessions/accounts.
-  await page.route('**/api/sessions/*/transcript', (route) =>
-    route.fulfill({ json: { events: buildTranscriptEvents() } }),
+  // hangs the app shell if a route pulls sessions/accounts. The real endpoint
+  // (server/api/sessions.py get_session_transcript) always returns earliestTurn/
+  // totalTurns as top-level metadata alongside events — replayComplete is a
+  // WS-only wire event and is never embedded in the REST transcript payload;
+  // ReviewView itself synthesizes that dispatch from the top-level fields
+  // (ReviewView.tsx:38). Query-string variants (`?limit=…`) must still match.
+  await page.route('**/api/sessions/*/transcript*', (route) =>
+    route.fulfill({ json: { events: buildTranscriptEvents(), earliestTurn: 0, totalTurns: EXCHANGES * 2 } }),
   )
-  await page.route('**/api/sessions', (route) => route.fulfill({ json: [] }))
-  await page.route('**/api/accounts', (route) => route.fulfill({ json: [] }))
+  await page.route('**/api/sessions*', (route) => route.fulfill({ json: [] }))
+  await page.route('**/api/accounts*', (route) => route.fulfill({ json: [] }))
   await page.routeWebSocket('**/ws', (ws) => ws.onMessage(() => {}))
 }
 
