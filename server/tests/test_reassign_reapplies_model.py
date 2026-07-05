@@ -108,3 +108,67 @@ class _NullCtx:
     async def __aenter__(self): return self
     async def __aexit__(self, *a): return False
     async def execute(self, *a, **k): return None
+
+
+@pytest.mark.asyncio
+async def test_reassign_rotated_event_carries_rev_token(monkeypatch):
+    """The `rotated` event must carry the same `revAt` token a subsequent sessions read
+    (record.rev_at, the single source of truth also used by the `status` event and the
+    HTTP session list) returns — bumped by the rotation itself. Without this the client's
+    rev-guarded reconcile (web/src/session/reconcile.ts revIsNewer/shouldApplyRev) has no
+    way to tell the WS account patch is newer than a poll response snapshotted just before
+    the rotation persisted, so the stale poll silently reverts the account badge."""
+    from datetime import datetime, timedelta
+    from server.sessions import orchestrator as orch_mod
+    from server.time_iso import iso_utc
+
+    class _NewDriver:
+        def __init__(self, *a, **k):
+            self.cwd = "/tmp"; self.mode = "interactive"; self.identity = None
+            self.claude_session_id = "c1"
+        async def start(self): pass
+        async def send_prompt(self, p): pass
+        async def set_model(self, m): pass
+
+    class _OldDriver:
+        cwd = "/tmp"; mode = "interactive"; identity = None; claude_session_id = "c1"
+        async def interrupt(self): pass
+        async def aclose(self): pass
+
+    monkeypatch.setattr(orch_mod, "SessionDriver", _NewDriver)
+    monkeypatch.setattr(orch_mod, "compose", lambda a: "/cfg")
+    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
+    monkeypatch.setattr(orch_mod, "db_session", lambda: _NullCtx())
+
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.sessions.types import SessionRecord
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    stale_rev = datetime.utcnow() - timedelta(minutes=5)
+    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+                        cols=80, rows=24, cwd="/tmp", model=None, updated_at=stale_rev)
+    orch._records = {"s1": rec}
+    orch._drivers = {"s1": _OldDriver()}
+    orch._last_prompt = {}
+    orch._registry = None
+    orch._suggester = None
+    orch._session_factory = lambda sid: None
+    orch._persist_claude_session_id = lambda *a, **k: None
+    orch._persist_status = lambda *a, **k: None
+    orch._handle_recoverable_failure = lambda *a, **k: None
+
+    published = []
+    orch._publish_event = lambda e: published.append(e)
+
+    await orch._reassign(rec, "b", reason="manual")
+
+    assert len(published) == 1
+    event = published[0]
+    assert event["type"] == "rotated"
+    assert event.get("revAt"), "rotated event must carry a revAt token"
+    # Single source of truth: the token equals what a subsequent sessions read
+    # (record.rev_at, serialized identically by server/api/sessions.py) returns — not a
+    # parallel freshness mechanism invented for this event.
+    assert event["revAt"] == rec.rev_at
+    # And it must be strictly newer than the pre-rotation rev so the client's
+    # revIsNewer/shouldApplyRev comparisons keep the WS patch over a stale in-flight poll.
+    assert event["revAt"] > iso_utc(stale_rev)
