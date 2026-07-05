@@ -350,6 +350,8 @@ class CiTestResult(Base):
     test_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     outcome: Mapped[str | None] = mapped_column(String, nullable=True)  # passed/failed/error/skipped
     time_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Parsed failure/error message (truncated) — surfaced in flaky-test findings.
+    message: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     head_sha: Mapped[str | None] = mapped_column(String, nullable=True)
     head_branch: Mapped[str | None] = mapped_column(String, nullable=True)
     created_ts: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
@@ -369,6 +371,10 @@ class CiFinding(Base):
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     detail: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # True once the linked issue is confirmed closed. NULL/False means it is still
+    # open on GitHub — either an active finding, or a resolve whose close failed and
+    # must be retried. Kept alongside issue_number so a recurrence can reopen it.
+    issue_closed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=_utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=_utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)

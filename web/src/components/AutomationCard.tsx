@@ -226,6 +226,15 @@ function ActionButton(
     return () => clearTimeout(id)
   }, [outcome])
 
+  // A risky action arms a two-step confirm. Auto-disarm after a few seconds so a
+  // user who reconsiders isn't left with a sticky "Confirm?" they can only escape
+  // by firing — mirrors the outcome-badge auto-clear above (#466).
+  useEffect(() => {
+    if (!armed) return
+    const id = setTimeout(() => setArmed(false), 4000)
+    return () => clearTimeout(id)
+  }, [armed])
+
   async function fire() {
     setArmed(false)
     const r = await trigger.mutateAsync({ item_id: item.id, kind: action.kind })
@@ -247,6 +256,16 @@ function ActionButton(
       <button type="button" disabled={busy} onClick={onClick} className={`${base} ${btnTone}`}>
         {busy ? 'Working…' : armed ? `Confirm ${action.label}?` : action.label}
       </button>
+      {armed && !busy && (
+        <button
+          type="button"
+          aria-label={`Cancel ${action.label}`}
+          onClick={() => setArmed(false)}
+          className={`${base} border-border text-muted-foreground hover:bg-muted`}
+        >
+          Cancel
+        </button>
+      )}
       {outcome && (() => {
         const badgeTone = outcome.level === 'ok' ? 'text-green-700 bg-green-50'
           : outcome.level === 'warn' ? 'text-amber-700 bg-amber-50'

@@ -82,7 +82,8 @@ class CicdDoctorLoop:
                  fetch_workflows: Callable[[str, str], Awaitable[dict[str, str]]],
                  file_issue: Callable[[str, str, str], Awaitable[int | None]],
                  close_issue: Callable[[str, int], Awaitable[bool]],
-                 clock: Callable[[], float]) -> None:
+                 clock: Callable[[], float],
+                 reopen_issue: Callable[[str, int], Awaitable[bool]] | None = None) -> None:
         self._ctx = ctx
         self._read_config = read_config
         self._list_repos = list_repos
@@ -93,6 +94,7 @@ class CicdDoctorLoop:
         self._fetch_workflows = fetch_workflows
         self._file_issue = file_issue
         self._close_issue = close_issue
+        self._reopen_issue = reopen_issue
         self._clock = clock
         self._lock = asyncio.Lock()
 
@@ -160,14 +162,15 @@ class CicdDoctorLoop:
                     for c in cases:
                         db.add(CiTestResult(repo=repo, run_id=r["id"], suite=suite,
                                             test_id=c.test_id, outcome=c.outcome,
-                                            time_s=c.time_s, head_sha=r["head_sha"],
+                                            time_s=c.time_s, message=c.message,
+                                            head_sha=r["head_sha"],
                                             head_branch=r["head_branch"],
                                             created_ts=r["created_ts"]))
             await db.flush()
         await self._ctx.set_target_state(f"cursor:{repo}", {"last_created_ts": max_ts})
 
     async def _analyze(self, repo: str, config: dict) -> list:
-        from sqlalchemy import select
+        from sqlalchemy import func, select
         from server.db import db_session
         from server.db.models import CiJob, CiRun, CiTestResult
         from .cicd.findings import (check_transition_findings, flaky_test_findings,
@@ -178,88 +181,130 @@ class CicdDoctorLoop:
         from .cicd.waste import workflow_waste_findings
 
         th = GateThresholds.from_config(config)
-        async with db_session() as db:
-            jobs = (await db.execute(select(CiJob).where(CiJob.repo == repo))).scalars().all()
-            tests = (await db.execute(select(CiTestResult).where(
-                CiTestResult.repo == repo))).scalars().all()
-            run_count = len((await db.execute(select(CiRun.id).where(
-                CiRun.repo == repo))).scalars().all())
-        default_branch, required = await self._fetch_repo_meta(repo)
         now = self._clock()
-        job_obs = [JobObs(check=j.name or "", head_sha=j.head_sha or "",
-                          head_branch=j.head_branch or "", conclusion=j.conclusion or "",
-                          duration_s=j.duration_s or 0.0, created_ts=j.created_ts or 0.0)
-                   for j in jobs]
-        test_obs = [TestObs(test_id=t.test_id or "", head_sha=t.head_sha or "",
-                            head_branch=t.head_branch or "", outcome=t.outcome or "")
-                    for t in tests]
+        # Cap the query to the widest window any analyzer looks at, so a tick
+        # never materializes the full retained history (#449). retention_days is
+        # the prune horizon and normally the widest; retire/graduation windows are
+        # included so a small retention can't silently starve those verdicts.
+        horizon_days = max(float(config.get("retention_days", 90)),
+                           th.retire_days, th.min_window_days, th.demote_window_days)
+        since_ts = now - horizon_days * 86400.0
+        # Select column tuples, not whole ORM entities: the analyzers only read a
+        # handful of columns and build detached value objects, so hydrating full
+        # mapped instances (identity map, all columns) is pure overhead at 10^5+ rows.
+        async with db_session() as db:
+            job_rows = (await db.execute(
+                select(CiJob.name, CiJob.head_sha, CiJob.head_branch, CiJob.conclusion,
+                       CiJob.duration_s, CiJob.created_ts)
+                .where(CiJob.repo == repo, CiJob.created_ts >= since_ts))).all()
+            test_rows = (await db.execute(
+                select(CiTestResult.test_id, CiTestResult.head_sha,
+                       CiTestResult.outcome, CiTestResult.message)
+                .where(CiTestResult.repo == repo, CiTestResult.created_ts >= since_ts))).all()
+            run_count = (await db.execute(
+                select(func.count()).select_from(CiRun)
+                .where(CiRun.repo == repo, CiRun.created_ts >= since_ts))).scalar_one()
+        default_branch, required = await self._fetch_repo_meta(repo)
+        job_obs = [JobObs(check=r.name or "", head_sha=r.head_sha or "",
+                          head_branch=r.head_branch or "", conclusion=r.conclusion or "",
+                          duration_s=r.duration_s or 0.0, created_ts=r.created_ts or 0.0)
+                   for r in job_rows]
+        test_obs = [TestObs(test_id=r.test_id or "", head_sha=r.head_sha or "",
+                            outcome=r.outcome or "")
+                    for r in test_rows]
+        # A representative failure message per test (last one wins) — attached to
+        # the flaky-test finding so it points at a concrete failure, not just a %.
+        msg_by_test = {r.test_id or "": r.message
+                       for r in test_rows
+                       if r.outcome in ("failed", "error") and r.message}
         stats = check_stats(job_obs, default_branch=default_branch, now_ts=now,
                             demote_window_days=th.demote_window_days)
         verdicts = {c: v for c, s in stats.items()
                     if (v := check_verdict(s, is_required=c in required, th=th))}
-        fresh = flaky_test_findings(repo, test_flake_pcts(test_obs), th=th)
+        fresh = flaky_test_findings(repo, test_flake_pcts(test_obs), th=th,
+                                    messages=msg_by_test)
         fresh += check_transition_findings(repo, verdicts)
         for path, text in (await self._fetch_workflows(repo, default_branch)).items():
             fresh += workflow_waste_findings(repo, path, text)
-        if run_count and not tests:
+        if run_count and not test_rows:
             fresh.append(missing_junit_finding(repo))
         return fresh
 
     async def _reconcile(self, repo: str, fresh: list, config: dict) -> tuple[int, int]:
-        import json as _json
-        from sqlalchemy import select, update as sa_update
+        from sqlalchemy import false, or_, select, update as sa_update
         from server.db import db_session
         from server.db.models import CiFinding
         from server.db.models import _utcnow  # single source for tz-aware now
+        from .cicd.findings import issue_body
 
         fresh_by_fp = {f.fingerprint: f for f in fresh}
+        file_on = bool(config.get("file_issues"))
+
+        def _body(f) -> str:
+            return issue_body(f.title, f.detail)
 
         # Pass 1: compute all DB upserts/resolves; collect side effects for after commit.
         to_emit: list[tuple] = []          # (level, summary, kind, target, detail)
-        to_file: list[tuple] = []          # (fingerprint, title, body)
-        to_close: list[int] = []           # issue numbers to close
+        to_file: list[tuple] = []          # (fingerprint, title, body) -> file new issue
+        to_reopen: list[int] = []          # issue numbers to reopen on recurrence
         open_n = candidates = 0
 
         async with db_session() as db:
             open_rows = (await db.execute(select(CiFinding).where(
                 CiFinding.repo == repo, CiFinding.status == "open"))).scalars().all()
             open_by_fp = {r.fingerprint: r for r in open_rows}
+            # Latest resolved row per fingerprint that still links a filed issue —
+            # the reopen target when a finding flaps back (#448).
+            resolved_rows = (await db.execute(select(CiFinding).where(
+                CiFinding.repo == repo, CiFinding.status == "resolved",
+                CiFinding.issue_number.is_not(None))
+                .order_by(CiFinding.resolved_at.desc()))).scalars().all()
+            resolved_by_fp: dict[str, CiFinding] = {}
+            for r in resolved_rows:
+                if r.fingerprint is not None:
+                    resolved_by_fp.setdefault(r.fingerprint, r)  # first == most recent
+
             for fp, f in fresh_by_fp.items():
                 row = open_by_fp.get(fp)
-                if row is None:
-                    row = CiFinding(repo=repo, kind=f.kind, fingerprint=fp,
-                                    status="open", title=f.title, detail=f.detail)
-                    db.add(row)
-                    to_emit.append(("info", f"{repo}: {f.title}", "detected", fp, f.detail))
-                    if config.get("file_issues") and f.actionable:
-                        body = (f"{f.title}\n\n```json\n"
-                                f"{_json.dumps(f.detail, indent=2)}\n```\n\n"
-                                "Filed by the ccswitch CI/CD Doctor (propose mode).")
-                        to_file.append((fp, f.title, body))
-                else:
+                if row is not None:
                     row.title, row.detail, row.last_seen_at = f.title, f.detail, _utcnow()
                     # An open row with no issue number means a prior filing attempt
                     # failed (e.g. transient gh error) — retry it this tick.
-                    if (row.issue_number is None and config.get("file_issues")
-                            and f.actionable):
-                        body = (f"{f.title}\n\n```json\n"
-                                f"{_json.dumps(f.detail, indent=2)}\n```\n\n"
-                                "Filed by the ccswitch CI/CD Doctor (propose mode).")
-                        to_file.append((fp, f.title, body))
+                    if row.issue_number is None and file_on and f.actionable:
+                        to_file.append((fp, f.title, _body(f)))
+                    continue
+                prior = resolved_by_fp.get(fp)
+                if prior is not None and file_on and f.actionable:
+                    # Recurrence of a previously-filed finding: revive the resolved
+                    # row and reopen its issue instead of filing a duplicate (#448).
+                    prior.status, prior.resolved_at, prior.issue_closed = "open", None, None
+                    prior.title, prior.detail, prior.last_seen_at = f.title, f.detail, _utcnow()
+                    to_reopen.append(prior.issue_number)  # type: ignore[arg-type]
+                    to_emit.append(("info", f"{repo}: recurred — {f.title}",
+                                    "detected", fp, f.detail))
+                else:
+                    db.add(CiFinding(repo=repo, kind=f.kind, fingerprint=fp,
+                                     status="open", title=f.title, detail=f.detail))
+                    to_emit.append(("info", f"{repo}: {f.title}", "detected", fp, f.detail))
+                    if file_on and f.actionable:
+                        to_file.append((fp, f.title, _body(f)))
             for fp, row in open_by_fp.items():
                 if fp not in fresh_by_fp:
+                    # Mark resolved; the close-pending sweep below closes the issue
+                    # (and retries on failure) — issue_closed stays NULL until confirmed.
                     row.status, row.resolved_at = "resolved", _utcnow()
                     to_emit.append(("info", f"{repo}: resolved — {row.title}",
                                     "recovered", fp, None))
-                    if row.issue_number:
-                        to_close.append(row.issue_number)
-            open_n = sum(1 for fp in fresh_by_fp)
+            open_n = len(fresh_by_fp)
             candidates = sum(1 for f in fresh_by_fp.values() if f.kind == "graduate_check")
         # Pass 1 session committed; SQLite write lock released.
 
         # Pass 2: run side effects now that the DB write lock is free.
         for level, summary, kind, target, detail in to_emit:
             await self._ctx.emit(level, summary, kind=kind, target=target, detail=detail)
+        for reopen_number in to_reopen:
+            if self._reopen_issue is not None:
+                await self._reopen_issue(repo, reopen_number)
         for fp, title, body in to_file:
             issue_number = await self._file_issue(repo, title, body)
             if issue_number is not None:
@@ -270,18 +315,44 @@ class CicdDoctorLoop:
                         .where(CiFinding.repo == repo, CiFinding.fingerprint == fp,
                                CiFinding.status == "open")
                         .values(issue_number=issue_number))
-        for issue_number in to_close:
-            await self._close_issue(repo, issue_number)
+        # Close-pending sweep: every resolved finding whose linked issue is still
+        # (believed) open. A first close and a retry of a previously-failed close
+        # are the same operation here — a failed close leaves issue_closed NULL and
+        # is retried next tick, never left open forever (#448).
+        async with db_session() as db:
+            pending = (await db.execute(select(CiFinding.id, CiFinding.issue_number).where(
+                CiFinding.repo == repo, CiFinding.status == "resolved",
+                CiFinding.issue_number.is_not(None),
+                or_(CiFinding.issue_closed.is_(None),
+                    CiFinding.issue_closed == false())))).all()
+        for row_id, number in pending:
+            if await self._close_issue(repo, number):
+                async with db_session() as db:
+                    await db.execute(sa_update(CiFinding)
+                                     .where(CiFinding.id == row_id)
+                                     .values(issue_closed=True))
 
         return open_n, candidates
 
     async def _prune(self, config: dict) -> None:
-        """Bounded tables: drop history rows older than retention_days."""
+        """Bounded tables: drop history rows older than retention_days, and prune
+        long-resolved findings so ci_finding doesn't grow without bound (#448)."""
+        from datetime import timedelta
+
         from sqlalchemy import delete
         from server.db import db_session
-        from server.db.models import CiJob, CiRun, CiTestResult
+        from server.db.models import CiFinding, CiJob, CiRun, CiTestResult
+        from server.db.models import _utcnow
 
-        horizon = self._clock() - float(config.get("retention_days", 90)) * 86400.0
+        retention_days = float(config.get("retention_days", 90))
+        horizon = self._clock() - retention_days * 86400.0
+        finding_cutoff = _utcnow() - timedelta(days=retention_days)
         async with db_session() as db:
             for model in (CiRun, CiJob, CiTestResult):
                 await db.execute(delete(model).where(model.created_ts < horizon))
+            # Only resolved findings are pruned; an open finding is never dropped
+            # however old. resolved_at NULL (legacy rows) is left for a later tick.
+            await db.execute(delete(CiFinding).where(
+                CiFinding.status == "resolved",
+                CiFinding.resolved_at.is_not(None),
+                CiFinding.resolved_at < finding_cutoff))

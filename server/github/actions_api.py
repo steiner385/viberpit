@@ -37,30 +37,45 @@ def _json(proc) -> dict:  # type: ignore[return-value]
     return json.loads(proc.stdout)
 
 
+# First-tick backfill bound. Steady-state ticks carry a cursor and return well
+# under one page, so pagination stops after page 1; only the very first tick (no
+# cursor) can span multiple pages, and this caps that at MAX_BACKFILL_PAGES*100
+# runs — deliberately bounded so a repo with years of history never hammers the
+# API in a single tick (constitution III / anti-hammer, #451).
+MAX_BACKFILL_PAGES = 10
+
+
 def list_completed_runs(repo: str, since_ts: float | None, *,
-                        run=gitrepos._run_gh) -> list[dict]:
+                        run=gitrepos._run_gh, max_pages: int = MAX_BACKFILL_PAGES) -> list[dict]:
+    from urllib.parse import quote
     date = ""
     if since_ts:
         # Apply a 3-day lookback so runs created before since_ts but completed
         # after it are not permanently dropped by a strict client-side cut.
         lookback_ts = since_ts - 3 * 86400
-        date = "&created=>=" + datetime.fromtimestamp(
-            lookback_ts, tz=timezone.utc).strftime("%Y-%m-%d")
-    data = _json(run(["api", f"repos/{repo}/actions/runs"
-                             f"?status=completed&per_page=100{date}"]))
+        day = datetime.fromtimestamp(lookback_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        # URL-encode the qualifier: `>=` are reserved characters in a query string
+        # and must be percent-encoded (created=%3E%3DYYYY-MM-DD), not sent raw.
+        date = "&created=" + quote(f">={day}", safe="")
     out = []
-    for r in data.get("workflow_runs", []):
-        created = _iso_ts(r.get("created_at")) or 0.0
-        # No strict client-side created <= since_ts filter: idempotence lives in
-        # _ingest's existing `seen` set (skips already-stored run ids).
-        started, updated = _iso_ts(r.get("run_started_at")), _iso_ts(r.get("updated_at"))
-        out.append({
-            "id": r["id"], "workflow_path": r.get("path") or "",
-            "event": r.get("event") or "", "head_sha": r.get("head_sha") or "",
-            "head_branch": r.get("head_branch") or "",
-            "conclusion": r.get("conclusion") or "", "created_ts": created,
-            "duration_s": max(0.0, (updated - started)) if started and updated else 0.0,
-        })
+    for page in range(1, max_pages + 1):
+        data = _json(run(["api", f"repos/{repo}/actions/runs"
+                                 f"?status=completed&per_page=100&page={page}{date}"]))
+        runs = data.get("workflow_runs", [])
+        for r in runs:
+            created = _iso_ts(r.get("created_at")) or 0.0
+            # No strict client-side created <= since_ts filter: idempotence lives in
+            # _ingest's existing `seen` set (skips already-stored run ids).
+            started, updated = _iso_ts(r.get("run_started_at")), _iso_ts(r.get("updated_at"))
+            out.append({
+                "id": r["id"], "workflow_path": r.get("path") or "",
+                "event": r.get("event") or "", "head_sha": r.get("head_sha") or "",
+                "head_branch": r.get("head_branch") or "",
+                "conclusion": r.get("conclusion") or "", "created_ts": created,
+                "duration_s": max(0.0, (updated - started)) if started and updated else 0.0,
+            })
+        if len(runs) < 100:  # last (or only) page — steady-state ticks stop here
+            break
     out.sort(key=lambda r: r["created_ts"])
     return out
 
@@ -116,12 +131,40 @@ def repo_ci_meta(repo: str, *, run=gitrepos._run_gh) -> tuple[str, set[str]]:
     return branch, required
 
 
-def workflow_texts(repo: str, default_branch: str, *, run=gitrepos._run_gh) -> dict[str, str]:
+# Process-global cache: repo -> (default-branch HEAD sha, {path: text}). Workflow
+# YAML changes only when a commit lands on the default branch, so between 900s
+# ticks a repo with an unchanged HEAD skips the whole listing + N content reads
+# (#452). Keyed by sha so a genuine workflow change is picked up next tick.
+_WORKFLOW_CACHE: dict[str, tuple[str, dict[str, str]]] = {}
+
+
+def _default_branch_head_sha(repo: str, default_branch: str, *, run) -> str | None:
+    """One cheap read of the default branch's HEAD commit sha — the cache key.
+    None on any failure, so the caller degrades to an uncached refetch."""
+    try:
+        data = _json(run(["api", f"repos/{repo}/commits/{default_branch}"]))
+    except Exception:
+        log.debug("cicd.head_sha_failed repo=%s", repo, exc_info=True)
+        return None
+    sha = data.get("sha") if isinstance(data, dict) else None
+    return sha or None
+
+
+def workflow_texts(repo: str, default_branch: str, *, run=gitrepos._run_gh,
+                   cache: dict[str, tuple[str, dict[str, str]]] | None = None) -> dict[str, str]:
     import base64
+    cache = _WORKFLOW_CACHE if cache is None else cache
+    head_sha = _default_branch_head_sha(repo, default_branch, run=run)
+    if head_sha is not None:
+        hit = cache.get(repo)
+        if hit is not None and hit[0] == head_sha:
+            return dict(hit[1])  # copy: callers must not mutate the cached dict
     try:
         listing = _json(run(["api",
                              f"repos/{repo}/contents/.github/workflows?ref={default_branch}"]))
     except Exception:
+        # Transient listing failure — do NOT cache the empty result, so the next
+        # tick retries instead of masking the outage until HEAD changes.
         return {}
     out: dict[str, str] = {}
     items: list[Any] = listing if isinstance(listing, list) else []
@@ -134,4 +177,6 @@ def workflow_texts(repo: str, default_branch: str, *, run=gitrepos._run_gh) -> d
             out[path] = base64.b64decode(content.get("content") or "").decode(errors="replace")
         except Exception:
             log.debug("cicd.workflow_read_failed repo=%s path=%s", repo, path, exc_info=True)
+    if head_sha is not None:  # a successful listing (even empty) caches under this sha
+        cache[repo] = (head_sha, dict(out))
     return out

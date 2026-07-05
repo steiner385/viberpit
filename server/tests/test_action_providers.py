@@ -1,7 +1,7 @@
 import pytest
 
 from server.automations.action_providers import (
-    PrDoctorActionProvider, BacklogRunnerActionProvider,
+    PrDoctorActionProvider, BacklogRunnerActionProvider, CicdDoctorActionProvider,
 )
 from server.github.pr_status import PullRequestInfo
 
@@ -84,7 +84,8 @@ class _FakeBacklogOrch:
 
     async def backlog_candidates(self):
         return [{"ref": "cairnea/KinDash#42", "repo": "cairnea/KinDash",
-                 "title": "add rate limiter"}]
+                 "title": "add rate limiter",
+                 "url": "https://github.com/cairnea/KinDash/issues/42"}]
 
 
 @pytest.mark.asyncio
@@ -93,8 +94,44 @@ async def test_backlog_provider_actionable_and_trigger():
     prov = BacklogRunnerActionProvider(orch)
     items = await prov.actionable()
     assert items[0].id == "cairnea/KinDash#42"
+    assert items[0].url == "https://github.com/cairnea/KinDash/issues/42"  # #467
     assert items[0].actions[0].kind == "implement"
     res = await prov.trigger("cairnea/KinDash#42", "implement")
     assert (res.status, res.level) == ("no_account", "warn")
     assert "usage ceiling" in res.message
     assert orch.implement_calls == ["cairnea/KinDash#42"]
+
+
+class _FakeCicdOrch:
+    def __init__(self, status):
+        self._status = status
+        self.file_calls = []
+
+    async def cicd_actionable_findings(self):
+        return [{"id": "f-1", "repo": "o/r", "title": "flaky test: t::a",
+                 "kind": "flaky_test"}]
+
+    async def cicd_file_issue_now(self, finding_id):
+        self.file_calls.append(finding_id)
+        return self._status
+
+
+@pytest.mark.asyncio
+async def test_cicd_provider_actionable_and_file():  # #465
+    orch = _FakeCicdOrch(status="filed")
+    prov = CicdDoctorActionProvider(orch)
+    items = await prov.actionable()
+    assert items[0].id == "f-1"
+    assert items[0].subtitle == "o/r"
+    assert items[0].actions[0].kind == "file_issue"
+    res = await prov.trigger("f-1", "file_issue")
+    assert (res.status, res.level) == ("filed", "ok")
+    assert orch.file_calls == ["f-1"]
+
+
+@pytest.mark.asyncio
+async def test_cicd_provider_already_filed_warns():
+    orch = _FakeCicdOrch(status="exists")
+    res = await CicdDoctorActionProvider(orch).trigger("f-1", "file_issue")
+    assert (res.status, res.level) == ("exists", "warn")
+    assert "already filed" in res.message

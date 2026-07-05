@@ -21,8 +21,10 @@ def _runs(n, sha="s1", ts=1000.0):
              "created_ts": ts + i, "duration_s": 60.0} for i in range(1, n + 1)]
 
 
-def _loop(ctx, *, runs, junit_by_run, mode="propose", config=None, issues=None):
+def _loop(ctx, *, runs, junit_by_run, mode="propose", config=None, issues=None,
+          closed=None, reopened=None, close_ok=None):
     issues = issues if issues is not None else []
+    close_ok = close_ok if close_ok is not None else (lambda: True)
     async def read_config():
         return mode, {"enabled_repos": [], "file_issues": True, "min_window_days": 21,
                       "min_runs": 30, "max_flake_pct": 2, "max_p95_minutes": 10,
@@ -30,6 +32,14 @@ def _loop(ctx, *, runs, junit_by_run, mode="propose", config=None, issues=None):
                       "flaky_test_min_pct": 2, "retention_days": 90, **(config or {})}
     async def fetch_junit(repo, run_id):
         return junit_by_run.get(run_id, [])
+    def do_close(repo, n):
+        if closed is not None:
+            closed.append(n)
+        return _async(close_ok())
+    def do_reopen(repo, n):
+        if reopened is not None:
+            reopened.append(n)
+        return _async(True)
     return CicdDoctorLoop(
         ctx,
         read_config=read_config,
@@ -42,7 +52,8 @@ def _loop(ctx, *, runs, junit_by_run, mode="propose", config=None, issues=None):
         fetch_repo_meta=lambda repo: _async(("master", {"lint-and-test"})),
         fetch_workflows=lambda repo, br: _async({}),
         file_issue=lambda repo, t, b: _async(issues.append(t) or 42),
-        close_issue=lambda repo, n: _async(True),
+        close_issue=do_close,
+        reopen_issue=do_reopen,
         clock=lambda: 2000.0,
     )
 
@@ -113,6 +124,8 @@ def test_flaky_test_becomes_finding_and_issue(tmp_path):
             f = (await db.execute(select(CiFinding).where(
                 CiFinding.kind == "flaky_test"))).scalars().one()
             assert f.status == "open" and f.issue_number == 42
+            # #450: the parsed failure message rides through ingest -> finding.
+            assert (f.detail or {}).get("message") == "boom"
         assert any("flaky" in t for t in issues)
         assert ctx.cicd_doctor_counts["open"] >= 1
     asyncio.run(run())
@@ -154,6 +167,139 @@ def test_detected_event_lands_outside_db_session(tmp_path):
         # session while reconcile's session still held the lock.
         events = await ctx.list_events(kind="detected")
         assert events, "detected event was not emitted (emit ran inside the write lock)"
+    asyncio.run(run())
+
+
+def test_analyze_windows_out_stale_history(tmp_path):
+    """#449: _analyze must ignore rows older than the analysis horizon. A run
+    outside the window doesn't count toward the "runs but no JUnit" verdict; one
+    inside it does. Proven via the windowed run_count → missing_junit finding."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        from server.db.models import CiRun
+        ctx = AutomationContext("cicd-doctor")
+        # Collapse every window to 1 day so horizon == 1 day (86400s).
+        cfg = {"retention_days": 1, "retire_days": 1, "min_window_days": 1,
+               "demote_window_days": 1}
+        loop = _loop(ctx, runs=[], junit_by_run={}, config=cfg)  # clock() == 2000.0
+        config = (await loop._read_config())[1]
+
+        async def seed(created_ts):
+            async with db_session() as db:
+                db.add(CiRun(id=int(created_ts), repo="o/r", workflow_path="wf.yml",
+                             event="pull_request", head_sha="s", head_branch="feat",
+                             conclusion="success", created_ts=created_ts, duration_s=1.0))
+
+        # A run created well before now - horizon (2000 - 86400 < 0, so anything
+        # with a tiny ts is inside; use a large negative-relative gap): seed one
+        # far in the past and one "now".
+        await seed(1.0)          # far outside the 1-day window (age ~2000s vs 86400s? inside!)
+        fresh = await loop._analyze("o/r", config)
+        # 2000 - 86400 is negative, so ts=1.0 is INSIDE the window → run counts →
+        # missing_junit finding present (there are runs, no test rows).
+        assert any(f.kind == "missing_junit" for f in fresh)
+
+        # Now widen the gap: a run at ts=1.0 with clock far in the future is OUTSIDE.
+        loop._clock = lambda: 1_000_000.0
+        fresh2 = await loop._analyze("o/r", config)
+        assert not any(f.kind == "missing_junit" for f in fresh2), \
+            "stale run outside the horizon must not count toward analysis"
+    asyncio.run(run())
+
+
+def _finding():
+    from server.automations.cicd.types import Finding
+    return Finding(kind="flaky_test", repo="o/r", key="t::a",
+                   title="flaky test: t::a", detail={"flake_pct": 8.0})
+
+
+def test_flap_reopens_prior_issue_instead_of_filing_new(tmp_path):
+    """#448: a finding that resolves then recurs reopens its original issue
+    rather than filing a duplicate."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        ctx = AutomationContext("cicd-doctor")
+        issues: list[str] = []
+        closed: list[int] = []
+        reopened: list[int] = []
+        loop = _loop(ctx, runs=[], junit_by_run={}, issues=issues,
+                     closed=closed, reopened=reopened)
+        cfg = {"file_issues": True, "retention_days": 90}
+        f = _finding()
+
+        await loop._reconcile("o/r", [f], cfg)      # detect -> file issue 42
+        assert issues == ["flaky test: t::a"]
+        async with db_session() as db:
+            row = (await db.execute(select(CiFinding))).scalars().one()
+            assert row.status == "open" and row.issue_number == 42
+
+        await loop._reconcile("o/r", [], cfg)        # resolve -> close issue 42
+        assert closed == [42]
+        async with db_session() as db:
+            row = (await db.execute(select(CiFinding))).scalars().one()
+            assert row.status == "resolved" and row.issue_closed is True
+
+        await loop._reconcile("o/r", [f], cfg)       # recur -> REOPEN, no new file
+        assert reopened == [42]
+        assert issues == ["flaky test: t::a"]        # still one filed issue, no duplicate
+        async with db_session() as db:
+            rows = (await db.execute(select(CiFinding))).scalars().all()
+            assert len(rows) == 1                    # same row revived, not a new one
+            assert rows[0].status == "open" and rows[0].issue_number == 42
+            assert rows[0].issue_closed is None
+    asyncio.run(run())
+
+
+def test_failed_close_is_retried_next_tick(tmp_path):
+    """#448: a close that fails leaves the issue open but is retried, not lost."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        ctx = AutomationContext("cicd-doctor")
+        closed: list[int] = []
+        ok = {"v": False}
+        loop = _loop(ctx, runs=[], junit_by_run={}, closed=closed,
+                     close_ok=lambda: ok["v"])
+        cfg = {"file_issues": True, "retention_days": 90}
+        f = _finding()
+
+        await loop._reconcile("o/r", [f], cfg)       # file issue 42
+        await loop._reconcile("o/r", [], cfg)         # resolve; close FAILS
+        assert closed == [42]
+        async with db_session() as db:
+            row = (await db.execute(select(CiFinding))).scalars().one()
+            assert row.status == "resolved" and row.issue_closed is None  # not confirmed
+
+        ok["v"] = True
+        await loop._reconcile("o/r", [], cfg)         # retry sweep closes it
+        assert closed == [42, 42]                     # retried
+        async with db_session() as db:
+            row = (await db.execute(select(CiFinding))).scalars().one()
+            assert row.issue_closed is True
+    asyncio.run(run())
+
+
+def test_prune_drops_old_resolved_findings_keeps_open(tmp_path):
+    """#448: resolved findings past retention are pruned; open ones never are."""
+    async def run():
+        from datetime import timedelta
+        from server.db.models import _utcnow
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        ctx = AutomationContext("cicd-doctor")
+        loop = _loop(ctx, runs=[], junit_by_run={})
+        old = _utcnow() - timedelta(days=200)
+        recent = _utcnow() - timedelta(days=1)
+        async with db_session() as db:
+            db.add(CiFinding(repo="o/r", kind="flaky_test", fingerprint="a",
+                             status="resolved", resolved_at=old))       # prune
+            db.add(CiFinding(repo="o/r", kind="flaky_test", fingerprint="b",
+                             status="resolved", resolved_at=recent))    # keep (recent)
+            db.add(CiFinding(repo="o/r", kind="flaky_test", fingerprint="c",
+                             status="open", resolved_at=None))          # keep (open)
+        await loop._prune({"retention_days": 90})
+        async with db_session() as db:
+            fps = {r.fingerprint for r in (await db.execute(
+                select(CiFinding))).scalars().all()}
+        assert fps == {"b", "c"}
     asyncio.run(run())
 
 

@@ -6,10 +6,11 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class TestObs:
-    """One test-case outcome observation (a ci_test_result row, detached)."""
+    """One test-case outcome observation (a ci_test_result row, detached).
+    Flake analysis keys on (test_id, head_sha, outcome) only — head_branch is
+    deliberately absent (no analyzer distinguishes test flakiness by branch)."""
     test_id: str
     head_sha: str
-    head_branch: str
     outcome: str  # passed | failed | error | skipped
 
 
