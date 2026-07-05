@@ -170,6 +170,42 @@ def test_attach_emits_commands_frame(ws_fake):
         assert cmd_frame["commands"][0]["name"] == "help"
 
 
+class FakeDetachedOrch(FakeOrch):
+    """A session that is DETACHED (no live driver) but has a cached catalog. The WS
+    bridge must replay the cache on attach without resuming a driver."""
+
+    def __init__(self):
+        super().__init__()
+        self.ensure_driver_called = False
+
+    def get_session(self, session_id):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            detached=True, context_used_tokens=None, context_max_tokens=None, model=None,
+        )
+
+    async def ensure_driver(self, session_id, identity):
+        self.ensure_driver_called = True
+        return object()
+
+
+def test_detached_attach_replays_cached_commands_without_resume():
+    """A detached session emits its cached command catalog on attach and does NOT
+    resume a driver — so the composer palette populates on view (the regression fix)."""
+    orch = FakeDetachedOrch()
+    app = create_app(orchestrator=orch)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "attach", "sessionId": "s1"}))
+            frames = _drain_until(ws, until_type="commands")
+
+    types = [f.get("type") for f in frames]
+    assert "commands" in types, f"detached attach must replay cached commands; got {types}"
+    cmd_frame = next(f for f in frames if f.get("type") == "commands")
+    assert cmd_frame["commands"][0]["name"] == "help"
+    assert orch.ensure_driver_called is False, "detached view must NOT resume a driver"
+
+
 def test_command_known_returns_command_result(ws_fake):
     """A known command returns a commandResult frame with ok:true and the dispatch payload."""
     _orch, client = ws_fake

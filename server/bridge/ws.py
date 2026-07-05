@@ -327,6 +327,19 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             except Exception:
                 log.warning("ws.attach: context usage re-emit failed", exc_info=True)
 
+        async def _emit_command_catalog(session_id: str) -> None:
+            """Emit the session's slash-command catalog so the composer palette
+            populates. For a live session the orchestrator builds it fresh from the
+            SDK's get_server_info and caches it; for a DETACHED session (no driver) it
+            replays the last-known cached catalog — so the palette works on view without
+            forcing a resume. Best-effort: never blocks the attach."""
+            try:
+                catalog = await orchestrator.command_catalog(session_id)
+                if catalog:
+                    await _send(redact_event({"type": "commands", "sessionId": session_id, "commands": catalog}))
+            except Exception:
+                log.warning("ws.attach: command_catalog failed for %s", session_id, exc_info=True)
+
         async def _emit_live_extras(session_id: str, driver, events: list) -> None:
             """Post-attach live wiring: suggestion seeding, command catalog, pending
             permission/question re-emit, live status, and the deferred initial prompt.
@@ -341,11 +354,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 log.warning("ws.attach: idle suggestion seeding failed for %s", session_id, exc_info=True)
 
             # Slash-command catalog (built from the SDK's get_server_info) for this session.
-            try:
-                catalog = await orchestrator.command_catalog(session_id)
-                await _send(redact_event({"type": "commands", "sessionId": session_id, "commands": catalog}))
-            except Exception:
-                log.warning("ws.attach: command_catalog failed for %s", session_id, exc_info=True)
+            await _emit_command_catalog(session_id)
 
             # Re-emit any pending permission requests for this session. Build the frame
             # through PermissionRequest.to_wire() — the same wire format the live path
@@ -439,6 +448,12 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
 
             if rec is not None and getattr(rec, "detached", False):
                 await _replay_and_complete(session_id)
+                # Replay the last-known slash-command catalog so the composer palette
+                # populates on view. A detached session has no live driver (the lazy-view
+                # path defers the resume), so without this the catalog frame — otherwise
+                # emitted only from _emit_live_extras — never arrives and the autocomplete
+                # is silently empty until the user sends a prompt.
+                await _emit_command_catalog(session_id)
                 return
 
             # LIVE session (or unknown — let ensure_driver decide): a live record's
@@ -462,6 +477,11 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             if driver is None:
                 return False
             _start_live_stream(session_id, driver)
+            # Now that a live driver exists, (re)build + emit the command catalog. This
+            # both refreshes the palette and self-populates the persisted cache for a
+            # session that had never been live before (e.g. one predating catalog caching,
+            # or only ever resumed lazily) — so its NEXT detached view shows the palette.
+            await _emit_command_catalog(session_id)
             # Flip the header from the read-only 'Ready' to the live state as the
             # resumed turn begins. Best-effort.
             try:
