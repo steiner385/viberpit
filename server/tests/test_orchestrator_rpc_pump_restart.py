@@ -84,6 +84,64 @@ async def test_pump_restarts_for_replacement_driver_after_recompose():
 
 
 @pytest.mark.asyncio
+async def test_driver_replaced_hook_restarts_pump_without_rpc():
+    """A recovery swap (orchestrator._reassign) replaces the driver with NO RPC, so no
+    ensure_driver runs to restart the pump. The orchestrator fires on_driver_replaced;
+    the daemon must restart the pump on the NEW driver so an ALREADY-attached viewer
+    keeps receiving live events — otherwise its transcript freezes until a reattach."""
+    app = create_daemon_app()
+    q1: asyncio.Queue = asyncio.Queue()
+    q2: asyncio.Queue = asyncio.Queue()
+    d1 = _QueueDriver(q1)
+    d2 = _QueueDriver(q2)          # the swapped-in driver after a rotation / 401 recompose
+    orch = _Orch(d1)
+    register_orchestrator_rpc(app, orch)
+    assert orch.on_driver_replaced is not None      # hook registered by the RPC layer
+    async with serve_daemon_uds(app) as sock:
+        client = DaemonClient(sock)
+        try:
+            stream = client.subscribe("s1")
+            await client.events_ready("s1")
+            await client.call("ensure_driver", session_id="s1")      # pump d1
+            await q1.put(_Evt(1))
+            e1 = await asyncio.wait_for(stream.__anext__(), 2)
+            assert e1["i"] == 1
+            # Recovery swaps d1 → d2 with NO ensure_driver RPC. Fire the hook the way
+            # orchestrator._install_driver does; the pump must follow to d2.
+            orch.on_driver_replaced("s1", d2)
+            await q2.put(_Evt(2))
+            e2 = await asyncio.wait_for(stream.__anext__(), 2)
+            assert e2["i"] == 2
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_driver_replaced_hook_same_driver_pumps_once():
+    """Idempotency: firing the hook with the SAME driver already being pumped must not
+    start a 2nd pump (a redundant swap notification would double-publish every event)."""
+    app = create_daemon_app()
+    q: asyncio.Queue = asyncio.Queue()
+    d = _QueueDriver(q)
+    orch = _Orch(d)
+    register_orchestrator_rpc(app, orch)
+    async with serve_daemon_uds(app) as sock:
+        client = DaemonClient(sock)
+        try:
+            stream = client.subscribe("s1")
+            await client.events_ready("s1")
+            await client.call("ensure_driver", session_id="s1")      # pump d
+            orch.on_driver_replaced("s1", d)                          # same driver → no 2nd pump
+            await q.put(_Evt(5))
+            e = await asyncio.wait_for(stream.__anext__(), 2)
+            assert e["i"] == 5
+            with pytest.raises(asyncio.TimeoutError):                  # no duplicate copy
+                await asyncio.wait_for(stream.__anext__(), 0.3)
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_repeated_ensure_driver_same_driver_pumps_once():
     """Idempotency guard: re-ensuring the SAME live driver must not start a 2nd pump
     (which would double-publish every event)."""

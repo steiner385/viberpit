@@ -145,6 +145,13 @@ class SessionOrchestrator:
         usage_fn: Override for the usage-fetch function (testing).
     """
 
+    # Optional listener fired whenever a session's live driver is SWAPPED for a new
+    # SessionDriver by a recovery path (see _install_driver / _reassign). The daemon RPC
+    # layer registers it to restart the per-session event pump; a recovery swap carries
+    # no RPC, so without this the pump keeps forwarding the dead driver and every
+    # attached viewer's transcript freezes. None in edge/in-process mode (no daemon pump).
+    on_driver_replaced = None   # Callable[[str, SessionDriver], None] | None
+
     def __init__(
         self,
         sdk_factory=None,
@@ -4412,6 +4419,19 @@ class SessionOrchestrator:
                 .values(autopilot_paused=paused)
             )
 
+    def _install_driver(self, session_id: str, driver: SessionDriver) -> None:
+        """Register *driver* as the live driver for *session_id* and notify the
+        driver-replaced listener. Recovery swaps the driver with no RPC (see _reassign),
+        yet the daemon's per-session pump is (re)started only inside the ensure_driver
+        RPC — so a swap would leave the pump forwarding the DEAD driver's ended events()
+        and every attached viewer's live transcript freezes until a reattach. Firing the
+        hook lets the RPC layer restart the pump on the new driver. No-op when
+        unregistered (edge/in-process mode has no daemon pump)."""
+        self._drivers[session_id] = driver
+        cb = self.on_driver_replaced
+        if cb is not None:
+            cb(session_id, driver)
+
     async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str) -> None:
         """Resume the session's claude conversation on *new_account* (may equal the
         current account, for a 401 recompose). Relaunches the driver, replays the last
@@ -4445,7 +4465,7 @@ class SessionOrchestrator:
             # cross-account reassign injects the old account's token into the new config (#346).
             record.account = new_account
             await new_driver.start()
-            self._drivers[record.id] = new_driver
+            self._install_driver(record.id, new_driver)
             if record.model is not None:
                 await new_driver.set_model(record.model)
             last = self._last_prompt.get(record.id)
