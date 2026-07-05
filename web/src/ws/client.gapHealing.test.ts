@@ -1,6 +1,7 @@
 // web/src/ws/client.gapHealing.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SessionSocket } from './client'
+import { clientLogger } from '../obs/logger'
 
 // Build a socket whose _send is spied, with an active session, and drive inbound
 // frames through the (test-only) inbound hook.
@@ -69,6 +70,23 @@ describe('SessionSocket gap healing', () => {
     s._handleInbound({ type: 'batch', events: [{ type: 'textDelta', turnId: 't', text: 'fresh', seq: 0, sessionId: 's1' }] })
     expect(sent.filter((m) => (m as { type: string }).type === 'detach')).toHaveLength(0)
     expect(sent.filter((m) => (m as { type: string }).type === 'attach')).toHaveLength(0)
+  })
+
+  it('records a srcSeq gap via the client logger WITHOUT healing (telemetry only)', () => {
+    // srcSeq (the daemon's end-to-end source seq, audit W2.3) is diagnostic: a hole
+    // must be logged to the frontend obs sink but must NOT trigger detach/attach.
+    const warn = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    const { s, sent } = makeSocket()
+    s._handleInbound({ type: 'batch', events: [{ type: 'textDelta', turnId: 't', text: 'a', seq: 0, sessionId: 's1', srcSeq: 10 }] })
+    s._handleInbound({ type: 'batch', events: [{ type: 'textDelta', turnId: 't', text: 'b', seq: 1, sessionId: 's1', srcSeq: 12 }] })
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('transcript.srcseq.gap'),
+      expect.objectContaining({ sessionId: 's1' }),
+    )
+    // No heal from the srcSeq gap alone (client seq stayed contiguous 0→1).
+    expect(sent.filter((m) => (m as { type: string }).type === 'detach')).toHaveLength(0)
+    expect(sent.filter((m) => (m as { type: string }).type === 'attach')).toHaveLength(0)
+    warn.mockRestore()
   })
 
   it('dispatches a full attach batch (reset, replay, complete, status, permissionRequest) as ordered sessionEvents', () => {

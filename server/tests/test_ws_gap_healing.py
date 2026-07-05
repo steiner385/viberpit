@@ -24,6 +24,15 @@ class _BoomEvent:
     def to_wire(self): raise RuntimeError("bad event")
 
 
+class _SrcEvent:
+    """A live event carrying the daemon's source seq (like RemoteDriver's
+    _WireEvent) so _forward_live can stamp it as srcSeq telemetry."""
+    def __init__(self, wire, src_seq):
+        self._wire = wire
+        self.src_seq = src_seq
+    def to_wire(self): return dict(self._wire)
+
+
 class _FakeDriver:
     def __init__(self, events): self._events = events
     async def events(self):
@@ -99,6 +108,80 @@ async def test_forward_live_gap_on_to_wire_failure():
     got = [out_q.get_nowait(), out_q.get_nowait()]
     assert out_q.empty()
     assert [e["seq"] for e in got] == [0, 2]  # seq 1 was consumed by the failed event
+
+
+# ---------------------------------------------------------------------------
+# srcSeq telemetry (audit W2.3): the daemon's per-stream source seq is threaded
+# end-to-end as an ADDITIVE wire field. It must never change the per-attach `seq`
+# (the client's dedup/heal key) or drop/reorder events — telemetry only.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_forward_live_stamps_srcseq_from_daemon_seq():
+    """In remote mode each event carries the daemon's source seq; _forward_live
+    stamps it as srcSeq WITHOUT disturbing the per-attach `seq`."""
+    from server.bridge.ws import _forward_live
+    out_q: asyncio.Queue = asyncio.Queue()
+    driver = _FakeDriver([_SrcEvent({"type": "textDelta", "text": "a"}, 5),
+                          _SrcEvent({"type": "textDelta", "text": "b"}, 6)])
+    await _forward_live(driver, out_q, "sess-1")
+    first = out_q.get_nowait()
+    second = out_q.get_nowait()
+    assert first["srcSeq"] == 5 and second["srcSeq"] == 6
+    # per-attach seq is unchanged — still a fresh 0-based counter.
+    assert first["seq"] == 0 and second["seq"] == 1
+
+
+@pytest.mark.asyncio
+async def test_forward_live_omits_srcseq_in_local_mode():
+    """Local/in-process events have no daemon seq — the field is omitted, not faked."""
+    from server.bridge.ws import _forward_live
+    out_q: asyncio.Queue = asyncio.Queue()
+    driver = _FakeDriver([_FakeEvent({"type": "textDelta", "text": "a"})])
+    await _forward_live(driver, out_q, "sess-1")
+    wire = out_q.get_nowait()
+    assert "srcSeq" not in wire
+
+
+@pytest.mark.asyncio
+async def test_forward_live_logs_one_srcseq_gap_per_attach(monkeypatch):
+    """A hole in the daemon source seq → exactly ONE structured warning per attach
+    (rate-limited), and every frame is STILL dispatched (telemetry, never a drop)."""
+    import server.bridge.ws as wsmod
+    calls: list[dict] = []
+    monkeypatch.setattr(wsmod, "log_event", lambda *a, **k: calls.append(k))
+    _forward_live = wsmod._forward_live
+    out_q: asyncio.Queue = asyncio.Queue()
+    driver = _FakeDriver([
+        _SrcEvent({"type": "textDelta", "text": "a"}, 5),
+        _SrcEvent({"type": "textDelta", "text": "b"}, 7),   # hole: 6 missing
+        _SrcEvent({"type": "textDelta", "text": "c"}, 9),   # another hole: 8 missing
+    ])
+    await _forward_live(driver, out_q, "sess-1")
+    assert len(calls) == 1  # rate-limited to once per attach
+    assert calls[0]["session_id"] == "sess-1"
+    assert calls[0]["prev"] == 5 and calls[0]["got"] == 7
+    assert out_q.qsize() == 3  # no event dropped by the telemetry
+
+
+@pytest.mark.asyncio
+async def test_forward_live_gap_sentinel_rebaselines_srcseq(monkeypatch):
+    """The documented GAP-consumption skip already forces a from-disk resync, so the
+    legitimate srcSeq jump across it must NOT also be counted as a srcSeq gap."""
+    import server.bridge.ws as wsmod
+    from server.ipc import protocol as proto
+    calls: list[dict] = []
+    monkeypatch.setattr(wsmod, "log_event", lambda *a, **k: calls.append(k))
+    _forward_live = wsmod._forward_live
+    out_q: asyncio.Queue = asyncio.Queue()
+    driver = _FakeDriver([
+        _SrcEvent({"type": "textDelta", "text": "a"}, 5),
+        _FakeEvent({"type": proto.GAP, "stream": "sess-1", "lost": 2, "oldest": 7}),
+        _SrcEvent({"type": "textDelta", "text": "c"}, 8),  # jump legit — covered by GAP
+    ])
+    await _forward_live(driver, out_q, "sess-1")
+    assert calls == []  # GAP re-baselines srcSeq → no double-count
 
 
 def test_redact_buffer_drops_unredactable_without_raising(monkeypatch):

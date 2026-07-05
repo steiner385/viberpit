@@ -19,6 +19,23 @@ def protocol_compatible(daemon_protocol: int) -> bool:
     return daemon_protocol == _proto.PROTOCOL_VERSION
 
 
+class _SeqDict(dict):
+    """An event dict that also carries the daemon's per-stream source seq.
+
+    Subclasses ``dict`` so it is content-equal to (and JSON-serializes identically
+    to) the plain event — every existing subscriber and equality-based test is
+    unaffected — while ws._forward_live can read ``.src_seq`` to stamp the additive
+    ``srcSeq`` loss telemetry (audit W2.3). ``None`` when the delivered frame has no
+    daemon seq (a GAP sentinel or a locally-injected control event). The seq lives
+    on an attribute, never a dict KEY, so it never leaks into the wire payload.
+    """
+    __slots__ = ("src_seq",)
+
+    def __init__(self, data, src_seq=None):
+        super().__init__(data)
+        self.src_seq = src_seq
+
+
 class DaemonUnavailable(Exception):
     """The daemon socket could not be reached."""
 
@@ -209,6 +226,11 @@ class DaemonClient:
         subs = self._subscribers.get(stream)
         if not subs:
             return
+        # Thread the daemon's source seq onto the delivered event WITHOUT changing its
+        # content (a dict subclass — see _SeqDict): the client's dedup/heal key is the
+        # per-attach seq stamped later by ws._forward_live, not this. Wrapped once and
+        # fanned out (all subscribers on a stream see the same source seq).
+        event = _SeqDict(event, seq)
         for q in subs:
             if q.full():
                 try:
