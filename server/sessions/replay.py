@@ -110,6 +110,44 @@ def _tool_result_events(content: list[dict], uuid, ts, pid: str | None) -> list:
             for r in content if r.get("type") == "tool_result"]
 
 
+def _collapse_recovery_resend_dupes(out: list) -> list:
+    """Suppress the duplicate user turn a recovery *resend* leaves in the transcript.
+
+    Rate-limit / crash recovery resends the last prompt into a ``resume=``d driver
+    (orchestrator ``_replay_same_account`` / ``_reassign``). The ORIGINAL user turn was
+    already persisted to the CLI's JSONL before the failure, so the resend appends a
+    SECOND identical UserMessage to the same file. The CLI owns the JSONL (constitution
+    I — never fork/patch the binary), so we cannot dedupe at write time; we suppress on
+    replay so every disk-replay stops rendering ``[user X (no reply)] [user X] [reply]``.
+
+    Suppress the EARLIER of two user turns iff its FULL identity — text AND images —
+    is IDENTICAL to the immediately-FOLLOWING user turn AND it produced NO
+    assistant/tool content between the two (a dead "dropped turn" head). A true
+    recovery resend re-persists the exact same prompt it failed to complete, images
+    included, so requiring image equality (not just text) keeps this from collapsing
+    two genuinely-different image-bearing turns that merely share caption text (e.g.
+    two blank-caption screenshots) — that would silently drop the first image.
+    Intervening non-content lines (isMeta / system / summary) emit no events in
+    ``_build_events``, so the two dead-adjacent UserMessages sit at consecutive
+    indices; ANY real content event (TurnStart/TextDelta/ToolCall/ToolResult/…) pushes
+    them apart and correctly defeats suppression — an interrupted turn whose partial
+    output is genuine transcript must keep rendering. The later turn carries the real
+    completion and is kept; applied across every adjacent pair so N consecutive dead
+    resends collapse to the final one.
+
+    Distinct from the trailing-incomplete-turn drop (``drop_incomplete_turn`` /
+    ``_is_in_progress_user``): this runs on SETTLED history anywhere in the file; that
+    one trims the IN-PROGRESS tail owned by the live buffer. The two never entangle."""
+    user_idx = [i for i, e in enumerate(out) if isinstance(e, ev.UserMessage)]
+    drop: set[int] = set()
+    for a, b in zip(user_idx, user_idx[1:]):
+        if b == a + 1 and out[a].text == out[b].text and out[a].images == out[b].images:
+            drop.add(a)
+    if not drop:
+        return out
+    return [e for i, e in enumerate(out) if i not in drop]
+
+
 def _build_events(path: str) -> tuple[list, object | None]:
     """Parse the full main JSONL into (events, meta_event). No trimming.
 
@@ -182,7 +220,11 @@ def _build_events(path: str) -> tuple[list, object | None]:
             out.extend(_assistant_block_events(content, uuid, ts, None))
             usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
             out.append(ev.TurnEnd(uuid, usage, None, uuid))
-    return out, meta_event
+    # Collapse the duplicate user turn a recovery resend leaves behind. Done here, in
+    # the single shared reconstruction path, so every consumer (replay_window /
+    # transcript_events / export / replay_events) inherits it and the drop_incomplete
+    # tail-trim below anchors on the deduped last user entry.
+    return _collapse_recovery_resend_dupes(out), meta_event
 
 
 def _subagent_events(main_path: str, task_ids: set[str]) -> list:
