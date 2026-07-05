@@ -29,6 +29,7 @@ server = [
     "pytest",
     "pytest-asyncio",
   "pytest-cov",
+    "hypothesis",
     "pyyaml",
     "ruff",
     "mypy",
