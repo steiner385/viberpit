@@ -89,12 +89,19 @@ class RemoteDriver:
         # local SessionDriver.turn_started_at property.
         self.turn_started_at = turn_started_at
         self._bg_tasks: set[asyncio.Task] = set()
-        # Wave-3 cursor catch-up (audit W2.3): when set (via enable_catch_up), events()
-        # resumes THIS attach from the daemon ring at this srcSeq cursor — replaying the
-        # one-shot ring_tail snapshot then continuing on the shared live fan-out, deduped
-        # by seq — instead of relying on a since-override subscribe (which the shared
-        # per-stream DaemonClient would ignore). None ⇒ ordinary from-resume_since stream.
-        self._catch_up_since: int | None = None
+        # Wave-3 cursor catch-up (audit W2.3), FINDING-1 atomic commitment. When
+        # ``_catch_up_snapshot`` is pinned (via join_live + pin_catch_up, driven by ws.py
+        # BEFORE resumeOk is enqueued), events() replays that already-fetched ring_tail
+        # snapshot then continues on the shared live fan-out joined at ``_live``, deduped by
+        # seq (src <= head). The snapshot is fetched and pinned while the fan-out is already
+        # joined, so a not-covered result takes the full-replay path and resumeOk is only
+        # ever sent with the snapshot in hand — no silent-gap window between probe and fetch.
+        # ``_live`` is the fan-out iterator joined synchronously by join_live(); events()
+        # reuses it on BOTH paths (catch-up replay, or a not-covered full-replay forward).
+        # None everywhere ⇒ ordinary non-catch-up attach: events() subscribes for itself.
+        self._live = None
+        self._catch_up_snapshot: list[dict] | None = None
+        self._catch_up_head: int | None = None
 
     def current_status(self) -> str:
         return self._status
@@ -143,25 +150,43 @@ class RemoteDriver:
 
         task.add_done_callback(_done)
 
-    def enable_catch_up(self, since: int) -> None:
-        """Turn THIS attach into a wave-3 cursor catch-up from ``since`` (the client's
-        contiguous srcSeq cursor) — the edge already confirmed ring coverage (ring_covers)
-        and enqueued resumeOk. events() then replays the ring tail and continues live from
-        there. Per-attach and safe: ensure_driver mints a fresh RemoteDriver every attach,
-        so a catch-up flag never leaks across attaches."""
-        self._catch_up_since = since
+    def join_live(self) -> None:
+        """Join the shared live fan-out synchronously (FINDING-1 atomic commitment step 1).
+
+        From this instant every newly-published event is captured in our subscriber queue,
+        so anything the ring_tail snapshot fetched NEXT does not cover (seq > its head) is
+        guaranteed to already be queued here. ws.py calls this BEFORE fetching the snapshot,
+        which is BEFORE resumeOk — the ordering that makes the catch-up gapless. Idempotent:
+        a second call is a no-op. Per-attach and safe: ensure_driver mints a fresh
+        RemoteDriver every attach, so a joined fan-out never leaks across attaches."""
+        if self._live is None:
+            self._live = self._client.subscribe(self._session_id, since=self._resume_since)
+
+    def pin_catch_up(self, snapshot: list[dict], head: int) -> None:
+        """Pin the ring_tail snapshot (FINDING-1 atomic commitment step 2).
+
+        ws.py fetches the one-shot ring_tail snapshot AFTER join_live and, only if it comes
+        back covered, pins it here and THEN enqueues resumeOk — so resumeOk is never sent
+        without the snapshot already in hand (closes the silent-gap window between the
+        ring_covers probe and the snapshot fetch). events() replays this snapshot then
+        continues on the already-joined fan-out, deduping the overlap by daemon seq
+        (src <= head)."""
+        self._catch_up_snapshot = snapshot
+        self._catch_up_head = head
 
     def open_stream(self) -> RemoteDriverStream:
         """Uniform attach interface with the local SessionDriver.open_stream()."""
         return RemoteDriverStream(self)
 
     async def events(self):
-        # Join the shared live fan-out FIRST (synchronously, inside subscribe()), so from
-        # this instant every newly-published event is captured in our queue — the ordering
-        # that makes the catch-up gapless: anything the ring_tail snapshot below does NOT
-        # cover (seq > its head) is guaranteed to already be queued here.
-        live = self._client.subscribe(self._session_id, since=self._resume_since)
-        if self._catch_up_since is None:
+        # Reuse the fan-out already joined at commit time (join_live) when a catch-up was
+        # prepared — that SAME subscription captured everything published after the snapshot
+        # head, so nothing is lost. A not-covered catch-up also left a joined fan-out (used
+        # here for the full-replay live forward). An ordinary attach never joined, so join
+        # now, anchored at resume_since.
+        live = self._live if self._live is not None else self._client.subscribe(
+            self._session_id, since=self._resume_since)
+        if self._catch_up_snapshot is None:
             async for wire in live:
                 # The DaemonClient delivers a _SeqDict carrying the daemon source seq on
                 # .src_seq; a plain dict (or GAP sentinel) reads as None. Surface it so
@@ -169,28 +194,12 @@ class RemoteDriver:
                 yield _WireEvent(wire, getattr(wire, "src_seq", None))
             return
 
-        # Cursor catch-up: fetch the one-shot ring snapshot after the cursor. Because the
-        # fan-out was joined above, events newer than the snapshot's head are already in
-        # `live`; the snapshot supplies everything from cursor+1..head. A re-subscribe with
-        # since= would be silently ignored by the shared per-stream client — the snapshot is
-        # how the tail is actually replayed (see daemon.ring_tail).
-        snap = await self._client.call(
-            "ring_tail", session_id=self._session_id, since=self._catch_up_since)
-        if not snap.get("covered"):
-            # Evicted in the tiny window between ws.py's ring_covers probe and now (the
-            # ring is 8192-deep, so this is rare). We already sent resumeOk, so signal a
-            # GAP: ws._forward_live consumes a seq, leaving a hole the client heals from
-            # disk (detach+attach → re-probe → full replay). Self-correcting, never a
-            # silent missing tail.
-            from server.ipc import protocol as proto
-            yield _WireEvent({"type": proto.GAP, "stream": self._session_id,
-                              "lost": None, "oldest": None}, None)
-            async for wire in live:
-                yield _WireEvent(wire, getattr(wire, "src_seq", None))
-            return
-
-        head = snap["head"]
-        for item in snap["events"]:
+        # Cursor catch-up: replay the pinned ring_tail snapshot (fetched by ws.py while the
+        # fan-out was already joined and BEFORE resumeOk), then continue live. Because the
+        # snapshot supplies cursor+1..head and the fan-out captured everything > head, the
+        # join has no gap.
+        head = self._catch_up_head
+        for item in self._catch_up_snapshot:
             yield _WireEvent(item["event"], item["seq"])
         # Continue live, dropping the overlap already delivered by the snapshot (seq<=head).
         # A GAP sentinel (src_seq None) is never an overlap — always forward it.
@@ -304,8 +313,13 @@ class RemoteOrchestrator:
         return bool(r.get("covered"))
 
     async def ring_tail(self, session_id: str, since: int | None) -> dict:
-        """One-shot ring snapshot after ``since`` (the wave-3 catch-up tail). Used by
-        RemoteDriver.events() to replay the missed events before continuing live."""
+        """One-shot ring snapshot after ``since`` (the wave-3 catch-up tail): the commit-time
+        coverage re-check. ws.py's attach handler fetches this AFTER driver.join_live() and
+        BEFORE resumeOk — a covered result pins the snapshot (driver.pin_catch_up) and lets
+        resumeOk go out; a not-covered result (ring evicted between the ring_covers probe and
+        here) falls back to the full disk replay with no resumeOk (FINDING-1 atomicity).
+        Returns ``{covered, events:[{seq,event}], head}``; the driver replays ``events`` then
+        continues live, deduping the overlap by ``head`` (see daemon.ring_tail)."""
         return await self._client.call("ring_tail", session_id=session_id, since=since)
 
     async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> "RemoteDriver | None":

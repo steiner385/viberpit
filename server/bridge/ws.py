@@ -557,11 +557,15 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             skip replayReset/replay/replayComplete entirely. The client keeps its rendered
             transcript and the ring tail simply continues it.
 
-            Returns True iff it COMMITTED to the catch-up path. The coverage decision is
-            probed BEFORE anything is enqueued, so a not-covered (or unknown) cursor never
-            leaves a half-sent resumeOk — the caller falls back to the full replay. Local/
-            in-process mode's ring_covers is a constant False, so it always full-replays and
-            ignores the cursor. Any probe error is treated as not-covered (safe fallback)."""
+            Returns True iff it COMMITTED to the catch-up path. The commitment is ATOMIC
+            (FINDING-1): the cheap ring_covers probe gates the path, but the actual commit
+            is the ring_tail snapshot fetch — done AFTER the live fan-out is joined and only
+            once the snapshot is IN HAND is resumeOk enqueued. So if the ring evicts in the
+            window between the probe and the fetch, the snapshot comes back not-covered and
+            the caller falls back to the full replay with NO resumeOk on the wire — never a
+            half-sent resumeOk over a silently-lost tail. Local/in-process mode's ring_covers
+            is a constant False, so it always full-replays and ignores the cursor. Any probe
+            or fetch error is treated as not-covered (safe fallback)."""
             if since_src_seq is None:
                 return False
             try:
@@ -574,11 +578,26 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 return False
             if not covered:
                 return False
-            # Committed: switch this attach into ring catch-up (events() replays the ring
-            # tail from the cursor then continues live) and tell the client to keep its
-            # transcript and continue from here. resumeOk rides out_q (raw + session-tagged,
-            # the batcher redacts at flush) exactly like replayReset.
-            driver.enable_catch_up(since_src_seq)
+            # ATOMIC COMMITMENT (FINDING-1). Join the live fan-out FIRST so every event
+            # published from this instant is captured (anything the snapshot does not cover,
+            # seq > head, is then already queued) — then fetch the ring_tail snapshot, which
+            # re-verifies coverage at fetch time. Only a covered snapshot commits: we pin it
+            # and enqueue resumeOk. A not-covered snapshot (evicted since the probe) or any
+            # fetch error → full replay, resumeOk never sent. The joined fan-out is reused by
+            # events() either way (catch-up replay, or the full-replay live forward).
+            driver.join_live()
+            try:
+                snap = await orchestrator.ring_tail(session_id, since_src_seq)
+            except Exception:
+                log.warning("ws.attach: ring_tail fetch failed for %s — full replay",
+                            session_id, exc_info=True)
+                return False
+            if not snap.get("covered"):
+                return False
+            driver.pin_catch_up(snap["events"], snap["head"])
+            # Committed: tell the client to keep its transcript and continue from the ring
+            # tail. resumeOk rides out_q (raw + session-tagged, the batcher redacts at flush)
+            # exactly like replayReset.
             out_q.put_nowait({"type": "resumeOk", "sessionId": session_id})
             return True
 
