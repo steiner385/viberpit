@@ -390,6 +390,61 @@ def test_replay_batch_leads_with_reset_on_every_attach(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# A re-attach on the SAME socket without an intervening detach is NOT a silent
+# no-op (incident 2026-07-05, Hole 2): the navigation-return remount attaches again
+# while the unmount's detach frame was lost on a closed socket, so the session is
+# still in THIS socket's live_tasks. The old `if session_id in live_tasks: return`
+# returned silently → the freshly-mounted empty reducer got only the live tail and a
+# false "Beginning of session". The server must now tear down this socket's forwarding
+# task and re-run the full replay, and the live tail must continue exactly-once (a
+# single forwarding task — no duplicate from a leaked old task).
+# ---------------------------------------------------------------------------
+
+def test_same_socket_reattach_full_replays_and_tail_exactly_once(ws_env):
+    msgs = [
+        f.sys_init("sess-1"),
+        f.stream_start(uuid="t1"),
+        f.stream_text("Hello ", uuid="t1"),
+        f.stream_text("there", uuid="t1"),
+        f.assistant(TextBlock(text="Hello there"), uuid="t1"),
+        f.result(session_id="sess-1", uuid="t1"),
+    ]
+    _app, orch, client = ws_env(msgs)
+    session = client.portal.call(orch.create_session, "test-rebind")
+    session_id = session.id
+    # Non-empty transcript so the full replay emits replayReset (not just replayComplete).
+    fixture = str(Path(__file__).parent / "fixtures" / "transcript.jsonl")
+    orch.transcript_path = lambda sid: fixture
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+
+        # SAME socket, NO detach: the re-attach must re-run the full replay.
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        ev2 = _drain_events(ws, until_type="replayComplete")
+        assert any(e.get("type") == "replayReset" for e in ev2), (
+            f"re-attach was a silent no-op — no replayReset in {[e.get('type') for e in ev2]}"
+        )
+        assert any(e.get("type") == "replayComplete" for e in ev2), (
+            f"re-attach did not full-replay — no replayComplete in {[e.get('type') for e in ev2]}"
+        )
+
+        # The live tail continues exactly-once: the rebind tore down this socket's old
+        # forwarding task BEFORE opening the new stream, so a single task forwards the turn.
+        # A leaked pre-rebind task would double every event (both subscribers fed by the
+        # driver fan-out), inflating the text / turnEnd count within the turn window.
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "hi"}))
+        ev3 = _drain_events(ws, until_type="turnEnd", timeout=8.0)
+        types3 = [e.get("type") for e in ev3]
+        assert types3.count("turnEnd") == 1, f"duplicated live tail (two forwarding tasks?): {types3}"
+        text = "".join(e.get("text", "") for e in ev3 if e.get("type") == "textDelta")
+        assert text == "Hello there", f"tail not exactly-once: {text!r}"
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
 # attach re-emits the persisted exact context usage (so a reloaded idle session
 # shows real remaining context, not the per-call approximation that reads 0% for
 # 1M-window sessions whose model string lost its [1m] marker)

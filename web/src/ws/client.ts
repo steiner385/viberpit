@@ -12,7 +12,7 @@ import { QK } from '@/api/hooks'
 import type { SessionEvent } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
 import { clientLogger } from '@/obs/logger'
-import { createGapState, handleLiveBatch, catchUpCursor, type GapState } from './liveBatch'
+import { createGapState, handleLiveBatch, catchUpCursor, invalidateCatchUp, type GapState } from './liveBatch'
 import { shouldApplyRev } from '@/session/reconcile'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
@@ -184,6 +184,15 @@ export class SessionSocket {
 
   attach(sessionId: string) {
     this._activeSessionId = sessionId
+    // A public attach is a FRESH user-initiated view: the reducer mounts empty
+    // (key={sessionId}), so any surviving catch-up cursor for this session is stale.
+    // Invalidate it BEFORE sending so that if this attach is dropped on a closed socket,
+    // the reconnect onopen re-attach (_attachFrame) omits sinceSrcSeq and full-replays,
+    // instead of getting resumeOk + tail-only against an empty transcript (Hole 1). This
+    // is intentionally NOT done on the mid-view reconnect path (onopen with no intervening
+    // public attach) — that's the legitimate resumeOk case (reducer still intact) — nor by
+    // the raw-_send heal, which must leave the cursor for its own contiguity check.
+    invalidateCatchUp(this._gap, sessionId)
     this._send({ type: 'attach', sessionId })
   }
 
@@ -295,14 +304,15 @@ export class SessionSocket {
   /** Self-heal a detected live-stream gap by detaching then re-attaching the active
    *  session, which triggers the server's replayReset → replay → replayComplete rebuild.
    *
-   *  WHY detach before attach: the server's _handle_attach opens with
-   *  `if session_id in live_tasks: return` — so a bare re-attach of an already-live
-   *  session is a no-op: no replayReset, no replay, no replayComplete, gap not healed.
-   *  Sending detach first removes the session from live_tasks (cancels only THIS
-   *  socket's forwarding task; the driver keeps running and buffering). The subsequent
-   *  attach then passes the guard and runs the full LIVE-attach path.  The server
-   *  processes frames sequentially (single awaited receive loop), so detach fully
-   *  completes before attach — no race.
+   *  WHY detach before attach: the server's _handle_attach now tears down THIS socket's
+   *  existing forwarding task and re-runs the attach path even for an already-live session
+   *  (a re-attach is never a silent no-op — see server/bridge/ws.py _handle_attach). So the
+   *  bare attach alone would heal; the explicit detach first is kept because it makes the
+   *  teardown intent obvious and matches the server's read-it-off-live_tasks path exactly.
+   *  The detach cancels only THIS socket's forwarding task (the driver keeps running and
+   *  buffering); the subsequent attach re-opens the stream and full-replays (or catches up
+   *  from the cursor). The server processes frames sequentially (single awaited receive
+   *  loop), so detach fully completes before attach — no race, no double forwarding task.
    *
    *  We use raw _send() rather than the public detach()/attach() methods because those
    *  mutate _activeSessionId; the heal must leave it intact.
