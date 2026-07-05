@@ -15,7 +15,8 @@ def _orch():
 
 @pytest.mark.asyncio
 async def test_trigger_no_provider_returns_structured_status():
-    r = await _orch().automation_trigger("cicd-doctor", "x", "y")
+    # autopilot is a real automation with no action provider registered.
+    r = await _orch().automation_trigger("autopilot", "x", "y")
     assert r["status"] == "no_provider"
     assert r["level"] == "error"
 
