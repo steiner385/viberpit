@@ -106,7 +106,7 @@ def _collect_until(ws, predicate, *, timeout: float = 6.0) -> list[dict]:
 
 
 def _types(events: list[dict]) -> list[str]:
-    return [e.get("type") for e in events]
+    return [e.get("type", "") for e in events]
 
 
 def _count(events: list[dict], t: str) -> int:
