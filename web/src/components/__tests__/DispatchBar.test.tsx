@@ -4,10 +4,22 @@ import userEvent from '@testing-library/user-event'
 import { DispatchBar } from '../DispatchBar'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 import type { GithubRepo } from '@/api/hooks'
+import type { Account, ModelOption } from '@/api/types'
 
 const REPOS: GithubRepo[] = [
   { nameWithOwner: 'cairnea/KinDash', name: 'KinDash', owner: 'cairnea', isPrivate: true, url: '', defaultBranch: 'main', pushedAt: null, cloned: true },
   { nameWithOwner: 'acme/web', name: 'web', owner: 'acme', isPrivate: false, url: '', defaultBranch: 'main', pushedAt: null, cloned: false },
+]
+
+const ACCOUNTS = [
+  { name: 'work', nickname: 'Work' },
+  { name: 'personal', nickname: null },
+] as unknown as Account[]
+
+const MODELS: ModelOption[] = [
+  { id: 'default', label: 'Default' },
+  { id: 'opus', label: 'Opus' },
+  { id: 'fable', label: 'Fable' },
 ]
 
 function makeProps(overrides: Partial<React.ComponentProps<typeof DispatchBar>> = {}) {
@@ -15,6 +27,8 @@ function makeProps(overrides: Partial<React.ComponentProps<typeof DispatchBar>> 
     repos: REPOS,
     reposLoading: false,
     reposError: false,
+    accounts: ACCOUNTS,
+    models: MODELS,
     onDispatch: vi.fn(),
     onNavigate: vi.fn(),
     onOpenHighlighted: vi.fn(),
@@ -65,7 +79,7 @@ describe('DispatchBar', () => {
     await user.click(box)
     await user.type(box, 'fix the bug')
     await user.keyboard('{Enter}')
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, attachmentIds: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, attachmentIds: [] })
     expect(box).toHaveValue('')
   })
 
@@ -102,8 +116,46 @@ describe('DispatchBar', () => {
     await user.type(box, 'fix the bug')
     expect(create).toBeEnabled()
     await user.click(create)
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, attachmentIds: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, attachmentIds: [] })
     expect(box).toHaveValue('')
+  })
+
+  it('offers Account and Model dropdowns next to Repository, and forwards the picks', async () => {
+    const user = userEvent.setup()
+    const onDispatch = vi.fn()
+    render(<DispatchBar {...makeProps({ onDispatch })} />)
+
+    // All three selectors are present in the bar.
+    expect(screen.getByRole('combobox', { name: /repository/i })).toBeInTheDocument()
+    const accountSel = screen.getByRole('combobox', { name: /account/i })
+    const modelSel = screen.getByRole('combobox', { name: /model/i })
+
+    // Defaults: Auto-select account, account-default model.
+    expect(accountSel).toHaveValue('')
+    expect(modelSel).toHaveValue('default')
+
+    await user.selectOptions(accountSel, 'work')
+    await user.selectOptions(modelSel, 'opus')
+
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.type(box, 'ship it')
+    await user.keyboard('{Enter}')
+
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'ship it', repo: null, account: 'work', model: 'opus', attachmentIds: [] })
+  })
+
+  it('normalizes the "Default" model to null so the backend keeps the account default', async () => {
+    const user = userEvent.setup()
+    const onDispatch = vi.fn()
+    render(<DispatchBar {...makeProps({ onDispatch })} />)
+
+    // Pick an account but leave Model on "Default".
+    await user.selectOptions(screen.getByRole('combobox', { name: /account/i }), 'personal')
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.type(box, 'go')
+    await user.keyboard('{Enter}')
+
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'go', repo: null, account: 'personal', model: null, attachmentIds: [] })
   })
 
   it('Create button never opens the highlighted session (stays disabled when empty)', async () => {

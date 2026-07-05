@@ -54,6 +54,7 @@ import {
   useCloseSession,
   usePermanentDeleteSession,
   useGithubRepos,
+  useModels,
   useSendPrompt,
   useConfig,
   useAllPrs,
@@ -133,6 +134,7 @@ export function DesktopShell() {
     useSessionOrdering(sessions, sessionSearch.matchedIds)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const reposQuery = useGithubRepos()
+  const { data: models = [] } = useModels()
   const { data: config } = useConfig()
 
   const createSession = useCreateSession()
@@ -294,13 +296,15 @@ export function DesktopShell() {
   function handleCollapseHighlighted() { if (highlightedGroupKey) collapseGroup(highlightedGroupKey) }
   function handleToggleHighlighted() { if (highlightedGroupKey) toggleCollapse(highlightedGroupKey) }
 
-  function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
+  function handleDispatch({ initialPrompt, repo, account, model, attachmentIds }: { initialPrompt: string; repo: string | null; account: string | null; model: string | null; attachmentIds: string[] }) {
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     createSession.mutate(
       {
         initialPrompt,
         repo: repo ?? undefined,
         branch: repoInfo?.defaultBranch ?? undefined,
+        account: account ?? undefined,
+        model: model ?? undefined,
         attachmentIds: attachmentIds.length ? attachmentIds : undefined,
       },
       {
@@ -461,6 +465,8 @@ export function DesktopShell() {
       repos={reposQuery.data ?? []}
       reposLoading={reposQuery.isLoading}
       reposError={reposQuery.isError}
+      accounts={accounts}
+      models={models}
       onDispatch={handleDispatch}
       onNavigate={navigate}
       onOpenHighlighted={handleOpenHighlighted}

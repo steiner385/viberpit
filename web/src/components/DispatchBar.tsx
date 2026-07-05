@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import type { GithubRepo } from '@/api/hooks'
+import type { Account, ModelOption } from '@/api/types'
 import { getLastRepo, setLastRepo } from '@/lib/lastRepo'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 import { useImageAttachments } from './session/useImageAttachments'
@@ -12,8 +13,22 @@ export interface DispatchBarProps {
   repos: GithubRepo[]
   reposLoading: boolean
   reposError: boolean
-  /** Fired on Enter when the prompt has text or images are attached. */
-  onDispatch: (input: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) => void
+  /** Accounts offered in the Account dropdown; empty ⇒ only "Auto-select". */
+  accounts?: Account[]
+  /** Curated model list (server source of truth); empty ⇒ only "Default". */
+  models?: ModelOption[]
+  /**
+   * Fired on Enter when the prompt has text or images are attached.
+   * `account`/`model` are already normalized: null means "let the backend
+   * decide" (Auto-select account / account-default model).
+   */
+  onDispatch: (input: {
+    initialPrompt: string
+    repo: string | null
+    account: string | null
+    model: string | null
+    attachmentIds: string[]
+  }) => void
   /** ↑/↓ at a line boundary (or empty prompt). */
   onNavigate: (dir: 'up' | 'down') => void
   /** Enter on an EMPTY prompt, or →. */
@@ -45,6 +60,8 @@ export function DispatchBar({
   repos,
   reposLoading,
   reposError,
+  accounts = [],
+  models = [],
   onDispatch,
   onNavigate,
   onOpenHighlighted,
@@ -62,6 +79,9 @@ export function DispatchBar({
 }: DispatchBarProps) {
   const [text, setText] = useState('')
   const [repo, setRepo] = useState<string>(() => getLastRepo() ?? '')
+  // '' = Auto-select (let the backend pick). 'default' = the account's own model.
+  const [account, setAccount] = useState('')
+  const [model, setModel] = useState('default')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const att = useImageAttachments()
@@ -97,7 +117,14 @@ export function DispatchBar({
       onOpenHighlighted()
       return
     }
-    onDispatch({ initialPrompt: trimmed, repo: repo || null, attachmentIds: refs })
+    onDispatch({
+      initialPrompt: trimmed,
+      repo: repo || null,
+      account: account || null,
+      // "default" ⇒ omit so the backend leaves the account's model as-is.
+      model: model && model !== 'default' ? model : null,
+      attachmentIds: refs,
+    })
     setText('')
     att.clear()
     // Reset textarea height
@@ -197,6 +224,16 @@ export function DispatchBar({
   // control should never silently open an existing session.
   const canSubmit = !isPending && (text.trim().length > 0 || att.refs().length > 0)
 
+  // Shared styling for the repo / account / model selects (single source of truth).
+  const selectClass = cn(
+    'w-full rounded border border-gray-300 dark:border-gray-600 text-sm',
+    'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',
+    'px-2 py-1 min-h-[44px]',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+    'disabled:opacity-50 disabled:cursor-not-allowed',
+  )
+  const selectLabelClass = 'text-xs text-gray-500 dark:text-gray-400'
+
   return (
     <div
       className={cn(
@@ -207,51 +244,84 @@ export function DispatchBar({
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
     >
-      {/* Repo selector row */}
-      <div className="flex items-center gap-2">
-        <label
-          htmlFor="dispatch-bar-repo"
-          className="text-xs text-gray-500 dark:text-gray-400 shrink-0"
-        >
-          Repository
-        </label>
-        <select
-          id="dispatch-bar-repo"
-          aria-label="Repository"
-          value={repo}
-          onChange={handleRepoChange}
-          disabled={reposLoading || reposError}
-          className={cn(
-            'flex-1 rounded border border-gray-300 dark:border-gray-600 text-sm',
-            'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100',
-            'px-2 py-1 min-h-[44px]',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-            'disabled:opacity-50 disabled:cursor-not-allowed',
-          )}
-        >
-          {reposLoading ? (
-            <>
-              {/* Keep persisted repo value selectable while loading so toHaveValue works */}
-              {persistedRepo && <option value={persistedRepo}>{persistedRepo}</option>}
-              {!persistedRepo && <option value="">Loading…</option>}
-            </>
-          ) : reposError ? (
-            <option value="">— could not load repos —</option>
-          ) : (
-            <>
-              <option value="">— no repo —</option>
-              {/* If persisted repo isn't in the list (e.g. after a repo rename), keep it as an option */}
-              {persistedRepo && !repoIsKnown && (
-                <option value={persistedRepo}>{persistedRepo}</option>
-              )}
-              {repos.map((r) => (
-                <option key={r.nameWithOwner} value={r.nameWithOwner}>
-                  {r.nameWithOwner}
-                </option>
-              ))}
-            </>
-          )}
-        </select>
+      {/* Repo / account / model selector row — 3 across on desktop, stacked on mobile */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        {/* Repository */}
+        <div className="flex flex-col gap-1">
+          <label htmlFor="dispatch-bar-repo" className={selectLabelClass}>
+            Repository
+          </label>
+          <select
+            id="dispatch-bar-repo"
+            aria-label="Repository"
+            value={repo}
+            onChange={handleRepoChange}
+            disabled={reposLoading || reposError}
+            className={selectClass}
+          >
+            {reposLoading ? (
+              <>
+                {/* Keep persisted repo value selectable while loading so toHaveValue works */}
+                {persistedRepo && <option value={persistedRepo}>{persistedRepo}</option>}
+                {!persistedRepo && <option value="">Loading…</option>}
+              </>
+            ) : reposError ? (
+              <option value="">— could not load repos —</option>
+            ) : (
+              <>
+                <option value="">— no repo —</option>
+                {/* If persisted repo isn't in the list (e.g. after a repo rename), keep it as an option */}
+                {persistedRepo && !repoIsKnown && (
+                  <option value={persistedRepo}>{persistedRepo}</option>
+                )}
+                {repos.map((r) => (
+                  <option key={r.nameWithOwner} value={r.nameWithOwner}>
+                    {r.nameWithOwner}
+                  </option>
+                ))}
+              </>
+            )}
+          </select>
+        </div>
+
+        {/* Account — "" = Auto-select (usage-aware rotation picks one). */}
+        <div className="flex flex-col gap-1">
+          <label htmlFor="dispatch-bar-account" className={selectLabelClass}>
+            Account
+          </label>
+          <select
+            id="dispatch-bar-account"
+            aria-label="Account"
+            value={account}
+            onChange={(e) => setAccount(e.target.value)}
+            className={selectClass}
+          >
+            <option value="">Auto-select</option>
+            {accounts.map((a) => (
+              <option key={a.name} value={a.name}>{a.nickname || a.name}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Model — "default" = the account's own model. */}
+        <div className="flex flex-col gap-1">
+          <label htmlFor="dispatch-bar-model" className={selectLabelClass}>
+            Model
+          </label>
+          <select
+            id="dispatch-bar-model"
+            aria-label="Model"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            className={selectClass}
+          >
+            {/* Fallback so the "default" value always has a matching option before the list loads. */}
+            {models.length === 0 && <option value="default">Default</option>}
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
