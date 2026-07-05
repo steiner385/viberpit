@@ -546,7 +546,43 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     _forward_live(stream, out_q, session_id), name=f"ws-live-{session_id}"),
                 name=f"ws-live-{session_id}", on_failure=_on_forward_task_failed)
 
-        async def _handle_attach(session_id: str) -> None:
+        async def _maybe_catch_up(session_id: str, driver, since_src_seq: int | None) -> bool:
+            """Wave-3 cursor catch-up (audit W2.3), remote mode only.
+
+            When the client re-attaches (heal / reconnect) with a CONTIGUOUS srcSeq cursor
+            AND the daemon ring still covers it, resume the live stream FROM that cursor
+            instead of doing a full disk replay: enqueue a lightweight ``resumeOk`` (through
+            the same out_q FIFO as every other session frame — never a direct send that
+            could overtake queued frames), anchor the live subscription at the cursor, and
+            skip replayReset/replay/replayComplete entirely. The client keeps its rendered
+            transcript and the ring tail simply continues it.
+
+            Returns True iff it COMMITTED to the catch-up path. The coverage decision is
+            probed BEFORE anything is enqueued, so a not-covered (or unknown) cursor never
+            leaves a half-sent resumeOk — the caller falls back to the full replay. Local/
+            in-process mode's ring_covers is a constant False, so it always full-replays and
+            ignores the cursor. Any probe error is treated as not-covered (safe fallback)."""
+            if since_src_seq is None:
+                return False
+            try:
+                covered = await orchestrator.ring_covers(session_id, since_src_seq)
+            except Exception:
+                # A wedged/absent daemon or any probe failure → full replay (the safe path;
+                # the disk transcript is the durable source of truth). Never half-commit.
+                log.warning("ws.attach: ring_covers probe failed for %s — full replay",
+                            session_id, exc_info=True)
+                return False
+            if not covered:
+                return False
+            # Committed: switch this attach into ring catch-up (events() replays the ring
+            # tail from the cursor then continues live) and tell the client to keep its
+            # transcript and continue from here. resumeOk rides out_q (raw + session-tagged,
+            # the batcher redacts at flush) exactly like replayReset.
+            driver.enable_catch_up(since_src_seq)
+            out_q.put_nowait({"type": "resumeOk", "sessionId": session_id})
+            return True
+
+        async def _handle_attach(session_id: str, since_src_seq: int | None = None) -> None:
             if session_id in live_tasks:
                 return  # already attached
 
@@ -588,6 +624,13 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             driver = await _resume_driver_or_error(session_id)
             if driver is None:
                 return
+            # Wave-3 cursor catch-up (remote mode only): if the client's srcSeq cursor is
+            # still covered by the daemon ring, skip the whole disk replay and resume the
+            # live stream from the cursor. Probed + committed (resumeOk enqueued) BEFORE
+            # open_stream so the decision is made once, up front — never a half-sent
+            # resumeOk. Not covered / no cursor / local mode → catching_up is False and the
+            # full replay below runs exactly as before.
+            catching_up = await _maybe_catch_up(session_id, driver, since_src_seq)
             # Open the driver stream SYNCHRONOUSLY, BEFORE the replay (the
             # settle-race bug, B3): open_stream() atomically snapshots the
             # in-progress turn buffer AND pins turn_active/turn_started_at to that
@@ -601,10 +644,20 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             # while the replay runs.
             stream = driver.open_stream()
             try:
-                events = await _replay_and_complete(
-                    session_id, drop_incomplete=stream.turn_active,
-                    turn_started_at=stream.turn_started_at)
-                await _emit_live_extras(session_id, driver, events)
+                if catching_up:
+                    # Catch-up: no disk replay, no replayReset/replayComplete. The client
+                    # keeps its transcript and the ring tail (srcSeq cursor+1…) continues
+                    # it. Still re-emit pending live state (permissions/questions/status/
+                    # queue) AFTER the resumeOk that _maybe_catch_up already enqueued — the
+                    # client dedups those by id. No in-progress-turn trim: the ring already
+                    # carries every event after the cursor, and the client has everything up
+                    # to it, so there is nothing to drop or re-supply.
+                    await _emit_live_extras(session_id, driver, [])
+                else:
+                    events = await _replay_and_complete(
+                        session_id, drop_incomplete=stream.turn_active,
+                        turn_started_at=stream.turn_started_at)
+                    await _emit_live_extras(session_id, driver, events)
             except BaseException:
                 # Nothing has consumed the stream yet (only events()'s finally or
                 # close() deregisters it) — discard the queue so a failed attach
@@ -698,7 +751,16 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 session_id = msg.get("sessionId", "")
 
                 if msg_type == "attach":
-                    await _handle_attach(session_id)
+                    # Optional wave-3 catch-up cursor: the client's last CONTIGUOUS daemon
+                    # srcSeq (audit W2.3). Accept only a real non-negative int (reject bool,
+                    # which is an int subclass, and anything malformed) — otherwise omit it
+                    # and full-replay. The server, not the client, still owns the ring
+                    # coverage decision (ring_covers) before honoring it.
+                    raw_cursor = msg.get("sinceSrcSeq")
+                    since_src_seq = (raw_cursor if isinstance(raw_cursor, int)
+                                     and not isinstance(raw_cursor, bool)
+                                     and raw_cursor >= 0 else None)
+                    await _handle_attach(session_id, since_src_seq)
                 elif msg_type == "detach":
                     await _handle_detach(session_id)
                 elif msg_type == "prompt":

@@ -89,6 +89,12 @@ class RemoteDriver:
         # local SessionDriver.turn_started_at property.
         self.turn_started_at = turn_started_at
         self._bg_tasks: set[asyncio.Task] = set()
+        # Wave-3 cursor catch-up (audit W2.3): when set (via enable_catch_up), events()
+        # resumes THIS attach from the daemon ring at this srcSeq cursor — replaying the
+        # one-shot ring_tail snapshot then continuing on the shared live fan-out, deduped
+        # by seq — instead of relying on a since-override subscribe (which the shared
+        # per-stream DaemonClient would ignore). None ⇒ ordinary from-resume_since stream.
+        self._catch_up_since: int | None = None
 
     def current_status(self) -> str:
         return self._status
@@ -137,16 +143,62 @@ class RemoteDriver:
 
         task.add_done_callback(_done)
 
+    def enable_catch_up(self, since: int) -> None:
+        """Turn THIS attach into a wave-3 cursor catch-up from ``since`` (the client's
+        contiguous srcSeq cursor) — the edge already confirmed ring coverage (ring_covers)
+        and enqueued resumeOk. events() then replays the ring tail and continues live from
+        there. Per-attach and safe: ensure_driver mints a fresh RemoteDriver every attach,
+        so a catch-up flag never leaks across attaches."""
+        self._catch_up_since = since
+
     def open_stream(self) -> RemoteDriverStream:
         """Uniform attach interface with the local SessionDriver.open_stream()."""
         return RemoteDriverStream(self)
 
     async def events(self):
-        async for wire in self._client.subscribe(self._session_id, since=self._resume_since):
-            # The DaemonClient delivers a _SeqDict carrying the daemon source seq on
-            # .src_seq; a plain dict (or GAP sentinel) reads as None. Surface it so
-            # ws._forward_live can stamp srcSeq telemetry.
-            yield _WireEvent(wire, getattr(wire, "src_seq", None))
+        # Join the shared live fan-out FIRST (synchronously, inside subscribe()), so from
+        # this instant every newly-published event is captured in our queue — the ordering
+        # that makes the catch-up gapless: anything the ring_tail snapshot below does NOT
+        # cover (seq > its head) is guaranteed to already be queued here.
+        live = self._client.subscribe(self._session_id, since=self._resume_since)
+        if self._catch_up_since is None:
+            async for wire in live:
+                # The DaemonClient delivers a _SeqDict carrying the daemon source seq on
+                # .src_seq; a plain dict (or GAP sentinel) reads as None. Surface it so
+                # ws._forward_live can stamp srcSeq telemetry.
+                yield _WireEvent(wire, getattr(wire, "src_seq", None))
+            return
+
+        # Cursor catch-up: fetch the one-shot ring snapshot after the cursor. Because the
+        # fan-out was joined above, events newer than the snapshot's head are already in
+        # `live`; the snapshot supplies everything from cursor+1..head. A re-subscribe with
+        # since= would be silently ignored by the shared per-stream client — the snapshot is
+        # how the tail is actually replayed (see daemon.ring_tail).
+        snap = await self._client.call(
+            "ring_tail", session_id=self._session_id, since=self._catch_up_since)
+        if not snap.get("covered"):
+            # Evicted in the tiny window between ws.py's ring_covers probe and now (the
+            # ring is 8192-deep, so this is rare). We already sent resumeOk, so signal a
+            # GAP: ws._forward_live consumes a seq, leaving a hole the client heals from
+            # disk (detach+attach → re-probe → full replay). Self-correcting, never a
+            # silent missing tail.
+            from server.ipc import protocol as proto
+            yield _WireEvent({"type": proto.GAP, "stream": self._session_id,
+                              "lost": None, "oldest": None}, None)
+            async for wire in live:
+                yield _WireEvent(wire, getattr(wire, "src_seq", None))
+            return
+
+        head = snap["head"]
+        for item in snap["events"]:
+            yield _WireEvent(item["event"], item["seq"])
+        # Continue live, dropping the overlap already delivered by the snapshot (seq<=head).
+        # A GAP sentinel (src_seq None) is never an overlap — always forward it.
+        async for wire in live:
+            src = getattr(wire, "src_seq", None)
+            if src is not None and src <= head:
+                continue
+            yield _WireEvent(wire, src)
 
 
 class RemoteOrchestrator:
@@ -241,6 +293,20 @@ class RemoteOrchestrator:
     async def send_prompt(self, session_id: str, text: str, images=None) -> str | None:
         r = await self._client.call("send_prompt", session_id=session_id, text=text, images=images)
         return (r or {}).get("status")
+
+    async def ring_covers(self, session_id: str, since: int | None) -> bool:
+        """Ask the daemon whether its replay ring can resume ``session_id`` from ``since``
+        (the browser's contiguous srcSeq cursor) with no GAP — the wave-3 cursor-catchup
+        coverage probe (audit W2.3). The edge decides resumeOk vs full replay off this
+        BEFORE enqueuing anything, so a not-covered cursor never half-sends resumeOk. A
+        daemon/RPC error surfaces to the caller, which treats it as not-covered."""
+        r = await self._client.call("ring_covers", session_id=session_id, since=since)
+        return bool(r.get("covered"))
+
+    async def ring_tail(self, session_id: str, since: int | None) -> dict:
+        """One-shot ring snapshot after ``since`` (the wave-3 catch-up tail). Used by
+        RemoteDriver.events() to replay the missed events before continuing live."""
+        return await self._client.call("ring_tail", session_id=session_id, since=since)
 
     async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> "RemoteDriver | None":
         r = await self._client.call("ensure_driver", session_id=session_id, identity=identity)

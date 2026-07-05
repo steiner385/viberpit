@@ -5,23 +5,42 @@ import type { SessionEvent } from '@/session/events'
  *
  *  `lastSeq` is the per-attach seq that drives dedup + self-heal (the client's
  *  correctness key). `lastSrcSeq` is the daemon's end-to-end SOURCE seq (`srcSeq`,
- *  audit W2.3) — DIAGNOSTIC ONLY: a hole in it is recorded as loss telemetry but
- *  never triggers dedup, heal, or a dropped frame. */
+ *  audit W2.3): DIAGNOSTIC for heal (a hole never drops a frame), but it is ALSO the
+ *  wave-3 catch-up cursor — the anchor a heal/reconnect re-attach sends as
+ *  `sinceSrcSeq` so the server resumes from the daemon ring instead of full-replaying.
+ *  `srcContiguous` gates that: true iff NO srcSeq hole has been observed since the last
+ *  replayComplete/resumeOk (established on those, reset on replayReset, cleared on a
+ *  hole). A cursor is only safe to send when the source stream has been unbroken. */
 export interface GapState {
   lastSeq: Map<string, number>
   lastSrcSeq: Map<string, number>
+  srcContiguous: Map<string, boolean>
 }
 
 export function createGapState(): GapState {
-  return { lastSeq: new Map(), lastSrcSeq: new Map() }
+  return { lastSeq: new Map(), lastSrcSeq: new Map(), srcContiguous: new Map() }
 }
 
-/** Clear both seq baselines for a session — called on replayReset so the next live
- *  event re-baselines instead of registering a false gap (applies to the source-seq
- *  telemetry too, so a reconnect replay doesn't emit a spurious srcSeq gap). */
+/** Clear the per-attach + source-seq BASELINES for a session — called on replayReset
+ *  and resumeOk so the next live event re-baselines instead of registering a false gap
+ *  (applies to the source-seq telemetry too, so a reconnect replay / ring resume doesn't
+ *  emit a spurious srcSeq gap). Deliberately does NOT touch `srcContiguous`: that flag is
+ *  managed at each protocol site (replayReset clears it, replayComplete/resumeOk set it)
+ *  because the two events want opposite contiguity outcomes from the same baseline reset. */
 export function resetSeq(state: GapState, sessionId: string): void {
   state.lastSeq.delete(sessionId)
   state.lastSrcSeq.delete(sessionId)
+}
+
+/** The srcSeq cursor to send as `sinceSrcSeq` on a heal / reconnect re-attach, or null
+ *  when a full replay is required. Returns `lastSrcSeq` ONLY when the source stream has
+ *  stayed contiguous since the last replayComplete/resumeOk (no observed srcSeq hole) AND
+ *  a lastSrcSeq exists. Any observed loss (or a not-yet-established baseline) → null → the
+ *  client omits the cursor and the server full-replays from the durable transcript. */
+export function catchUpCursor(state: GapState, sessionId: string): number | null {
+  if (state.srcContiguous.get(sessionId) !== true) return null
+  const last = state.lastSrcSeq.get(sessionId)
+  return typeof last === 'number' ? last : null
 }
 
 /** A non-contiguous daemon source seq observed on the live stream — pure telemetry
@@ -73,12 +92,38 @@ export function handleLiveBatch(
 
   for (const e of events) {
     const meta = e as SessionEvent & WireMeta
+    const etype = (e as { type?: string }).type
     // Re-baseline on replayReset BEFORE the ownership filter so a reset tagged
     // for a non-viewed session still clears THAT session's stale baseline
     // (falling back to the active session for legacy untagged frames).
-    if ((e as { type?: string }).type === 'replayReset') {
+    if (etype === 'replayReset') {
       const sid = meta.sessionId ?? activeSessionId
-      if (sid) resetSeq(state, sid)
+      if (sid) {
+        resetSeq(state, sid)
+        // A full replay is starting: the source stream is NOT contiguous until it
+        // finishes (replayComplete re-establishes the cursor baseline).
+        state.srcContiguous.set(sid, false)
+      }
+    }
+    // resumeOk (wave-3 cursor catch-up): the server resumed the live stream from our
+    // srcSeq cursor instead of full-replaying. Re-baseline the per-attach + srcSeq
+    // trackers (the ring tail restarts the per-attach seq at 0) and mark the source
+    // contiguous — the transcript simply CONTINUES, so it is NOT dispatched to the
+    // reducer (no replayReset, no stale-buffer cycle, no transcript-state change).
+    if (etype === 'resumeOk') {
+      const sid = meta.sessionId ?? activeSessionId
+      if (sid) {
+        resetSeq(state, sid)
+        state.srcContiguous.set(sid, true)
+      }
+      continue
+    }
+    // replayComplete ends a full replay: from here the source stream is a clean
+    // baseline, so a future heal/reconnect may catch up from its cursor. (Still
+    // dispatched below — the reducer needs it to clear `replaying`.)
+    if (etype === 'replayComplete') {
+      const sid = meta.sessionId ?? activeSessionId
+      if (sid) state.srcContiguous.set(sid, true)
     }
     // Drop events explicitly owned by a different session.
     if (meta.sessionId && activeSessionId && meta.sessionId !== activeSessionId) continue
@@ -104,6 +149,11 @@ export function handleLiveBatch(
       const prevSrc = state.lastSrcSeq.get(meta.sessionId)
       if (prevSrc !== undefined && meta.srcSeq !== prevSrc + 1) {
         srcSeqGaps.push({ sessionId: meta.sessionId, prev: prevSrc, got: meta.srcSeq })
+        // A source-seq hole means events were lost between daemon and browser: the
+        // cursor is no longer trustworthy, so forbid catch-up until a full replay (or a
+        // fresh resumeOk) re-establishes contiguity. This is the browser-side guard that
+        // pairs with the server's ring_covers `since <= head` check.
+        state.srcContiguous.set(meta.sessionId, false)
       }
       state.lastSrcSeq.set(meta.sessionId, meta.srcSeq)
     }

@@ -34,7 +34,15 @@ def create_daemon_app() -> FastAPI:
 
     # Per-stream replay ring buffer: (seq, event). Closes the at-attach/reconnect gap —
     # events published before a subscriber connects are kept and replayed on subscribe.
-    _maxlen = int(os.environ.get("CCSWITCH_IPC_REPLAY_BUFFER", "2048"))
+    #
+    # Default 8192 (audit W2.1 mitigation, raised from 2048): the wider ring is what makes
+    # the wave-3 cursor catch-up (attach.sinceSrcSeq → resumeOk, server/bridge/ws.py) hit
+    # instead of falling back to a full disk replay across a longer reconnect gap. Memory
+    # trade-off: the ring is PER LIVE STREAM and holds at most _maxlen (seq, event) tuples;
+    # at ~1–2 KB per normalized event that is roughly 8–16 MB per busy session at the cap,
+    # and far less typically (idle streams hold only their turn tail). Bounded and evicted
+    # oldest-first, so it never grows without limit. Override with CCSWITCH_IPC_REPLAY_BUFFER.
+    _maxlen = int(os.environ.get("CCSWITCH_IPC_REPLAY_BUFFER", "8192"))
     app.state.buffers = {}   # stream -> deque[(seq, event)]
     app.state.seqs = {}      # stream -> last assigned seq (int)
     # Turn-boundary tracking for in-progress-turn replay: the seq of the current
@@ -111,6 +119,57 @@ def create_daemon_app() -> FastAPI:
         return head_seq(stream)
 
     app.state.resume_since = resume_since
+
+    def ring_covers(stream: str, since: int | None) -> bool:
+        """True when a live subscribe at ``since`` would replay the whole tail from the
+        ring WITHOUT a GAP — i.e. the daemon can resume this stream from ``since`` with no
+        data loss. This is the coverage probe the edge runs BEFORE committing to the
+        wave-3 cursor catch-up (server/bridge/ws.py): deciding first means a not-covered
+        cursor never leaves a half-sent ``resumeOk`` on the wire (the airtight-fallback
+        requirement).
+
+        Covered iff the anchor sits inside the retained window:
+          * ``since + 1 >= oldest`` — mirrors the EXACT subscribe-time GAP test
+            (``since + 1 < oldest`` ⇒ evicted ⇒ GAP), so the probe and the real subscribe
+            can never disagree; and
+          * ``since <= head`` — the anchor is not AHEAD of what this daemon has produced.
+            A browser srcSeq cursor can only exceed head after a daemon restart (the seq
+            space is per-process and resets to 0); its stale high cursor must never be
+            treated as covered by the fresh low ring. (The browser also flips its
+            srcContiguous flag on the post-restart srcSeq jump — this is the server-side
+            belt to that suspenders.)
+
+        A fresh anchor (``since`` None/<0) is never a catch-up cursor, and an empty/absent
+        ring can guarantee nothing → both return False (full disk replay)."""
+        buf = app.state.buffers.get(stream)
+        if not buf or since is None or since < 0:
+            return False
+        oldest_seq = buf[0][0]
+        head = app.state.seqs.get(stream, -1)
+        return oldest_seq - 1 <= since <= head
+
+    app.state.ring_covers = ring_covers
+
+    def ring_tail(stream: str, since: int | None) -> dict:
+        """One-shot snapshot of the retained ring events AFTER ``since`` (seq in
+        ``(since, head]``), for the wave-3 cursor catch-up.
+
+        Why a snapshot RPC and not just a re-subscribe at ``since``: the edge's shared
+        DaemonClient keeps ONE daemon subscription PER STREAM (server/ipc/client.py) — a
+        re-subscribe by a healing/reconnecting viewer joins the existing fan-out and its
+        ``since`` is IGNORED, so it would never replay the missed tail (and a naive
+        since-override would leave the client falsely told it caught up). Instead the edge
+        replays this snapshot then continues on the shared live fan-out, deduping the
+        overlap by seq (RemoteDriver.events()). ``head`` lets that dedup know where the
+        snapshot ends. Not covered ⇒ empty snapshot; the edge falls back to a disk replay."""
+        head = app.state.seqs.get(stream, -1)
+        if not ring_covers(stream, since):
+            return {"covered": False, "events": [], "head": head}
+        buf = app.state.buffers.get(stream) or ()
+        events = [{"seq": s, "event": e} for (s, e) in buf if since is None or s > since]
+        return {"covered": True, "events": events, "head": head}
+
+    app.state.ring_tail = ring_tail
 
     def evict(stream: str) -> None:
         app.state.buffers.pop(stream, None)

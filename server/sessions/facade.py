@@ -25,6 +25,10 @@ class InProcessOrchestratorAdapter:
     async def create_session(self, *a, **k): return await _maybe_await(self._orch.create_session(*a, **k))
     async def send_prompt(self, *a, **k): return await _maybe_await(self._orch.send_prompt(*a, **k))
     async def ensure_driver(self, *a, **k): return await _maybe_await(self._orch.ensure_driver(*a, **k))
+    # Local/in-process mode has no daemon replay ring, so the wave-3 cursor catch-up never
+    # applies here — always report "not covered" so ws.py takes the full disk-replay path
+    # (the constant answer that keeps the two modes' attach code identical, constitution VI).
+    async def ring_covers(self, session_id, since): return False
     async def archive_session(self, *a, **k): return await _maybe_await(self._orch.archive_session(*a, **k))
     async def unarchive(self, *a, **k): return await _maybe_await(self._orch.unarchive(*a, **k))
     async def permanent_delete(self, *a, **k): return await _maybe_await(self._orch.permanent_delete(*a, **k))
