@@ -86,6 +86,12 @@ export interface TranscriptState {
   pendingSentSeq: number                        // monotonic counter for stable synthetic ids
   hadReset: boolean                             // true after a replayReset; guards re-assert on replayComplete
   orphanToolResults: Record<string /* toolId */, OrphanToolResult>  // toolResults with no matching block yet (main thread or any sub-thread); cleared on replayReset
+  // Double-buffer: the previously-rendered transcript, captured on a replayReset of a
+  // non-empty view and served (via selectVisibleTurns/selectVisibleSubAgents) while the
+  // following replay rebuilds `turns`/`subAgents` invisibly. Swapped out (cleared) on
+  // replayComplete. Empty on first attach, so a fresh session behaves exactly as before.
+  staleTurns: Turn[]
+  staleSubAgents: Record<string, SubThread>
 }
 
 export const initialTranscript: TranscriptState = {
@@ -110,7 +116,13 @@ export const initialTranscript: TranscriptState = {
   pendingSentSeq: 0,
   hadReset: false,
   orphanToolResults: {},
+  staleTurns: [],
+  staleSubAgents: {},
 }
+
+/** Shared empty references for cleared double-buffer slots (referential stability). */
+const EMPTY_TURNS: Turn[] = []
+const EMPTY_SUBAGENTS: Record<string, SubThread> = {}
 
 /**
  * Park an orphan toolResult (no matching tool block anywhere yet). Bounded FIFO: JS
@@ -668,8 +680,19 @@ export function transcriptReducer(
       // transcript-rebuildable state so the following replay events rebuild it
       // cleanly. Live-only state that the replay does NOT re-emit (rotations,
       // queue, banner) is preserved.
+      //
+      // Double-buffer: capture the currently-rendered transcript into stale* so the view
+      // keeps showing it (via selectVisibleTurns) while this replay rebuilds `turns`/
+      // `subAgents` from scratch — a gap-heal no longer blanks the transcript. Capture
+      // ONLY when settled (replaying===false) and something is rendered: a reset arriving
+      // mid-replay keeps the existing (good) stale rather than overwriting it with the
+      // half-built replay, and a first/empty attach leaves stale empty so behavior is
+      // identical to before this buffer existed.
+      const captureStale = !state.replaying && state.turns.length > 0
       return { ...state, turns: [], openBlockId: null, subAgents: {}, replaying: true, hadReset: true,
-               earliestTurn: 0, totalTurns: 0, loadingOlder: false, orphanToolResults: {} }
+               earliestTurn: 0, totalTurns: 0, loadingOlder: false, orphanToolResults: {},
+               staleTurns: captureStale ? state.turns : state.staleTurns,
+               staleSubAgents: captureStale ? state.subAgents : state.staleSubAgents }
     }
 
     // ── replayComplete ────────────────────────────────────────────────────────
@@ -698,6 +721,10 @@ export function transcriptReducer(
         replaying: false,
         hadReset: false,
         turns,
+        // Atomic swap: the rebuilt live content is now visible (replaying=false), so drop
+        // the double-buffer — stale must never leak into the next epoch's render.
+        staleTurns: EMPTY_TURNS,
+        staleSubAgents: EMPTY_SUBAGENTS,
         earliestTurn: ev.earliestTurn ?? state.earliestTurn,
         totalTurns: ev.totalTurns ?? state.totalTurns,
       }

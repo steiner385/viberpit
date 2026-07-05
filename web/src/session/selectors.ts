@@ -1,7 +1,35 @@
 /**
  * Derived views over transcript state for the session status strip.
  */
-import type { Turn } from './reducer'
+import type { Turn, SubThread, TranscriptState } from './reducer'
+
+// ── Visible transcript (double-buffer during replay) ──────────────────────────
+//
+// A gap-heal replays the whole transcript (replayReset → replay events →
+// replayComplete), during which the reducer's live `turns`/`subAgents` are empty
+// and rebuilding. To avoid blanking the view, replayReset captures the last
+// rendered content into `staleTurns`/`staleSubAgents`. These selectors are the
+// SINGLE decision point for which copy the UI shows: the stale snapshot while a
+// replay is in flight (and a snapshot exists), otherwise the live arrays. Routing
+// every consumer through here keeps the choice out of the components.
+
+/** Fields the visible-transcript selectors read (a narrow slice of TranscriptState). */
+type VisibleSlice = Pick<TranscriptState, 'replaying' | 'turns' | 'staleTurns' | 'subAgents' | 'staleSubAgents'>
+
+/** True when a replay is in flight AND a stale snapshot exists to serve instead of the empty live arrays. */
+function servingStale(state: VisibleSlice): boolean {
+  return state.replaying && state.staleTurns.length > 0
+}
+
+/** The turns the UI should render: the stale snapshot during a heal, else the live turns. */
+export function selectVisibleTurns(state: VisibleSlice): Turn[] {
+  return servingStale(state) ? state.staleTurns : state.turns
+}
+
+/** The sub-agent threads the UI should render: the stale snapshot during a heal, else the live map. */
+export function selectVisibleSubAgents(state: VisibleSlice): Record<string, SubThread> {
+  return servingStale(state) ? state.staleSubAgents : state.subAgents
+}
 
 export type SubAgentStatus = 'running' | 'done' | 'failed'
 

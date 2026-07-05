@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { selectSubAgents } from './selectors'
-import type { Turn } from './reducer'
+import { selectSubAgents, selectVisibleTurns, selectVisibleSubAgents } from './selectors'
+import { initialTranscript } from './reducer'
+import type { Turn, TranscriptState, SubThread } from './reducer'
 
 function toolTurn(blocks: Turn['blocks']): Turn {
   return { id: 't1', role: 'assistant', blocks }
@@ -85,5 +86,36 @@ describe('selectSubAgents', () => {
     expect(selectSubAgents(turns)).toEqual([
       { toolId: 'x1', type: 'agent', description: '', status: 'running' },
     ])
+  })
+})
+
+// ── Visible-transcript double-buffer selectors ────────────────────────────────
+
+describe('selectVisibleTurns / selectVisibleSubAgents', () => {
+  const liveTurns: Turn[] = [{ id: 'live', role: 'assistant', blocks: [] }]
+  const staleTurns: Turn[] = [{ id: 'stale', role: 'assistant', blocks: [] }]
+  const liveSubs: Record<string, SubThread> = { a: { turns: [], openBlockId: null } }
+  const staleSubs: Record<string, SubThread> = { b: { turns: [], openBlockId: null } }
+
+  function make(over: Partial<TranscriptState>): TranscriptState {
+    return { ...initialTranscript, ...over }
+  }
+
+  it('serves live content when not replaying', () => {
+    const s = make({ replaying: false, turns: liveTurns, staleTurns, subAgents: liveSubs, staleSubAgents: staleSubs })
+    expect(selectVisibleTurns(s)).toBe(liveTurns)
+    expect(selectVisibleSubAgents(s)).toBe(liveSubs)
+  })
+
+  it('serves stale content while replaying and stale exists', () => {
+    const s = make({ replaying: true, turns: liveTurns, staleTurns, subAgents: liveSubs, staleSubAgents: staleSubs })
+    expect(selectVisibleTurns(s)).toBe(staleTurns)
+    expect(selectVisibleSubAgents(s)).toBe(staleSubs)
+  })
+
+  it('falls through to live content while replaying when there is no stale (first attach)', () => {
+    const s = make({ replaying: true, turns: liveTurns, staleTurns: [], subAgents: liveSubs, staleSubAgents: {} })
+    expect(selectVisibleTurns(s)).toBe(liveTurns)
+    expect(selectVisibleSubAgents(s)).toBe(liveSubs)
   })
 })
