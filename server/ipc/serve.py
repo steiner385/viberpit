@@ -26,6 +26,13 @@ log = logging.getLogger("server.ipc.serve")
 # TimeoutStopSec so graceful cleanup completes instead of being SIGKILLed (issue #206).
 _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S = 15.0
 
+# Bounds how long uvicorn waits for open connections (edge<->daemon RPC/WS traffic)
+# before forcing them shut on SIGTERM. Without this, graceful shutdown waits
+# indefinitely, the daemon_lifespan() shutdown branch below (x11 teardown, reauth
+# shutdown, orchestrator stop) never runs, and systemd SIGKILLs at TimeoutStopSec
+# on every deploy (transcript audit V4 — same defect as the edge's ccswitch.service).
+_DAEMON_GRACEFUL_SHUTDOWN_TIMEOUT_S = 10
+
 
 def uvicorn_run_kwargs(endpoint: Endpoint, *, daemon_tls: DaemonTLSFiles | None = None,
                        allowlist: frozenset[str] | None = None) -> dict:
@@ -135,4 +142,9 @@ def serve(socket_path: str | None = None) -> None:
     app.router.lifespan_context = lambda _app: daemon_lifespan(_app, orchestrator)
     where = endpoint.path if endpoint.is_unix else f"{endpoint.host}:{endpoint.port} (mTLS)"
     log.info("session daemon serving on %s", where)
-    uvicorn.run(app, log_level="info", **uvicorn_run_kwargs(endpoint, allowlist=client_allowlist()))
+    uvicorn.run(
+        app,
+        log_level="info",
+        timeout_graceful_shutdown=_DAEMON_GRACEFUL_SHUTDOWN_TIMEOUT_S,
+        **uvicorn_run_kwargs(endpoint, allowlist=client_allowlist()),
+    )

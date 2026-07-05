@@ -18,9 +18,18 @@ RuntimeDirectoryPreserve=yes
 StateDirectory=ccswitch
 WorkingDirectory=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
 EnvironmentFile=/etc/ccswitch/ccswitch.env
+# This entrypoint calls uvicorn.run() programmatically (server/ipc/serve.py) rather
+# than the uvicorn CLI, so --timeout-graceful-shutdown can't be passed here as a
+# flag; it's set as timeout_graceful_shutdown=10 in that call instead (same
+# transcript-audit V4 rationale as ccswitch.service: bound SIGTERM so the daemon
+# lifespan shutdown — x11 teardown, reauth shutdown, orchestrator stop — actually
+# runs instead of being SIGKILLed).
 ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m server.ipc
 Restart=on-failure
 RestartSec=3
+# Shutdown budget: 10s (uvicorn graceful) + up to 15s (x11.stop_all sweep,
+# _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S in serve.py) + small overhead for reauth
+# shutdown/orchestrator stop = well under the 90s below.
 TimeoutStopSec=90
 KillMode=control-group
 MemoryMax=12G
