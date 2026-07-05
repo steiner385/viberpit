@@ -29,6 +29,10 @@ class InProcessOrchestratorAdapter:
     # applies here — always report "not covered" so ws.py takes the full disk-replay path
     # (the constant answer that keeps the two modes' attach code identical, constitution VI).
     async def ring_covers(self, session_id, since): return False
+    # ring_covers is a constant False here, so ws.py's _maybe_catch_up returns before ever
+    # reaching the ring_tail commit-time fetch — this exists for interface parity with the
+    # remote orchestrator (and to keep the union type honest) and reports not-covered too.
+    async def ring_tail(self, session_id, since): return {"covered": False, "events": [], "head": -1}
     async def archive_session(self, *a, **k): return await _maybe_await(self._orch.archive_session(*a, **k))
     async def unarchive(self, *a, **k): return await _maybe_await(self._orch.unarchive(*a, **k))
     async def permanent_delete(self, *a, **k): return await _maybe_await(self._orch.permanent_delete(*a, **k))

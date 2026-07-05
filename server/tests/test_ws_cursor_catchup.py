@@ -179,6 +179,28 @@ def test_evicted_cursor_falls_back_to_full_replay(live_ring_edge):
     assert _count(evB, "resumeOk") == 0, _types(evB)
 
 
+def test_evict_between_probe_and_snapshot_falls_back_to_full_replay(live_ring_edge):
+    """FINDING-3: the ring evicts in the window BETWEEN the ring_covers probe (still covered)
+    and the ring_tail snapshot fetch. The commit-time coverage recheck (ring_tail) reports
+    not-covered, so NO resumeOk is sent and the attach falls back to the full disk replay
+    (replayComplete) — the FINDING-1 atomic-commitment guarantee: resumeOk is only ever
+    enqueued with a covered snapshot in hand, never ahead of a silently-evicted tail.
+
+    Faked at the ring_tail / coverage-recheck level (NOT the probe level): ring_covers is
+    left REAL — it genuinely returns covered for cursor 1 (the ring holds seq 0..3) — while
+    ring_tail returns not-covered, exactly modelling an eviction landing in that window."""
+    orch, client = live_ring_edge
+    sessions = client.app.state.sessions
+    not_covered = mock.AsyncMock(return_value={"covered": False, "events": [], "head": 3})
+    with mock.patch.object(sessions, "ring_tail", not_covered):
+        with client.websocket_connect("/ws", headers=_IDENT) as wsB:
+            wsB.send_json({"type": "attach", "sessionId": "s1", "sinceSrcSeq": 1})
+            evB = _collect_until(wsB, lambda acc: any(e.get("type") == "replayComplete" for e in acc))
+    not_covered.assert_awaited()  # the commit-time recheck actually ran (probe alone isn't enough)
+    assert _count(evB, "replayComplete") == 1, _types(evB)
+    assert _count(evB, "resumeOk") == 0, _types(evB)
+
+
 def test_attach_without_cursor_never_probes_and_full_replays(live_ring_edge):
     """No cursor → full replay, and ring_covers is NEVER consulted (the probe is gated on a
     present cursor, so a plain attach costs no extra RPC)."""
@@ -216,3 +238,50 @@ def test_local_mode_ignores_cursor_and_full_replays(ws_env):
     assert _count(events, "replayComplete") == 1, _types(events)
     assert _count(events, "resumeOk") == 0, _types(events)
     client.portal.call(orch.close_session, sid)
+
+
+# ---------------------------------------------------------------------------
+# FINDING-2: the snapshot↔live overlap dedup (`src <= head`) exercised directly. An event
+# emitted AFTER the subscriber joined the fan-out but INSIDE the snapshot range arrives via
+# BOTH the ring_tail snapshot AND the live fan-out — the dedup must deliver it exactly once.
+# The boundary case seq == head is the one `<=` (correct) vs `<` (bug) disagree on, so this
+# fails under that mutation (which otherwise passed the whole suite).
+# ---------------------------------------------------------------------------
+
+class _OverlapClient:
+    """Fake DaemonClient: subscribe() replays a preset live fan-out carrying daemon seqs
+    (via _SeqDict); the ring_tail snapshot is supplied out-of-band through pin_catch_up, so
+    RemoteDriver's snapshot-then-dedup-live path is exercised in isolation."""
+
+    def __init__(self, live_frames):
+        self._live_frames = live_frames
+
+    def subscribe(self, session_id, since=None):
+        async def _gen():
+            for f in self._live_frames:
+                yield f
+        return _gen()
+
+
+@pytest.mark.asyncio
+async def test_catch_up_dedups_snapshot_and_live_overlap_exactly_once():
+    from server.ipc.client import _SeqDict
+    from server.sessions.remote import RemoteDriver
+
+    # The live fan-out (joined BEFORE the snapshot was pinned) re-delivers seq 3 — which is
+    # ALSO the snapshot's last event (head == 3) — plus a genuinely-new seq 4 past the head.
+    live = [_SeqDict({"type": "textDelta", "text": "d3"}, 3),
+            _SeqDict({"type": "textDelta", "text": "d4"}, 4)]
+    d = RemoteDriver(_OverlapClient(live), "s1")
+    d.join_live()  # join the fan-out first (atomic-commitment ordering)
+    d.pin_catch_up(
+        [{"seq": 2, "event": {"type": "textDelta", "text": "d2"}},
+         {"seq": 3, "event": {"type": "textDelta", "text": "d3"}}],
+        head=3,
+    )
+    got = [e async for e in d.events()]
+    # seq 3 is in BOTH the snapshot and the live fan-out; the `src <= head` dedup must drop
+    # the live copy. Exactly-once by srcSeq AND by content, in order. Mutating `<=` to `<`
+    # re-admits the seq==head live frame → a duplicate d3 → [2, 3, 3, 4] → this fails.
+    assert [e.src_seq for e in got] == [2, 3, 4]
+    assert [e.to_wire()["text"] for e in got] == ["d2", "d3", "d4"]
