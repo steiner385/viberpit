@@ -4,8 +4,12 @@ Keeps orchestrator knowledge out of the generic transport (daemon.py). A2.1 wire
 the vertical-slice methods; A2.2 adds the rest.
 """
 import asyncio
+import logging
 from server.ipc.daemon import register_rpc
+from server.obs.tasks import supervise
 from server.sessions.types import SYSTEM_IDENTITY
+
+log = logging.getLogger(__name__)
 
 
 def register_orchestrator_rpc(app, orch) -> None:
@@ -19,6 +23,12 @@ def register_orchestrator_rpc(app, orch) -> None:
     # orchestrator's on_driver_replaced hook (below) restart it for a RECOVERY swap
     # (rotation / 401 recompose / crash relaunch) that carries no RPC at all.
     app.state.pumped = {}
+    # session_id -> (driver, consecutive-failure count). Keyed on driver identity so a
+    # genuinely NEW driver object gets its own one-retry budget; the SAME driver failing
+    # its restart trips the count to 2 → give up (bounded, no hot loop). See _on_pump_failed.
+    app.state.pump_failures = {}
+    # Lifetime consecutive-failure count for the single global pump.
+    app.state.global_pump_failures = 0
 
     async def _global_pump():
         q = orch.subscribe_events()
@@ -26,11 +36,28 @@ def register_orchestrator_rpc(app, orch) -> None:
             ev = await q.get()
             await app.state.publish("_global", ev)
 
-    try:
-        loop = asyncio.get_running_loop()
-        app.state.global_pump = loop.create_task(_global_pump(), name="global-pump")
-    except RuntimeError:
-        app.state.global_pump = None   # no loop at register time (sync TestClient tests don't use the bus)
+    def _on_global_pump_failed(exc: BaseException) -> None:
+        # The global pump dying stops ALL lifecycle/status frames to every edge. Restart
+        # ONCE; a second consecutive failure logs loudly and gives up (no hot loop).
+        app.state.global_pump_failures += 1
+        if app.state.global_pump_failures > 1:
+            log.error("global pump failed %d× consecutively — giving up; lifecycle/status "
+                      "frames to every edge have stopped", app.state.global_pump_failures)
+            return
+        log.warning("global pump failed — restarting once")
+        _start_global_pump()
+
+    def _start_global_pump() -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            app.state.global_pump = None   # no loop at register time (sync TestClient tests don't use the bus)
+            return
+        app.state.global_pump = supervise(
+            loop.create_task(_global_pump(), name="global-pump"),
+            name="global-pump", on_failure=_on_global_pump_failed)
+
+    _start_global_pump()
 
     async def _pump(session_id: str, driver) -> None:
         try:
@@ -43,15 +70,38 @@ def register_orchestrator_rpc(app, orch) -> None:
             if app.state.pumped.get(session_id) is driver:
                 del app.state.pumped[session_id]
 
+    def _on_pump_failed(session_id: str, driver, exc: BaseException) -> None:
+        # A pump whose driver.events() raised froze this session's live transcript.
+        # Restart it ONCE on the same driver (the finally above already cleared its
+        # registration). Per-driver consecutive counting: a NEW driver object resets to
+        # 1 (fresh budget) while the SAME driver's restart failing trips 2 → give up.
+        prev_driver, count = app.state.pump_failures.get(session_id, (None, 0))
+        count = count + 1 if prev_driver is driver else 1
+        app.state.pump_failures[session_id] = (driver, count)
+        if count > 1:
+            log.error("pump for session %s failed %d× consecutively — giving up; its live "
+                      "transcript is frozen until a reattach", session_id, count)
+            return
+        # Only restart if nothing newer took over: a recovery swap installs a replacement
+        # driver + its own pump via on_driver_replaced, so restarting the dead driver would
+        # clobber it (and _ensure_pump would happily overwrite pumped[session_id]).
+        if app.state.pumped.get(session_id) is None:
+            log.warning("pump for session %s failed — restarting once", session_id)
+            _ensure_pump(session_id, driver)
+
     def _ensure_pump(session_id: str, driver) -> None:
         # (Re)start the pump whenever the live driver isn't the one we're already
         # pumping — first attach, OR a swapped-in driver after a teardown/recompose.
         # Same driver → no-op (avoids double-pumping, which would duplicate events).
-        # Single source of truth: called by both the ensure_driver RPC (attach) and the
-        # orchestrator's on_driver_replaced hook (recovery swap with no RPC).
+        # Single source of truth: called by the ensure_driver RPC (attach), the
+        # orchestrator's on_driver_replaced hook (recovery swap with no RPC), and the
+        # supervised one-retry restart in _on_pump_failed.
         if app.state.pumped.get(session_id) is not driver:
             app.state.pumped[session_id] = driver
-            asyncio.create_task(_pump(session_id, driver), name=f"pump-{session_id}")
+            supervise(
+                asyncio.create_task(_pump(session_id, driver), name=f"pump-{session_id}"),
+                name=f"pump-{session_id}",
+                on_failure=lambda exc: _on_pump_failed(session_id, driver, exc))
 
     # A recovery path (orchestrator._reassign) swaps a session's driver WITHOUT any RPC,
     # so ensure_driver never runs to restart the pump: the old driver's events() ends,

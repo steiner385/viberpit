@@ -47,6 +47,7 @@ from server.db import db_session
 from server.ipc import protocol as proto
 from server.ipc.client import DaemonUnavailable
 from server.obs.context import bind_session, log_event
+from server.obs.tasks import supervise
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.replay import replay_window
 
@@ -264,6 +265,22 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             except Exception:
                 pass
 
+        async def _close_unexpectedly() -> None:
+            try:
+                if websocket.client_state == WebSocketState.CONNECTED:
+                    await websocket.close(code=1011)
+            except Exception:
+                pass
+
+        def _on_forward_task_failed(_exc: BaseException) -> None:
+            """A dead outbound forwarding task (batcher / lifecycle forwarder / live
+            stream) makes this socket useless: no frame will ever flush again, but the
+            socket stays open-looking — a silently frozen tail. Close it (1011) so the
+            client's reconnect logic takes over (that path replays from disk). We do NOT
+            try to restart a task on a socket we can no longer trust. Single source of
+            truth for all three forwarding tasks (supervise already logged the crash)."""
+            asyncio.create_task(_close_unexpectedly())
+
         # ------------------------------------------------------------------
         # Outbound batcher — coalesces wire dicts into one batch frame / interval
         # ------------------------------------------------------------------
@@ -285,7 +302,8 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             except asyncio.CancelledError:
                 return
 
-        batcher_task = asyncio.create_task(_batcher(), name="ws-batcher")
+        batcher_task = supervise(asyncio.create_task(_batcher(), name="ws-batcher"),
+                                 name="ws-batcher", on_failure=_on_forward_task_failed)
 
         # ------------------------------------------------------------------
         # Lifecycle event forwarder (status, rotated, …) → top-level frames
@@ -304,7 +322,8 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             except asyncio.CancelledError:
                 pass
 
-        event_task = asyncio.create_task(_forward_events(), name="ws-events")
+        event_task = supervise(asyncio.create_task(_forward_events(), name="ws-events"),
+                               name="ws-events", on_failure=_on_forward_task_failed)
 
         # ------------------------------------------------------------------
         # Attach / detach
@@ -522,8 +541,10 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             session. The stream was opened by driver.open_stream() BEFORE the replay
             (see _handle_attach's settle-race note); once this task starts, the
             stream's events() generator owns queue teardown."""
-            live_tasks[session_id] = asyncio.create_task(
-                _forward_live(stream, out_q, session_id), name=f"ws-live-{session_id}")
+            live_tasks[session_id] = supervise(
+                asyncio.create_task(
+                    _forward_live(stream, out_q, session_id), name=f"ws-live-{session_id}"),
+                name=f"ws-live-{session_id}", on_failure=_on_forward_task_failed)
 
         async def _handle_attach(session_id: str) -> None:
             if session_id in live_tasks:
@@ -634,6 +655,11 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             try:
                 await asyncio.wait_for(task, timeout=0.5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            except Exception:
+                # A supervised task that already FAILED re-raises its exception here;
+                # it was observed + logged by supervise, so swallow it — never let a
+                # dead forwarding task crash the teardown of an otherwise clean detach.
                 pass
 
         # ------------------------------------------------------------------
@@ -768,12 +794,16 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 await asyncio.wait_for(event_task, timeout=0.5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+            except Exception:
+                pass  # already observed + logged by supervise (see _handle_detach)
 
             batcher_task.cancel()
             try:
                 await asyncio.wait_for(batcher_task, timeout=0.5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+            except Exception:
+                pass  # already observed + logged by supervise (see _handle_detach)
 
             await orchestrator.unsubscribe_events(event_q)
             log.debug("ws.disconnect identity=%s", identity)

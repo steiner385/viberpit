@@ -9,6 +9,8 @@ later `ensure_driver` (reattach) could ever restart the pump. Events published i
 a dead/abandoned generator; the session's published-event count froze.
 """
 import asyncio
+import contextlib
+
 import pytest
 
 from server.ipc.client import DaemonClient
@@ -193,3 +195,122 @@ async def test_repeated_ensure_driver_same_driver_pumps_once():
                 await asyncio.wait_for(stream.__anext__(), 0.3)
         finally:
             await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Supervision of the fire-and-forget pump tasks (audit W2.6)
+# ---------------------------------------------------------------------------
+# A pump/global-pump created bare (no done-callback) swallows an unexpected
+# exception: the task dies, its work stops, and NOTHING logs, restarts, or
+# signals. `supervise` observes the failure, logs loudly, and applies a bounded
+# one-retry-then-give-up recovery so a wedged driver can't hot-loop.
+
+
+class _RaisingDriver:
+    """events() yields *boom_after* values then RAISES — a pump crash. Counts starts
+    so a test can assert how many times the pump was (re)started."""
+    def __init__(self, *, boom_after: int = 0):
+        self.boom_after = boom_after
+        self.starts = 0
+    def current_status(self): return "idle"
+    def queued(self): return []
+
+    async def events(self):
+        self.starts += 1
+        for i in range(self.boom_after):
+            yield _Evt(i)
+        raise RuntimeError("pump boom")
+
+
+@pytest.mark.asyncio
+async def test_pump_restarts_once_then_gives_up_on_repeated_failure(caplog):
+    """A _pump whose driver.events() raises must be restarted exactly ONCE; the
+    second consecutive failure logs and gives up — no hot loop."""
+    app = create_daemon_app()
+    d = _RaisingDriver()                       # raises immediately, every start
+    register_orchestrator_rpc(app, _Orch(d, d))
+    async with serve_daemon_uds(app) as sock:
+        client = DaemonClient(sock)
+        try:
+            with caplog.at_level("ERROR"):
+                await client.call("ensure_driver", session_id="s1")   # start pump → crash
+                await asyncio.sleep(0.3)                              # let the retry run + crash
+        finally:
+            await client.aclose()
+    assert d.starts == 2, "expected initial start + exactly one restart"
+    driver, count = app.state.pump_failures["s1"]
+    assert driver is d and count == 2          # 2nd failure recorded, then gave up
+    assert any("giving up" in r.getMessage() for r in caplog.records), \
+        "give-up must be logged loudly"
+
+
+@pytest.mark.asyncio
+async def test_pump_auto_restart_delivers_after_transient_failure():
+    """The auto-retry (no reattach) actually recovers: a driver that raises on its
+    FIRST events() call but streams on the restart keeps the live transcript flowing."""
+    app = create_daemon_app()
+    q: asyncio.Queue = asyncio.Queue()
+
+    class _FlakyDriver:
+        def __init__(self): self.starts = 0
+        def current_status(self): return "idle"
+        def queued(self): return []
+        async def events(self):
+            self.starts += 1
+            if self.starts == 1:
+                raise RuntimeError("transient pump boom")
+            while True:
+                yield await q.get()
+
+    d = _FlakyDriver()
+    register_orchestrator_rpc(app, _Orch(d))
+    async with serve_daemon_uds(app) as sock:
+        client = DaemonClient(sock)
+        try:
+            stream = client.subscribe("s1")
+            await client.events_ready("s1")
+            await client.call("ensure_driver", session_id="s1")   # pump → crash → auto-restart (no RPC)
+            await asyncio.sleep(0.2)
+            await q.put(_Evt(42))
+            e = await asyncio.wait_for(stream.__anext__(), 2)
+            assert e["i"] == 42
+            assert d.starts == 2      # crashed once, auto-restarted once, then healthy
+        finally:
+            await client.aclose()
+
+
+class _RaisingQueue:
+    """A subscribe_events() queue whose get() raises — forces the global pump to crash."""
+    async def get(self):
+        raise RuntimeError("global boom")
+
+
+class _GlobalOrch(_Orch):
+    """Global-pump source: first subscribe hands back a crashing queue, later
+    subscribes hand back a blocking (healthy) queue. Counts subscribes so a test
+    can assert the pump restarted."""
+    def __init__(self, *drivers):
+        super().__init__(*drivers)
+        self.subscribe_calls = 0
+
+    def subscribe_events(self):
+        self.subscribe_calls += 1
+        if self.subscribe_calls == 1:
+            return _RaisingQueue()
+        return asyncio.Queue()        # blocks forever → restarted pump survives
+
+
+@pytest.mark.asyncio
+async def test_global_pump_restarts_once_on_failure():
+    """The _global_pump crashing (its event source raised) must restart once and
+    recover — otherwise ALL lifecycle/status frames to every edge stop forever."""
+    orch = _GlobalOrch()
+    app = create_daemon_app()
+    register_orchestrator_rpc(app, orch)      # starts global pump #1 on this loop
+    await asyncio.sleep(0.3)                   # #1 crashes → restart → #2 subscribes + blocks
+    assert orch.subscribe_calls == 2, "global pump must restart exactly once"
+    assert app.state.global_pump_failures == 1
+    assert not app.state.global_pump.done(), "the restarted global pump must be alive"
+    app.state.global_pump.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await app.state.global_pump
