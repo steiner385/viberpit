@@ -29,7 +29,7 @@ _ORCH_VARS = {"orch", "orchestrator"}
 _LOCAL_ONLY: set[str] = set()
 
 
-def _orch_attr_accesses() -> set[str]:
+def _orch_attr_accesses(*, private: bool = False) -> set[str]:
     """AST-scan the request-handling layers for `orch.<x>` / `orchestrator.<x>` access."""
     root = Path(server.__file__).parent
     names: set[str] = set()
@@ -41,7 +41,7 @@ def _orch_attr_accesses() -> set[str]:
                     isinstance(node, ast.Attribute)
                     and isinstance(node.value, ast.Name)
                     and node.value.id in _ORCH_VARS
-                    and not node.attr.startswith("_")
+                    and node.attr.startswith("_") == private
                 ):
                     names.add(node.attr)
     return names
@@ -62,6 +62,20 @@ def test_remote_orchestrator_covers_every_request_layer_call():
         f"RemoteOrchestrator is missing {missing} — the request layer calls these on `orch`, "
         f"but daemon mode would AttributeError -> 500. Add a proxy method in server/sessions/remote.py "
         f"(or add to _LOCAL_ONLY if truly local-only)."
+    )
+
+
+def test_request_layer_never_touches_private_orchestrator_attrs():
+    """The guard above only checks PUBLIC names, so a private `orch._x` call site slips
+    past it — and private methods are never proxied on RemoteOrchestrator by convention.
+    That combination broke archived-session search: the API called a private
+    orch transcript-path resolver that only the in-process facade had, so daemon mode
+    AttributeError'd -> 500 and the frontend silently showed the unfiltered list."""
+    private = sorted(_orch_attr_accesses(private=True))
+    assert not private, (
+        f"request layer accesses private orchestrator attrs {private} — these bypass the "
+        f"public-coverage guard and are missing from RemoteOrchestrator in daemon mode. "
+        f"Expose a public method on the orchestrator (+ facade + remote proxy) instead."
     )
 
 
@@ -112,6 +126,22 @@ async def test_simple_and_quirk_methods_round_trip():
 
 
 @pytest.mark.asyncio
+async def test_resolve_transcript_path_round_trips():
+    """resolve_transcript_path must be proxied (archived-scope search calls it on the
+    edge orchestrator to read transcripts for matching)."""
+    app, orch = _build()
+    orch.resolve_transcript_path = mock.AsyncMock(return_value="/fake/arch.jsonl")
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            assert await ro.resolve_transcript_path("s1") == "/fake/arch.jsonl"
+        finally:
+            await ro.aclose()
+    orch.resolve_transcript_path.assert_called_once_with(session_id="s1")
+
+
+@pytest.mark.asyncio
 async def test_transcript_window_returns_replay_window():
     """transcript_window resolves path via daemon RPC then replays locally."""
     app, orch = _build()
@@ -134,9 +164,9 @@ async def test_transcript_window_returns_replay_window():
 async def test_transcript_window_no_path_returns_none():
     """transcript_window returns None when the daemon reports no transcript path."""
     app, orch = _build()
-    # The resolve_transcript_path RPC calls _resolve_transcript_path (DB-glob
+    # The resolve_transcript_path RPC calls the orchestrator resolver (DB-glob
     # fallback included); mock that seam so no DB is needed here.
-    orch._resolve_transcript_path = mock.AsyncMock(return_value=None)
+    orch.resolve_transcript_path = mock.AsyncMock(return_value=None)
 
     async with serve_daemon_uds(app) as sock:
         ro = RemoteOrchestrator(DaemonClient(sock))

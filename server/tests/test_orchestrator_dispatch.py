@@ -181,7 +181,7 @@ async def test_latest_suggestions_prepends_proposal_for_done_session(monkeypatch
     async def fake_resolve_transcript(session_id):
         return "/fake/transcript.jsonl"
 
-    monkeypatch.setattr(orch, "_resolve_transcript_path", fake_resolve_transcript)
+    monkeypatch.setattr(orch, "resolve_transcript_path", fake_resolve_transcript)
 
     # Stub os.path.getmtime to return a stable signature
     import os

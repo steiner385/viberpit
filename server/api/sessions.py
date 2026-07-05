@@ -493,7 +493,7 @@ async def search_sessions(
     if scope == "archived":
         rows = await orch.list_archived()
         items = [(r["id"], r["name"]) for r in rows]
-        ids = await _search_ids(items, orch._resolve_transcript_path, terms)
+        ids = await _search_ids(items, orch.resolve_transcript_path, terms)
     else:
         records = await orch.list_sessions()
         items = [(r.id, r.name) for r in records]

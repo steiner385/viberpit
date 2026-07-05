@@ -420,15 +420,21 @@ class RemoteOrchestrator:
                                     max_turns=max_turns)
         return r["events"]
 
+    async def resolve_transcript_path(self, session_id):
+        """Resolve a transcript path via the daemon — unlike transcript_path (in-memory
+        driver state only), this includes the DB-glob fallback, so archived sessions
+        resolve too. Search and transcript replay both depend on that."""
+        return await self._client.call("resolve_transcript_path", session_id=session_id)
+
     async def transcript_window(self, session_id, *, before=None, limit=None):
         """Resolve the transcript path via daemon, then replay locally.
 
-        Uses the resolve_transcript_path RPC (not transcript_path) so archived
+        Uses resolve_transcript_path (not transcript_path) so archived
         sessions — absent from the daemon's in-memory driver state but resolvable
         via its DB-glob fallback — still replay. limit=None → full transcript.
         """
         from server.sessions.replay import replay_window
-        path = await self._client.call("resolve_transcript_path", session_id=session_id)
+        path = await self.resolve_transcript_path(session_id)
         if not path:
             return None
         try:

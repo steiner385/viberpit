@@ -42,14 +42,14 @@ def _make_app_with_patched_transcript(tmp_path, n_turns, db_url):
     transcript_path = _write_transcript(tmp_path, n_turns)
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
 
-    # Patch _resolve_transcript_path (used by transcript_events + transcript_window)
+    # Patch resolve_transcript_path (used by transcript_events + transcript_window)
     # to return the tmp file path for the seeded session, None for others.
     session_id = "test-session-paging-001"
 
     async def _fake_resolve(sid):
         return transcript_path if sid == session_id else None
 
-    orch._resolve_transcript_path = _fake_resolve
+    orch.resolve_transcript_path = _fake_resolve
 
     # Patch get_session so the session appears to exist (not 404)
     orch.get_session = AsyncMock(side_effect=lambda sid: (

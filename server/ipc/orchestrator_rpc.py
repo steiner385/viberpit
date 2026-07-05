@@ -214,11 +214,11 @@ def register_orchestrator_rpc(app, orch) -> None:
     async def _maybe_await(r):
         return await r if inspect.isawaitable(r) else r
 
-    # 24 methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
+    # Methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
     _SIMPLE = [
         "archive_session", "rename_session", "set_autopilot_paused", "interrupt",
         "set_permission_mode", "cancel_queued", "resolve_permission", "answer_question",
-        "transcript_path", "pending_questions", "pop_pending_initial_prompt",
+        "transcript_path", "resolve_transcript_path", "pending_questions", "pop_pending_initial_prompt",
         "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
         "latest_suggestions", "generate_suggestions_now", "seed_idle_suggestions", "latest_summary",
         "begin_drain", "drain_status",
@@ -256,16 +256,9 @@ def register_orchestrator_rpc(app, orch) -> None:
         events = await orch.transcript_events(**params)
         return {"events": [e.to_wire() for e in events]}
 
-    async def resolve_transcript_path(params: dict):
-        # Unlike the transcript_path RPC (in-memory driver state only), this
-        # includes the DB-glob fallback, so archived sessions resolve too —
-        # RemoteOrchestrator.transcript_window replays the file locally.
-        return await orch._resolve_transcript_path(params["session_id"])
-
     register_rpc(app, "unarchive", unarchive)
     register_rpc(app, "adopt_session", adopt_session)
     register_rpc(app, "transcript_events", transcript_events)
-    register_rpc(app, "resolve_transcript_path", resolve_transcript_path)
 
     async def usage(params: dict) -> dict:
         u = await orch.poller.get(params["name"])

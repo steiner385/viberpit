@@ -88,7 +88,7 @@ def _make_app(tmp_path, n_turns, db_url, *, has_transcript=True):
         return None
 
     # Patch transcript_path and get_session on the orchestrator
-    orch._resolve_transcript_path = _fake_transcript_path
+    orch.resolve_transcript_path = _fake_transcript_path
     # transcript_path is the sync method on orchestrator; we also need to patch
     # the method on the facade (which wraps the orchestrator). Easiest: patch
     # transcript_path directly on the orchestrator instance so the facade forwards it.
@@ -101,7 +101,7 @@ def _make_app(tmp_path, n_turns, db_url, *, has_transcript=True):
     ))
 
     # No transcript_events mock: export.md flows through the real windowed
-    # replay path (_resolve_transcript_path → replay_window) over the JSONL above.
+    # replay path (resolve_transcript_path → replay_window) over the JSONL above.
 
     app = create_app(orchestrator=orch)
     return app, session_id, no_transcript_id
