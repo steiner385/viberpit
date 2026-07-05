@@ -261,7 +261,8 @@ class CicdDoctorLoop:
                 .order_by(CiFinding.resolved_at.desc()))).scalars().all()
             resolved_by_fp: dict[str, CiFinding] = {}
             for r in resolved_rows:
-                resolved_by_fp.setdefault(r.fingerprint, r)  # first == most recent
+                if r.fingerprint is not None:
+                    resolved_by_fp.setdefault(r.fingerprint, r)  # first == most recent
 
             for fp, f in fresh_by_fp.items():
                 row = open_by_fp.get(fp)
@@ -301,9 +302,9 @@ class CicdDoctorLoop:
         # Pass 2: run side effects now that the DB write lock is free.
         for level, summary, kind, target, detail in to_emit:
             await self._ctx.emit(level, summary, kind=kind, target=target, detail=detail)
-        for issue_number in to_reopen:
+        for reopen_number in to_reopen:
             if self._reopen_issue is not None:
-                await self._reopen_issue(repo, issue_number)
+                await self._reopen_issue(repo, reopen_number)
         for fp, title, body in to_file:
             issue_number = await self._file_issue(repo, title, body)
             if issue_number is not None:

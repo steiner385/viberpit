@@ -1465,6 +1465,8 @@ class SessionOrchestrator:
                 return "unknown"
             if row.issue_number is not None:
                 return "exists"
+            if row.repo is None:
+                return "unknown"
             repo, title, detail = row.repo, row.title or "", dict(row.detail or {})
         number = await asyncio.to_thread(
             ci_issues.create_issue, repo, title, issue_body(title, detail))
