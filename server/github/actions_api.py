@@ -116,12 +116,40 @@ def repo_ci_meta(repo: str, *, run=gitrepos._run_gh) -> tuple[str, set[str]]:
     return branch, required
 
 
-def workflow_texts(repo: str, default_branch: str, *, run=gitrepos._run_gh) -> dict[str, str]:
+# Process-global cache: repo -> (default-branch HEAD sha, {path: text}). Workflow
+# YAML changes only when a commit lands on the default branch, so between 900s
+# ticks a repo with an unchanged HEAD skips the whole listing + N content reads
+# (#452). Keyed by sha so a genuine workflow change is picked up next tick.
+_WORKFLOW_CACHE: dict[str, tuple[str, dict[str, str]]] = {}
+
+
+def _default_branch_head_sha(repo: str, default_branch: str, *, run) -> str | None:
+    """One cheap read of the default branch's HEAD commit sha — the cache key.
+    None on any failure, so the caller degrades to an uncached refetch."""
+    try:
+        data = _json(run(["api", f"repos/{repo}/commits/{default_branch}"]))
+    except Exception:
+        log.debug("cicd.head_sha_failed repo=%s", repo, exc_info=True)
+        return None
+    sha = data.get("sha") if isinstance(data, dict) else None
+    return sha or None
+
+
+def workflow_texts(repo: str, default_branch: str, *, run=gitrepos._run_gh,
+                   cache: dict[str, tuple[str, dict[str, str]]] | None = None) -> dict[str, str]:
     import base64
+    cache = _WORKFLOW_CACHE if cache is None else cache
+    head_sha = _default_branch_head_sha(repo, default_branch, run=run)
+    if head_sha is not None:
+        hit = cache.get(repo)
+        if hit is not None and hit[0] == head_sha:
+            return dict(hit[1])  # copy: callers must not mutate the cached dict
     try:
         listing = _json(run(["api",
                              f"repos/{repo}/contents/.github/workflows?ref={default_branch}"]))
     except Exception:
+        # Transient listing failure — do NOT cache the empty result, so the next
+        # tick retries instead of masking the outage until HEAD changes.
         return {}
     out: dict[str, str] = {}
     items: list[Any] = listing if isinstance(listing, list) else []
@@ -134,4 +162,6 @@ def workflow_texts(repo: str, default_branch: str, *, run=gitrepos._run_gh) -> d
             out[path] = base64.b64decode(content.get("content") or "").decode(errors="replace")
         except Exception:
             log.debug("cicd.workflow_read_failed repo=%s path=%s", repo, path, exc_info=True)
+    if head_sha is not None:  # a successful listing (even empty) caches under this sha
+        cache[repo] = (head_sha, dict(out))
     return out

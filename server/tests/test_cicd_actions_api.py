@@ -76,13 +76,72 @@ def test_repo_ci_meta_error_degrades_to_empty():
     assert branch == "master" and required == set()
 
 
-def test_workflow_texts_decodes_contents():
+def _workflow_fake(sha="sha1", body=b"name: CI\n"):
+    """A gh runner that answers the three workflow_texts endpoints and records
+    how many contents/commits calls it served."""
     import base64
     listing = [{"path": ".github/workflows/ci.yml", "type": "file"}]
-    content = {"content": base64.b64encode(b"name: CI\n").decode(), "encoding": "base64"}
+    content = {"content": base64.b64encode(body).decode(), "encoding": "base64"}
+    calls = {"commits": 0, "contents": 0, "sha": sha}
     def fake_run(args, token=None):
-        # Directory listing vs file read — both URLs end in `?ref=master`.
-        is_listing = "contents/.github/workflows?" in args[1]
+        url = args[1]
+        if url.startswith("repos/o/r/commits/"):
+            calls["commits"] += 1
+            return _ok({"sha": calls["sha"]})
+        calls["contents"] += 1
+        is_listing = "contents/.github/workflows?" in url
         return _ok(listing if is_listing else content)
-    assert workflow_texts("o/r", "master", run=fake_run) == {
+    return fake_run, calls
+
+
+def test_workflow_texts_decodes_contents():
+    fake_run, _ = _workflow_fake()
+    assert workflow_texts("o/r", "master", run=fake_run, cache={}) == {
         ".github/workflows/ci.yml": "name: CI\n"}
+
+
+def test_workflow_texts_caches_by_head_sha():
+    """#452: an unchanged default-branch HEAD serves from cache — no contents reads."""
+    fake_run, calls = _workflow_fake(sha="sha1")
+    cache: dict = {}
+    first = workflow_texts("o/r", "master", run=fake_run, cache=cache)
+    contents_after_first = calls["contents"]
+    assert contents_after_first > 0  # the first tick did the listing + file reads
+    second = workflow_texts("o/r", "master", run=fake_run, cache=cache)
+    assert second == first
+    assert calls["contents"] == contents_after_first  # cache hit: no new contents reads
+    assert calls["commits"] == 2                       # only the cheap sha check re-ran
+
+
+def test_workflow_texts_refetches_when_head_sha_changes():
+    """A new commit on the default branch invalidates the cache."""
+    fake_run, calls = _workflow_fake(sha="sha1")
+    cache: dict = {}
+    workflow_texts("o/r", "master", run=fake_run, cache=cache)
+    before = calls["contents"]
+    calls["sha"] = "sha2"  # a commit landed
+    workflow_texts("o/r", "master", run=fake_run, cache=cache)
+    assert calls["contents"] > before  # refetched
+
+
+def test_workflow_texts_listing_failure_not_cached():
+    """A transient listing failure must not poison the cache under that sha."""
+    import base64
+    content = {"content": base64.b64encode(b"name: CI\n").decode()}
+    listing = [{"path": ".github/workflows/ci.yml", "type": "file"}]
+    state = {"fail_listing": True}
+    def fake_run(args, token=None):
+        url = args[1]
+        if url.startswith("repos/o/r/commits/"):
+            return _ok({"sha": "sha1"})
+        if "contents/.github/workflows?" in url:
+            if state["fail_listing"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="502")
+            return _ok(listing)
+        return _ok(content)
+    cache: dict = {}
+    assert workflow_texts("o/r", "master", run=fake_run, cache=cache) == {}
+    assert "o/r" not in cache          # not cached under sha1
+    state["fail_listing"] = False
+    assert workflow_texts("o/r", "master", run=fake_run, cache=cache) == {
+        ".github/workflows/ci.yml": "name: CI\n"}  # retried, now succeeds
