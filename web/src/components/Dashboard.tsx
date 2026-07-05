@@ -492,6 +492,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const { data: settingsData } = useSettings()
   const { data: config } = useConfig()
   const reposQuery = useGithubRepos()
+  const { data: models = [] } = useModels()
 
   const createSession = useCreateSession()
   const renameSession = useRenameSession()
@@ -674,13 +675,15 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   function handleCollapseHighlighted() { if (highlightedGroupKey) collapseGroup(highlightedGroupKey) }
   function handleToggleHighlighted() { if (highlightedGroupKey) toggleCollapse(highlightedGroupKey) }
 
-  function handleDispatch({ initialPrompt, repo, attachmentIds }: { initialPrompt: string; repo: string | null; attachmentIds: string[] }) {
+  function handleDispatch({ initialPrompt, repo, account, model, attachmentIds }: { initialPrompt: string; repo: string | null; account: string | null; model: string | null; attachmentIds: string[] }) {
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     createSession.mutate(
       {
         initialPrompt,
         repo: repo ?? undefined,
         branch: repoInfo?.defaultBranch ?? undefined,
+        account: account ?? undefined,
+        model: model ?? undefined,
         attachmentIds: attachmentIds.length ? attachmentIds : undefined,
       },
       {
@@ -818,6 +821,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             repos={reposQuery.data ?? []}
             reposLoading={reposQuery.isLoading}
             reposError={reposQuery.isError}
+            accounts={accounts}
+            models={models}
             onDispatch={handleDispatch}
             onNavigate={navigate}
             onOpenHighlighted={handleOpenHighlighted}

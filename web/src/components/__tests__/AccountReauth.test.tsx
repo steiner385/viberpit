@@ -28,6 +28,7 @@ vi.mock('@/api/hooks', () => ({
   useUpdateAccountNickname: vi.fn(),
   useDeleteAccount: vi.fn(),
   useGithubRepos: vi.fn(),
+  useModels: vi.fn(() => ({ data: [] })),
   useGithubBranches: vi.fn(),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
