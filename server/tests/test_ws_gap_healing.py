@@ -66,6 +66,27 @@ async def test_forward_live_resyncs_on_daemon_gap():
 
 
 @pytest.mark.asyncio
+async def test_forward_live_resyncs_on_local_overflow_gap():
+    """The synthetic GAP the edge client injects on a LOCAL subscriber-queue
+    overflow (transcript audit V1) carries oldest=None — no daemon seq anchor.
+    It must be handled by the SAME _forward_live branch as the daemon-eviction
+    GAP: not forwarded, consuming a seq so the client self-heals from disk."""
+    from server.bridge.ws import _forward_live
+    from server.ipc import protocol as proto
+    out_q: asyncio.Queue = asyncio.Queue()
+    driver = _FakeDriver([
+        _FakeEvent({"type": "textDelta", "text": "a"}),
+        _FakeEvent({"type": proto.GAP, "stream": "sess-1", "lost": 3, "oldest": None}),
+        _FakeEvent({"type": "textDelta", "text": "c"}),
+    ])
+    await _forward_live(driver, out_q, "sess-1")
+    got = [out_q.get_nowait(), out_q.get_nowait()]
+    assert out_q.empty()  # the gap sentinel itself is never forwarded
+    assert [e["text"] for e in got] == ["a", "c"]
+    assert [e["seq"] for e in got] == [0, 2]  # seq 1 consumed by the gap → visible hole
+
+
+@pytest.mark.asyncio
 async def test_forward_live_gap_on_to_wire_failure():
     """A single bad event must not kill the stream, and must leave a seq hole
     so the client self-heals."""

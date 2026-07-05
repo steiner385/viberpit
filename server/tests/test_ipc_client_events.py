@@ -1,5 +1,6 @@
 import asyncio
 import pytest
+from server.ipc import protocol as proto
 from server.ipc.client import DaemonClient
 from server.ipc.daemon import create_daemon_app
 from server.tests.ipc_harness import serve_daemon_uds
@@ -86,4 +87,76 @@ async def test_deliver_drops_oldest_on_overflow():
     client._deliver("s", {"i": 3})           # overflow → drop oldest ({"i":1})
     drained = [q.get_nowait() for _ in range(2)]
     assert drained == [{"i": 2}, {"i": 3}]
+    await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Local subscriber-queue overflow → synthetic GAP (transcript audit V1)
+# ---------------------------------------------------------------------------
+# When a local subscriber's bounded queue overflows, _deliver drops the oldest
+# queued event. Dropping silently left the edge view permanently behind durable
+# storage (the daemon-side watermark had already advanced, so a reconnect never
+# re-sent the dropped events). _iter now injects ONE GAP control frame per
+# overflow burst — the same wire shape as the daemon ring-eviction GAP — so the
+# ws._forward_live consumer forces a from-disk resync.
+
+
+@pytest.mark.asyncio
+async def test_overflow_emits_single_gap_then_events_flow():
+    client = DaemonClient("/unused.sock")
+    q = client._add_subscriber("s", maxsize=2)
+    gen = client._iter("s", q)
+    # 5 events into a maxsize-2 queue → 3 oldest dropped; survivors {i:3},{i:4}.
+    for i in range(5):
+        client._deliver("s", {"i": i})
+    first = await asyncio.wait_for(gen.__anext__(), 2)
+    assert first == {"type": proto.GAP, "stream": "s", "lost": 3, "oldest": None}
+    # Survivors still flow, with NO further GAP.
+    survivors = [await asyncio.wait_for(gen.__anext__(), 2) for _ in range(2)]
+    assert survivors == [{"i": 3}, {"i": 4}]
+    # A fresh event after the burst drains cleanly (no spurious second GAP).
+    client._deliver("s", {"i": 5})
+    assert await asyncio.wait_for(gen.__anext__(), 2) == {"i": 5}
+    await gen.aclose()
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_second_overflow_burst_yields_second_gap():
+    client = DaemonClient("/unused.sock")
+    q = client._add_subscriber("s", maxsize=2)
+    gen = client._iter("s", q)
+    for i in range(5):                       # burst 1: 3 dropped
+        client._deliver("s", {"i": i})
+    g1 = await asyncio.wait_for(gen.__anext__(), 2)
+    assert g1["type"] == proto.GAP and g1["lost"] == 3
+    for _ in range(2):                       # drain survivors, queue now empty
+        await asyncio.wait_for(gen.__anext__(), 2)
+    for i in range(5, 9):                    # burst 2: 4 events → 2 dropped
+        client._deliver("s", {"i": i})
+    g2 = await asyncio.wait_for(gen.__anext__(), 2)
+    assert g2 == {"type": proto.GAP, "stream": "s", "lost": 2, "oldest": None}
+    await gen.aclose()
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_non_overflowing_subscriber_gets_every_event_and_no_gap():
+    """Two subscribers on one stream: only the slow one overflows. The fast one
+    receives every event and NO GAP — the dropped counter is strictly per-queue."""
+    client = DaemonClient("/unused.sock")
+    slow = client._add_subscriber("s", maxsize=2)
+    fast = client._add_subscriber("s", maxsize=100)
+    gslow = client._iter("s", slow)
+    gfast = client._iter("s", fast)
+    for i in range(5):
+        client._deliver("s", {"i": i})
+    fast_got = [await asyncio.wait_for(gfast.__anext__(), 2) for _ in range(5)]
+    assert fast_got == [{"i": i} for i in range(5)]
+    assert all(e.get("type") != proto.GAP for e in fast_got)
+    # The overflowing subscriber DOES get a GAP for the same burst.
+    g = await asyncio.wait_for(gslow.__anext__(), 2)
+    assert g == {"type": proto.GAP, "stream": "s", "lost": 3, "oldest": None}
+    await gslow.aclose()
+    await gfast.aclose()
     await client.aclose()
