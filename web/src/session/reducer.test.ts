@@ -60,12 +60,45 @@ describe('transcriptReducer', () => {
 
   // ── orphan toolResult ──────────────────────────────────────────────────────
 
-  it('orphan toolResult (no matching toolCall) does not throw and leaves state unchanged', () => {
+  it('orphan toolResult (no matching toolCall) does not throw, leaves rendering unchanged, and is parked', () => {
     const s = reduce([
       { type: 'turnStart', turnId: 't1' },
     ])
     const next = transcriptReducer(s, { type: 'toolResult', toolId: 'nonexistent', ok: true, payload: {} })
-    expect(next).toBe(s) // referentially same — no change
+    // Nothing renders differently — same turns/openBlockId reference — but the
+    // result is parked (not dropped) for a toolCall that may still arrive.
+    expect(next.turns).toBe(s.turns)
+    expect(next.openBlockId).toBe(s.openBlockId)
+    expect(next.orphanToolResults['nonexistent']).toEqual({ ok: true, payload: {} })
+  })
+
+  it('a late toolCall adopts an earlier orphaned toolResult (main thread)', () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'toolResult', toolId: 'tool-1', ok: true, payload: { content: 'late result' } },
+    ])
+    // Parked, not yet visible on any block.
+    expect(s.orphanToolResults['tool-1']).toEqual({ ok: true, payload: { content: 'late result' } })
+
+    const next = transcriptReducer(s, {
+      type: 'toolCall', turnId: 't1', toolId: 'tool-1', name: 'Read', toolKind: 'read', input: { path: '/foo' },
+    })
+    const toolBlock = next.turns[0].blocks.find((b) => b.kind === 'tool')
+    expect(toolBlock).toMatchObject({ kind: 'tool', toolId: 'tool-1', result: { ok: true, payload: { content: 'late result' } } })
+    // Consumed — no longer sitting in the buffer.
+    expect(next.orphanToolResults['tool-1']).toBeUndefined()
+  })
+
+  it('caps the orphan toolResult buffer, evicting the oldest entry first', () => {
+    const events: SessionEvent[] = [{ type: 'turnStart', turnId: 't1' }]
+    // One more than the cap (50) — the first inserted ("orphan-0") must be evicted.
+    for (let i = 0; i < 51; i++) {
+      events.push({ type: 'toolResult', toolId: `orphan-${i}`, ok: true, payload: { i } })
+    }
+    const s = reduce(events)
+    expect(Object.keys(s.orphanToolResults)).toHaveLength(50)
+    expect(s.orphanToolResults['orphan-0']).toBeUndefined()
+    expect(s.orphanToolResults['orphan-50']).toEqual({ ok: true, payload: { i: 50 } })
   })
 
   // ── toolResult attaches to matching tool block ─────────────────────────────
@@ -186,6 +219,26 @@ describe('transcriptReducer', () => {
     expect(reset.replaying).toBe(true)
     // Rotations are live-only (never re-emitted on reattach) — must survive reset.
     expect(reset.rotations).toHaveLength(1)
+  })
+
+  it('replayReset clears parked orphan toolResults so a post-reset toolCall does not adopt a stale one', () => {
+    const built = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'toolResult', toolId: 'tool-1', ok: true, payload: { content: 'pre-reset' } },
+    ])
+    expect(built.orphanToolResults['tool-1']).toEqual({ ok: true, payload: { content: 'pre-reset' } })
+
+    const reset = transcriptReducer(built, { type: 'replayReset' } as SessionEvent)
+    expect(reset.orphanToolResults).toEqual({})
+
+    // Fresh replay after the reset: toolCall for the same toolId, no toolResult
+    // re-delivered yet — must NOT adopt the stale pre-reset payload.
+    const after = transcriptReducer(reset, {
+      type: 'toolCall', turnId: 't1', toolId: 'tool-1', name: 'Read', toolKind: 'read', input: {},
+    })
+    const toolBlock = after.turns.find((t) => t.id === 't1')?.blocks.find((b) => b.kind === 'tool')
+    expect(toolBlock).toMatchObject({ kind: 'tool', toolId: 'tool-1' })
+    if (toolBlock?.kind === 'tool') expect(toolBlock.result).toBeUndefined()
   })
 
   // ── referential stability of untouched turns ───────────────────────────────
@@ -611,6 +664,27 @@ describe('sub-agent thread routing', () => {
     })
     const block = s.subAgents['task1'].turns[0].blocks[0]
     expect(block).toMatchObject({ kind: 'tool', toolId: 'g1', result: { ok: true } })
+  })
+
+  it('a late tagged toolCall adopts an earlier orphaned toolResult inside its sub-thread', () => {
+    let s = initialTranscript
+    s = transcriptReducer(s, { type: 'turnStart', turnId: 'sa1', parentToolUseId: 'task1' })
+    // The toolResult arrives first (reorder around a reconnect/heal boundary) —
+    // no block exists in the sub-thread yet, so it must be parked, not dropped.
+    s = transcriptReducer(s, {
+      type: 'toolResult', toolId: 'g1', ok: true, payload: { content: 'hit' }, parentToolUseId: 'task1',
+    })
+    // turnStart already created the empty turn; the result must not appear on any block yet.
+    expect(s.subAgents['task1'].turns[0].blocks).toEqual([])
+    expect(s.orphanToolResults['g1']).toEqual({ ok: true, payload: { content: 'hit' } })
+
+    s = transcriptReducer(s, {
+      type: 'toolCall', turnId: 'sa1', toolId: 'g1', name: 'Grep', toolKind: 'search',
+      input: {}, parentToolUseId: 'task1',
+    })
+    const block = s.subAgents['task1'].turns[0].blocks[0]
+    expect(block).toMatchObject({ kind: 'tool', toolId: 'g1', result: { ok: true, payload: { content: 'hit' } } })
+    expect(s.orphanToolResults['g1']).toBeUndefined()
   })
 })
 
