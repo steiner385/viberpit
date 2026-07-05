@@ -49,7 +49,19 @@ def create_daemon_app() -> FastAPI:
     # resume), so the disk's last user entry can belong to a PREVIOUS, completed
     # turn — dropping that amputates history nothing re-supplies.
     app.state.turn_start_ts = {}     # stream -> float epoch seconds
-    _TERMINAL_STATES = {"done", "complete", "needs_attention", "idle"}
+    # A turn closes on end-of-turn EVENTS, not on a status guess. `turnEnd` (SDK
+    # ResultMessage → ev.TurnEnd) is the canonical completion; `turnFailure`
+    # (ev.TurnFailure — the recoverable rate_limit/auth_401/turn_dropped settle) is
+    # the failure completion. `_TURN_END_EVENTS` names them.
+    _TURN_END_EVENTS = {"turnEnd", "turnFailure"}
+    # Fallback ONLY: the drain's exception path settles to a terminal status WITHOUT
+    # emitting a turnEnd (TurnEnd is produced solely from the SDK ResultMessage during
+    # a normal receive), so a `status` in this set is the only close signal there.
+    # `idle` is deliberately EXCLUDED: derive_status returns it only as the never-ran
+    # sentinel (turns_completed == 0), and recovery/reset paths (interrupt of the first
+    # turn, a rehydrated/rebuilt driver) emit it mid-flight — closing on it would drop
+    # the resume anchor and null turn_started_at, re-enabling the #482 amputation.
+    _TERMINAL_STATUSES = {"done", "complete", "needs_attention"}
     # Per-stream observability (issue #185): the ring buffer drops its oldest entry on
     # every event past the cap — that's NORMAL for live delivery, so it must NOT log per
     # event. We count instead. `dropped` only matters as a precursor to a RECONNECT GAP
@@ -80,9 +92,11 @@ def create_daemon_app() -> FastAPI:
     app.state.turn_open_for = turn_open_for
 
     def turn_started_at(stream: str) -> float | None:
-        # Meaningful only while the turn is open: turn_open is flipped False by
-        # turnEnd AND by a terminal status (no turnEnd), so gate on it rather than
-        # on the raw ts — otherwise a settled turn would leak its stale start time.
+        # Meaningful only while the turn is open. turn_open is flipped False by an
+        # end-of-turn EVENT (turnEnd / turnFailure) AND by a terminal status arriving
+        # without one (drain exception path) — gate on it rather than on the raw ts so
+        # a settled turn can't leak its stale start time, and a transient mid-turn
+        # `idle` (no longer a close condition) can't null a still-open turn's start.
         if app.state.turn_open.get(stream):
             return app.state.turn_start_ts.get(stream)
         return None
@@ -165,9 +179,9 @@ def create_daemon_app() -> FastAPI:
             app.state.turn_start_seqs[stream] = seq
             app.state.turn_open[stream] = True
             app.state.turn_start_ts[stream] = time.time()
-        elif etype == "turnEnd":
+        elif etype in _TURN_END_EVENTS:
             app.state.turn_open[stream] = False
-        elif etype == "status" and event.get("state") in _TERMINAL_STATES:
+        elif etype == "status" and event.get("state") in _TERMINAL_STATUSES:
             app.state.turn_open[stream] = False
         if len(buf) > st["high_water"]:
             st["high_water"] = len(buf)
