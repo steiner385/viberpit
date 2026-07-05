@@ -231,18 +231,17 @@ class CicdDoctorLoop:
         return fresh
 
     async def _reconcile(self, repo: str, fresh: list, config: dict) -> tuple[int, int]:
-        import json as _json
         from sqlalchemy import false, or_, select, update as sa_update
         from server.db import db_session
         from server.db.models import CiFinding
         from server.db.models import _utcnow  # single source for tz-aware now
+        from .cicd.findings import issue_body
 
         fresh_by_fp = {f.fingerprint: f for f in fresh}
         file_on = bool(config.get("file_issues"))
 
         def _body(f) -> str:
-            return (f"{f.title}\n\n```json\n{_json.dumps(f.detail, indent=2)}\n```\n\n"
-                    "Filed by the ccswitch CI/CD Doctor (propose mode).")
+            return issue_body(f.title, f.detail)
 
         # Pass 1: compute all DB upserts/resolves; collect side effects for after commit.
         to_emit: list[tuple] = []          # (level, summary, kind, target, detail)

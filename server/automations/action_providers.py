@@ -144,3 +144,42 @@ class BacklogRunnerActionProvider:
         status = await self._orch.backlog_runner_implement_core(item_id)
         level, message = _BACKLOG_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
         return TriggerResult(status=status, level=level, message=message)
+
+
+# --- CI/CD Doctor ----------------------------------------------------------
+
+_CICD_STATUS_MAP = {
+    "filed": ("ok", "Filed ci-doctor issue"),
+    "exists": ("warn", "An issue is already filed for this finding"),
+    "unknown": ("warn", "Finding is no longer open"),
+    "file_failed": ("error", "Could not file the issue — see the automation feed"),
+}
+
+
+class CicdDoctorActionProvider:
+    """Surface open CI/CD Doctor findings that still need a GitHub issue filed.
+
+    The loop auto-files *actionable* findings on its tick; this lets a human file
+    one immediately (or file a graduation candidate the loop deliberately skips)
+    without waiting. Reuses the loop's issue-filing machinery — no new recovery
+    logic. Findings that already link an issue expose no action.
+    """
+
+    valid_kinds = frozenset({"file_issue"})
+
+    def __init__(self, orch) -> None:
+        self._orch = orch
+
+    async def actionable(self) -> list[ActionableItem]:
+        items: list[ActionableItem] = []
+        for f in await self._orch.cicd_actionable_findings():
+            items.append(ActionableItem(
+                id=f["id"], title=f.get("title") or f["id"], subtitle=f.get("repo"),
+                url=f.get("url"),
+                actions=[ActionSpec(kind="file_issue", label="File issue", style="default")]))
+        return items
+
+    async def trigger(self, item_id: str, kind: str) -> TriggerResult:
+        status = await self._orch.cicd_file_issue_now(item_id)
+        level, message = _CICD_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
+        return TriggerResult(status=status, level=level, message=message)

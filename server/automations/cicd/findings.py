@@ -1,7 +1,16 @@
 """Assemble Finding objects from analyzer outputs. Pure."""
 from __future__ import annotations
 
+import json as _json
+
 from .types import Finding, GateThresholds
+
+
+def issue_body(title: str, detail: dict) -> str:
+    """The ci-doctor GitHub issue body for a finding — the single source of truth
+    shared by the loop's auto-filing and the manual "File issue" action (#465)."""
+    return (f"{title}\n\n```json\n{_json.dumps(detail or {}, indent=2)}\n```\n\n"
+            "Filed by the ccswitch CI/CD Doctor (propose mode).")
 
 _MIN_SHAS_FOR_FLAKE = 3  # fewer distinct shas is too little evidence to accuse a test
 

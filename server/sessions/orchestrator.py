@@ -285,11 +285,13 @@ class SessionOrchestrator:
         self._pr_population.set_repos_provider(self._pr_repos)
         from server.automations.action_providers import (
             PrDoctorActionProvider, BacklogRunnerActionProvider,
+            CicdDoctorActionProvider,
         )
         from server.automations.base import ActionProvider
         self._action_providers: dict[str, ActionProvider] = {
             "pr-doctor": PrDoctorActionProvider(self),
             "backlog-runner": BacklogRunnerActionProvider(self),
+            "cicd-doctor": CicdDoctorActionProvider(self),
         }
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
@@ -1431,6 +1433,48 @@ class SessionOrchestrator:
                 select(DbSession.repo).where(DbSession.repo.is_not(None))
                 .distinct())).scalars().all()
         return sorted(r for r in rows if r)
+
+    # ------------------------------------------------------------------
+    # CI/CD Doctor action-provider seams (CicdDoctorActionProvider)
+    # ------------------------------------------------------------------
+
+    async def cicd_actionable_findings(self) -> list[dict]:
+        """Open findings that still need a GitHub issue filed — the only
+        finding-level action the card exposes (#465)."""
+        from sqlalchemy import select
+        from server.db.models import CiFinding
+        async with db_session() as db:
+            rows = (await db.execute(select(CiFinding).where(
+                CiFinding.status == "open", CiFinding.issue_number.is_(None))
+                .order_by(CiFinding.last_seen_at.desc()))).scalars().all()
+            return [{"id": r.id, "repo": r.repo, "title": r.title, "kind": r.kind}
+                    for r in rows]
+
+    async def cicd_file_issue_now(self, finding_id: str) -> str:
+        """File a ci-doctor issue for one finding immediately, reusing the loop's
+        issue-filing machinery. Returns a status string the provider maps to a
+        level/message: filed | exists | unknown | file_failed."""
+        from sqlalchemy import select, update as sa_update
+        from server.automations.cicd.findings import issue_body
+        from server.db.models import CiFinding
+        from server.github import ci_issues
+        async with db_session() as db:
+            row = (await db.execute(select(CiFinding).where(
+                CiFinding.id == finding_id))).scalar_one_or_none()
+            if row is None or row.status != "open":
+                return "unknown"
+            if row.issue_number is not None:
+                return "exists"
+            repo, title, detail = row.repo, row.title or "", dict(row.detail or {})
+        number = await asyncio.to_thread(
+            ci_issues.create_issue, repo, title, issue_body(title, detail))
+        if number is None:
+            return "file_failed"
+        async with db_session() as db:
+            await db.execute(sa_update(CiFinding)
+                             .where(CiFinding.id == finding_id, CiFinding.issue_number.is_(None))
+                             .values(issue_number=number))
+        return "filed"
 
     # ------------------------------------------------------------------
     # Autopilot control-loop dependencies (injected into AutopilotLoop)
