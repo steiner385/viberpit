@@ -311,3 +311,59 @@ describe('DispatchBar', () => {
     expect(onOpenHighlighted).toHaveBeenCalled()
   })
 })
+
+describe('DispatchBar mobile collapse (More options)', () => {
+  // Visibility is CSS-only (Tailwind `hidden sm:flex`), invisible to jsdom —
+  // assert the class state + aria wiring here; real layout is Playwright territory.
+  const moreBtn = () => screen.getByRole('button', { name: /more options/i })
+  const accountWrap = () => screen.getByRole('combobox', { name: /account/i }).parentElement!
+  const modelWrap = () => screen.getByRole('combobox', { name: /model/i }).parentElement!
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.clearAllMocks()
+  })
+
+  it('starts collapsed: aria-expanded=false, account/model wrappers mobile-hidden', () => {
+    render(<DispatchBar {...makeProps()} />)
+    expect(moreBtn()).toHaveAttribute('aria-expanded', 'false')
+    expect(accountWrap().className).toContain('hidden')
+    expect(modelWrap().className).toContain('hidden')
+  })
+
+  it('toggle expands and collapses the account/model selects', async () => {
+    const user = userEvent.setup()
+    render(<DispatchBar {...makeProps()} />)
+    await user.click(moreBtn())
+    expect(moreBtn()).toHaveAttribute('aria-expanded', 'true')
+    expect(accountWrap().className).not.toContain('hidden')
+    expect(modelWrap().className).not.toContain('hidden')
+    await user.click(moreBtn())
+    expect(moreBtn()).toHaveAttribute('aria-expanded', 'false')
+    expect(accountWrap().className).toContain('hidden')
+  })
+
+  it('shows an indicator only when collapsed with a non-default account or model', async () => {
+    const user = userEvent.setup()
+    render(<DispatchBar {...makeProps()} />)
+    const indicator = () => screen.queryByText(/non-default account or model selected/i)
+    // Collapsed but everything default → no indicator.
+    expect(indicator()).not.toBeInTheDocument()
+    await user.click(moreBtn())
+    await user.selectOptions(screen.getByRole('combobox', { name: /account/i }), 'work')
+    // Expanded → the select itself is visible, no indicator needed.
+    expect(indicator()).not.toBeInTheDocument()
+    await user.click(moreBtn())
+    // Collapsed with a hidden non-default pick → indicator on.
+    expect(indicator()).toBeInTheDocument()
+  })
+
+  it('non-default model also lights the indicator', async () => {
+    const user = userEvent.setup()
+    render(<DispatchBar {...makeProps()} />)
+    await user.click(moreBtn())
+    await user.selectOptions(screen.getByRole('combobox', { name: /model/i }), 'opus')
+    await user.click(moreBtn())
+    expect(screen.getByText(/non-default account or model selected/i)).toBeInTheDocument()
+  })
+})
