@@ -1,7 +1,37 @@
-# Launch-target grouping in the New Session dialog
+# Account & model selection when starting a session
 
 **Date:** 2026-07-05
-**Status:** Approved — ready for planning
+**Status:** Implemented
+**Area:** `web/src/components/DispatchBar.tsx` (primary), `NewSessionDialog` in
+`web/src/components/Dashboard.tsx`, `DesktopShell.tsx` (frontend only)
+
+## Update — the real "repo chooser" is the inline DispatchBar
+
+The first pass grouped the dropdowns inside the **`NewSessionDialog` modal**, but the
+"repo chooser" the user actually starts sessions from is the **inline `DispatchBar`** — the
+composer bar under the session list (Repository dropdown + prompt + Create). That bar had
+**no** account/model controls at all: its `onDispatch` only carried
+`{ initialPrompt, repo, attachmentIds }`.
+
+Fix: add **Account** and **Model** `<select>`s to the DispatchBar's selector row as a
+responsive 3-across grid (`grid-cols-1 sm:grid-cols-3`) — Repository / Account / Model
+side-by-side on desktop, stacked on mobile. `DispatchBar` stays presentational: the parents
+(`Dashboard`, `DesktopShell`) pass `accounts`/`models` as props (matching how `repos` is
+already passed) and thread the picks into `createSession.mutate`. DispatchBar normalizes the
+selections before calling `onDispatch` — `account: '' → null` (Auto-select),
+`model: 'default' → null` (account default) — so both parents just forward `?? undefined`.
+
+Defaults keep the app's usage-aware account rotation intact: Account defaults to
+"Auto-select" (backend picks), Model to "Default" (account's own model). Selections are not
+persisted in v1 (matches the modal); persisting last-used model is a possible follow-up.
+
+The modal grouping below still ships (it's a valid discoverability win for that secondary
+flow), with the "Session setup" legend from the UX review.
+
+---
+
+## (Original) Launch-target grouping in the New Session dialog
+
 **Area:** `web/src/components/Dashboard.tsx` (frontend only)
 
 ## Problem
