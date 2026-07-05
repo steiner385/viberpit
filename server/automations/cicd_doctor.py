@@ -160,7 +160,8 @@ class CicdDoctorLoop:
                     for c in cases:
                         db.add(CiTestResult(repo=repo, run_id=r["id"], suite=suite,
                                             test_id=c.test_id, outcome=c.outcome,
-                                            time_s=c.time_s, head_sha=r["head_sha"],
+                                            time_s=c.time_s, message=c.message,
+                                            head_sha=r["head_sha"],
                                             head_branch=r["head_branch"],
                                             created_ts=r["created_ts"]))
             await db.flush()
@@ -196,7 +197,7 @@ class CicdDoctorLoop:
                 .where(CiJob.repo == repo, CiJob.created_ts >= since_ts))).all()
             test_rows = (await db.execute(
                 select(CiTestResult.test_id, CiTestResult.head_sha,
-                       CiTestResult.head_branch, CiTestResult.outcome)
+                       CiTestResult.outcome, CiTestResult.message)
                 .where(CiTestResult.repo == repo, CiTestResult.created_ts >= since_ts))).all()
             run_count = (await db.execute(
                 select(func.count()).select_from(CiRun)
@@ -207,13 +208,19 @@ class CicdDoctorLoop:
                           duration_s=r.duration_s or 0.0, created_ts=r.created_ts or 0.0)
                    for r in job_rows]
         test_obs = [TestObs(test_id=r.test_id or "", head_sha=r.head_sha or "",
-                            head_branch=r.head_branch or "", outcome=r.outcome or "")
+                            outcome=r.outcome or "")
                     for r in test_rows]
+        # A representative failure message per test (last one wins) — attached to
+        # the flaky-test finding so it points at a concrete failure, not just a %.
+        msg_by_test = {r.test_id or "": r.message
+                       for r in test_rows
+                       if r.outcome in ("failed", "error") and r.message}
         stats = check_stats(job_obs, default_branch=default_branch, now_ts=now,
                             demote_window_days=th.demote_window_days)
         verdicts = {c: v for c, s in stats.items()
                     if (v := check_verdict(s, is_required=c in required, th=th))}
-        fresh = flaky_test_findings(repo, test_flake_pcts(test_obs), th=th)
+        fresh = flaky_test_findings(repo, test_flake_pcts(test_obs), th=th,
+                                    messages=msg_by_test)
         fresh += check_transition_findings(repo, verdicts)
         for path, text in (await self._fetch_workflows(repo, default_branch)).items():
             fresh += workflow_waste_findings(repo, path, text)

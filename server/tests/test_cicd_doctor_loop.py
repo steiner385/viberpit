@@ -113,6 +113,8 @@ def test_flaky_test_becomes_finding_and_issue(tmp_path):
             f = (await db.execute(select(CiFinding).where(
                 CiFinding.kind == "flaky_test"))).scalars().one()
             assert f.status == "open" and f.issue_number == 42
+            # #450: the parsed failure message rides through ingest -> finding.
+            assert (f.detail or {}).get("message") == "boom"
         assert any("flaky" in t for t in issues)
         assert ctx.cicd_doctor_counts["open"] >= 1
     asyncio.run(run())

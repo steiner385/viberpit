@@ -7,8 +7,8 @@ from server.automations.cicd.types import JobObs, TestObs
 DAY = 86400.0
 
 
-def _t(test_id, sha, outcome, branch="feat"):
-    return TestObs(test_id=test_id, head_sha=sha, head_branch=branch, outcome=outcome)
+def _t(test_id, sha, outcome):
+    return TestObs(test_id=test_id, head_sha=sha, outcome=outcome)
 
 
 def test_test_flake_pcts_same_sha_pass_and_fail():
