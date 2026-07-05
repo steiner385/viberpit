@@ -15,7 +15,9 @@ def register_orchestrator_rpc(app, orch) -> None:
     # unchanged. A plain set that was added-to but never cleared stranded the pump on
     # the dead driver forever — the replacement driver's events published nowhere and
     # the live transcript froze until a reattach forced a disk replay. Keying on driver
-    # identity lets ensure_driver restart the pump for a swapped-in driver.
+    # identity lets ensure_driver restart the pump for a swapped-in driver — and lets the
+    # orchestrator's on_driver_replaced hook (below) restart it for a RECOVERY swap
+    # (rotation / 401 recompose / crash relaunch) that carries no RPC at all.
     app.state.pumped = {}
 
     async def _global_pump():
@@ -41,17 +43,30 @@ def register_orchestrator_rpc(app, orch) -> None:
             if app.state.pumped.get(session_id) is driver:
                 del app.state.pumped[session_id]
 
+    def _ensure_pump(session_id: str, driver) -> None:
+        # (Re)start the pump whenever the live driver isn't the one we're already
+        # pumping — first attach, OR a swapped-in driver after a teardown/recompose.
+        # Same driver → no-op (avoids double-pumping, which would duplicate events).
+        # Single source of truth: called by both the ensure_driver RPC (attach) and the
+        # orchestrator's on_driver_replaced hook (recovery swap with no RPC).
+        if app.state.pumped.get(session_id) is not driver:
+            app.state.pumped[session_id] = driver
+            asyncio.create_task(_pump(session_id, driver), name=f"pump-{session_id}")
+
+    # A recovery path (orchestrator._reassign) swaps a session's driver WITHOUT any RPC,
+    # so ensure_driver never runs to restart the pump: the old driver's events() ends,
+    # its pump self-cleans, and no new pump starts — freezing every already-attached
+    # viewer's live transcript until they reattach. The orchestrator notifies us on each
+    # swap; restart the pump on the new driver. Loop-safe: the orchestrator drives the
+    # swap on this same event loop, so create_task inside _ensure_pump has a running loop.
+    orch.on_driver_replaced = _ensure_pump
+
     async def ensure_driver(params: dict) -> dict:
         session_id = params["session_id"]
         driver = await orch.ensure_driver(session_id, params.get("identity", SYSTEM_IDENTITY))
         if driver is None:
             return {"found": False}
-        # (Re)start the pump whenever the live driver isn't the one we're already
-        # pumping — first attach, OR a swapped-in driver after a teardown/recompose.
-        # Same driver → no-op (avoids double-pumping, which would duplicate events).
-        if app.state.pumped.get(session_id) is not driver:
-            app.state.pumped[session_id] = driver
-            asyncio.create_task(_pump(session_id, driver), name=f"pump-{session_id}")
+        _ensure_pump(session_id, driver)
         return {"found": True, "status": driver.current_status(), "queued": driver.queued(),
                 "head_seq": app.state.head_seq(session_id),
                 "resume_since": app.state.resume_since(session_id),
