@@ -45,6 +45,23 @@ def test_persist_status_updates_record(tmp_path):
     assert asyncio.run(run()) == "waiting_input"
 
 
+def test_persist_status_folds_command_catalog_to_db(tmp_path):
+    """The in-memory command catalog (cached during attach) is written to the DB row by
+    _persist_status, so it survives to be rehydrated after a daemon restart — the palette
+    works on view of a detached session (rehydrate maps row.command_catalog → record)."""
+    catalog = [{"name": "review", "description": "Review a PR", "argumentHint": "<pr>", "kind": "passthrough"}]
+
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch.record("s1").command_catalog = catalog
+        await orch._persist_status("s1", "waiting_input")
+        from sqlalchemy import select
+        async with db_session() as db:
+            row = (await db.execute(select(DbSession).where(DbSession.id == "s1"))).scalar_one()
+            return row.command_catalog
+    assert asyncio.run(run()) == catalog
+
+
 def test_persist_status_never_overwrites_ended(tmp_path):
     async def run():
         orch = await _build_orch(tmp_path)

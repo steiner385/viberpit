@@ -145,6 +145,12 @@ class Session(Base):
     # no turn has reported usage yet. Nullable so init_db backfills on dev SQLite without a migration.
     context_used_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     context_max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # Last-known slash-command catalog (JSON list of wire dicts), cached whenever the
+    # session is live. Replayed on attach so a DETACHED session — whose lazy-view path
+    # never resumes a driver (the source of get_server_info) — still populates the
+    # composer's command palette instead of an empty autocomplete. NULL until the
+    # session has been live once. Nullable so init_db backfills on dev SQLite w/o a migration.
+    command_catalog: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
 
 
 class AppSession(Base):

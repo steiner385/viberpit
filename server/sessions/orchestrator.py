@@ -919,6 +919,13 @@ class SessionOrchestrator:
             values: dict = {"status": status}
             if turn_at is not None:
                 values["last_turn_at"] = turn_at
+            # Fold the in-memory slash-command catalog (cached during attach by
+            # command_catalog(), which must not write from the cancellable attach path)
+            # into this driver-loop write so it reaches the DB row for cross-restart
+            # replay. Written here rather than on attach because this callback runs in
+            # the turn loop, safe from client-disconnect cancellation.
+            if rec is not None and rec.command_catalog:
+                values["command_catalog"] = rec.command_catalog
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(**values)
             )
@@ -2502,6 +2509,7 @@ class SessionOrchestrator:
             authored_branches=list(getattr(row, "authored_branches", None) or []),
             context_used_tokens=getattr(row, "context_used_tokens", None),
             context_max_tokens=getattr(row, "context_max_tokens", None),
+            command_catalog=getattr(row, "command_catalog", None),
         )
         fields.update(overrides)
         return SessionRecord(**fields)
@@ -3904,17 +3912,38 @@ class SessionOrchestrator:
         if d:
             await d.set_permission_mode(mode)
 
+    def _cached_command_catalog(self, session_id) -> list[dict]:
+        """Last-known catalog cached on the record, or []. Used when there is no live
+        driver (a detached session) so the palette still populates on view."""
+        rec = self._records.get(session_id)
+        cached = getattr(rec, "command_catalog", None) if rec is not None else None
+        return list(cached) if cached else []
+
     async def command_catalog(self, session_id) -> list[dict]:
-        """Build the per-session slash-command catalog (wire dicts). [] if no driver."""
+        """Per-session slash-command catalog (wire dicts). Built from the live driver's
+        get_server_info and cached on the record; falls back to the last-known cached
+        catalog when no live driver exists (detached session) so the palette works on
+        view without a resume.
+
+        The cache is stored IN MEMORY only here — deliberately NOT a DB write. This runs
+        inside the WS attach coroutine, which a client disconnect can cancel mid-write;
+        a cancelled write corrupts the shared (StaticPool) connection. Durability is
+        folded into the next _persist_status write (a driver-loop callback that is safe
+        to write from), so the catalog still reaches the DB row for cross-restart replay."""
         d = self._drivers.get(session_id)
         if d is None:
-            return []
+            return self._cached_command_catalog(session_id)
         try:
             info = await d.server_info()
         except Exception:
             log.warning("command_catalog: server_info failed session=%s", session_id, exc_info=True)
-            return []
-        return [c.to_wire() for c in cmd_catalog.build_catalog(info)]
+            return self._cached_command_catalog(session_id)
+        catalog = [c.to_wire() for c in cmd_catalog.build_catalog(info)]
+        if catalog:
+            rec = self._records.get(session_id)
+            if rec is not None:
+                rec.command_catalog = catalog
+        return catalog
 
     async def run_command(self, session_id, name, args) -> dict | None:
         """Dispatch a slash command. Raises KeyError if the command is unknown."""

@@ -69,6 +69,12 @@ class SessionRecord:
     # id ("claude-opus-4-8", no `[1m]`) looks like a 200k window. None until a turn reports it.
     context_used_tokens: int | None = None
     context_max_tokens: int | None = None
+    # Last-known slash-command catalog (list of wire dicts from build_catalog),
+    # cached whenever the session is live. Persisted + replayed on attach so a
+    # DETACHED session (no live driver — the lazy-view path never resumes one)
+    # can still populate the composer's command palette instead of showing an
+    # empty autocomplete. None until the session has been live once.
+    command_catalog: list | None = None
 
     @property
     def updated_at_iso(self) -> str | None:
@@ -117,6 +123,7 @@ class SessionRecord:
             "authoredBranches": list(self.authored_branches),
             "contextUsedTokens": self.context_used_tokens,
             "contextMaxTokens": self.context_max_tokens,
+            "commandCatalog": self.command_catalog,
         }
 
     @classmethod
@@ -148,4 +155,5 @@ class SessionRecord:
             authored_branches=list(d.get("authoredBranches") or []),
             context_used_tokens=d.get("contextUsedTokens"),
             context_max_tokens=d.get("contextMaxTokens"),
+            command_catalog=d.get("commandCatalog"),
         )
