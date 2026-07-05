@@ -1,5 +1,5 @@
 // web/src/components/AutomationCard.test.tsx
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { AutomationCard } from './AutomationCard'
@@ -377,6 +377,36 @@ describe('AutomationCard', () => {
       expect(mutateAsync).not.toHaveBeenCalled()               // first click = arm confirm
       fireEvent.click(screen.getByRole('button', { name: /Confirm/ }))
       expect(mutateAsync).toHaveBeenCalledWith({ item_id: 'owner/repo#44', kind: 'merge_conflict' })
+    })
+
+    it('cancel button disarms an armed risky confirm (#466)', async () => {
+      const mutateAsync = vi.fn()
+      mockBasicHooks(); mockActions(mutateAsync)
+      expand()
+      fireEvent.click(screen.getByRole('button', { name: 'Resolve conflicts' }))
+      expect(screen.getByRole('button', { name: /Confirm/ })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel Resolve conflicts' }))
+      // Back to the disarmed label; nothing fired.
+      expect(screen.getByRole('button', { name: 'Resolve conflicts' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Confirm/ })).not.toBeInTheDocument()
+      expect(mutateAsync).not.toHaveBeenCalled()
+    })
+
+    it('auto-disarms an armed risky confirm after the timeout (#466)', async () => {
+      vi.useFakeTimers()
+      try {
+        const mutateAsync = vi.fn()
+        mockBasicHooks(); mockActions(mutateAsync)
+        expand()
+        fireEvent.click(screen.getByRole('button', { name: 'Resolve conflicts' }))
+        expect(screen.getByRole('button', { name: /Confirm/ })).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(4000) })
+        expect(screen.getByRole('button', { name: 'Resolve conflicts' })).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /Confirm/ })).not.toBeInTheDocument()
+        expect(mutateAsync).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('shows empty state when there are no actionable items', () => {
