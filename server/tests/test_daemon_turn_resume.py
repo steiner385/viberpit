@@ -34,6 +34,69 @@ def test_status_terminal_closes_turn_when_no_turnend():
     asyncio.run(run())
 
 
+def test_status_done_and_complete_close_turn_when_no_turnend():
+    """Regression: the genuinely terminal statuses close the turn as a fallback for
+    the drain exception path, which settles to done/complete/needs_attention WITHOUT
+    ever emitting a turnEnd (TurnEnd is only produced from the SDK ResultMessage)."""
+    for terminal in ("done", "complete"):
+        app = create_daemon_app()
+
+        async def run():
+            s = "sess2b"
+            await app.state.publish(s, {"type": "user", "text": "hi"})
+            await app.state.publish(s, {"type": "status", "state": terminal})
+            assert app.state.turn_open_for(s) is False
+
+        asyncio.run(run())
+
+
+def test_transient_idle_status_does_not_close_open_turn():
+    """`idle` is derive_status's never-ran sentinel (turns_completed == 0), NOT a
+    turn-completion signal — recovery/reset paths (interrupt of the first turn, a
+    rehydrated/rebuilt driver) emit it while a turn is still logically in flight. It
+    must NOT close the turn: doing so drops the resume anchor mid-turn (skips the
+    ring's in-progress events) AND nulls turn_started_at, re-enabling the positional
+    trailing-turn amputation #482 fixed."""
+    app = create_daemon_app()
+
+    async def run():
+        s = "sess_idle"
+        await app.state.publish(s, {"type": "user", "text": "hi"})       # seq 0 -> open
+        ts = app.state.turn_started_at(s)
+        await app.state.publish(s, {"type": "textDelta", "text": "a"})   # seq 1
+        # A transient idle arrives mid-turn — turn stays open, anchors intact.
+        await app.state.publish(s, {"type": "status", "state": "idle"})  # seq 2
+        assert app.state.turn_open_for(s) is True
+        assert app.state.turn_started_at(s) == ts
+        assert app.state.resume_since(s) == -1   # still anchored to turn_start_seq(0) - 1
+        # A real turnEnd still closes it.
+        await app.state.publish(s, {"type": "turnEnd", "turnId": "t"})   # seq 3
+        assert app.state.turn_open_for(s) is False
+        assert app.state.turn_started_at(s) is None
+        assert app.state.resume_since(s) == app.state.head_seq(s)
+
+    asyncio.run(run())
+
+
+def test_turn_failure_closes_turn_and_clears_anchors():
+    """turnFailure is an end-of-turn EVENT (the recoverable-failure settle: rate_limit
+    / auth_401 / turn_dropped). It closes the turn just like turnEnd."""
+    app = create_daemon_app()
+
+    async def run():
+        s = "sess_fail"
+        await app.state.publish(s, {"type": "user", "text": "hi"})       # seq 0 -> open
+        assert app.state.turn_open_for(s) is True
+        assert app.state.turn_started_at(s) is not None
+        await app.state.publish(
+            s, {"type": "turnFailure", "kind": "rate_limit", "account": "a"})
+        assert app.state.turn_open_for(s) is False
+        assert app.state.turn_started_at(s) is None
+        assert app.state.resume_since(s) == app.state.head_seq(s)
+
+    asyncio.run(run())
+
+
 def test_turn_started_at_tracks_open_turn():
     """turn_started_at(stream) mirrors turn_open_for: a wall-clock epoch while the
     turn is open (recorded when the `user` event was published), None otherwise.
