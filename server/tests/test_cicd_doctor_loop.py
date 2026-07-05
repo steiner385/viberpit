@@ -157,6 +157,43 @@ def test_detected_event_lands_outside_db_session(tmp_path):
     asyncio.run(run())
 
 
+def test_analyze_windows_out_stale_history(tmp_path):
+    """#449: _analyze must ignore rows older than the analysis horizon. A run
+    outside the window doesn't count toward the "runs but no JUnit" verdict; one
+    inside it does. Proven via the windowed run_count → missing_junit finding."""
+    async def run():
+        await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        from server.db.models import CiRun
+        ctx = AutomationContext("cicd-doctor")
+        # Collapse every window to 1 day so horizon == 1 day (86400s).
+        cfg = {"retention_days": 1, "retire_days": 1, "min_window_days": 1,
+               "demote_window_days": 1}
+        loop = _loop(ctx, runs=[], junit_by_run={}, config=cfg)  # clock() == 2000.0
+        config = (await loop._read_config())[1]
+
+        async def seed(created_ts):
+            async with db_session() as db:
+                db.add(CiRun(id=int(created_ts), repo="o/r", workflow_path="wf.yml",
+                             event="pull_request", head_sha="s", head_branch="feat",
+                             conclusion="success", created_ts=created_ts, duration_s=1.0))
+
+        # A run created well before now - horizon (2000 - 86400 < 0, so anything
+        # with a tiny ts is inside; use a large negative-relative gap): seed one
+        # far in the past and one "now".
+        await seed(1.0)          # far outside the 1-day window (age ~2000s vs 86400s? inside!)
+        fresh = await loop._analyze("o/r", config)
+        # 2000 - 86400 is negative, so ts=1.0 is INSIDE the window → run counts →
+        # missing_junit finding present (there are runs, no test rows).
+        assert any(f.kind == "missing_junit" for f in fresh)
+
+        # Now widen the gap: a run at ts=1.0 with clock far in the future is OUTSIDE.
+        loop._clock = lambda: 1_000_000.0
+        fresh2 = await loop._analyze("o/r", config)
+        assert not any(f.kind == "missing_junit" for f in fresh2), \
+            "stale run outside the horizon must not count toward analysis"
+    asyncio.run(run())
+
+
 def test_non_reentrant(tmp_path):
     async def run():
         await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")

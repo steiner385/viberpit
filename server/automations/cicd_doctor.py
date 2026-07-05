@@ -167,7 +167,7 @@ class CicdDoctorLoop:
         await self._ctx.set_target_state(f"cursor:{repo}", {"last_created_ts": max_ts})
 
     async def _analyze(self, repo: str, config: dict) -> list:
-        from sqlalchemy import select
+        from sqlalchemy import func, select
         from server.db import db_session
         from server.db.models import CiJob, CiRun, CiTestResult
         from .cicd.findings import (check_transition_findings, flaky_test_findings,
@@ -178,21 +178,37 @@ class CicdDoctorLoop:
         from .cicd.waste import workflow_waste_findings
 
         th = GateThresholds.from_config(config)
-        async with db_session() as db:
-            jobs = (await db.execute(select(CiJob).where(CiJob.repo == repo))).scalars().all()
-            tests = (await db.execute(select(CiTestResult).where(
-                CiTestResult.repo == repo))).scalars().all()
-            run_count = len((await db.execute(select(CiRun.id).where(
-                CiRun.repo == repo))).scalars().all())
-        default_branch, required = await self._fetch_repo_meta(repo)
         now = self._clock()
-        job_obs = [JobObs(check=j.name or "", head_sha=j.head_sha or "",
-                          head_branch=j.head_branch or "", conclusion=j.conclusion or "",
-                          duration_s=j.duration_s or 0.0, created_ts=j.created_ts or 0.0)
-                   for j in jobs]
-        test_obs = [TestObs(test_id=t.test_id or "", head_sha=t.head_sha or "",
-                            head_branch=t.head_branch or "", outcome=t.outcome or "")
-                    for t in tests]
+        # Cap the query to the widest window any analyzer looks at, so a tick
+        # never materializes the full retained history (#449). retention_days is
+        # the prune horizon and normally the widest; retire/graduation windows are
+        # included so a small retention can't silently starve those verdicts.
+        horizon_days = max(float(config.get("retention_days", 90)),
+                           th.retire_days, th.min_window_days, th.demote_window_days)
+        since_ts = now - horizon_days * 86400.0
+        # Select column tuples, not whole ORM entities: the analyzers only read a
+        # handful of columns and build detached value objects, so hydrating full
+        # mapped instances (identity map, all columns) is pure overhead at 10^5+ rows.
+        async with db_session() as db:
+            job_rows = (await db.execute(
+                select(CiJob.name, CiJob.head_sha, CiJob.head_branch, CiJob.conclusion,
+                       CiJob.duration_s, CiJob.created_ts)
+                .where(CiJob.repo == repo, CiJob.created_ts >= since_ts))).all()
+            test_rows = (await db.execute(
+                select(CiTestResult.test_id, CiTestResult.head_sha,
+                       CiTestResult.head_branch, CiTestResult.outcome)
+                .where(CiTestResult.repo == repo, CiTestResult.created_ts >= since_ts))).all()
+            run_count = (await db.execute(
+                select(func.count()).select_from(CiRun)
+                .where(CiRun.repo == repo, CiRun.created_ts >= since_ts))).scalar_one()
+        default_branch, required = await self._fetch_repo_meta(repo)
+        job_obs = [JobObs(check=r.name or "", head_sha=r.head_sha or "",
+                          head_branch=r.head_branch or "", conclusion=r.conclusion or "",
+                          duration_s=r.duration_s or 0.0, created_ts=r.created_ts or 0.0)
+                   for r in job_rows]
+        test_obs = [TestObs(test_id=r.test_id or "", head_sha=r.head_sha or "",
+                            head_branch=r.head_branch or "", outcome=r.outcome or "")
+                    for r in test_rows]
         stats = check_stats(job_obs, default_branch=default_branch, now_ts=now,
                             demote_window_days=th.demote_window_days)
         verdicts = {c: v for c, s in stats.items()
@@ -201,7 +217,7 @@ class CicdDoctorLoop:
         fresh += check_transition_findings(repo, verdicts)
         for path, text in (await self._fetch_workflows(repo, default_branch)).items():
             fresh += workflow_waste_findings(repo, path, text)
-        if run_count and not tests:
+        if run_count and not test_rows:
             fresh.append(missing_junit_finding(repo))
         return fresh
 
