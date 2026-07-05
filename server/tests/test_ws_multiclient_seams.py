@@ -18,29 +18,25 @@ This module adds a small multi-client harness on top of test_ws.py's ``ws_env``:
 
 Determinism
 -----------
-No sleep-based races. Live turns are gated with ``_GatedSDK`` (an asyncio.Event the
-turn blocks on right before its ResultMessage), so a test can pin "the turn is mid-stream"
-to a real signal (the pre-result deltas have arrived; turnEnd has NOT) and only then join /
-drop a second client, then release the gate.
-
-``_GatedSDK`` duplicates the local-gate idea of the ``_GatedSDK`` pattern the brief points
-at (test_driver_replay_buffer.py); that file does not exist on this base, so the pattern is
-inlined here. FOLLOW-UP: if a shared gating generator lands in server/tests/fakes/fake_sdk.py,
-route this through it and delete this local copy (constitution VI — single source of truth).
+No sleep-based races. Live turns are gated with the shared ``ScriptedSDKClient``/``Gate``
+primitive from ``server/tests/fakes/scripted_sdk.py`` (see its module docstring): a ``Gate``
+step in the scenario blocks the turn right before its terminal ``ResultMessage`` until the
+test calls ``gate.release()``, so a test can pin "the turn is mid-stream" to a real signal
+(the pre-result deltas have arrived; turnEnd has NOT) and only then join / drop a second
+client, then release the gate. This is the same primitive ``test_driver_replay_buffer.py``
+uses — no local gating copy (constitution VI — single source of truth).
 """
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import time
 from collections.abc import Callable
 
-import pytest
-from claude_agent_sdk import ResultMessage, TextBlock
+from claude_agent_sdk import TextBlock
 
 from server.tests.fakes import fake_sdk as f
-from server.tests.fakes.fake_sdk import FakeSDKClient
+from server.tests.fakes.scripted_sdk import Gate, ScriptedSDKClient
 # Reuse the real WS test rig: the fixture, the identity headers, and the
 # batch-flattening drain helper — no parallel copy of any of them (constitution VI).
 # ``ws_env as ws_env`` is an explicit re-export: it makes the imported pytest fixture
@@ -156,47 +152,8 @@ def open_attached(client, session_id: str, n: int):
 
 
 # ---------------------------------------------------------------------------
-# Gated fake SDK — blocks a turn right before its ResultMessage until released
+# Gated turn scenario — blocks a turn right before its ResultMessage until released
 # ---------------------------------------------------------------------------
-
-class _GatedSDK(FakeSDKClient):
-    """A fake SDK whose turn streams every message up to (but not including) its
-    ``ResultMessage``, then blocks on ``self.gate`` until the test releases it. This pins
-    the "turn is actively mid-stream" instant deterministically — no sleeps.
-
-    The gate is created in ``__init__`` (run by the orchestrator on the app loop when the
-    driver builds its client) and instances are registered in ``instances`` so the test can
-    reach the live one and release it through ``client.portal``."""
-
-    instances: list["_GatedSDK"] = []
-
-    def __init__(self, messages, on_can_use_tool=None, **kw):
-        super().__init__(messages, on_can_use_tool=on_can_use_tool, **kw)
-        self.gate = asyncio.Event()
-        _GatedSDK.instances.append(self)
-
-    async def receive_response(self):
-        for m in self._messages:
-            if self.interrupted:
-                break
-            if isinstance(m, ResultMessage):
-                # Turn is fully streamed but NOT settled — hold here until released.
-                await self.gate.wait()
-            yield m
-
-
-@pytest.fixture()
-def gated():
-    """Reset the gated-SDK instance registry and hand back the class."""
-    _GatedSDK.instances.clear()
-    yield _GatedSDK
-    _GatedSDK.instances.clear()
-
-
-def _release_gate(client) -> None:
-    """Release the most-recent gated turn on the app loop (portal-thread safe)."""
-    client.portal.call(lambda: _GatedSDK.instances[-1].gate.set())
-
 
 # Two raw text deltas → one logical assistant message "Hello world".
 _TURN_MSGS = [
@@ -207,6 +164,20 @@ _TURN_MSGS = [
     f.assistant(TextBlock(text="Hello world"), uuid="t1"),
     f.result(session_id="sess-1", uuid="t1"),
 ]
+
+
+def _gated_turn(gate: Gate) -> list:
+    """``_TURN_MSGS`` as a ``ScriptedSDKClient`` scenario, with *gate* spliced in right
+    before the terminal ``result`` — the former ``_GatedSDK``'s pause point (it streamed
+    every message including the assistant text, then blocked immediately before yielding
+    its ``ResultMessage``). The turn is fully streamed but NOT settled until the test calls
+    ``gate.release()``, pinning "turn is actively mid-stream" deterministically — no sleeps."""
+    return list(_TURN_MSGS[:-1]) + [gate, _TURN_MSGS[-1]]
+
+
+def _release_gate(client, gate: Gate) -> None:
+    """Release a gated turn on the app loop (portal-thread safe)."""
+    client.portal.call(gate.release)
 
 
 # ===========================================================================
@@ -240,12 +211,13 @@ def test_two_live_clients_receive_identical_transcript(ws_env):
 # Seam 2 — client B attaches (full replay) WHILE a turn streams to client A
 # ===========================================================================
 
-def test_client_b_attaches_mid_stream_no_dup_no_missing(ws_env, gated):
+def test_client_b_attaches_mid_stream_no_dup_no_missing(ws_env):
     """B attaches while A's turn is actively streaming (gated before its result). B's
     view = replayReset + replayComplete + the driver's atomic in-progress-turn snapshot
     (one coalesced delta) + the live tail (result→turnEnd). Once both settle, B's
     reconstructed turn text must equal A's — no duplicated and no missing turn content."""
-    _app, orch, client = ws_env(_TURN_MSGS, client_cls=gated)
+    gate = Gate("seam-midstream")
+    _app, orch, client = ws_env(_gated_turn(gate), client_cls=ScriptedSDKClient)
     session = client.portal.call(orch.create_session, "seam-midstream")
     sid = session.id
 
@@ -266,7 +238,7 @@ def test_client_b_attaches_mid_stream_no_dup_no_missing(ws_env, gated):
             assert _reconstruct_text(preB) == [("t1", "Hello world")], (
                 f"B's mid-stream snapshot lost/dup'd turn content: {_reconstruct_text(preB)}")
 
-            _release_gate(client)
+            _release_gate(client, gate)
             tailA = collect(wsA, _has_type("turnEnd"))
             tailB = collect(wsB, _has_type("turnEnd"))
 
@@ -283,13 +255,14 @@ def test_client_b_attaches_mid_stream_no_dup_no_missing(ws_env, gated):
 # Seam 3 — client A drops mid-turn, reconnects; A's final view heals to B's
 # ===========================================================================
 
-def test_client_a_drops_and_reattaches_heals_to_b(ws_env, gated):
+def test_client_a_drops_and_reattaches_heals_to_b(ws_env):
     """A and B both attach before the turn. The turn streams to both, then gates before
     its result. A's socket DROPS mid-turn; A reconnects and re-attaches (still mid-turn),
     receiving a replayReset + the in-progress-turn snapshot. After release+settle, A's
     reconstructed transcript (which its replayReset healed to only the post-reset content)
     equals B's — the dedup/heal path end-to-end."""
-    _app, orch, client = ws_env(_TURN_MSGS, client_cls=gated)
+    gate = Gate("seam-drop-heal")
+    _app, orch, client = ws_env(_gated_turn(gate), client_cls=ScriptedSDKClient)
     session = client.portal.call(orch.create_session, "seam-drop-heal")
     sid = session.id
 
@@ -315,7 +288,7 @@ def test_client_a_drops_and_reattaches_heals_to_b(ws_env, gated):
         with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as wsA2:
             wsA2.send_text(json.dumps({"type": "attach", "sessionId": sid}))
             framesA += collect(wsA2, _has_type("replayComplete"))
-            _release_gate(client)
+            _release_gate(client, gate)
             framesA += collect(wsA2, _has_type("turnEnd"))
             framesB += collect(wsB, _has_type("turnEnd"))
 
