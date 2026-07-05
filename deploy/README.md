@@ -55,6 +55,13 @@ PYTHONPATH=<repo>/src <repo>/.venv/bin/python -m server.deploy --once
 - **Frontend dependency changes** trigger `npm ci` automatically when
   `web/package-lock.json` changed.
 - The deploy runs as `tony` and uses passwordless `sudo` only for `systemctl restart`.
+- **Unit-file edits (this file's `.service`/`.service.d` content) do NOT auto-apply.**
+  `server.deploy` only runs `systemctl restart` on the already-installed unit in
+  `/etc/systemd/system/` (see steps above); it never re-`install`s or
+  `daemon-reload`s. After editing a committed unit file, re-run the `Install`
+  steps above by hand (`sudo install -m644 ... && sudo systemctl daemon-reload`)
+  and then restart the affected service(s), or the running unit stays on its old
+  config indefinitely.
 
 ## Session daemon (`ccswitch-daemon.service`)
 
