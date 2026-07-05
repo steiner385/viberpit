@@ -13,10 +13,21 @@ WorkingDirectory=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
 # Runtime secrets/config (DB url, signing keys, tailnet allowlist) + PATH/HOME so
 # the server can find git/node/claude. Created out-of-band; NOT in the repo.
 EnvironmentFile=/etc/ccswitch/ccswitch.env
-ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/uvicorn server.app:app --host 100.102.11.121 --port 8787
+# --timeout-graceful-shutdown bounds how long uvicorn waits for open connections
+# (attached browser WebSockets never close on their own) before forcing them shut.
+# Without it, SIGTERM hangs indefinitely, the lifespan shutdown branch in
+# server/app.py (session close, X11 sweep, DB dispose — see app.py's shutdown
+# comment block) NEVER runs, and systemd SIGKILLs at TimeoutStopSec on every deploy
+# (transcript audit V4).
+ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/uvicorn server.app:app --host 100.102.11.121 --port 8787 --timeout-graceful-shutdown 10
 Restart=on-failure
 RestartSec=3
 # Chromium is slow to exit; cap host resources on the 19GB box
+# Shutdown budget: 10s (--timeout-graceful-shutdown, above) + up to 45s worst case
+# for the app.py lifespan shutdown branch (_SHUTDOWN_CLOSE_TIMEOUT_S=30 +
+# _SHUTDOWN_SWEEP_TIMEOUT_S=15, sequential, in-process-fallback mode only — remote
+# mode's shutdown is just an IPC client close) + small overhead for the reauth/
+# auth-audit stop calls = ~55-60s, comfortably under the 90s below.
 TimeoutStopSec=90
 KillMode=control-group
 MemoryMax=12G
