@@ -5,39 +5,34 @@ from server.sessions.events import Suggestions, TextDelta, UserMessage, TurnEnd
 from claude_agent_sdk import TextBlock
 from server.tests.fakes import fake_sdk as f
 from server.tests.fakes.fake_sdk import FakeSDKClient
+from server.tests.fakes.scripted_sdk import Gate, scripted_factory
 
 
-class _GatedSDK:
-    """Streams two text deltas, then blocks on a gate before emitting the result,
-    so a test can attach a second subscriber while the turn is still in progress."""
-    def __init__(self, gate: asyncio.Event):
-        self._gate = gate
-    async def __aenter__(self): return self
-    async def __aexit__(self, *exc): return False
-    async def query(self, prompt): pass
-    async def interrupt(self): pass
-    async def set_permission_mode(self, mode): pass
-    async def receive_response(self):
-        yield f.sys_init("sess-x")
-        yield f.stream_start(uuid="t1")
-        yield f.stream_text("Hello ", uuid="t1")
-        yield f.stream_text("world", uuid="t1")
-        await self._gate.wait()
-        yield f.assistant(TextBlock(text="Hello world"), uuid="t1")
-        yield f.result(session_id="sess-x", uuid="t1")
+def _gated_stream(gate: Gate):
+    """The former ``_GatedSDK``, expressed as a scenario: two text deltas, then a
+    gate that blocks before the settle (assistant + result), so a test can attach a
+    second subscriber while the turn is still in progress. Generalized onto
+    ``ScriptedSDKClient`` — the single scriptable stream primitive (constitution VI)."""
+    return [
+        f.sys_init("sess-x"),
+        f.stream_start(uuid="t1"),
+        f.stream_text("Hello ", uuid="t1"),
+        f.stream_text("world", uuid="t1"),
+        gate,
+        f.assistant(TextBlock(text="Hello world"), uuid="t1"),
+        f.result(session_id="sess-x", uuid="t1"),
+    ]
 
 
 def test_late_subscriber_replays_in_progress_turn_then_goes_live():
-    gate = asyncio.Event()
-
-    def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
-        return _GatedSDK(gate)
+    gate = Gate()
+    factory = scripted_factory(_gated_stream(gate))
 
     async def run():
         d = SessionDriver("s", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
-        # Subscriber A drives the turn until 2 text deltas have streamed.
+        # Subscriber A is a concurrent LIVE consumer while B replays the snapshot.
         a_seen = []
         gen_a = d.events()
         async def drive_a():
@@ -47,10 +42,9 @@ def test_late_subscriber_replays_in_progress_turn_then_goes_live():
                     break
         task_a = asyncio.create_task(drive_a())
         await d.send_prompt("hi")
-        for _ in range(200):
-            if sum(isinstance(e, TextDelta) for e in a_seen) >= 2:
-                break
-            await asyncio.sleep(0.01)
+        # Deterministic: the gate is reached only once both text deltas have been fed
+        # to the translator and emitted (the stream is suspended at the gate).
+        await gate.wait_reached()
         assert d.turn_active is True
         # Mid-turn the driver must expose WHEN the turn started (epoch seconds) —
         # ws.py hands this to replay_window so the incomplete-turn drop can tell the
@@ -68,7 +62,7 @@ def test_late_subscriber_replays_in_progress_turn_then_goes_live():
         assert any(isinstance(e, TextDelta) and e.text == "Hello world" for e in b_first)
 
         # Now release the turn; B must receive the TurnEnd live (no duplicate text).
-        gate.set()
+        gate.release()
         b_rest = []
         for _ in range(10):
             e = await asyncio.wait_for(gen_b.__anext__(), timeout=1)
@@ -88,10 +82,8 @@ def test_interrupt_clears_turn_started_at():
     """interrupt() flips _turn_active False without running the drain's settle path —
     turn_started_at must be cleared there too, or a later attach would hand a stale
     start time to the replay drop rule."""
-    gate = asyncio.Event()
-
-    def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
-        return _GatedSDK(gate)
+    gate = Gate()
+    factory = scripted_factory(_gated_stream(gate))
 
     async def run():
         d = SessionDriver("s3", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
@@ -106,16 +98,24 @@ def test_interrupt_clears_turn_started_at():
                     break
         task = asyncio.create_task(drive())
         await d.send_prompt("hi")
-        for _ in range(200):
-            if sum(isinstance(e, TextDelta) for e in seen) >= 2:
-                break
-            await asyncio.sleep(0.01)
+        await gate.wait_reached()   # mid-turn, deterministically (both deltas emitted)
         assert d.turn_started_at is not None
         await d.interrupt()
         assert d.turn_active is False
         assert d.turn_started_at is None
-        gate.set()   # unblock the drain so teardown is clean
-        await task
+        gate.release()   # unblock the drain so it can settle
+        # An interrupted turn stops the stream without emitting a TurnEnd (the scripted
+        # client honours interrupt, like the real SDK — the old no-op-interrupt fake
+        # kept streaming the result). Await the pump directly; the consumer would block
+        # forever waiting for a TurnEnd that never comes.
+        if d._pump is not None:
+            await asyncio.wait_for(d._pump, timeout=1)
+        assert d.turn_active is False   # settle path leaves it cleared
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
         await d.aclose()
 
     asyncio.run(run())
