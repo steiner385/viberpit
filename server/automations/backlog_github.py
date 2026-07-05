@@ -62,7 +62,7 @@ def _build_candidates_query(repos: list[str], eligible_label: str) -> str:
     return (
         "query {\n"
         f"  issues: search(query: {json.dumps(search)}, type: ISSUE, first: 100) {{\n"
-        "    nodes { ... on Issue { number title repository { nameWithOwner } } }\n"
+        "    nodes { ... on Issue { number title url repository { nameWithOwner } } }\n"
         "  }\n"
         "}"
     )
@@ -73,7 +73,8 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh) -> list[
 
     Candidate shape (what :func:`rank_and_batch` consumes)::
 
-        {"ref": "owner/repo#N", "number": N, "repo": "owner/repo", "title": ...}
+        {"ref": "owner/repo#N", "number": N, "repo": "owner/repo", "title": ...,
+         "url": "https://github.com/owner/repo/issues/N"}
 
     For v1, ``enabled_repos`` must be non-empty — an empty list returns ``[]``
     without a gh call (drawing from *all* repos is intentionally deferred).  A gh
@@ -118,6 +119,9 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh) -> list[
             "number": number,
             "repo": repo,
             "title": node.get("title"),
+            # url lets the ActionableItem link out to the issue; fall back to the
+            # canonical /issues/N path if the API somehow omitted it (#467).
+            "url": node.get("url") or f"https://github.com/{repo}/issues/{number}",
         })
     return out
 

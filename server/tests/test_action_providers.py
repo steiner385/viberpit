@@ -84,7 +84,8 @@ class _FakeBacklogOrch:
 
     async def backlog_candidates(self):
         return [{"ref": "cairnea/KinDash#42", "repo": "cairnea/KinDash",
-                 "title": "add rate limiter"}]
+                 "title": "add rate limiter",
+                 "url": "https://github.com/cairnea/KinDash/issues/42"}]
 
 
 @pytest.mark.asyncio
@@ -93,6 +94,7 @@ async def test_backlog_provider_actionable_and_trigger():
     prov = BacklogRunnerActionProvider(orch)
     items = await prov.actionable()
     assert items[0].id == "cairnea/KinDash#42"
+    assert items[0].url == "https://github.com/cairnea/KinDash/issues/42"  # #467
     assert items[0].actions[0].kind == "implement"
     res = await prov.trigger("cairnea/KinDash#42", "implement")
     assert (res.status, res.level) == ("no_account", "warn")

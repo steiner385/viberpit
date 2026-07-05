@@ -33,8 +33,10 @@ def _graphql_stdout(nodes: list[dict]) -> str:
 
 def test_query_candidates_builds_filtered_query_and_parses():
     nodes = [
-        {"number": 7, "title": "Fix login", "repository": {"nameWithOwner": "o/r"}},
-        {"number": 12, "title": "Add search", "repository": {"nameWithOwner": "o/r"}},
+        {"number": 7, "title": "Fix login", "url": "https://github.com/o/r/issues/7",
+         "repository": {"nameWithOwner": "o/r"}},
+        {"number": 12, "title": "Add search", "url": "https://github.com/o/r/issues/12",
+         "repository": {"nameWithOwner": "o/r"}},
     ]
     fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
     config = {"enabled_repos": ["o/r"], "eligible_label": "ready"}
@@ -46,6 +48,8 @@ def test_query_candidates_builds_filtered_query_and_parses():
     argv = fake.calls[0]
     assert argv[:2] == ["api", "graphql"]
     query = next(a for a in argv if a.startswith("query="))
+    # The selection fetches url so the candidate can link out (#467).
+    assert "url" in query
     # Carries the eligible label and excludes already-claimed / needs-human issues.
     assert "label:ready" in query or 'label:"ready"' in query
     assert "-label:in-progress" in query or '-label:"in-progress"' in query
@@ -57,9 +61,21 @@ def test_query_candidates_builds_filtered_query_and_parses():
 
     # Parsed into the candidate shape rank_and_batch consumes.
     assert out == [
-        {"ref": "o/r#7", "number": 7, "repo": "o/r", "title": "Fix login"},
-        {"ref": "o/r#12", "number": 12, "repo": "o/r", "title": "Add search"},
+        {"ref": "o/r#7", "number": 7, "repo": "o/r", "title": "Fix login",
+         "url": "https://github.com/o/r/issues/7"},
+        {"ref": "o/r#12", "number": 12, "repo": "o/r", "title": "Add search",
+         "url": "https://github.com/o/r/issues/12"},
     ]
+
+
+def test_query_candidates_synthesizes_url_when_api_omits_it():
+    """If the GraphQL node lacks a url, fall back to the canonical issue path so
+    the ActionableItem still links out (#467)."""
+    nodes = [{"number": 9, "title": "No url", "repository": {"nameWithOwner": "o/r"}}]
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
+    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
+    assert out == [{"ref": "o/r#9", "number": 9, "repo": "o/r", "title": "No url",
+                    "url": "https://github.com/o/r/issues/9"}]
 
 
 def test_query_candidates_empty_enabled_repos_returns_empty_no_call():
@@ -79,7 +95,8 @@ def test_query_candidates_blank_label_drops_the_label_gate():
     """A blank eligible_label means "no label gate" — any open, unassigned issue
     is a candidate. The query must NOT carry a `label:` qualifier (and must not
     silently fall back to `ready`), while the other gates stay."""
-    nodes = [{"number": 7, "title": "Fix login", "repository": {"nameWithOwner": "o/r"}}]
+    nodes = [{"number": 7, "title": "Fix login", "url": "https://github.com/o/r/issues/7",
+              "repository": {"nameWithOwner": "o/r"}}]
     fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
 
     out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": ""}, gh_run=fake)
@@ -92,7 +109,8 @@ def test_query_candidates_blank_label_drops_the_label_gate():
     assert " label:" not in query.replace("-label:", "")  # no bare `label:<x>` gate
     # Other gates still present; the issue is still parsed.
     assert "no:assignee" in query and "is:open" in query
-    assert out == [{"ref": "o/r#7", "number": 7, "repo": "o/r", "title": "Fix login"}]
+    assert out == [{"ref": "o/r#7", "number": 7, "repo": "o/r", "title": "Fix login",
+                    "url": "https://github.com/o/r/issues/7"}]
 
 
 # --------------------------------------------------------------------------- #
