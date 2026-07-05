@@ -601,9 +601,39 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             out_q.put_nowait({"type": "resumeOk", "sessionId": session_id})
             return True
 
+        async def _teardown_live_task(session_id: str) -> None:
+            """Cancel + await THIS socket's forwarding task for a session and drop it from
+            live_tasks. The SINGLE teardown implementation, shared by _handle_detach and the
+            re-attach rebind path (below), so there is never a window where two forwarding
+            tasks run for one session on one socket and never a second, drift-prone copy of
+            this cancel/await dance. Only this socket's subscription is torn down; the driver
+            keeps running and buffering. No-op if the session isn't live on this socket."""
+            task = live_tasks.pop(session_id, None)
+            if task is None:
+                return
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=0.5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            except Exception:
+                # A supervised task that already FAILED re-raises its exception here; it was
+                # observed + logged by supervise, so swallow it — never let a dead forwarding
+                # task crash the teardown of an otherwise clean detach/rebind.
+                pass
+
         async def _handle_attach(session_id: str, since_src_seq: int | None = None) -> None:
-            if session_id in live_tasks:
-                return  # already attached
+            # Idempotent-with-replay (Hole 2): a re-attach of a session already live on THIS
+            # socket is NOT a silent no-op. That silent return dropped the remounted view's
+            # full replay whenever the unmount's detach frame was lost on a closed socket
+            # (navigation return → tail-only transcript). Tear down this socket's existing
+            # forwarding task FIRST (the exact detach teardown, awaited to completion) and
+            # then fall through to the normal attach path — full replay, or catch-up per the
+            # frame's cursor. Because teardown is awaited before open_stream/_start_live_stream
+            # below, there is never a window with two forwarding tasks for one session here.
+            rebind = session_id in live_tasks
+            if rebind:
+                await _teardown_live_task(session_id)
 
             # READ-ONLY attach for a detached session: replay history only. A detached
             # record has no live driver, and resuming one just to *view* it spawns an
@@ -628,6 +658,9 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             await _emit_persisted_context_usage(session_id, rec)
 
             if rec is not None and getattr(rec, "detached", False):
+                log_event(log, logging.INFO, "ws.attach.decision",
+                          session_id=session_id, mode="full_replay",
+                          rebind=rebind, cursor=since_src_seq, detached=True)
                 await _replay_and_complete(session_id)
                 # Replay the last-known slash-command catalog so the composer palette
                 # populates on view. A detached session has no live driver (the lazy-view
@@ -650,6 +683,14 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             # resumeOk. Not covered / no cursor / local mode → catching_up is False and the
             # full replay below runs exactly as before.
             catching_up = await _maybe_catch_up(session_id, driver, since_src_seq)
+            # Diagnosability (incident 2026-07-05): the catch-up vs full-replay decision was
+            # invisible in the journal, so a tail-only nav-return couldn't be told apart from a
+            # legitimate resume. Log the mode + whether this was a rebind (already-live re-attach)
+            # + the cursor the client sent, at the moment the decision is made.
+            log_event(log, logging.INFO, "ws.attach.decision",
+                      session_id=session_id,
+                      mode=("catch_up" if catching_up else "full_replay"),
+                      rebind=rebind, cursor=since_src_seq, detached=False)
             # Open the driver stream SYNCHRONOUSLY, BEFORE the replay (the
             # settle-race bug, B3): open_stream() atomically snapshots the
             # in-progress turn buffer AND pins turn_active/turn_started_at to that
@@ -720,19 +761,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             return True
 
         async def _handle_detach(session_id: str) -> None:
-            task = live_tasks.pop(session_id, None)
-            if task is None:
-                return
-            task.cancel()
-            try:
-                await asyncio.wait_for(task, timeout=0.5)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-            except Exception:
-                # A supervised task that already FAILED re-raises its exception here;
-                # it was observed + logged by supervise, so swallow it — never let a
-                # dead forwarding task crash the teardown of an otherwise clean detach.
-                pass
+            await _teardown_live_task(session_id)
 
         # ------------------------------------------------------------------
         # Main receive loop

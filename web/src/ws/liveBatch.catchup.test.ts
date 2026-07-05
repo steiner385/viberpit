@@ -3,7 +3,7 @@
 // WS-client layer. catchUpCursor(state, sid) returns the srcSeq to send as `sinceSrcSeq`
 // ONLY when the source stream has stayed contiguous since the last replayComplete/resumeOk.
 import { describe, it, expect } from 'vitest'
-import { createGapState, handleLiveBatch, catchUpCursor } from './liveBatch'
+import { createGapState, handleLiveBatch, catchUpCursor, invalidateCatchUp } from './liveBatch'
 import type { SessionEvent } from '@/session/events'
 
 const ev = (over: Record<string, unknown>): SessionEvent =>
@@ -46,6 +46,30 @@ describe('catchUpCursor / srcContiguous', () => {
     expect(catchUpCursor(state, 's1')).toBe(10)
     handleLiveBatch([frame('replayReset', { sessionId: 's1' })], { activeSessionId: 's1', state })
     expect(catchUpCursor(state, 's1')).toBeNull()
+  })
+})
+
+describe('invalidateCatchUp (fresh user-initiated attach)', () => {
+  it('forces catchUpCursor → null by clearing lastSrcSeq + srcContiguous', () => {
+    const state = createGapState()
+    handleLiveBatch([frame('replayComplete', { sessionId: 's1' })], { activeSessionId: 's1', state })
+    handleLiveBatch([ev({ seq: 0, sessionId: 's1', srcSeq: 10 })], { activeSessionId: 's1', state })
+    expect(catchUpCursor(state, 's1')).toBe(10)
+    invalidateCatchUp(state, 's1')
+    expect(catchUpCursor(state, 's1')).toBeNull()
+    expect(state.lastSrcSeq.has('s1')).toBe(false)
+    expect(state.srcContiguous.has('s1')).toBe(false)
+  })
+
+  it('is per-session: invalidating s1 leaves s2 cursor intact', () => {
+    const state = createGapState()
+    for (const sid of ['s1', 's2']) {
+      handleLiveBatch([frame('replayComplete', { sessionId: sid })], { activeSessionId: sid, state })
+      handleLiveBatch([ev({ seq: 0, sessionId: sid, srcSeq: 20 })], { activeSessionId: sid, state })
+    }
+    invalidateCatchUp(state, 's1')
+    expect(catchUpCursor(state, 's1')).toBeNull()
+    expect(catchUpCursor(state, 's2')).toBe(20)
   })
 })
 

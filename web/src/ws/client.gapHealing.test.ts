@@ -27,9 +27,10 @@ describe('SessionSocket gap healing', () => {
     s._handleInbound({ type: 'batch', events: [{ type: 'textDelta', turnId: 't', text: 'c', seq: 2, sessionId: 's1' }] })
     const detaches = sent.filter((m) => (m as { type: string }).type === 'detach')
     const attaches  = sent.filter((m) => (m as { type: string }).type === 'attach')
-    // A bare re-attach is a no-op on a live session (server guards with
-    // `if session_id in live_tasks: return`).  The detach removes the session
-    // from live_tasks first so the subsequent attach re-runs the full replay path.
+    // The heal sends detach then attach: the detach removes the session from THIS
+    // socket's live_tasks and the subsequent attach re-runs the full replay path.
+    // (The server also now rebinds a bare re-attach — see _handle_attach — so the
+    // attach alone would heal; the explicit detach-first is kept for clear intent.)
     expect(detaches).toHaveLength(1)
     expect(detaches[0]).toMatchObject({ type: 'detach', sessionId: 's1' })
     expect(attaches).toHaveLength(1)

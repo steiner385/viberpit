@@ -32,6 +32,21 @@ export function resetSeq(state: GapState, sessionId: string): void {
   state.lastSrcSeq.delete(sessionId)
 }
 
+/** Invalidate the catch-up cursor for a session on a FRESH user-initiated attach.
+ *  A public `attach(sessionId)` represents a brand-new view whose reducer mounts EMPTY
+ *  (`key={sessionId}` remounts the runtime). The srcSeq cursor lives in the socket
+ *  singleton and survives that remount, so a surviving `lastSrcSeq`/`srcContiguous` for
+ *  this session is now STALE — a reopen re-attach that sent it as `sinceSrcSeq` would get
+ *  `resumeOk` + the ring tail only against an empty transcript (nav-return tail-only bug).
+ *  Clearing both forces `catchUpCursor` → null → the server full-replays from the durable
+ *  transcript. Per-session by construction (Map deletes keyed on `sessionId`), so other
+ *  sessions' cursors are untouched. Distinct from `resetSeq`: this DOES clear
+ *  `srcContiguous` (the whole point — forbid catch-up), where a mid-stream reset must not. */
+export function invalidateCatchUp(state: GapState, sessionId: string): void {
+  state.lastSrcSeq.delete(sessionId)
+  state.srcContiguous.delete(sessionId)
+}
+
 /** The srcSeq cursor to send as `sinceSrcSeq` on a heal / reconnect re-attach, or null
  *  when a full replay is required. Returns `lastSrcSeq` ONLY when the source stream has
  *  stayed contiguous since the last replayComplete/resumeOk (no observed srcSeq hole) AND

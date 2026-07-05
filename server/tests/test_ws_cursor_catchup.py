@@ -154,6 +154,40 @@ def test_covered_cursor_attach_gets_resumeOk_no_replay_tail_exactly_once(live_ri
     assert [e["text"] for e in tail] == ["d2", "d3"], evB
 
 
+def test_same_socket_reattach_with_cursor_catches_up(remote_edge):
+    """Incident 2026-07-05, Hole 2 + catch-up: a re-attach on the SAME socket without an
+    intervening detach (the session is still in this socket's live_tasks) must NOT be a
+    silent no-op — it rebinds (tears down this socket's forwarding task) and re-runs the
+    attach path. With a still-covered srcSeq cursor that means catch-up: a resumeOk and the
+    missed ring tail, NO replayReset/replayComplete, and the tail arrives exactly-once
+    (single forwarding task after the rebind — no duplicate from a leaked old task)."""
+    orch, client = remote_edge
+    orch._records["s1"] = _rec("s1")
+    driver = _RingDriver(4)
+    with mock.patch.object(orch, "ensure_driver", new=mock.AsyncMock(return_value=driver)), \
+         mock.patch.object(orch, "transcript_path", new=mock.AsyncMock(return_value=None)):
+        with client.websocket_connect("/ws", headers=_IDENT) as ws:
+            # First attach drains the 4 streamed deltas (srcSeq 0..3); the ring holds 0..3.
+            ws.send_json({"type": "attach", "sessionId": "s1"})
+            ev1 = _collect_until(ws, lambda acc: _count(acc, "textDelta") >= 4)
+            assert [e["srcSeq"] for e in ev1 if e.get("type") == "textDelta"] == [0, 1, 2, 3], ev1
+
+            # SAME socket, NO detach: re-attach with a contiguous cursor at srcSeq 1.
+            ws.send_json({"type": "attach", "sessionId": "s1", "sinceSrcSeq": 1})
+            ev2 = _collect_until(
+                ws, lambda acc: any(e.get("type") == "resumeOk" for e in acc)
+                and _count(acc, "textDelta") >= 2)
+
+    assert _count(ev2, "resumeOk") == 1, _types(ev2)
+    # Catch-up path after the rebind: NEITHER full-replay bracket.
+    assert _count(ev2, "replayReset") == 0, _types(ev2)
+    assert _count(ev2, "replayComplete") == 0, _types(ev2)
+    # The missed tail: exactly srcSeq 2,3, exactly once each, in order.
+    tail = [e for e in ev2 if e.get("type") == "textDelta"]
+    assert [e["srcSeq"] for e in tail] == [2, 3], ev2
+    assert [e["text"] for e in tail] == ["d2", "d3"], ev2
+
+
 def test_ring_covers_rpc_round_trip(live_ring_edge):
     """RemoteOrchestrator.ring_covers over the real daemon RPC: covered within the window,
     not covered when the cursor is ahead of head (epoch guard)."""
