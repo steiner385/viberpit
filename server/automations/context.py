@@ -104,13 +104,13 @@ class AutomationContext:
         'skipped_duplicate' event instead of creating a second. Otherwise create
         via the injected create_session (which stamps origin/origin_ref), then emit
         a linked 'spawned' event (carrying the optional ``detail`` payload)."""
-        from server.db.models import Session
+        from server.db.models import INACTIVE_SESSION_STATUSES, Session
         key = dedupe_key or origin_ref
         async with db_session() as db:
             existing = (await db.execute(select(Session).where(
                 Session.origin == self.automation_id,
                 Session.origin_ref == key,
-                Session.status != "ended"))).scalars().first()
+                Session.status.not_in(INACTIVE_SESSION_STATUSES)))).scalars().first()
         if existing is not None:
             await self.emit("info", f"skipped duplicate spawn for {key}",
                             kind="skipped_duplicate", target=key, session_id=existing.id)

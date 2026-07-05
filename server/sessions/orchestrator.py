@@ -2219,7 +2219,7 @@ class SessionOrchestrator:
             existing = (await db.execute(select(DbSession).where(
                 DbSession.origin == "pr-doctor",
                 DbSession.origin_ref == target,
-                DbSession.status != "ended"))).scalars().first()
+                DbSession.status.not_in(INACTIVE_SESSION_STATUSES)))).scalars().first()
         if existing is not None:
             return "duplicate", existing.id
 

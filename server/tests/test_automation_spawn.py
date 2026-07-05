@@ -58,3 +58,27 @@ def test_spawn_dedups_non_terminal(tmp_path):
         assert any(e["kind"] == "skipped_duplicate" for e in await ctx.list_events())
 
     asyncio.run(run())
+
+
+def test_spawn_ignores_inactive_duplicates(tmp_path):
+    """An archived (or ended) prior session for the same target must NOT block a
+    re-spawn — regression for the Resolve-conflicts button silently returning an
+    archived session while toasting 'Spawned fix session'."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'spawn_c.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        from server.db.models import Automation, INACTIVE_SESSION_STATUSES, Session
+        from server.automations.context import AutomationContext
+        async with db_session() as db:
+            db.add(Automation(id="pr-doctor"))
+            for i, status in enumerate(sorted(INACTIVE_SESSION_STATUSES)):
+                db.add(Session(id=f"old-{i}", name="auto", account_name="a", cwd="/tmp",
+                               status=status, origin="pr-doctor", origin_ref="a/b#1"))
+
+        ctx = AutomationContext("pr-doctor", create_session=_fake_create_session)
+        rec = await ctx.spawn_session(origin_ref="a/b#1", name="auto")
+        assert rec.id == "sess-a/b#1"  # fresh spawn, not an inactive leftover
+        assert not any(e["kind"] == "skipped_duplicate" for e in await ctx.list_events())
+
+    asyncio.run(run())

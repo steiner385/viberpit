@@ -101,3 +101,25 @@ async def test_consolidate_duplicate_when_live_session_exists(tmp_path, monkeypa
                        cwd=".", origin="pr-doctor", origin_ref="consolidate:o/r#1+2"))
     status, sid = await orch._pr_doctor_consolidate("o/r", [1, 2])
     assert status == "duplicate" and sid == "existing"
+
+
+@pytest.mark.asyncio
+async def test_consolidate_respawns_when_prior_session_archived(tmp_path, monkeypatch):
+    """An archived consolidation session for the same PR set must not count as a
+    live duplicate — regression for archived leftovers blocking re-spawn."""
+    from ccswitch import gitrepos
+    from server.db import db_session
+    from server.db.models import Session
+    await _init_db(tmp_path)
+    orch = _build_orch([_pr(1), _pr(2)])
+    monkeypatch.setattr(gitrepos, "ensure_clone", lambda root, repo, url: str(tmp_path))
+    async with db_session() as db:
+        db.add(Session(id="old", name="c", account_name="a", status="archived",
+                       cwd=".", origin="pr-doctor", origin_ref="consolidate:o/r#1+2"))
+
+    async def fake_spawn(**kw):
+        return types.SimpleNamespace(id="new-sess")
+
+    orch._pr_doctor_ctx.spawn_session = fake_spawn  # type: ignore[assignment]
+    status, sid = await orch._pr_doctor_consolidate("o/r", [1, 2])
+    assert status == "spawned" and sid == "new-sess"
