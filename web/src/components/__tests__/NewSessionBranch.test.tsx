@@ -143,6 +143,37 @@ describe('New Session dialog — branch default selection', () => {
     expect(within(modelSelect).getByRole('option', { name: 'Fable' })).toBeInTheDocument()
   })
 
+  it('groups the repo chooser, account, and model under a "Launch target" fieldset', async () => {
+    const user = userEvent.setup()
+    render(<Dashboard />, { wrapper })
+
+    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
+    const dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+
+    // The launch-config controls live together in one accessible group.
+    const group = within(dialog.getByRole('group', { name: /launch target/i }))
+    expect(group.getByLabelText(/^repository/i)).toBeInTheDocument()
+    expect(group.getByLabelText(/^branch/i)).toBeInTheDocument()
+    expect(group.getByLabelText(/^account/i)).toBeInTheDocument()
+    expect(group.getByLabelText(/^model/i)).toBeInTheDocument()
+
+    // Tool approvals is a separate control, outside the launch-target group.
+    expect(group.queryByLabelText(/tool approvals/i)).not.toBeInTheDocument()
+  })
+
+  it('places the model select before "Tool approvals" in DOM order', async () => {
+    const user = userEvent.setup()
+    render(<Dashboard />, { wrapper })
+
+    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
+    const dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+
+    const model = dialog.getByLabelText(/^model/i)
+    const toolApprovals = dialog.getByLabelText(/tool approvals/i)
+    // Model was previously buried below Tool approvals; it now precedes it.
+    expect(model.compareDocumentPosition(toolApprovals) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('submits the chosen model, and omits it when left on "Default"', async () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
