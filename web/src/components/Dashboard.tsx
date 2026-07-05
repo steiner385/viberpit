@@ -192,102 +192,134 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
             />
           </div>
 
-          {/* Repository filter */}
-          <div className="space-y-1">
-            <label htmlFor="new-session-repo-filter" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Filter repos <span className="text-gray-400">(optional)</span>
-            </label>
-            <input
-              id="new-session-repo-filter"
-              type="text"
-              value={repoFilter}
-              onChange={(e) => setRepoFilter(e.target.value)}
-              placeholder="owner/name…"
-              className={inputClass}
-              autoComplete="off"
-            />
-          </div>
+          {/* Launch target — the repo/branch to open and which account + model to run it with.
+              Grouped so these "what am I launching" controls are discoverable together. */}
+          <fieldset className="space-y-4 rounded-lg border border-gray-200 dark:border-gray-600 p-4">
+            <legend className="px-1 text-sm font-medium text-gray-700 dark:text-gray-300">
+              Launch target
+            </legend>
 
-          {/* Repository */}
-          <div className="space-y-1">
-            <label htmlFor="new-session-repo" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Repository <span className="text-gray-400">(optional)</span>
-            </label>
-            <select
-              id="new-session-repo"
-              value={selectedRepo}
-              onChange={(e) => handleRepoChange(e.target.value)}
-              className={inputClass}
-              disabled={reposQuery.isLoading}
-              aria-busy={reposQuery.isLoading}
-            >
-              <option value="">
-                {reposQuery.isLoading
-                  ? 'Loading…'
-                  : reposQuery.isError
-                    ? '— could not load repos —'
-                    : '— select repo —'}
-              </option>
-              {filteredRepos.map((repo) => (
-                <option key={repo.nameWithOwner} value={repo.nameWithOwner}>
-                  {repo.nameWithOwner}
-                  {repo.isPrivate ? ' 🔒' : ''}
-                  {repo.cloned ? ' · ✓ cloned' : ' · ↓ clones on start'}
+            {/* Repository filter */}
+            <div className="space-y-1">
+              <label htmlFor="new-session-repo-filter" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Filter repos <span className="text-gray-400">(optional)</span>
+              </label>
+              <input
+                id="new-session-repo-filter"
+                type="text"
+                value={repoFilter}
+                onChange={(e) => setRepoFilter(e.target.value)}
+                placeholder="owner/name…"
+                className={inputClass}
+                autoComplete="off"
+              />
+            </div>
+
+            {/* Repository */}
+            <div className="space-y-1">
+              <label htmlFor="new-session-repo" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Repository <span className="text-gray-400">(optional)</span>
+              </label>
+              <select
+                id="new-session-repo"
+                value={selectedRepo}
+                onChange={(e) => handleRepoChange(e.target.value)}
+                className={inputClass}
+                disabled={reposQuery.isLoading}
+                aria-busy={reposQuery.isLoading}
+              >
+                <option value="">
+                  {reposQuery.isLoading
+                    ? 'Loading…'
+                    : reposQuery.isError
+                      ? '— could not load repos —'
+                      : '— select repo —'}
                 </option>
-              ))}
-            </select>
-            {selectedRepoInfo && (
+                {filteredRepos.map((repo) => (
+                  <option key={repo.nameWithOwner} value={repo.nameWithOwner}>
+                    {repo.nameWithOwner}
+                    {repo.isPrivate ? ' 🔒' : ''}
+                    {repo.cloned ? ' · ✓ cloned' : ' · ↓ clones on start'}
+                  </option>
+                ))}
+              </select>
+              {selectedRepoInfo && (
+                <p className="text-xs text-gray-400">
+                  {selectedRepoInfo.isPrivate ? 'Private · ' : ''}
+                  {selectedRepoInfo.cloned
+                    ? '✓ Already cloned into ~/GitHub/.ccswitch'
+                    : '↓ Will be cloned into ~/GitHub/.ccswitch on first start (one-time; may take a moment for large repos)'}
+                </p>
+              )}
+            </div>
+
+            {/* Branch */}
+            <div className="space-y-1">
+              <label htmlFor="new-session-branch" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Branch <span className="text-gray-400">(optional)</span>
+              </label>
+              <select
+                id="new-session-branch"
+                value={effectiveBranch}
+                onChange={(e) => setSelectedBranch(e.target.value)}
+                className={cn(inputClass, !selectedRepo && 'opacity-50')}
+                disabled={!selectedRepo || branchesQuery.isLoading}
+                aria-busy={branchesQuery.isLoading}
+              >
+                <option value="">{branchesQuery.isLoading ? 'Loading…' : '— default —'}</option>
+                {(branchesQuery.data?.branches ?? []).map((b) => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
               <p className="text-xs text-gray-400">
-                {selectedRepoInfo.isPrivate ? 'Private · ' : ''}
-                {selectedRepoInfo.cloned
-                  ? '✓ Already cloned into ~/GitHub/.ccswitch'
-                  : '↓ Will be cloned into ~/GitHub/.ccswitch on first start (one-time; may take a moment for large repos)'}
+                Clones and worktrees live under <code>~/GitHub/.ccswitch</code> — your real
+                checkouts are never touched. Each session runs in its own isolated git
+                worktree on the selected branch.
               </p>
-            )}
-          </div>
+            </div>
 
-          {/* Branch */}
-          <div className="space-y-1">
-            <label htmlFor="new-session-branch" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Branch <span className="text-gray-400">(optional)</span>
-            </label>
-            <select
-              id="new-session-branch"
-              value={effectiveBranch}
-              onChange={(e) => setSelectedBranch(e.target.value)}
-              className={cn(inputClass, !selectedRepo && 'opacity-50')}
-              disabled={!selectedRepo || branchesQuery.isLoading}
-              aria-busy={branchesQuery.isLoading}
-            >
-              <option value="">{branchesQuery.isLoading ? 'Loading…' : '— default —'}</option>
-              {(branchesQuery.data?.branches ?? []).map((b) => (
-                <option key={b} value={b}>{b}</option>
-              ))}
-            </select>
-            <p className="text-xs text-gray-400">
-              Clones and worktrees live under <code>~/GitHub/.ccswitch</code> — your real
-              checkouts are never touched. Each session runs in its own isolated git
-              worktree on the selected branch.
-            </p>
-          </div>
+            {/* Account + Model — side-by-side on desktop, stacked on narrow mobile */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Account */}
+              <div className="space-y-1">
+                <label htmlFor="new-session-account" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Account <span className="text-gray-400">(optional)</span>
+                </label>
+                <select
+                  id="new-session-account"
+                  value={account}
+                  onChange={(e) => setAccount(e.target.value)}
+                  className={inputClass}
+                >
+                  <option value="">Auto-select</option>
+                  {accounts.map((a) => (
+                    <option key={a.name} value={a.name}>{a.nickname || a.name}</option>
+                  ))}
+                </select>
+              </div>
 
-          {/* Account */}
-          <div className="space-y-1">
-            <label htmlFor="new-session-account" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Account <span className="text-gray-400">(optional)</span>
-            </label>
-            <select
-              id="new-session-account"
-              value={account}
-              onChange={(e) => setAccount(e.target.value)}
-              className={inputClass}
-            >
-              <option value="">Auto-select</option>
-              {accounts.map((a) => (
-                <option key={a.name} value={a.name}>{a.nickname || a.name}</option>
-              ))}
-            </select>
-          </div>
+              {/* Model */}
+              <div className="space-y-1">
+                <label htmlFor="new-session-model" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Model
+                </label>
+                <select
+                  id="new-session-model"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  className={inputClass}
+                  disabled={modelsQuery.isLoading}
+                  aria-busy={modelsQuery.isLoading}
+                >
+                  {/* Fallback so the "default" value always has a matching option before the list loads. */}
+                  {models.length === 0 && <option value="default">Default</option>}
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </fieldset>
 
           {/* Tool approvals */}
           <div className="space-y-1">
@@ -302,27 +334,6 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
             >
               {PERMISSION_MODES.map(({ value, label }) => (
                 <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Model */}
-          <div className="space-y-1">
-            <label htmlFor="new-session-model" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Model
-            </label>
-            <select
-              id="new-session-model"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className={inputClass}
-              disabled={modelsQuery.isLoading}
-              aria-busy={modelsQuery.isLoading}
-            >
-              {/* Fallback so the "default" value always has a matching option before the list loads. */}
-              {models.length === 0 && <option value="default">Default</option>}
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>{m.label}</option>
               ))}
             </select>
           </div>
