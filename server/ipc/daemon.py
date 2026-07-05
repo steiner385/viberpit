@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 from collections import deque
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -41,6 +42,13 @@ def create_daemon_app() -> FastAPI:
     # from turn_start_seq so the whole in-progress turn replays from the ring.
     app.state.turn_start_seqs = {}   # stream -> seq of the last `user` event
     app.state.turn_open = {}         # stream -> bool
+    # Wall-clock start of the open turn (epoch seconds, recorded when its `user`
+    # event was published). The edge threads it through ensure_driver → RemoteDriver
+    # → replay_window so the incomplete-turn drop only trims the turn that actually
+    # IS in progress: the CLI's disk write lags the live stream (MCP fleet boot on
+    # resume), so the disk's last user entry can belong to a PREVIOUS, completed
+    # turn — dropping that amputates history nothing re-supplies.
+    app.state.turn_start_ts = {}     # stream -> float epoch seconds
     _TERMINAL_STATES = {"done", "complete", "needs_attention", "idle"}
     # Per-stream observability (issue #185): the ring buffer drops its oldest entry on
     # every event past the cap — that's NORMAL for live delivery, so it must NOT log per
@@ -71,6 +79,16 @@ def create_daemon_app() -> FastAPI:
 
     app.state.turn_open_for = turn_open_for
 
+    def turn_started_at(stream: str) -> float | None:
+        # Meaningful only while the turn is open: turn_open is flipped False by
+        # turnEnd AND by a terminal status (no turnEnd), so gate on it rather than
+        # on the raw ts — otherwise a settled turn would leak its stale start time.
+        if app.state.turn_open.get(stream):
+            return app.state.turn_start_ts.get(stream)
+        return None
+
+    app.state.turn_started_at = turn_started_at
+
     def resume_since(stream: str) -> int | None:
         # While a turn is open, resume from just before its user message so the whole
         # in-progress turn replays from the ring; otherwise from-now (disk has the rest).
@@ -86,6 +104,7 @@ def create_daemon_app() -> FastAPI:
         app.state.stats.pop(stream, None)
         app.state.turn_start_seqs.pop(stream, None)
         app.state.turn_open.pop(stream, None)
+        app.state.turn_start_ts.pop(stream, None)
 
     app.state.evict = evict
 
@@ -145,6 +164,7 @@ def create_daemon_app() -> FastAPI:
         if etype == "user":
             app.state.turn_start_seqs[stream] = seq
             app.state.turn_open[stream] = True
+            app.state.turn_start_ts[stream] = time.time()
         elif etype == "turnEnd":
             app.state.turn_open[stream] = False
         elif etype == "status" and event.get("state") in _TERMINAL_STATES:

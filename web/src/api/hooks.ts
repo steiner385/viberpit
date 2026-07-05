@@ -582,12 +582,19 @@ export function useAdoptSession() {
 
 export interface SessionTranscript {
   events: SessionEvent[]
+  /** Lowest turn ordinal in this response (0 = session start). */
+  earliestTurn?: number
+  /** Total logical turns on disk — earliestTurn > 0 means older turns exist. */
+  totalTurns?: number
 }
 
-export function useSessionTranscript(id: string, enabled: boolean) {
+/** With `limit`, fetches only the last `limit` turns (older ones page in via
+ *  fetchOlderTurns); without it, the full transcript. */
+export function useSessionTranscript(id: string, enabled: boolean, limit?: number) {
   return useQuery<SessionTranscript>({
-    queryKey: ['session-transcript', id],
-    queryFn: () => api.get<SessionTranscript>(`/sessions/${id}/transcript`),
+    queryKey: ['session-transcript', id, limit ?? null],
+    queryFn: () => api.get<SessionTranscript>(
+      `/sessions/${id}/transcript${limit != null ? `?limit=${limit}` : ''}`),
     enabled,
     staleTime: Infinity,
   })

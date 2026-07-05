@@ -54,7 +54,21 @@ class FakeOrch:
 
     # -- attach path --
     async def ensure_driver(self, session_id, identity):
-        return object()  # truthy; driver is never used directly in our tests
+        # ws.py's attach path REQUIRES open_stream() (the uniform stream
+        # interface — no hasattr branching), so a bare object() no longer
+        # survives attach. Everything else on the driver is best-effort.
+        class _Stream:
+            turn_active = False
+            turn_started_at = None
+            async def events(self):
+                if False:
+                    yield None
+                await asyncio.Event().wait()   # block until detach/teardown
+            def close(self): pass
+
+        class _Driver:
+            def open_stream(self): return _Stream()
+        return _Driver()
 
     def get_session(self, session_id):
         return None
@@ -110,15 +124,6 @@ def _drain_until(ws, *, until_type: str, timeout: float = 5.0) -> list[dict]:
         if msg.get("type") == until_type:
             return frames
     return frames
-
-
-def _next_frame(ws, *, timeout: float = 3.0) -> dict | None:
-    """Read exactly one frame, or None on timeout/error."""
-    try:
-        raw = ws.receive_text()
-        return json.loads(raw)
-    except Exception:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +221,11 @@ def test_command_known_returns_command_result(ws_fake):
         _drain_until(ws, until_type="commands")
 
         ws.send_text(json.dumps({"type": "command", "sessionId": "s1", "name": "model", "args": "sonnet"}))
-        frame = _next_frame(ws)
+        # replayComplete (and other session frames) now ride the batcher and can
+        # land BETWEEN the top-level commands and commandResult frames — drain to
+        # the commandResult rather than assuming frame adjacency.
+        frames = _drain_until(ws, until_type="commandResult")
+        frame = next((f for f in frames if f.get("type") == "commandResult"), None)
 
     assert frame is not None, "Expected a commandResult frame but got nothing"
     assert frame.get("type") == "commandResult"
@@ -236,7 +245,8 @@ def test_command_unknown_returns_ok_false(ws_fake):
         _drain_until(ws, until_type="commands")
 
         ws.send_text(json.dumps({"type": "command", "sessionId": "s1", "name": "bogus", "args": ""}))
-        frame = _next_frame(ws)
+        frames = _drain_until(ws, until_type="commandResult")
+        frame = next((f for f in frames if f.get("type") == "commandResult"), None)
 
     assert frame is not None, "Expected a commandResult frame but got nothing"
     assert frame.get("type") == "commandResult"

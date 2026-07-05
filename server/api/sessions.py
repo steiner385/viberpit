@@ -816,11 +816,15 @@ async def get_session_transcript(
     session_id: str,
     request: Request,
     before: int | None = None,
-    limit: int = 20,
+    limit: int | None = None,
     _identity: str = Depends(current_identity),
 ) -> dict:
-    """Read-only transcript events. With `before`, returns a turn-ordinal window
-    plus earliestTurn/totalTurns for lazy scrollback paging."""
+    """Read-only transcript events, always with earliestTurn/totalTurns metadata.
+
+    - no params → the FULL transcript, sub-agent threads included (no silent cap)
+    - `limit` alone → the last `limit` turns
+    - `before` → a turn-ordinal window for lazy scrollback paging
+    """
     from server.db import db_session as _db_session
     from server.db.models import Session as _DbSession
     from server.audit import redact_event
@@ -846,10 +850,8 @@ async def get_session_transcript(
     def _wire(e):
         return redact_event(e.to_wire() if hasattr(e, "to_wire") else e)
 
-    if before is None:
-        events = await orch.transcript_events(session_id)
-        return {"events": [_wire(e) for e in events]}
-
+    if before is not None and limit is None:
+        limit = 20  # classic scrollback page size when only a cursor is given
     window = await orch.transcript_window(session_id, before=before, limit=limit)
     if window is None:
         return {"events": [], "earliestTurn": 0, "totalTurns": 0}
@@ -876,7 +878,10 @@ async def export_session_markdown(
                             detail={"code": "not_found", "message": "No transcript"})
     record = await orch.get_session(session_id)
     title = (getattr(record, "name", None) or getattr(record, "title", None) or session_id) if record else session_id
-    events = await orch.transcript_events(session_id)
+    # Full windowed replay (limit=None): the export must never be silently
+    # truncated to a trailing slice of the session (B1).
+    window = await orch.transcript_window(session_id)
+    events = window.events if window is not None else []
     # In-process orchestrator yields event objects (.to_wire()); the remote/daemon
     # orchestrator returns already-serialised wire dicts. Handle both (#172).
     md = transcript_markdown(

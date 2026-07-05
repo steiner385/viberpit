@@ -1,8 +1,9 @@
 """GET /api/sessions/{id}/transcript — must handle BOTH event shapes.
 
-In-process orchestrator returns event objects (`.to_wire()`); the remote/daemon
-orchestrator returns already-serialised wire dicts. The endpoint 500'd on dicts
-(`'dict' object has no attribute 'to_wire'`) — this guards the daemon path.
+In-process replay yields event objects (`.to_wire()`); a remote/daemon
+orchestrator may hand back already-serialised wire dicts. The endpoint 500'd on
+dicts (`'dict' object has no attribute 'to_wire'`) — this guards the daemon path
+through the (now unified) transcript_window flow.
 
 Auth/harness mirrors test_send_prompt_route.py.
 """
@@ -43,8 +44,10 @@ class _FakeSessions:
     async def get_session(self, sid):
         return self._record if (self._record and self._record.id == sid) else None
 
-    async def transcript_events(self, sid):
-        return self._events
+    async def transcript_window(self, sid, *, before=None, limit=None):
+        from server.sessions.replay import ReplayWindow
+        return ReplayWindow(events=list(self._events), earliest_turn=0,
+                            total_turns=len(self._events))
 
 
 def _rec():

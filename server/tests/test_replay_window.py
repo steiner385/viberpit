@@ -77,9 +77,35 @@ async def test_session_meta_present_in_every_window(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_window_limit_none_returns_all_turns(tmp_path):
+    """limit=None means NO cap: the full transcript from turn 0 (B1)."""
+    from server.sessions import events as ev
+    path = _write_transcript(tmp_path, 25)
+    w = await replay_window(path, limit=None)
+    assert w.total_turns == 25
+    assert w.earliest_turn == 0
+    assert _turn_ids(w) == [f"a{i}" for i in range(25)]
+    # The very first turn's content is present, not sliced away.
+    texts = [e.text for e in w.events if isinstance(e, ev.TextDelta)]
+    assert "r0" in texts
+
+
+@pytest.mark.asyncio
 async def test_replay_events_wrapper_unchanged(tmp_path):
     path = _write_transcript(tmp_path, 30)
     events = await replay_events(path, max_turns=20)
     from server.sessions import events as ev
     starts = [e for e in events if isinstance(e, ev.TurnStart)]
     assert len(starts) == 20
+
+
+@pytest.mark.asyncio
+async def test_replay_events_max_turns_none_returns_all(tmp_path):
+    """max_turns=None → the FULL transcript. The sub-agent summary persister uses
+    this: with the default 20-turn tail, agents spawned earlier in a long session
+    silently vanished from the dashboard chips (sibling of the B1 cap)."""
+    path = _write_transcript(tmp_path, 30)
+    events = await replay_events(path, max_turns=None)
+    from server.sessions import events as ev
+    starts = [e for e in events if isinstance(e, ev.TurnStart)]
+    assert len(starts) == 30

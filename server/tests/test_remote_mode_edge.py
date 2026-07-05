@@ -176,6 +176,24 @@ class _FakeDriver:
     def queued(self):
         return []
 
+    def open_stream(self):
+        # ws.py consumes drivers through the uniform open_stream() interface
+        # (turn flags pinned to the stream, no hasattr branching) — mirror the
+        # RemoteDriverStream shape.
+        driver = self
+
+        class _Stream:
+            turn_active = False
+            turn_started_at = None
+
+            def events(self):
+                return driver.events()
+
+            def close(self):
+                pass
+
+        return _Stream()
+
     async def events(self):
         # Delay emission so the edge client can subscribe to the daemon channel
         # before we publish — avoids a race where the single event is lost.

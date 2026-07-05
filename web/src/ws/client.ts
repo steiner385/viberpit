@@ -12,7 +12,7 @@ import { QK } from '@/api/hooks'
 import type { SessionEvent } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
 import { clientLogger } from '@/obs/logger'
-import { createGapState, resetSeq, handleLiveBatch, type GapState } from './liveBatch'
+import { createGapState, handleLiveBatch, type GapState } from './liveBatch'
 import { shouldApplyRev } from '@/session/reconcile'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
@@ -357,17 +357,10 @@ export class SessionSocket {
         this._emit('error', msg)
         break
       case 'batch': {
-        // A replayReset re-baselines its OWN session's seq. Route by the frame's
-        // tagged sessionId (falling back to the active session for legacy untagged
-        // frames) so a stale replay for a session we've navigated away from can't
-        // clobber the active session's gap baseline.
-        for (const e of msg.events) {
-          const meta = e as { type: string; sessionId?: string }
-          if (meta.type === 'replayReset') {
-            const sid = meta.sessionId ?? this._activeSessionId
-            if (sid) resetSeq(this._gap, sid)
-          }
-        }
+        // replayReset re-baselining happens INSIDE handleLiveBatch, in frame
+        // order — a pre-scan here would apply the reset before a stale
+        // old-epoch event sharing the batch, letting its seq re-poison the
+        // fresh baseline (see handleLiveBatch's stale-straddle note).
         const { dispatch, needsHeal } = handleLiveBatch(msg.events, {
           activeSessionId: this._activeSessionId,
           state: this._gap,

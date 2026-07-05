@@ -8,17 +8,22 @@
  * - Back button calls onBack
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ReviewView } from '../ReviewView'
 import * as hooks from '@/api/hooks'
+import { fetchOlderTurns } from '@/api/transcript'
 
 vi.mock('@/api/hooks', () => ({
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessionTranscript: vi.fn(),
   useSessionsViewing: vi.fn(),
+}))
+
+vi.mock('@/api/transcript', () => ({
+  fetchOlderTurns: vi.fn(),
 }))
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -101,7 +106,7 @@ describe('ReviewView', () => {
     expect(onBack).toHaveBeenCalledOnce()
   })
 
-  it('calls useSessionTranscript with enabled=true', () => {
+  it('calls useSessionTranscript with enabled=true and a bounded initial window', () => {
     vi.mocked(hooks.useSessionTranscript).mockReturnValue({
       data: undefined,
       isLoading: true,
@@ -109,6 +114,57 @@ describe('ReviewView', () => {
 
     render(<ReviewView sessionId="arc-99" onBack={vi.fn()} />, { wrapper })
 
-    expect(vi.mocked(hooks.useSessionTranscript)).toHaveBeenCalledWith('arc-99', true)
+    expect(vi.mocked(hooks.useSessionTranscript)).toHaveBeenCalledWith('arc-99', true, 100)
+  })
+
+  it('pages in older turns when scrolled to the top', () => {
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue({
+      data: {
+        events: [
+          { type: 'user', turnId: 'turn-1', text: 'Hello world' },
+          { type: 'turnStart', turnId: 'turn-2' },
+          { type: 'textDelta', turnId: 'turn-2', text: 'Hi there!' },
+          { type: 'turnEnd', turnId: 'turn-2' },
+        ],
+        earliestTurn: 5,
+        totalTurns: 30,
+      },
+      isLoading: false,
+    } as ReturnType<typeof hooks.useSessionTranscript>)
+    vi.mocked(fetchOlderTurns).mockResolvedValue({ events: [], earliestTurn: 0, totalTurns: 30 })
+
+    const { container } = render(<ReviewView sessionId="arc-1" onBack={vi.fn()} />, { wrapper })
+
+    // The transcript scroller (mirrors TranscriptView.test.tsx's approach).
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement
+    expect(scroller).toBeTruthy()
+    Object.defineProperty(scroller, 'scrollTop', { value: 0, writable: true })
+    fireEvent.scroll(scroller)
+
+    expect(fetchOlderTurns).toHaveBeenCalledWith('arc-1', 5)
+  })
+
+  it('does not page when already at the session start', () => {
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue({
+      data: {
+        events: [
+          { type: 'user', turnId: 'turn-1', text: 'Hello world' },
+          { type: 'turnStart', turnId: 'turn-2' },
+          { type: 'textDelta', turnId: 'turn-2', text: 'Hi there!' },
+          { type: 'turnEnd', turnId: 'turn-2' },
+        ],
+        earliestTurn: 0,
+        totalTurns: 1,
+      },
+      isLoading: false,
+    } as ReturnType<typeof hooks.useSessionTranscript>)
+
+    const { container } = render(<ReviewView sessionId="arc-1" onBack={vi.fn()} />, { wrapper })
+
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement
+    Object.defineProperty(scroller, 'scrollTop', { value: 0, writable: true })
+    fireEvent.scroll(scroller)
+
+    expect(fetchOlderTurns).not.toHaveBeenCalled()
   })
 })

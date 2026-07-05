@@ -70,7 +70,10 @@ def test_remote_driver_covers_every_ws_reachable_driver_member():
     new one is added without a matching RemoteDriver method/attr, so the surfaces
     can't drift again."""
     used = _driver_members_used(*_DRIVER_CALLERS)
-    assert "events" in used and "current_status" in used, (
+    # Sanity anchors for the scan itself: ws.py consumes the live stream via
+    # driver.open_stream() (driver.events() is no longer a ws-reachable member —
+    # the returned stream owns events()), and reads current_status() on attach.
+    assert "open_stream" in used and "current_status" in used, (
         "static scan found no driver.* usages — the regex or call sites moved")
     d = RemoteDriver(_FakeClient([]), "s1")
     missing = sorted(name for name in used if not hasattr(d, name))
@@ -221,7 +224,8 @@ def test_remote_orchestrator_threads_resume_fields():
         async def call(self, method, **kw):
             assert method == "ensure_driver"
             return {"found": True, "status": "in_progress", "queued": [],
-                    "head_seq": 10, "resume_since": 3, "turn_active": True}
+                    "head_seq": 10, "resume_since": 3, "turn_active": True,
+                    "turn_started_at": 1751710000.5}
         def subscribe(self, *a, **k):
             async def gen():
                 if False:
@@ -233,4 +237,33 @@ def test_remote_orchestrator_threads_resume_fields():
         d = await orch.ensure_driver("s", "ident")
         assert d.turn_active is True
         assert d._resume_since == 3
+        # turn_started_at must ride the same snapshot: ws.py hands it to
+        # replay_window so the incomplete-turn drop can distinguish the in-progress
+        # turn's disk user entry from a PREVIOUS turn's (resume-lag amputation bug).
+        assert d.turn_started_at == 1751710000.5
     asyncio.run(run())
+
+
+def test_remote_driver_turn_started_at_defaults_none():
+    """A snapshot without the field (idle session / legacy daemon) must read None —
+    ws.py falls back to the legacy positional drop then."""
+    d = RemoteDriver(_FakeClient([]), "s1")
+    assert d.turn_started_at is None
+
+
+@pytest.mark.asyncio
+async def test_remote_driver_open_stream_shim():
+    """RemoteDriver.open_stream() must present the SAME stream interface as the
+    local DriverStream (turn_active / turn_started_at / events() / close()) so
+    ws.py never hasattr-branches on the driver flavor. The flags come from the
+    ensure_driver RPC snapshot; events() delegates to the subscribe-based
+    generator; close() is a best-effort no-op (async-generator teardown closes
+    the daemon subscription)."""
+    c = _FakeClient([{"type": "textDelta", "text": "hi"}])
+    d = RemoteDriver(c, "s1", turn_active=True, turn_started_at=1751710123.5)
+    stream = d.open_stream()
+    assert stream.turn_active is True
+    assert stream.turn_started_at == 1751710123.5
+    got = [e.to_wire() async for e in stream.events()]
+    assert got == [{"type": "textDelta", "text": "hi"}]
+    assert stream.close() is None   # nothing to release before events() is iterated
