@@ -19,7 +19,7 @@ import { shouldApplyRev } from '@/session/reconcile'
 
 export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string; interruptedByRestart?: boolean }
 export interface WsUsageMsg        { type: 'usage';         account: string; session: { pct: number; resetsAt: string | null }; weekly: { pct: number; resetsAt: string | null } }
-export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean }
+export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean; revAt?: string }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null }
 export interface WsBatchMsg        { type: 'batch';         events: SessionEvent[] }
 export interface WsCommandsMsg      { type: 'commands';      sessionId: string; commands: import('@/session/events').Command[] }
@@ -351,7 +351,7 @@ export class SessionSocket {
         break
       case 'rotated':
         this._emit('rotated', msg)
-        this._patchSessionAccount(msg.sessionId, msg.toAccount)
+        this._patchSessionAccount(msg.sessionId, msg.toAccount, msg.revAt)
         break
       case 'error':
         this._emit('error', msg)
@@ -427,13 +427,23 @@ export class SessionSocket {
     })
   }
 
-  private _patchSessionAccount(sessionId: string, accountName: string) {
+  private _patchSessionAccount(sessionId: string, accountName: string, revAt?: string) {
     const qc = this._queryClient
     if (!qc) return
-    // A rotation is not a fresh turn — update the account only, never updatedAt.
+    // A rotation is not a fresh turn — update the account only, never updatedAt. The
+    // rev token IS bumped by the rotation (server/sessions/orchestrator.py _reassign)
+    // and must be applied here so reconcileSessions (web/src/session/reconcile.ts) can
+    // tell this patch is newer than a poll response snapshotted just before the
+    // rotation persisted — otherwise the next 5s poll silently reverts the account
+    // badge to the old account. Same rev-guard as _patchSessionStatus: a strictly
+    // older/stale revAt is rejected; a missing token on either side still applies.
     qc.setQueryData<Session[]>(QK.sessions, (old) => {
       if (!old) return old
-      return old.map((s) => s.id === sessionId ? { ...s, accountName } : s)
+      return old.map((s) => {
+        if (s.id !== sessionId) return s
+        if (!shouldApplyRev(revAt, s.revAt)) return s
+        return { ...s, accountName, ...(revAt ? { revAt } : {}) }
+      })
     })
   }
 

@@ -4481,12 +4481,21 @@ class SessionOrchestrator:
                     .where(DbSession.id == record.id)
                     .values(account_name=new_account)
                 )
+            # Bump the in-memory rev token BEFORE publishing the event (mirrors
+            # _persist_status's "row-write token" bump). Without this the `rotated`
+            # WS patch (web/src/ws/client.ts _patchSessionAccount) carries no fresher
+            # revAt than what a poll snapshotted just before the rotation persisted,
+            # so reconcileSessions (web/src/session/reconcile.ts) can't tell the two
+            # apart and the stale poll silently reverts the account badge.
+            from datetime import datetime
+            record.updated_at = datetime.utcnow()
             log.info("reassign.complete session=%s %s→%s reason=%s",
                      record.id, old, new_account, reason)
             self._publish_event({
                 "type": "rotated", "sessionId": record.id, "fromAccount": old,
                 "toAccount": new_account, "reason": reason,
                 "turnRestarted": bool(last),
+                "revAt": record.rev_at,
             })
             log_event(log, logging.INFO, "session.rotate",
                       session_id=record.id,
