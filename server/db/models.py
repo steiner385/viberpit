@@ -371,6 +371,10 @@ class CiFinding(Base):
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     detail: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # True once the linked issue is confirmed closed. NULL/False means it is still
+    # open on GitHub — either an active finding, or a resolve whose close failed and
+    # must be retried. Kept alongside issue_number so a recurrence can reopen it.
+    issue_closed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=_utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=_utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)

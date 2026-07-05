@@ -383,6 +383,8 @@ class SessionOrchestrator:
                 ci_issues.create_issue, repo, title, body),
             close_issue=lambda repo, n: asyncio.to_thread(
                 ci_issues.close_issue, repo, n),
+            reopen_issue=lambda repo, n: asyncio.to_thread(
+                ci_issues.reopen_issue, repo, n),
             clock=time.time,  # wall clock: created_ts from GitHub is epoch time
         )
         self._cicd_task: asyncio.Task | None = None

@@ -42,3 +42,16 @@ def close_issue(repo: str, number: int, *, run=gitrepos._run_gh) -> bool:
     except Exception:
         log.warning("cicd.issue_close_failed repo=%s #%s", repo, number, exc_info=True)
         return False
+
+
+def reopen_issue(repo: str, number: int, *, run=gitrepos._run_gh) -> bool:
+    """Reopen a previously-filed ci-doctor issue when its finding recurs, instead
+    of filing a brand-new duplicate each flap. Best-effort — False on failure so
+    the caller can fall back to filing fresh."""
+    try:
+        proc = run(["api", "-X", "PATCH", f"repos/{repo}/issues/{number}",
+                    "-f", "state=open"])
+        return proc.returncode == 0
+    except Exception:
+        log.warning("cicd.issue_reopen_failed repo=%s #%s", repo, number, exc_info=True)
+        return False
