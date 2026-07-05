@@ -53,6 +53,17 @@ export interface UsageSnapshot {
   costUsd: number
 }
 
+/** A toolResult payload parked pending its (not-yet-arrived) toolCall block. */
+export interface OrphanToolResult { ok: boolean; payload: Record<string, unknown>; ts?: number }
+
+/**
+ * Cap on parked orphan toolResults (bounded FIFO, oldest evicted first). Orphans arise
+ * from frame reordering around a reconnect/heal boundary — the result usually arrives
+ * within moments of its toolCall, so a small cap is plenty and keeps a pathological
+ * stream of unmatched results from growing state without bound.
+ */
+export const ORPHAN_TOOL_RESULT_CAP = 50
+
 export interface TranscriptState {
   turns: Turn[]
   openBlockId: string | null    // id of the open text/thinking block in the active assistant turn
@@ -74,6 +85,7 @@ export interface TranscriptState {
   pendingSent: { id: string; text: string }[]  // sent-but-unconfirmed-on-disk prompts (FIFO); survives replayReset
   pendingSentSeq: number                        // monotonic counter for stable synthetic ids
   hadReset: boolean                             // true after a replayReset; guards re-assert on replayComplete
+  orphanToolResults: Record<string /* toolId */, OrphanToolResult>  // toolResults with no matching block yet (main thread or any sub-thread); cleared on replayReset
 }
 
 export const initialTranscript: TranscriptState = {
@@ -97,6 +109,53 @@ export const initialTranscript: TranscriptState = {
   pendingSent: [],
   pendingSentSeq: 0,
   hadReset: false,
+  orphanToolResults: {},
+}
+
+/**
+ * Park an orphan toolResult (no matching tool block anywhere yet). Bounded FIFO: JS
+ * object key order is insertion order, so evicting `Object.keys(buffer)[0]` evicts the
+ * oldest entry without needing a separate ordering structure.
+ */
+function parkOrphanResult(
+  buffer: Record<string, OrphanToolResult>,
+  toolId: string,
+  result: OrphanToolResult,
+): Record<string, OrphanToolResult> {
+  let next = buffer
+  if (!(toolId in buffer) && Object.keys(buffer).length >= ORPHAN_TOOL_RESULT_CAP) {
+    next = { ...buffer }
+    delete next[Object.keys(buffer)[0]]
+  }
+  return { ...next, [toolId]: result }
+}
+
+/**
+ * If `toolId` has a parked orphan result and a block for it exists in `turns` without a
+ * result yet, apply it and remove the entry from the buffer. Returns null when there is
+ * nothing to consume, so callers can skip publishing a new state (referential stability).
+ */
+function consumeOrphanResult(
+  turns: Turn[],
+  toolId: string,
+  orphan: Record<string, OrphanToolResult>,
+): { turns: Turn[]; orphan: Record<string, OrphanToolResult> } | null {
+  const pending = orphan[toolId]
+  if (!pending) return null
+  let applied = false
+  const nextTurns = turns.map((turn) => {
+    const blockIdx = turn.blocks.findIndex((b) => b.kind === 'tool' && b.toolId === toolId && !b.result)
+    if (blockIdx === -1) return turn
+    applied = true
+    return {
+      ...turn,
+      blocks: turn.blocks.map((b, i) => (i === blockIdx && b.kind === 'tool' ? { ...b, result: pending } : b)),
+    }
+  })
+  if (!applied) return null
+  const restOrphan = { ...orphan }
+  delete restOrphan[toolId]
+  return { turns: nextTurns, orphan: restOrphan }
 }
 
 /** Coerce a possibly-missing numeric usage field to a finite number (0 when absent). */
@@ -287,7 +346,28 @@ export function transcriptReducer(
     if (pid) {
       const cur = state.subAgents[pid] ?? { turns: [], openBlockId: null }
       const next = applyToThread(cur, ev as BlockEvent)
+
+      // toolResult found no block in this sub-thread: park it instead of dropping it
+      // (the buffer is keyed by toolId, which the SDK assigns uniquely across the whole
+      // session — so it applies regardless of which thread eventually gets the toolCall).
+      if (ev.type === 'toolResult' && next === cur) {
+        const { toolId, ok, payload } = ev as EvToolResult
+        return { ...state, orphanToolResults: parkOrphanResult(state.orphanToolResults, toolId, { ok, payload, ts: ev.ts }) }
+      }
+
       if (next === cur) return state
+
+      if (ev.type === 'toolCall') {
+        const consumed = consumeOrphanResult(next.turns, (ev as EvToolCall).toolId, state.orphanToolResults)
+        if (consumed) {
+          return {
+            ...state,
+            subAgents: { ...state.subAgents, [pid]: { ...next, turns: consumed.turns } },
+            orphanToolResults: consumed.orphan,
+          }
+        }
+      }
+
       return { ...state, subAgents: { ...state.subAgents, [pid]: next } }
     }
   }
@@ -435,6 +515,10 @@ export function transcriptReducer(
         ...t,
         blocks: [...t.blocks, newBlock],
       }))
+      const consumed = consumeOrphanResult(nextTurns, toolId, state.orphanToolResults)
+      if (consumed) {
+        return { ...state, turns: consumed.turns, openBlockId: null, orphanToolResults: consumed.orphan }
+      }
       return { ...state, turns: nextTurns, openBlockId: null }
     }
 
@@ -452,7 +536,12 @@ export function transcriptReducer(
         )
         return { ...turn, blocks: newBlocks }
       })
-      if (!found) return state // IGNORE orphan toolResult
+      if (!found) {
+        // Not found on the main thread (and, per the routing block above, not in any
+        // sub-thread either — an untagged toolResult only reaches here). Park it: the
+        // matching toolCall may still be in flight around a reconnect/heal boundary.
+        return { ...state, orphanToolResults: parkOrphanResult(state.orphanToolResults, toolId, { ok, payload, ts: ev.ts }) }
+      }
       return { ...state, turns: nextTurns }
     }
 
@@ -580,7 +669,7 @@ export function transcriptReducer(
       // cleanly. Live-only state that the replay does NOT re-emit (rotations,
       // queue, banner) is preserved.
       return { ...state, turns: [], openBlockId: null, subAgents: {}, replaying: true, hadReset: true,
-               earliestTurn: 0, totalTurns: 0, loadingOlder: false }
+               earliestTurn: 0, totalTurns: 0, loadingOlder: false, orphanToolResults: {} }
     }
 
     // ── replayComplete ────────────────────────────────────────────────────────
