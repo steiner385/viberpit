@@ -269,6 +269,42 @@ def test_attach_resume_failure_reports_error_and_keeps_ws_alive(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# A dead outbound forwarding task closes the socket (1011) so the client reconnects
+# ---------------------------------------------------------------------------
+# The batcher / lifecycle-forwarder / live-stream tasks are fire-and-forget. Before
+# audit W2.6 an unexpected raise in one killed the socket's tail while the socket
+# stayed open-looking: frozen forever, no log, no client signal. Now a failed
+# forwarding task is supervised → logged loudly → the socket is closed 1011 so the
+# client's reconnect logic (which replays from disk) takes over.
+
+def test_batcher_failure_closes_socket_1011(ws_env, monkeypatch):
+    """If the outbound batcher task dies unexpectedly, the socket is useless — the
+    server must close it with 1011 rather than leave the client on a frozen tail."""
+    from starlette.websockets import WebSocketDisconnect
+    import server.bridge.ws as wsmod
+
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "batcher-boom")
+    session_id = session.id
+
+    def _boom(_buf):
+        raise RuntimeError("batcher boom")
+    # Kill the batcher on its very first flush (the attach's replayComplete).
+    monkeypatch.setattr(wsmod, "_redact_buffer", _boom)
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        with pytest.raises(WebSocketDisconnect) as ei:
+            # No batch will ever flush (the flush raises); the only frame the client
+            # sees is the server's 1011 close.
+            for _ in range(20):
+                ws.receive_text()
+        assert ei.value.code == 1011
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
 # attach + prompt streams the turn live
 # ---------------------------------------------------------------------------
 
