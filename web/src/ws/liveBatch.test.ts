@@ -116,6 +116,32 @@ describe('handleLiveBatch', () => {
     expect(r.needsHeal).toBe(false)
   })
 
+  // --- srcSeq loss telemetry (audit W2.3): additive, never heals or drops ---
+
+  it('records a srcSeq gap without healing, and still dispatches the frame', () => {
+    const state = createGapState()
+    handleLiveBatch([ev({ seq: 0, sessionId: 's1', srcSeq: 10 })], { activeSessionId: 's1', state })
+    const r = handleLiveBatch([ev({ seq: 1, sessionId: 's1', srcSeq: 12 })], { activeSessionId: 's1', state })
+    expect(r.srcSeqGaps).toEqual([{ sessionId: 's1', prev: 10, got: 12 }])
+    expect(r.needsHeal).toBe(false)   // srcSeq gap ALONE must not heal
+    expect(r.dispatch).toHaveLength(1)   // frame is still delivered
+  })
+
+  it('reports no srcSeq gap for contiguous srcSeq', () => {
+    const state = createGapState()
+    handleLiveBatch([ev({ seq: 0, sessionId: 's1', srcSeq: 10 })], { activeSessionId: 's1', state })
+    const r = handleLiveBatch([ev({ seq: 1, sessionId: 's1', srcSeq: 11 })], { activeSessionId: 's1', state })
+    expect(r.srcSeqGaps).toHaveLength(0)
+  })
+
+  it('resets the srcSeq baseline on replayReset (no false gap after a reconnect replay)', () => {
+    const state = createGapState()
+    handleLiveBatch([ev({ seq: 0, sessionId: 's1', srcSeq: 99 })], { activeSessionId: 's1', state })
+    handleLiveBatch([{ type: 'replayReset', sessionId: 's1' } as unknown as SessionEvent], { activeSessionId: 's1', state })
+    const r = handleLiveBatch([ev({ seq: 0, sessionId: 's1', srcSeq: 3 })], { activeSessionId: 's1', state })
+    expect(r.srcSeqGaps).toHaveLength(0)   // baseline cleared → the new epoch's srcSeq re-baselines
+  })
+
   it('drops a replayReset tagged for a non-active session (blank-on-navigation guard)', () => {
     // A stale replay for session s2 arriving after the user navigated to s1 must NOT
     // reach s1's reducer: its replayReset would wipe s1's transcript to empty. Now that

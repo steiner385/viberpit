@@ -361,11 +361,19 @@ export class SessionSocket {
         // order — a pre-scan here would apply the reset before a stale
         // old-epoch event sharing the batch, letting its seq re-poison the
         // fresh baseline (see handleLiveBatch's stale-straddle note).
-        const { dispatch, needsHeal } = handleLiveBatch(msg.events, {
+        const { dispatch, needsHeal, srcSeqGaps } = handleLiveBatch(msg.events, {
           activeSessionId: this._activeSessionId,
           state: this._gap,
         })
         for (const e of dispatch) this._emit('sessionEvent', e)
+        // srcSeq loss telemetry (audit W2.3): record daemon→edge→browser holes to the
+        // obs sink WITHOUT healing — this is diagnostic only, the foundation for the
+        // wave-3 cursor protocol. The per-attach `seq` above still owns dedup/heal.
+        for (const g of srcSeqGaps) {
+          clientLogger.warn(`transcript.srcseq.gap prev=${g.prev} got=${g.got}`, {
+            sessionId: g.sessionId,
+          })
+        }
         if (needsHeal) this._healActiveSession()
         break
       }

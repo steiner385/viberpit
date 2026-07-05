@@ -25,9 +25,16 @@ USAGE_RPC_TIMEOUT = 5.0
 
 
 class _WireEvent:
-    """Wraps an already-serialized event dict so ws.py's e.to_wire() works."""
-    def __init__(self, wire: dict):
+    """Wraps an already-serialized event dict so ws.py's e.to_wire() works.
+
+    ``src_seq`` carries the daemon's per-stream source seq (from the DaemonClient's
+    _SeqDict), which ws._forward_live stamps as the additive ``srcSeq`` loss
+    telemetry (audit W2.3). ``None`` for a frame with no daemon seq (a GAP sentinel);
+    local in-process events aren't _WireEvents at all, so their src_seq reads as None
+    and the field is omitted."""
+    def __init__(self, wire: dict, src_seq: int | None = None):
         self._wire = wire
+        self.src_seq = src_seq
 
     def to_wire(self) -> dict:
         return self._wire
@@ -136,7 +143,10 @@ class RemoteDriver:
 
     async def events(self):
         async for wire in self._client.subscribe(self._session_id, since=self._resume_since):
-            yield _WireEvent(wire)
+            # The DaemonClient delivers a _SeqDict carrying the daemon source seq on
+            # .src_seq; a plain dict (or GAP sentinel) reads as None. Surface it so
+            # ws._forward_live can stamp srcSeq telemetry.
+            yield _WireEvent(wire, getattr(wire, "src_seq", None))
 
 
 class RemoteOrchestrator:

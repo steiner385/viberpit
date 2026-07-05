@@ -106,6 +106,20 @@ async def test_remote_driver_events_wrap_subscribe():
 
 
 @pytest.mark.asyncio
+async def test_remote_driver_events_carry_src_seq():
+    """RemoteDriver.events surfaces the daemon source seq on each _WireEvent so
+    ws._forward_live can stamp srcSeq (audit W2.3). A frame without a src_seq (a
+    plain dict / GAP sentinel) yields None → local mode then omits the field."""
+    from server.ipc.client import _SeqDict
+    frames = [_SeqDict({"type": "textDelta", "text": "hi"}, 4),
+              {"type": "textDelta", "text": "no-seq"}]
+    d = RemoteDriver(_FakeClient(frames), "s1")
+    got = [e async for e in d.events()]
+    assert [e.src_seq for e in got] == [4, None]
+    assert [e.to_wire() for e in got] == frames  # payload content unchanged
+
+
+@pytest.mark.asyncio
 async def test_ensure_driver_returns_remotedriver_when_found():
     c = _FakeClient([{"type": "turnEnd"}], found=True, status="idle", queued=[])
     ro = RemoteOrchestrator(c)

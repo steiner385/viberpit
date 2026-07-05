@@ -46,7 +46,7 @@ from server.auth.middleware import require_ws_identity
 from server.db import db_session
 from server.ipc import protocol as proto
 from server.ipc.client import DaemonUnavailable
-from server.obs.context import bind_session
+from server.obs.context import bind_session, log_event
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.replay import replay_window
 
@@ -79,9 +79,21 @@ async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str) -
     viewing and (b) detect a hole and self-heal via re-attach. A single event that
     fails to serialize must not silence the whole stream: skip it but still advance
     ``seq`` so the gap is visible. A crash in the generator becomes an ``error`` frame.
+
+    ADDITIVE ``srcSeq`` (audit W2.3): in remote mode each event also carries the
+    daemon's per-stream *source* seq (``e.src_seq``) — the only identity that survives
+    re-attach (the per-attach ``seq`` restarts at 0). It is stamped as ``wire["srcSeq"]``
+    ONLY when present (local/in-process mode has no daemon seq → the field is omitted,
+    never faked). It is pure telemetry: it NEVER affects ordering, dedup, heal, or
+    replay. When consecutive source seqs are non-contiguous we log ONE structured
+    warning per attach so production loss between daemon and edge becomes visible; the
+    GAP-consumption skip already forces a from-disk resync, so it re-baselines the
+    source-seq tracker to avoid double-counting that known, expected jump.
     """
     with bind_session(session_id):
         seq = 0
+        prev_src: int | None = None      # last daemon source seq seen on THIS attach
+        src_gap_logged = False           # rate-limit the srcSeq-gap warning to once/attach
         try:
             async for e in stream.events():
                 try:
@@ -99,9 +111,20 @@ async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str) -
                     log.warning("ws.live_stream: daemon replay gap session=%s lost=%s — "
                                 "forcing client resync from disk", session_id, wire.get("lost"))
                     seq += 1
+                    # The srcSeq jump ACROSS a GAP is expected (events really were lost and
+                    # a resync is already forced) — re-baseline so it isn't also flagged.
+                    prev_src = None
                     continue
                 wire["sessionId"] = session_id
                 wire["seq"] = seq
+                src = getattr(e, "src_seq", None)
+                if src is not None:
+                    wire["srcSeq"] = src
+                    if prev_src is not None and src != prev_src + 1 and not src_gap_logged:
+                        log_event(log, logging.WARNING, "transcript.srcseq.gap",
+                                  session_id=session_id, prev=prev_src, got=src)
+                        src_gap_logged = True
+                    prev_src = src
                 seq += 1
                 out_q.put_nowait(wire)
         except asyncio.CancelledError:

@@ -79,6 +79,25 @@ async def test_two_subscribers_same_stream_both_receive():
 
 
 @pytest.mark.asyncio
+async def test_deliver_carries_daemon_src_seq():
+    """_deliver threads the daemon's per-stream seq onto the delivered event as a
+    dict-compatible _SeqDict.src_seq — additive srcSeq telemetry (audit W2.3) that
+    leaves the event's CONTENT (and thus every existing consumer/equality check)
+    unchanged."""
+    from server.ipc.client import _SeqDict
+    client = DaemonClient("/unused.sock")
+    q = client._add_subscriber("s")
+    client._deliver("s", {"i": 1}, seq=7)
+    got = q.get_nowait()
+    assert got == {"i": 1}                       # content identical → consumers unaffected
+    assert isinstance(got, _SeqDict) and got.src_seq == 7
+    # A gap/local control event delivered without a seq carries src_seq None.
+    client._deliver("s", {"type": "gap"})
+    assert q.get_nowait().src_seq is None
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_deliver_drops_oldest_on_overflow():
     client = DaemonClient("/unused.sock")
     q = client._add_subscriber("s", maxsize=2)
