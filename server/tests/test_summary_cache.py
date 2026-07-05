@@ -20,7 +20,7 @@ def test_latest_summary_serves_cache_without_regen_when_signature_matches():
     async def fake_path(_sid):
         return "/t.jsonl"
 
-    orch._resolve_transcript_path = fake_path  # type: ignore[assignment]
+    orch.resolve_transcript_path = fake_path  # type: ignore[assignment]
     import server.sessions.orchestrator as om
     orig = om.os.path.getmtime
     om.os.path.getmtime = lambda _p: 5.0  # signature unchanged
@@ -39,7 +39,7 @@ def test_latest_summary_no_regen_when_not_viewing():
     async def fake_path(_sid):
         return "/t.jsonl"
 
-    orch._resolve_transcript_path = fake_path  # type: ignore[assignment]
+    orch.resolve_transcript_path = fake_path  # type: ignore[assignment]
     import server.sessions.orchestrator as om
     orig = om.os.path.getmtime
     om.os.path.getmtime = lambda _p: 9.0

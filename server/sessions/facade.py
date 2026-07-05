@@ -52,7 +52,7 @@ class InProcessOrchestratorAdapter:
     async def generate_suggestions_now(self, *a, **k): return await _maybe_await(self._orch.generate_suggestions_now(*a, **k))
     async def latest_summary(self, *a, **k): return await _maybe_await(self._orch.latest_summary(*a, **k))
     async def transcript_path(self, *a, **k): return await _maybe_await(self._orch.transcript_path(*a, **k))
-    async def _resolve_transcript_path(self, *a, **k): return await _maybe_await(self._orch._resolve_transcript_path(*a, **k))
+    async def resolve_transcript_path(self, *a, **k): return await _maybe_await(self._orch.resolve_transcript_path(*a, **k))
     async def pending_questions(self, *a, **k): return await _maybe_await(self._orch.pending_questions(*a, **k))
     async def pop_pending_initial_prompt(self, *a, **k): return await _maybe_await(self._orch.pop_pending_initial_prompt(*a, **k))
     async def pop_pending_initial_attachment_ids(self, *a, **k): return await _maybe_await(self._orch.pop_pending_initial_attachment_ids(*a, **k))

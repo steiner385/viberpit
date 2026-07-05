@@ -3646,7 +3646,7 @@ class SessionOrchestrator:
         proposal = self._dispatch_proposal(rec)
 
         try:
-            path = await self._resolve_transcript_path(session_id)
+            path = await self.resolve_transcript_path(session_id)
             if not path:
                 return _prepend_proposal(proposal, [])
             signature = os.path.getmtime(path)
@@ -3730,7 +3730,7 @@ class SessionOrchestrator:
                 await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, rec.account)
             except (AuthError, FileNotFoundError):
                 return []
-            path = await self._resolve_transcript_path(session_id)
+            path = await self.resolve_transcript_path(session_id)
             if not path:
                 return []
             events = await replay_events(path)
@@ -3762,7 +3762,7 @@ class SessionOrchestrator:
             return ""
         cached = self._summaries.get(session_id)
         try:
-            path = await self._resolve_transcript_path(session_id)
+            path = await self.resolve_transcript_path(session_id)
             signature = os.path.getmtime(path) if path else 0.0
         except Exception:
             return cached[2] if cached else ""
@@ -4771,7 +4771,7 @@ class SessionOrchestrator:
         log.info("session.permanent_delete id=%s db row removed", session_id)
         return True
 
-    async def _resolve_transcript_path(self, session_id: str) -> str | None:
+    async def resolve_transcript_path(self, session_id: str) -> str | None:
         """Resolve the on-disk JSONL path for a session's transcript.
 
         Works for both active and archived sessions. Returns None when not found.
@@ -4809,7 +4809,7 @@ class SessionOrchestrator:
         """
         from server.sessions.replay import replay_events
 
-        path = await self._resolve_transcript_path(session_id)
+        path = await self.resolve_transcript_path(session_id)
         if not path:
             return []
         try:
@@ -4829,7 +4829,7 @@ class SessionOrchestrator:
         """
         from server.sessions.replay import replay_window
 
-        path = await self._resolve_transcript_path(session_id)
+        path = await self.resolve_transcript_path(session_id)
         if not path:
             return None
         try:

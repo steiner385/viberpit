@@ -54,7 +54,7 @@ def test_detached_done_generates_and_caches():
     async def run():
         orch, _ = _orch_with_record("done")
         path = _temp_transcript()
-        orch._resolve_transcript_path = AsyncMock(return_value=path)
+        orch.resolve_transcript_path = AsyncMock(return_value=path)
         first = await orch.latest_suggestions("s1")     # kicks generation
         assert first == []                               # nothing cached yet
         got = await _await_until_cached(orch, "s1")
@@ -71,7 +71,7 @@ def test_detached_idle_status_is_eligible():
     async def run():
         orch, _ = _orch_with_record("idle")
         path = _temp_transcript()
-        orch._resolve_transcript_path = AsyncMock(return_value=path)
+        orch.resolve_transcript_path = AsyncMock(return_value=path)
         await orch.latest_suggestions("s1")
         got = await _await_until_cached(orch, "s1")
         assert got == ["Run tests", "Commit"]
@@ -81,7 +81,7 @@ def test_detached_idle_status_is_eligible():
 def test_non_done_idle_status_skipped():
     async def run():
         orch, _ = _orch_with_record("in_progress")
-        orch._resolve_transcript_path = AsyncMock(return_value=_temp_transcript())
+        orch.resolve_transcript_path = AsyncMock(return_value=_temp_transcript())
         res = await orch.latest_suggestions("s1")
         assert res == []
         assert orch._suggester.generate.call_count == 0
@@ -92,7 +92,7 @@ def test_no_suggester_returns_empty():
     async def run():
         orch, _ = _orch_with_record("done")
         orch._suggester = None
-        orch._resolve_transcript_path = AsyncMock(return_value=_temp_transcript())
+        orch.resolve_transcript_path = AsyncMock(return_value=_temp_transcript())
         assert await orch.latest_suggestions("s1") == []
     asyncio.run(run())
 
@@ -100,7 +100,7 @@ def test_no_suggester_returns_empty():
 def test_empty_result_is_cached_not_retried():
     async def run():
         orch, _ = _orch_with_record("done", suggester_items=())
-        orch._resolve_transcript_path = AsyncMock(return_value=_temp_transcript())
+        orch.resolve_transcript_path = AsyncMock(return_value=_temp_transcript())
         await orch.latest_suggestions("s1")          # kicks generation -> []
         for _ in range(50):
             await orch.latest_suggestions("s1")
@@ -114,7 +114,7 @@ def test_signature_change_retriggers():
     async def run():
         orch, _ = _orch_with_record("done")
         path = _temp_transcript()
-        orch._resolve_transcript_path = AsyncMock(return_value=path)
+        orch.resolve_transcript_path = AsyncMock(return_value=path)
         await orch.latest_suggestions("s1")
         await _await_until_cached(orch, "s1")
         first_calls = orch._suggester.generate.call_count
@@ -130,7 +130,7 @@ def test_signature_change_retriggers():
 def test_inflight_dedup_single_generation():
     async def run():
         orch, _ = _orch_with_record("done")
-        orch._resolve_transcript_path = AsyncMock(return_value=_temp_transcript())
+        orch.resolve_transcript_path = AsyncMock(return_value=_temp_transcript())
         # Fire many concurrent awaits before the first generation completes.
         await asyncio.gather(*(orch.latest_suggestions("s1") for _ in range(8)))
         await _await_until_cached(orch, "s1")
@@ -151,7 +151,7 @@ def test_live_driver_path_unchanged():
 def test_resolve_transcript_path_error_returns_empty_not_raise():
     async def run():
         orch, _ = _orch_with_record("done")
-        orch._resolve_transcript_path = AsyncMock(side_effect=FileNotFoundError("no creds"))
+        orch.resolve_transcript_path = AsyncMock(side_effect=FileNotFoundError("no creds"))
         res = await orch.latest_suggestions("s1")     # must NOT raise
         assert res == []
         assert orch._suggester.generate.call_count == 0

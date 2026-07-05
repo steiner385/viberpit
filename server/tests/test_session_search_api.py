@@ -111,7 +111,7 @@ def _setup_archived(orch, tmp_path, monkeypatch, rows, texts):
         return paths.get(sid)
 
     monkeypatch.setattr(orch, "list_archived", _list_archived)
-    monkeypatch.setattr(orch, "_resolve_transcript_path", _resolve)
+    monkeypatch.setattr(orch, "resolve_transcript_path", _resolve)
 
 
 def test_search_archived_matches_name_and_transcript(tmp_path, monkeypatch):
