@@ -134,7 +134,9 @@ async def test_transcript_window_returns_replay_window():
 async def test_transcript_window_no_path_returns_none():
     """transcript_window returns None when the daemon reports no transcript path."""
     app, orch = _build()
-    orch.transcript_path = mock.MagicMock(return_value=None)
+    # The resolve_transcript_path RPC calls _resolve_transcript_path (DB-glob
+    # fallback included); mock that seam so no DB is needed here.
+    orch._resolve_transcript_path = mock.AsyncMock(return_value=None)
 
     async with serve_daemon_uds(app) as sock:
         ro = RemoteOrchestrator(DaemonClient(sock))

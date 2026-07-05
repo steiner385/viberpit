@@ -100,20 +100,8 @@ def _make_app(tmp_path, n_turns, db_url, *, has_transcript=True):
         MagicMock(id=sid, name="Test Session", title=None) if sid in (session_id, no_transcript_id) else None
     ))
 
-    # transcript_events: return a small list of mock event objects
-    def _make_event(i):
-        e = MagicMock()
-        e.to_wire.return_value = {
-            "type": "user",
-            "turnId": f"u{i}",
-            "text": f"q{i}",
-            "images": [],
-        }
-        return e
-
-    orch.transcript_events = AsyncMock(
-        return_value=[_make_event(i) for i in range(n_turns)]
-    )
+    # No transcript_events mock: export.md flows through the real windowed
+    # replay path (_resolve_transcript_path → replay_window) over the JSONL above.
 
     app = create_app(orchestrator=orch)
     return app, session_id, no_transcript_id
@@ -132,6 +120,18 @@ class TestExportEndpoints:
         assert r.headers["content-type"].startswith("text/markdown")
         assert "attachment" in r.headers["content-disposition"]
         assert r.headers["content-disposition"].endswith('.md"')
+
+    def test_export_md_contains_full_transcript(self, tmp_path):
+        """Export is NOT capped at the last 20 turns: turn 1 of a 25-turn
+        transcript must appear in the Markdown (B1)."""
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+        app, sid, _ = _make_app(tmp_path, 25, db_url)
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+             TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get(f"/api/sessions/{sid}/export.md", headers=_IDENT)
+        assert r.status_code == 200, r.text
+        assert "q0" in r.text and "r0" in r.text    # first turn present
+        assert "q24" in r.text and "r24" in r.text  # last turn present
 
     def test_export_jsonl_raw_download(self, tmp_path):
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"

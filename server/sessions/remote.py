@@ -33,14 +33,40 @@ class _WireEvent:
         return self._wire
 
 
+class RemoteDriverStream:
+    """``open_stream()`` shim mirroring the local ``DriverStream`` shape
+    (``turn_active`` / ``turn_started_at`` / ``events()`` / ``close()``) so
+    ws.py drives both driver flavors through ONE interface — no hasattr
+    branching. The flags come from the ensure_driver RPC snapshot; unlike the
+    local stream there is no settle race to close on this side: the daemon
+    anchors the subscription at ``resume_since`` (just before the open turn's
+    user message), so the ring replay IS the snapshot."""
+
+    def __init__(self, driver: "RemoteDriver") -> None:
+        self._driver = driver
+        self.turn_active = driver.turn_active
+        self.turn_started_at = driver.turn_started_at
+
+    def events(self):
+        return self._driver.events()
+
+    def close(self) -> None:
+        # Best-effort no-op: the daemon subscription only starts when events()
+        # is first iterated, and async-generator teardown closes it — there is
+        # nothing to release before that point.
+        return None
+
+
 class RemoteDriver:
     """Driver-shaped shim so ws.py can consume a remote session like a local one.
 
-    ws.py needs ``.events()`` (an async generator of objects with ``.to_wire()``),
-    ``.current_status()`` (sync, returns str), and ``.queued()`` (sync, returns list).
+    ws.py needs ``.open_stream()`` (returning a stream with ``turn_active`` /
+    ``turn_started_at`` / ``events()`` / ``close()``), ``.current_status()``
+    (sync, returns str), and ``.queued()`` (sync, returns list).
     """
     def __init__(self, client, session_id: str, status="idle", queued=None, head_seq=None,
-                 resume_since=None, turn_active=False):
+                 resume_since=None, turn_active=False,
+                 turn_started_at: float | None = None):
         self._client = client
         self._session_id = session_id
         self._status = status
@@ -50,6 +76,11 @@ class RemoteDriver:
         # user message, so the whole in-progress turn replays from the ring; else from-now.
         self._resume_since = resume_since if resume_since is not None else head_seq
         self.turn_active = bool(turn_active)
+        # Epoch seconds of the open turn's start (None when idle), from the daemon's
+        # ensure_driver snapshot. ws.py hands it to replay_window so the incomplete-
+        # turn drop only trims the turn that actually IS in progress — mirrors the
+        # local SessionDriver.turn_started_at property.
+        self.turn_started_at = turn_started_at
         self._bg_tasks: set[asyncio.Task] = set()
 
     def current_status(self) -> str:
@@ -98,6 +129,10 @@ class RemoteDriver:
                             self._session_id, t.exception())
 
         task.add_done_callback(_done)
+
+    def open_stream(self) -> RemoteDriverStream:
+        """Uniform attach interface with the local SessionDriver.open_stream()."""
+        return RemoteDriverStream(self)
 
     async def events(self):
         async for wire in self._client.subscribe(self._session_id, since=self._resume_since):
@@ -203,7 +238,8 @@ class RemoteOrchestrator:
             return None
         return RemoteDriver(self._client, session_id, status=r["status"], queued=r["queued"],
                             head_seq=r.get("head_seq"), resume_since=r.get("resume_since"),
-                            turn_active=r.get("turn_active", False))
+                            turn_active=r.get("turn_active", False),
+                            turn_started_at=r.get("turn_started_at"))
 
     async def archive_session(self, session_id):
         return await self._client.call("archive_session", session_id=session_id)
@@ -289,14 +325,20 @@ class RemoteOrchestrator:
         r = await self._client.call("adopt_session", claude_session_id=claude_session_id, identity=identity)
         return SessionRecord.from_dict(r["record"]), r["metadata"]
 
-    async def transcript_events(self, session_id):
-        r = await self._client.call("transcript_events", session_id=session_id)
+    async def transcript_events(self, session_id, *, max_turns: int | None = 20):
+        r = await self._client.call("transcript_events", session_id=session_id,
+                                    max_turns=max_turns)
         return r["events"]
 
-    async def transcript_window(self, session_id, *, before=None, limit=20):
-        """Resolve the transcript path via daemon, then replay locally."""
+    async def transcript_window(self, session_id, *, before=None, limit=None):
+        """Resolve the transcript path via daemon, then replay locally.
+
+        Uses the resolve_transcript_path RPC (not transcript_path) so archived
+        sessions — absent from the daemon's in-memory driver state but resolvable
+        via its DB-glob fallback — still replay. limit=None → full transcript.
+        """
         from server.sessions.replay import replay_window
-        path = await self.transcript_path(session_id)
+        path = await self._client.call("resolve_transcript_path", session_id=session_id)
         if not path:
             return None
         try:

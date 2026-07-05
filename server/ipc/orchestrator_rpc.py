@@ -70,7 +70,12 @@ def register_orchestrator_rpc(app, orch) -> None:
         return {"found": True, "status": driver.current_status(), "queued": driver.queued(),
                 "head_seq": app.state.head_seq(session_id),
                 "resume_since": app.state.resume_since(session_id),
-                "turn_active": app.state.turn_open_for(session_id)}
+                "turn_active": app.state.turn_open_for(session_id),
+                # Epoch seconds of the open turn's start (None when no turn is open).
+                # The edge hands it to replay_window so the incomplete-turn drop only
+                # trims the turn that actually IS in progress (resume-lag bug: the
+                # disk's last user entry can belong to a PREVIOUS, completed turn).
+                "turn_started_at": app.state.turn_started_at(session_id)}
 
     async def list_sessions(params: dict) -> dict:
         return {"sessions": [r.to_dict() for r in orch.list_sessions()]}
@@ -185,9 +190,16 @@ def register_orchestrator_rpc(app, orch) -> None:
         events = await orch.transcript_events(**params)
         return {"events": [e.to_wire() for e in events]}
 
+    async def resolve_transcript_path(params: dict):
+        # Unlike the transcript_path RPC (in-memory driver state only), this
+        # includes the DB-glob fallback, so archived sessions resolve too —
+        # RemoteOrchestrator.transcript_window replays the file locally.
+        return await orch._resolve_transcript_path(params["session_id"])
+
     register_rpc(app, "unarchive", unarchive)
     register_rpc(app, "adopt_session", adopt_session)
     register_rpc(app, "transcript_events", transcript_events)
+    register_rpc(app, "resolve_transcript_path", resolve_transcript_path)
 
     async def usage(params: dict) -> dict:
         u = await orch.poller.get(params["name"])

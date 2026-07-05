@@ -644,11 +644,10 @@ def test_reattach_reemits_pending_question(ws_env):
     # --- Second connection: reattach — the pending question must be re-emitted. ---
     with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
         ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
-        # Drain up to either replayComplete or the question re-emit (whichever comes last).
-        all_events: list[dict] = []
-        all_events.extend(_drain_events(ws, until_type="replayComplete"))
-        # Give the bridge a moment to send the question re-emit (comes after replayComplete).
-        all_events.extend(_drain_events(ws, until_type="question", timeout=4.0))
+        # The question re-emit follows replayComplete on the SAME outbound FIFO,
+        # so both frequently share one batch — drain once, to the question itself
+        # (a second drain would block on an already-consumed frame).
+        all_events: list[dict] = _drain_events(ws, until_type="question", timeout=8.0)
 
         q_reemit = next((e for e in all_events if e.get("type") == "question"), None)
         assert q_reemit is not None, (
@@ -727,9 +726,9 @@ def test_reattach_reemits_pending_plan_permission_with_plan_flag(ws_env):
     #     and must still carry plan=True. ---
     with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
         ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
-        all_events: list[dict] = []
-        all_events.extend(_drain_events(ws, until_type="replayComplete"))
-        all_events.extend(_drain_events(ws, until_type="permissionRequest", timeout=4.0))
+        # Same single-drain rationale as the question re-emit above: the
+        # permissionRequest re-emit rides the FIFO right behind replayComplete.
+        all_events: list[dict] = _drain_events(ws, until_type="permissionRequest", timeout=8.0)
 
         reemit = next((e for e in all_events if e.get("type") == "permissionRequest"), None)
         assert reemit is not None, (

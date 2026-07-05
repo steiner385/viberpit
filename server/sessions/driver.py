@@ -46,6 +46,57 @@ async def _aiter_one(message: dict):
     yield message
 
 
+class DriverStream:
+    """One attach's atomically-opened view of a driver's event stream.
+
+    Built by ``SessionDriver.open_stream()`` with NO awaits between snapshotting
+    the in-progress turn buffer, registering the subscriber queue, and capturing
+    ``turn_active``/``turn_started_at`` — so all four describe the SAME instant.
+
+    The WS attach path needs that atomicity (the settle-race bug, B3): it awaits
+    a multi-step disk replay between reading ``turn_active`` and consuming the
+    stream. If the turn settles during those awaits, the driver clears
+    ``_turn_buffer`` — a snapshot taken *after* the replay would be empty, and
+    the in-progress turn the replay dropped (``drop_incomplete=True``) would be
+    delivered by NOBODY. Opening the stream first pins the snapshot and the
+    flags to one consistent instant; anything emitted afterwards lands in the
+    queue and is delivered live.
+    """
+
+    def __init__(self, driver: "SessionDriver", snapshot: list,
+                 queue: asyncio.Queue, turn_active: bool,
+                 turn_started_at: float | None) -> None:
+        self._driver = driver
+        self._snapshot = snapshot
+        self._queue = queue
+        self.turn_active = turn_active
+        self.turn_started_at = turn_started_at
+
+    async def events(self):
+        """Yield the snapshot (the past), then drain the queue (strictly the
+        future) until the driver's close sentinel."""
+        try:
+            for e in self._snapshot:
+                yield e
+            while True:
+                item = await self._queue.get()
+                if item is _STREAM_DONE:
+                    return
+                yield item
+        finally:
+            self._driver._subscribers.discard(self._queue)
+
+    def close(self) -> None:
+        """Discard the subscriber queue without consuming ``events()``.
+
+        Leak guard for the WS attach error path: if the replay between
+        ``open_stream()`` and the live-task creation raises, nothing will ever
+        iterate ``events()`` (whose ``finally`` normally deregisters), so the
+        queue must be discarded here or it buffers every future emit forever.
+        Idempotent — safe alongside the generator's own discard."""
+        self._driver._subscribers.discard(self._queue)
+
+
 class SessionDriver:
     """Drives one Claude session via an SDK client, exposing normalized events.
 
@@ -108,6 +159,10 @@ class SessionDriver:
         self._titled: bool = False
         self._queue: list[tuple[str, list[dict]]] = []
         self._turn_active: bool = False
+        # Epoch seconds of the in-progress turn's start; None whenever no turn is
+        # active. Consumed by the WS attach path (→ replay_window.turn_started_at)
+        # to scope the incomplete-turn drop to the turn that actually is in progress.
+        self._turn_started_at: float | None = None
         self._retrying: bool = False
         self._condensing: bool = False
         self._turns_completed: int = 0
@@ -471,6 +526,13 @@ class SessionDriver:
         self._turn_buffer = []
         self._turn_produced_output = False
         self._turn_active = True
+        # Wall-clock start of this turn. The CLI's transcript write LAGS the live
+        # stream (MCP fleet boot on resume), so a live attach can see a disk JSONL
+        # whose last user entry is the PREVIOUS turn's. replay_window compares the
+        # entry's timestamp against this to drop only the turn that actually is in
+        # progress — same-host clocks, and the CLI stamps its user entry only AFTER
+        # this point (it processes the prompt we are about to send).
+        self._turn_started_at = time.time()
         self._last_turn_outcome = "success"
         await self._emit_status()
         # Build the live UserMessage image refs (url/mime/name only).
@@ -625,6 +687,7 @@ class SessionDriver:
                 await self._start_turn(next_text, next_images)
             else:
                 self._turn_active = False
+                self._turn_started_at = None
                 self._turn_buffer = []
                 self._turns_completed += 1
                 # Turn settled — refresh the exact context-window readout.
@@ -684,10 +747,17 @@ class SessionDriver:
     def turn_active(self) -> bool:
         return self._turn_active
 
-    async def events(self):
-        # Snapshot the in-progress turn and register a fresh live queue ATOMICALLY —
-        # no await between the two lines, so no event can slip into the gap (single
-        # asyncio thread). Snapshot = the past; the queue = strictly the future.
+    @property
+    def turn_started_at(self) -> float | None:
+        """Epoch seconds of the in-progress turn's start, or None when idle."""
+        return self._turn_started_at
+
+    def open_stream(self) -> DriverStream:
+        """Open an attach stream ATOMICALLY — no await anywhere in this method,
+        so no event (and no turn settle) can slip between snapshotting the
+        in-progress turn, registering the live queue, and capturing the turn
+        flags (single asyncio thread). Snapshot = the past; the queue = strictly
+        the future; turn_active/turn_started_at = the same instant as both."""
         snapshot = list(self._turn_buffer)
         # Re-emit the latest suggestions to every new subscriber. Suggestions are
         # current-state (like Status), not buffered turn content, and are produced by a
@@ -701,16 +771,25 @@ class SessionDriver:
                 self.session_id, self._last_turn_id, list(self._last_suggestions)))
         q: asyncio.Queue = asyncio.Queue()
         self._subscribers.add(q)
+        return DriverStream(self, snapshot, q, self._turn_active, self._turn_started_at)
+
+    async def events(self):
+        """Single-shot subscribe: thin delegate over open_stream() — ONE
+        implementation of the snapshot+queue semantics (used by the daemon-side
+        RPC pump; the WS bridge calls open_stream() directly so it can pin the
+        turn flags to the same instant as the snapshot).
+
+        The explicit close() matters: ``async for`` does NOT aclose its inner
+        generator when THIS generator is closed, so without it the subscriber
+        queue would linger in _subscribers until GC finalizes the inner
+        generator — a deferred leak. close() is idempotent alongside the inner
+        finally's own discard."""
+        stream = self.open_stream()
         try:
-            for e in snapshot:
+            async for e in stream.events():
                 yield e
-            while True:
-                item = await q.get()
-                if item is _STREAM_DONE:
-                    return
-                yield item
         finally:
-            self._subscribers.discard(q)
+            stream.close()
 
     def _cancel_suggest(self) -> None:
         if self._suggest_task is not None and not self._suggest_task.done():
@@ -791,6 +870,7 @@ class SessionDriver:
         if self._client:
             await self._client.interrupt()
         self._turn_active = False
+        self._turn_started_at = None
         # Clear turn-scoped flags BEFORE deriving the post-interrupt status. Without
         # this, _condensing stays True and (outranking turn_active in derive_status)
         # re-persists 'condensing' — the interrupt would visibly do nothing to the pill.
@@ -872,6 +952,7 @@ class SessionDriver:
         self._titled = False
         self._queue.clear()
         self._turn_active = False
+        self._turn_started_at = None
         self._tr = Translator()
         client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None,
                                on_pre_compact=self._on_pre_compact)

@@ -10,7 +10,16 @@ Factory:
 Message protocol (JSON):
   client→server: attach, detach, prompt, interrupt, permissionResponse,
                  setPermissionMode, answerQuestion
-  server→client: batch, replayComplete, permissionRequest, error
+  server→client: batch (carrying ALL session-scoped events, including the
+                 replayReset/replay/replayComplete sequence and attach re-emits
+                 like permissionRequest/status), plus top-level error /
+                 commands / commandResult / lifecycle frames.
+
+  Every session-scoped frame flows through ONE outbound FIFO (out_q → batcher)
+  so replay and live events share a single total order per socket — see
+  _run_replay_and_complete for the stale-straddle rationale. Top-level frames
+  are reserved for things that are NOT transcript state (error banners, the
+  slash-command catalog, session-LIST lifecycle updates).
 
 Security:
   - Handshake identity via the require_ws_identity dependency.
@@ -25,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -57,8 +67,12 @@ _MAX_FRAME = 262144
 _RESUME_TIMEOUT = 90.0
 
 
-async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -> None:
-    """Forward a driver's live events into *out_q* as wire dicts.
+async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str) -> None:
+    """Forward a driver stream's live events into *out_q* as wire dicts.
+
+    *stream* is a ``DriverStream``/``RemoteDriverStream`` opened by
+    ``driver.open_stream()`` at attach time (its ``events()`` replays the
+    atomically-captured in-progress-turn snapshot, then goes live).
 
     Each dict is stamped with the owning ``sessionId`` and a per-session monotonic
     ``seq`` so the client can (a) discard events from a session it is no longer
@@ -69,7 +83,7 @@ async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -
     with bind_session(session_id):
         seq = 0
         try:
-            async for e in driver.events():
+            async for e in stream.events():
                 try:
                     wire = e.to_wire()
                 except Exception:
@@ -95,11 +109,15 @@ async def _forward_live(driver, out_q: "asyncio.Queue[dict]", session_id: str) -
         except Exception as exc:
             log.exception("ws.live_stream session=%s", session_id)
             detail = str(exc).strip() or "no detail"
-            out_q.put_nowait(ErrorEvent(
+            # Session-tagged like every other out_q frame: untagged, a crash frame
+            # surviving a detach would be applied to whichever session the client
+            # is viewing when the batcher flushes it (same misrouting family as
+            # the stale-straddle bug).
+            out_q.put_nowait({**ErrorEvent(
                 "live_stream_failed",
                 f"The live session stream stopped unexpectedly. {type(exc).__name__}: {detail[:500]}",
                 turn_id=None,
-            ).to_wire())
+            ).to_wire(), "sessionId": session_id})
 
 
 def _redact_buffer(buf: list[dict]) -> list[dict]:
@@ -115,18 +133,42 @@ def _redact_buffer(buf: list[dict]) -> list[dict]:
     return out
 
 
-async def _run_replay_and_complete(orchestrator, send, session_id: str,
-                                   drop_incomplete: bool = False) -> list:
-    """Replay the transcript (trimmed of the in-progress turn when drop_incomplete) as
-    one batch, then replayComplete. Returns the replayed events. See build_ws_router's
-    _replay_and_complete for the rationale (reset-leading batch, always-fire complete)."""
+async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None]",
+                                   session_id: str,
+                                   drop_incomplete: bool = False,
+                                   turn_started_at: float | None = None) -> list:
+    """Replay the transcript (trimmed of the in-progress turn when drop_incomplete),
+    then replayComplete — every frame IN ORDER through *enqueue* (the socket's
+    single outbound FIFO: out_q → batcher). Returns the replayed events.
+
+    WHY the FIFO and not a direct send (the stale-straddle bug, B4): live events
+    flow driver → out_q → batcher, and a detach never drains that queue. On a
+    detach→attach (navigation, gap-healing), pre-detach frames can still be parked
+    in out_q or the batcher's flush buffer; a direct-sent replay would OVERTAKE
+    them, so stale old-epoch frames land AFTER the fresh replayReset — same
+    sessionId, so no client filter drops them. They duplicate transcript content
+    and their stale ``seq`` poisons the client's just-reset gap baseline (the new
+    live stream restarts at seq 0 → looks like a gap → detach+attach heal loop).
+    Routing the replay through the same queue makes the queue the total order.
+
+    Frames are enqueued as RAW wire dicts: the batcher's ``_redact_buffer``
+    redacts everything at flush, so redacting here would be a second, parallel
+    redaction path (the exact drift-prone shape constitution VI bans).
+
+    replayComplete rides the queue too (so it cannot overtake the replay), and
+    still fires on a replay failure so the client's loading spinner clears.
+
+    turn_started_at (epoch seconds, from the live driver) scopes the trim to the turn
+    that actually IS in progress — the CLI's disk write lags the live stream, so the
+    file's last user entry can belong to a PREVIOUS, completed turn (see replay.py)."""
     events: list = []
     earliest_turn = 0
     total_turns = 0
     try:
         path = await orchestrator.transcript_path(session_id)
         if path:
-            window = await replay_window(path, drop_incomplete_turn=drop_incomplete)
+            window = await replay_window(path, drop_incomplete_turn=drop_incomplete,
+                                         turn_started_at=turn_started_at)
             events = window.events
             earliest_turn = window.earliest_turn
             total_turns = window.total_turns
@@ -148,14 +190,13 @@ async def _run_replay_and_complete(orchestrator, send, session_id: str,
             # and its history never returns (blank-on-navigation bug). Tagging lets the
             # client (handleLiveBatch / useSessionRuntime.onEvent) drop a replay meant
             # for a session it is no longer viewing.
-            redacted_replay = [{"type": "replayReset", "sessionId": session_id}]
-            redacted_replay += [{**redact_event(e.to_wire()), "sessionId": session_id}
-                                for e in events]
-            await send({"type": "batch", "events": redacted_replay})
+            enqueue({"type": "replayReset", "sessionId": session_id})
+            for e in events:
+                enqueue({**e.to_wire(), "sessionId": session_id})
     except Exception:
         log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
-    await send({"type": "replayComplete", "sessionId": session_id,
-                "earliestTurn": earliest_turn, "totalTurns": total_turns})
+    enqueue({"type": "replayComplete", "sessionId": session_id,
+             "earliestTurn": earliest_turn, "totalTurns": total_turns})
     return events
 
 
@@ -246,15 +287,20 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
         # Attach / detach
         # ------------------------------------------------------------------
 
-        async def _replay_and_complete(session_id: str, drop_incomplete: bool = False) -> list:
+        async def _replay_and_complete(session_id: str, drop_incomplete: bool = False,
+                                       turn_started_at: float | None = None) -> list:
             """Delegate to the module-level helper, binding this socket's orchestrator
-            and _send.  A transcript that can't be located or parsed must NOT crash the
+            and out_q (the single session-frame FIFO — see the helper's stale-straddle
+            rationale).  A transcript that can't be located or parsed must NOT crash the
             WS — the helper swallows the error and always fires replayComplete so the
             client's loading spinner clears.  Returns the replayed events (for
-            idle-suggestion seeding).  Pass drop_incomplete=True for a LIVE session
-            whose driver reports turn_active so the in-progress turn is owned solely by
-            the driver's events() buffer replay (no duplication)."""
-            return await _run_replay_and_complete(orchestrator, _send, session_id, drop_incomplete)
+            idle-suggestion seeding).  Pass drop_incomplete=True (plus the stream's
+            turn_started_at) for a LIVE session whose stream reports turn_active so the
+            in-progress turn — and ONLY that turn — is owned solely by the stream's
+            snapshot replay (no duplication, no amputated history)."""
+            return await _run_replay_and_complete(orchestrator, out_q.put_nowait,
+                                                  session_id, drop_incomplete,
+                                                  turn_started_at)
 
         async def _resume_driver_or_error(session_id: str):
             """Resume (or fetch) the live driver, bounded by _RESUME_TIMEOUT.
@@ -277,7 +323,10 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                              "message": "This session is taking too long to resume — the "
                                         "server may be busy. Try again in a moment.",
                              "sessionId": session_id})
-                await _send({"type": "replayComplete", "sessionId": session_id})
+                # The error frame stays a direct top-level send (it's a banner, not
+                # transcript state), but replayComplete IS transcript state — route
+                # it through out_q so it can never overtake queued session frames.
+                out_q.put_nowait({"type": "replayComplete", "sessionId": session_id})
                 return None
             except DaemonUnavailable:
                 log.warning("ws.attach: session daemon unavailable for %s", session_id)
@@ -298,32 +347,35 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 await _send({"type": "error", "code": "SESSION_START_FAILED",
                              "message": f"Couldn't resume this session.{hint}",
                              "sessionId": session_id})
-                await _send({"type": "replayComplete", "sessionId": session_id})
+                out_q.put_nowait({"type": "replayComplete", "sessionId": session_id})
                 return None
             if driver is None:
                 await _send({"type": "error", "code": "SESSION_NOT_FOUND",
                              "message": f"Session {session_id!r} not found",
                              "sessionId": session_id})
-                await _send({"type": "replayComplete", "sessionId": session_id})
+                out_q.put_nowait({"type": "replayComplete", "sessionId": session_id})
                 return None
             return driver
 
-        async def _emit_persisted_context_usage(rec) -> None:
+        async def _emit_persisted_context_usage(session_id: str, rec) -> None:
             """Re-emit the record's last exact context usage as a contextUsage frame.
 
             No-op when there's no record or no persisted reading (a session that has
-            never finished a turn). Best-effort: never blocks the attach."""
+            never finished a turn). Best-effort: never blocks the attach. Rides the
+            out_q FIFO (session-tagged, unredacted — the batcher redacts at flush)
+            like every other session-scoped frame, so it can't interleave into the
+            middle of a queued replay."""
             used = getattr(rec, "context_used_tokens", None) if rec is not None else None
             mx = getattr(rec, "context_max_tokens", None) if rec is not None else None
             if not isinstance(used, int) or not isinstance(mx, int) or mx <= 0:
                 return
             try:
                 from server.sessions import events as ev
-                await _send(redact_event(ev.ContextUsage(
+                out_q.put_nowait({**ev.ContextUsage(
                     used_tokens=used, max_tokens=mx,
                     percentage=round(used / mx * 100, 1),
                     model=getattr(rec, "model", None),
-                ).to_wire()))
+                ).to_wire(), "sessionId": session_id})
             except Exception:
                 log.warning("ws.attach: context usage re-emit failed", exc_info=True)
 
@@ -332,7 +384,15 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             populates. For a live session the orchestrator builds it fresh from the
             SDK's get_server_info and caches it; for a DETACHED session (no driver) it
             replays the last-known cached catalog — so the palette works on view without
-            forcing a resume. Best-effort: never blocks the attach."""
+            forcing a resume. Best-effort: never blocks the attach.
+
+            DELIBERATELY a direct top-level send, not out_q: the client's 'commands'
+            handler is TOP-LEVEL-only (client.ts case 'commands' → the dedicated
+            'commands' emitter; SESSION_EVENT_TYPES does NOT include it), so a
+            batch-wrapped catalog would be dispatched as a sessionEvent that nothing
+            consumes — silently breaking the slash-command menu. The catalog is not
+            transcript state, so its ordering vs the replay is irrelevant; being
+            direct, it is redacted here."""
             try:
                 catalog = await orchestrator.command_catalog(session_id)
                 if catalog:
@@ -343,7 +403,14 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
         async def _emit_live_extras(session_id: str, driver, events: list) -> None:
             """Post-attach live wiring: suggestion seeding, command catalog, pending
             permission/question re-emit, live status, and the deferred initial prompt.
-            Only meaningful once a live driver exists. Each step is best-effort."""
+            Only meaningful once a live driver exists. Each step is best-effort.
+
+            Session-scoped frames (permissionRequest, question, status, queueUpdate)
+            ride out_q — the replay now flows through that queue, and a direct send
+            here would OVERTAKE it (a permissionRequest landing before replayReset
+            gets wiped: the reducer stores permission blocks inside turns). They are
+            enqueued raw + session-tagged; the batcher redacts at flush. The
+            'commands' catalog is the deliberate exception (see below)."""
             # A session resumed into an idle state has no in-memory turn context, so the
             # turn-completion suggestion trigger never fires. Seed one suggestion from
             # the replayed transcript tail (best-effort; driver gates + dedupes).
@@ -353,7 +420,8 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             except Exception:
                 log.warning("ws.attach: idle suggestion seeding failed for %s", session_id, exc_info=True)
 
-            # Slash-command catalog (built from the SDK's get_server_info) for this session.
+            # Slash-command catalog (built from the SDK's get_server_info) for this
+            # session — top-level by design, see _emit_command_catalog's docstring.
             await _emit_command_catalog(session_id)
 
             # Re-emit any pending permission requests for this session. Build the frame
@@ -361,36 +429,39 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             # uses — so the re-emit can't drift from it (it previously hardcoded
             # plan=False, dropping the plan flag for a pending ExitPlanMode approval).
             for p in await orchestrator.pending_permissions(session_id):
-                perm_frame = redact_event(PermissionRequest(
+                out_q.put_nowait({**PermissionRequest(
                     p["permId"], p["turn_id"], p["tool"], tool_kind(p["tool"]),
                     p["input"], plan=(p["tool"] == "ExitPlanMode"),
-                ).to_wire())
-                await _send(perm_frame)
+                ).to_wire(), "sessionId": session_id})
 
             # Re-emit any pending AskUserQuestion events for this session. Mirrors the
             # permission re-emit above so a refresh/reattach while the model is blocked
             # in _handle_ask_user_question never silently hangs.
             from server.sessions import events as ev
             for q in await orchestrator.pending_questions(session_id):
-                q_wire = redact_event(ev.Question(
+                out_q.put_nowait({**ev.Question(
                     question_id=q["question_id"],
                     turn_id=q["turn_id"],
                     header=q["header"],
                     question=q["question"],
                     options=q["options"],
                     multi_select=q["multi_select"],
-                ).to_wire())
-                await _send(q_wire)
+                ).to_wire(), "sessionId": session_id})
 
             # Emit the current live status so a client attaching or reconnecting mid-turn
             # renders the true state immediately. The live status is otherwise only
             # pushed on transitions, so without this a mid-turn attach would show the
             # reducer's initial 'idle' ("Ready"). Best-effort.
+            # Riding out_q is also the fix for the status-frame collision (B5): as a
+            # top-level frame, {"type":"status","state":...} hit the client's
+            # LIFECYCLE 'status' handler (which expects {sessionId,status}) and never
+            # reached the transcript reducer. Batched, it is dispatched as a
+            # sessionEvent → the reducer's 'status' case — where it always belonged.
             try:
-                await _send(redact_event(ev.Status(
+                out_q.put_nowait({**ev.Status(
                     state=driver.current_status(),
                     count=len(driver.queued()),
-                ).to_wire()))
+                ).to_wire(), "sessionId": session_id})
             except Exception:
                 log.warning("ws.attach: live status emit failed for %s", session_id, exc_info=True)
 
@@ -399,7 +470,8 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             # without this, a navigate-away/back showed an empty strip. Best-effort.
             try:
                 if driver.queued():
-                    await _send(redact_event(ev.QueueUpdate(driver.queue_wire()).to_wire()))
+                    out_q.put_nowait({**ev.QueueUpdate(driver.queue_wire()).to_wire(),
+                                      "sessionId": session_id})
             except Exception:
                 log.warning("ws.attach: queue re-emit failed for %s", session_id, exc_info=True)
 
@@ -408,17 +480,27 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             # so that its events stream live to this first attach rather than racing the
             # transcript-file write or arriving before any subscriber is registered on
             # the driver. Only fires on the first attach (pop clears the entry);
-            # reconnects fall through to live-stream only.
-            pending_prompt = await orchestrator.pop_pending_initial_prompt(session_id)
-            pending_attachment_ids = await orchestrator.pop_pending_initial_attachment_ids(session_id)
-            if pending_prompt is not None or pending_attachment_ids:
-                await orchestrator.send_prompt(
-                    session_id, pending_prompt or "", pending_attachment_ids)
+            # reconnects fall through to live-stream only. Best-effort like every
+            # other step here: a raise would propagate out of _handle_attach's
+            # try, close the just-opened stream, and kill the whole attach — the
+            # client would spin on a dead socket over a deferred nicety.
+            try:
+                pending_prompt = await orchestrator.pop_pending_initial_prompt(session_id)
+                pending_attachment_ids = await orchestrator.pop_pending_initial_attachment_ids(session_id)
+                if pending_prompt is not None or pending_attachment_ids:
+                    await orchestrator.send_prompt(
+                        session_id, pending_prompt or "", pending_attachment_ids)
+            except Exception:
+                log.warning("ws.attach: deferred initial prompt send failed for %s",
+                            session_id, exc_info=True)
 
-        def _start_live_stream(session_id: str, driver) -> None:
-            """Forward the driver's live events into the batcher for this session."""
+        def _start_live_stream(session_id: str, stream) -> None:
+            """Forward an opened driver stream's events into the batcher for this
+            session. The stream was opened by driver.open_stream() BEFORE the replay
+            (see _handle_attach's settle-race note); once this task starts, the
+            stream's events() generator owns queue teardown."""
             live_tasks[session_id] = asyncio.create_task(
-                _forward_live(driver, out_q, session_id), name=f"ws-live-{session_id}")
+                _forward_live(stream, out_q, session_id), name=f"ws-live-{session_id}")
 
         async def _handle_attach(session_id: str) -> None:
             if session_id in live_tasks:
@@ -444,7 +526,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             # session falls back to the model-string approximation (0% for a 1M opus session
             # whose API-stripped id lacks the `[1m]` marker). Emitted for live AND detached
             # sessions; survives the following replayReset (which doesn't clear contextUsage).
-            await _emit_persisted_context_usage(rec)
+            await _emit_persisted_context_usage(session_id, rec)
 
             if rec is not None and getattr(rec, "detached", False):
                 await _replay_and_complete(session_id)
@@ -462,10 +544,30 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             driver = await _resume_driver_or_error(session_id)
             if driver is None:
                 return
-            active = getattr(driver, "turn_active", False)
-            events = await _replay_and_complete(session_id, drop_incomplete=active)
-            await _emit_live_extras(session_id, driver, events)
-            _start_live_stream(session_id, driver)
+            # Open the driver stream SYNCHRONOUSLY, BEFORE the replay (the
+            # settle-race bug, B3): open_stream() atomically snapshots the
+            # in-progress turn buffer AND pins turn_active/turn_started_at to that
+            # same instant. The replay below awaits (disk IO, and in remote mode
+            # 4+ RPCs); if the turn settles during those awaits the driver clears
+            # its buffer — a stream opened after the replay would snapshot nothing,
+            # and the in-progress turn this replay drops (drop_incomplete=True)
+            # would be delivered by NOBODY: the trailing turn silently vanishes and
+            # the fresh live seq starts at 0 with no gap, so the client can't
+            # self-heal. The pre-opened queue also captures every event emitted
+            # while the replay runs.
+            stream = driver.open_stream()
+            try:
+                events = await _replay_and_complete(
+                    session_id, drop_incomplete=stream.turn_active,
+                    turn_started_at=stream.turn_started_at)
+                await _emit_live_extras(session_id, driver, events)
+            except BaseException:
+                # Nothing has consumed the stream yet (only events()'s finally or
+                # close() deregisters it) — discard the queue so a failed attach
+                # can't leak a subscriber that buffers every future emit forever.
+                stream.close()
+                raise
+            _start_live_stream(session_id, stream)
 
         async def _ensure_live(session_id: str) -> bool:
             """Make the session live + streaming so a prompt can flow, resuming a
@@ -476,20 +578,27 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             driver = await _resume_driver_or_error(session_id)
             if driver is None:
                 return False
-            _start_live_stream(session_id, driver)
+            # Same uniform interface as _handle_attach (no replay here, so there is
+            # no settle race to close — but ONE way of opening a live stream keeps
+            # the two paths from drifting). No awaits between open and task start,
+            # so no leak window either.
+            _start_live_stream(session_id, driver.open_stream())
             # Now that a live driver exists, (re)build + emit the command catalog. This
             # both refreshes the palette and self-populates the persisted cache for a
             # session that had never been live before (e.g. one predating catalog caching,
             # or only ever resumed lazily) — so its NEXT detached view shows the palette.
             await _emit_command_catalog(session_id)
             # Flip the header from the read-only 'Ready' to the live state as the
-            # resumed turn begins. Best-effort.
+            # resumed turn begins. Best-effort; rides out_q like every other
+            # session-scoped frame (raw + tagged, batcher redacts — and batching is
+            # what routes it to the reducer's 'status' case instead of colliding
+            # with the client's top-level lifecycle 'status' handler, B5).
             try:
                 from server.sessions import events as ev
-                await _send(redact_event(ev.Status(
+                out_q.put_nowait({**ev.Status(
                     state=driver.current_status(),
                     count=len(driver.queued()),
-                ).to_wire()))
+                ).to_wire(), "sessionId": session_id})
             except Exception:
                 log.warning("ws._ensure_live: live status emit failed for %s", session_id, exc_info=True)
             return True

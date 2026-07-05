@@ -2303,7 +2303,10 @@ class SessionOrchestrator:
         it to the in-memory record + DB row. Best-effort; swallows all errors."""
         try:
             from .subagents import summarize_transcript
-            events = await self.transcript_events(session_id)
+            # Full transcript (max_turns=None): the summary is persisted and shown
+            # as the session's sub-agent chips — a 20-turn tail would silently drop
+            # every agent spawned earlier in a long session.
+            events = await self.transcript_events(session_id, max_turns=None)
             summary = summarize_transcript(events)
             rec = self._records.get(session_id)
             if rec is not None:
@@ -4784,12 +4787,16 @@ class SessionOrchestrator:
                 path = matches[0] if matches else None
         return path
 
-    async def transcript_events(self, session_id: str) -> list:
+    async def transcript_events(self, session_id: str, *, max_turns: int | None = 20) -> list:
         """Return replayed transcript events for a session (read-only review).
 
         Works for both active and archived sessions: transcripts live in the
         account's config dir (not the moved cwd), so always accessible.
         Returns [] if no transcript is found or parsing fails.
+        max_turns=None returns the FULL transcript — pass it whenever the result
+        feeds a user-facing surface, or the default tail silently truncates it
+        (the sub-agent summary bug: agents spawned before the last 20 turns
+        vanished from the dashboard chips).
         """
         from server.sessions.replay import replay_events
 
@@ -4797,17 +4804,19 @@ class SessionOrchestrator:
         if not path:
             return []
         try:
-            return await replay_events(path)
+            return await replay_events(path, max_turns=max_turns)
         except Exception:
             log.warning("session.transcript_events id=%s replay failed", session_id, exc_info=True)
             return []
 
-    async def transcript_window(self, session_id: str, *, before: int | None = None, limit: int = 20):
+    async def transcript_window(self, session_id: str, *, before: int | None = None,
+                                limit: int | None = None):
         """Windowed transcript replay. Returns a ReplayWindow, or None if no transcript.
 
         Use before/limit for lazy scrollback paging: returns up to `limit` turns
         ending before turn-ordinal `before` (or the last `limit` turns if before
         is None), plus earliest_turn/total_turns for pagination metadata.
+        limit=None (the default) returns the FULL transcript — no silent cap.
         """
         from server.sessions.replay import replay_window
 

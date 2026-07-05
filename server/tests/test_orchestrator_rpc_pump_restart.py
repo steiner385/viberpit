@@ -142,6 +142,36 @@ async def test_driver_replaced_hook_same_driver_pumps_once():
 
 
 @pytest.mark.asyncio
+async def test_ensure_driver_snapshot_carries_turn_started_at():
+    """The ensure_driver RPC snapshot must expose turn_started_at alongside
+    turn_active: the edge's RemoteDriver hands it to replay_window so the
+    incomplete-turn drop only amputates the turn that actually IS in progress
+    (resume-lag bug: the disk's last user entry can be a PREVIOUS turn's)."""
+    app = create_daemon_app()
+    fed: asyncio.Queue = asyncio.Queue()
+    register_orchestrator_rpc(app, _Orch(_QueueDriver(fed)))
+    async with serve_daemon_uds(app) as sock:
+        client = DaemonClient(sock)
+        try:
+            # No open turn yet → None (matches turn_active False).
+            r0 = await client.call("ensure_driver", session_id="s1")
+            assert r0["turn_active"] is False
+            assert r0["turn_started_at"] is None
+            # Open a turn on the daemon side; the snapshot must carry its start ts.
+            await app.state.publish("s1", {"type": "user", "text": "hi"})
+            r1 = await client.call("ensure_driver", session_id="s1")
+            assert r1["turn_active"] is True
+            assert isinstance(r1["turn_started_at"], float)
+            # Turn settles → back to None.
+            await app.state.publish("s1", {"type": "turnEnd", "turnId": "t"})
+            r2 = await client.call("ensure_driver", session_id="s1")
+            assert r2["turn_active"] is False
+            assert r2["turn_started_at"] is None
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_repeated_ensure_driver_same_driver_pumps_once():
     """Idempotency guard: re-ensuring the SAME live driver must not start a 2nd pump
     (which would double-publish every event)."""

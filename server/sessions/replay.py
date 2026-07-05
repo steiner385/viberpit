@@ -244,16 +244,51 @@ def _subagent_events(main_path: str, task_ids: set[str]) -> list:
     return events
 
 
-def _window(path: str, before: int | None, limit: int, drop_incomplete_turn: bool = False,
-            include_subagents: bool = False) -> ReplayWindow:
+def _is_in_progress_user(e, turn_started_at: float | None) -> bool:
+    """Decide whether the positionally-last disk UserMessage really belongs to the
+    IN-PROGRESS turn (safe to drop — the live buffer/ring re-supplies it) or to a
+    PREVIOUS, COMPLETED turn (dropping it amputates history nothing re-supplies).
+
+    The disk JSONL is written by the claude CLI, which LAGS the live event stream:
+    on a resumed session the CLI spends seconds booting its MCP fleet before writing
+    the new turn's user entry. A live attach in that window sees the previous turn's
+    user entry as the file's last — the old positional rule dropped that completed
+    turn from the replay, the live stream only re-supplied the current turn, and the
+    previous turn silently vanished (no seq gap → no self-heal; the "transcript cut
+    off after navigating away and back" bug).
+
+    Invariant (constitution III — verified against the real binary, same host): the
+    CLI processes a prompt only AFTER the driver sends it, so the in-progress turn's
+    disk user entry is stamped ``timestamp >= turn_started_at`` while every earlier
+    turn's entry is strictly older (seconds-to-minutes in the pathological window).
+    2s slack absorbs coarse clock granularity; it only risks re-dropping in a sub-2s
+    double-prompt race where the entry IS on disk — and dropping is then correct.
+
+    ``turn_started_at is None`` (legacy caller / unknown start time) and a
+    timestamp-less entry (``ts is None``) both keep the historical positional drop:
+    real CLI transcripts always carry timestamps, and an unprovable entry defaults
+    to the duplication-safe behavior the drop has always had."""
+    if turn_started_at is None:
+        return True
+    ts = e.ts  # transcript timestamps parse to MILLISECONDS via _ts_ms
+    if ts is None:
+        return True
+    return ts >= turn_started_at * 1000 - 2000
+
+
+def _window(path: str, before: int | None, limit: int | None, drop_incomplete_turn: bool = False,
+            include_subagents: bool = False,
+            turn_started_at: float | None = None) -> ReplayWindow:
     out, meta_event = _build_events(path)
     if drop_incomplete_turn:
         # Drop the trailing in-progress logical turn: everything from the last real
         # UserMessage onward. The live driver buffer / daemon ring owns that turn, and
         # its blocks are flushed to disk mid-stream, so keeping them here duplicates.
+        # But ONLY if that UserMessage actually IS the in-progress turn's — see
+        # _is_in_progress_user for the resume-lag amputation this guards against.
         last_user = max((i for i, e in enumerate(out) if isinstance(e, ev.UserMessage)),
                         default=None)
-        if last_user is not None:
+        if last_user is not None and _is_in_progress_user(out[last_user], turn_started_at):
             out = out[:last_user]
     starts = [i for i, e in enumerate(out) if isinstance(e, ev.TurnStart)]
     ends   = [i for i, e in enumerate(out) if isinstance(e, ev.TurnEnd)]
@@ -263,7 +298,7 @@ def _window(path: str, before: int | None, limit: int, drop_incomplete_turn: boo
         # image-only user turn with no reply yet, or an empty transcript).
         return ReplayWindow(events=list(out), earliest_turn=0, total_turns=0)
     end = total if before is None else max(0, min(before, total))
-    start = max(0, end - limit)
+    start = 0 if limit is None else max(0, end - limit)  # limit=None → NO cap
     # Include user messages / tool-results that precede the first TurnStart in
     # the window: they sit between the previous TurnEnd (or file start) and the
     # TurnStart. Without this, slicing from starts[start] drops those events.
@@ -282,20 +317,25 @@ def _window(path: str, before: int | None, limit: int, drop_incomplete_turn: boo
     return ReplayWindow(events=window, earliest_turn=start, total_turns=total)
 
 
-def _parse(path: str, max_turns: int) -> list:
-    """Back-compat: last `max_turns` turns as a flat event list.
+def _parse(path: str, max_turns: int | None) -> list:
+    """Back-compat: last `max_turns` turns as a flat event list (None → ALL turns).
 
     Main-thread only (no sub-agent reconstruction) — this feeds the sub-agent
     SUMMARY and suggestion generators, which must not see nested sub-agent turns."""
     return _window(path, before=None, limit=max_turns).events
 
 
-async def replay_window(jsonl_path: str, *, before: int | None = None, limit: int = 20,
-                        drop_incomplete_turn: bool = False) -> ReplayWindow:
+async def replay_window(jsonl_path: str, *, before: int | None = None, limit: int | None = 20,
+                        drop_incomplete_turn: bool = False,
+                        turn_started_at: float | None = None) -> ReplayWindow:
     # The reattach / transcript-window UI path: reconstruct sub-agent threads so a
     # completed sub-agent shows its internal turns inside its Task card, as it does live.
-    return await asyncio.to_thread(_window, jsonl_path, before, limit, drop_incomplete_turn, True)
+    # limit=None returns the FULL transcript (no cap) — the review/export path.
+    # turn_started_at (epoch SECONDS, from the live driver / daemon turn tracking)
+    # scopes drop_incomplete_turn to the turn that actually is in progress.
+    return await asyncio.to_thread(_window, jsonl_path, before, limit, drop_incomplete_turn, True,
+                                   turn_started_at)
 
 
-async def replay_events(jsonl_path: str, *, max_turns: int = 20) -> list:
+async def replay_events(jsonl_path: str, *, max_turns: int | None = 20) -> list:
     return await asyncio.to_thread(_parse, jsonl_path, max_turns)

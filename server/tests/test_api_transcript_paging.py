@@ -1,7 +1,8 @@
 """Tests for Task 3: paged transcript endpoint (?before=&limit=).
 
 GET /api/sessions/{session_id}/transcript
-  - no params: backward-compatible {"events": [...]} only
+  - no params: the FULL transcript plus earliestTurn/totalTurns (no 20-turn cap)
+  - ?limit=M alone: the last M turns plus paging metadata
   - ?before=N&limit=M: {"events": [...], "earliestTurn": N, "totalTurns": N}
   - unknown session: 404
 """
@@ -79,8 +80,9 @@ class TestTranscriptPaging:
         starts = [e for e in body["events"] if e["type"] == "turnStart"]
         assert len(starts) == 5
 
-    def test_transcript_no_params_is_backward_compatible(self, tmp_path):
-        """No query params → response has only 'events' key (unchanged shape)."""
+    def test_transcript_no_params_returns_full_transcript(self, tmp_path):
+        """No query params → the FULL transcript (no silent 20-turn cap — B1),
+        with the 'events' key preserved plus additive paging metadata."""
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
         app, sid = _make_app_with_patched_transcript(tmp_path, 25, db_url)
         with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
@@ -90,7 +92,31 @@ class TestTranscriptPaging:
                 headers=_IDENT,
             )
         assert r.status_code == 200, r.text
-        assert set(r.json().keys()) == {"events"}
+        body = r.json()
+        assert body["totalTurns"] == 25
+        assert body["earliestTurn"] == 0
+        starts = [e for e in body["events"] if e["type"] == "turnStart"]
+        assert len(starts) == 25
+        # The very first turn's content is present, not sliced away.
+        texts = [e["text"] for e in body["events"] if e["type"] == "textDelta"]
+        assert "r0" in texts
+
+    def test_transcript_limit_without_before_returns_tail(self, tmp_path):
+        """?limit=N alone → the last N turns plus correct paging metadata."""
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+        app, sid = _make_app_with_patched_transcript(tmp_path, 25, db_url)
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+             TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get(
+                f"/api/sessions/{sid}/transcript?limit=5",
+                headers=_IDENT,
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["totalTurns"] == 25
+        assert body["earliestTurn"] == 20   # turns 20..24
+        starts = [e for e in body["events"] if e["type"] == "turnStart"]
+        assert len(starts) == 5
 
     def test_transcript_unknown_session_404(self, tmp_path):
         """Unknown session_id returns 404."""

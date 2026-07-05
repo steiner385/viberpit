@@ -180,14 +180,12 @@ def test_initial_prompt_deferred_until_first_attach(ws_env_ip):
         ws.send_text(json.dumps({"type": "attach", "sessionId": session_id2}))
 
         # After attach, the pending initial prompt should have been sent.
-        # Drain through the *whole* first turn: the user echo and the assistant
-        # response stream as separate WS frames, so stopping at the user echo
-        # races the assistant frames. Drain to the turn's terminal event
-        # (turnEnd) so both the echo and the response are buffered before we
-        # assert on them.
-        all_events: list[dict] = []
-        all_events.extend(_drain_events(ws, until_type="replayComplete", timeout=5.0))
-        all_events.extend(_drain_events(ws, until_type="turnEnd", timeout=5.0))
+        # Drain through the *whole* first turn in ONE pass, to its terminal
+        # event (turnEnd). All session frames now ride a single outbound FIFO,
+        # so replayComplete and the first turn's events can share one batch —
+        # a second drain "from replayComplete to turnEnd" would re-wait for a
+        # turnEnd that was already consumed and block forever.
+        all_events: list[dict] = _drain_events(ws, until_type="turnEnd", timeout=10.0)
 
         types = [e.get("type") for e in all_events]
 
@@ -234,10 +232,12 @@ def test_initial_prompt_sent_exactly_once_across_two_attaches(ws_env_ip):
     session_id = session.id
 
     # First attach — should consume and send the deferred initial prompt.
+    # Single drain to the user echo (replayComplete precedes it, possibly in the
+    # SAME batch now that all session frames share one FIFO — a second drain
+    # would block on an already-consumed frame).
     with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
         ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
-        _drain_events(ws, until_type="replayComplete", timeout=5.0)
-        _drain_events(ws, until_type="user", timeout=5.0)
+        _drain_events(ws, until_type="user", timeout=10.0)
 
     # Verify the pending slot is now empty (consumed on first attach).
     assert orch.pop_pending_initial_prompt(session_id) is None, (
