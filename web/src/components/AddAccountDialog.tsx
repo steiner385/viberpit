@@ -63,7 +63,7 @@ export function AddAccountDialog({ onClose }: AddAccountDialogProps) {
 
   React.useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape' && !isRunning) { onClose(); return }
+      if (e.key === 'Escape' && !isRunning && !copilotStarted) { onClose(); return }
       if (e.key === 'Tab') {
         const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
           'button:not([disabled]), input, [tabindex]:not([tabindex="-1"])',
@@ -80,7 +80,7 @@ export function AddAccountDialog({ onClose }: AddAccountDialogProps) {
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [onClose, isRunning])
+  }, [onClose, isRunning, copilotStarted])
 
   // Refresh the accounts list once the Anthropic add transitions into success — the new
   // account only appears in the list after its slot is written.
@@ -148,7 +148,7 @@ export function AddAccountDialog({ onClose }: AddAccountDialogProps) {
       role="dialog"
       aria-modal="true"
       aria-labelledby="add-account-dialog-title"
-      onClick={(e) => { if (e.target === e.currentTarget && !isRunning) onClose() }}
+      onClick={(e) => { if (e.target === e.currentTarget && !isRunning && !copilotStarted) onClose() }}
     >
       <div
         ref={dialogRef}
