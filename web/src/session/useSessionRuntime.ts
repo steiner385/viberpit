@@ -110,9 +110,6 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   const [commands, setCommands] = useState<Command[]>([])
   const [commandResult, setCommandResult] = useState<{ render: 'help' | 'context'; data: unknown } | null>(null)
   const modeRef = useRef('interactive')
-  // Answers whose WS send was dropped (socket not open). Buffered here and
-  // auto-resent when the socket reconnects. Keyed by questionId.
-  const pendingAnswersRef = useRef<Map<string, { selected: string[]; mode: 'option' | 'freeform' | 'chat' }>>(new Map())
 
   // Attach / detach + subscribe to session events
   useEffect(() => {
@@ -174,11 +171,15 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
-  // Decision handler for permission cards
+  // Decision handler for permission cards. Only resolve the card OPTIMISTICALLY when
+  // the frame actually left the browser: on a closed socket the send is rejected
+  // (permissionResponse returns false and emits NOT_CONNECTED, surfaced as a banner),
+  // so we must keep the card interactive rather than falsely marking it resolved (#505).
   const onDecision = useCallback(
     (permId: string, decision: 'allow' | 'deny' | 'always') => {
-      permissionResponse(sessionId, permId, decision)
-      dispatch({ type: '_resolvePermission', permId })
+      if (permissionResponse(sessionId, permId, decision)) {
+        dispatch({ type: '_resolvePermission', permId })
+      }
     },
     [sessionId, permissionResponse],
   )
@@ -207,33 +208,26 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
 
   const onAnswer = useCallback(
     (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => {
-      if (deliverAnswer(questionId, selected, mode)) return
-      // The socket wasn't open — buffer the answer to auto-resend on reconnect,
-      // keep the question interactive, and surface a transient notice.
-      pendingAnswersRef.current.set(questionId, { selected, mode })
+      if (deliverAnswer(questionId, selected, mode)) {
+        // A confirmed send supersedes any prior "answer not sent" banner from a
+        // failed attempt on this question — clear it (only that banner, never an
+        // unrelated error already on screen).
+        if (state.error?.code === 'answer_not_sent') dispatch({ type: '_clearError' })
+        return
+      }
+      // Socket wasn't open — REJECT, don't buffer. A buffered answer replayed after
+      // reconnect is UNSAFE: the server's QuestionRegistry._reconcile resolves a stale
+      // answer onto whatever single question is pending NOW, so a late replay can answer
+      // the WRONG question with old content (#505). Keep the card interactive so the user
+      // can retry once connected, and surface the not-sent error.
       dispatch({
         type: 'error',
         code: 'answer_not_sent',
-        message: 'Not connected — your answer is queued and will be sent automatically when you reconnect.',
+        message: "Not connected — your answer wasn't sent. Reconnect and try again.",
       })
     },
-    [deliverAnswer],
+    [deliverAnswer, state.error],
   )
-
-  // Flush buffered answers when the socket reconnects. A stale answer (question
-  // no longer pending server-side) is a harmless no-op — the server ignores
-  // unknown questionIds — so there is no misfire risk.
-  useEffect(() => {
-    if (connectionState !== 'connected') return
-    const pending = pendingAnswersRef.current
-    if (pending.size === 0) return
-    for (const [questionId, { selected, mode }] of Array.from(pending.entries())) {
-      if (deliverAnswer(questionId, selected, mode)) pending.delete(questionId)
-    }
-    if (pending.size === 0 && state.error?.code === 'answer_not_sent') {
-      dispatch({ type: '_clearError' })
-    }
-  }, [connectionState, deliverAnswer, state.error])
 
   // Toggle "armed for chat" for a question: the next composer send becomes its answer.
   const onChat = useCallback(
@@ -249,10 +243,10 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   const onPrompt = useCallback(
     (text: string, attachmentIds: AttachmentIds) => {
       if (armedQuestionId) {
-        answerQuestion(sessionId, armedQuestionId, [text], 'chat')
-        // Resolve in place carrying the typed reply (no tail bubble — see deliverAnswer).
-        dispatch({ type: '_resolveQuestion', questionId: armedQuestionId, selected: [text] })
-        setArmedQuestionId(null)
+        // A chat reply is delivered through the answer channel — route it through the
+        // same gated path as onAnswer so a closed socket REJECTS (visible error, card
+        // kept interactive) instead of falsely resolving the question (#505).
+        onAnswer(armedQuestionId, [text], 'chat')
         return
       }
       // Track the sent prompt so a reconnect whose replayReset outruns the
@@ -260,7 +254,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
       dispatch({ type: '_trackSentPrompt', text })
       prompt(sessionId, text, attachmentIds)
     },
-    [sessionId, prompt, answerQuestion, armedQuestionId],
+    [sessionId, prompt, onAnswer, armedQuestionId],
   )
   const onInterrupt = useCallback(
     () => {
@@ -271,8 +265,11 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   )
   const onSetMode = useCallback(
     (m: string) => {
-      setMode(m)
-      setPermissionMode(sessionId, m)
+      // Only apply the mode locally when the frame actually left the browser. On a
+      // closed socket the send is rejected (setPermissionMode returns false + emits
+      // NOT_CONNECTED), and a stale last-write replay could clobber a newer choice —
+      // so don't optimistically show a mode the server never received (#505).
+      if (setPermissionMode(sessionId, m)) setMode(m)
     },
     [sessionId, setPermissionMode],
   )

@@ -21,6 +21,8 @@ vi.mock('@/api/transcript', () => ({
 // Capture answerQuestion and the sessionEvent handler at module scope
 // so the hoisted vi.mock factory can close over them.
 const mockAnswerQuestion = vi.fn()
+const mockPermissionResponse = vi.fn()
+const mockSetPermissionMode = vi.fn()
 let capturedSessionEventHandler: ((e: unknown) => void) | undefined
 // Controllable so tests can simulate a reconnect (reconnecting → connected).
 let mockConnectionState: 'connecting' | 'connected' | 'disconnected' | 'reconnecting' = 'connected'
@@ -35,9 +37,9 @@ vi.mock('@/ws/client', async (importOriginal) => {
       interrupt: vi.fn(),
       prompt: vi.fn(),
       sendInterrupt: vi.fn(),
-      permissionResponse: vi.fn(),
+      permissionResponse: mockPermissionResponse,
       answerQuestion: mockAnswerQuestion,
-      setPermissionMode: vi.fn(),
+      setPermissionMode: mockSetPermissionMode,
       cancelQueued: vi.fn(),
       on: (event: string, handler: (e: unknown) => void) => {
         if (event === 'sessionEvent') capturedSessionEventHandler = handler
@@ -60,6 +62,10 @@ describe('useSessionRuntime.onAnswer', () => {
   beforeEach(() => {
     mockAnswerQuestion.mockReset()
     mockAnswerQuestion.mockReturnValue(true) // socket open: send succeeds by default
+    mockPermissionResponse.mockReset()
+    mockPermissionResponse.mockReturnValue(true)
+    mockSetPermissionMode.mockReset()
+    mockSetPermissionMode.mockReturnValue(true)
     mockConnectionState = 'connected'
     capturedSessionEventHandler = undefined
   })
@@ -142,7 +148,7 @@ describe('useSessionRuntime.onAnswer', () => {
     expect(result.current.state.error?.code).toBe('answer_not_sent')
   })
 
-  it('auto-resends a buffered answer and clears the notice when the socket reconnects', async () => {
+  it('does NOT auto-resend a rejected answer on reconnect — no stale replay (#505)', async () => {
     const qExists = (id: string) =>
       result.current.state.turns.flatMap((t) => t.blocks).some((b) => b.kind === 'question' && b.questionId === id)
 
@@ -164,21 +170,113 @@ describe('useSessionRuntime.onAnswer', () => {
     })
 
     act(() => { result.current.onAnswer('q4', ['Yes']) })
-    expect(mockAnswerQuestion).toHaveBeenCalledTimes(1)   // attempted once, dropped
+    expect(mockAnswerQuestion).toHaveBeenCalledTimes(1)   // attempted once, rejected
     expect(result.current.state.error?.code).toBe('answer_not_sent')
-    expect(qExists('q4')).toBe(true)                       // retained for retry
+    expect(qExists('q4')).toBe(true)                       // kept interactive for retry
 
-    // Reconnect: socket open, send now succeeds.
+    // Reconnect: socket becomes open. A stale buffered answer must NOT be auto-replayed
+    // (the server would reconcile it onto whatever question is pending NOW — wrong-answer
+    // risk). So no further answerQuestion frame goes out on reopen.
     mockAnswerQuestion.mockReturnValue(true)
     act(() => { mockConnectionState = 'connected'; rerender() })
 
-    expect(mockAnswerQuestion).toHaveBeenCalledTimes(2)    // auto-resent on reconnect
-    expect(mockAnswerQuestion).toHaveBeenLastCalledWith('sess4', 'q4', ['Yes'], 'option')
-    // Resolved in place after resend: the block stays inline but is no longer live.
+    expect(mockAnswerQuestion).toHaveBeenCalledTimes(1)    // still just the one attempt
+    // The question stays open + the not-sent banner stays up until the user retries.
+    expect(qExists('q4')).toBe(true)
     const q4 = result.current.state.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question' && b.questionId === 'q4')
-    expect(q4 && q4.kind === 'question' && q4.live).toBe(false)
-    expect(q4 && q4.kind === 'question' && q4.answered).toEqual(['Yes'])
-    expect(result.current.state.error).toBeNull()          // notice cleared
+    expect(q4 && q4.kind === 'question' && q4.live).toBe(true)
+    expect(result.current.state.error?.code).toBe('answer_not_sent')
+
+    // A manual retry now succeeds, resolves the card, and clears the banner.
+    act(() => { result.current.onAnswer('q4', ['Yes']) })
+    expect(mockAnswerQuestion).toHaveBeenCalledTimes(2)
+    const q4b = result.current.state.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question' && b.questionId === 'q4')
+    expect(q4b && q4b.kind === 'question' && q4b.live).toBe(false)
+    expect(q4b && q4b.kind === 'question' && q4b.answered).toEqual(['Yes'])
+    expect(result.current.state.error).toBeNull()          // banner cleared on confirmed send
+  })
+})
+
+describe('useSessionRuntime.onDecision (permission) — reject on closed socket (#505)', () => {
+  beforeEach(() => {
+    mockPermissionResponse.mockReset()
+    mockAnswerQuestion.mockReset()
+    mockSetPermissionMode.mockReset()
+    mockConnectionState = 'connected'
+    capturedSessionEventHandler = undefined
+  })
+
+  function seedPermission(result: { current: { state: { turns: unknown[] } } }) {
+    act(() => {
+      capturedSessionEventHandler?.({ type: 'replayComplete' })
+      capturedSessionEventHandler?.({
+        type: 'permissionRequest',
+        permId: 'perm-1',
+        turnId: 'turn-1',
+        tool: 'Bash',
+        toolKind: 'bash',
+        input: { command: 'ls' },
+        plan: false,
+      })
+    })
+    const hasCard = (result.current.state.turns as { blocks: { kind: string; permId?: string }[] }[])
+      .some((t) => t.blocks.some((b) => b.kind === 'permission' && b.permId === 'perm-1'))
+    expect(hasCard).toBe(true)
+  }
+  const permExists = (result: { current: { state: { turns: { blocks: { kind: string; permId?: string }[] }[] } } }) =>
+    result.current.state.turns.some((t) => t.blocks.some((b) => b.kind === 'permission' && b.permId === 'perm-1'))
+
+  it('resolves the card optimistically when the send succeeds (open socket)', () => {
+    mockPermissionResponse.mockReturnValue(true)
+    const { result } = renderHook(() => useSessionRuntime('psess1'), { wrapper })
+    seedPermission(result)
+
+    act(() => { result.current.onDecision('perm-1', 'allow') })
+
+    expect(mockPermissionResponse).toHaveBeenCalledWith('psess1', 'perm-1', 'allow')
+    expect(permExists(result)).toBe(false) // resolved
+  })
+
+  it('does NOT resolve the card when the send is rejected (closed socket)', () => {
+    mockPermissionResponse.mockReturnValue(false)
+    const { result } = renderHook(() => useSessionRuntime('psess2'), { wrapper })
+    seedPermission(result)
+
+    act(() => { result.current.onDecision('perm-1', 'allow') })
+
+    expect(mockPermissionResponse).toHaveBeenCalledWith('psess2', 'perm-1', 'allow')
+    expect(permExists(result)).toBe(true) // card kept interactive — NOT falsely resolved
+  })
+})
+
+describe('useSessionRuntime.onSetMode — reject on closed socket (#505)', () => {
+  beforeEach(() => {
+    mockSetPermissionMode.mockReset()
+    mockPermissionResponse.mockReset()
+    mockAnswerQuestion.mockReset()
+    mockConnectionState = 'connected'
+    capturedSessionEventHandler = undefined
+  })
+
+  it('applies the mode locally when the send succeeds (open socket)', () => {
+    mockSetPermissionMode.mockReturnValue(true)
+    const { result } = renderHook(() => useSessionRuntime('msess1'), { wrapper })
+
+    act(() => { result.current.onSetMode('plan') })
+
+    expect(mockSetPermissionMode).toHaveBeenCalledWith('msess1', 'plan')
+    expect(result.current.mode).toBe('plan')
+  })
+
+  it('does NOT apply the mode when the send is rejected (closed socket)', () => {
+    mockSetPermissionMode.mockReturnValue(false)
+    const { result } = renderHook(() => useSessionRuntime('msess2'), { wrapper })
+
+    expect(result.current.mode).toBe('interactive')
+    act(() => { result.current.onSetMode('plan') })
+
+    expect(mockSetPermissionMode).toHaveBeenCalledWith('msess2', 'plan')
+    expect(result.current.mode).toBe('interactive') // unchanged — no false optimistic mode
   })
 })
 
