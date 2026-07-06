@@ -22,6 +22,7 @@ export interface LiveSessionCounts {
 export interface Account {
   name: string
   status: AccountStatus
+  provider?: 'anthropic' | 'copilot'
   usage: {
     session: UsageWindow
     weekly: UsageWindow
@@ -336,4 +337,10 @@ export interface ApiError {
 
 export interface AllLimitedError extends ApiError {
   earliestReset: string | null
+}
+
+export interface CopilotAddState {
+  state: 'pending' | 'awaiting_authorization' | 'authorized' | 'failed'
+  userCode: string | null
+  verificationUri: string | null
 }
