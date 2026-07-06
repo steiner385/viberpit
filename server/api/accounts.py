@@ -134,10 +134,11 @@ def _get_reauth(request: Request):
 
 
 def _check_name_and_slot(name: str) -> None:
-    """Assert the account name is valid and the slot exists.
+    """Assert the account name is valid and a credential exists for it.
 
     Raises HTTPException 404 if the name is invalid (path traversal, hidden
-    file, bad chars) OR if no credential slot exists for the name.
+    file, bad chars) OR if neither an anthropic credential slot nor a copilot
+    token-dir exists for the name.
     """
     try:
         assert_valid_account_name(name)
