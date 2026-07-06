@@ -120,6 +120,69 @@ def test_turn_started_at_tracks_open_turn():
     asyncio.run(run())
 
 
+def test_open_turn_evicted_from_ring_reports_closed_and_resumes_from_head(monkeypatch):
+    """Transcript-reset-on-reload bug (autonomous mega-turn): the ensure_driver
+    snapshot promises the edge that the ring can re-supply the whole open turn —
+    that promise is what licenses the edge to DROP the in-progress turn from the
+    disk replay (drop_incomplete_turn) and anchor its subscription at
+    turn_start_seq - 1. The ring is a bounded deque, so a turn longer than the
+    ring evicts its own head; the drop then amputates history NOTHING re-supplies
+    (for a one-prompt autonomous session: the entire transcript), and the
+    turn-start anchor predates the ring's oldest entry → GAP → the client's heal
+    (detach+attach → disk replay) re-runs the same amputation, forever.
+
+    Once the ring no longer retains the open turn's user event, the accessors
+    must degrade to the safe non-droppable shape: turn closed for re-supply
+    purposes (edge replays the FULL disk transcript) and resume from head (no
+    GAP, no heal loop). The publish-time turn state itself stays open — the real
+    turnEnd still closes it."""
+    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "4")
+    app = create_daemon_app()
+
+    async def run():
+        s = "sess_ring_evict"
+        await app.state.publish(s, {"type": "user", "text": "go"})        # seq 0 -> open
+        ts = app.state.turn_started_at(s)
+        assert ts is not None
+        for i in range(6):                                                # seqs 1..6
+            await app.state.publish(s, {"type": "textDelta", "text": str(i)})
+        # Ring (maxlen 4) now holds seqs 3..6 — the turn's user event (seq 0) was
+        # evicted, so the open turn can NOT be replayed from the ring.
+        assert app.state.turn_open_for(s) is False
+        assert app.state.turn_started_at(s) is None
+        assert app.state.resume_since(s) == app.state.head_seq(s)
+        # The real end-of-turn event still closes the underlying turn state, and
+        # the next turn re-arms everything (its user event is the ring's newest).
+        await app.state.publish(s, {"type": "turnEnd", "turnId": "t"})    # seq 7
+        await app.state.publish(s, {"type": "user", "text": "next"})     # seq 8
+        assert app.state.turn_open_for(s) is True
+        assert app.state.turn_started_at(s) is not None
+        assert app.state.resume_since(s) == 7                            # turn_start_seq(8) - 1
+
+    asyncio.run(run())
+
+
+def test_open_turn_still_retained_by_small_ring_keeps_anchor(monkeypatch):
+    """Boundary companion: while the ring still retains the open turn's user event
+    (even as the ring's OLDEST entry), the turn stays droppable/anchored — the
+    subscribe-time GAP test (since + 1 < oldest) does not fire at
+    since = turn_start_seq - 1 when oldest == turn_start_seq."""
+    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "4")
+    app = create_daemon_app()
+
+    async def run():
+        s = "sess_ring_ok"
+        await app.state.publish(s, {"type": "user", "text": "go"})        # seq 0 -> open
+        for i in range(3):                                                # seqs 1..3
+            await app.state.publish(s, {"type": "textDelta", "text": str(i)})
+        # Ring (maxlen 4) holds exactly seqs 0..3 — the user event IS the oldest.
+        assert app.state.turn_open_for(s) is True
+        assert app.state.turn_started_at(s) is not None
+        assert app.state.resume_since(s) == -1                            # turn_start_seq(0) - 1
+
+    asyncio.run(run())
+
+
 def test_turn_started_at_cleared_by_terminal_status_and_evict():
     app = create_daemon_app()
 

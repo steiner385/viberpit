@@ -100,27 +100,70 @@ def create_daemon_app() -> FastAPI:
 
     app.state.head_seq = head_seq
 
+    def _turn_ring_replayable(stream: str) -> bool:
+        """True iff a turn is open AND the ring still retains its ``user`` event.
+
+        The three accessors below are the ensure_driver snapshot's promise to the
+        edge: "the ring re-supplies the whole open turn, so you may DROP it from
+        the disk replay (drop_incomplete_turn) and anchor your subscription at
+        turn_start_seq - 1". The ring is a bounded deque that evicts oldest-first,
+        so a turn LONGER than the ring evicts its own head and the promise goes
+        false: the drop then amputates history nothing re-supplies — for a
+        one-prompt autonomous session (a single agentic mega-turn, the last real
+        UserMessage sits at the top of the file) that is the ENTIRE transcript,
+        rendered as a bare "Beginning of session" on every reload. And the
+        turn-start anchor predating the ring's oldest entry raises the subscribe
+        GAP, whose heal (detach+attach → disk replay) re-runs the same amputating
+        drop — a loop that can never recover.
+
+        Retained iff ``oldest <= turn_start_seq`` — the complement of the
+        subscribe-time GAP test (``since + 1 < oldest`` at since = turn_start_seq
+        - 1), so this gate and the real subscribe can never disagree. Not
+        ``ring_covers``: that helper deliberately rejects since < 0, and the
+        first turn's anchor is -1.
+
+        Only the READ accessors degrade; the publish-time turn state stays open
+        so the real turnEnd / turnFailure / terminal status still closes it."""
+        if not app.state.turn_open.get(stream):
+            return False
+        buf = app.state.buffers.get(stream)
+        if not buf:
+            return False
+        return buf[0][0] <= app.state.turn_start_seqs.get(stream, 0)
+
     def turn_open_for(stream: str) -> bool:
-        return bool(app.state.turn_open.get(stream))
+        # Ring-coverage gated (see _turn_ring_replayable): once the open turn has
+        # outgrown the ring, report it closed for re-supply purposes so the edge
+        # replays the FULL disk transcript instead of dropping the turn. Cost of
+        # the degraded shape: the in-flight message's not-yet-flushed tail is
+        # absent until the CLI flushes it — vs. total transcript loss.
+        return _turn_ring_replayable(stream)
 
     app.state.turn_open_for = turn_open_for
 
     def turn_started_at(stream: str) -> float | None:
-        # Meaningful only while the turn is open. turn_open is flipped False by an
-        # end-of-turn EVENT (turnEnd / turnFailure) AND by a terminal status arriving
-        # without one (drain exception path) — gate on it rather than on the raw ts so
-        # a settled turn can't leak its stale start time, and a transient mid-turn
-        # `idle` (no longer a close condition) can't null a still-open turn's start.
-        if app.state.turn_open.get(stream):
+        # Meaningful only while the turn is open AND ring-replayable. turn_open is
+        # flipped False by an end-of-turn EVENT (turnEnd / turnFailure) AND by a
+        # terminal status arriving without one (drain exception path) — gate on it
+        # rather than on the raw ts so a settled turn can't leak its stale start
+        # time, and a transient mid-turn `idle` (no longer a close condition)
+        # can't null a still-open turn's start. The ring gate keeps this None
+        # whenever turn_open_for reports False — the pair feeds ws.py's
+        # drop_incomplete/trim as one snapshot and must degrade together
+        # (turn_started_at=None alone re-enables the positional #482 amputation).
+        if _turn_ring_replayable(stream):
             return app.state.turn_start_ts.get(stream)
         return None
 
     app.state.turn_started_at = turn_started_at
 
     def resume_since(stream: str) -> int | None:
-        # While a turn is open, resume from just before its user message so the whole
-        # in-progress turn replays from the ring; otherwise from-now (disk has the rest).
-        if app.state.turn_open.get(stream):
+        # While a turn is open and still ring-replayable, resume from just before
+        # its user message so the whole in-progress turn replays from the ring;
+        # otherwise from-now (disk has the rest — and once the turn has outgrown
+        # the ring, a turn-start anchor would predate the ring's oldest entry and
+        # GAP on subscribe, forcing the client's unwinnable disk-resync loop).
+        if _turn_ring_replayable(stream):
             return app.state.turn_start_seqs.get(stream, 0) - 1
         return head_seq(stream)
 
