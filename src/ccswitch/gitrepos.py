@@ -258,22 +258,78 @@ query($cursor: String) {
 """
 
 
-def list_accessible_repos() -> list[dict]:
-    """List repos the user's gh creds can access, most-recently-pushed first.
+_ORGS_QUERY = """
+query($cursor: String) {
+  viewer {
+    organizations(first: 100, after: $cursor) {
+      pageInfo { hasNextPage endCursor }
+      nodes { login }
+    }
+  }
+}
+"""
 
-    Archived repos are excluded -- they are read-only on GitHub and should not
-    be offered in the repository chooser.
 
-    Paginates over the GraphQL cursor.  Returns dicts with keys:
-    ``nameWithOwner, name, owner, isPrivate, url, defaultBranch, pushedAt``.
+_ORG_REPOS_QUERY = """
+query($org: String!, $cursor: String) {
+  organization(login: $org) {
+    repositories(
+      first: 100
+      after: $cursor
+      orderBy: { field: PUSHED_AT, direction: DESC }
+    ) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        nameWithOwner
+        name
+        owner { login }
+        isPrivate
+        isArchived
+        url
+        pushedAt
+        defaultBranchRef { name }
+      }
+    }
+  }
+}
+"""
+
+
+def _repo_node_to_dict(node: dict | None) -> dict | None:
+    """Map a GraphQL repo node to the chooser dict, or ``None`` to drop it.
+
+    Archived repos are read-only on GitHub and must never reach the chooser, so
+    they map to ``None`` (same rule for viewer- and org-sourced nodes).
+    """
+    if not node or node.get("isArchived"):
+        return None
+    name_with_owner = node.get("nameWithOwner")
+    if not name_with_owner:
+        return None
+    default_ref = node.get("defaultBranchRef") or {}
+    return {
+        "nameWithOwner": name_with_owner,
+        "name": node.get("name"),
+        "owner": (node.get("owner") or {}).get("login"),
+        "isPrivate": bool(node.get("isPrivate")),
+        "url": node.get("url"),
+        "defaultBranch": default_ref.get("name"),
+        "pushedAt": node.get("pushedAt"),
+    }
+
+
+def _paginate_graphql(query: str, extra_args: list[str], path: list[str]):
+    """Yield ``nodes`` from a paginated GraphQL connection at ``data.<path>``.
+
+    ``path`` is the key sequence leading to the connection object (which must
+    expose ``nodes`` and ``pageInfo {hasNextPage endCursor}``).
 
     Raises:
-        GhError: if gh is missing/unauthed or the response can't be parsed.
+        GhError: if gh fails or the response can't be parsed.
     """
-    repos: list[dict] = []
     cursor: str | None = None
     while True:
-        args = ["api", "graphql", "-f", f"query={_REPOS_QUERY}"]
+        args = ["api", "graphql", "-f", f"query={query}", *extra_args]
         if cursor:
             args += ["-F", f"cursor={cursor}"]
         r = _run_gh(args)
@@ -284,30 +340,11 @@ def list_accessible_repos() -> list[dict]:
         except json.JSONDecodeError as exc:
             raise GhError(f"could not parse gh graphql response: {exc}") from exc
 
-        conn = (
-            payload.get("data", {})
-            .get("viewer", {})
-            .get("repositories", {})
-        )
-        for node in conn.get("nodes", []) or []:
-            if not node:
-                continue
-            # Archived repos are read-only on GitHub; never offer them in the chooser.
-            if node.get("isArchived"):
-                continue
-            owner = (node.get("owner") or {}).get("login")
-            default_ref = node.get("defaultBranchRef") or {}
-            repos.append(
-                {
-                    "nameWithOwner": node.get("nameWithOwner"),
-                    "name": node.get("name"),
-                    "owner": owner,
-                    "isPrivate": bool(node.get("isPrivate")),
-                    "url": node.get("url"),
-                    "defaultBranch": default_ref.get("name"),
-                    "pushedAt": node.get("pushedAt"),
-                }
-            )
+        conn: dict = payload.get("data") or {}
+        for key in path:
+            conn = (conn or {}).get(key, {})
+        conn = conn or {}
+        yield from (conn.get("nodes", []) or [])
 
         page = conn.get("pageInfo") or {}
         if page.get("hasNextPage") and page.get("endCursor"):
@@ -315,7 +352,65 @@ def list_accessible_repos() -> list[dict]:
             continue
         break
 
-    return repos
+
+def _list_viewer_orgs() -> list[str]:
+    """Org logins the viewer belongs to (best-effort; empty on failure)."""
+    orgs: list[str] = []
+    try:
+        for node in _paginate_graphql(_ORGS_QUERY, [], ["viewer", "organizations"]):
+            login = (node or {}).get("login")
+            if login:
+                orgs.append(login)
+    except GhError as exc:
+        log.warning("repos.org_list_failed err=%s", exc)
+    return orgs
+
+
+def list_accessible_repos() -> list[dict]:
+    """List repos the user's gh creds can access, most-recently-pushed first.
+
+    Sources are unioned (deduped by ``nameWithOwner``):
+
+    1. ``viewer.repositories`` — repos the user owns or has an *explicit* tie to
+       (added collaborator / team member).
+    2. ``organization.repositories`` for every org in ``viewer.organizations`` —
+       the ONLY way to surface repos the user can reach solely via org
+       base-permission or implicit org-owner admin.  ``viewer.repositories``
+       omits those entirely (no affiliation matches) even though a direct
+       ``repository(owner,name)`` lookup returns them, so an org-owned repo the
+       user never got an explicit grant on would otherwise be invisible.
+
+    Archived repos are excluded -- they are read-only on GitHub and should not
+    be offered in the repository chooser.  Org enumeration is best-effort per
+    org so one inaccessible org can't blank the whole chooser.
+
+    Returns dicts with keys:
+    ``nameWithOwner, name, owner, isPrivate, url, defaultBranch, pushedAt``.
+
+    Raises:
+        GhError: if the primary ``viewer.repositories`` query fails or the
+            response can't be parsed.
+    """
+    by_name: dict[str, dict] = {}
+
+    for node in _paginate_graphql(_REPOS_QUERY, [], ["viewer", "repositories"]):
+        repo = _repo_node_to_dict(node)
+        if repo:
+            by_name.setdefault(repo["nameWithOwner"], repo)
+
+    for org in _list_viewer_orgs():
+        try:
+            for node in _paginate_graphql(
+                _ORG_REPOS_QUERY, ["-F", f"org={org}"], ["organization", "repositories"]
+            ):
+                repo = _repo_node_to_dict(node)
+                if repo:
+                    by_name.setdefault(repo["nameWithOwner"], repo)
+        except GhError as exc:
+            log.warning("repos.org_enum_failed org=%s err=%s", org, exc)
+
+    # Merging two PUSHED_AT-desc streams needs a re-sort to honour the contract.
+    return sorted(by_name.values(), key=lambda r: r.get("pushedAt") or "", reverse=True)
 
 
 def list_remote_branches(name_with_owner: str) -> dict:
