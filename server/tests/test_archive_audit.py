@@ -2,9 +2,10 @@ import asyncio
 from server.automations import archive_audit as aa
 
 
-def _row(id, goal, repo="o/r", branch="feat/x", authored=("feat/x",)):
+def _row(id, goal, repo="o/r", branch="feat/x", authored=("feat/x",), initial_prompt=None):
     return {"id": id, "repo": repo, "branch": branch,
-            "authored_branches": list(authored), "goal": goal, "goal_source": "explicit"}
+            "authored_branches": list(authored), "goal": goal, "goal_source": "explicit",
+            "initial_prompt": initial_prompt}
 
 
 def _gh_returning(pr):
@@ -155,3 +156,140 @@ def test_main_returns_2_when_db_url_unset(monkeypatch):
     monkeypatch.delenv("CCSWITCH_DB_URL", raising=False)
     rc = asyncio.run(aa.main(["--dry-run"]))
     assert rc == 2
+
+
+# ---------------------------------------------------------------------------
+# New tests for referenced-PR resolution (issue #502)
+# ---------------------------------------------------------------------------
+
+def test_referenced_pr_numbers_from_goal():
+    """#N in goal body is extracted."""
+    assert aa.referenced_pr_numbers("Fix CI in PR #11267", None) == [11267]
+
+
+def test_referenced_pr_numbers_from_initial_prompt_only_own_pr():
+    """'your pull request #N' in initial_prompt extracted; input-list PRs are NOT."""
+    prompt = (
+        "Your pull request cairnea/KinDash#11288 has failing CI. "
+        "The PRs to combine (#11025, #11133)."
+    )
+    assert aa.referenced_pr_numbers("", prompt) == [11288]
+
+
+def test_referenced_pr_numbers_empty_inputs():
+    """Empty/None inputs return empty list."""
+    assert aa.referenced_pr_numbers("", None) == []
+    assert aa.referenced_pr_numbers("", "") == []
+
+
+def _gh_num_returning(pr_dict):
+    """Returns a gh_num_fn that ignores repo/number and returns the given dict (or None)."""
+    def gh_num_fn(repo, number):
+        return pr_dict
+    return gh_num_fn
+
+
+def test_referenced_merged_pr_is_legit():
+    """A referenced MERGED PR → legit; session not unarchived."""
+    unarchived = []
+    row = _row("s1", "land PR #42 on the main branch")
+    merged_pr = {"number": 42, "state": "MERGED", "isDraft": False,
+                 "autoMergeRequest": None, "url": "http://x/42"}
+    out = asyncio.run(aa.run_audit(
+        [row],
+        _gh_returning(None),   # branch lookup finds nothing
+        unarchived.append,
+        gh_num_fn=_gh_num_returning(merged_pr),
+    ))
+    assert out[0]["bucket"] == "legit"
+    assert unarchived == []
+
+
+def test_referenced_open_unarmed_pr_is_premature_and_unarchived():
+    """A referenced open-unarmed PR → premature; session unarchived."""
+    unarchived = []
+    row = _row("s1", "land PR #42 on main")
+    open_pr = {"number": 42, "state": "OPEN", "isDraft": False,
+               "autoMergeRequest": None, "url": "http://x/42"}
+    out = asyncio.run(aa.run_audit(
+        [row],
+        _gh_returning(None),
+        unarchived.append,
+        gh_num_fn=_gh_num_returning(open_pr),
+    ))
+    assert out[0]["bucket"] == "premature"
+    assert unarchived == ["s1"]
+
+
+def test_referenced_closed_pr_code_goal_is_review_not_unarchived():
+    """A referenced CLOSED PR + code goal → 'review' bucket; action 'none'."""
+    unarchived = []
+    row = _row("s1", "implement feature in PR #42")
+    closed_pr = {"number": 42, "state": "CLOSED", "isDraft": False,
+                 "autoMergeRequest": None, "url": "http://x/42"}
+    out = asyncio.run(aa.run_audit(
+        [row],
+        _gh_returning(None),
+        unarchived.append,
+        gh_num_fn=_gh_num_returning(closed_pr),
+    ))
+    assert out[0]["bucket"] == "review"
+    assert out[0]["action"] == "none"
+    assert unarchived == []
+
+
+def test_no_pr_anywhere_code_goal_is_ambiguous():
+    """No PR anywhere + code goal remains ambiguous (regression guard)."""
+    unarchived = []
+    row = _row("s1", "implement feature X")
+    out = asyncio.run(aa.run_audit(
+        [row],
+        _gh_returning(None),
+        unarchived.append,
+        gh_num_fn=_gh_num_returning(None),
+    ))
+    assert out[0]["bucket"] == "ambiguous"
+    assert unarchived == []
+
+
+def test_build_pr_facts_dedupes_branch_and_ref_number():
+    """A PR number matched by both branch lookup AND ref_numbers appears only once."""
+    pr_raw = _pr(number=99, state="MERGED")
+    facts = aa.build_pr_facts(
+        "o/r",
+        ["feat/x"],
+        _gh_returning(pr_raw),
+        ref_numbers=[99],
+        gh_num_fn=_gh_num_returning(pr_raw),
+    )
+    assert len(facts.prs) == 1
+    assert facts.prs[0].number == 99
+
+
+def test_real_gh_num_parses_json(monkeypatch):
+    """_real_gh_num returns a parsed dict on success."""
+    import subprocess
+    sample = '{"number": 42, "state": "OPEN", "isDraft": false, "autoMergeRequest": null, "url": "u"}'
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        class R:
+            stdout = sample
+            returncode = 0
+        assert "pr" in cmd and "view" in cmd
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = aa._real_gh_num("o/r", 42)
+    assert result is not None
+    assert result["number"] == 42
+
+
+def test_real_gh_num_returns_none_on_error(monkeypatch):
+    """_real_gh_num returns None on any gh failure."""
+    import subprocess
+
+    def boom(*a, **k):
+        raise subprocess.CalledProcessError(1, "gh")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert aa._real_gh_num("o/r", 42) is None
