@@ -130,6 +130,18 @@ class DaemonClient:
             raise DaemonUnavailable(str(exc)) from exc
         return resp.json()
 
+    @property
+    def epoch(self) -> str | None:
+        """The daemon's current process epoch (from ``/info``), or ``None`` when the edge
+        has not yet reached ``/info`` (reader not connected). Changes on a daemon restart.
+
+        The edge reads this — through RemoteOrchestrator.daemon_epoch — to reject a stale
+        cross-epoch catch-up cursor (#497): a browser's srcSeq cursor is only meaningful
+        within the epoch that minted it, so after a restart (seq space resets to 0) a stale
+        high cursor must force a full replay, never a catch-up against the fresh low ring.
+        Prefer this public accessor over reaching into ``_epoch``."""
+        return self._epoch
+
     def _add_subscriber(self, stream: str, maxsize: int = 1000) -> asyncio.Queue:
         """Register a new local subscriber queue for *stream* and return it."""
         q: asyncio.Queue = asyncio.Queue(maxsize=maxsize)

@@ -12,7 +12,7 @@ import { QK } from '@/api/hooks'
 import type { SessionEvent } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
 import { clientLogger } from '@/obs/logger'
-import { createGapState, handleLiveBatch, catchUpCursor, invalidateCatchUp, type GapState } from './liveBatch'
+import { createGapState, handleLiveBatch, catchUpCursor, catchUpEpoch, invalidateCatchUp, type GapState } from './liveBatch'
 import { shouldApplyRev } from '@/session/reconcile'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
@@ -356,12 +356,22 @@ export class SessionSocket {
   /** Build an `attach` frame, adding the wave-3 `sinceSrcSeq` catch-up cursor when the
    *  session's source stream has stayed contiguous (see catchUpCursor). Omitting the
    *  cursor makes the server full-replay from the durable transcript — the safe default,
-   *  used for the initial user-initiated attach and whenever contiguity is unknown/broken. */
-  private _attachFrame(sessionId: string): { type: 'attach'; sessionId: string; sinceSrcSeq?: number } {
+   *  used for the initial user-initiated attach and whenever contiguity is unknown/broken.
+   *
+   *  When a cursor is sent, also echo the daemon `epoch` that minted it as `sinceEpoch`
+   *  (#497): the server rejects a cursor from a previous epoch (a daemon restart resets the
+   *  srcSeq space to 0) and full-replays, so a stale cross-epoch cursor can never silently
+   *  skip the new epoch's early events. A missing epoch is simply omitted → the server also
+   *  full-replays (conservative). */
+  private _attachFrame(
+    sessionId: string,
+  ): { type: 'attach'; sessionId: string; sinceSrcSeq?: number; sinceEpoch?: string } {
     const cursor = catchUpCursor(this._gap, sessionId)
-    return cursor !== null
-      ? { type: 'attach', sessionId, sinceSrcSeq: cursor }
-      : { type: 'attach', sessionId }
+    if (cursor === null) return { type: 'attach', sessionId }
+    const epoch = catchUpEpoch(this._gap, sessionId)
+    return epoch !== null
+      ? { type: 'attach', sessionId, sinceSrcSeq: cursor, sinceEpoch: epoch }
+      : { type: 'attach', sessionId, sinceSrcSeq: cursor }
   }
 
   private _scheduleReconnect() {

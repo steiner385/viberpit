@@ -160,7 +160,8 @@ def _redact_buffer(buf: list[dict]) -> list[dict]:
 async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None]",
                                    session_id: str,
                                    drop_incomplete: bool = False,
-                                   turn_started_at: float | None = None) -> list:
+                                   turn_started_at: float | None = None,
+                                   epoch: str | None = None) -> list:
     """Replay the transcript (trimmed of the in-progress turn when drop_incomplete),
     then replayComplete — every frame IN ORDER through *enqueue* (the socket's
     single outbound FIFO: out_q → batcher). Returns the replayed events.
@@ -219,8 +220,15 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
                 enqueue({**e.to_wire(), "sessionId": session_id})
     except Exception:
         log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
-    enqueue({"type": "replayComplete", "sessionId": session_id,
-             "earliestTurn": earliest_turn, "totalTurns": total_turns})
+    # Stamp the daemon epoch (#497) so the browser remembers which epoch minted the cursor
+    # it establishes off this replayComplete; a later re-attach echoes it as sinceEpoch and
+    # the edge rejects it after a daemon restart. Omitted when None (local/in-process mode
+    # has no daemon epoch — mirrors how srcSeq is omitted there).
+    complete: dict = {"type": "replayComplete", "sessionId": session_id,
+                      "earliestTurn": earliest_turn, "totalTurns": total_turns}
+    if epoch is not None:
+        complete["epoch"] = epoch
+    enqueue(complete)
     return events
 
 
@@ -342,7 +350,8 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             snapshot replay (no duplication, no amputated history)."""
             return await _run_replay_and_complete(orchestrator, out_q.put_nowait,
                                                   session_id, drop_incomplete,
-                                                  turn_started_at)
+                                                  turn_started_at,
+                                                  epoch=orchestrator.daemon_epoch())
 
         async def _resume_driver_or_error(session_id: str):
             """Resume (or fetch) the live driver, bounded by _RESUME_TIMEOUT.
@@ -546,7 +555,8 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     _forward_live(stream, out_q, session_id), name=f"ws-live-{session_id}"),
                 name=f"ws-live-{session_id}", on_failure=_on_forward_task_failed)
 
-        async def _maybe_catch_up(session_id: str, driver, since_src_seq: int | None) -> bool:
+        async def _maybe_catch_up(session_id: str, driver, since_src_seq: int | None,
+                                  since_epoch: str | None) -> bool:
             """Wave-3 cursor catch-up (audit W2.3), remote mode only.
 
             When the client re-attaches (heal / reconnect) with a CONTIGUOUS srcSeq cursor
@@ -557,6 +567,28 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             skip replayReset/replay/replayComplete entirely. The client keeps its rendered
             transcript and the ring tail simply continues it.
 
+            EPOCH GATE (#497). The daemon's srcSeq space is per-process: a restart resets it
+            to 0. A browser disconnected ACROSS a restart still holds a stale high
+            ``since_src_seq`` from the OLD epoch; if the new epoch has already produced events
+            past it while the ring still holds it, ring_covers returns True and catch-up would
+            SILENTLY SKIP the new epoch's early events. So the cursor is honored only when the
+            epoch that minted it (``since_epoch``, echoed back from the resumeOk/replayComplete
+            that established it) equals the daemon's CURRENT epoch.
+
+            The gate is TWO-TIER so it is authoritative even when the edge's cached epoch lags
+            a restart (FINDING 2 — the stale-epoch RPC race):
+              1. CHEAP short-circuit on the cached ``daemon_epoch()`` — None or a mismatch ⇒
+                 full replay with NO RPC (an old client with no sinceEpoch, or an obviously
+                 stale cursor, costs nothing).
+              2. AUTHORITATIVE confirm: when the cached epoch MATCHES, that is exactly the
+                 dangerous case — the cache can be stale-but-non-None while the events-reader
+                 is still in reconnect backoff after a daemon restart (RPCs go over the
+                 separate ``_http`` channel and already reach the NEW daemon). So we compare
+                 ``since_epoch`` against the epoch the daemon reports in the SAME ring_covers
+                 response; a silent restart is caught here and full-replays. resumeOk is then
+                 stamped with that authoritative epoch. Conservative throughout: unknown/None
+                 on either side ⇒ mismatch ⇒ never catch up against an unknown epoch.
+
             Returns True iff it COMMITTED to the catch-up path. The commitment is ATOMIC
             (FINDING-1): the cheap ring_covers probe gates the path, but the actual commit
             is the ring_tail snapshot fetch — done AFTER the live fan-out is joined and only
@@ -564,17 +596,31 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             window between the probe and the fetch, the snapshot comes back not-covered and
             the caller falls back to the full replay with NO resumeOk on the wire — never a
             half-sent resumeOk over a silently-lost tail. Local/in-process mode's ring_covers
-            is a constant False, so it always full-replays and ignores the cursor. Any probe
+            is a constant (False, None), so it always full-replays and ignores the cursor. Any probe
             or fetch error is treated as not-covered (safe fallback)."""
             if since_src_seq is None:
                 return False
+            # Epoch gate tier 1 (#497): cheap short-circuit on the cached epoch. None or a
+            # mismatch ⇒ full replay with NO RPC. (An old client sends no sinceEpoch → None;
+            # an obviously stale cross-epoch cursor mismatches here.)
+            cached_epoch = orchestrator.daemon_epoch()
+            if (since_epoch is None or cached_epoch is None
+                    or since_epoch != cached_epoch):
+                return False
             try:
-                covered = await orchestrator.ring_covers(session_id, since_src_seq)
+                covered, current_epoch = await orchestrator.ring_covers(session_id, since_src_seq)
             except Exception:
                 # A wedged/absent daemon or any probe failure → full replay (the safe path;
                 # the disk transcript is the durable source of truth). Never half-commit.
                 log.warning("ws.attach: ring_covers probe failed for %s — full replay",
                             session_id, exc_info=True)
+                return False
+            # Epoch gate tier 2 (FINDING 2): the cached epoch matched, but the cache can lag a
+            # restart while RPCs already hit the new daemon. Compare against the epoch the
+            # daemon reports in THIS ring_covers response — the authoritative-at-gate-time
+            # value. A silent restart (current_epoch != since_epoch, or an old daemon that
+            # sent no epoch → None) is caught here and full-replays.
+            if current_epoch is None or since_epoch != current_epoch:
                 return False
             if not covered:
                 return False
@@ -597,8 +643,12 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             driver.pin_catch_up(snap["events"], snap["head"])
             # Committed: tell the client to keep its transcript and continue from the ring
             # tail. resumeOk rides out_q (raw + session-tagged, the batcher redacts at flush)
-            # exactly like replayReset.
-            out_q.put_nowait({"type": "resumeOk", "sessionId": session_id})
+            # exactly like replayReset. Stamp the AUTHORITATIVE epoch the daemon reported in
+            # the ring_covers response (== since_epoch, we passed tier-2) so the browser
+            # re-anchors its cursor to the epoch the ring it just resumed actually belongs
+            # to (#497), not the edge's possibly-stale cached epoch.
+            out_q.put_nowait({"type": "resumeOk", "sessionId": session_id,
+                              "epoch": current_epoch})
             return True
 
         async def _teardown_live_task(session_id: str) -> None:
@@ -622,7 +672,8 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 # task crash the teardown of an otherwise clean detach/rebind.
                 pass
 
-        async def _handle_attach(session_id: str, since_src_seq: int | None = None) -> None:
+        async def _handle_attach(session_id: str, since_src_seq: int | None = None,
+                                 since_epoch: str | None = None) -> None:
             # Idempotent-with-replay (Hole 2): a re-attach of a session already live on THIS
             # socket is NOT a silent no-op. That silent return dropped the remounted view's
             # full replay whenever the unmount's detach frame was lost on a closed socket
@@ -682,7 +733,15 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             # open_stream so the decision is made once, up front — never a half-sent
             # resumeOk. Not covered / no cursor / local mode → catching_up is False and the
             # full replay below runs exactly as before.
-            catching_up = await _maybe_catch_up(session_id, driver, since_src_seq)
+            catching_up = await _maybe_catch_up(session_id, driver, since_src_seq, since_epoch)
+            # Epoch-gate visibility (#497): whether the cursor's minting epoch matched the
+            # daemon's current epoch, surfaced in the journal so a stale-epoch full-replay
+            # (after a daemon restart) is distinguishable from a not-covered one. Only
+            # meaningful when a cursor was actually sent.
+            daemon_epoch = orchestrator.daemon_epoch()
+            epoch_match = (bool(since_epoch is not None and daemon_epoch is not None
+                                and since_epoch == daemon_epoch)
+                           if since_src_seq is not None else None)
             # Diagnosability (incident 2026-07-05): the catch-up vs full-replay decision was
             # invisible in the journal, so a tail-only nav-return couldn't be told apart from a
             # legitimate resume. Log the mode + whether this was a rebind (already-live re-attach)
@@ -690,7 +749,9 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             log_event(log, logging.INFO, "ws.attach.decision",
                       session_id=session_id,
                       mode=("catch_up" if catching_up else "full_replay"),
-                      rebind=rebind, cursor=since_src_seq, detached=False)
+                      rebind=rebind, cursor=since_src_seq, detached=False,
+                      since_epoch=since_epoch, daemon_epoch=daemon_epoch,
+                      epoch_match=epoch_match)
             # Open the driver stream SYNCHRONOUSLY, BEFORE the replay (the
             # settle-race bug, B3): open_stream() atomically snapshots the
             # in-progress turn buffer AND pins turn_active/turn_started_at to that
@@ -808,7 +869,13 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     since_src_seq = (raw_cursor if isinstance(raw_cursor, int)
                                      and not isinstance(raw_cursor, bool)
                                      and raw_cursor >= 0 else None)
-                    await _handle_attach(session_id, since_src_seq)
+                    # The epoch that minted the cursor (#497): the browser echoes back the
+                    # `epoch` it saw on the resumeOk/replayComplete that established this
+                    # cursor. Accept only a real string; anything else → None → the epoch
+                    # gate treats it as a mismatch and full-replays (conservative default).
+                    raw_epoch = msg.get("sinceEpoch")
+                    since_epoch = raw_epoch if isinstance(raw_epoch, str) else None
+                    await _handle_attach(session_id, since_src_seq, since_epoch)
                 elif msg_type == "detach":
                     await _handle_detach(session_id)
                 elif msg_type == "prompt":

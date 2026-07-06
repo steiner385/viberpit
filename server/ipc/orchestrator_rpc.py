@@ -132,8 +132,14 @@ def register_orchestrator_rpc(app, orch) -> None:
         # from `since` (the browser's contiguous srcSeq cursor) with no GAP? Pure read of
         # the ring state — the edge (RemoteOrchestrator.ring_covers) decides resumeOk vs
         # full replay off the boolean, BEFORE anything is enqueued.
+        #
+        # `epoch` rides the SAME response (#497 stale-epoch RPC race): the edge's epoch gate
+        # compares the cursor's minting epoch against the epoch this daemon reports RIGHT NOW,
+        # not against the edge's cached epoch — which can be stale-but-non-None while the
+        # events-reader is still in reconnect backoff after a daemon restart. Reporting it here
+        # makes the gate authoritative at gate time; the coverage semantics are unchanged.
         covered = app.state.ring_covers(params["session_id"], params.get("since"))
-        return {"covered": bool(covered)}
+        return {"covered": bool(covered), "epoch": app.state.epoch}
 
     async def ring_tail(params: dict) -> dict:
         # One-shot ring snapshot after `since` for the cursor catch-up: the edge replays
