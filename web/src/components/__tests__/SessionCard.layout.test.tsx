@@ -81,13 +81,16 @@ describe('SessionCard deterministic skeleton', () => {
 // On a phone the card crammed title + account + repo + status + Goal + PRs +
 // usage% + "active … ago" + five 44px action icons into ~360px. Per-element
 // truncation can shrink things but can't *drop* one when space runs out, so the
-// secondary signals are gated to desktop via Tailwind `lg:` (min-width 1024px —
-// the exact viewport where App.tsx switches from the mobile routed views to the
-// resizable desktop shell). Below `lg`, only the at-a-glance essentials (title,
-// account chip, status pill) and a single resume action survive; everything else
-// is `hidden lg:*`. These assertions lock that contract so a refactor can't
-// silently un-hide the demoted elements (or hide an essential) on mobile.
-describe('SessionCard mobile declutter contract', () => {
+// secondary signals are gated to a wide card via Tailwind container queries
+// (`@lg:*`, resolved against the card's own width — the drag-resizable sidebar —
+// not the viewport). This replaced viewport `lg:` breakpoints, which left a
+// narrow sidebar on a wide window in the full desktop layout and overflowed the
+// badge row under the action icons. When the card is narrow, only the
+// at-a-glance essentials (title, account chip, status pill) and a single resume
+// action survive; everything else is `hidden @lg:*`. These assertions lock that
+// contract so a refactor can't silently un-hide the demoted elements (or hide an
+// essential) in a narrow card.
+describe('SessionCard narrow-card declutter contract', () => {
   const rich: Session = {
     ...base,
     activeGoal: 'ship the thing',
@@ -98,36 +101,36 @@ describe('SessionCard mobile declutter contract', () => {
     ],
   }
 
-  it('gates the telemetry row to desktop (hidden on mobile)', () => {
+  it('gates the telemetry row to a wide card (hidden when narrow)', () => {
     renderCard(rich)
-    expect(screen.getByTestId('card-telemetry')).toHaveClass('hidden', 'lg:flex')
+    expect(screen.getByTestId('card-telemetry')).toHaveClass('hidden', '@lg:flex')
   })
 
-  it('gates the Goal badge to desktop', () => {
+  it('gates the Goal badge to a wide card', () => {
     renderCard(rich)
-    expect(screen.getByTestId('card-goal')).toHaveClass('hidden', 'lg:inline-flex')
+    expect(screen.getByTestId('card-goal')).toHaveClass('hidden', '@lg:inline-flex')
   })
 
-  it('gates the PR badge to desktop', () => {
+  it('gates the PR badge to a wide card', () => {
     renderCard(rich)
-    expect(screen.getByTestId('card-prs')).toHaveClass('hidden', 'lg:inline-flex')
+    expect(screen.getByTestId('card-prs')).toHaveClass('hidden', '@lg:inline-flex')
   })
 
-  it('gates rename/archive/delete to desktop but keeps resume on mobile', () => {
+  it('gates rename/archive/delete to a wide card but keeps resume when narrow', () => {
     renderCard(rich)
     const secondary = screen.getByTestId('card-secondary-actions')
-    expect(secondary).toHaveClass('hidden', 'lg:contents')
+    expect(secondary).toHaveClass('hidden', '@lg:contents')
     expect(within(secondary).getByRole('button', { name: /rename session/i })).toBeInTheDocument()
     expect(within(secondary).getByRole('button', { name: /archive session/i })).toBeInTheDocument()
     expect(within(secondary).getByRole('button', { name: /delete session/i })).toBeInTheDocument()
-    // Resume is the one action kept inline on mobile — it must NOT live in the
-    // desktop-only group.
+    // Resume is the one action kept inline when narrow — it must NOT live in the
+    // wide-card-only group.
     const resume = screen.getByRole('button', { name: /resume session/i })
     expect(secondary).not.toContainElement(resume)
     expect(resume).not.toHaveClass('hidden')
   })
 
-  it('keeps the essentials (title + account chip) visible on mobile', () => {
+  it('keeps the essentials (title + account chip) visible when narrow', () => {
     renderCard(rich)
     const identity = screen.getByTestId('card-identity')
     expect(within(identity).getByText('Fix login bug')).not.toHaveClass('hidden')
