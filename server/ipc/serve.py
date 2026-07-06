@@ -66,6 +66,8 @@ def build_daemon(orchestrator=None):
     if orchestrator is None:
         orchestrator = SessionOrchestrator()
     orchestrator._x11 = build_x11_manager(get_settings())
+    from server.sessions.copilot_proxy import build_copilot_proxy_manager
+    orchestrator._copilot = build_copilot_proxy_manager(get_settings())
     register_orchestrator_rpc(app, orchestrator)
     app.state.x11 = orchestrator._x11
     register_x11(app, app.state.x11)

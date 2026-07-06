@@ -30,7 +30,8 @@ if TYPE_CHECKING:
     from server.pipeline.track import StageModel
 
 from ccswitch import accounts as ccswitch_accounts
-from ccswitch import configdir, crypto, gitrepos, worktrees
+from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
+from ccswitch.accounts import provider_of as _provider_of
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
@@ -162,6 +163,7 @@ class SessionOrchestrator:
         repo_root: str | None = None,
         titling_interval: float = 15.0,
         x11=None,
+        copilot=None,
         title_fn: Callable | None = None,
         summary_factory=None,
     ) -> None:
@@ -182,6 +184,7 @@ class SessionOrchestrator:
         self._worktrees: dict[str, worktrees.WorktreeInfo] = {}
         self._sdk_factory = sdk_factory or real_sdk_factory
         self._x11 = x11  # X11Manager | None — per-session virtual displays
+        self._copilot = copilot  # CopilotProxyManager | None — per-account translating proxy
         if os.environ.get("CCSWITCH_SUGGESTIONS", "1") == "0":
             self._suggester = None
         else:
@@ -434,10 +437,16 @@ class SessionOrchestrator:
         self._shutting_down: bool = False
 
     def _oat_env(self, session_id: str) -> dict:
-        """Return {CLAUDE_CODE_OAUTH_TOKEN: <token>} for the session's account, or {}."""
+        """Return auth env for the session's account.
+
+        For copilot accounts, returns the proxy env ({ANTHROPIC_BASE_URL, …}) from
+        the CopilotProxyManager.  For standard accounts, returns the oauth-token env.
+        """
         rec = self._records.get(session_id)
         if rec is None:
             return {}
+        if self._copilot is not None and _provider_of(rec.account) == _copilot_mod.PROVIDER:
+            return self._copilot.env_for(rec.account)
         tok = crypto.read_oauth_token(rec.account)
         return {"CLAUDE_CODE_OAUTH_TOKEN": tok} if tok else {}
 
@@ -696,6 +705,23 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("session.display_start_failed id=%s", session_id)
 
+        # Ensure the Copilot proxy is running for copilot-backed accounts.
+        if self._copilot is not None and _provider_of(account) == _copilot_mod.PROVIDER:
+            await self._copilot.ensure(account)
+
+        # Pre-seed the in-memory record so _session_factory's _oat_env closure can
+        # look up the account (needed for copilot env injection during driver.start()).
+        # The model field is patched below once the driver resolves the actual alias.
+        from datetime import datetime
+        _pre_record = SessionRecord(
+            id=session_id, name=name, account=account, claude_session_id="",
+            cols=cols, rows=rows, cwd=cwd, repo=repo, branch=branch_name,
+            status="idle", name_is_auto=name_is_auto,
+            updated_at=datetime.utcnow(), usage_unverified=usage_unverified,
+            origin=origin, origin_ref=origin_ref, model=None,
+        )
+        self._records[session_id] = _pre_record
+
         # Start a SessionDriver backed by the configured SDK factory.
         driver = SessionDriver(
             session_id, account, cwd, str(cfg_dir),
@@ -757,28 +783,9 @@ class SessionOrchestrator:
             )
             db.add(row)
 
-        from datetime import datetime
-        record = SessionRecord(
-            id=session_id,
-            name=name,
-            account=account,
-            claude_session_id="",
-            cols=cols,
-            rows=rows,
-            cwd=cwd,
-            repo=repo,
-            branch=branch_name,
-            status="idle",
-            name_is_auto=name_is_auto,
-            # Stamp activity now so the new card reads "active just now" rather than
-            # waiting for the first status event (mirrors the DB row's utcnow default).
-            updated_at=datetime.utcnow(),
-            usage_unverified=usage_unverified,
-            origin=origin,
-            origin_ref=origin_ref,
-            model=model,
-        )
-        self._records[session_id] = record
+        # Patch the model on the pre-seeded record (resolved by driver.set_model above).
+        _pre_record.model = model
+        record = _pre_record
         log_event(log, logging.INFO, "session.start",
                   session_id=session_id, **{"from": None, "to": "idle", "reason": "create"})
         log.info("session.create id=%s account=%s", session_id, account)
@@ -3399,6 +3406,10 @@ class SessionOrchestrator:
                 except Exception:
                     log.exception("session.display_start_failed id=%s", session_id)
 
+            # Ensure the Copilot proxy is running for copilot-backed accounts.
+            if self._copilot is not None and _provider_of(rec.account) == _copilot_mod.PROVIDER:
+                await self._copilot.ensure(rec.account)
+
             def _build(resume_arg):
                 return SessionDriver(
                     session_id,
@@ -3501,6 +3512,10 @@ class SessionOrchestrator:
                 await self._x11.start_display(session_id)
             except Exception:
                 log.exception("session.display_start_failed id=%s", session_id)
+
+        # Ensure the Copilot proxy is running for copilot-backed accounts.
+        if self._copilot is not None and _provider_of(cand.account) == _copilot_mod.PROVIDER:
+            await self._copilot.ensure(cand.account)
 
         def _build(resume_arg):
             return SessionDriver(
@@ -3653,6 +3668,9 @@ class SessionOrchestrator:
         rec = self._records.get(session_id)
         if rec is None:
             return []
+        # Copilot sessions use a third-party model — Haiku suggestions are meaningless.
+        if _provider_of(rec.account) == _copilot_mod.PROVIDER:
+            return []
         if rec.status not in ("done", "idle"):
             return []
 
@@ -3773,6 +3791,9 @@ class SessionOrchestrator:
         """
         rec = self._records.get(session_id)
         if rec is None:
+            return ""
+        # Copilot sessions use a third-party model — Haiku summaries are meaningless.
+        if _provider_of(rec.account) == _copilot_mod.PROVIDER:
             return ""
         cached = self._summaries.get(session_id)
         try:
