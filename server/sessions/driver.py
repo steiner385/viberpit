@@ -8,6 +8,7 @@ import time
 import uuid
 from typing import Callable
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+from claude_agent_sdk._errors import CLIConnectionError
 from . import events as ev
 from .failure import classify, TurnFailure
 from .translator import Translator
@@ -868,7 +869,12 @@ class SessionDriver:
         self._queue.clear()
         self._cancel_suggest()
         if self._client:
-            await self._client.interrupt()
+            try:
+                await self._client.interrupt()
+            except CLIConnectionError:
+                # Client disconnected (e.g. after daemon restart mid-turn). The CLI is
+                # already dead, so interrupt is unnecessary — proceed to recovery.
+                pass
         self._turn_active = False
         self._turn_started_at = None
         # Clear turn-scoped flags BEFORE deriving the post-interrupt status. Without
