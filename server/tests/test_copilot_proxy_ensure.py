@@ -14,7 +14,8 @@ def _mgr(ready_check=None, **kw):
     async def spawn(*argv, **kwargs):
         p = FakeProc(); procs.append((argv, p)); return p
     if ready_check is None:
-        ready_check = lambda port: True
+        def ready_check(port):
+            return True
     mgr = cp.CopilotProxyManager(
         cp.ProxyPortAllocator(4142, 4),
         token_dir_for=lambda a: f"/tmp/tok/{a}",

@@ -1,9 +1,8 @@
 import asyncio
-import os
 import types
 import pytest
 from server.sessions import copilot_proxy as cp
-from server.tests.test_copilot_proxy_ensure import FakeProc, _mgr
+from server.tests.test_copilot_proxy_ensure import _mgr
 
 
 @pytest.fixture(autouse=True)
