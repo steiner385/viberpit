@@ -369,19 +369,21 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete, 
               </>
             )}
             {account.provider === 'copilot' ? (
-              <button
-                type="button"
-                className={cn(
-                  'rounded min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
-                  needsReauth
-                    ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
-                    : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
-                )}
-                aria-label={`Re-run device flow for ${account.name}`}
-                onClick={() => onCopilotReauth?.(account)}
-              >
-                {needsReauth ? 'Re-authenticate' : <KeyRound size={14} aria-hidden="true" />}
-              </button>
+              !isReauthRunning && !isAwaitingCode && (
+                <button
+                  type="button"
+                  className={cn(
+                    'rounded min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
+                    needsReauth
+                      ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
+                      : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
+                  )}
+                  aria-label={`Re-run device flow for ${account.name}`}
+                  onClick={() => onCopilotReauth?.(account)}
+                >
+                  {needsReauth ? 'Re-authenticate' : <KeyRound size={14} aria-hidden="true" />}
+                </button>
+              )
             ) : (
               <>
                 {!isReauthRunning && !isAwaitingCode && (
