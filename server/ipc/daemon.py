@@ -28,6 +28,12 @@ def create_daemon_app() -> FastAPI:
 
     app = FastAPI(title="ccswitch-sessiond")
     app.state.rpc = {}
+    # Published for RPC handlers that must report the daemon's CURRENT epoch in-band, not
+    # just via /info: the wave-3 cursor-catchup coverage probe (ring_covers) returns it so
+    # the edge's epoch gate compares against the epoch the daemon reports RIGHT NOW —
+    # closing the window where the edge's events-reader is still in reconnect backoff after
+    # a restart and its cached epoch is stale-but-non-None (#497 stale-epoch RPC race).
+    app.state.epoch = _app_epoch
 
     # stream_id -> set of connected WebSockets subscribed to it
     app.state.subscribers = {}

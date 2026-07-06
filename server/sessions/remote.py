@@ -312,14 +312,21 @@ class RemoteOrchestrator:
         ring_covers/ring_tail RPCs."""
         return self._client.epoch
 
-    async def ring_covers(self, session_id: str, since: int | None) -> bool:
+    async def ring_covers(self, session_id: str, since: int | None) -> tuple[bool, str | None]:
         """Ask the daemon whether its replay ring can resume ``session_id`` from ``since``
         (the browser's contiguous srcSeq cursor) with no GAP — the wave-3 cursor-catchup
         coverage probe (audit W2.3). The edge decides resumeOk vs full replay off this
         BEFORE enqueuing anything, so a not-covered cursor never half-sends resumeOk. A
-        daemon/RPC error surfaces to the caller, which treats it as not-covered."""
+        daemon/RPC error surfaces to the caller, which treats it as not-covered.
+
+        Returns ``(covered, epoch)``: the daemon's CURRENT process epoch rides the same
+        response so the edge's epoch gate is authoritative at gate time (#497 stale-epoch RPC
+        race). The cached ``daemon_epoch()`` can lag a restart (events-reader in backoff);
+        this epoch is what the daemon reports RIGHT NOW over the RPC ``_http`` channel, so a
+        cursor minted under the old epoch is rejected even before the reader has reconnected.
+        ``epoch`` is None only against an old daemon that predates the field."""
         r = await self._client.call("ring_covers", session_id=session_id, since=since)
-        return bool(r.get("covered"))
+        return bool(r.get("covered")), r.get("epoch")
 
     async def ring_tail(self, session_id: str, since: int | None) -> dict:
         """One-shot ring snapshot after ``since`` (the wave-3 catch-up tail): the commit-time

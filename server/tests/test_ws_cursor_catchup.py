@@ -203,13 +203,16 @@ def test_same_socket_reattach_with_cursor_catches_up(remote_edge):
 
 def test_ring_covers_rpc_round_trip(live_ring_edge):
     """RemoteOrchestrator.ring_covers over the real daemon RPC: covered within the window,
-    not covered when the cursor is ahead of head (epoch guard)."""
+    not covered when the cursor is ahead of head (epoch guard). Now returns (covered, epoch):
+    the daemon's current process epoch rides the same response (#497 stale-epoch RPC race)."""
     _orch, client = live_ring_edge
     sessions = client.app.state.sessions
-    assert client.portal.call(sessions.ring_covers, "s1", 1) is True
-    assert client.portal.call(sessions.ring_covers, "s1", 3) is True   # == head
-    assert client.portal.call(sessions.ring_covers, "s1", 4) is False  # ahead of head
-    assert client.portal.call(sessions.ring_covers, "s1", None) is False
+    epoch = _daemon_epoch(client)
+    # Coverage boolean is unchanged; the epoch is the daemon's live epoch on every response.
+    assert client.portal.call(sessions.ring_covers, "s1", 1) == (True, epoch)
+    assert client.portal.call(sessions.ring_covers, "s1", 3) == (True, epoch)   # == head
+    assert client.portal.call(sessions.ring_covers, "s1", 4) == (False, epoch)  # ahead of head
+    assert client.portal.call(sessions.ring_covers, "s1", None) == (False, epoch)
 
 
 def test_evicted_cursor_falls_back_to_full_replay(live_ring_edge):
@@ -219,7 +222,8 @@ def test_evicted_cursor_falls_back_to_full_replay(live_ring_edge):
     orch, client = live_ring_edge
     sessions = client.app.state.sessions
     epoch = _daemon_epoch(client)
-    with mock.patch.object(sessions, "ring_covers", new=mock.AsyncMock(return_value=False)):
+    with mock.patch.object(sessions, "ring_covers",
+                           new=mock.AsyncMock(return_value=(False, epoch))):
         with client.websocket_connect("/ws", headers=_IDENT) as wsB:
             wsB.send_json({"type": "attach", "sessionId": "s1", "sinceSrcSeq": 1,
                            "sinceEpoch": epoch})
@@ -269,8 +273,11 @@ def test_attach_without_cursor_never_probes_and_full_replays(live_ring_edge):
 
 # ---------------------------------------------------------------------------
 # Epoch gate (#497): a cursor is honored only when its minting epoch matches the daemon's
-# CURRENT epoch. The gate runs BEFORE the ring_covers probe, so a mismatched/absent/unknown
-# epoch full-replays without even consulting the ring.
+# CURRENT epoch. The gate is two-tier — a CHEAP short-circuit on the edge's cached epoch
+# (a mismatched/absent/unknown cached epoch full-replays WITHOUT consulting the ring), then
+# an AUTHORITATIVE confirm against the epoch the daemon reports in the ring_covers response
+# (which catches a silent restart the cached epoch hasn't reconciled yet — see the
+# stale-edge-epoch test below). These cases exercise tier 1: no ring probe at all.
 # ---------------------------------------------------------------------------
 
 def test_cursor_without_epoch_full_replays_and_never_probes(live_ring_edge):
@@ -321,6 +328,40 @@ def test_unknown_edge_epoch_full_replays(live_ring_edge):
     spy.assert_not_awaited()
     assert _count(evB, "replayComplete") == 1, _types(evB)
     assert _count(evB, "resumeOk") == 0, _types(evB)
+
+
+def test_stale_edge_epoch_but_daemon_restarted_rejects_via_rpc_epoch(live_ring_edge):
+    """FINDING 2 — the stale-epoch RPC race, now CLOSED. The edge's CACHED daemon epoch is
+    stale (the events-reader is still in reconnect backoff after a daemon restart), so
+    daemon_epoch() still returns the OLD epoch A that the browser's cursor was minted under.
+    Tier-1 of the gate (the cheap cached comparison) therefore PASSES — this is exactly the
+    window the race lived in. But ring_covers now round-trips over the RPC _http channel,
+    which already reaches the restarted daemon, and reports the daemon's CURRENT (fresh)
+    epoch B in the same response. Tier-2 compares against THAT and rejects the cross-epoch
+    cursor → full replay, no resumeOk — even though the ring is (mocked) COVERED, which is
+    what would have made the old cached-only gate wrongly catch up."""
+    orch, client = live_ring_edge
+    sessions = client.app.state.sessions
+    stale = _daemon_epoch(client)  # the cursor's minting epoch == the edge's stale cache
+    # The daemon has silently restarted: ring_covers reports a DIFFERENT current epoch and
+    # (deliberately) still-covered, so ONLY the tier-2 RPC-epoch check can reject the cursor.
+    rpc = mock.AsyncMock(return_value=(True, stale + "-restarted"))
+    with mock.patch.object(sessions, "ring_covers", new=rpc):
+        with client.websocket_connect("/ws", headers=_IDENT) as wsB:
+            wsB.send_json({"type": "attach", "sessionId": "s1", "sinceSrcSeq": 1,
+                           "sinceEpoch": stale})
+            # Stop on resumeOk OR replayComplete so that removing the tier-2 RPC-epoch check
+            # (the mutation) makes this fail on the assertions below instead of hanging on a
+            # replayComplete that a catch-up never sends.
+            evB = _collect_until(wsB, lambda acc: any(
+                e.get("type") in ("replayComplete", "resumeOk") for e in acc))
+    # The authoritative RPC-epoch check actually ran (tier-1 did NOT short-circuit it): the
+    # cached epoch matched, so the RPC had to be consulted to catch the silent restart.
+    rpc.assert_awaited()
+    # Full replay (the live_ring_edge fixture has no on-disk transcript, so the full-replay
+    # path emits replayComplete with no history to reset) — and crucially NO resumeOk.
+    assert _count(evB, "resumeOk") == 0, _types(evB)
+    assert _count(evB, "replayComplete") == 1, _types(evB)
 
 
 def test_resumeOk_and_replayComplete_carry_epoch_in_remote_mode(live_ring_edge):
@@ -432,6 +473,13 @@ async def test_catch_up_dedups_snapshot_and_live_overlap_exactly_once():
 #
 # This restarts a REAL daemon on the SAME socket (the test_ipc_daemon_restart_gap mechanism)
 # under a live remote edge, so the DaemonClient genuinely reconciles the new epoch.
+#
+# CRITICAL (the test genuinely FENCES the gate): daemon B (post-restart) is driven to publish
+# cursor+1 events into ITS fresh-epoch ring BEFORE the cross-epoch re-attach, so ring_covers
+# WOULD return True for the stale cursor value — the real #497 danger (a covering new-epoch
+# ring that silently skips events 0..cursor). The ONLY thing forcing a full replay is then the
+# epoch gate: remove the gate and this test catches the catch-up (resumeOk) that skips them.
+# A sanity assertion proves the coverage precondition so an empty-ring false pass is impossible.
 # ---------------------------------------------------------------------------
 
 class _RestartableThreadDaemon:
@@ -576,11 +624,16 @@ def test_cross_epoch_cursor_after_daemon_restart_forces_full_replay(tmp_path):
                 epoch2 = sessions.daemon_epoch()
                 assert epoch2 is not None and epoch2 != epoch1, (epoch1, epoch2)
 
-                # ---- Epoch E2: re-attach with the STALE cursor (srcSeq 3) + STALE epoch. ----
-                # The full replay for the NEW epoch reads the DURABLE disk transcript (the
-                # real full-replay source of truth — NOT the ring), so the new epoch's early
-                # events are supplied by a real transcript file here. A live-but-empty driver
-                # keeps the attach a valid live session without racing the ring.
+                # ---- Epoch E2: drive daemon B to COVER the stale cursor. ----
+                # The real #497 danger is a NEW-epoch ring that already holds seq 0..cursor:
+                # ring_covers then returns True and a cursor-honoring catch-up would SILENTLY
+                # SKIP those fresh events. So we must reproduce that coverage. A BLOCKING
+                # _RingDriver(4) publishes fresh seq 0..3 into daemon B's ring and holds the
+                # stream open so the ring is RETAINED for the cross-epoch re-attach below —
+                # exactly the live_ring_edge population pattern, but on the post-restart daemon.
+                # The full replay (gate ON) reads the DURABLE disk transcript (the real
+                # full-replay source of truth — NOT the ring), so the new epoch's early events
+                # are supplied by a real transcript file.
                 transcript = tmp_path / "s1.jsonl"
                 transcript.write_text("\n".join(_json.dumps(o) for o in [
                     {"type": "user", "uuid": "u0", "message": {"content": "q0"}},
@@ -589,18 +642,52 @@ def test_cross_epoch_cursor_after_daemon_restart_forces_full_replay(tmp_path):
                                  "content": [{"type": "text", "text": "r0"}],
                                  "usage": {"input_tokens": 1}}},
                 ]))
+                driver_b = _RingDriver(4)  # blocking: publishes seq 0..3 then holds the stream
                 with mock.patch.object(orch_b, "ensure_driver",
-                                       new=mock.AsyncMock(return_value=_FiniteRingDriver(0))), \
+                                       new=mock.AsyncMock(return_value=driver_b)), \
                      mock.patch.object(orch_b, "transcript_path",
                                        new=mock.AsyncMock(return_value=str(transcript))):
-                    with client.websocket_connect("/ws", headers=_IDENT) as wsB:
-                        wsB.send_json({"type": "attach", "sessionId": "s1",
-                                       "sinceSrcSeq": 3, "sinceEpoch": epoch1})
-                        evB = _collect_until(
-                            wsB, lambda acc: any(e.get("type") == "replayComplete" for e in acc))
+                    # First post-restart attach drives daemon B's pump to publish fresh seq
+                    # 0..3 into ITS ring (same daemon-pump path that fed epoch E1). Kept OPEN so
+                    # the ring stays retained while the cross-epoch attach probes it.
+                    with client.websocket_connect("/ws", headers=_IDENT) as wsPop:
+                        wsPop.send_json({"type": "attach", "sessionId": "s1",
+                                         "sinceEpoch": epoch2})
+                        # WAIT on the RING itself — not on wsPop receiving the deltas. Post
+                        # restart the edge already holds a daemon-level "s1" subscription (the
+                        # reader re-subscribed on reconnect), so a live delta can be delivered
+                        # before wsPop's local subscriber queue is added (the shared-
+                        # subscription artifact). ring_covers reads the daemon ring directly and
+                        # is immune to that race; poll it until daemon B's fresh-epoch ring
+                        # COVERS the stale cursor value 3 — the #497 danger precondition. It also
+                        # returns the daemon's CURRENT epoch (== epoch2), proving the RPC channel
+                        # reaches daemon B and that the ONLY thing forcing a full replay below is
+                        # the epoch gate, not an empty/short ring (the original _FiniteRingDriver(0)
+                        # bug that let this test pass with the gate disabled).
+                        deadline = _time.time() + 5
+                        covered = (False, None)
+                        while _time.time() < deadline:
+                            covered = client.portal.call(sessions.ring_covers, "s1", 3)
+                            if covered == (True, epoch2):
+                                break
+                            _time.sleep(0.05)
+                        assert covered == (True, epoch2), covered
+
+                        # ---- Cross-epoch re-attach: STALE cursor (srcSeq 3) + STALE epoch1. ----
+                        # Stop on resumeOk OR replayComplete so the MUTATION check (gate removed →
+                        # the covering ring makes this catch up with resumeOk and no replayComplete)
+                        # fails on the assertions below instead of hanging.
+                        with client.websocket_connect("/ws", headers=_IDENT) as wsB:
+                            wsB.send_json({"type": "attach", "sessionId": "s1",
+                                           "sinceSrcSeq": 3, "sinceEpoch": epoch1})
+                            evB = _collect_until(
+                                wsB, lambda acc: any(e.get("type") in ("replayComplete", "resumeOk")
+                                                     for e in acc))
 
                 # Stale cross-epoch cursor rejected → FULL replay (replayReset + replayComplete),
-                # NOT resumeOk.
+                # NOT resumeOk — EVEN THOUGH the ring covers the cursor (asserted above). This is
+                # the assertion the gate fences: remove the epoch gate and daemon B's covering
+                # ring makes _maybe_catch_up emit resumeOk (skipping 0..3) → resumeOk count 1 → FAIL.
                 assert _count(evB, "resumeOk") == 0, _types(evB)
                 assert _count(evB, "replayReset") == 1, _types(evB)
                 assert _count(evB, "replayComplete") == 1, _types(evB)

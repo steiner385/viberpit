@@ -28,7 +28,7 @@ class InProcessOrchestratorAdapter:
     # Local/in-process mode has no daemon replay ring, so the wave-3 cursor catch-up never
     # applies here — always report "not covered" so ws.py takes the full disk-replay path
     # (the constant answer that keeps the two modes' attach code identical, constitution VI).
-    async def ring_covers(self, session_id, since): return False
+    async def ring_covers(self, session_id, since): return (False, None)
     # ring_covers is a constant False here, so ws.py's _maybe_catch_up returns before ever
     # reaching the ring_tail commit-time fetch — this exists for interface parity with the
     # remote orchestrator (and to keep the union type honest) and reports not-covered too.
