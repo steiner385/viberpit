@@ -192,6 +192,74 @@ async def test_latest_suggestions_skipped_for_copilot(tmp_path):
     assert result == [], f"Expected [] for copilot session, got {result!r}"
 
 
+# ---------------------------------------------------------------------------
+# Test 4: failed driver.start() must not leave a ghost record in _records
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_create_session_start_failure_leaves_no_record(tmp_path):
+    """If driver.start() raises, the pre-seeded _records entry must be removed."""
+    account = "copilot-user"
+    store_home = _make_copilot_home(tmp_path, account)
+    shared_base_dir = tmp_path / "dot-claude"
+    shared_base_dir.mkdir()
+    (shared_base_dir / "settings.json").write_text("{}")
+    (shared_base_dir / "projects").mkdir()
+    cfg_dir = tmp_path / "cfg" / account
+    cfg_dir.mkdir(parents=True)
+    repo_root = tmp_path / "repos"
+    repo_root.mkdir()
+    db_path = tmp_path / "start_failure_test.db"
+    db_url = f"sqlite+aiosqlite:///{db_path}"
+
+    proxy = FakeCopilotProxy()
+
+    # Build a factory whose driver's start() raises RuntimeError.
+    from server.tests.fakes.fake_sdk import FakeSDKClient
+
+    class _FailingSDKClient(FakeSDKClient):
+        async def __aenter__(self):
+            raise RuntimeError("simulated driver.start() failure")
+
+    def failing_factory(cwd, cfg, cut, mode, resume, extra_env=None, *, on_pre_compact=None):
+        return _FailingSDKClient([])
+
+    from ccswitch.selector import Picked
+    from server.db import init_db
+
+    env_patch = patch.dict(os.environ, {
+        "CCSWITCH_HOME": str(store_home),
+        "CLAUDE_CONFIG_DIR": str(shared_base_dir),
+        "CCSWITCH_DB_URL": db_url,
+    })
+    compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
+    trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")
+    select_patch = patch(
+        "server.sessions.orchestrator.select_account",
+        return_value=Picked(account),
+    )
+
+    with env_patch, compose_patch, trust_patch, select_patch:
+        await init_db(db_url=db_url)
+        orch = SessionOrchestrator(
+            sdk_factory=failing_factory,
+            copilot=proxy,
+            poll_interval=9999.0,
+            usage_fn=_fake_usage,
+            repo_root=str(repo_root),
+        )
+        await orch.start()
+        try:
+            with pytest.raises((RuntimeError, Exception)):
+                await orch.create_session("fail-session", account=account)
+        finally:
+            await orch.stop()
+
+    assert orch._records == {}, (
+        f"_records must be empty after a failed create_session, got {list(orch._records)}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_latest_summary_skipped_for_copilot(tmp_path):
     """latest_summary returns '' immediately for copilot-backed sessions."""

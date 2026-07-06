@@ -736,7 +736,13 @@ class SessionOrchestrator:
             on_recoverable_failure=self._handle_recoverable_failure,
             suggester=self._suggester,
         )
-        await driver.start()
+        try:
+            await driver.start()
+        except Exception:
+            # driver.start() failed — remove the pre-seeded record so the session
+            # does not appear as a ghost idle card in list_sessions.
+            self._records.pop(session_id, None)
+            raise
         # Apply the chosen model before the first prompt runs (initial prompt is
         # deferred until a client attaches, so this always lands on turn one). The
         # "default" alias / empty means "account default" → leave the driver as-is.
