@@ -187,7 +187,6 @@ class GhListingTests(unittest.TestCase):
         self.assertIsNone(repos[1]["defaultBranch"])
 
     def test_list_accessible_repos_excludes_archived(self) -> None:
-        captured: dict = {}
         repos_json = json.dumps(
             {
                 "data": {
@@ -222,16 +221,34 @@ class GhListingTests(unittest.TestCase):
             }
         )
 
+        no_orgs = json.dumps(
+            {
+                "data": {
+                    "viewer": {
+                        "organizations": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [],
+                        }
+                    }
+                }
+            }
+        )
+        calls: list = []
+
         def fake_run(args, capture_output, text, env):
-            captured["args"] = args
-            return subprocess.CompletedProcess(args, 0, stdout=repos_json, stderr="")
+            calls.append(args)
+            # The org-membership discovery query is a separate gh call; answer it
+            # with an empty org list so only the viewer.repositories query feeds
+            # the chooser here.
+            out = no_orgs if "organizations" in " ".join(args) else repos_json
+            return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
 
         with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
             repos = gitrepos.list_accessible_repos()
 
-        # The GraphQL query must request the archived flag, otherwise the API
-        # never returns it and nothing would ever be filtered.
-        self.assertIn("isArchived", " ".join(captured["args"]))
+        # The repositories GraphQL query must request the archived flag, otherwise
+        # the API never returns it and nothing would ever be filtered.
+        self.assertTrue(any("isArchived" in " ".join(c) for c in calls))
         # Archived repos must not appear in the chooser.
         self.assertEqual([r["nameWithOwner"] for r in repos], ["acme/active"])
 
@@ -280,18 +297,35 @@ class GhListingTests(unittest.TestCase):
                 }
             }
         )
+        no_orgs = json.dumps(
+            {
+                "data": {
+                    "viewer": {
+                        "organizations": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [],
+                        }
+                    }
+                }
+            }
+        )
         calls: list = []
 
         def fake_run(args, capture_output, text, env):
             calls.append(args)
-            out = page2 if any("cursor=CURSOR1" in a for a in args) else page1
+            joined = " ".join(args)
+            if "organizations" in joined:
+                return subprocess.CompletedProcess(args, 0, stdout=no_orgs, stderr="")
+            out = page2 if "cursor=CURSOR1" in joined else page1
             return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
 
         with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
             repos = gitrepos.list_accessible_repos()
 
-        self.assertEqual([r["nameWithOwner"] for r in repos], ["a/one", "a/two"])
-        self.assertEqual(len(calls), 2)
+        # Both pages must be surfaced (order is by pushedAt, not fetch order).
+        self.assertEqual({r["nameWithOwner"] for r in repos}, {"a/one", "a/two"})
+        # The second page was fetched by following the endCursor.
+        self.assertTrue(any("cursor=CURSOR1" in " ".join(c) for c in calls))
 
     def test_list_accessible_repos_gh_failure_raises(self) -> None:
         def fake_run(args, capture_output, text, env):
