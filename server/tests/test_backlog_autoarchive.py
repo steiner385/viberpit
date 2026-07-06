@@ -144,6 +144,7 @@ def test_completed_backlog_archive_context_includes_pr_state_with_pr():
         # Build a minimal PullRequestInfo-like object that _autopilot_pr_facts can use
         pr_info = types.SimpleNamespace(
             number=42, state="open", is_draft=False, auto_merge_enabled=True,
+            in_merge_queue=False,
             url="https://github.com/o/r/pull/42")
         orch, calls = _orch_with_pr({"s1": rec}, pr_info=pr_info)
         orch._maybe_autoarchive_completed("s1", "complete", rec)

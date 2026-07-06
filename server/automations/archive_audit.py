@@ -44,7 +44,12 @@ def referenced_pr_numbers(goal: str, initial_prompt: str | None) -> list[int]:
 
 def _pr_fact_from_gh(d: dict) -> PrFact:
     """Map one `gh pr list --json ...` row to a PrFact. gh states are UPPERCASE
-    (OPEN/MERGED/CLOSED); autoMergeRequest is non-null when auto-merge is armed."""
+    (OPEN/MERGED/CLOSED); autoMergeRequest is non-null when auto-merge is armed.
+
+    Limitation: `gh pr list/view --json` does not expose mergeQueueEntry, so
+    in_merge_queue is always False here — a queued PR may be misclassified as
+    open-unarmed by the retro audit. Needs a GraphQL path (tracked on #501).
+    """
     state = str(d.get("state", "")).lower()
     is_draft = bool(d.get("isDraft", False))
     if state == "open" and is_draft:

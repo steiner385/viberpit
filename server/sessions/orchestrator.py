@@ -1665,7 +1665,8 @@ class SessionOrchestrator:
             if info is not None and info.number not in seen:
                 seen[info.number] = PrFact(
                     number=info.number, state=info.state, is_draft=info.is_draft,
-                    auto_merge_enabled=info.auto_merge_enabled, url=info.url)
+                    auto_merge_enabled=info.auto_merge_enabled,
+                    in_merge_queue=info.in_merge_queue, url=info.url)
         return PrFacts(has_repo=bool(rec.repo), prs=tuple(seen.values()))
 
     async def _autopilot_transcript_tail(self, session_id: str,
