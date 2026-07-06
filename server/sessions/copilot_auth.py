@@ -92,6 +92,7 @@ class CopilotAuthManager:
             return state.to_dict()
 
         token_dir = str(self._token_dir_for(account))
+        Path(token_dir).mkdir(parents=True, mode=0o700, exist_ok=True)
 
         async with self._lock:
             # Cancel any existing in-flight login for this account
