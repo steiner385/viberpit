@@ -12,7 +12,6 @@ import pytest
 from claude_agent_sdk._errors import CLIConnectionError
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
-from server.sessions.questions import QuestionRegistry
 
 
 @pytest.mark.asyncio
