@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+from . import paths
 from .oauth import Usage
 
 log = logging.getLogger(__name__)
@@ -49,6 +50,14 @@ def _parse_iso(s) -> datetime | None:
         return datetime.fromisoformat(s)
     except ValueError:
         return None
+
+
+def copilot_account_names() -> list[str]:
+    d = paths.copilot_store_dir()
+    if not d.exists():
+        return []
+    return sorted(p.name for p in d.iterdir()
+                  if p.is_dir() and (p / "credentials.json").exists())
 
 
 def launch_env(port: int, secret: str) -> dict[str, str]:

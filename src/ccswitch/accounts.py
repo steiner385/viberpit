@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
-from . import ledger, oauth, paths
+from . import copilot, ledger, oauth, paths
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .selector import Picked, select_picked
@@ -96,11 +96,25 @@ def _refresh_guard(name: str):
             os.close(fd)
 
 
-def _account_names() -> list[str]:
+def _anthropic_account_names() -> list[str]:
     d = paths.store_dir()
     if not d.exists():
         return []
     return sorted(p.name[: -len(".cred.json")] for p in d.glob("*.cred.json"))
+
+
+def provider_of(name: str) -> str:
+    return copilot.PROVIDER if paths.copilot_token_dir(name).exists() else "anthropic"
+
+
+def all_accounts() -> list[tuple[str, str]]:
+    out = [(n, "anthropic") for n in _anthropic_account_names()]
+    out += [(n, copilot.PROVIDER) for n in copilot.copilot_account_names()]
+    return out
+
+
+def _account_names() -> list[str]:
+    return sorted(n for n, _ in all_accounts())
 
 
 def _is_fresh(blob: dict, cfg: Config) -> bool:
