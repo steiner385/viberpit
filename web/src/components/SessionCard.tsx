@@ -206,7 +206,14 @@ export function SessionCard({ session, account, selected = false, listMode = fal
     <article
       ref={articleRef}
       className={cn(
-        'group flex flex-col rounded-lg border border-gray-200 dark:border-gray-700',
+        // `@container` makes the card a container-query context so the layout
+        // below responds to the card's OWN width (i.e. the drag-resizable
+        // sidebar), not the viewport. A narrow sidebar on a wide (≥1024px)
+        // window used to keep the full desktop layout — all badges + the 6-icon
+        // grid — crammed into a tiny box, so the badge row overflowed under the
+        // action icons. Container queries (`@lg:*` below) collapse to the
+        // compact layout by real available width instead.
+        'group @container flex flex-col rounded-lg border border-gray-200 dark:border-gray-700',
         'bg-white dark:bg-gray-800 px-3 py-2 min-h-[44px]',
         'focus-within:ring-2 focus-within:ring-blue-500',
         // Autopilot-driven cards get an emerald left edge so they pop out of the
@@ -393,16 +400,17 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             <span className="truncate">{repoLabel.text}</span>
           </span>
           {/* Status pill is the one context signal kept at every width; the Goal
-              badge and the PR badge are secondary, so they are gated to desktop
-              (`hidden lg:*`) — on a phone they bunched against the status pill and
-              forced the repo label to a few characters. They remain reachable in
-              the session detail view. */}
+              badge and the PR badge are secondary, so they are gated to a wide
+              card (`hidden @lg:*`, container-query on the card ≥ 32rem) — in a
+              narrow sidebar they bunched against the status pill and forced the
+              repo label to a few characters. They remain reachable in the
+              session detail view. */}
           <div className="flex flex-shrink-0 items-center gap-2">
             <StatusPill status={session.status} interruptedByRestart={session.interruptedByRestart} />
             {session.activeGoal && (
               <span
                 data-testid="card-goal"
-                className="hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
+                className="hidden @lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
                 title={`Goal: ${session.activeGoal}`}
               >
                 <Target size={12} aria-hidden="true" className="flex-shrink-0" />
@@ -414,7 +422,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                  styling distinguishes it from the solid explicit-/goal pill. */
               <span
                 data-testid="card-goal-inferred"
-                className="hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800 text-indigo-500 dark:text-indigo-400 max-w-[12rem]"
+                className="hidden @lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800 text-indigo-500 dark:text-indigo-400 max-w-[12rem]"
                 title={`Goal (inferred): ${session.effectiveGoal}`}
               >
                 <Target size={12} aria-hidden="true" className="flex-shrink-0" />
@@ -424,7 +432,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             {session.autopilotPaused && (
               <span
                 data-testid="card-autopilot-badge"
-                className="hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                className="hidden @lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
                 title="Autopilot paused — this session is on manual"
               >
                 <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
@@ -436,7 +444,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                  unarchived, so autopilot will never auto-archive it again. */
               <span
                 data-testid="card-no-autoarchive-badge"
-                className="hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
+                className="hidden @lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
                 title="Auto-archive off — you unarchived this session, so autopilot won't archive it again"
               >
                 <Archive size={12} aria-hidden="true" className="flex-shrink-0" />
@@ -451,7 +459,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 data-testid="card-provenance"
                 onClick={(e) => e.stopPropagation()}
                 className={cn(
-                  'hidden lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-w-[12rem]',
+                  'hidden @lg:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-w-[12rem]',
                   // Emerald when autopilot is actively guiding (matches the edge +
                   // marker); generic violet for created-by/other automation, and for
                   // an autopilot session that's paused (guidedByAutopilot is false).
@@ -472,7 +480,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               </Link>
             )}
             {session.prs?.length > 0 && (
-              <span data-testid="card-prs" className="hidden lg:inline-flex items-center">
+              <span data-testid="card-prs" className="hidden @lg:inline-flex items-center">
                 <PrList prs={session.prs} />
               </span>
             )}
@@ -482,7 +490,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 data-testid="card-fix-pr"
                 onClick={(e) => { e.stopPropagation(); onFixPr?.(session.id, failingPr.number) }}
                 aria-label={`Fix PR #${failingPr.number}`}
-                className="hidden lg:inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                className="hidden @lg:inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               >
                 <Wrench size={11} aria-hidden />
                 <span>Fix PR #{failingPr.number}</span>
@@ -498,12 +506,12 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             strip, so repeating it per card is just noise. The row renders only
             when there's something to show, but at least one is near-always
             present (every live session has an updatedAt). */}
-        {/* The whole telemetry row (usage % + "active … ago") is desktop-only:
-            `hidden lg:flex`. It's the least glanceable line on a phone and the
-            biggest source of vertical density; the usage figure also lives in the
-            Accounts tab and the in-session meta strip. */}
+        {/* The whole telemetry row (usage % + "active … ago") shows only on a
+            wide card: `hidden @lg:flex`. It's the least glanceable line in a
+            narrow sidebar and the biggest source of vertical density; the usage
+            figure also lives in the Accounts tab and the in-session meta strip. */}
         {(account?.usage || (!isBusy && isValidTimestamp(session.updatedAt))) && (
-          <div data-testid="card-telemetry" className="hidden lg:flex items-center gap-2 min-w-0">
+          <div data-testid="card-telemetry" className="hidden @lg:flex items-center gap-2 min-w-0">
             {account?.usage && (
               <UsageBadge
                 pct={account.usage.session.pct}
@@ -536,17 +544,17 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           hover-capable devices (desktop) they shrink to a denser 32px and stay
           hidden until the row is hovered, focused, or selected — so the meta row
           gets the full card width instead of fighting three permanent buttons.
-          On mobile (< lg) only Resume stays inline; the rest are `hidden lg:*`
+          In a narrow card only Resume stays inline; the rest are `hidden @lg:*`
           (see the secondary-actions group below) and live in the detail view.
-          On desktop the buttons lay out as a 3-column grid so the (up to six)
-          controls fold into two rows — halving the horizontal footprint they
-          steal from the meta row. The secondary group uses `lg:contents` so its
-          five children flow into this grid directly rather than as one wide
-          flex child. */}
+          On a wide card (container ≥ 32rem) the buttons lay out as a 3-column
+          grid so the (up to six) controls fold into two rows — halving the
+          horizontal footprint they steal from the meta row. The secondary group
+          uses `@lg:contents` so its five children flow into this grid directly
+          rather than as one wide flex child. */}
       <div
         className={cn(
           'flex flex-shrink-0 items-center gap-0.5 transition-opacity',
-          'lg:grid lg:grid-cols-3 lg:justify-items-center',
+          '@lg:grid @lg:grid-cols-3 @lg:justify-items-center',
           '[@media(hover:hover)]:opacity-0',
           '[@media(hover:hover)]:group-hover:opacity-100',
           '[@media(hover:hover)]:group-focus-within:opacity-100',
@@ -571,14 +579,14 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               : <Sparkles size={16} aria-hidden="true" />}
           </button>
         )}
-        {/* Secondary actions group — desktop-only. Suggestions/rename/archive/
+        {/* Secondary actions group — wide-card-only. Suggestions/rename/archive/
             delete each render a 44px tap target with no hover to retreat behind,
-            so on a phone they consumed most of the card width. Gating the group
-            to `lg:` leaves Resume as the single inline action on mobile.
-            `lg:contents` dissolves this wrapper on desktop so its buttons become
-            direct children of the parent action grid (two rows), while staying
-            `hidden` (as a box) on mobile. */}
-        <div data-testid="card-secondary-actions" className="hidden lg:contents">
+            so in a narrow card they consumed most of the card width. Gating the
+            group to `@lg:` leaves Resume as the single inline action when narrow.
+            `@lg:contents` dissolves this wrapper on a wide card so its buttons
+            become direct children of the parent action grid (two rows), while
+            staying `hidden` (as a box) when narrow. */}
+        <div data-testid="card-secondary-actions" className="hidden @lg:contents">
         {!isBusy && (
           <div className="relative flex items-center">
             <button
