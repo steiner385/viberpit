@@ -753,6 +753,7 @@ class SessionOrchestrator:
                 origin=origin,
                 origin_ref=origin_ref,
                 model=model,
+                initial_prompt=initial_prompt,
             )
             db.add(row)
 

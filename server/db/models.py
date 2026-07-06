@@ -83,6 +83,11 @@ class Session(Base):
     # cannot duplicate destructive work). NULL = nothing to re-send. Nullable so init_db
     # backfills it on the dev SQLite DB without a migration.
     pending_prompt: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # The verbatim first prompt the session was created with (human sessions defer it to
+    # first WS attach; automation sessions send it immediately) — persisted so completion
+    # judgment / archive audit need not read transcript files. Nullable so init_db
+    # backfills on the dev SQLite DB without a migration.
+    initial_prompt: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Persisted model for this session (alias like "opus"/"sonnet" or a pinned id
     # like "claude-haiku-4-5"). NULL = account/binary default. Nullable so init_db
     # backfills on the dev SQLite DB without a migration.

@@ -135,7 +135,8 @@ async def load_archived_rows(session_factory) -> list[dict]:
         goal, source = effective_goal(row)
         out.append({"id": row.id, "repo": row.repo, "branch": row.branch,
                     "authored_branches": list(row.authored_branches or []),
-                    "goal": goal, "goal_source": source})
+                    "goal": goal, "goal_source": source,
+                    "initial_prompt": row.initial_prompt})
     return out
 
 

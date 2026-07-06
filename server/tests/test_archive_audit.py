@@ -85,6 +85,7 @@ def test_load_archived_rows_maps_fields():
         id = "s1"; repo = "o/r"; branch = "feat/x"
         authored_branches = ["feat/x", "feat/y"]
         active_goal = "fix ci"; inferred_goal = None; name = "sess"
+        initial_prompt = None
 
     class FakeScalars:
         def all(self):
