@@ -276,6 +276,37 @@ async def test_escalation_reemits_when_stuck_state_changes():
 
 
 @pytest.mark.asyncio
+async def test_nudge_loop_survives_status_oscillation():
+    """A rejected nudge (e.g. 'Prompt is too long' on a context-exhausted session)
+    churns the momentary status between ticks (needs_attention <-> idle). Loop
+    detection MUST still escalate and STOP nudging: the volatile status must not reset
+    the 'keep nudging the same goal' counter, or autopilot nudges a stuck session
+    forever (prod: PR #11273 session, escalate->nudge->escalate for ~7h, 2026-07-06)."""
+    ctx = FakeCtx()
+    applied: list = []
+    # No pending permission/question — autopilot's only lever is a nudge toward the
+    # goal, and the rejected nudge flaps the status every tick.
+    flap = iter(["needs_attention", "idle"] * 8)
+
+    async def oscillating_ctx(sid):
+        st = next(flap)
+        return DecisionContext(session_id=sid, status=st, account="a", repo=None,
+                               branch=None, effective_goal="g", goal_source="explicit",
+                               stuck={"kind": st}, transcript_tail=[], ledger={})
+
+    loop = _loop(ctx, decision=Decision(action="nudge", prompt="keep going"), applied=applied)
+    loop._get_context = oscillating_ctx
+    for _ in range(6):
+        await loop.tick()
+    # Escalated despite the status flapping every tick ...
+    assert ctx.states.get("s1", {}).get("escalated") is True
+    assert any(kind == "escalated" for _, _, kind in ctx.emits)
+    # ... and it stopped nudging once escalated: at most loop_repeat_limit (3) nudges
+    # over 6 ticks, not one per tick.
+    assert applied.count(("s1", "nudge")) <= 3
+
+
+@pytest.mark.asyncio
 async def test_applied_action_clears_escalated_flag():
     """Once autopilot successfully acts on a session again, it is no longer
     'handed to a human' — a later escalation for the same state must re-emit."""
