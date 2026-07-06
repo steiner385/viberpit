@@ -153,16 +153,23 @@ def compose(name: str) -> Path:
     """Reconcile links and write the composed .credentials.json + .claude.json.
 
     Returns the config dir path (set CLAUDE_CONFIG_DIR to this when launching claude).
+    
+    For copilot accounts, skips writing .credentials.json since the proxy handles auth
+    via environment variables (ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN).
     """
+    from . import accounts
+    
     reconcile_links(name)
     cfg_dir = paths.account_cfg_dir(name)
 
-    # Write .credentials.json (real file, never a symlink).
-    # read_credentials decrypts the refreshToken in memory so the composed file
-    # that claude reads is always plaintext — we must never write ciphertext there.
-    claude_oauth = read_credentials(paths.slot_path(name))
-    mcp = read_json(paths.shared_mcp_path()) if paths.shared_mcp_path().exists() else {}
-    write_json_secure(cfg_dir / CREDENTIALS_NAME, compose_credentials(claude_oauth, mcp))
+    # Copilot accounts don't use OAuth credentials — the proxy injects auth via env vars.
+    # Only write .credentials.json for Anthropic accounts.
+    if accounts.provider_of(name) != "copilot":
+        # read_credentials decrypts the refreshToken in memory so the composed file
+        # that claude reads is always plaintext — we must never write ciphertext there.
+        claude_oauth = read_credentials(paths.slot_path(name))
+        mcp = read_json(paths.shared_mcp_path()) if paths.shared_mcp_path().exists() else {}
+        write_json_secure(cfg_dir / CREDENTIALS_NAME, compose_credentials(claude_oauth, mcp))
 
     # Write .claude.json (real file, never a symlink)
     write_json_secure(cfg_dir / CLAUDE_JSON_NAME, compose_claude_json(name))
