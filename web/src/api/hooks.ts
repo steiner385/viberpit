@@ -11,7 +11,7 @@ import {
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
   DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, MergeTrainState, CheckInsights,
-  DaemonHealth,
+  DaemonHealth, CopilotAddState,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
@@ -395,6 +395,39 @@ export function useCancelAddAccount() {
     mutationFn: () => api.post<ReauthState>('/accounts/add/cancel'),
     // fire-and-forget cancel: never toast on error (see queryClient global handler)
     meta: { suppressErrorToast: true },
+  })
+}
+
+// Copilot device-flow add: initiates the GitHub device-flow OAuth for a new
+// Copilot account slot. The name is sent in the body since the slot does not exist yet.
+export function useAddCopilotAccount() {
+  return useMutation<CopilotAddState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<CopilotAddState>('/accounts/add/copilot', { name }),
+  })
+}
+
+// Poll the device-flow state until authorization completes or fails.
+// Mirrors useReauthStatus / useAddAccountStatus — polling stops automatically
+// at terminal states (authorized | failed) to avoid unnecessary requests.
+export function useCopilotAddStatus(name: string, enabled: boolean) {
+  return useQuery<CopilotAddState>({
+    queryKey: ['copilot-add-status', name],
+    queryFn: () => api.get<CopilotAddState>(`/accounts/add/copilot?name=${encodeURIComponent(name)}`),
+    enabled,
+    refetchInterval: (query) => {
+      const s = query.state.data?.state
+      return s === 'authorized' || s === 'failed' ? false : 2000
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 0,
+  })
+}
+
+export function useCancelCopilotAdd() {
+  const qc = useQueryClient()
+  return useMutation<CopilotAddState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<CopilotAddState>('/accounts/add/copilot/cancel', { name }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
   })
 }
 
