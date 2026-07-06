@@ -114,6 +114,12 @@ class ArchiveAuditLoop:
                 log.warning("archive_audit loop unarchive failed sid=%s", r["id"], exc_info=True)
         from collections import Counter
         counts = Counter(r["bucket"] for r in results)
+        # Publish counts on the ctx so ArchiveAudit.status() reflects the last run
+        # (mirrors CicdDoctorLoop). status() reads 'total' and 'unarchived'.
+        setattr(self._ctx, "archive_audit_counts", {
+            "total": len(rows), "unarchived": len(unarchived),
+            **{b: counts.get(b, 0) for b in ("legit", "premature", "review", "ambiguous")},
+        })
         await self._ctx.emit(
             "info",
             f"re-audit: {len(rows)} recent archives — unarchived {len(unarchived)} premature",

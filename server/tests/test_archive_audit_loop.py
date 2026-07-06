@@ -217,3 +217,37 @@ def test_tick_enabled_no_rows_skips_emit():
         ctx.emit.assert_not_called()
 
     asyncio.run(run())
+
+
+def test_tick_publishes_status_counts_for_card():
+    """After an enabled tick, ctx.archive_audit_counts is set so ArchiveAudit.status()
+    reflects the run — guards against the status card being permanently stuck 'idle'."""
+    async def run():
+        from server.automations.archive_audit import ArchiveAudit, ArchiveAuditLoop
+        ctx = _FakeCtx()
+        list_rows = AsyncMock(return_value=[_row("sess-prem", "fix ci")])
+        unarchive_fn = AsyncMock()
+
+        async def read_config():
+            return ("act", {"window_days": 7})
+
+        loop = ArchiveAuditLoop(
+            ctx, read_config=read_config, list_rows=list_rows,
+            gh_fn=_gh_returning(_pr(state="OPEN", auto_merge=False)),
+            gh_num_fn=None, unarchive_fn=unarchive_fn, clock=lambda: _FIXED_EPOCH)
+        await loop.tick()
+
+        unarchive_fn.assert_awaited_once_with("sess-prem")
+        counts = getattr(ctx, "archive_audit_counts", None)
+        assert counts is not None
+        assert counts["total"] == 1 and counts["unarchived"] == 1
+        assert counts["premature"] == 1
+        assert ArchiveAudit().status(ctx).level == "active"
+
+    asyncio.run(run())
+
+
+def test_archive_audit_registered_in_registry():
+    """The automation must be registered so the daemon builds/starts its loop."""
+    from server.automations.registry import registry
+    assert "archive-audit" in {a.id for a in registry.all()}
