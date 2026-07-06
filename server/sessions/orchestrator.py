@@ -4657,11 +4657,13 @@ class SessionOrchestrator:
 
         # Mark archived in DB.
         async with db_session() as db:
+            from datetime import datetime
             from sqlalchemy import update as sa_update
             await db.execute(
                 sa_update(DbSession)
                 .where(DbSession.id == session_id)
-                .values(status="archived", archived_by=archived_by, archive_context=context)
+                .values(status="archived", archived_by=archived_by, archive_context=context,
+                        archived_at=datetime.utcnow())
             )
         prev_status = record.status if record is not None else None
         log_event(log, logging.INFO, "session.terminal",

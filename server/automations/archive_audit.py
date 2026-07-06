@@ -10,9 +10,12 @@ import json
 import logging
 import re
 import subprocess
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from .completion_bar import BarVerdict, PrFact, PrFacts, _is_code_goal, met_bar
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 log = logging.getLogger(__name__)
 
@@ -239,24 +242,43 @@ def _real_gh_num(repo: str, number: int) -> "dict | None":
         return None
 
 
+def _archived_row_to_dict(row) -> dict:
+    """Map one archived Session row to the audit's row dict. Single source of truth
+    for the shape shared by load_archived_rows and list_recent_archived_rows."""
+    from server.sessions.goals import effective_goal
+    goal, source = effective_goal(row)
+    return {"id": row.id, "repo": row.repo, "branch": row.branch,
+            "authored_branches": list(row.authored_branches or []),
+            "goal": goal, "goal_source": source,
+            "initial_prompt": row.initial_prompt}
+
+
 async def load_archived_rows(session_factory) -> list[dict]:
     """Load archived Session rows with the fields the audit needs (the list_archived
     seam omits repo/branch/authored_branches/goal, so read the model directly).
     session_factory() is an async context manager yielding a DB session."""
     from sqlalchemy import select as sa_select
     from server.db.models import Session as DbSession
-    from server.sessions.goals import effective_goal
     async with session_factory() as db:
         rows = (await db.execute(
             sa_select(DbSession).where(DbSession.status == "archived"))).scalars().all()
-    out: list[dict] = []
-    for row in rows:
-        goal, source = effective_goal(row)
-        out.append({"id": row.id, "repo": row.repo, "branch": row.branch,
-                    "authored_branches": list(row.authored_branches or []),
-                    "goal": goal, "goal_source": source,
-                    "initial_prompt": row.initial_prompt})
-    return out
+    return [_archived_row_to_dict(row) for row in rows]
+
+
+async def list_recent_archived_rows(session_factory, since: "datetime") -> list[dict]:
+    """Archived rows with archived_at >= since (the re-audit window). Same shape as
+    load_archived_rows. Rows with NULL archived_at (archived before the column existed,
+    or never timestamped) are excluded — they are not 'recent'."""
+    from sqlalchemy import select as sa_select
+    from server.db.models import Session as DbSession
+    async with session_factory() as db:
+        rows = (await db.execute(
+            sa_select(DbSession).where(
+                DbSession.status == "archived",
+                DbSession.archived_at.isnot(None),
+                DbSession.archived_at >= since,
+            ))).scalars().all()
+    return [_archived_row_to_dict(row) for row in rows]
 
 
 async def main(argv: "list[str] | None" = None) -> int:

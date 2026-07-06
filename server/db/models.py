@@ -112,6 +112,10 @@ class Session(Base):
     # unarchive detect that an AUTO archive was just reversed (→ a learning heuristic).
     # Cleared on unarchive. Nullable so init_db backfills without a migration.
     archived_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # UTC time this session was archived (set in archive_session). NULL for rows
+    # archived before this column existed and for never-archived sessions. Nullable
+    # so init_db backfills it on existing rows without a migration.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     # Snapshot of the decision features at AUTO-archive time ({repo, goal, goal_source,
     # pr_state, reason}); copied into an `archive_reversed` autopilot event on unarchive so
     # the auto-archive algorithm can learn which sessions it wrongly archived. none_as_null
