@@ -291,8 +291,10 @@ async def create_session(
                     },
                 },
             )
-        from ccswitch import paths as _paths
-        if not _paths.slot_path(body.account).exists():
+        # Check account existence in a provider-aware way: anthropic accounts have a
+        # slot file; copilot accounts have a token directory.
+        known_accounts = {name for name, _ in _accounts.all_accounts()}
+        if body.account not in known_accounts:
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={
