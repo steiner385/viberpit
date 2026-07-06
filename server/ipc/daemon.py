@@ -193,7 +193,26 @@ def create_daemon_app() -> FastAPI:
     # Each connection now has a bounded send queue drained by its own writer task;
     # `publish` enqueues non-blocking and drops a subscriber whose queue overflows (it
     # reconnects and replays from `since`). Source events are never dropped.
-    _sendq_max = int(os.environ.get("CCSWITCH_IPC_SEND_QUEUE", "1024"))
+    #
+    # INVARIANT: the send queue MUST be able to hold a full ring replay plus a burst of
+    # live events. On a fresh subscribe the `/events` handler replays the entire ring
+    # SYNCHRONOUSLY (the `for seq, event in buf` loop below has no await, so the writer
+    # task cannot drain mid-replay). If the ring (`_maxlen`) is deeper than the queue,
+    # the replay overflows → `_enqueue` calls `drop_subscriber` → the writer is cancelled
+    # before it flushes a single frame → the socket closes → the edge reconnects and
+    # re-subscribes with the SAME `since` (it received zero events, so its watermark never
+    # advanced) → replays the same backlog → overflows again: a non-converging reconnect
+    # storm that starves ALL live forwarding. This regressed when `_maxlen` was raised to
+    # 8192 (audit W2.1) while this default stayed 1024. Floor the queue above the ring so a
+    # full replay always fits; the env override can only raise it, never break the invariant.
+    # In remote mode there is exactly one `/events` consumer (the edge reader), so the
+    # larger queue is negligible memory.
+    _sendq_max = max(
+        int(os.environ.get("CCSWITCH_IPC_SEND_QUEUE", "1024")),
+        _maxlen + 1024,  # ring depth + one live burst of headroom
+    )
+    app.state.replay_maxlen = _maxlen   # exposed for the invariant test + ops visibility
+    app.state.sendq_max = _sendq_max
     app.state.sendq = {}     # ws -> bounded asyncio.Queue[str] (per-connection buffer)
     app.state.writers = {}   # ws -> writer Task draining sendq to ws.send_text
 
