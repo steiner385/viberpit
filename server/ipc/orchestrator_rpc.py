@@ -233,6 +233,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "request_pr_fix",
         "automation_statuses", "automation_trigger",
         "consolidation_candidates", "automation_consolidate",
+        "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
     ]
 
     def _make_simple(method_name):

@@ -164,6 +164,7 @@ class SessionOrchestrator:
         titling_interval: float = 15.0,
         x11=None,
         copilot=None,
+        copilot_auth=None,
         title_fn: Callable | None = None,
         summary_factory=None,
     ) -> None:
@@ -185,6 +186,7 @@ class SessionOrchestrator:
         self._sdk_factory = sdk_factory or real_sdk_factory
         self._x11 = x11  # X11Manager | None — per-session virtual displays
         self._copilot = copilot  # CopilotProxyManager | None — per-account translating proxy
+        self._copilot_auth = copilot_auth  # CopilotAuthManager | None — device-flow auth manager
         if os.environ.get("CCSWITCH_SUGGESTIONS", "1") == "0":
             self._suggester = None
         else:
@@ -3335,6 +3337,26 @@ class SessionOrchestrator:
             key = "active" if rec.status in _ACTIVE_STATUSES else "idle"
             bucket[key] += 1
         return counts
+
+    # ------------------------------------------------------------------
+    # Copilot account management
+    # ------------------------------------------------------------------
+
+    async def copilot_add_start(self, account: str) -> dict:
+        """Start the GitHub device-flow login for a copilot account."""
+        return await self._copilot_auth.start(account)
+
+    async def copilot_add_status(self, account: str) -> dict:
+        """Return the current device-flow auth state for a copilot account (sync)."""
+        return self._copilot_auth.status(account)   # status() is sync — do NOT await
+
+    async def copilot_add_cancel(self, account: str) -> dict:
+        """Cancel an in-flight device-flow login for a copilot account."""
+        return await self._copilot_auth.cancel(account)
+
+    async def copilot_usage(self, account: str) -> dict | None:
+        """Return the proxy /usage payload for a copilot account, or None."""
+        return self._copilot.usage(account) if self._copilot is not None else None
 
     def driver(self, session_id: str) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, or None."""

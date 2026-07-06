@@ -370,7 +370,16 @@ def create_app(
     # Copilot proxy manager — None when proxy binary absent or feature disabled.
     if not getattr(app.state, "remote_mode", False) and orchestrator is not None:
         from server.sessions.copilot_proxy import build_copilot_proxy_manager
+        from server.sessions.copilot_auth import CopilotAuthManager
+        from ccswitch import paths as _ccswitch_paths
+        from ccswitch.accounts import set_copilot_usage_reader
         orchestrator._copilot = build_copilot_proxy_manager(_gs())
+        orchestrator._copilot_auth = CopilotAuthManager(
+            token_dir_for=_ccswitch_paths.copilot_token_dir
+        )
+        set_copilot_usage_reader(
+            lambda name: orchestrator._copilot.usage(name) if orchestrator._copilot else None
+        )
 
     # Attach the reauth facade. Remote mode proxies to the daemon's manager (which owns
     # the X11 displays); in-process wraps a real manager behind the same async facade.

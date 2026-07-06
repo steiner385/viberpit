@@ -67,7 +67,16 @@ def build_daemon(orchestrator=None):
         orchestrator = SessionOrchestrator()
     orchestrator._x11 = build_x11_manager(get_settings())
     from server.sessions.copilot_proxy import build_copilot_proxy_manager
+    from server.sessions.copilot_auth import CopilotAuthManager
+    from ccswitch import paths as _ccswitch_paths
+    from ccswitch.accounts import set_copilot_usage_reader
     orchestrator._copilot = build_copilot_proxy_manager(get_settings())
+    orchestrator._copilot_auth = CopilotAuthManager(
+        token_dir_for=_ccswitch_paths.copilot_token_dir
+    )
+    set_copilot_usage_reader(
+        lambda name: orchestrator._copilot.usage(name) if orchestrator._copilot else None
+    )
     register_orchestrator_rpc(app, orchestrator)
     app.state.x11 = orchestrator._x11
     register_x11(app, app.state.x11)
