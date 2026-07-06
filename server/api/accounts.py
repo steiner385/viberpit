@@ -405,6 +405,110 @@ async def add_account_cancel(
 
 
 # ---------------------------------------------------------------------------
+# Copilot device-flow add-account routes
+#
+# Unlike the browser-OAuth add flow (which uses ReauthManager), Copilot
+# accounts are added via GitHub device-flow (no browser required).  The flow
+# is managed by CopilotAuthManager inside the orchestrator.  The slot is a
+# token directory at paths.copilot_token_dir(name); it must NOT already exist
+# when starting.  Status/cancel do NOT require the slot to exist.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/add/copilot", status_code=status.HTTP_202_ACCEPTED)
+async def copilot_add_start(
+    body: AddAccountBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Start a GitHub device-flow that creates a new Copilot account slot.
+
+    Returns 202 + state dict (state, userCode, verificationUri …) on success.
+    Returns 400 if the requested name is malformed.
+    Returns 409 if a Copilot account with that name already exists.
+    """
+    name = body.name
+    try:
+        assert_valid_account_name(name)
+    except InvalidAccountName:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_name",
+                "name": name,
+                "message": (
+                    "Account name must be a short identifier — letters, numbers, "
+                    ". _ - only (no @ or spaces). It's not an email; add a friendly "
+                    "nickname afterwards."
+                ),
+            },
+        )
+
+    if paths.copilot_token_dir(name).exists():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "account_exists",
+                "name": name,
+                "message": f"Copilot account '{name}' already exists",
+            },
+        )
+
+    orch = _get_orchestrator(request)
+    state = await orch.copilot_add_start(name)
+
+    await record_audit(
+        db=db,
+        type="account.add.copilot.start",
+        identity=identity,
+        detail={"account": name},
+    )
+
+    return state
+
+
+@router.get("/add/copilot")
+async def copilot_add_status(
+    name: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Return the current device-flow state for an in-flight Copilot add.
+
+    Does not require the slot to exist.
+    """
+    orch = _get_orchestrator(request)
+    return await orch.copilot_add_status(name)
+
+
+class CopilotAddCancelBody(BaseModel):
+    name: str
+
+
+@router.post("/add/copilot/cancel")
+async def copilot_add_cancel(
+    body: CopilotAddCancelBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Cancel a running Copilot device-flow add.  Returns the resulting state dict."""
+    name = body.name
+    orch = _get_orchestrator(request)
+    state = await orch.copilot_add_cancel(name)
+
+    await record_audit(
+        db=db,
+        type="account.add.copilot.cancel",
+        identity=identity,
+        detail={"account": name},
+    )
+
+    return state
+
+
+# ---------------------------------------------------------------------------
 # Reauth routes
 # ---------------------------------------------------------------------------
 
