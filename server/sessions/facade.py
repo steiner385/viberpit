@@ -80,3 +80,7 @@ class InProcessOrchestratorAdapter:
     async def resume_recovery_status(self, *a, **k): return await _maybe_await(self._orch.resume_recovery_status(*a, **k))
     async def automation_actionable(self, *a, **k): return await _maybe_await(self._orch.automation_actionable(*a, **k))
     async def automation_trigger(self, *a, **k): return await _maybe_await(self._orch.automation_trigger(*a, **k))
+    async def copilot_add_start(self, *a, **k): return await _maybe_await(self._orch.copilot_add_start(*a, **k))
+    async def copilot_add_status(self, *a, **k): return await _maybe_await(self._orch.copilot_add_status(*a, **k))
+    async def copilot_add_cancel(self, *a, **k): return await _maybe_await(self._orch.copilot_add_cancel(*a, **k))
+    async def copilot_usage(self, *a, **k): return await _maybe_await(self._orch.copilot_usage(*a, **k))

@@ -479,6 +479,22 @@ class RemoteOrchestrator:
     async def live_session_counts(self):
         return await self._client.call("live_session_counts")
 
+    async def copilot_add_start(self, account: str) -> dict:
+        """Start the GitHub device-flow login for a copilot account, via the daemon."""
+        return await self._client.call("copilot_add_start", account=account)
+
+    async def copilot_add_status(self, account: str) -> dict:
+        """Return the current device-flow auth state for a copilot account, via the daemon."""
+        return await self._client.call("copilot_add_status", account=account)
+
+    async def copilot_add_cancel(self, account: str) -> dict:
+        """Cancel an in-flight device-flow login for a copilot account, via the daemon."""
+        return await self._client.call("copilot_add_cancel", account=account)
+
+    async def copilot_usage(self, account: str) -> dict | None:
+        """Return the proxy /usage payload for a copilot account, via the daemon."""
+        return await self._client.call("copilot_usage", account=account)
+
     async def subscribe_events(self) -> asyncio.Queue:
         """Return a queue that receives global lifecycle events.
 

@@ -57,6 +57,10 @@ try:
         # startup-FATAL launch isn't counted as live. 0 disables the check.
         browser_liveness_s: float = Field(default=0.3, alias="CCSWITCH_BROWSER_LIVENESS_S")
         vnc_idle_timeout_s: float = Field(default=1800.0, alias="CCSWITCH_VNC_IDLE_TIMEOUT_S")
+        enable_copilot: bool = Field(default=False, alias="CCSWITCH_ENABLE_COPILOT")
+        copilot_port_base: int = Field(default=4142, alias="CCSWITCH_COPILOT_PORT_BASE")
+        copilot_port_count: int = Field(default=8, alias="CCSWITCH_COPILOT_PORT_COUNT")
+        copilot_idle_grace_s: float = Field(default=300.0, alias="CCSWITCH_COPILOT_IDLE_GRACE_S")
         log_level: str = Field(default="INFO", alias="CCSWITCH_LOG_LEVEL")
         log_dir: str = Field(
             default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR")
@@ -159,6 +163,18 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         vnc_idle_timeout_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("CCSWITCH_VNC_IDLE_TIMEOUT_S", "1800"))
+        )
+        enable_copilot: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_COPILOT", "false").lower() in ("1","true","yes","on")
+        )
+        copilot_port_base: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_COPILOT_PORT_BASE", "4142"))
+        )
+        copilot_port_count: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_COPILOT_PORT_COUNT", "8"))
+        )
+        copilot_idle_grace_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_COPILOT_IDLE_GRACE_S", "300.0"))
         )
         log_level: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_LOG_LEVEL", "INFO")

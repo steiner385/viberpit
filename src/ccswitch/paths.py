@@ -82,6 +82,14 @@ def account_cfg_dir(name: str) -> Path:
     return cfg_root() / name
 
 
+def copilot_store_dir() -> Path:
+    return store_dir() / "copilot"
+
+
+def copilot_token_dir(name: str) -> Path:
+    return copilot_store_dir() / name
+
+
 def reauth_tmp_dir() -> Path:
     return root() / "reauth-tmp"
 

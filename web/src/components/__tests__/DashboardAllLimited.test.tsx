@@ -43,6 +43,9 @@ vi.mock('@/api/hooks', () => ({
   useBulkPermanentDeleteSessions: vi.fn(),
   useSendPrompt: () => ({ mutate: vi.fn() }),
   useSessionsViewing: vi.fn(),
+  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   QK: {
     accounts: ['accounts'],
     sessions: ['sessions'],

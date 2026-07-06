@@ -11,6 +11,9 @@ vi.mock('@/api/hooks', () => ({
   // (no canRename), so a stub return is enough.
   useRenameSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessionsViewing: vi.fn(),
+  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 // mutate(id, opts) helpers that synchronously invoke the success/error callbacks,

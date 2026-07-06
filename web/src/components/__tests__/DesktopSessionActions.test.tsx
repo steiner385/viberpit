@@ -10,6 +10,9 @@ vi.mock('@/api/hooks', () => ({
   // header doesn't surface Rename, but the hook still runs.
   useRenameSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessionsViewing: vi.fn(),
+  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 // Provide a runtime via the context the pane reads from. DesktopShell imports both

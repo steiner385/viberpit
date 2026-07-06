@@ -11,6 +11,9 @@ vi.mock('@/api/hooks', () => ({
   useAccounts: () => ({ data: [] }),
   useSessions: () => ({ data: [] }),
   useSessionsViewing: vi.fn(),
+  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 // Regression: the desktop master-detail shell renders SessionBody but previously

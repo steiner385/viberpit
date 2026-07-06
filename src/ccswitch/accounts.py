@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
-from . import ledger, oauth, paths
+from . import copilot, ledger, oauth, paths
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .selector import Picked, select_picked
@@ -38,6 +38,39 @@ def set_auth_failure_sink(fn: "Callable[[AuthFailure], None] | None") -> None:
     """
     global _auth_failure_sink
     _auth_failure_sink = fn
+
+
+_copilot_usage_reader: Callable[[str], "dict | None"] | None = None
+
+
+def set_copilot_usage_reader(fn: "Callable[[str], dict | None] | None") -> None:
+    """Register (or clear) the reader that fetches the proxy /usage payload for a copilot account.
+
+    The core stays transport-free: the daemon registers a reader at startup. When
+    unset (CLI usage) copilot usage_for returns None.
+    """
+    global _copilot_usage_reader
+    _copilot_usage_reader = fn
+
+
+def _copilot_usage_for(name: str) -> "oauth.Usage | None":
+    reader = _copilot_usage_reader
+    if reader is None:
+        return None
+    try:
+        payload = reader(name)
+    except Exception:
+        log.warning("copilot usage read failed for %s", name, exc_info=True)
+        return None
+    if payload is None:
+        return None
+    now = datetime.now(timezone.utc)
+    u = copilot.usage_from_proxy(payload, now)
+    if u is not None:
+        with ledger.locked_ledger() as led:
+            ledger.record_usage(led, name, u, now)
+            ledger.set_status(led, name, "ok")
+    return u
 
 
 def emit_auth_failure(f: AuthFailure) -> None:
@@ -96,11 +129,25 @@ def _refresh_guard(name: str):
             os.close(fd)
 
 
-def _account_names() -> list[str]:
+def _anthropic_account_names() -> list[str]:
     d = paths.store_dir()
     if not d.exists():
         return []
     return sorted(p.name[: -len(".cred.json")] for p in d.glob("*.cred.json"))
+
+
+def provider_of(name: str) -> str:
+    return copilot.PROVIDER if paths.copilot_token_dir(name).exists() else "anthropic"
+
+
+def all_accounts() -> list[tuple[str, str]]:
+    out = [(n, "anthropic") for n in _anthropic_account_names()]
+    out += [(n, copilot.PROVIDER) for n in copilot.copilot_account_names()]
+    return out
+
+
+def _account_names() -> list[str]:
+    return sorted({n for n, _ in all_accounts()})
 
 
 def _is_fresh(blob: dict, cfg: Config) -> bool:
@@ -210,6 +257,8 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             refreshing and WITHOUT marking needs-reauth (the live SDK owns the
             token family and will refresh on its next request).
     """
+    if provider_of(name) == copilot.PROVIDER:
+        return _copilot_usage_for(name)
     cfg = load_config()
     retry_kw = {"max_retries": cfg.retry_max_retries, "max_total_sec": cfg.retry_max_total_sec}
     now = datetime.now(timezone.utc)
@@ -361,6 +410,9 @@ def remove_account(name: str) -> None:
     cfg_dir = paths.account_cfg_dir(name)
     if cfg_dir.exists():
         shutil.rmtree(cfg_dir)
+    ct = paths.copilot_token_dir(name)
+    if ct.exists():
+        shutil.rmtree(ct)
 
 
 def list_accounts() -> list[dict]:
@@ -373,6 +425,7 @@ def list_accounts() -> list[dict]:
                 "status": acct.get("status", "unknown"),
                 "usage": acct.get("usage"),
                 "nickname": acct.get("nickname"),
+                "provider": provider_of(name),
             })
     return out
 
