@@ -140,7 +140,6 @@ def test_completed_backlog_archive_context_includes_pr_state_with_pr():
     """When a PR exists on the branch, archive_context pr_state reflects it."""
     import types
     async def run():
-        from server.automations.completion_bar import PrFact
         rec = _rec("s1")
         # Build a minimal PullRequestInfo-like object that _autopilot_pr_facts can use
         pr_info = types.SimpleNamespace(
