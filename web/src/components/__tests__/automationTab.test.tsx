@@ -39,6 +39,9 @@ vi.mock('@/api/hooks', () => ({
   useStageModels: vi.fn(() => ({ data: {} })),
   useSessionsViewing: vi.fn(),
   useAutomations: vi.fn(() => ({ data: [], isLoading: false })),
+  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   QK: {
     accounts: ['accounts'],
     sessions: ['sessions'],

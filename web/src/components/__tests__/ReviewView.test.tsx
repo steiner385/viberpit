@@ -20,6 +20,9 @@ vi.mock('@/api/hooks', () => ({
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessionTranscript: vi.fn(),
   useSessionsViewing: vi.fn(),
+  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 vi.mock('@/api/transcript', () => ({

@@ -9,7 +9,12 @@ const toastWarning = vi.fn()
 vi.mock('sonner', () => ({ toast: { warning: (...a: unknown[]) => toastWarning(...a) } }))
 
 const mockHealth = vi.fn<() => { data: DaemonHealth | undefined }>()
-vi.mock('@/api/hooks', () => ({ useDaemonHealth: () => mockHealth() }))
+vi.mock('@/api/hooks', () => ({
+  useDaemonHealth: () => mockHealth(),
+  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+}))
 
 function renderIndicator() {
   const qc = new QueryClient()

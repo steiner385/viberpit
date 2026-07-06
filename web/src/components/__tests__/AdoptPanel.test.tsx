@@ -9,6 +9,9 @@ vi.mock('@/api/hooks', () => ({
   useAdoptable: vi.fn(),
   useAdoptSession: vi.fn(),
   useSessionsViewing: vi.fn(),
+  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 function cand(overrides: Partial<AdoptionCandidate> = {}): AdoptionCandidate {

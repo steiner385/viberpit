@@ -21,6 +21,9 @@ vi.mock('@/api/hooks', () => ({
   useAccounts: () => ({ data: [] }),
   useSettings: () => ({ data: { defaultToolDetail: 'auto', thinkingCollapsed: true } }),
   useSessionsViewing: vi.fn(),
+  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   QK: {},
 }))
 

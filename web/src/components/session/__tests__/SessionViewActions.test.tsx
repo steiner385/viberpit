@@ -46,6 +46,9 @@ vi.mock('@/api/hooks', () => ({
   // useSessionNeighbors (added in mobile nav feature) calls useSessions internally.
   // Return an empty list so the chevrons stay hidden in these header-focused tests.
   useSessions: vi.fn(() => ({ data: [], isLoading: false })),
+  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 function successMutation() {
