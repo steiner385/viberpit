@@ -65,6 +65,27 @@ describe('SessionSocket catch-up cursor on reconnect re-attach', () => {
   })
 })
 
+describe('SessionSocket attach frame carries sinceEpoch alongside the cursor (#497)', () => {
+  it('includes sinceEpoch when the cursor was minted under a known epoch', () => {
+    const { s, socket } = makeSocket()
+    // replayComplete carrying an epoch establishes both the contiguity baseline and the epoch.
+    s._handleInbound({ type: 'batch', events: [{ type: 'replayComplete', sessionId: 's1', epoch: 'E7' }] })
+    s._handleInbound({ type: 'batch', events: [{ type: 'textDelta', turnId: 't', text: 'a', seq: 0, sessionId: 's1', srcSeq: 7 }] })
+    const frame = (socket as unknown as { _attachFrame: (sid: string) => object })._attachFrame('s1')
+    expect(frame).toEqual({ type: 'attach', sessionId: 's1', sinceSrcSeq: 7, sinceEpoch: 'E7' })
+  })
+
+  it('omits sinceEpoch (but keeps the cursor) when no epoch was carried', () => {
+    const { s, socket } = makeSocket()
+    // An old server / local mode: replayComplete without an epoch → contiguity but no epoch.
+    s._handleInbound({ type: 'batch', events: [{ type: 'replayComplete', sessionId: 's1' }] })
+    s._handleInbound({ type: 'batch', events: [{ type: 'textDelta', turnId: 't', text: 'a', seq: 0, sessionId: 's1', srcSeq: 3 }] })
+    const frame = (socket as unknown as { _attachFrame: (sid: string) => object })._attachFrame('s1')
+    expect(frame).toEqual({ type: 'attach', sessionId: 's1', sinceSrcSeq: 3 })
+    expect(frame).not.toHaveProperty('sinceEpoch')
+  })
+})
+
 describe('resumeOk preserves the transcript (no replayReset dispatch)', () => {
   it('does not fan out a replayReset or the resumeOk itself, only the live tail', () => {
     const { s, socket } = makeSocket()

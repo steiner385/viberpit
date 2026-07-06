@@ -303,6 +303,15 @@ class RemoteOrchestrator:
         r = await self._client.call("send_prompt", session_id=session_id, text=text, images=images)
         return (r or {}).get("status")
 
+    def daemon_epoch(self) -> str | None:
+        """The daemon's current process epoch, or ``None`` if the edge hasn't reached
+        ``/info`` yet. Sync (a cached-field read via DaemonClient.epoch — no RPC). ws.py's
+        cursor catch-up reads it to reject a stale cross-epoch ``sinceEpoch`` after a daemon
+        restart (#497). The epoch gate is deliberately an EDGE concern: the edge already
+        tracks the daemon epoch cheaply here, so it is NOT threaded through the
+        ring_covers/ring_tail RPCs."""
+        return self._client.epoch
+
     async def ring_covers(self, session_id: str, since: int | None) -> bool:
         """Ask the daemon whether its replay ring can resume ``session_id`` from ``since``
         (the browser's contiguous srcSeq cursor) with no GAP — the wave-3 cursor-catchup

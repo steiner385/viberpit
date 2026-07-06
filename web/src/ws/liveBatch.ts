@@ -15,10 +15,19 @@ export interface GapState {
   lastSeq: Map<string, number>
   lastSrcSeq: Map<string, number>
   srcContiguous: Map<string, boolean>
+  /** The daemon epoch that minted the current `lastSrcSeq` cursor (#497), taken from the
+   *  `epoch` field on the resumeOk/replayComplete that established it. Sent back as
+   *  `sinceEpoch` alongside `sinceSrcSeq` so the server can reject a cursor from a previous
+   *  daemon epoch (a restart resets the srcSeq space to 0) and force a full replay. Absent
+   *  ⇒ no epoch known ⇒ server full-replays (conservative). Pairs with `lastSrcSeq`. */
+  srcEpoch: Map<string, string>
 }
 
 export function createGapState(): GapState {
-  return { lastSeq: new Map(), lastSrcSeq: new Map(), srcContiguous: new Map() }
+  return {
+    lastSeq: new Map(), lastSrcSeq: new Map(), srcContiguous: new Map(),
+    srcEpoch: new Map(),
+  }
 }
 
 /** Clear the per-attach + source-seq BASELINES for a session — called on replayReset
@@ -30,6 +39,10 @@ export function createGapState(): GapState {
 export function resetSeq(state: GapState, sessionId: string): void {
   state.lastSeq.delete(sessionId)
   state.lastSrcSeq.delete(sessionId)
+  // srcEpoch pairs with lastSrcSeq (it is that cursor's minting epoch), so clear it on the
+  // same baseline reset (#497). The resumeOk/replayComplete that drives the reset re-sets it
+  // from its own `epoch` field immediately after, so the current epoch is never lost.
+  state.srcEpoch.delete(sessionId)
 }
 
 /** Invalidate the catch-up cursor for a session on a FRESH user-initiated attach.
@@ -45,6 +58,9 @@ export function resetSeq(state: GapState, sessionId: string): void {
 export function invalidateCatchUp(state: GapState, sessionId: string): void {
   state.lastSrcSeq.delete(sessionId)
   state.srcContiguous.delete(sessionId)
+  // Drop the cursor's minting epoch too (#497) — a stale epoch would otherwise be sent as
+  // sinceEpoch on the reopen re-attach; clearing it forces the full-replay default.
+  state.srcEpoch.delete(sessionId)
 }
 
 /** The srcSeq cursor to send as `sinceSrcSeq` on a heal / reconnect re-attach, or null
@@ -58,13 +74,22 @@ export function catchUpCursor(state: GapState, sessionId: string): number | null
   return typeof last === 'number' ? last : null
 }
 
+/** The daemon epoch that minted the current catch-up cursor (#497), to send as `sinceEpoch`
+ *  alongside `sinceSrcSeq`. Null when unknown — no `epoch` was carried on the frame that
+ *  established the cursor (e.g. local/in-process mode), in which case the server rejects the
+ *  cursor and full-replays. Only meaningful together with a non-null `catchUpCursor`. */
+export function catchUpEpoch(state: GapState, sessionId: string): string | null {
+  const e = state.srcEpoch.get(sessionId)
+  return typeof e === 'string' ? e : null
+}
+
 /** A non-contiguous daemon source seq observed on the live stream — pure telemetry
  *  (audit W2.3), surfaced for the caller to log; it never affects dispatch/heal. */
 export interface SrcSeqGap { sessionId: string; prev: number; got: number }
 
 // `seq` is the per-attach dedup/heal key; `srcSeq` is the daemon's additive
 // end-to-end source seq (loss telemetry only — see GapState).
-interface WireMeta { seq?: number; sessionId?: string; srcSeq?: number }
+interface WireMeta { seq?: number; sessionId?: string; srcSeq?: number; epoch?: string }
 
 /**
  * Filter a live batch to the active session and detect a sequence gap.
@@ -130,6 +155,10 @@ export function handleLiveBatch(
       if (sid) {
         resetSeq(state, sid)
         state.srcContiguous.set(sid, true)
+        // Re-anchor the cursor's epoch to the one the server resumed us under (#497). The
+        // resetSeq above cleared it; set it fresh (or leave cleared when no epoch is carried
+        // — an old server / local mode — so the next cursor is sent without a stale epoch).
+        if (typeof meta.epoch === 'string') state.srcEpoch.set(sid, meta.epoch)
       }
       continue
     }
@@ -138,7 +167,14 @@ export function handleLiveBatch(
     // dispatched below — the reducer needs it to clear `replaying`.)
     if (etype === 'replayComplete') {
       const sid = meta.sessionId ?? activeSessionId
-      if (sid) state.srcContiguous.set(sid, true)
+      if (sid) {
+        state.srcContiguous.set(sid, true)
+        // Remember the epoch this fresh baseline was minted under (#497) so a later
+        // heal/reconnect echoes it as sinceEpoch. Absent (local mode / old server) ⇒ clear
+        // it, so the cursor is sent without an epoch and the server full-replays.
+        if (typeof meta.epoch === 'string') state.srcEpoch.set(sid, meta.epoch)
+        else state.srcEpoch.delete(sid)
+      }
     }
     // Drop events explicitly owned by a different session.
     if (meta.sessionId && activeSessionId && meta.sessionId !== activeSessionId) continue

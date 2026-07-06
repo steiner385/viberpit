@@ -3,7 +3,7 @@
 // WS-client layer. catchUpCursor(state, sid) returns the srcSeq to send as `sinceSrcSeq`
 // ONLY when the source stream has stayed contiguous since the last replayComplete/resumeOk.
 import { describe, it, expect } from 'vitest'
-import { createGapState, handleLiveBatch, catchUpCursor, invalidateCatchUp } from './liveBatch'
+import { createGapState, handleLiveBatch, catchUpCursor, catchUpEpoch, invalidateCatchUp } from './liveBatch'
 import type { SessionEvent } from '@/session/events'
 
 const ev = (over: Record<string, unknown>): SessionEvent =>
@@ -110,5 +110,54 @@ describe('resumeOk handling', () => {
       { activeSessionId: 's1', state },
     )
     expect(catchUpCursor(state, 's1')).toBe(13)
+  })
+})
+
+describe('catchUpEpoch / srcEpoch (#497)', () => {
+  it('is null before any baseline carries an epoch', () => {
+    const state = createGapState()
+    handleLiveBatch([frame('replayComplete', { sessionId: 's1' })], { activeSessionId: 's1', state })
+    expect(catchUpEpoch(state, 's1')).toBeNull()
+  })
+
+  it('replayComplete records its epoch for the session', () => {
+    const state = createGapState()
+    handleLiveBatch([frame('replayComplete', { sessionId: 's1', epoch: 'E1' })], { activeSessionId: 's1', state })
+    expect(catchUpEpoch(state, 's1')).toBe('E1')
+  })
+
+  it('resumeOk records its epoch (re-anchored after the reset)', () => {
+    const state = createGapState()
+    handleLiveBatch(
+      [frame('resumeOk', { sessionId: 's1', epoch: 'E2' }), ev({ seq: 0, sessionId: 's1', srcSeq: 5 })],
+      { activeSessionId: 's1', state },
+    )
+    expect(catchUpEpoch(state, 's1')).toBe('E2')
+    expect(catchUpCursor(state, 's1')).toBe(5)
+  })
+
+  it('replayComplete WITHOUT an epoch clears any stale epoch (local mode / old server)', () => {
+    const state = createGapState()
+    handleLiveBatch([frame('replayComplete', { sessionId: 's1', epoch: 'E1' })], { activeSessionId: 's1', state })
+    expect(catchUpEpoch(state, 's1')).toBe('E1')
+    handleLiveBatch([frame('replayComplete', { sessionId: 's1' })], { activeSessionId: 's1', state })
+    expect(catchUpEpoch(state, 's1')).toBeNull()
+  })
+
+  it('invalidateCatchUp clears the remembered epoch too', () => {
+    const state = createGapState()
+    handleLiveBatch([frame('replayComplete', { sessionId: 's1', epoch: 'E1' })], { activeSessionId: 's1', state })
+    handleLiveBatch([ev({ seq: 0, sessionId: 's1', srcSeq: 5 })], { activeSessionId: 's1', state })
+    invalidateCatchUp(state, 's1')
+    expect(catchUpEpoch(state, 's1')).toBeNull()
+    expect(state.srcEpoch.has('s1')).toBe(false)
+  })
+
+  it('replayReset clears the remembered epoch (a full replay is starting)', () => {
+    const state = createGapState()
+    handleLiveBatch([frame('replayComplete', { sessionId: 's1', epoch: 'E1' })], { activeSessionId: 's1', state })
+    expect(catchUpEpoch(state, 's1')).toBe('E1')
+    handleLiveBatch([frame('replayReset', { sessionId: 's1' })], { activeSessionId: 's1', state })
+    expect(catchUpEpoch(state, 's1')).toBeNull()
   })
 })

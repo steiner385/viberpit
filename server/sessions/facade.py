@@ -33,6 +33,10 @@ class InProcessOrchestratorAdapter:
     # reaching the ring_tail commit-time fetch — this exists for interface parity with the
     # remote orchestrator (and to keep the union type honest) and reports not-covered too.
     async def ring_tail(self, session_id, since): return {"covered": False, "events": [], "head": -1}
+    # Local/in-process mode has no session daemon, so there is no process epoch to tag a
+    # catch-up cursor with. None here means ws.py's epoch gate never matches → full replay,
+    # which is moot anyway since ring_covers is a constant False (#497).
+    def daemon_epoch(self): return None
     async def archive_session(self, *a, **k): return await _maybe_await(self._orch.archive_session(*a, **k))
     async def unarchive(self, *a, **k): return await _maybe_await(self._orch.unarchive(*a, **k))
     async def permanent_delete(self, *a, **k): return await _maybe_await(self._orch.permanent_delete(*a, **k))
