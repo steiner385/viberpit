@@ -49,3 +49,16 @@ def _parse_iso(s) -> datetime | None:
         return datetime.fromisoformat(s)
     except ValueError:
         return None
+
+
+def launch_env(port: int, secret: str) -> dict[str, str]:
+    """Env that makes claude route through the per-account proxy instead of OAuth.
+
+    ENABLE_TOOL_SEARCH is set because claude disables MCP tool search by default for a
+    non-first-party ANTHROPIC_BASE_URL.
+    """
+    return {
+        "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{port}",
+        "ANTHROPIC_AUTH_TOKEN": secret,
+        "ENABLE_TOOL_SEARCH": "true",
+    }
