@@ -19,11 +19,15 @@ import type { SessionEvent } from '@/session/events'
 
 let capturedHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
 
-const mockPermissionResponse = vi.fn()
-const mockAnswerQuestion = vi.fn()
+// These control-frame mocks return true: they stand in for an OPEN socket where the
+// frame is written successfully, so the optimistic dispatch (resolve card / apply mode)
+// fires. On a closed socket the real methods return false and the optimistic step is
+// gated off (see #505). mockClear() in beforeEach keeps this return value.
+const mockPermissionResponse = vi.fn().mockReturnValue(true)
+const mockAnswerQuestion = vi.fn().mockReturnValue(true)
 const mockPrompt = vi.fn()
 const mockSendInterrupt = vi.fn()
-const mockSetPermissionMode = vi.fn()
+const mockSetPermissionMode = vi.fn().mockReturnValue(true)
 const mockAttach = vi.fn()
 const mockDetach = vi.fn()
 const mockOff = vi.fn()

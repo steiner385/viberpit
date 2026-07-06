@@ -201,8 +201,8 @@ export class SessionSocket {
     this._send({ type: 'detach', sessionId })
   }
 
-  interrupt(sessionId: string) {
-    this._send({ type: 'interrupt', sessionId })
+  interrupt(sessionId: string): boolean {
+    return this._sendControl({ type: 'interrupt', sessionId })
   }
 
   prompt(sessionId: string, text: string, attachmentIds?: string[]) {
@@ -216,29 +216,32 @@ export class SessionSocket {
     this._send({ type: 'prompt', sessionId, text, ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}) })
   }
 
-  sendInterrupt(sessionId: string) {
-    this._send({ type: 'interrupt', sessionId })
+  sendInterrupt(sessionId: string): boolean {
+    return this._sendControl({ type: 'interrupt', sessionId })
   }
 
-  permissionResponse(sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') {
-    this._send({ type: 'permissionResponse', sessionId, permId, decision })
+  permissionResponse(sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always'): boolean {
+    return this._sendControl({ type: 'permissionResponse', sessionId, permId, decision })
   }
 
-  /** Returns true if the answer was actually written to an open socket. */
+  /** Returns true if the answer was actually written to an open socket. When the
+   *  socket is closed it is REJECTED (returns false + emits NOT_CONNECTED) — the
+   *  answer is NOT buffered for late replay, because a stale answer can be reconciled
+   *  onto the wrong live question (see #505 and useSessionRuntime.onAnswer). */
   answerQuestion(sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option'): boolean {
-    return this._send({ type: 'answerQuestion', sessionId, questionId, selected, mode })
+    return this._sendControl({ type: 'answerQuestion', sessionId, questionId, selected, mode })
   }
 
-  setPermissionMode(sessionId: string, mode: string) {
-    this._send({ type: 'setPermissionMode', sessionId, mode })
+  setPermissionMode(sessionId: string, mode: string): boolean {
+    return this._sendControl({ type: 'setPermissionMode', sessionId, mode })
   }
 
-  cancelQueued(sessionId: string, index: number) {
-    this._send({ type: 'cancelQueued', sessionId, index })
+  cancelQueued(sessionId: string, index: number): boolean {
+    return this._sendControl({ type: 'cancelQueued', sessionId, index })
   }
 
-  command(sessionId: string, name: string, args: string) {
-    this._send({ type: 'command', sessionId, name, args })
+  command(sessionId: string, name: string, args: string): boolean {
+    return this._sendControl({ type: 'command', sessionId, name, args })
   }
 
   // ── Event emitter ───────────────────────────────────────────────────────────
@@ -292,6 +295,25 @@ export class SessionSocket {
       this.ws.send(JSON.stringify(msg))
       return true
     }
+    return false
+  }
+
+  /** Send a CONTROL frame (interrupt, permission response, answer, set-mode, cancel,
+   *  command). Unlike attach/detach/prompt — which self-heal via re-attach or the
+   *  prompt queue — these frames are NOT safe to buffer-and-replay late: the server
+   *  handlers are not id-idempotent against a changed live state (an interrupt is not
+   *  id-scoped and would kill a fresh turn; cancelQueued is index-addressed; a stale
+   *  answer can be reconciled onto the wrong pending question). So when the socket is
+   *  closed we REJECT with a visible error instead of silently dropping the frame —
+   *  the single closed-socket handling point for every control method (#505). Mirrors
+   *  the PENDING_BUFFER_FULL emit so the reducer renders one consistent error surface. */
+  private _sendControl(msg: object): boolean {
+    if (this._send(msg)) return true
+    this._emit('error', {
+      type: 'error',
+      code: 'NOT_CONNECTED',
+      message: 'Not connected — action not sent. Reconnect and try again.',
+    })
     return false
   }
 

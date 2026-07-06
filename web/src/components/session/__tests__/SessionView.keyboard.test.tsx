@@ -17,7 +17,9 @@ import { SessionView } from '../SessionView'
 
 let capturedHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
 
-const mockSetPermissionMode = vi.fn()
+// Returns true: these mocks stand in for an OPEN socket where the control frame is
+// written successfully, so the optimistic mode change is applied (see #505 gating).
+const mockSetPermissionMode = vi.fn().mockReturnValue(true)
 const mockAttach = vi.fn()
 const mockDetach = vi.fn()
 const mockOff = vi.fn()
