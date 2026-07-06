@@ -114,7 +114,7 @@ def all_accounts() -> list[tuple[str, str]]:
 
 
 def _account_names() -> list[str]:
-    return sorted(n for n, _ in all_accounts())
+    return sorted({n for n, _ in all_accounts()})
 
 
 def _is_fresh(blob: dict, cfg: Config) -> bool:

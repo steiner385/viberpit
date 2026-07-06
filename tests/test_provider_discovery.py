@@ -18,3 +18,17 @@ def test_union_discovery_and_provider_of(tmp_path, monkeypatch):
     assert accounts.provider_of("work") == "anthropic"
     assert accounts.provider_of("copilot1") == "copilot"
     assert accounts.all_accounts() == [("work", "anthropic"), ("copilot1", "copilot")]
+
+
+def test_account_names_dedupes_across_providers(tmp_path, monkeypatch):
+    """Regression: _account_names() must return a sorted UNION (deduplicated names) across providers."""
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))  # paths.root() honors this
+    # Create both an anthropic slot and a copilot token-dir with the SAME name
+    _mk_anthropic(tmp_path, "dup")
+    _mk_copilot("dup")
+    # Verify all_accounts() yields the name twice (once per provider)
+    assert accounts.all_accounts() == [("dup", "anthropic"), ("dup", "copilot")]
+    # Verify _account_names() dedupes: "dup" appears exactly once
+    names = accounts._account_names()
+    assert names.count("dup") == 1
+    assert names == ["dup"]
