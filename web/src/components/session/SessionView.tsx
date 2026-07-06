@@ -135,11 +135,15 @@ export function SessionView({ sessionId, onBack, onDone, onNavigateSession, init
         greedy `flex-1` title use the whole width instead of collapsing to an
         ellipsis on a narrow phone.
       */}
-      <div className={cn(
-        'flex items-center gap-3 px-3 py-2',
-        'bg-gray-900 border-b border-gray-700',
-        'flex-shrink-0',
-      )}>
+      {/* paddingTop pushes content below the iOS status bar; env() is 0 on desktop. */}
+      <div
+        className={cn(
+          'flex items-center gap-3 px-3 pb-2',
+          'bg-gray-900 border-b border-gray-700',
+          'flex-shrink-0',
+        )}
+        style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.5rem)' }}
+      >
         <button
           type="button"
           onClick={handleBack}

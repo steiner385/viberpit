@@ -243,10 +243,12 @@ export function DispatchBar({
   return (
     <div
       className={cn(
-        'flex flex-col gap-2 px-3 py-2',
+        'flex flex-col gap-2 px-3 pt-2',
         'border-t border-gray-200 dark:border-gray-700',
         'bg-white dark:bg-gray-900',
       )}
+      // Clear the mobile gesture/home bar, same as Composer. env() is 0 on desktop.
+      style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.5rem)' }}
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
     >
