@@ -52,6 +52,48 @@ async def test_since_anchor_skips_already_seen():
     assert frame["seq"] == 2
 
 
+@pytest.mark.parametrize("ring_env", [None, "16384"])
+def test_send_queue_is_never_smaller_than_the_ring(monkeypatch, ring_env):
+    """Invariant: a full ring replay must fit in a per-connection send queue.
+
+    If `_sendq_max` < `_maxlen`, a fresh subscribe to a stream deeper than the queue
+    overflows the (synchronously-filled) queue → drop_subscriber closes the socket →
+    the edge reconnects and re-replays forever (a storm that starves live forwarding).
+    Floor the queue above the ring so the coupling can't regress again (a raised ring
+    default must drag the queue up with it).
+    """
+    if ring_env is not None:
+        monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", ring_env)
+    # Even an explicit tiny env override must not drop below the ring.
+    monkeypatch.setenv("CCSWITCH_IPC_SEND_QUEUE", "8")
+    app = create_daemon_app()
+    assert app.state.sendq_max >= app.state.replay_maxlen
+
+
+@pytest.mark.asyncio
+async def test_full_ring_replay_delivers_every_event_without_dropping(monkeypatch):
+    """Regression for the reconnect-storm: subscribing to a stream whose ring holds more
+    events than the configured send queue must still deliver EVERY replayed event and keep
+    the connection open. Before the fix, a ring deeper than the 1024-slot queue overflowed
+    on replay, dropped the subscriber, and closed the socket — the edge then reconnected
+    and re-replayed indefinitely, so no live event ever got through.
+    """
+    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "50")  # ring holds 50
+    monkeypatch.setenv("CCSWITCH_IPC_SEND_QUEUE", "8")      # < ring: pre-fix, replay overflows
+    app = create_daemon_app()
+    async with serve_daemon_uds(app) as sock:
+        for i in range(50):
+            await app.state.publish("s1", {"type": str(i)})  # seq 0..49, fills the ring
+        async with websockets.unix_connect(sock, "ws://daemon/events") as ws:
+            await ws.send(json.dumps(proto.subscribe_frame("s1", since=-1)))
+            frames = await _collect(ws, 50)  # must receive ALL 50 (times out if dropped)
+            # Connection must still be live: a post-subscribe event is delivered too.
+            await app.state.publish("s1", {"type": "live"})  # seq 50
+            live = json.loads(await asyncio.wait_for(ws.recv(), 2))
+    assert [f["seq"] for f in frames] == list(range(50))
+    assert live["event"]["type"] == "live" and live["seq"] == 50
+
+
 @pytest.mark.asyncio
 async def test_buffer_is_bounded(monkeypatch):
     monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "4")
