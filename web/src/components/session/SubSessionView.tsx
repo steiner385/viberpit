@@ -26,8 +26,12 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
-      <header className={cn('flex items-center gap-3 p-3 border-b',
-        'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800')}>
+      {/* paddingTop pushes content below the iOS status bar; env() is 0 on desktop. */}
+      <header
+        className={cn('flex items-center gap-3 px-3 pb-3 border-b',
+          'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800')}
+        style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.75rem)' }}
+      >
         <button type="button" onClick={onBack} aria-label="Back to session"
           className={cn('rounded px-3 py-1.5 text-sm font-medium min-h-[44px]',
             'border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300',
@@ -50,7 +54,8 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
         </nav>
         <span className="ml-auto text-xs text-gray-400 italic">Read-only sub-agent</span>
       </header>
-      <main className="flex-1 overflow-hidden flex flex-col">
+      {/* paddingBottom keeps last item above the home indicator; env() is 0 on desktop. */}
+      <main className="flex-1 overflow-hidden flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
         {turns.length === 0 ? (
           <div className="flex-1 flex items-center justify-center">
             <p className="text-sm text-gray-500 dark:text-gray-400">

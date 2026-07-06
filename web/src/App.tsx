@@ -25,7 +25,8 @@ function DashboardRoute({ tab }: { tab: TabId }) {
   const dialog = rawDialog === 'new' || rawDialog === 'settings' ? rawDialog : null
   return (
     <div className="h-dvh flex flex-col overflow-hidden bg-background text-foreground">
-      <header className="shrink-0 p-4 border-b border-border">
+      {/* paddingTop pushes content below the iOS status bar; env() is 0 on desktop. */}
+      <header className="shrink-0 px-4 pb-4 border-b border-border" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1rem)' }}>
         <h1 className="text-2xl font-bold tracking-tight">ccswitch</h1>
       </header>
       <main className="flex-1 min-h-0 flex flex-col px-4">

@@ -58,11 +58,15 @@ export function ReviewView({ sessionId, onBack }: Props) {
   return (
     <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
       {/* Header */}
-      <header className={cn(
-        'flex items-center gap-3 p-3 border-b',
-        'border-gray-200 dark:border-gray-700',
-        'bg-white dark:bg-gray-800',
-      )}>
+      {/* paddingTop pushes content below the iOS status bar; env() is 0 on desktop. */}
+      <header
+        className={cn(
+          'flex items-center gap-3 px-3 pb-3 border-b',
+          'border-gray-200 dark:border-gray-700',
+          'bg-white dark:bg-gray-800',
+        )}
+        style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.75rem)' }}
+      >
         <button
           type="button"
           onClick={onBack}
@@ -83,7 +87,8 @@ export function ReviewView({ sessionId, onBack }: Props) {
       </header>
 
       {/* Transcript area */}
-      <main className="flex-1 overflow-hidden flex flex-col">
+      {/* paddingBottom keeps last item above the home indicator; env() is 0 on desktop. */}
+      <main className="flex-1 overflow-hidden flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
         {isLoading ? (
           <div className="flex-1 flex items-center justify-center">
             <p className="text-sm text-gray-500 dark:text-gray-400">Loading transcript…</p>
