@@ -40,6 +40,39 @@ def set_auth_failure_sink(fn: "Callable[[AuthFailure], None] | None") -> None:
     _auth_failure_sink = fn
 
 
+_copilot_usage_reader: Callable[[str], "dict | None"] | None = None
+
+
+def set_copilot_usage_reader(fn: "Callable[[str], dict | None] | None") -> None:
+    """Register (or clear) the reader that fetches the proxy /usage payload for a copilot account.
+
+    The core stays transport-free: the daemon registers a reader at startup. When
+    unset (CLI usage) copilot usage_for returns None.
+    """
+    global _copilot_usage_reader
+    _copilot_usage_reader = fn
+
+
+def _copilot_usage_for(name: str) -> "oauth.Usage | None":
+    reader = _copilot_usage_reader
+    if reader is None:
+        return None
+    try:
+        payload = reader(name)
+    except Exception:
+        log.warning("copilot usage read failed for %s", name, exc_info=True)
+        return None
+    if payload is None:
+        return None
+    now = datetime.now(timezone.utc)
+    u = copilot.usage_from_proxy(payload, now)
+    if u is not None:
+        with ledger.locked_ledger() as led:
+            ledger.record_usage(led, name, u, now)
+            ledger.set_status(led, name, "ok")
+    return u
+
+
 def emit_auth_failure(f: AuthFailure) -> None:
     sink = _auth_failure_sink
     if sink is None:
@@ -224,6 +257,8 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             refreshing and WITHOUT marking needs-reauth (the live SDK owns the
             token family and will refresh on its next request).
     """
+    if provider_of(name) == copilot.PROVIDER:
+        return _copilot_usage_for(name)
     cfg = load_config()
     retry_kw = {"max_retries": cfg.retry_max_retries, "max_total_sec": cfg.retry_max_total_sec}
     now = datetime.now(timezone.utc)
@@ -375,6 +410,9 @@ def remove_account(name: str) -> None:
     cfg_dir = paths.account_cfg_dir(name)
     if cfg_dir.exists():
         shutil.rmtree(cfg_dir)
+    ct = paths.copilot_token_dir(name)
+    if ct.exists():
+        shutil.rmtree(ct)
 
 
 def list_accounts() -> list[dict]:
@@ -387,6 +425,7 @@ def list_accounts() -> list[dict]:
                 "status": acct.get("status", "unknown"),
                 "usage": acct.get("usage"),
                 "nickname": acct.get("nickname"),
+                "provider": provider_of(name),
             })
     return out
 
