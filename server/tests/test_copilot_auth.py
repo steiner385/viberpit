@@ -131,8 +131,8 @@ async def test_state_machine_pending_to_authorized():
 
         assert result["state"] == "pending"
 
-        # Give the background reader enough time to consume both lines
-        await asyncio.sleep(0.1)
+        # Wait deterministically for the reader task to finish
+        await asyncio.wait_for(manager._states["myaccount"]._task, timeout=2.0)
 
         final = manager.status("myaccount")
         assert final["state"] == "authorized"
@@ -157,7 +157,8 @@ async def test_state_machine_failed_when_no_credentials():
         with patch("server.sessions.copilot_proxy.resolve_copilot_proxy", return_value="/usr/bin/copilot2api"):
             await manager.start("myaccount")
 
-        await asyncio.sleep(0.05)
+        # Wait deterministically for the reader task to finish
+        await asyncio.wait_for(manager._states["myaccount"]._task, timeout=2.0)
 
         final = manager.status("myaccount")
         assert final["state"] == "failed"
@@ -191,7 +192,8 @@ async def test_cancel_resets_state():
         with patch("server.sessions.copilot_proxy.resolve_copilot_proxy", return_value="/usr/bin/copilot2api"):
             await manager.start("myaccount")
 
-        await asyncio.sleep(0.01)
+        # Yield to let task start before cancelling
+        await asyncio.sleep(0)
         result = await manager.cancel("myaccount")
         assert result["state"] == "pending"
 
