@@ -23,7 +23,7 @@ from typing import Any, TYPE_CHECKING
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
-from ccswitch.accounts import list_accounts, remove_account, set_nickname
+from ccswitch.accounts import list_accounts, provider_of, remove_account, set_nickname
 from ccswitch import paths
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.config import load_config
@@ -118,6 +118,7 @@ def _account_response(
         "status": status_str,
         "usage": _usage_to_dict(usage),
         "nickname": nickname,
+        "provider": provider_of(name),
         "liveSessions": live_sessions or {"active": 0, "idle": 0},
         "rank": rank,
         "rankReason": rank_reason,
@@ -143,7 +144,7 @@ def _check_name_and_slot(name: str) -> None:
     except InvalidAccountName:
         raise HTTPException(status_code=404, detail=f"Account '{name}' not found")
 
-    if not paths.slot_path(name).exists():
+    if not (paths.slot_path(name).exists() or paths.copilot_token_dir(name).exists()):
         raise HTTPException(status_code=404, detail=f"Account '{name}' not found")
 
 
