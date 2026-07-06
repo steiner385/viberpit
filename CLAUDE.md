@@ -122,3 +122,33 @@ Skill: `github-via-graphql`.
 GitHub closes a referenced issue on merge only when a closing keyword (`Fixes #N`, `Closes #N`,
 `Resolves #N`) precedes the number in the **PR body or a commit message** — a bare `(#N)` links but
 does NOT close. Put `Fixes #N` in the PR body for a full fix, `Refs #N` for a partial one.
+
+## Copilot account type
+
+ccswitch supports GitHub Copilot Pro+ accounts via the `whtsky/copilot2api` proxy binary, which
+translates Anthropic API calls into Copilot API calls. Key operational notes:
+
+**Provisioning the binary:** `CCSWITCH_ENABLE_COPILOT=true` must be set and the proxy binary must
+be installed before adding Copilot accounts.
+
+```bash
+bash scripts/fetch-copilot-proxy.sh   # installs to ~/.local/lib/ccswitch/copilot2api
+```
+
+Or point to a custom binary: `CCSWITCH_COPILOT_PROXY_BIN=/path/to/copilot2api`.
+
+**Copilot sessions behave differently from Anthropic sessions:**
+- Suggestions and auto-summaries are disabled (`_pre_record` skips `suggester`/`summarizer`).
+- `ENABLE_TOOL_SEARCH=true` is injected — Claude Code disables MCP tool search for non-first-party
+  base URLs, so this restores it for Copilot sessions.
+- Usage is reported as premium-request quota (mapped to the `Usage` dataclass via
+  `src/ccswitch/copilot.py:usage_from_proxy`), not session-reset tokens.
+- The proxy runs as a supervised subprocess per account (see `CopilotProxyManager`), health-gated
+  on `GET /usage`, with idle teardown after `CCSWITCH_COPILOT_IDLE_GRACE_S` (default 300 s).
+
+**ToS caveat:** routing Claude sessions through the Copilot API may violate GitHub's ToS or
+Anthropic's usage policies. This feature is provided for personal experimentation. Users are
+responsible for ensuring their usage complies with applicable terms.
+
+**Adding a Copilot account:** open the Add Account dialog → toggle to "GitHub Copilot" → enter a
+name → click Add → follow the device-flow code at `github.com/login/device`.
