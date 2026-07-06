@@ -43,12 +43,12 @@ def referenced_pr_numbers(goal: str, initial_prompt: str | None) -> list[int]:
 
 
 def _pr_fact_from_gh(d: dict) -> PrFact:
-    """Map one `gh pr list --json ...` row to a PrFact. gh states are UPPERCASE
-    (OPEN/MERGED/CLOSED); autoMergeRequest is non-null when auto-merge is armed.
+    """Map one GraphQL PR node to a PrFact. GraphQL states are UPPERCASE
+    (OPEN/MERGED/CLOSED); autoMergeRequest is non-null when auto-merge is armed;
+    mergeQueueEntry is non-null when the PR is enrolled in the merge queue.
 
-    Limitation: `gh pr list/view --json` does not expose mergeQueueEntry, so
-    in_merge_queue is always False here — a queued PR may be misclassified as
-    open-unarmed by the retro audit. Needs a GraphQL path (tracked on #501).
+    A queued PR (mergeQueueEntry != null) is treated as armed — in_merge_queue
+    flows into PrFact.is_armed so the retro audit matches the live autopilot gate.
     """
     state = str(d.get("state", "")).lower()
     is_draft = bool(d.get("isDraft", False))
@@ -56,6 +56,7 @@ def _pr_fact_from_gh(d: dict) -> PrFact:
         state = "draft"
     return PrFact(number=int(d.get("number", 0)), state=state, is_draft=is_draft,
                   auto_merge_enabled=d.get("autoMergeRequest") is not None,
+                  in_merge_queue=d.get("mergeQueueEntry") is not None,
                   url=str(d.get("url", "")))
 
 
@@ -169,36 +170,72 @@ def format_report(results: list[dict]) -> str:
 
 
 def _real_gh(repo: str, branch: str) -> list[dict]:
-    """`gh pr list` for one head branch, all states. Returns [] on any gh failure —
-    the caller then buckets the session ambiguous (never a false 'premature')."""
+    """GraphQL query for PRs by head branch, all states (OPEN/CLOSED/MERGED).
+    Returns [] on ANY failure (missing gh / auth / network / non-zero / JSON error /
+    GraphQL errors) — the caller then buckets the session ambiguous, never a false
+    'premature'."""
+    owner, _, name = repo.partition("/")
+    query = (
+        "query($o:String!,$n:String!,$br:String!){"
+        "repository(owner:$o,name:$n){pullRequests(headRefName:$br,first:20,"
+        "states:[OPEN,CLOSED,MERGED]){nodes{"
+        "number url state isDraft autoMergeRequest{enabledAt} mergeQueueEntry{state}}}}}"
+    )
     try:
         r = subprocess.run(
-            ["gh", "pr", "list", "--repo", repo, "--head", branch, "--state", "all",
-             "--json", "number,state,isDraft,autoMergeRequest,url"],
+            ["gh", "api", "graphql",
+             "-f", f"query={query}",
+             "-f", f"o={owner}",
+             "-f", f"n={name}",
+             "-f", f"br={branch}"],
             capture_output=True, text=True, timeout=30, check=True)
     except Exception as exc:  # gh missing / auth / network / non-zero
-        log.warning("archive_audit gh pr list failed repo=%s head=%s: %s", repo, branch, exc)
+        log.warning("archive_audit gh graphql pr list failed repo=%s head=%s: %s", repo, branch, exc)
         return []
     try:
-        return json.loads(r.stdout or "[]")
+        data = json.loads(r.stdout or "{}")
     except json.JSONDecodeError:
+        return []
+    if data.get("errors"):
+        log.warning("archive_audit gh graphql errors repo=%s head=%s: %s", repo, branch, data["errors"])
+        return []
+    try:
+        return data["data"]["repository"]["pullRequests"]["nodes"] or []
+    except (KeyError, TypeError):
         return []
 
 
 def _real_gh_num(repo: str, number: int) -> "dict | None":
-    """`gh pr view <number>` for a single PR by number. Returns None on ANY gh
-    failure (missing/auth/network/non-zero/JSON error) — never raises."""
+    """GraphQL query for a single PR by number. Returns None on ANY failure
+    (missing gh / auth / network / non-zero / JSON error / GraphQL errors /
+    PR not found) — never raises."""
+    owner, _, name = repo.partition("/")
+    query = (
+        "query($o:String!,$n:String!,$num:Int!){"
+        "repository(owner:$o,name:$n){pullRequest(number:$num){"
+        "number url state isDraft autoMergeRequest{enabledAt} mergeQueueEntry{state}}}}"
+    )
     try:
         r = subprocess.run(
-            ["gh", "pr", "view", str(number), "--repo", repo,
-             "--json", "number,state,isDraft,autoMergeRequest,url"],
+            ["gh", "api", "graphql",
+             "-f", f"query={query}",
+             "-f", f"o={owner}",
+             "-f", f"n={name}",
+             "-F", f"num={number}"],
             capture_output=True, text=True, timeout=30, check=True)
     except Exception as exc:
-        log.warning("archive_audit gh pr view failed repo=%s number=%s: %s", repo, number, exc)
+        log.warning("archive_audit gh graphql pr view failed repo=%s number=%s: %s", repo, number, exc)
         return None
     try:
-        return json.loads(r.stdout or "null")
+        data = json.loads(r.stdout or "{}")
     except json.JSONDecodeError:
+        return None
+    if data.get("errors"):
+        log.warning("archive_audit gh graphql errors repo=%s number=%s: %s", repo, number, data["errors"])
+        return None
+    try:
+        return data["data"]["repository"]["pullRequest"]  # None if PR not found
+    except (KeyError, TypeError):
         return None
 
 
