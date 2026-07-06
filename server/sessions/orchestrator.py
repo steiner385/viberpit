@@ -991,14 +991,27 @@ class SessionOrchestrator:
 
     async def _auto_archive_completed(self, session_id: str) -> None:
         """Archive a completed backlog-runner session + log it to the activity feed.
-        A failure clears the guard so a later ``complete`` emit can retry."""
+        A failure clears the guard so a later ``complete`` emit can retry.
+
+        Snapshots decision-time evidence (goal, repo, PR state) so the retro archive
+        audit can evaluate whether the archive was premature. Mirrors ``_autopilot_archive``."""
         rec = self._records.get(session_id)
-        context = {
-            "repo": getattr(rec, "repo", None) if rec is not None else None,
-            "goal": getattr(rec, "origin_ref", None) if rec is not None else None,
-            "goal_source": "backlog-runner",
-            "reason": "backlog-runner: run complete",
-        }
+        if rec is not None:
+            from server.sessions.goals import effective_goal
+            goal_text, goal_source = effective_goal(rec)
+            pr = self._autopilot_pr_facts(rec)
+            context = {
+                "repo": rec.repo, "goal": goal_text, "goal_source": goal_source,
+                "pr_state": pr.to_prompt() if pr is not None else None,
+                "reason": "backlog-runner: run complete",
+            }
+        else:
+            context = {
+                "repo": None,
+                "goal": None,
+                "goal_source": "backlog-runner",
+                "reason": "backlog-runner: run complete",
+            }
         try:
             await self.archive_session(session_id, archived_by="backlog-runner", context=context)
         except Exception:

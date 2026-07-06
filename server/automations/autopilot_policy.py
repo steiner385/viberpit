@@ -151,12 +151,15 @@ def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Dec
         return Decision(action="escalate", reason="empty nudge prompt")
     if decision.action == "complete" and ctx.pr_facts is not None:
         # Deterministic backstop the untrusted decider cannot override: an open PR
-        # that is not armed is definitionally NOT the finished state (CLAUDE.md
-        # completion workflow). Downgrade to a nudge toward arming it. The "no PR at
-        # all" case is intentionally left to the fact-fed decider (goal judgment).
+        # that is not armed AND a code goal that opened zero PRs are both definitionally
+        # NOT the finished state. Downgrade to a nudge in both cases.
+        # `not verdict.met` covers exactly two cases (per completion_bar.met_bar):
+        #   - open-unarmed PR (confidence=high) → nudge toward arming it
+        #   - code goal + repo + no PR at all (confidence=low) → nudge toward opening one
+        # The non-code/research case has met=True, so research/Q&A sessions still complete.
         from .completion_bar import met_bar
         verdict = met_bar(ctx.effective_goal, ctx.goal_source, ctx.pr_facts)
-        if not verdict.met and verdict.confidence == "high":
+        if not verdict.met:
             return Decision(action="nudge", prompt=verdict.remedy or
                             "Open a PR and arm auto-merge before finishing.",
                             reason=f"completion-gate: {verdict.reason}")

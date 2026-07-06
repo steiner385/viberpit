@@ -105,3 +105,46 @@ def test_complete_with_no_pr_facts_is_left_to_decider():
     ctx = _ctx(status="complete", stuck={"kind": "complete"})  # pr_facts defaults None
     d = post_validate(Decision(action="complete", reason="x"), ctx, CONFIG)
     assert d.action == "complete"
+
+
+# --- Part 1: code goal + no PR is also gated ---
+
+def _no_pr_code_facts():
+    """Repo-attached session with zero PRs — code goal, nothing opened."""
+    return PrFacts(has_repo=True, prs=())
+
+
+def _no_pr_no_repo_facts():
+    """Non-code / research session: no repo, no PRs."""
+    return PrFacts(has_repo=False, prs=())
+
+
+def test_complete_code_goal_no_pr_is_downgraded_to_nudge():
+    """Code goal + repo + zero PRs → completion gate nudges (new behavior)."""
+    ctx = _ctx(status="complete", stuck={"kind": "complete"},
+               repo="owner/repo",
+               effective_goal="ship the refactor",
+               goal_source="explicit",
+               pr_facts=_no_pr_code_facts())
+    d = post_validate(Decision(action="complete", reason="agent said done"), ctx, CONFIG)
+    assert d.action == "nudge"
+    assert d.prompt
+    assert d.reason and "completion-gate" in d.reason
+
+
+def test_complete_noncode_goal_no_pr_stays_complete():
+    """Research/Q&A goal + no repo → NOT gated; session may complete without a PR."""
+    ctx = _ctx(status="complete", stuck={"kind": "complete"},
+               repo=None,
+               effective_goal="investigate the flaky test",
+               goal_source="explicit",
+               pr_facts=_no_pr_no_repo_facts())
+    d = post_validate(Decision(action="complete", reason="research done"), ctx, CONFIG)
+    assert d.action == "complete"
+
+
+def test_complete_unarmed_pr_regression_guard():
+    """Regression guard: open-unarmed PR still gets nudged (pre-existing behavior)."""
+    ctx = _ctx(status="complete", stuck={"kind": "complete"}, pr_facts=_unarmed_facts())
+    d = post_validate(Decision(action="complete", reason="agent said done"), ctx, CONFIG)
+    assert d.action == "nudge" and d.prompt

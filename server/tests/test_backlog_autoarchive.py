@@ -35,6 +35,7 @@ def _orch(records):
         archived.append(session_id)
 
     orch.archive_session = _spy_archive  # type: ignore[method-assign]
+    orch.pr_for = lambda repo, branch: None  # type: ignore[method-assign]
     return orch, archived
 
 
@@ -91,6 +92,70 @@ def test_double_complete_archives_once():
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert archived == ["s1"]  # idempotent guard
+
+    asyncio.run(run())
+
+
+# --- Part 2: archive_context captures pr_state ---
+
+def _orch_with_pr(records, pr_info=None):
+    """Like _orch() but also stubs pr_for so _autopilot_pr_facts can return known data."""
+    import server.sessions.orchestrator as orch_mod
+    from server.automations.context import AutomationContext
+    orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
+    orch._records = records
+    orch._auto_archiving = set()
+    orch._backlog_ctx = AutomationContext("backlog-runner")
+
+    archived_calls: list[dict] = []
+
+    async def _spy_archive(session_id, *, archived_by="user", context=None):
+        archived_calls.append({"session_id": session_id, "archived_by": archived_by,
+                                "context": context})
+
+    orch.archive_session = _spy_archive  # type: ignore[method-assign]
+    orch.pr_for = lambda repo, branch: pr_info  # type: ignore[method-assign]
+    return orch, archived_calls
+
+
+def test_completed_backlog_archive_context_includes_pr_state_no_pr():
+    """When no PR exists, archive_context has pr_state with has_repo=True, prs=[]."""
+    async def run():
+        rec = _rec("s1")
+        # rec.repo = "o/r", rec.branch = "feat/x"
+        orch, calls = _orch_with_pr({"s1": rec}, pr_info=None)
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(calls) == 1
+        ctx = calls[0]["context"]
+        assert "pr_state" in ctx
+        assert ctx["pr_state"]["has_repo"] is True
+        assert ctx["pr_state"]["prs"] == []
+
+    asyncio.run(run())
+
+
+def test_completed_backlog_archive_context_includes_pr_state_with_pr():
+    """When a PR exists on the branch, archive_context pr_state reflects it."""
+    import types
+    async def run():
+        from server.automations.completion_bar import PrFact
+        rec = _rec("s1")
+        # Build a minimal PullRequestInfo-like object that _autopilot_pr_facts can use
+        pr_info = types.SimpleNamespace(
+            number=42, state="open", is_draft=False, auto_merge_enabled=True,
+            url="https://github.com/o/r/pull/42")
+        orch, calls = _orch_with_pr({"s1": rec}, pr_info=pr_info)
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(calls) == 1
+        ctx = calls[0]["context"]
+        assert "pr_state" in ctx
+        prs = ctx["pr_state"]["prs"]
+        assert len(prs) == 1
+        assert prs[0]["number"] == 42
 
     asyncio.run(run())
 
