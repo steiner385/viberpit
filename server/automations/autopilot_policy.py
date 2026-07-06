@@ -91,11 +91,24 @@ _HOUR = 3600.0
 
 
 def fingerprint(ctx: DecisionContext) -> str:
-    """Stable identity of a stuck state, for loop detection."""
+    """Stable identity of a stuck state, for loop detection.
+
+    A concrete interaction (pending permission / plan / question) keys the identity on
+    that payload — a genuinely new one is new information and resets the loop counter.
+
+    With NO concrete interaction, autopilot's only lever is a nudge toward the goal, so
+    the identity is the GOAL alone. The momentary ``status`` is deliberately EXCLUDED
+    here: a rejected nudge (e.g. 'Prompt is too long' on a context-exhausted session)
+    flaps the status between ticks (idle <-> needs_attention <-> working). Keying on it
+    let every flap reset ``repeat_count``, so a stuck 'keep nudging the same goal' loop
+    never tripped detection and autopilot nudged forever (prod: PR #11273, 2026-07-06).
+    Collapsing to the goal keeps ONE identity across the flapping, so the counter climbs
+    monotonically and escalation sticks."""
     s = ctx.stuck or {}
-    head = (s.get("tool_name") or s.get("question")
-            or (s.get("plan_text") or "")[:60] or s.get("kind") or "")
-    return f"{s.get('kind')}|{head}|{ctx.effective_goal}"
+    concrete = s.get("tool_name") or s.get("question") or (s.get("plan_text") or "")[:60]
+    if concrete:
+        return f"{s.get('kind')}|{concrete}|{ctx.effective_goal}"
+    return f"advance|{ctx.effective_goal}"
 
 
 def _hourly_count(ledger: dict, now: float) -> int:
