@@ -38,3 +38,58 @@ def test_round_trip_preserves_merge_fields():
     assert back.mergeable == "CONFLICTING"
     assert back.merge_state_status == "DIRTY"
     assert back.auto_merge_enabled is True
+
+
+# --- merge-queue enrollment tests ---
+
+def test_query_requests_merge_queue_entry():
+    """_PR_NODE_FIELDS must include mergeQueueEntry so both per-branch and
+    per-repo queries fetch it (they share the constant)."""
+    from server.github.pr_status import _PR_NODE_FIELDS
+    assert "mergeQueueEntry" in _PR_NODE_FIELDS
+
+
+def test_to_info_sets_in_merge_queue_true_when_present():
+    node = {"number": 7, "url": "u", "state": "OPEN", "title": "t", "isDraft": False,
+            "headRefOid": "abc", "updatedAt": "",
+            "mergeQueueEntry": {"state": "QUEUED"},
+            "commits": {"nodes": []}}
+    info = _to_info(node, {})
+    assert info.in_merge_queue is True
+
+
+def test_to_info_sets_in_merge_queue_false_when_null():
+    node = {"number": 8, "url": "u", "state": "OPEN", "title": "t", "isDraft": False,
+            "headRefOid": "", "updatedAt": "",
+            "mergeQueueEntry": None,
+            "commits": {"nodes": []}}
+    info = _to_info(node, {})
+    assert info.in_merge_queue is False
+
+
+def test_to_info_sets_in_merge_queue_false_when_absent():
+    node = {"number": 9, "url": "u", "state": "OPEN", "title": "t", "isDraft": False,
+            "headRefOid": "", "updatedAt": "", "commits": {"nodes": []}}
+    info = _to_info(node, {})
+    assert info.in_merge_queue is False
+
+
+def test_round_trip_preserves_in_merge_queue_true():
+    info = PullRequestInfo(number=10, url="u", state="open", checks="passing", title="t",
+                           in_merge_queue=True)
+    back = PullRequestInfo.from_dict(info.to_dict())
+    assert back.in_merge_queue is True
+
+
+def test_round_trip_preserves_in_merge_queue_false():
+    info = PullRequestInfo(number=11, url="u", state="open", checks="passing", title="t",
+                           in_merge_queue=False)
+    back = PullRequestInfo.from_dict(info.to_dict())
+    assert back.in_merge_queue is False
+
+
+def test_from_dict_defaults_in_merge_queue_false_when_missing():
+    """Old serialized dicts without in_merge_queue must deserialize to False."""
+    d = {"number": 12, "url": "u", "state": "open", "checks": "passing", "title": "t"}
+    info = PullRequestInfo.from_dict(d)
+    assert info.in_merge_queue is False

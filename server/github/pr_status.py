@@ -120,6 +120,7 @@ class PullRequestInfo:
     mergeable: str = "UNKNOWN"          # MERGEABLE | CONFLICTING | UNKNOWN
     merge_state_status: str = ""        # BEHIND | BLOCKED | CLEAN | DIRTY | DRAFT | UNSTABLE | UNKNOWN
     auto_merge_enabled: bool = False    # autoMergeRequest != null
+    in_merge_queue: bool = False        # mergeQueueEntry != null
 
     def to_dict(self) -> dict:
         return {
@@ -147,6 +148,7 @@ class PullRequestInfo:
             "mergeable": self.mergeable,
             "merge_state_status": self.merge_state_status,
             "auto_merge_enabled": self.auto_merge_enabled,
+            "in_merge_queue": self.in_merge_queue,
         }
 
     @classmethod
@@ -177,6 +179,7 @@ class PullRequestInfo:
             mergeable=d.get("mergeable", "UNKNOWN"),
             merge_state_status=d.get("merge_state_status", ""),
             auto_merge_enabled=d.get("auto_merge_enabled", False),
+            in_merge_queue=d.get("in_merge_queue", False),
         )
 
 
@@ -218,6 +221,7 @@ def _alias(i: int) -> str:
 _PR_NODE_FIELDS = (
     "number url title state isDraft updatedAt mergedAt headRefName headRefOid mergeStateStatus mergeable\n"
     "      autoMergeRequest { enabledAt }\n"
+    "      mergeQueueEntry { state }\n"
     "      commits(last: 1) { nodes { commit { statusCheckRollup { state\n"
     "        contexts(first: 100) { nodes {\n"
     "          __typename\n"
@@ -535,6 +539,7 @@ def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
         mergeable=pr.get("mergeable") or "UNKNOWN",
         merge_state_status=pr.get("mergeStateStatus") or "",
         auto_merge_enabled=pr.get("autoMergeRequest") is not None,
+        in_merge_queue=pr.get("mergeQueueEntry") is not None,
     )
 
 

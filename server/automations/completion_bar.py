@@ -24,6 +24,16 @@ class PrFact:
     is_draft: bool
     auto_merge_enabled: bool
     url: str
+    in_merge_queue: bool = False   # mergeQueueEntry != null
+
+    @property
+    def is_armed(self) -> bool:
+        """True when this PR is queued to merge via auto-merge or the merge queue."""
+        return (
+            self.state == "open"
+            and not self.is_draft
+            and (self.auto_merge_enabled or self.in_merge_queue)
+        )
 
 
 @dataclass(frozen=True)
@@ -37,21 +47,20 @@ class PrFacts:
 
     @property
     def armed_pr(self) -> "PrFact | None":
-        return next((p for p in self.prs
-                     if p.state == "open" and not p.is_draft and p.auto_merge_enabled), None)
+        return next((p for p in self.prs if p.is_armed), None)
 
     @property
     def open_unarmed_pr(self) -> "PrFact | None":
         return next((p for p in self.prs
-                     if p.state in ("open", "draft")
-                     and not (p.state == "open" and not p.is_draft and p.auto_merge_enabled)),
+                     if p.state in ("open", "draft") and not p.is_armed),
                     None)
 
     def to_prompt(self) -> dict:
         return {
             "has_repo": self.has_repo,
             "prs": [{"number": p.number, "state": p.state, "is_draft": p.is_draft,
-                     "auto_merge_enabled": p.auto_merge_enabled} for p in self.prs],
+                     "auto_merge_enabled": p.auto_merge_enabled,
+                     "in_merge_queue": p.in_merge_queue} for p in self.prs],
         }
 
 
