@@ -24,16 +24,20 @@ import { ReauthBrowserPanel } from './ReauthBrowserPanel'
 
 interface AddAccountDialogProps {
   onClose: () => void
+  /** Pre-select a provider when opening (e.g. for copilot reauth). Defaults to 'anthropic'. */
+  initialProvider?: 'anthropic' | 'copilot'
+  /** Pre-fill the account name field (e.g. for copilot reauth of an existing account). */
+  initialName?: string
 }
 
-export function AddAccountDialog({ onClose }: AddAccountDialogProps) {
+export function AddAccountDialog({ onClose, initialProvider, initialName }: AddAccountDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const [name, setName] = useState('')
+  const [name, setName] = useState(initialName ?? '')
   const [started, setStarted] = useState(false)
   // Optimistic local idle override — set when the user cancels.
   const [optimisticIdle, setOptimisticIdle] = useState(false)
-  const [provider, setProvider] = useState<'anthropic' | 'copilot'>('anthropic')
+  const [provider, setProvider] = useState<'anthropic' | 'copilot'>(initialProvider ?? 'anthropic')
   const [copilotStarted, setCopilotStarted] = useState(false)
 
   const qc = useQueryClient()

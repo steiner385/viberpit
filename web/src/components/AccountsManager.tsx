@@ -175,6 +175,22 @@ function DeleteAccountDialog({ account, activeSessions, onClose, onConfirm, isPe
   )
 }
 
+// ── Provider Chip ────────────────────────────────────────────────────────────
+
+function CopilotChip() {
+  return (
+    <span
+      className={cn(
+        'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
+        'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
+      )}
+      aria-label="GitHub Copilot account"
+    >
+      Copilot
+    </span>
+  )
+}
+
 // ── Account Row ──────────────────────────────────────────────────────────────
 
 interface AccountRowProps {
@@ -183,9 +199,11 @@ interface AccountRowProps {
   refreshing: boolean
   onSaveNickname: (name: string, nickname: string | null) => void
   onDelete: (account: Account) => void
+  /** Called when a Copilot account's reauth button is clicked — opens the device-flow dialog. */
+  onCopilotReauth?: (account: Account) => void
 }
 
-function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }: AccountRowProps) {
+function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete, onCopilotReauth }: AccountRowProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -324,10 +342,11 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
             </button>
           </div>
         ) : (
-          <div className="flex-1 min-w-0 flex flex-col">
+          <div className="flex-1 min-w-0 flex items-center gap-2">
             <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
               {displayLabel}
             </span>
+            {account.provider === 'copilot' && <CopilotChip />}
           </div>
         )}
         {!editing && (
@@ -339,7 +358,7 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
               <>
                 <UsageBadge
                   pct={account.usage.session.pct}
-                  label="session"
+                  label={account.provider === 'copilot' ? 'premium-req' : 'session'}
                   resetsAt={account.usage.session.resetsAt}
                 />
                 <UsageBadge
@@ -349,7 +368,7 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
                 />
               </>
             )}
-            {!isReauthRunning && !isAwaitingCode && (
+            {account.provider === 'copilot' ? (
               <button
                 type="button"
                 className={cn(
@@ -358,11 +377,29 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
                     ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
                     : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
                 )}
-                aria-label={`Re-authenticate ${account.name}`}
-                onClick={handleReauth}
+                aria-label={`Re-run device flow for ${account.name}`}
+                onClick={() => onCopilotReauth?.(account)}
               >
                 {needsReauth ? 'Re-authenticate' : <KeyRound size={14} aria-hidden="true" />}
               </button>
+            ) : (
+              <>
+                {!isReauthRunning && !isAwaitingCode && (
+                  <button
+                    type="button"
+                    className={cn(
+                      'rounded min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
+                      needsReauth
+                        ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
+                        : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
+                    )}
+                    aria-label={`Re-authenticate ${account.name}`}
+                    onClick={handleReauth}
+                  >
+                    {needsReauth ? 'Re-authenticate' : <KeyRound size={14} aria-hidden="true" />}
+                  </button>
+                )}
+              </>
             )}
             {(isReauthRunning || isAwaitingCode) && (
               <button
@@ -429,8 +466,8 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete }
         )}
       </div>
 
-      {/* Generate long-lived (setup-token) — available on every account row */}
-      {!editing && (
+      {/* Generate long-lived (setup-token) — Anthropic accounts only */}
+      {!editing && account.provider !== 'copilot' && (
         <div className="flex justify-end">
           <button
             type="button"
@@ -560,9 +597,10 @@ interface AccountsStripProps {
   refreshingName: string | null
   onSaveNickname: (name: string, nickname: string | null) => void
   onDelete: (account: Account) => void
+  onCopilotReauth: (account: Account) => void
 }
 
-function AccountsStrip({ accounts, onRefresh, refreshingName, onSaveNickname, onDelete }: AccountsStripProps) {
+function AccountsStrip({ accounts, onRefresh, refreshingName, onSaveNickname, onDelete, onCopilotReauth }: AccountsStripProps) {
   if (accounts.length === 0) return null
 
   return (
@@ -575,6 +613,7 @@ function AccountsStrip({ accounts, onRefresh, refreshingName, onSaveNickname, on
           refreshing={refreshingName === account.name}
           onSaveNickname={onSaveNickname}
           onDelete={onDelete}
+          onCopilotReauth={onCopilotReauth}
         />
       ))}
     </div>
@@ -593,6 +632,8 @@ export function AccountsManager() {
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
   const [showAdd, setShowAdd] = useState(false)
+  /** Non-null when a Copilot account's reauth button was clicked — drives AddAccountDialog pre-selection. */
+  const [copilotReauthAccount, setCopilotReauthAccount] = useState<Account | null>(null)
 
   function handleRefreshAccount(name: string) {
     setRefreshingAccount(name)
@@ -645,10 +686,18 @@ export function AccountsManager() {
           refreshingName={refreshingAccount}
           onSaveNickname={handleSaveNickname}
           onDelete={handleDeleteAccount}
+          onCopilotReauth={(acct) => setCopilotReauthAccount(acct)}
         />
       )}
 
       {showAdd && <AddAccountDialog onClose={() => setShowAdd(false)} />}
+      {copilotReauthAccount && (
+        <AddAccountDialog
+          onClose={() => setCopilotReauthAccount(null)}
+          initialProvider="copilot"
+          initialName={copilotReauthAccount.name}
+        />
+      )}
 
       {deleteTarget && (
         <DeleteAccountDialog
