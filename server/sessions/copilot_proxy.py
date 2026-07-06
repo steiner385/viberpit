@@ -22,11 +22,24 @@ log = logging.getLogger("server.copilot_proxy")
 PROXY_EXE = "copilot2api"
 
 
+_VENDORED_PATH = os.path.expanduser("~/.local/lib/ccswitch/copilot2api")
+
+
 def resolve_copilot_proxy() -> str | None:
-    """Vendored-path override first, then PATH. None (feature-disabled) when absent."""
+    """Vendored-path override first, then vendored install, then PATH.
+
+    Resolution order:
+      1. ``CCSWITCH_COPILOT_PROXY_BIN`` env var (explicit override)
+      2. ``~/.local/lib/ccswitch/copilot2api`` (installed by scripts/fetch-copilot-proxy.sh)
+      3. ``shutil.which("copilot2api")`` (user-managed install on PATH)
+
+    Returns None (feature-disabled) when the binary is absent on all paths.
+    """
     override = os.environ.get("CCSWITCH_COPILOT_PROXY_BIN")
     if override and os.path.exists(override):
         return override
+    if os.path.isfile(_VENDORED_PATH) and os.access(_VENDORED_PATH, os.X_OK):
+        return _VENDORED_PATH
     return shutil.which(PROXY_EXE)
 
 
