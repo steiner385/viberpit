@@ -1,4 +1,5 @@
 import asyncio
+import json
 from server.automations import archive_audit as aa
 
 
@@ -57,13 +58,17 @@ def test_dry_run_does_not_unarchive():
 
 def test_real_gh_parses_json(monkeypatch):
     import subprocess
-    sample = '[{"number": 3, "state": "OPEN", "isDraft": false, "autoMergeRequest": null, "url": "u"}]'
+    sample = json.dumps({"data": {"repository": {"pullRequests": {"nodes": [
+        {"number": 3, "state": "OPEN", "isDraft": False,
+         "autoMergeRequest": None, "mergeQueueEntry": None, "url": "u"},
+    ]}}}})
 
     def fake_run(cmd, capture_output, text, timeout, check):
         class R:
             stdout = sample
             returncode = 0
-        assert "--head" in cmd and "--state" in cmd
+        assert "graphql" in cmd
+        assert any("mergeQueueEntry" in a for a in cmd)
         return R()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -78,6 +83,21 @@ def test_real_gh_returns_empty_on_error(monkeypatch):
         raise subprocess.CalledProcessError(1, "gh")
 
     monkeypatch.setattr(subprocess, "run", boom)
+    assert aa._real_gh("o/r", "feat/x") == []
+
+
+def test_real_gh_returns_empty_on_graphql_errors(monkeypatch):
+    """_real_gh returns [] when GraphQL response contains top-level errors."""
+    import subprocess
+    sample = json.dumps({"errors": [{"message": "Not Found"}]})
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        class R:
+            stdout = sample
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
     assert aa._real_gh("o/r", "feat/x") == []
 
 
@@ -267,21 +287,55 @@ def test_build_pr_facts_dedupes_branch_and_ref_number():
 
 
 def test_real_gh_num_parses_json(monkeypatch):
-    """_real_gh_num returns a parsed dict on success."""
+    """_real_gh_num returns a normalized dict on success via GraphQL."""
     import subprocess
-    sample = '{"number": 42, "state": "OPEN", "isDraft": false, "autoMergeRequest": null, "url": "u"}'
+    sample = json.dumps({"data": {"repository": {"pullRequest": {
+        "number": 42, "state": "OPEN", "isDraft": False,
+        "autoMergeRequest": None, "mergeQueueEntry": None, "url": "u",
+    }}}})
 
     def fake_run(cmd, capture_output, text, timeout, check):
         class R:
             stdout = sample
             returncode = 0
-        assert "pr" in cmd and "view" in cmd
+        assert "graphql" in cmd
+        assert any("mergeQueueEntry" in a for a in cmd)
         return R()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     result = aa._real_gh_num("o/r", 42)
     assert result is not None
     assert result["number"] == 42
+
+
+def test_real_gh_num_returns_none_on_null_pr(monkeypatch):
+    """_real_gh_num returns None when pullRequest is null (PR does not exist)."""
+    import subprocess
+    sample = json.dumps({"data": {"repository": {"pullRequest": None}}})
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        class R:
+            stdout = sample
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert aa._real_gh_num("o/r", 9999) is None
+
+
+def test_real_gh_num_returns_none_on_graphql_errors(monkeypatch):
+    """_real_gh_num returns None when GraphQL response contains errors."""
+    import subprocess
+    sample = json.dumps({"errors": [{"message": "Not Found"}]})
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        class R:
+            stdout = sample
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert aa._real_gh_num("o/r", 42) is None
 
 
 def test_real_gh_num_returns_none_on_error(monkeypatch):
@@ -293,3 +347,56 @@ def test_real_gh_num_returns_none_on_error(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", boom)
     assert aa._real_gh_num("o/r", 42) is None
+
+
+# ---------------------------------------------------------------------------
+# Merge-queue awareness tests
+# ---------------------------------------------------------------------------
+
+def test_pr_fact_from_gh_in_merge_queue_true_when_entry_present():
+    """_pr_fact_from_gh sets in_merge_queue=True when mergeQueueEntry is non-null."""
+    d = {"number": 1, "state": "OPEN", "isDraft": False,
+         "autoMergeRequest": None, "mergeQueueEntry": {"state": "AWAITING_CHECKS"},
+         "url": "http://x/1"}
+    fact = aa._pr_fact_from_gh(d)
+    assert fact.in_merge_queue is True
+
+
+def test_pr_fact_from_gh_in_merge_queue_false_when_entry_absent():
+    """_pr_fact_from_gh sets in_merge_queue=False when mergeQueueEntry is null/missing."""
+    d = {"number": 1, "state": "OPEN", "isDraft": False,
+         "autoMergeRequest": None, "mergeQueueEntry": None,
+         "url": "http://x/1"}
+    fact = aa._pr_fact_from_gh(d)
+    assert fact.in_merge_queue is False
+
+    d_missing = {"number": 1, "state": "OPEN", "isDraft": False,
+                 "autoMergeRequest": None, "url": "http://x/1"}
+    fact2 = aa._pr_fact_from_gh(d_missing)
+    assert fact2.in_merge_queue is False
+
+
+def test_queued_open_pr_classifies_legit_not_premature():
+    """Regression guard: OPEN PR with mergeQueueEntry but no autoMergeRequest
+    → armed via queue → session is legit, NOT premature, NOT unarchived.
+
+    This is the real bug: PR #11280 was enrolled in the merge queue but
+    autoMergeRequest was null, causing the old code to classify the session as
+    premature and mark it for unarchive.
+    """
+    unarchived = []
+    row = _row("s1", "land PR #11280 on main")
+    queued_pr = {
+        "number": 11280, "state": "OPEN", "isDraft": False,
+        "autoMergeRequest": None,
+        "mergeQueueEntry": {"state": "AWAITING_CHECKS"},
+        "url": "http://x/11280",
+    }
+    out = asyncio.run(aa.run_audit(
+        [row],
+        _gh_returning(None),          # branch lookup finds nothing
+        unarchived.append,
+        gh_num_fn=_gh_num_returning(queued_pr),
+    ))
+    assert out[0]["bucket"] == "legit", f"expected legit, got {out[0]['bucket']}: {out[0]['reason']}"
+    assert unarchived == [], "queued PR should NOT trigger unarchive"
