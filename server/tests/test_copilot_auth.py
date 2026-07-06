@@ -26,20 +26,27 @@ def test_parse_device_prompt_ignores_unrelated_lines():
     assert _parse_device_prompt("starting server on :4142") == (None, None)
 
 
-def test_parse_device_prompt_requires_both_url_and_code():
-    # URL present but no code
-    uri, code = _parse_device_prompt("Visit https://github.com/login/device to continue")
-    assert uri is None
+def test_parse_device_prompt_uri_only_line():
+    # URL present but no code — returns uri; callers accumulate across lines
+    uri, code = _parse_device_prompt("Please visit: https://github.com/login/device")
+    assert uri == "https://github.com/login/device"
     assert code is None
+
+
+def test_parse_device_prompt_code_only_line():
+    # Code present but no URL — returns code; callers accumulate across lines
+    uri, code = _parse_device_prompt("Enter code: ABCD-1234")
+    assert uri is None
+    assert code == "ABCD-1234"
 
 
 def test_parse_device_prompt_requires_uppercase_code():
-    # lowercase code should not match
+    # lowercase code should not match — uri still returned if present
     uri, code = _parse_device_prompt(
         "Visit https://github.com/login/device and enter abcd-1234"
     )
-    assert uri is None
-    assert code is None
+    assert uri == "https://github.com/login/device"
+    assert code is None  # lowercase code is not a valid device code
 
 
 def test_parse_device_prompt_different_valid_code():
@@ -137,6 +144,57 @@ async def test_state_machine_pending_to_authorized():
         final = manager.status("myaccount")
         assert final["state"] == "authorized"
         assert final["userCode"] == "ABCD-1234"
+        assert final["verificationUri"] == "https://github.com/login/device"
+
+
+@pytest.mark.asyncio
+async def test_state_machine_multiline_device_prompt():
+    """URI and code on separate lines (real copilot2api format) still transitions correctly."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        token_dir = Path(tmpdir)
+        creds_path = token_dir / "credentials.json"
+
+        class _MultilineStream:
+            """Simulates the real binary output: URI line, code line, then writes creds."""
+            def __init__(self):
+                self._lines = [
+                    b"Please visit: https://github.com/login/device\n",
+                    b"Enter code: X1Y2-A3B4\n",
+                ]
+                self._step = 0
+            def __aiter__(self):
+                return self
+            async def __anext__(self):
+                if self._step < len(self._lines):
+                    line = self._lines[self._step]
+                    self._step += 1
+                    return line
+                if not creds_path.exists():
+                    creds_path.write_text('{"token": "test"}')
+                return b"Waiting for authorization...\n" if self._step == len(self._lines) else (_ for _ in ()).throw(StopAsyncIteration)
+
+        class _MLProc:
+            def __init__(self):
+                self.stdout = _MultilineStream()
+            def terminate(self):
+                pass
+
+        async def fake_spawn(*args, stdout, stderr):
+            return _MLProc()
+
+        manager = CopilotAuthManager(
+            spawn=fake_spawn,
+            token_dir_for=lambda account: token_dir,
+        )
+
+        with patch("server.sessions.copilot_proxy.resolve_copilot_proxy", return_value="/usr/bin/copilot2api"):
+            await manager.start("ml_account")
+
+        await asyncio.wait_for(manager._states["ml_account"]._task, timeout=2.0)
+
+        final = manager.status("ml_account")
+        assert final["state"] == "authorized"
+        assert final["userCode"] == "X1Y2-A3B4"
         assert final["verificationUri"] == "https://github.com/login/device"
 
 

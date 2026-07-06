@@ -27,12 +27,15 @@ _CODE_RE = re.compile(r"\b([A-Z0-9]{4}-[A-Z0-9]{4})\b")
 
 
 def _parse_device_prompt(line: str) -> tuple[str | None, str | None]:
-    """Return *(verification_uri, user_code)* if *line* contains both; else *(None, None)*."""
+    """Return *(verification_uri, user_code)* for whatever the line contains; either may be None.
+
+    copilot2api emits the URI and code on separate lines, so callers must
+    accumulate across lines and act when both have been seen.
+    """
     uri_match = _URI_RE.search(line)
     code_match = _CODE_RE.search(line)
-    if uri_match and code_match:
-        return uri_match.group(0), code_match.group(1)
-    return None, None
+    return (uri_match.group(0) if uri_match else None,
+            code_match.group(1) if code_match else None)
 
 
 # ---------------------------------------------------------------------------
@@ -164,22 +167,31 @@ class CopilotAuthManager:
     async def _reader(self, account: str, proc: Any, token_dir: str) -> None:
         """Background task: read stdout, scrape device prompt, poll for credentials."""
         creds_path = Path(token_dir) / "credentials.json"
+        # Accumulate URI and code across lines — copilot2api emits them separately
+        pending_uri: str | None = None
+        pending_code: str | None = None
 
         try:
             async for line_bytes in proc.stdout:
                 line = line_bytes.decode(errors="replace").rstrip()
                 uri, code = _parse_device_prompt(line)
-                if uri and code:
+                if uri:
+                    pending_uri = uri
+                if code:
+                    pending_code = code
+                if pending_uri and pending_code:
                     async with self._lock:
                         state = self._states.get(account)
                         if state is not None and state.state == "pending":
                             state.state = "awaiting_authorization"
-                            state.verification_uri = uri
-                            state.user_code = code
+                            state.verification_uri = pending_uri
+                            state.user_code = pending_code
                     log.info(
                         "copilot_auth: device prompt scraped account=%r code=%r",
-                        account, code,
+                        account, pending_code,
                     )
+                    pending_uri = None
+                    pending_code = None
 
                 # Poll for credentials after each line (cheap stat, file appears quickly)
                 if creds_path.exists():
