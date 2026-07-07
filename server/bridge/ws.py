@@ -775,9 +775,27 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     # to it, so there is nothing to drop or re-supply.
                     await _emit_live_extras(session_id, driver, [])
                 else:
+                    drop_incomplete = stream.turn_active
+                    turn_started_at = stream.turn_started_at
+                    # Remote mode: dropping the open turn from the disk replay is licensed
+                    # ONLY by a re-supply that actually happens. The shared DaemonClient
+                    # keeps one daemon subscription per stream, so a RE-attach's subscribe
+                    # `since` is silently ignored — the ring never replays into this attach
+                    # (incident 2026-07-07, session fced5538: every mid-turn reload of an
+                    # autonomous session reset the view to post-attach events only). Pin a
+                    # one-shot ring_tail snapshot of the open turn instead; if the ring no
+                    # longer covers it (evicted in the window), degrade to the #526 safe
+                    # shape — FULL disk replay, turn NOT dropped, trim disabled (the pair
+                    # must degrade together, see daemon.turn_started_at). Local drivers
+                    # have no resupply hook: their open_stream() queue snapshot already
+                    # carries the in-progress turn atomically.
+                    prepare = getattr(driver, "prepare_open_turn_resupply", None)
+                    if drop_incomplete and prepare is not None and not await prepare():
+                        drop_incomplete = False
+                        turn_started_at = None
                     events = await _replay_and_complete(
-                        session_id, drop_incomplete=stream.turn_active,
-                        turn_started_at=stream.turn_started_at)
+                        session_id, drop_incomplete=drop_incomplete,
+                        turn_started_at=turn_started_at)
                     await _emit_live_extras(session_id, driver, events)
             except BaseException:
                 # Nothing has consumed the stream yet (only events()'s finally or
