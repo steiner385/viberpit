@@ -25,7 +25,10 @@ def _default_query(pairs: list[tuple[str, str]]) -> dict:
     query = build_pr_query(pairs)
     if not query:
         return {"data": {}}
-    proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"])
+    # Pass the query on stdin (-F query=@-) rather than argv: a batched multi-pair
+    # query can exceed the 128 KiB per-argument kernel limit and raise
+    # "Argument list too long", killing the poll cycle.
+    proc = gitrepos._run_gh(["api", "graphql", "-F", "query=@-"], input=query)
     if proc.returncode != 0:
         raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql failed")
     return json.loads(proc.stdout or "{}")

@@ -4,9 +4,9 @@
 # Run every ~60s by ccswitch-health.timer (User=tony). Idempotent, no deps beyond
 # curl / df / python3 / systemctl. Two jobs:
 #   1. WATCHDOG: probe the daemon's control-plane socket; if the process is alive but
-#      the socket is unresponsive (the "wedge" — invisible to systemd's Restart=on-failure
+#      the socket is unresponsive (the "wedge" — invisible to systemd's Restart= policy
 #      because the process never exits), restart ccswitch-daemon.service. Honors a cooldown
-#      so a genuine crash-loop is left to Restart=on-failure instead of being thrashed here.
+#      so a genuine crash-loop is left to systemd's Restart= policy instead of being thrashed here.
 #   2. EARLY WARNING: alert on low disk, account needs-reauth, or daemon memory near the
 #      MemoryMax ceiling — the three conditions that silently broke prior deploys.
 #
@@ -108,10 +108,10 @@ elif systemctl is-active --quiet ccswitch-daemon.service; then
       alert daemon-restart-failed "daemon wedged AND auto-restart failed — manual action needed"
     fi
   else
-    log "daemon unresponsive but within ${RESTART_COOLDOWN}s restart cooldown — leaving to Restart=on-failure"
+    log "daemon unresponsive but within ${RESTART_COOLDOWN}s restart cooldown — leaving to systemd Restart= policy"
   fi
 else
-  log "daemon service not active — not our job (systemd Restart=on-failure owns this)"
+  log "daemon service not active — not our job (systemd Restart=always owns this)"
 fi
 
 # --- 2. Disk --------------------------------------------------------------------

@@ -67,9 +67,16 @@ def _gh_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"}
 
 
-def _run_gh(args: list[str], token: str | None = None) -> subprocess.CompletedProcess[str]:
+def _run_gh(
+    args: list[str], token: str | None = None, *, input: str | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run a ``gh`` command. ``GITHUB_TOKEN`` is always stripped; when ``token`` is
-    given (a GitHub App installation token), ``GH_TOKEN`` is set so gh uses it."""
+    given (a GitHub App installation token), ``GH_TOKEN`` is set so gh uses it.
+
+    ``input`` is written to the child's stdin. Use it (with ``gh api ... -F
+    field=@-``) to pass a large value that would otherwise overflow the per-argument
+    kernel limit (MAX_ARG_STRLEN, 128 KiB) and raise ``OSError: Argument list too
+    long`` — e.g. the batched PR-status GraphQL query."""
     env = _gh_env()
     if token:
         env["GH_TOKEN"] = token
@@ -79,6 +86,7 @@ def _run_gh(args: list[str], token: str | None = None) -> subprocess.CompletedPr
             capture_output=True,
             text=True,
             env=env,
+            input=input,
         )
     except FileNotFoundError as exc:  # gh not installed
         raise GhError("the `gh` CLI is not installed or not on PATH") from exc
