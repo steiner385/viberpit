@@ -132,6 +132,10 @@ class BranchSwitchError(Exception):
 # Session-window utilisation ceiling that triggers rotation (100 = hard ceiling per spec)
 _ROTATION_CEILING: float = 100.0
 
+# Consecutive poller failures before treating an account as persistently dead (e.g. Copilot
+# proxy crashed at quota exhaustion).  1–2 failures are transient; ≥3 warrants rotation.
+_UNREACHABLE_ROTATION_THRESHOLD: int = 3
+
 
 class SessionOrchestrator:
     """Orchestrates session lifecycle: creation, rotation, termination.
@@ -4260,25 +4264,55 @@ class SessionOrchestrator:
     # ------------------------------------------------------------------
 
     async def _rotation_monitor(self) -> None:
-        """Subscribe to usage events; rotate any session whose account hits ceiling."""
+        """Subscribe to usage events; rotate any session whose account hits ceiling.
+
+        Also handles accounts that become persistently unreachable (usage=None for
+        _UNREACHABLE_ROTATION_THRESHOLD consecutive polls) — the canonical case is a
+        Copilot proxy that exits when its premium-request quota is exhausted.
+        """
         q = self._poller.subscribe()
         try:
             while True:
                 event = await q.get()
                 account: str = event.get("account", "")
                 usage = event.get("usage")
+
                 if usage is None:
-                    continue
-                session_pct: float = getattr(usage, "session_pct", 0.0)
-                if session_pct < _ROTATION_CEILING:
-                    continue
-                # Find all running sessions on this account
+                    # Transient fetch hiccup vs. persistently dead proxy — only act
+                    # once enough consecutive failures rule out a brief network blip.
+                    if (self._poller.consecutive_failures(account)
+                            < _UNREACHABLE_ROTATION_THRESHOLD):
+                        continue
+                    reason = "account_unreachable"
+                    session_pct = 0.0  # unknown; treat as ceiling for rotation logic
+                else:
+                    session_pct = getattr(usage, "session_pct", 0.0)
+                    if session_pct < _ROTATION_CEILING:
+                        continue
+                    reason = "session limit reached"
+
+                # Find all live sessions on this account and rotate them.
                 for record in list(self._records.values()):
                     if record.account != account:
                         continue
-                    if record.id not in self._drivers:
+                    if record.status in INACTIVE_SESSION_STATUSES:
                         continue
-                    if record.account_pinned:
+                    if record.id not in self._drivers:
+                        # Driver died separately from any turn (e.g. proxy crash while
+                        # session was idle).  Restart on a new account so the session
+                        # is live again without requiring user interaction.
+                        log.info(
+                            "rotation.driverless session=%s account=%s reason=%s",
+                            record.id, account, reason,
+                        )
+                        self._spawn(
+                            self._restart_driverless(record, reason=reason),
+                            name=f"restart-{record.id}",
+                        )
+                        continue
+                    if record.account_pinned and usage is not None:
+                        # Pinned + usage ceiling: mark limited so the user knows
+                        # they need to unpin before the session can auto-rotate.
                         log.info("rotation.skip_pinned session=%s account=%s", record.id, account)
                         record.status = "limited"
                         self._spawn(
@@ -4290,13 +4324,11 @@ class SessionOrchestrator:
                         })
                         continue
                     log.info(
-                        "rotation.trigger session=%s account=%s pct=%.1f",
-                        record.id,
-                        account,
-                        session_pct,
+                        "rotation.trigger session=%s account=%s pct=%.1f reason=%s",
+                        record.id, account, session_pct, reason,
                     )
                     self._spawn(
-                        self._do_rotate(record),
+                        self._do_rotate(record, reason=reason),
                         name=f"rotate-{record.id}",
                     )
         except asyncio.CancelledError:
@@ -4304,9 +4336,33 @@ class SessionOrchestrator:
         finally:
             self._poller.unsubscribe(q)
 
-    async def _do_rotate(self, record: SessionRecord) -> None:
+    async def _do_rotate(self, record: SessionRecord, *,
+                         reason: str = "session limit reached") -> None:
         """Usage-ceiling rotation entrypoint (called by the poller monitor)."""
-        await self._rotate_away(record, reason="session limit reached")
+        await self._rotate_away(record, reason=reason)
+
+    def _account_is_dead(self, account: str) -> bool:
+        """True when the account is at usage ceiling OR persistently unreachable.
+
+        Used by crash recovery to decide whether to rotate away rather than
+        rebuilding the driver on the same broken account.
+        """
+        usage = self._poller.cached(account)
+        if usage is not None:
+            return getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
+        # usage=None: distinguish "not yet polled" from "persistently failing"
+        return self._poller.consecutive_failures(account) >= _UNREACHABLE_ROTATION_THRESHOLD
+
+    async def _restart_driverless(self, record: SessionRecord, *, reason: str) -> None:
+        """Restart a session whose driver has died on a new account.
+
+        Called by the rotation monitor when a live session has no driver (the
+        subprocess died while the session was idle, e.g. Copilot proxy crash).
+        Picks a fresh account and delegates to _rotate_away which rebuilds the
+        driver and replays the last prompt.
+        """
+        log.info("rotation.restart_driverless session=%s reason=%s", record.id, reason)
+        await self._rotate_away(record, reason=reason)
 
     # ------------------------------------------------------------------
     # Failure-driven recovery (429 / 401 during a live turn)
@@ -4357,6 +4413,13 @@ class SessionOrchestrator:
                 await self._pause_session(record, reason="crash_cap")
                 return
             self._recovery.record_crash(record.id, now=now)
+            # When the account is dead (usage ceiling or persistently unreachable
+            # proxy — the Copilot quota-exhaustion case), retrying on the same
+            # account just crashes again.  Quarantine it and rotate away instead.
+            if self._account_is_dead(record.account):
+                self._recovery.quarantine(record.account, until=now + QUARANTINE_429)
+                await self._rotate_away(record, reason="process_crash_account_exhausted")
+                return
             # Rebuild the driver in place on the same account, resuming the
             # conversation; _reassign re-sends the last prompt so the interrupted
             # turn continues. Same machinery rate-limit recovery uses.
