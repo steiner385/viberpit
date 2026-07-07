@@ -33,6 +33,13 @@ def _make_engine(db_url: str, *, poolclass=None):
     connect_args = {}
     if db_url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
+        # Pass timeout at the sqlite3.connect() level so it takes effect
+        # regardless of greenlet context.  The aiosqlite dialect forwards
+        # connect_args to sqlite3.connect(**kwargs) where `timeout` is the
+        # busy-wait duration in seconds before raising OperationalError.
+        # The PRAGMA busy_timeout event below is belt-and-suspenders; the
+        # connect_args path is the one that actually lands on every connection.
+        connect_args["timeout"] = 30
     engine_kwargs = {"connect_args": connect_args, "echo": False}
     # `poolclass` lets a caller pin the pool strategy (the test harness pins
     # StaticPool so a file-backed stand-in for an in-memory DB keeps the same
@@ -49,7 +56,7 @@ def _make_engine(db_url: str, *, poolclass=None):
         def _set_sqlite_pragmas(dbapi_conn, _record):  # pragma: no cover - driver callback
             cur = dbapi_conn.cursor()
             cur.execute("PRAGMA journal_mode=WAL")
-            cur.execute("PRAGMA busy_timeout=5000")
+            cur.execute("PRAGMA busy_timeout=30000")
             cur.close()
     return engine
 
