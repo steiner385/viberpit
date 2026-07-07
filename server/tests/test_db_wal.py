@@ -14,4 +14,6 @@ async def test_sqlite_engine_uses_wal(tmp_path):
     finally:
         await engine.dispose()
     assert str(mode).lower() == "wal"
-    assert int(busy) == 5000
+    # 30s: a contended writer waits instead of raising "database is locked"
+    # under load (matches PRAGMA busy_timeout + sqlite3 connect timeout).
+    assert int(busy) == 30000
