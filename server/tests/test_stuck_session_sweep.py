@@ -137,12 +137,6 @@ async def test_sweep_loop_survives_rotate_error():
         if sleep_count >= 2:
             raise asyncio.CancelledError
 
-    import server.sessions.orchestrator as orch_mod
-    original_sleep = asyncio.sleep
-
-    async def patched_sleep(seconds):
-        await fast_sleep(seconds)
-
     task = asyncio.create_task(o._stuck_session_sweep())
     # Give the loop one iteration to run the failing sweep then sleep.
     await asyncio.sleep(0)   # enter loop body
