@@ -4115,15 +4115,9 @@ class SessionOrchestrator:
 
     async def run_command(self, session_id, name, args) -> dict | None:
         """Dispatch a slash command. Raises KeyError if the command is unknown."""
-        d = self._drivers.get(session_id)
-        if d is None:
-            return {"name": str(name).lstrip("/"), "render": "notice",
-                    "data": {"text": "This session isn't live — open it and try again."}}
-        if str(name).lstrip("/") == "model":
-            arg = (args or "").strip()
-            await self.set_model_for_session(session_id, arg or None)
-            return {"name": "model", "render": "notice",
-                    "data": {"text": f"Model → {arg or 'default'}"}}
+        # /account is an orchestrator-level operation: it doesn't touch the driver
+        # subprocess at all, so it must work even when no driver exists (e.g. the
+        # session is driverless because the Copilot proxy died).
         if str(name).lstrip("/") == "account":
             acct = (args or "").strip()
             if not acct:
@@ -4136,6 +4130,15 @@ class SessionOrchestrator:
                         "data": {"text": f"Unknown account: {acct}"}}
             return {"name": "account", "render": "notice",
                     "data": {"text": f"Account → {acct}"}}
+        d = self._drivers.get(session_id)
+        if d is None:
+            return {"name": str(name).lstrip("/"), "render": "notice",
+                    "data": {"text": "This session isn't live — open it and try again."}}
+        if str(name).lstrip("/") == "model":
+            arg = (args or "").strip()
+            await self.set_model_for_session(session_id, arg or None)
+            return {"name": "model", "render": "notice",
+                    "data": {"text": f"Model → {arg or 'default'}"}}
         if str(name).lstrip("/") == "goal":
             cond = (args or "").strip()
             cleared = (not cond) or cond.lower() == "clear"
