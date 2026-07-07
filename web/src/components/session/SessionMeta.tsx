@@ -107,7 +107,7 @@ export function SessionMeta({ account, model, mode, contextPct, quota, subAgents
           <select
             aria-label="Select model"
             value={model ?? 'default'}
-            onChange={(e) => onSelectModel(e.target.value)}
+            onChange={(e) => e.target.value && e.target.value !== (model ?? 'default') && onSelectModel(e.target.value)}
             className="bg-transparent font-medium text-gray-900 dark:text-gray-100 truncate max-w-[14rem] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
           >
             {model && !models.some((m) => m.id === model) && <option value={model}>{model}</option>}
