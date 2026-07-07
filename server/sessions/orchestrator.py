@@ -402,6 +402,20 @@ class SessionOrchestrator:
             clock=time.time,  # wall clock: created_ts from GitHub is epoch time
         )
         self._cicd_task: asyncio.Task | None = None
+        # Archive Audit control loop: periodic re-audit of recently-archived sessions.
+        from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
+        from server.automations.archive_audit import list_recent_archived_rows
+        self._archaudit_ctx = AutomationContext("archive-audit")
+        self._archaudit_loop = ArchiveAuditLoop(
+            self._archaudit_ctx,
+            read_config=self._archaudit_read_config,
+            list_rows=lambda since: list_recent_archived_rows(db_session, since),
+            gh_fn=_real_gh,
+            gh_num_fn=_real_gh_num,
+            unarchive_fn=lambda sid: self.unarchive(sid),  # type: ignore[arg-type,return-value]
+            clock=time.time,
+        )
+        self._archaudit_task: asyncio.Task | None = None
         # Fire-and-forget task registry (issue #405). Every detached ``create_task``
         # (persist, rotation, recovery, summary/proposal refresh, backlog nudge …) is
         # routed through ``_spawn`` so ``stop()`` can cancel+await ALL of them. An
@@ -528,6 +542,10 @@ class SessionOrchestrator:
         self._cicd_task = asyncio.create_task(
             self._cicd_tick_loop(interval=900.0), name="cicd-doctor-loop"
         )
+        # Archive Audit: re-audit recently-archived sessions every 6 hours.
+        self._archaudit_task = asyncio.create_task(
+            self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
+        )
 
     async def _refresh_idle_tokens_once(self) -> None:
         """Proactively refresh idle accounts' access tokens (best-effort).
@@ -579,7 +597,7 @@ class SessionOrchestrator:
             self._pr_branch_task = None
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
                      "_token_refresh_task", "_backlog_task", "_autopilot_task",
-                     "_cicd_task", "_drain_timer"):
+                     "_cicd_task", "_archaudit_task", "_drain_timer"):
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
@@ -1476,6 +1494,52 @@ class SessionOrchestrator:
                 select(DbSession.repo).where(DbSession.repo.is_not(None))
                 .distinct())).scalars().all()
         return sorted(r for r in rows if r)
+
+    # ------------------------------------------------------------------
+    # Archive Audit control-loop dependencies (injected into ArchiveAuditLoop)
+    # ------------------------------------------------------------------
+
+    async def _archaudit_tick_loop(self, interval: float) -> None:
+        while True:
+            await self._archaudit_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _archaudit_tick_once(self) -> None:
+        """One tick + enabled-only last_active_at heartbeat (mirrors cicd)."""
+        await self._archaudit_loop.tick()
+        try:
+            mode, _ = await self._archaudit_read_config()
+            if mode != "off":
+                await self._bump_automation_active("archive-audit")
+        except Exception:
+            log.debug("archive_audit.heartbeat_failed", exc_info=True)
+
+    async def _archaudit_read_config(self) -> tuple[str, dict]:
+        """(effective mode, validated config) for archive-audit; off + defaults on
+        any bad row so a corrupt config can never act."""
+        from sqlalchemy import select
+        from server.automations.base import validate_config
+        from server.automations.archive_audit import ArchiveAudit
+        from server.db.models import Automation
+        enabled, mode, raw = False, None, {}
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "archive-audit"))).scalar_one_or_none()
+                if row is not None:
+                    enabled, mode = bool(row.enabled), row.mode
+                    raw = dict(row.config) if row.config else {}
+        except Exception:
+            log.debug("archive_audit.config.load_failed", exc_info=True)
+        try:
+            config = validate_config(ArchiveAudit.config_schema, raw)
+        except ValueError:
+            config = validate_config(ArchiveAudit.config_schema, {})
+        # archive-audit is a 2-mode (off/act) automation; resolve enabled + no explicit
+        # mode to the first non-off mode (act), else an enabled row is stuck 'off' forever.
+        active = [m for m in ArchiveAudit.modes if m != "off"]
+        effective = (mode if mode in active else active[0]) if enabled else "off"
+        return effective, config
 
     # ------------------------------------------------------------------
     # CI/CD Doctor action-provider seams (CicdDoctorActionProvider)

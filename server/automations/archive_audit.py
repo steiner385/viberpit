@@ -10,14 +10,121 @@ import json
 import logging
 import re
 import subprocess
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from .base import AutomationStatus, ConfigField
 from .completion_bar import BarVerdict, PrFact, PrFacts, _is_code_goal, met_bar
 
 if TYPE_CHECKING:
     from datetime import datetime
 
 log = logging.getLogger(__name__)
+
+
+class ArchiveAudit:
+    id = "archive-audit"
+    name = "Archive Audit"
+    description = ("Re-audits recently archived sessions against the completion bar and "
+                   "auto-unarchives ones archived prematurely (no merged/armed PR).")
+    modes: tuple[str, ...] = ("off", "act")
+    config_schema = [
+        ConfigField(key="window_days", label="Recency window (days)", type="int", default=7,
+                    help="Re-audit sessions archived within this many days."),
+    ]
+
+    def status(self, ctx: Any) -> AutomationStatus:
+        counts = getattr(ctx, "archive_audit_counts", None) if ctx is not None else None
+        if not counts:
+            return AutomationStatus(text="idle", level="idle")
+        unarchived = counts.get("unarchived", 0)
+        total = counts.get("total", 0)
+        if unarchived:
+            level = "active"
+            text = f"unarchived {unarchived} of {total} recent sessions"
+        else:
+            level = "idle"
+            text = f"audited {total} recent sessions, none premature"
+        return AutomationStatus(text=text, level=level, counts=counts)
+
+    async def on_state_change(self, *, enabled: bool, mode: "str | None",
+                              config: dict, ctx: Any) -> None:
+        # The orchestrator's loop reads mode/config each tick; nothing to start here.
+        ...
+
+
+class ArchiveAuditLoop:
+    """Restart-safe, non-reentrant periodic re-audit loop. Every I/O dependency is
+    injected. Per tick: loads recently-archived rows, classifies them via run_audit
+    (dry_run=True, offloaded to a thread so gh subprocess calls never block the loop),
+    then async-unarchives the premature ones and emits a summary."""
+
+    def __init__(self, ctx, *,
+                 read_config: Callable[[], Awaitable[tuple[str, dict]]],
+                 list_rows: Callable[["datetime"], Awaitable[list[dict]]],
+                 gh_fn: Callable[[str, str], list[dict]],
+                 gh_num_fn: "Callable[[str, int], dict | None] | None",
+                 unarchive_fn: Callable[[str], Awaitable[None]],
+                 clock: Callable[[], float]) -> None:
+        self._ctx = ctx
+        self._read_config = read_config
+        self._list_rows = list_rows
+        self._gh_fn = gh_fn
+        self._gh_num_fn = gh_num_fn
+        self._unarchive_fn = unarchive_fn
+        self._clock = clock
+        self._lock = asyncio.Lock()
+
+    async def tick(self) -> None:
+        async with self._lock:
+            try:
+                await self._run()
+            except Exception:  # a tick must never crash the loop
+                log.warning("archive_audit.tick_failed", exc_info=True)
+
+    async def _run(self) -> None:
+        mode, config = await self._read_config()
+        if mode == "off":
+            return
+        window_days = int(config.get("window_days", 7))
+        from datetime import datetime, timedelta
+        since = datetime.utcfromtimestamp(self._clock()) - timedelta(days=window_days)
+        rows = await self._list_rows(since)
+        if not rows:
+            return
+        # The gh fetchers are BLOCKING subprocess calls and run_audit calls them
+        # inline. Offload the whole classify pass to a thread so the daemon event
+        # loop is never blocked. dry_run=True => run_audit does NOT unarchive inside
+        # the thread; we do the unarchives on THIS loop (async orch.unarchive).
+        gh_fn = self._gh_fn
+        gh_num_fn = self._gh_num_fn
+
+        def _classify():
+            return asyncio.run(run_audit(
+                rows, gh_fn, lambda _sid: None,
+                dry_run=True, gh_num_fn=gh_num_fn))
+
+        results = await asyncio.to_thread(_classify)
+        premature = [r for r in results if r["bucket"] == "premature"]
+        unarchived = []
+        for r in premature:
+            try:
+                await self._unarchive_fn(r["id"])
+                unarchived.append(r["id"])
+            except Exception:
+                log.warning("archive_audit loop unarchive failed sid=%s", r["id"], exc_info=True)
+        from collections import Counter
+        counts = Counter(r["bucket"] for r in results)
+        # Publish counts on the ctx so ArchiveAudit.status() reflects the last run
+        # (mirrors CicdDoctorLoop). status() reads 'total' and 'unarchived'.
+        setattr(self._ctx, "archive_audit_counts", {
+            "total": len(rows), "unarchived": len(unarchived),
+            **{b: counts.get(b, 0) for b in ("legit", "premature", "review", "ambiguous")},
+        })
+        await self._ctx.emit(
+            "info",
+            f"re-audit: {len(rows)} recent archives — unarchived {len(unarchived)} premature",
+            kind="audit",
+            detail={"counts": dict(counts), "unarchived": unarchived})
 
 GhFn = Callable[[str, str], list[dict]]              # (repo, branch) -> raw PR dicts
 GhNumFn = Callable[[str, int], "dict | None"]        # (repo, number) -> raw PR dict or None
