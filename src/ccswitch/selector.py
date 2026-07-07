@@ -29,6 +29,17 @@ class AllAccountsBusy(Exception):
         self.earliest_reset = earliest_reset
         self.kind = kind
 
+    @property
+    def error_data(self) -> dict:
+        """Structured payload so the typed exception survives the daemon RPC
+        boundary (which otherwise flattens exceptions to type+message). The remote
+        client rebuilds ``AllAccountsBusy`` from this so the edge renders a clear
+        'all accounts at limit, resets <date>' message instead of a generic 500."""
+        return {
+            "earliest_reset": self.earliest_reset.isoformat() if self.earliest_reset else None,
+            "kind": self.kind,
+        }
+
 
 def _perishability(u: Usage, ceiling: float, now: datetime) -> float:
     """Quota (per hour) that will be wasted if unspent before the binding window resets.

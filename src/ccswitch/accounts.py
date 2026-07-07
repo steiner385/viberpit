@@ -355,7 +355,17 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
 
 
 def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
-                          load: dict[str, float] | None = None) -> Picked:
+                          load: dict[str, float] | None = None,
+                          *, reserve: bool = True) -> Picked:
+    """Select the best available account.
+
+    ``reserve`` (default True) writes a soft reservation on the picked account so
+    a concurrent pick doesn't double-assign it. A READ-ONLY availability probe
+    (e.g. "is any account healthy so I can spawn?") MUST pass ``reserve=False``:
+    reserving on a check consumes the account's reservation window without
+    creating a session, which — when only one account has headroom — starves both
+    real spawns and interactive creates for the full reservation TTL.
+    """
     names = _account_names()
     usages = {n: usage_for(n) for n in names}
     now = datetime.now(timezone.utc)
@@ -365,7 +375,8 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
         unhealthy = frozenset(n for n in names if ledger.get_status(led, n) == "needs-reauth")
         picked = select_picked(usages, reserved, cfg, now, exclude, load or {},
                                unhealthy, optimistic_fallback=True)
-        ledger.reserve(led, picked.name, now_ts + cfg.reservation_ttl_sec)
+        if reserve:
+            ledger.reserve(led, picked.name, now_ts + cfg.reservation_ttl_sec)
     return picked
 
 

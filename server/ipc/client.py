@@ -43,10 +43,13 @@ class DaemonUnavailable(Exception):
 class DaemonError(Exception):
     """The daemon returned an error envelope for an RPC call."""
 
-    def __init__(self, err_type: str, message: str):
+    def __init__(self, err_type: str, message: str, data: dict | None = None):
         super().__init__(f"{err_type}: {message}")
         self.err_type = err_type
         self.message = message
+        # Structured payload carried by typed daemon exceptions (e.g.
+        # AllAccountsBusy.error_data) so a remote caller can reconstruct them.
+        self.data = data
 
 
 def daemon_ws_connect(endpoint: Endpoint, path: str, ssl_ctx=None):
@@ -120,7 +123,7 @@ class DaemonClient:
         body = resp.json()
         if "error" in body:
             err = body["error"]
-            raise DaemonError(err.get("type", "Error"), err.get("message", ""))
+            raise DaemonError(err.get("type", "Error"), err.get("message", ""), err.get("data"))
         return body["result"]
 
     async def info(self) -> dict:

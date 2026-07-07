@@ -16,11 +16,15 @@ __all__ = ["select_account", "AllAccountsBusy", "Picked"]
 
 
 def select_account(exclude: frozenset[str] = frozenset(),
-                   load: dict[str, float] | None = None) -> Picked:
+                   load: dict[str, float] | None = None,
+                   *, reserve: bool = True) -> Picked:
     """Select the best available account, skipping any in *exclude*.
 
-    Writes a soft reservation into the ledger so concurrent calls don't
-    double-assign the same account (R8 / FR-009a). *load* is an optional
+    When ``reserve`` is True (default), writes a soft reservation into the ledger
+    so concurrent calls don't double-assign the same account (R8 / FR-009a). A
+    read-only availability probe MUST pass ``reserve=False`` — otherwise the check
+    burns the account's reservation window without starting a session, starving
+    real work when only one account has headroom. *load* is an optional
     per-account weighted live-session count; accounts already carrying load are
     discounted so new sessions spread out (avoids 429s).
 
@@ -29,4 +33,4 @@ def select_account(exclude: frozenset[str] = frozenset(),
             The exception carries ``.earliest_reset`` (datetime | None).
     """
     cfg = load_config()
-    return pick_account_detailed(cfg, exclude=set(exclude), load=load)
+    return pick_account_detailed(cfg, exclude=set(exclude), load=load, reserve=reserve)
