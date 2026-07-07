@@ -227,7 +227,8 @@ class BacklogRunner:
                     default="ready",
                     help="Only issues with this label are candidates. Leave blank "
                          "to consider ALL open, unassigned issues (no label gate)."),
-        ConfigField(key="max_concurrent", label="Max sessions in flight", type="int", default=1),
+        ConfigField(key="max_concurrent", label="Max sessions in flight", type="int", default=1,
+                    help="Parallel implementing sessions allowed at once."),
         ConfigField(key="max_spawns_per_day", label="Max spawns per day", type="int", default=10,
                     help="Circuit-breaker: pause spawning past this many per day."),
         ConfigField(key="max_attempts", label="Max attempts per issue", type="int", default=2),
