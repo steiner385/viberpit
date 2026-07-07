@@ -136,6 +136,11 @@ _ROTATION_CEILING: float = 100.0
 # proxy crashed at quota exhaustion).  1–2 failures are transient; ≥3 warrants rotation.
 _UNREACHABLE_ROTATION_THRESHOLD: int = 3
 
+# How often the stuck-session sweep retries rotation for needs_attention sessions.
+# _pause_session() is a dead-end: the rotation monitor only fires on degradation
+# events, not recovery, so paused sessions need a separate periodic retry.
+_STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
+
 
 class SessionOrchestrator:
     """Orchestrates session lifecycle: creation, rotation, termination.
@@ -437,6 +442,7 @@ class SessionOrchestrator:
         self._goal_task: asyncio.Task | None = None
         self._stall_task: asyncio.Task | None = None
         self._token_refresh_task: asyncio.Task | None = None
+        self._sweep_task: asyncio.Task | None = None
         self._pr_branch_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
@@ -550,6 +556,13 @@ class SessionOrchestrator:
         self._archaudit_task = asyncio.create_task(
             self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
         )
+        # Stuck-session sweep: retry rotation for needs_attention sessions every 5 min.
+        # The rotation monitor is event-driven (fires on degradation); this covers
+        # the recovery side — sessions paused due to all_accounts_busy get a chance
+        # to move once a healthy account frees up.
+        self._sweep_task = asyncio.create_task(
+            self._stuck_session_sweep(), name="stuck-session-sweep"
+        )
 
     async def _refresh_idle_tokens_once(self) -> None:
         """Proactively refresh idle accounts' access tokens (best-effort).
@@ -601,7 +614,7 @@ class SessionOrchestrator:
             self._pr_branch_task = None
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
                      "_token_refresh_task", "_backlog_task", "_autopilot_task",
-                     "_cicd_task", "_archaudit_task", "_drain_timer"):
+                     "_cicd_task", "_archaudit_task", "_sweep_task", "_drain_timer"):
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
@@ -4377,6 +4390,38 @@ class SessionOrchestrator:
         """
         log.info("rotation.restart_driverless session=%s reason=%s", record.id, reason)
         await self._rotate_away(record, reason=reason)
+
+    async def _stuck_session_sweep(self) -> None:
+        """Periodically retry rotation for sessions paused as needs_attention.
+
+        The rotation monitor is event-driven — it fires when accounts *degrade*,
+        not when they *recover*. A session paused by _pause_session() (reason:
+        all_accounts_busy, crash_cap, rotation_cap, stall_cap, turn_dropped_cap)
+        therefore stays stuck until the user intervenes, even when a healthy account
+        frees up. This sweep fires every _STUCK_SESSION_SWEEP_INTERVAL seconds and
+        calls _rotate_away for each needs_attention session. _rotate_away re-pauses
+        gracefully if accounts are still busy, so the sweep is safe to run repeatedly.
+        """
+        while True:
+            if not self._shutting_down:
+                try:
+                    await self._sweep_needs_attention()
+                except Exception:
+                    log.exception("stuck-session-sweep: sweep failed")
+            await asyncio.sleep(_STUCK_SESSION_SWEEP_INTERVAL)
+
+    async def _sweep_needs_attention(self) -> None:
+        """One sweep pass: spawn a rotation attempt for every needs_attention session."""
+        for record in list(self._records.values()):
+            if record.status != "needs_attention":
+                continue
+            log.info(
+                "stuck-sweep.retry session=%s account=%s", record.id, record.account,
+            )
+            self._spawn(
+                self._rotate_away(record, reason="stuck_session_sweep"),
+                name=f"sweep-rotate-{record.id}",
+            )
 
     # ------------------------------------------------------------------
     # Failure-driven recovery (429 / 401 during a live turn)
