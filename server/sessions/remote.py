@@ -174,6 +174,39 @@ class RemoteDriver:
         self._catch_up_snapshot = snapshot
         self._catch_up_head = head
 
+    async def prepare_open_turn_resupply(self) -> bool:
+        """Pin a one-shot ring snapshot of the OPEN turn so events() re-supplies it to
+        this attach. Returns False when the ring no longer covers the turn anchor (or
+        the fetch failed) — the caller must then KEEP the turn in the disk replay.
+
+        Why this exists (incident 2026-07-07, session fced5538): the shared DaemonClient
+        keeps ONE daemon-side subscription per stream — only the FIRST local subscriber
+        triggers the daemon's replay-on-subscribe, and nothing ever unsubscribes. So a
+        RE-attach's ``subscribe(since=resume_since)`` is silently ignored: the new queue
+        joins the fan-out at "now" and the open turn the disk replay just dropped
+        (``drop_incomplete_turn``) is re-supplied by NOBODY — the view resets to only
+        post-attach events until the turn settles to disk. Exactly the trap the
+        ``ring_tail`` docstring (server/ipc/daemon.py) warns about for the catch-up
+        path; this applies its snapshot-then-dedup answer to the ordinary live attach.
+
+        Same FINDING-1 atomic ordering as the wave-3 catch-up: join the fan-out FIRST
+        (everything published after the snapshot head is then already queued), fetch
+        ``ring_tail`` at the turn anchor, and pin only a covered snapshot. Coverage is
+        re-verified AT FETCH TIME by the daemon, so an eviction between the
+        ensure_driver snapshot and this call degrades safely to False."""
+        self.join_live()
+        try:
+            snap = await self._client.call(
+                "ring_tail", session_id=self._session_id, since=self._resume_since)
+        except Exception:
+            log.warning("RemoteDriver.prepare_open_turn_resupply: ring_tail failed for %s",
+                        self._session_id, exc_info=True)
+            return False
+        if not snap.get("covered"):
+            return False
+        self.pin_catch_up(snap["events"], snap["head"])
+        return True
+
     def open_stream(self) -> RemoteDriverStream:
         """Uniform attach interface with the local SessionDriver.open_stream()."""
         return RemoteDriverStream(self)

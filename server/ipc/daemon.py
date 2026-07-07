@@ -118,9 +118,10 @@ def create_daemon_app() -> FastAPI:
 
         Retained iff ``oldest <= turn_start_seq`` — the complement of the
         subscribe-time GAP test (``since + 1 < oldest`` at since = turn_start_seq
-        - 1), so this gate and the real subscribe can never disagree. Not
-        ``ring_covers``: that helper deliberately rejects since < 0, and the
-        first turn's anchor is -1.
+        - 1), so this gate and the real subscribe can never disagree. While a
+        turn is open this is equivalent to ``ring_covers(stream, turn_start_seq
+        - 1)`` (that helper accepts the first turn's -1 anchor as "from stream
+        start"); kept separate because this gate also owns the turn_open check.
 
         Only the READ accessors degrade; the publish-time turn state stays open
         so the real turnEnd / turnFailure / terminal status still closes it."""
@@ -188,10 +189,16 @@ def create_daemon_app() -> FastAPI:
             srcContiguous flag on the post-restart srcSeq jump — this is the server-side
             belt to that suspenders.)
 
-        A fresh anchor (``since`` None/<0) is never a catch-up cursor, and an empty/absent
-        ring can guarantee nothing → both return False (full disk replay)."""
+        ``since = -1`` means "from the very beginning of the stream" — the open-turn
+        resupply anchor of a FIRST-turn session (``resume_since = turn_start_seq - 1``
+        with the user event at seq 0). It is covered iff the ring still retains seq 0
+        (nothing ever evicted) — the same ``oldest - 1 <= since`` formula. A browser
+        catch-up cursor is never negative, so the wave-3 path is unaffected.
+
+        A fresh anchor (``since`` None or < -1) is never a resume anchor, and an
+        empty/absent ring can guarantee nothing → both return False (full disk replay)."""
         buf = app.state.buffers.get(stream)
-        if not buf or since is None or since < 0:
+        if not buf or since is None or since < -1:
             return False
         oldest_seq = buf[0][0]
         head = app.state.seqs.get(stream, -1)

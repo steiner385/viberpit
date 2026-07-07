@@ -171,6 +171,23 @@ async def test_ring_covers_false_for_fresh_or_empty(monkeypatch):
         assert rc("never-seen", 3) is False   # no ring at all → can't guarantee coverage
         await app.state.publish("s1", {"type": "0"})
         assert rc("s1", None) is False         # fresh anchor is never a catch-up cursor
+        assert rc("s1", -2) is False           # below the stream-start anchor: meaningless
+
+
+@pytest.mark.asyncio
+async def test_ring_covers_stream_start_anchor(monkeypatch):
+    """``since=-1`` is the open-turn resupply anchor of a FIRST-turn session
+    (resume_since = turn_start_seq - 1 with the user event at seq 0): covered iff the
+    ring still retains seq 0 — i.e. nothing was ever evicted from this stream."""
+    monkeypatch.setenv("CCSWITCH_IPC_REPLAY_BUFFER", "4")
+    app = create_daemon_app()
+    async with serve_daemon_uds(app):
+        rc = app.state.ring_covers
+        for i in range(3):  # seq 0..2, all retained (ring depth 4)
+            await app.state.publish("s1", {"type": str(i)})
+        assert rc("s1", -1) is True
+        for i in range(3, 6):  # seq 3..5 — seq 0,1 evicted (oldest=2)
+            await app.state.publish("s1", {"type": str(i)})
         assert rc("s1", -1) is False
 
 
