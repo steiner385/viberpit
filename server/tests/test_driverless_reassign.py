@@ -242,3 +242,49 @@ async def test_ensure_driver_rotates_on_proxy_start_failure(monkeypatch, tmp_pat
         "ensure_driver should have spawned a rotation task when the proxy failed"
     )
     assert ("rotate", "s1", "proxy_start_failed") in o.calls
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: run_command /account works for driverless sessions
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_run_command_account_works_without_driver(monkeypatch):
+    """/account must switch the session even when no driver is present.
+
+    run_command previously checked for a live driver first, returning
+    'This session isn't live' before reaching the /account handler.
+    The fix hoists /account above the driver guard."""
+    o = _make_orch()
+    _rec(o, with_driver=False)
+
+    reassigned = []
+
+    async def spy_reassign(self, record, new_account, *, reason):
+        reassigned.append((record.id, new_account, reason))
+
+    async def spy_persist_pin(self, sid, pinned):
+        pass
+
+    monkeypatch.setattr(SessionOrchestrator, "_reassign", spy_reassign)
+    monkeypatch.setattr(SessionOrchestrator, "_persist_pin", spy_persist_pin)
+    monkeypatch.setattr(orch_mod.ccswitch_accounts, "list_accounts",
+                        lambda: [{"name": "copilot_acct"}, {"name": "tony_kindash"}])
+
+    result = await o.run_command("s1", "/account", "tony_kindash")
+
+    assert result is not None
+    assert result.get("data", {}).get("text") == "Account → tony_kindash", repr(result)
+    assert reassigned == [("s1", "tony_kindash", "manual")]
+
+
+@pytest.mark.asyncio
+async def test_run_command_other_commands_still_blocked_without_driver():
+    """Non-account commands still return 'not live' when there is no driver."""
+    o = _make_orch()
+    _rec(o, with_driver=False)
+
+    result = await o.run_command("s1", "/compact", "")
+
+    assert result is not None
+    assert "isn't live" in result.get("data", {}).get("text", ""), repr(result)
