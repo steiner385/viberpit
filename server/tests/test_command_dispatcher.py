@@ -36,19 +36,15 @@ async def test_context_fetches_usage():
 
 
 @pytest.mark.anyio
-async def test_model_sets_and_notices():
+async def test_model_is_not_dispatchers_to_own():
+    """/model is intercepted by run_command BEFORE dispatch (orchestrator-level:
+    record + DB persistence + busy stop/switch/restart, works driverless). The
+    dispatcher must not grow a parallel /model implementation — reaching it is
+    a routing bug and must fail loudly."""
     d = FakeDriver()
-    res = await dispatch(d, _cmd("model", "control"), "sonnet")
-    assert d.model == "sonnet"
-    assert res == {"name": "model", "render": "notice", "data": {"text": "Model → sonnet"}}
-
-
-@pytest.mark.anyio
-async def test_model_no_arg_uses_default_label():
-    d = FakeDriver()
-    res = await dispatch(d, _cmd("model", "control"), "")
-    assert d.model is None
-    assert res["data"]["text"] == "Model → default"
+    with pytest.raises(ValueError, match="unhandled control command"):
+        await dispatch(d, _cmd("model", "control"), "sonnet")
+    assert d.model == "unset"
 
 
 @pytest.mark.anyio
