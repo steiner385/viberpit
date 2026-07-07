@@ -30,7 +30,7 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 def _make_engine(db_url: str, *, poolclass=None):
-    connect_args = {}
+    connect_args: dict[str, object] = {}
     if db_url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
         # Pass timeout at the sqlite3.connect() level so it takes effect
