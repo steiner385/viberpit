@@ -3516,8 +3516,22 @@ class SessionOrchestrator:
                     log.exception("session.display_start_failed id=%s", session_id)
 
             # Ensure the Copilot proxy is running for copilot-backed accounts.
+            # If the proxy can't start (quota exhausted / token dead), schedule a
+            # rotation so the session moves to a working account without requiring
+            # user intervention, then re-raise so the WS caller shows an error.
             if self._copilot is not None and _provider_of(rec.account) == _copilot_mod.PROVIDER:
-                await self._copilot.ensure(rec.account)
+                try:
+                    await self._copilot.ensure(rec.account)
+                except Exception:
+                    log.warning("ensure_driver: copilot proxy start failed for %s; "
+                                "scheduling rotation session=%s", rec.account, session_id,
+                                exc_info=True)
+                    if not self._shutting_down:
+                        self._spawn(
+                            self._rotate_away(rec, reason="proxy_start_failed"),
+                            name=f"rotate-proxy-{session_id}",
+                        )
+                    raise
 
             def _build(resume_arg):
                 return SessionDriver(
@@ -4558,8 +4572,11 @@ class SessionOrchestrator:
         rotation, then resumes the conversation on new_account via the shared
         _reassign primitive (same path as auto-rotation / recovery)."""
         record = self._records.get(session_id)
-        if record is None or session_id not in self._drivers:
+        if record is None:
             raise KeyError(session_id)
+        # Allow switching even when there is no live driver: the session may have
+        # lost its driver because the account's proxy died (Copilot quota exhaustion).
+        # _reassign now handles the driverless case by rebuilding from record state.
         # Validate: reject path-traversal / bad chars.
         assert_valid_account_name(new_account)
         # Validate: reject unknown accounts (must be in the configured ledger).
@@ -4641,21 +4658,43 @@ class SessionOrchestrator:
     async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str) -> None:
         """Resume the session's claude conversation on *new_account* (may equal the
         current account, for a 401 recompose). Relaunches the driver, replays the last
-        prompt, updates the DB, and emits a rotated event."""
+        prompt, updates the DB, and emits a rotated event.
+
+        Works for both live sessions (closes the old driver first) and driverless ones
+        (e.g. the driver died while the session was idle — in that case params are
+        derived from the SessionRecord instead of the old driver).
+        """
         old_driver = self._drivers.get(record.id)
-        if old_driver is None:
-            return
         old = record.account
-        claude_sid = old_driver.claude_session_id
+
+        # Derive driver construction params from whichever source is available.
+        if old_driver is not None:
+            claude_sid = old_driver.claude_session_id
+            cwd = old_driver.cwd
+            mode = old_driver.mode
+            identity = old_driver.identity
+        else:
+            # Driverless path: session lost its driver while idle (proxy crash, etc.).
+            # Use stored record fields — cwd and claude_session_id are persisted on
+            # every turn so they're reliable even after a daemon restart.
+            claude_sid = record.claude_session_id
+            cwd = record.cwd
+            mode = getattr(record, "permission_mode", "interactive")
+            identity = SYSTEM_IDENTITY
+
         try:
-            await old_driver.interrupt()
-            await old_driver.aclose()
+            if old_driver is not None:
+                await old_driver.interrupt()
+                await old_driver.aclose()
             cfg = compose(new_account)
-            configdir.trust_project(new_account, old_driver.cwd)
+            configdir.trust_project(new_account, cwd)
+            Path(cwd).mkdir(parents=True, exist_ok=True)
+            if self._copilot is not None and _provider_of(new_account) == _copilot_mod.PROVIDER:
+                await self._copilot.ensure(new_account)
             new_driver = SessionDriver(
-                record.id, new_account, old_driver.cwd, str(cfg),
-                mode=old_driver.mode, sdk_factory=self._session_factory(record.id),
-                registry=self._registry, identity=old_driver.identity,
+                record.id, new_account, cwd, str(cfg),
+                mode=mode, sdk_factory=self._session_factory(record.id),
+                registry=self._registry, identity=identity,
                 resume=claude_sid,
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
