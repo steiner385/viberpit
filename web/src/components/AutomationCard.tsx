@@ -12,6 +12,12 @@ const LEVEL_DOT: Record<string, string> = {
   idle: 'bg-gray-400', active: 'bg-blue-500', warn: 'bg-amber-500', error: 'bg-red-500',
 }
 
+const MODE_DESCRIPTIONS: Record<string, string> = {
+  off: 'Not monitoring.',
+  propose: 'Suggests actions — you approve before anything runs.',
+  auto: 'Acts automatically without confirmation.',
+}
+
 // --- Config field renderers ---------------------------------------------------
 
 interface FieldProps {
@@ -182,22 +188,24 @@ function SpawnedSessionsSection({ id, enabled, onOpenSession, onReviewSession }:
       {list.length === 0
         ? <p className="text-sm text-muted-foreground">No sessions spawned.</p>
         : (
-          <ul className="space-y-1 text-sm">
-            {list.map((s) => (
-              <li key={s.id} className="flex items-center gap-2">
-                <button
-                  type="button"
-                  // Inactive (ended/archived) sessions have no live driver, so the
-                  // live-attach route 404s — route them to the read-only review view.
-                  onClick={() => (INACTIVE_SESSION_STATUSES.has(s.status) ? onReviewSession : onOpenSession)?.(s.id)}
-                  className="text-blue-600 hover:underline text-left"
-                >
-                  {s.name}
-                </button>
-                <span className="text-muted-foreground">· {s.status}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="max-h-40 overflow-y-auto rounded border border-border p-2">
+            <ul className="space-y-1 text-sm">
+              {list.map((s) => (
+                <li key={s.id} className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    // Inactive (ended/archived) sessions have no live driver, so the
+                    // live-attach route 404s — route them to the read-only review view.
+                    onClick={() => (INACTIVE_SESSION_STATUSES.has(s.status) ? onReviewSession : onOpenSession)?.(s.id)}
+                    className="text-blue-600 hover:underline text-left"
+                  >
+                    {s.name}
+                  </button>
+                  <span className="text-muted-foreground">· {s.status}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
     </section>
   )
@@ -285,19 +293,21 @@ function AutomationActions({ automationId, enabled }: { automationId: string; en
       {list.length === 0
         ? <p className="text-sm text-muted-foreground">No actionable items.</p>
         : (
-          <ul className="space-y-1 text-sm">
-            {list.map((item) => (
-              <li key={item.id} className="flex items-center gap-2">
-                <span className="flex-1 truncate">
-                  <span className="text-muted-foreground tabular-nums">{item.id.split('#')[1] ? `#${item.id.split('#')[1]}` : ''}</span>{' '}
-                  {item.title}
-                </span>
-                {item.actions.map((action) => (
-                  <ActionButton key={action.kind} item={item} action={action} automationId={automationId} />
-                ))}
-              </li>
-            ))}
-          </ul>
+          <div className="max-h-48 overflow-y-auto rounded border border-border p-2">
+            <ul className="space-y-1.5 text-sm">
+              {list.map((item) => (
+                <li key={item.id} className="flex items-center gap-2">
+                  <span className="flex-1 truncate">
+                    <span className="text-muted-foreground tabular-nums">{item.id.split('#')[1] ? `#${item.id.split('#')[1]}` : ''}</span>{' '}
+                    {item.title}
+                  </span>
+                  {item.actions.map((action) => (
+                    <ActionButton key={action.kind} item={item} action={action} automationId={automationId} />
+                  ))}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
     </section>
   )
@@ -321,7 +331,7 @@ export function AutomationCard({ automation: a, onOpenSession, onReviewSession }
           type="button"
           aria-label={open ? 'Collapse' : 'Expand'}
           onClick={() => setOpen((v) => !v)}
-          className="text-left flex-1"
+          className="text-left flex-1 min-w-0"
         >
           <div className="flex items-center gap-2">
             <span className="font-medium">{a.name}</span>
@@ -331,20 +341,30 @@ export function AutomationCard({ automation: a, onOpenSession, onReviewSession }
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <span className={cn('inline-block w-2 h-2 rounded-full', LEVEL_DOT[a.status.level])} />
+          {a.description && (
+            <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{a.description}</p>
+          )}
+          <div className="flex items-center gap-2 text-sm text-muted-foreground mt-0.5">
+            <span className={cn('inline-block w-2 h-2 rounded-full shrink-0', LEVEL_DOT[a.status.level])} />
             {a.status.text}
           </div>
         </button>
         {a.modes.length > 2 && (
-          <select
-            aria-label="Mode"
-            value={a.mode ?? ''}
-            onChange={(e) => patch.mutate({ id: a.id, body: { mode: e.target.value } })}
-            className="text-sm rounded border border-border bg-background px-2 py-1"
-          >
-            {a.modes.map((m) => <option key={m} value={m}>{m}</option>)}
-          </select>
+          <div className="flex flex-col items-end gap-0.5 shrink-0">
+            <select
+              aria-label="Mode"
+              value={a.mode ?? ''}
+              onChange={(e) => patch.mutate({ id: a.id, body: { mode: e.target.value } })}
+              className="text-sm rounded border border-border bg-background px-2 py-1"
+            >
+              {a.modes.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+            {a.mode && MODE_DESCRIPTIONS[a.mode] && (
+              <span className="text-xs text-muted-foreground text-right max-w-36">
+                {MODE_DESCRIPTIONS[a.mode]}
+              </span>
+            )}
+          </div>
         )}
         <button
           type="button"
@@ -377,20 +397,24 @@ export function AutomationCard({ automation: a, onOpenSession, onReviewSession }
             <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Activity</h4>
             {(events.data ?? []).length === 0
               ? <p className="text-sm text-muted-foreground">No activity yet.</p>
-              : <ul className="space-y-1 text-sm">
-                  {(events.data ?? []).map((e) => (
-                    <li key={`${e.ts}-${e.sessionId ?? ''}`} className="flex gap-2">
-                      <span className="text-muted-foreground tabular-nums">{e.ts.slice(11, 19)}</span>
-                      {e.sessionId
-                        ? <button
-                            type="button"
-                            onClick={() => onOpenSession?.(e.sessionId!)}
-                            className="text-blue-600 hover:underline text-left"
-                          >{e.summary}</button>
-                        : <span>{e.summary}</span>}
-                    </li>
-                  ))}
-                </ul>}
+              : (
+                <div className="max-h-40 overflow-y-auto rounded border border-border p-2">
+                  <ul className="space-y-1 text-sm">
+                    {(events.data ?? []).map((e) => (
+                      <li key={`${e.ts}-${e.sessionId ?? ''}`} className="flex gap-2">
+                        <span className="text-muted-foreground tabular-nums shrink-0">{e.ts.slice(11, 19)}</span>
+                        {e.sessionId
+                          ? <button
+                              type="button"
+                              onClick={() => onOpenSession?.(e.sessionId!)}
+                              className="text-blue-600 hover:underline text-left"
+                            >{e.summary}</button>
+                          : <span>{e.summary}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
           </section>
           <AutomationActions automationId={a.id} enabled={open} />
           {a.id === 'pr-doctor' && <ConsolidatePanel enabled={open} />}
