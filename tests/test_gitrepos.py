@@ -167,7 +167,7 @@ class GhListingTests(unittest.TestCase):
     def test_list_accessible_repos_parses_and_strips_token(self) -> None:
         captured: dict = {}
 
-        def fake_run(args, capture_output, text, env):
+        def fake_run(args, capture_output, text, env, input=None):
             captured["args"] = args
             captured["env"] = env
             return subprocess.CompletedProcess(args, 0, stdout=_REPOS_JSON, stderr="")
@@ -235,7 +235,7 @@ class GhListingTests(unittest.TestCase):
         )
         calls: list = []
 
-        def fake_run(args, capture_output, text, env):
+        def fake_run(args, capture_output, text, env, input=None):
             calls.append(args)
             # The org-membership discovery query is a separate gh call; answer it
             # with an empty org list so only the viewer.repositories query feeds
@@ -311,7 +311,7 @@ class GhListingTests(unittest.TestCase):
         )
         calls: list = []
 
-        def fake_run(args, capture_output, text, env):
+        def fake_run(args, capture_output, text, env, input=None):
             calls.append(args)
             joined = " ".join(args)
             if "organizations" in joined:
@@ -328,7 +328,7 @@ class GhListingTests(unittest.TestCase):
         self.assertTrue(any("cursor=CURSOR1" in " ".join(c) for c in calls))
 
     def test_list_accessible_repos_gh_failure_raises(self) -> None:
-        def fake_run(args, capture_output, text, env):
+        def fake_run(args, capture_output, text, env, input=None):
             return subprocess.CompletedProcess(args, 1, stdout="", stderr="not logged in")
 
         with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
@@ -336,7 +336,7 @@ class GhListingTests(unittest.TestCase):
                 gitrepos.list_accessible_repos()
 
     def test_list_accessible_repos_missing_gh_raises(self) -> None:
-        def fake_run(args, capture_output, text, env):
+        def fake_run(args, capture_output, text, env, input=None):
             raise FileNotFoundError("gh")
 
         with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
@@ -346,7 +346,7 @@ class GhListingTests(unittest.TestCase):
     def test_list_remote_branches_parses_and_strips_token(self) -> None:
         envs: list = []
 
-        def fake_run(args, capture_output, text, env):
+        def fake_run(args, capture_output, text, env, input=None):
             envs.append(env)
             if "branches" in args[2]:  # repos/<o>/<n>/branches
                 return subprocess.CompletedProcess(args, 0, stdout="main\nfeature-x\n", stderr="")
@@ -366,7 +366,7 @@ class GhListingTests(unittest.TestCase):
             gitrepos.list_remote_branches("no-slash")
 
     def test_list_remote_branches_gh_failure_raises(self) -> None:
-        def fake_run(args, capture_output, text, env):
+        def fake_run(args, capture_output, text, env, input=None):
             return subprocess.CompletedProcess(args, 1, stdout="", stderr="404")
 
         with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):

@@ -25,7 +25,14 @@ EnvironmentFile=/etc/ccswitch/ccswitch.env
 # lifespan shutdown — x11 teardown, reauth shutdown, orchestrator stop — actually
 # runs instead of being SIGKILLed).
 ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m server.ipc
-Restart=on-failure
+# Restart=always, NOT on-failure: an out-of-band SIGTERM (a stray kill/pkill, not a
+# `systemctl stop`) makes the daemon exit with Result=success, which on-failure does
+# NOT restart — the daemon then stays dead, the edge loops on "Connection refused",
+# and the UI shows no sessions. The health watchdog only covers the wedge case
+# (process alive, socket dead), so a fully-absent daemon fell between both guards.
+# `always` still honors an explicit `systemctl stop` (deploys are unaffected), and
+# StartLimitBurst/Interval still backstops a genuine crash-loop.
+Restart=always
 RestartSec=3
 # Shutdown budget: 10s (uvicorn graceful) + up to 15s (x11.stop_all sweep,
 # _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S in serve.py) + small overhead for reauth
