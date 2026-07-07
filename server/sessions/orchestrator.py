@@ -3594,6 +3594,12 @@ class SessionOrchestrator:
                 driver = _build(None)
                 await driver.start()
             self._drivers[session_id] = driver
+            # Re-apply the persisted model, mirroring _reassign. ensure_driver
+            # previously dropped rec.model on resume (rotation kept it, a plain
+            # detach → attach lost it to the account default). Placed after the
+            # final driver assignment so the fresh-start fallback gets it too.
+            if rec.model is not None:
+                await driver.set_model(rec.model)
             rec.detached = False
             await self._maybe_rearm_on_attach(session_id)
             log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
@@ -4147,15 +4153,25 @@ class SessionOrchestrator:
                         "data": {"text": f"Unknown account: {acct}"}}
             return {"name": "account", "render": "notice",
                     "data": {"text": f"Account → {acct}"}}
+        # /model is likewise orchestrator-level (record + DB, driver optional): it
+        # must sit ABOVE the driver guard so a detached session persists the model
+        # instead of getting "isn't live" — the picker was a silent no-op there.
+        if str(name).lstrip("/") == "model":
+            arg = (args or "").strip()
+            label = arg or "default"
+            has_driver = self._drivers.get(session_id) is not None
+            restarted = await self.set_model_for_session(session_id, arg or None)
+            if not has_driver:
+                text = f"Model → {label} — saved; applies when the session resumes"
+            elif restarted:
+                text = f"Model → {label} — stopped the current activity and restarted it on the new model"
+            else:
+                text = f"Model → {label}"
+            return {"name": "model", "render": "notice", "data": {"text": text}}
         d = self._drivers.get(session_id)
         if d is None:
             return {"name": str(name).lstrip("/"), "render": "notice",
                     "data": {"text": "This session isn't live — open it and try again."}}
-        if str(name).lstrip("/") == "model":
-            arg = (args or "").strip()
-            await self.set_model_for_session(session_id, arg or None)
-            return {"name": "model", "render": "notice",
-                    "data": {"text": f"Model → {arg or 'default'}"}}
         if str(name).lstrip("/") == "goal":
             cond = (args or "").strip()
             cleared = (not cond) or cond.lower() == "clear"
@@ -4647,16 +4663,38 @@ class SessionOrchestrator:
                 .values(account_pinned=pinned)
             )
 
-    async def set_model_for_session(self, session_id: str, model: str | None) -> None:
+    async def set_model_for_session(self, session_id: str, model: str | None) -> bool:
         """Set the live model AND persist it, so it survives rehydrate and every
-        driver rebuild (rotation/recovery re-applies record.model in _reassign)."""
+        driver rebuild (rotation/recovery re-applies record.model in _reassign).
+
+        A busy driver only picks up set_model on FUTURE turns, so switching mid-turn
+        would leave the in-flight activity running on the old model with no feedback.
+        When the driver is mid-turn (turn_active) the turn is stopped and restarted:
+        interrupt → set_model → re-send the stored last prompt. That's the same
+        stop → switch → replay dance _reassign performs across drivers during
+        rotation, here on the same driver — the driver's FIFO prompt queue runs the
+        resend as a fresh turn once the interrupt unwinds. Returns True iff the turn
+        was actually restarted; with no stored prompt (e.g. the daemon restarted
+        mid-turn) the interrupt + switch still happen but nothing is resent. Record
+        update + persistence run in every case, including driverless (detached),
+        so the model applies when the session resumes."""
+        restarted = False
         driver = self._drivers.get(session_id)
         if driver is not None:
-            await driver.set_model(model)
+            if driver.turn_active:
+                await driver.interrupt()
+                await driver.set_model(model)
+                last = self._last_prompt.get(session_id)
+                if last:
+                    await driver.send_prompt(last)
+                    restarted = True
+            else:
+                await driver.set_model(model)
         record = self._records.get(session_id)
         if record is not None:
             record.model = model
         await self._persist_model(session_id, model)
+        return restarted
 
     async def _persist_model(self, session_id: str, model: str | None) -> None:
         async with db_session() as db:
