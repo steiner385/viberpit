@@ -23,6 +23,7 @@ import { selectRunningSubAgentCount } from '@/session/selectors'
 import { BrowserTab } from '../BrowserTab'
 import { useModels, useAccounts, useSessions } from '@/api/hooks'
 import { ExportMenu } from './ExportMenu'
+import { ModelSwitchDialog } from './ModelSwitchDialog'
 
 export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSlot?: ReactNode }) {
   const runningSubAgents = selectRunningSubAgentCount(rt.state.turns)
@@ -37,6 +38,11 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   const [browserEnabled, setBrowserEnabled] = useState(false)
   // Active tab: 'conversation' (default) or 'browser'
   const [activeTab, setActiveTab] = useState<'conversation' | 'browser'>('conversation')
+
+  // Model id awaiting confirmation: switching model on a BUSY session stops the
+  // in-flight turn and restarts it on the new model, so the picker gates on a
+  // confirm dialog instead of firing immediately. Non-busy tiers fire directly.
+  const [pendingModelId, setPendingModelId] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -74,7 +80,10 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           models={models}
           accounts={accounts.map((a) => ({ name: a.name, nickname: a.nickname }))}
           accountPinned={pinned}
-          onSelectModel={(id) => rt.onCommand('model', id)}
+          onSelectModel={(id) => {
+            if (statusTier(rt.state.status.state) === 'busy') setPendingModelId(id)
+            else rt.onCommand('model', id)
+          }}
           onSelectAccount={(name) => rt.onCommand('account', name)}
           onSetMode={rt.onSetMode}
         />
@@ -245,6 +254,20 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
 
         return <div {...convoWrapperProps}>{conversationPanel}</div>
       })()}
+
+      {/* Confirm stop-and-restart before switching model on a busy session. Cancel
+          just closes: the <select> is controlled by the record model, so it snaps
+          back on its own. */}
+      {pendingModelId !== null && (
+        <ModelSwitchDialog
+          modelLabel={models.find((m) => m.id === pendingModelId)?.label ?? pendingModelId}
+          onClose={() => setPendingModelId(null)}
+          onConfirm={() => {
+            rt.onCommand('model', pendingModelId)
+            setPendingModelId(null)
+          }}
+        />
+      )}
     </>
   )
 }

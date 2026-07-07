@@ -3,6 +3,7 @@ from server.sessions.types import SessionRecord
 
 
 class _FakeDriver:
+    turn_active = False  # idle: set_model applies without an interrupt/restart
     def __init__(self): self.model = "untouched"
     async def set_model(self, m): self.model = m
 

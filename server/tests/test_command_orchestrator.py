@@ -69,9 +69,10 @@ async def test_run_command_unknown_raises():
 @pytest.mark.anyio
 async def test_run_command_not_live_session_returns_notice():
     orch, _ = _orch_with_driver()  # no driver registered
-    # Use a driver-bound command (/model): /account is now handled BEFORE the
-    # driver check so it works on driverless sessions (see test_driverless_reassign).
-    res = await orch.run_command("ghost", "model", "")
+    # Use a driver-bound command (/review): /account AND /model are handled BEFORE
+    # the driver check so they work on driverless sessions (see
+    # test_driverless_reassign and test_model_switch_restart).
+    res = await orch.run_command("ghost", "review", "")
     assert res is not None and res["render"] == "notice"
     assert "live" in res["data"]["text"].lower()
 

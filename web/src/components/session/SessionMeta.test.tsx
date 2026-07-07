@@ -18,6 +18,13 @@ describe('SessionMeta switchers', () => {
     expect(onSelectModel).toHaveBeenCalledWith('sonnet')
   })
 
+  it('does not dispatch a model selection when the value equals the current model', () => {
+    const onSelectModel = vi.fn()
+    render(<SessionMeta {...base} onSelectModel={onSelectModel} onSelectAccount={vi.fn()} />)
+    fireEvent.change(screen.getByLabelText('Select model'), { target: { value: 'opus' } })
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
+
   it('dispatches an account selection', () => {
     const onSelectAccount = vi.fn()
     render(<SessionMeta {...base} onSelectModel={vi.fn()} onSelectAccount={onSelectAccount} />)

@@ -18,9 +18,9 @@ async def dispatch(driver, cmd: Command, args: str) -> dict | None:
         return {"name": cmd.name, "render": "help", "data": None}
 
     if cmd.kind == "control":
-        if cmd.name == "model":
-            await driver.set_model(args or None)
-            return {"name": "model", "render": "notice", "data": {"text": f"Model → {args or 'default'}"}}
+        # /model never reaches dispatch: run_command intercepts it before the
+        # catalog lookup (orchestrator-level — record + DB persistence + the
+        # busy stop/switch/restart live there, and it must work driverless).
         if cmd.name == "clear":
             await driver.reconnect()
             return {"name": "clear", "render": "clear", "data": {"text": "Conversation cleared"}}
