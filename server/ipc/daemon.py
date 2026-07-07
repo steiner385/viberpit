@@ -339,8 +339,14 @@ def create_daemon_app() -> FastAPI:
             result = await fn(params)
             return JSONResponse({"result": result})
         except Exception as exc:  # noqa: BLE001 — surface handler errors as an envelope
-            return JSONResponse(
-                {"error": {"type": type(exc).__name__, "message": str(exc)}}, status_code=500)
+            err = {"type": type(exc).__name__, "message": str(exc)}
+            # A typed exception can carry structured state the edge needs (e.g.
+            # AllAccountsBusy.earliest_reset); ``error_data`` rides the envelope so
+            # the remote client can faithfully reconstruct the original exception.
+            data = getattr(exc, "error_data", None)
+            if data is not None:
+                err["data"] = data
+            return JSONResponse({"error": err}, status_code=500)
 
     @app.websocket("/events")
     async def events(ws: WebSocket) -> None:

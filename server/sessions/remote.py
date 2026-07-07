@@ -6,10 +6,12 @@ the vertical-slice methods only.
 """
 import asyncio
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from ccswitch.oauth import Usage
 from server.ipc.client import DaemonError, DaemonUnavailable
+from server.sessions.selection import AllAccountsBusy
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
@@ -329,7 +331,20 @@ class RemoteOrchestrator:
         return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None
 
     async def create_session(self, **kwargs) -> SessionRecord:
-        r = await self._client.call("create_session", **kwargs)
+        # Faithfully reconstruct the in-process error contract across the RPC
+        # boundary: the edge's create handler renders a clear "all accounts at
+        # limit, resets <date>" message only if it catches AllAccountsBusy by
+        # type. Without this re-raise it sees a generic DaemonError → opaque 500 →
+        # "Something went wrong." (mirrors run_command's KeyError re-raise.)
+        try:
+            r = await self._client.call("create_session", **kwargs)
+        except DaemonError as exc:
+            if exc.err_type == "AllAccountsBusy":
+                data = exc.data or {}
+                reset = data.get("earliest_reset")
+                earliest = datetime.fromisoformat(reset) if reset else None
+                raise AllAccountsBusy(earliest, data.get("kind", "at_ceiling")) from exc
+            raise
         return SessionRecord.from_dict(r["session"])
 
     async def send_prompt(self, session_id: str, text: str, images=None) -> str | None:

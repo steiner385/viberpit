@@ -1164,9 +1164,13 @@ class SessionOrchestrator:
         excluding quarantined accounts, load-aware) plus the usage-ceiling guard
         (``_account_limited``). None means: pause spawning until an account frees."""
         try:
+            # reserve=False: this is a read-only availability probe. Reserving here
+            # would consume the picked account's reservation window without starting
+            # a session, starving the real spawn (and interactive creates) when only
+            # one account has headroom.
             picked = select_account(
                 exclude=self._recovery.quarantined(now=self._clock()),
-                load=self.live_session_load())
+                load=self.live_session_load(), reserve=False)
         except AllAccountsBusy:
             return None
         if self._account_limited(picked.name):
