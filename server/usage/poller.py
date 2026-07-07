@@ -154,6 +154,16 @@ class UsagePoller:
         """
         return self._cache.get(account)
 
+    def consecutive_failures(self, account: str) -> int:
+        """Return the number of consecutive fetch failures for *account*.
+
+        A non-zero value means the last N polls all returned None (network
+        error, auth failure, dead Copilot proxy, etc.).  The orchestrator uses
+        this to distinguish a transient hiccup from a persistently unreachable
+        account that warrants rotating sessions away.
+        """
+        return self._fail_count.get(account, 0)
+
     async def all(self) -> dict[str, Usage | None]:
         """Fetch usage for every registered account and return the full mapping."""
         names = [a["name"] for a in list_accounts()]
