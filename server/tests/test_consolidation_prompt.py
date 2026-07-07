@@ -15,3 +15,9 @@ def test_consolidation_prompt_names_every_pr_and_closes_and_supersedes():
     assert "origin/master" in prompt          # branches off the base
     assert "Superseded by" in prompt          # closes originals with a linking comment
     assert "o/r" in prompt
+
+
+def test_consolidation_prompt_respects_main_base():
+    prompt = build_consolidation_prompt("o/r", "main", [_pr(1), _pr(2)])
+    assert "origin/main" in prompt
+    assert "origin/master" not in prompt
