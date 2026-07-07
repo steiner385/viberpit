@@ -74,7 +74,18 @@ def test_instructs_one_pr_for_all_issues():
     assert "one pull request" in lower or "single pull request" in lower or "one pr" in lower
 
 
-def test_instructs_branch_off_origin_master():
+def test_instructs_branch_off_default_branch_master():
+    result = build_implement_prompt(SINGLE_BATCH, default_branch="master")
+    assert "origin/master" in result
+
+
+def test_instructs_branch_off_default_branch_main():
+    result = build_implement_prompt(SINGLE_BATCH, default_branch="main")
+    assert "origin/main" in result
+    assert "origin/master" not in result
+
+
+def test_default_branch_defaults_to_master():
     result = build_implement_prompt(SINGLE_BATCH)
     assert "origin/master" in result
 

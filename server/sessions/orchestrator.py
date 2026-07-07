@@ -1346,6 +1346,12 @@ class SessionOrchestrator:
         from server.automations.backlog_prompt import build_implement_prompt
         from server.config import get_settings
         url = f"https://github.com/{batch.repo}.git"
+        try:
+            default_branch = await asyncio.to_thread(
+                lambda: gitrepos.list_remote_branches(batch.repo).get("default") or "master"
+            )
+        except Exception:
+            default_branch = "master"
         cwd = await asyncio.to_thread(
             gitrepos.ensure_clone, get_settings().repo_root, batch.repo, url)
         return await self._backlog_ctx.spawn_session(
@@ -1355,7 +1361,7 @@ class SessionOrchestrator:
             cwd=cwd,
             account=account,
             name=f"backlog {batch.primary}",
-            initial_prompt=build_implement_prompt(batch),
+            initial_prompt=build_implement_prompt(batch, default_branch),
             detail={"issues": batch.issues},
         )
 
@@ -2317,7 +2323,13 @@ class SessionOrchestrator:
         if existing is not None:
             return "duplicate", existing.id
 
-        prompt = build_consolidation_prompt(repo, "master", prs)
+        try:
+            default_branch = await asyncio.to_thread(
+                lambda: gitrepos.list_remote_branches(repo).get("default") or "master"
+            )
+        except Exception:
+            default_branch = "master"
+        prompt = build_consolidation_prompt(repo, default_branch, prs)
         url = f"https://github.com/{repo}.git"
         try:
             cwd = await asyncio.to_thread(

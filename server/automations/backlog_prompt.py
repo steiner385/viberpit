@@ -11,7 +11,7 @@ from __future__ import annotations
 from .backlog_selection import Batch
 
 
-def build_implement_prompt(batch: Batch) -> str:
+def build_implement_prompt(batch: Batch, default_branch: str = "master") -> str:
     """Return the seed prompt for a session that implements ``batch``.
 
     The prompt instructs the agent to:
@@ -19,6 +19,10 @@ def build_implement_prompt(batch: Batch) -> str:
     - Close each issue with a ``Fixes #<n>`` keyword in the PR body.
     - Follow this repository's completion workflow: open the PR (non-draft),
       mark it ready for review, and arm auto-merge (``--squash --auto``).
+
+    ``default_branch`` is the target repo's actual integration branch (e.g.
+    ``"main"`` or ``"master"``).  Callers must resolve it from the remote before
+    invoking — do NOT hardcode ``"master"`` (many repos use ``"main"``).
 
     Pure: no I/O, no model calls.  The returned string may be passed directly
     as the first user prompt of a spawned claude-agent-sdk session.
@@ -45,7 +49,7 @@ def build_implement_prompt(batch: Batch) -> str:
         "5. Arm auto-merge: `gh pr merge <#> --squash --auto`.\n"
         "   Both steps 4 and 5 are required — a ready PR with auto-merge armed\n"
         "   is the finished state.\n"
-        "6. Branch off `origin/master` (never local `master`).\n"
+        f"6. Branch off `origin/{default_branch}` (never local `{default_branch}`).\n"
         "7. End every commit message with:\n"
         "   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`\n"
     )
