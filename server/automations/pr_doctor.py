@@ -32,7 +32,7 @@ class PrDoctor:
         ConfigField(key="auto_update_out_of_date", label="Auto-update behind branches",
                     type="bool", default=True, help="Mechanical, safe."),
         ConfigField(key="auto_fix_failing_ci", label="Auto-fix failing CI",
-                    type="bool", default=True),
+                    type="bool", default=True, help="Spawns a session to fix failing CI jobs."),
         ConfigField(key="auto_resolve_conflicts", label="Auto-resolve merge conflicts",
                     type="bool", default=False, help="Risky — spawns a session to rebase/resolve."),
     ]
