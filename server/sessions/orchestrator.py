@@ -4689,8 +4689,9 @@ class SessionOrchestrator:
             cfg = compose(new_account)
             configdir.trust_project(new_account, cwd)
             Path(cwd).mkdir(parents=True, exist_ok=True)
-            if self._copilot is not None and _provider_of(new_account) == _copilot_mod.PROVIDER:
-                await self._copilot.ensure(new_account)
+            _copilot = getattr(self, "_copilot", None)
+            if _copilot is not None and _provider_of(new_account) == _copilot_mod.PROVIDER:
+                await _copilot.ensure(new_account)
             new_driver = SessionDriver(
                 record.id, new_account, cwd, str(cfg),
                 mode=mode, sdk_factory=self._session_factory(record.id),
