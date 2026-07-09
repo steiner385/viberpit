@@ -10,7 +10,7 @@ from typing import Any, Awaitable, Callable
 
 from server.github.pr_status import PullRequestInfo
 
-from .backlog_github import GhRun, query_candidates
+from .backlog_github import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, GhRun, query_candidates
 from .backlog_selection import Batch, rank_and_batch, should_free_slot
 from .base import AutomationStatus, ConfigField
 from .context import AutomationContext
@@ -234,6 +234,11 @@ class BacklogRunner:
         ConfigField(key="max_attempts", label="Max attempts per issue", type="int", default=2),
         ConfigField(key="max_issues_per_pr", label="Max issues per PR", type="int", default=1,
                     help="Bundle up to this many related issues into one PR."),
+        ConfigField(key="needs_human_retry_days", label="Retry needs-human after (days)",
+                    type="int", default=NEEDS_HUMAN_RETRY_DAYS_DEFAULT,
+                    help="Reconsider escalated (needs-human) issues once they sit "
+                         "untouched this many days. 0 = never retry (permanent "
+                         "handoff). Any activity on the issue restarts the clock."),
     ]
 
     def status(self, ctx) -> AutomationStatus:
