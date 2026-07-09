@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import dataclasses
+import functools
 import logging
 import os
 import time
@@ -376,6 +377,16 @@ class SessionDriver:
                 options=options,
                 multi_select=multi_select,
             ))
+            # Emit QuestionResolved the moment THIS future settles (answered or
+            # dismissed) — per-question, not after the whole gather, so a reattach
+            # between the answers of a multi-question call only resurrects the
+            # genuinely-unanswered cards. The resolution must be an event on the
+            # same stream as the Question frame: the daemon ring replays that frame
+            # on a mid-turn reattach, and without a QuestionResolved after it an
+            # already-answered question resurrects as pending (and other live tabs
+            # never learn it was answered).
+            fut.add_done_callback(
+                functools.partial(self._emit_question_resolved, qid, turn_id))
             pending.append((q, fut))
 
         # A question is now pending for the user → waiting_input.
@@ -413,6 +424,26 @@ class SessionDriver:
             msg = "\n".join(lines)
 
         return PermissionResultDeny(message=msg)
+
+    def _emit_question_resolved(self, question_id: str, turn_id: str,
+                                fut: asyncio.Future) -> None:
+        """Done-callback for a question future: broadcast the resolution.
+
+        The future resolves to (selected, mode) or None (dismissed via deny_all).
+        A cancelled future (driver torn down mid-question) emits nothing — there
+        is no resolution to report. Best-effort: a broadcast failure must never
+        propagate into asyncio's callback machinery."""
+        if fut.cancelled():
+            return
+        try:
+            res = fut.result()
+            selected, mode = res if res is not None else (None, "dismissed")
+            self._emit(ev.QuestionResolved(
+                question_id=question_id, turn_id=turn_id,
+                selected=selected, mode=mode))
+        except Exception:
+            log.warning("driver: QuestionResolved emit failed session=%s qid=%s",
+                        self.session_id, question_id, exc_info=True)
 
     def answer_question(self, question_id: str, selected: list[str], identity: str,
                         mode: str = "option") -> bool:
@@ -477,6 +508,15 @@ class SessionDriver:
             # A prompt is now pending for the user → waiting_input / ready_review.
             await self._emit_status()
         allowed = await fut
+        # Broadcast the resolution so it rides the same stream as the request
+        # frame — the daemon ring replays that frame on a mid-turn reattach, and
+        # without a PermissionResolved after it an already-decided permission
+        # resurrects in every reattached client's pinned panel (and other live
+        # tabs never learn it was decided). Mirrors QuestionResolved. Gated on
+        # perm_id: an auto-approved tool never emitted a request, so there is no
+        # card to clear.
+        if perm_id is not None:
+            self._emit(ev.PermissionResolved(perm_id, turn_id, allowed))
         # Decision made; the perm is no longer pending → back to in_progress.
         await self._emit_status()
         return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied by user")
