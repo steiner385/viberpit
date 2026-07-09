@@ -82,14 +82,22 @@ describe('SessionCard deterministic skeleton', () => {
 // usage% + "active … ago" + five 44px action icons into ~360px. Per-element
 // truncation can shrink things but can't *drop* one when space runs out, so the
 // secondary signals are gated to a wide card via Tailwind container queries
-// (`@lg:*`, resolved against the card's own width — the drag-resizable sidebar —
+// (`@md:*`, resolved against the card's own width — the drag-resizable sidebar —
 // not the viewport). This replaced viewport `lg:` breakpoints, which left a
 // narrow sidebar on a wide window in the full desktop layout and overflowed the
 // badge row under the action icons. When the card is narrow, only the
 // at-a-glance essentials (title, account chip, status pill) and a single resume
-// action survive; everything else is `hidden @lg:*`. These assertions lock that
+// action survive; everything else is `hidden @md:*`. These assertions lock that
 // contract so a refactor can't silently un-hide the demoted elements (or hide an
 // essential) in a narrow card.
+//
+// The threshold must be REACHABLE inside the sidebar. Container queries resolve
+// against the card's content box, and the card's width budget tops out at
+// SIDEBAR_MAX 560 − sidebar p-2 (16) − scrollbar (~15) − card border (2) − card
+// px-3 (24) ≈ 503px. `@lg` (32rem = 512px) is therefore unsatisfiable at ANY
+// permitted sidebar width — gating on it hid the badges/telemetry/actions for
+// every desktop user. `@md` (28rem = 448px) engages once the sidebar is dragged
+// to ≳505px while keeping the compact layout at the 320px default.
 describe('SessionCard narrow-card declutter contract', () => {
   const rich: Session = {
     ...base,
@@ -103,23 +111,33 @@ describe('SessionCard narrow-card declutter contract', () => {
 
   it('gates the telemetry row to a wide card (hidden when narrow)', () => {
     renderCard(rich)
-    expect(screen.getByTestId('card-telemetry')).toHaveClass('hidden', '@lg:flex')
+    expect(screen.getByTestId('card-telemetry')).toHaveClass('hidden', '@md:flex')
   })
 
   it('gates the Goal badge to a wide card', () => {
     renderCard(rich)
-    expect(screen.getByTestId('card-goal')).toHaveClass('hidden', '@lg:inline-flex')
+    expect(screen.getByTestId('card-goal')).toHaveClass('hidden', '@md:inline-flex')
   })
 
   it('gates the PR badge to a wide card', () => {
     renderCard(rich)
-    expect(screen.getByTestId('card-prs')).toHaveClass('hidden', '@lg:inline-flex')
+    expect(screen.getByTestId('card-prs')).toHaveClass('hidden', '@md:inline-flex')
+  })
+
+  it('never gates content on a container width the sidebar cannot reach', () => {
+    // Regression guard for the unreachable-breakpoint bug: `@lg:` (512px)
+    // exceeds the card's ~503px max content width inside the sidebar, so any
+    // element gated on it is permanently invisible on desktop. No card element
+    // may use an `@lg:` (or larger) container variant.
+    const { container } = renderCard(rich)
+    const unreachable = container.querySelectorAll('[class*="@lg:"], [class*="@xl:"]')
+    expect([...unreachable].map((el) => el.getAttribute('data-testid') ?? el.className)).toEqual([])
   })
 
   it('gates rename/archive/delete to a wide card but keeps resume when narrow', () => {
     renderCard(rich)
     const secondary = screen.getByTestId('card-secondary-actions')
-    expect(secondary).toHaveClass('hidden', '@lg:contents')
+    expect(secondary).toHaveClass('hidden', '@md:contents')
     expect(within(secondary).getByRole('button', { name: /rename session/i })).toBeInTheDocument()
     expect(within(secondary).getByRole('button', { name: /archive session/i })).toBeInTheDocument()
     expect(within(secondary).getByRole('button', { name: /delete session/i })).toBeInTheDocument()
