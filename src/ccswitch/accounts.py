@@ -56,20 +56,28 @@ def set_copilot_usage_reader(fn: "Callable[[str], dict | None] | None") -> None:
 def _copilot_usage_for(name: str) -> "oauth.Usage | None":
     reader = _copilot_usage_reader
     if reader is None:
+        # Feature not configured — not a fetch failure, so no backoff.
         return None
+    # Same ledger cooldown as the Anthropic path: a dead/idle proxy must not be
+    # re-hit on every sweep and every dashboard read.
+    with ledger.locked_ledger() as led:
+        if ledger.usage_fetch_cooldown_active(led, name, time.time()):
+            log.debug("usage_for(%s): fetch-failure cooldown active — skipping", name)
+            return None
     try:
         payload = reader(name)
     except Exception:
         log.warning("copilot usage read failed for %s", name, exc_info=True)
-        return None
-    if payload is None:
+        _note_usage_fetch_failure(name)
         return None
     now = datetime.now(timezone.utc)
-    u = copilot.usage_from_proxy(payload, now)
-    if u is not None:
-        with ledger.locked_ledger() as led:
+    u = copilot.usage_from_proxy(payload, now) if payload is not None else None
+    with ledger.locked_ledger() as led:
+        if u is not None:
             ledger.record_usage(led, name, u, now)
             ledger.set_status(led, name, "ok")
+        else:
+            ledger.note_usage_fetch_failure(led, name, time.time())
     return u
 
 

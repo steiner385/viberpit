@@ -4,6 +4,12 @@ Responsibilities:
 - Deduplicate concurrent per-account fetches (one in-flight request per account).
 - Fan changes out to subscriber queues.
 - Run a background loop on a configurable interval.
+- Count consecutive failures per account (rotation-monitor input).
+
+NOT a responsibility: rate-limit backoff. That is owned by usage_for's ledger
+cooldown (usageFetchFails/usageFetchCooldownUntil), shared by every caller in
+every process — get() always delegates, so a recovery that lands in the ledger
+via any path (re-auth, CLI, selection probe) is visible immediately.
 
 Tests inject a fake ``usage_fn`` so no real network calls are made.
 """
@@ -13,7 +19,6 @@ import asyncio
 import logging
 import os
 import random
-import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
@@ -40,9 +45,6 @@ class UsagePoller:
         *,
         jitter_frac: float = 0.1,
         rng: Callable[[], float] = random.random,
-        clock: Callable[[], float] = time.monotonic,
-        backoff_base: float | None = None,
-        backoff_cap: float = 900.0,
     ) -> None:
         self._poll_interval = poll_interval
         self._usage_fn = usage_fn if usage_fn is not None else _default_usage_fn
@@ -51,18 +53,14 @@ class UsagePoller:
         self._jitter_frac = jitter_frac
         self._rng = rng
 
-        # Per-account adaptive backoff. When a fetch fails (returns None — a 429
-        # throttle, a needs-reauth account, or a live-session token the SDK owns),
-        # the account enters an exponentially-growing cooldown during which get()
-        # serves the cached value instead of re-fetching. This caps the load a
-        # single failing account can put on Anthropic's API from BOTH the sweep
-        # loop and on-demand dashboard reads — and stops a sustained 429 storm
-        # from blocking the account's own recovery to 'ok'.
-        self._clock = clock
-        self._backoff_base = backoff_base if backoff_base is not None else poll_interval
-        self._backoff_cap = backoff_cap
+        # Consecutive-failure counter per account, read by the orchestrator's
+        # rotation monitor to spot persistently dead accounts. The fetch-failure
+        # BACKOFF itself lives in usage_for's ledger cooldown (shared by every
+        # caller in every process) — the poller must NOT gate fetches with its
+        # own in-memory cooldown on top: doing so masked recoveries, serving a
+        # stale cached None after a re-auth had already refreshed the ledger
+        # (kindash, 2026-07-09).
         self._fail_count: dict[str, int] = {}
-        self._cooldown_until: dict[str, float] = {}
 
         # Last-known usage per account
         self._cache: dict[str, Usage | None] = {}
@@ -97,12 +95,6 @@ class UsagePoller:
         that arrive while the lock is held wait and then read the cache the first
         caller wrote — avoiding N duplicate fetches for the same account.
         """
-        # Backoff gate: a recently-failed account is served from cache (no network)
-        # until its cooldown elapses, so one throttled account can't be re-hammered
-        # on every sweep and every dashboard load.
-        if self._clock() < self._cooldown_until.get(account, 0.0):
-            return self._cache.get(account)
-
         lock = self._fetch_locks.setdefault(account, asyncio.Lock())
 
         # Fast path: if the lock is already held another coroutine is fetching;
@@ -122,7 +114,7 @@ class UsagePoller:
                 # The usage_fn contract is to return None on failure, but a
                 # malformed credential slot or other unexpected fault can still
                 # raise. Contain it here: a single account must degrade to "no
-                # usage" (None) and grow its backoff, never propagate out of the
+                # usage" (None), never propagate out of the
                 # sweep. all() aggregates via get(), so one bad account propagating
                 # would 500 the whole /rpc/usage RPC — which the remote-mode edge
                 # maps to a blanket 409 on every route. See test_usage.py.
@@ -134,16 +126,6 @@ class UsagePoller:
             if old is _SENTINEL or old != result:
                 self._publish(account, result)
             return result
-
-    def reset_backoff(self, account: str) -> None:
-        """Clear an account's failure cooldown so the next get() fetches immediately.
-
-        Call after an event that makes a previously-failing account healthy again
-        (e.g. a successful re-auth) so fresh usage is fetched without waiting out
-        the remaining cooldown.
-        """
-        self._fail_count.pop(account, None)
-        self._cooldown_until.pop(account, None)
 
     def cached(self, account: str) -> Usage | None:
         """Return the last-known usage for *account* without fetching, or ``None``.
@@ -226,28 +208,16 @@ class UsagePoller:
         """Poll interval plus up to ``jitter_frac`` extra — never less than the interval."""
         return self._poll_interval * (1.0 + self._jitter_frac * self._rng())
 
-    def _backoff_delay(self, fail_count: int) -> float:
-        """Cooldown for the *fail_count*-th consecutive failure: exponential, capped.
-
-        ``base * 2**(fail_count-1)`` clamped to ``backoff_cap``, plus up to
-        ``jitter_frac`` extra so multiple throttled accounts don't resync.
-        """
-        raw = self._backoff_base * (2 ** (max(fail_count, 1) - 1))
-        return min(raw, self._backoff_cap) * (1.0 + self._jitter_frac * self._rng())
-
     def _note_outcome(self, account: str, result: Usage | None) -> None:
-        """Update an account's backoff state from a fetch result.
+        """Track consecutive failures per account (rotation-monitor input only).
 
-        None (throttle / auth failure / SDK-owned token) grows the cooldown; any
-        real usage clears it.
+        The fetch-rate backoff itself is usage_for's ledger cooldown; nothing
+        here may gate future fetches.
         """
         if result is None:
-            n = self._fail_count.get(account, 0) + 1
-            self._fail_count[account] = n
-            self._cooldown_until[account] = self._clock() + self._backoff_delay(n)
+            self._fail_count[account] = self._fail_count.get(account, 0) + 1
         else:
             self._fail_count.pop(account, None)
-            self._cooldown_until.pop(account, None)
 
     async def _loop(self) -> None:
         """Poll all accounts every ``_poll_interval`` seconds (plus jitter)."""
