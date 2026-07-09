@@ -199,15 +199,72 @@ describe('BrowserTab', () => {
     }
   })
 
-  it('surfaces a blocked-clipboard hint instead of failing silently', async () => {
+  it('opens the paste-capture fallback instead of failing silently when clipboard read is blocked', async () => {
     const readText = vi.fn().mockRejectedValue(new DOMException('no', 'NotAllowedError'))
     vi.stubGlobal('navigator', { clipboard: { readText } })
     try {
       render(<BrowserTab sessionId="S" statusState="working" initialState="connected" />)
       fireEvent.click(screen.getByRole('button', { name: /paste from clipboard/i }))
       await waitFor(() =>
-        expect(screen.getByText(/clipboard blocked/i)).toBeInTheDocument(),
+        expect(screen.getByLabelText('Paste target')).toBeInTheDocument(),
       )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('opens a focused paste-capture field when the Clipboard API is missing (plain-http origin)', () => {
+    // navigator.clipboard only exists in secure contexts; over plain http it is
+    // undefined and readText can never run — the button must still do something.
+    vi.stubGlobal('navigator', {})
+    try {
+      render(<BrowserTab sessionId="S" statusState="working" initialState="connected" />)
+      fireEvent.click(screen.getByRole('button', { name: /paste from clipboard/i }))
+      const field = screen.getByLabelText('Paste target')
+      expect(document.activeElement).toBe(field)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('relays a native paste from the capture field, closes it, and confirms', () => {
+    vi.stubGlobal('navigator', {})
+    try {
+      render(<BrowserTab sessionId="S" statusState="working" initialState="connected" />)
+      fireEvent.click(screen.getByRole('button', { name: /paste from clipboard/i }))
+      const field = screen.getByLabelText('Paste target')
+      // With the mocked VncClient the relay is a no-op, but it must not throw.
+      fireEvent.paste(field, { clipboardData: { getData: () => 'hunter2' } })
+      expect(screen.queryByLabelText('Paste target')).toBeNull()
+      expect(screen.getByText(/pasted into the session/i)).toBeInTheDocument()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('closes the capture field on Escape without a paste confirmation', () => {
+    vi.stubGlobal('navigator', {})
+    try {
+      render(<BrowserTab sessionId="S" statusState="working" initialState="connected" />)
+      fireEvent.click(screen.getByRole('button', { name: /paste from clipboard/i }))
+      fireEvent.keyDown(screen.getByLabelText('Paste target'), { key: 'Escape' })
+      expect(screen.queryByLabelText('Paste target')).toBeNull()
+      expect(screen.queryByText(/pasted into the session/i)).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('reports an empty clipboard without opening the capture field', async () => {
+    const readText = vi.fn().mockResolvedValue('')
+    vi.stubGlobal('navigator', { clipboard: { readText } })
+    try {
+      render(<BrowserTab sessionId="S" statusState="working" initialState="connected" />)
+      fireEvent.click(screen.getByRole('button', { name: /paste from clipboard/i }))
+      await waitFor(() =>
+        expect(screen.getByText(/clipboard is empty/i)).toBeInTheDocument(),
+      )
+      expect(screen.queryByLabelText('Paste target')).toBeNull()
     } finally {
       vi.unstubAllGlobals()
     }
