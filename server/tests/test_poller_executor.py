@@ -39,7 +39,6 @@ async def test_executor_torn_down_on_stop_and_recreated_on_next_use():
     await p.stop()
     assert p._executor is None  # threads released at teardown
 
-    p.reset_backoff("a")  # clear the None-result cooldown so get() re-fetches
     await p.get("a")      # must recreate the pool, not raise on a dead executor
     assert p._executor is not None and p._executor is not ex1
     await p.stop()
