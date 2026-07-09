@@ -29,7 +29,10 @@ def _seed_account(name, expires_in_ms=10_000_000):
 def _cooldown(name):
     """Read the account's backoff fields straight from the ledger file."""
     from ccswitch import paths
-    data = json.loads(paths.ledger_path().read_text())
+    path = paths.ledger_path()
+    if not path.exists():
+        return None, None
+    data = json.loads(path.read_text())
     acct = data["accounts"].get(name, {})
     return acct.get("usageFetchFails"), acct.get("usageFetchCooldownUntil")
 
@@ -174,6 +177,45 @@ class TestUsageFetchBackoff(unittest.TestCase):
                 u = accounts.usage_for("alpha")
                 self.assertEqual(u.session_pct, 42.0)
                 fu.assert_not_called()
+
+
+class TestCopilotUsageFetchBackoff(unittest.TestCase):
+    def _seed_copilot(self, name):
+        from ccswitch import paths
+        paths.copilot_token_dir(name).mkdir(parents=True, exist_ok=True)
+
+    def test_copilot_fetch_failure_sets_cooldown_and_skips_reader(self):
+        with temp_env():
+            from ccswitch import accounts
+            self._seed_copilot("cp1")
+            calls = {"n": 0}
+
+            def reader(name):
+                calls["n"] += 1
+                raise RuntimeError("proxy dead")
+
+            accounts.set_copilot_usage_reader(reader)
+            try:
+                self.assertIsNone(accounts.usage_for("cp1"))
+                self.assertEqual(calls["n"], 1)
+                fails, until = _cooldown("cp1")
+                self.assertEqual(fails, 1)
+                # Within the cooldown the reader must not be re-hit.
+                self.assertIsNone(accounts.usage_for("cp1"))
+                self.assertEqual(calls["n"], 1)
+            finally:
+                accounts.set_copilot_usage_reader(None)
+
+    def test_copilot_without_reader_does_not_back_off(self):
+        """No reader wired = feature not configured, not a fetch failure."""
+        with temp_env():
+            from ccswitch import accounts
+            self._seed_copilot("cp1")
+            accounts.set_copilot_usage_reader(None)
+            self.assertIsNone(accounts.usage_for("cp1"))
+            fails, until = _cooldown("cp1")
+            self.assertIsNone(fails)
+            self.assertIsNone(until)
 
 
 if __name__ == "__main__":

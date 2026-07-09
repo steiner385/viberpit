@@ -1,135 +1,71 @@
-"""UsagePoller per-account adaptive backoff.
+"""UsagePoller delegates backoff to usage_fn — it must not gate fetches itself.
 
-A persistently failing/throttled account (e.g. the usage endpoint 429ing for one
-account) must not be re-fetched at full cadence on every sweep AND every dashboard
-load — that is what hammered the kindash account into a 254-vs-17 429 asymmetry and
-also blocked it from ever clearing back to 'ok'. After a failed fetch the account
-enters an exponentially-growing cooldown during which get() serves the cached value
-without issuing a network call. A success resets it; reset_backoff() clears it
-immediately (e.g. right after a re-auth)."""
+The fetch-failure backoff is owned by ccswitch.accounts.usage_for via the
+ledger (usageFetchFails/usageFetchCooldownUntil, PR #539): one cooldown per
+account shared by every caller in every process. The poller keeping its OWN
+in-memory cooldown was a parallel implementation of the same concept, and it
+masked recoveries: after a re-auth cleared the ledger backoff and fresh usage
+landed in the ledger, the poller kept serving its cached None until its
+private cooldown expired (kindash, 2026-07-09). get() must always delegate;
+usage_for makes that cheap (fresh cache → instant hit, cooldown → instant
+None). The poller still counts consecutive failures — the rotation monitor
+uses that to spot persistently dead accounts.
+"""
 import asyncio
 
 from server.usage.poller import UsagePoller
 
 
-class FakeClock:
-    def __init__(self):
-        self.t = 1000.0
+def test_get_always_delegates_no_in_memory_cooldown():
+    """A failed fetch must not stop the next get() from calling usage_fn.
 
-    def __call__(self):
-        return self.t
-
-    def advance(self, dt):
-        self.t += dt
-
-
-def test_backoff_delay_grows_exponentially_and_caps():
-    p = UsagePoller(poll_interval=60.0, backoff_base=60.0, backoff_cap=480.0,
-                    jitter_frac=0.0)
-    assert p._backoff_delay(1) == 60.0    # base * 2**0
-    assert p._backoff_delay(2) == 120.0   # base * 2**1
-    assert p._backoff_delay(3) == 240.0   # base * 2**2
-    assert p._backoff_delay(4) == 480.0   # base * 2**3
-    assert p._backoff_delay(5) == 480.0   # capped
-    assert p._backoff_delay(99) == 480.0  # capped
-
-
-def test_failed_fetch_cools_down_and_serves_cache_without_refetch():
+    usage_for's ledger cooldown decides whether real network I/O happens; if
+    the poller also gated, a recovery visible in the ledger (re-auth, CLI
+    fetch, selection probe) stayed masked behind the poller's cached None.
+    """
     calls = {"n": 0}
 
     def usage_fn(account):
         calls["n"] += 1
-        return None  # simulate a 429-throttled account (usage_for returns None)
-
-    clock = FakeClock()
+        return None  # throttled/failing account: usage_for returns None
 
     async def run():
-        p = UsagePoller(usage_fn=usage_fn, poll_interval=60.0, backoff_base=60.0,
-                        jitter_frac=0.0, clock=clock)
-        await p.get("kindash")          # fetch #1 fails → cooldown 60s
-        clock.advance(30)               # still inside cooldown
-        await p.get("kindash")          # must be served from cache, no fetch
-        return calls["n"]
-
-    assert asyncio.run(run()) == 1
-
-
-def test_cooldown_expires_then_refetches():
-    calls = {"n": 0}
-
-    def usage_fn(account):
-        calls["n"] += 1
-        return None
-
-    clock = FakeClock()
-
-    async def run():
-        p = UsagePoller(usage_fn=usage_fn, poll_interval=60.0, backoff_base=60.0,
-                        jitter_frac=0.0, clock=clock)
-        await p.get("kindash")          # fetch #1 → cooldown 60s
-        clock.advance(61)               # cooldown elapsed
-        await p.get("kindash")          # fetch #2 → cooldown grows to 120s
+        p = UsagePoller(usage_fn=usage_fn, poll_interval=60.0)
+        await p.get("kindash")
+        await p.get("kindash")
         return calls["n"]
 
     assert asyncio.run(run()) == 2
 
 
-def test_success_does_not_cool_down():
-    calls = {"n": 0}
+def test_consecutive_failures_counts_and_success_resets():
+    results = iter([None, None, {"ok": True}])
 
     def usage_fn(account):
-        calls["n"] += 1
-        return f"ok-{account}"
-
-    clock = FakeClock()
+        return next(results)
 
     async def run():
-        p = UsagePoller(usage_fn=usage_fn, poll_interval=60.0, backoff_base=60.0,
-                        jitter_frac=0.0, clock=clock)
-        await p.get("alpha")
-        await p.get("alpha")            # no cooldown after success → fetches again
-        return calls["n"]
+        p = UsagePoller(usage_fn=usage_fn, poll_interval=60.0)
+        await p.get("a")
+        await p.get("a")
+        assert p.consecutive_failures("a") == 2
+        await p.get("a")
+        assert p.consecutive_failures("a") == 0
 
-    assert asyncio.run(run()) == 2
+    asyncio.run(run())
 
 
-def test_success_after_failure_resets_backoff():
-    results = [None, "recovered"]
-    calls = {"n": 0}
+def test_failure_then_recovery_is_served_immediately():
+    """The moment usage_fn can return data (e.g. ledger refreshed after a
+    re-auth), get() returns it — no cooldown tail."""
+    results = iter([None, {"session": 12.0}])
 
     def usage_fn(account):
-        calls["n"] += 1
-        return results.pop(0) if results else "recovered"
-
-    clock = FakeClock()
+        return next(results)
 
     async def run():
-        p = UsagePoller(usage_fn=usage_fn, poll_interval=60.0, backoff_base=60.0,
-                        jitter_frac=0.0, clock=clock)
-        await p.get("kindash")          # fail → cooldown
-        clock.advance(61)
-        await p.get("kindash")          # success → resets fail count + cooldown
-        await p.get("kindash")          # immediately eligible again (no cooldown)
-        return calls["n"]
+        p = UsagePoller(usage_fn=usage_fn, poll_interval=60.0)
+        assert await p.get("a") is None
+        assert await p.get("a") == {"session": 12.0}
 
-    assert asyncio.run(run()) == 3
-
-
-def test_reset_backoff_clears_cooldown_immediately():
-    calls = {"n": 0}
-
-    def usage_fn(account):
-        calls["n"] += 1
-        return None
-
-    clock = FakeClock()
-
-    async def run():
-        p = UsagePoller(usage_fn=usage_fn, poll_interval=60.0, backoff_base=60.0,
-                        jitter_frac=0.0, clock=clock)
-        await p.get("kindash")          # fail → cooldown 60s
-        p.reset_backoff("kindash")      # e.g. a fresh re-auth landed
-        await p.get("kindash")          # eligible immediately despite no clock advance
-        return calls["n"]
-
-    assert asyncio.run(run()) == 2
+    asyncio.run(run())
