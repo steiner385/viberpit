@@ -35,7 +35,43 @@ def _acct(led: dict, name: str) -> dict:
     return led["accounts"].setdefault(name, {})
 
 
+# Fetch-failure backoff: base doubles per consecutive failure, clamped to the
+# cap. Base must exceed the usage endpoint's observed Retry-After (~61s) by the
+# second failure or a synchronous caller loop (pick_account_detailed probes)
+# re-hammers the endpoint through its rate-limit window and the 429 never clears.
+_USAGE_BACKOFF_BASE_SEC = 60.0
+_USAGE_BACKOFF_CAP_SEC = 900.0
+
+
+def note_usage_fetch_failure(led: dict, name: str, now_ts: float) -> float:
+    """Record a failed usage fetch: bump the fail count, extend the cooldown.
+
+    Returns the applied cooldown in seconds. Lives in the ledger (not process
+    memory) so every usage_for caller — poller, pick_account_detailed, CLI,
+    launcher — shares one cooldown per account.
+    """
+    acct = _acct(led, name)
+    fails = int(acct.get("usageFetchFails", 0)) + 1
+    acct["usageFetchFails"] = fails
+    delay = min(_USAGE_BACKOFF_BASE_SEC * (2 ** (fails - 1)), _USAGE_BACKOFF_CAP_SEC)
+    acct["usageFetchCooldownUntil"] = now_ts + delay
+    return delay
+
+
+def usage_fetch_cooldown_active(led: dict, name: str, now_ts: float) -> bool:
+    return led["accounts"].get(name, {}).get("usageFetchCooldownUntil", 0) > now_ts
+
+
+def clear_usage_fetch_backoff(led: dict, name: str) -> None:
+    acct = led["accounts"].get(name)
+    if acct:
+        acct.pop("usageFetchFails", None)
+        acct.pop("usageFetchCooldownUntil", None)
+
+
 def record_usage(led: dict, name: str, u: Usage, now: datetime) -> None:
+    # A recorded fetch is by definition a successful one — reset the backoff.
+    clear_usage_fetch_backoff(led, name)
     _acct(led, name)["usage"] = {
         "session_pct": u.session_pct,
         "session_resets_at": u.session_resets_at.isoformat() if u.session_resets_at else None,
@@ -71,8 +107,13 @@ def get_status(led: dict, name: str) -> str | None:
 
 
 def clear_cached_usage(led: dict, name: str) -> None:
-    """Drop any cached usage so the next read forces a fresh fetch."""
+    """Drop cached usage AND the failure cooldown so the next read really fetches.
+
+    Callers use this to force a fresh fetch (e.g. after a re-auth); leaving the
+    cooldown behind would keep the account usage-dark for its remaining tail.
+    """
     _acct(led, name).pop("usage", None)
+    clear_usage_fetch_backoff(led, name)
 
 
 def set_nickname(led: dict, name: str, nickname: str | None) -> None:
