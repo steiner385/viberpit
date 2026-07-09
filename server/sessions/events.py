@@ -96,12 +96,37 @@ class PermissionRequest:
                                "ts": self.ts}
 
 @dataclass
+class PermissionResolved:
+    """A pending permission's future settled — allowed or denied (deny_all
+    dismissals land here as allowed=False). Same rationale as QuestionResolved:
+    the resolution must ride the same stream as the PermissionRequest frame so a
+    mid-turn reattach's ring resupply doesn't resurrect an already-decided card."""
+    perm_id: str; turn_id: str; allowed: bool
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "permissionResolved", "permId": self.perm_id,
+                               "turnId": self.turn_id, "allowed": self.allowed, "ts": self.ts}
+
+@dataclass
 class Question:
     question_id: str; turn_id: str; header: str; question: str; options: list[dict]; multi_select: bool = False
     ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "question", "questionId": self.question_id, "turnId": self.turn_id,
                                "header": self.header, "question": self.question, "options": self.options,
                                "multiSelect": self.multi_select, "ts": self.ts}
+
+@dataclass
+class QuestionResolved:
+    """A pending question's future settled — answered (``selected`` carries the
+    labels) or dismissed (``selected`` is None). Emitted through the driver
+    fan-out so the resolution rides the same stream as the Question frame: the
+    daemon ring replays the original Question on a mid-turn reattach, and without
+    this frame an already-answered question resurrects as pending in every
+    reattached client (other live tabs would never learn it was answered)."""
+    question_id: str; turn_id: str; selected: list[str] | None; mode: str = "option"
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "questionResolved", "questionId": self.question_id,
+                               "turnId": self.turn_id, "selected": self.selected,
+                               "mode": self.mode, "ts": self.ts}
 
 @dataclass
 class Title:

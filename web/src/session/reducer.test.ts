@@ -132,6 +132,19 @@ describe('transcriptReducer', () => {
     expect(remaining).toHaveLength(0)
   })
 
+  it('permissionResolved (server event) removes the permission block', () => {
+    // The mid-turn reattach resupply replays the open turn's ring events, which
+    // recreate the permissionRequest block; the server's permissionResolved frame
+    // (emitted when the decision resolved the future) must clear it again, or an
+    // already-decided permission resurrects in the PendingPermissionPanel.
+    const s = reduce([
+      { type: 'turnStart',          turnId: 't1' },
+      { type: 'permissionRequest',  permId: 'perm-1', turnId: 't1', tool: 'Bash', toolKind: 'bash', input: { cmd: 'ls' }, plan: false },
+      { type: 'permissionResolved', permId: 'perm-1', turnId: 't1', allowed: true },
+    ])
+    expect(s.turns[0].blocks.filter((b) => b.kind === 'permission')).toHaveLength(0)
+  })
+
   // ── duplicate event idempotency ───────────────────────────────────────────
 
   it('feeding the same toolCall twice results in one tool block', () => {
@@ -301,6 +314,54 @@ describe('transcriptReducer', () => {
     expect(q && q.kind === 'question' && q.answered).toEqual(['A'])
     expect(q && q.kind === 'question' && q.live).toBe(false)
     expect(resolved.turns.some((t) => t.role === 'user')).toBe(false)
+  })
+
+  it('questionResolved (server event) marks the question answered and not live', () => {
+    // The mid-turn reattach resupply replays the open turn's ring events AFTER
+    // replayComplete — the question block is recreated live:true. The server's
+    // questionResolved frame (emitted when the answer resolved the future) must
+    // re-resolve it, or an already-answered question resurrects as pending.
+    const s = reduce([
+      { type: 'replayReset' },
+      { type: 'replayComplete' },
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'question',  questionId: 'q-1', turnId: 't1', header: 'Pick one', question: 'Which?', options: [{ label: 'A' }, { label: 'B' }], multiSelect: false },
+      { type: 'questionResolved', questionId: 'q-1', turnId: 't1', selected: ['A'], mode: 'option' },
+    ])
+    const q = s.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question')
+    expect(q && q.kind === 'question' && q.answered).toEqual(['A'])
+    expect(q && q.kind === 'question' && q.live).toBe(false)
+  })
+
+  it('questionResolved with null selected (dismissed) still un-lives the question', () => {
+    const s = reduce([
+      { type: 'replayReset' },
+      { type: 'replayComplete' },
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'question',  questionId: 'q-1', turnId: 't1', header: 'Pick one', question: 'Which?', options: [{ label: 'A' }], multiSelect: false },
+      { type: 'questionResolved', questionId: 'q-1', turnId: 't1', selected: null, mode: 'dismissed' },
+    ])
+    const q = s.turns.flatMap((t) => t.blocks).find((b) => b.kind === 'question')
+    expect(q && q.kind === 'question' && q.live).toBe(false)
+  })
+
+  it('a duplicate question event never re-lives an answered question', () => {
+    // Regression: the post-replay live-upgrade path (question case) only checked
+    // !existing.live — a re-delivered question frame flipped an ANSWERED block
+    // back to live, resurrecting it in the PendingQuestionPanel.
+    const s = reduce([
+      { type: 'replayReset' },
+      { type: 'replayComplete' },
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'question',  questionId: 'q-1', turnId: 't1', header: 'Pick one', question: 'Which?', options: [{ label: 'A' }], multiSelect: false },
+      { type: '_resolveQuestion', questionId: 'q-1', selected: ['A'] },
+      // duplicate delivery of the original question frame (ring resupply / re-attach)
+      { type: 'question',  questionId: 'q-1', turnId: 't1', header: 'Pick one', question: 'Which?', options: [{ label: 'A' }], multiSelect: false },
+    ])
+    const blocks = s.turns.flatMap((t) => t.blocks).filter((b) => b.kind === 'question')
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].kind === 'question' && blocks[0].live).toBe(false)
+    expect(blocks[0].kind === 'question' && blocks[0].answered).toEqual(['A'])
   })
 
   // ── error ─────────────────────────────────────────────────────────────────

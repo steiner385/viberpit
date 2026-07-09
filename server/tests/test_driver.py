@@ -435,6 +435,223 @@ def test_askuserquestion_dismiss_returns_deny_with_dismissed_text():
     asyncio.run(run())
 
 
+def test_permission_decision_emits_permission_resolved():
+    """Deciding a permission emits ev.PermissionResolved through the driver fan-out.
+
+    Same shape as QuestionResolved: the daemon ring replays the original
+    PermissionRequest frame on a mid-turn reattach, so without a resolution frame
+    in the same stream an already-decided permission resurrects in the pinned
+    PendingPermissionPanel of every reattached client."""
+    from claude_agent_sdk import PermissionResultAllow
+    from server.sessions.events import PermissionRequest, PermissionResolved
+
+    async def run():
+        d = SessionDriver("sp-resolved", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
+        callback_task = asyncio.create_task(d._can_use_tool("Bash", {"command": "ls"}))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        req = None
+        while not out_q.empty():
+            e = out_q.get_nowait()
+            if isinstance(e, PermissionRequest):
+                req = e
+        assert req is not None, "expected a PermissionRequest event"
+
+        assert d.resolve_permission(req.perm_id, "allow", "me") is True
+        result = await asyncio.wait_for(callback_task, timeout=2.0)
+        assert isinstance(result, PermissionResultAllow)
+
+        resolved = []
+        while not out_q.empty():
+            e = out_q.get_nowait()
+            if isinstance(e, PermissionResolved):
+                resolved.append(e)
+        assert len(resolved) == 1, f"expected exactly one PermissionResolved, got {len(resolved)}"
+        assert resolved[0].perm_id == req.perm_id
+        assert resolved[0].allowed is True
+        wire = resolved[0].to_wire()
+        assert wire["type"] == "permissionResolved"
+        assert wire["permId"] == req.perm_id
+
+    asyncio.run(run())
+
+
+def test_permission_dismiss_emits_permission_resolved_denied():
+    """A dismissal (deny_all via interrupt) emits PermissionResolved allowed=False,
+    so reattached clients clear the card instead of resurrecting it."""
+    from claude_agent_sdk import PermissionResultDeny
+    from server.sessions.events import PermissionResolved
+
+    async def run():
+        d = SessionDriver("sp-resolved-dismiss", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
+        callback_task = asyncio.create_task(d._can_use_tool("Bash", {"command": "ls"}))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        await d.interrupt()
+        result = await asyncio.wait_for(callback_task, timeout=2.0)
+        assert isinstance(result, PermissionResultDeny)
+
+        resolved = []
+        while not out_q.empty():
+            e = out_q.get_nowait()
+            if isinstance(e, PermissionResolved):
+                resolved.append(e)
+        assert len(resolved) == 1
+        assert resolved[0].allowed is False
+
+    asyncio.run(run())
+
+
+def test_auto_allowed_permission_emits_no_permission_resolved():
+    """An auto-approved tool (no PermissionRequest ever emitted) must not emit a
+    PermissionResolved either — there is no card to clear."""
+    from server.sessions.events import PermissionRequest, PermissionResolved
+
+    async def run():
+        d = SessionDriver("sp-auto", "primary", "/tmp/r", "/tmp/cfg", mode="auto",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
+        await asyncio.wait_for(d._can_use_tool("Read", {"file_path": "/tmp/x"}), timeout=2.0)
+        events = []
+        while not out_q.empty():
+            events.append(out_q.get_nowait())
+        assert not any(isinstance(e, PermissionRequest) for e in events)
+        assert not any(isinstance(e, PermissionResolved) for e in events)
+
+    asyncio.run(run())
+
+
+def test_askuserquestion_answer_emits_question_resolved():
+    """Answering a question emits ev.QuestionResolved through the driver fan-out.
+
+    The resolution must be an EVENT (not just client-local state): the daemon ring
+    replays the original Question frame on a mid-turn reattach, so without a
+    QuestionResolved frame in the same stream an already-answered question
+    resurrects as pending in every reattached client (and other live tabs never
+    learn it was answered at all)."""
+    from server.sessions.events import Question, QuestionResolved
+
+    async def run():
+        d = SessionDriver("sq-resolved", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
+        tool_input = {"questions": [{"header": "Choose", "question": "Favourite?",
+                                     "options": [{"label": "Option A"}, {"label": "Option B"}],
+                                     "multiSelect": False}]}
+        callback_task = asyncio.create_task(d._can_use_tool("AskUserQuestion", tool_input))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        q_event = out_q.get_nowait()
+        assert isinstance(q_event, Question)
+        d.answer_question(q_event.question_id, ["Option A"], "me", mode="option")
+        await asyncio.wait_for(callback_task, timeout=2.0)
+
+        resolved = []
+        while not out_q.empty():
+            e = out_q.get_nowait()
+            if isinstance(e, QuestionResolved):
+                resolved.append(e)
+        assert len(resolved) == 1, f"expected exactly one QuestionResolved, got {len(resolved)}"
+        assert resolved[0].question_id == q_event.question_id
+        assert resolved[0].turn_id == q_event.turn_id
+        assert resolved[0].selected == ["Option A"]
+        assert resolved[0].mode == "option"
+        wire = resolved[0].to_wire()
+        assert wire["type"] == "questionResolved"
+        assert wire["questionId"] == q_event.question_id
+        assert wire["selected"] == ["Option A"]
+
+    asyncio.run(run())
+
+
+def test_askuserquestion_dismiss_emits_question_resolved_dismissed():
+    """A dismissal (deny_all via interrupt) emits QuestionResolved with selected=None,
+    so reattached clients un-live the card instead of resurrecting it."""
+    from server.sessions.events import QuestionResolved
+
+    async def run():
+        d = SessionDriver("sq-resolved-dismiss", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
+        tool_input = {"questions": [{"header": "H", "question": "Q?",
+                                     "options": [{"label": "Yes"}], "multiSelect": False}]}
+        callback_task = asyncio.create_task(d._can_use_tool("AskUserQuestion", tool_input))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        await d.interrupt()
+        await asyncio.wait_for(callback_task, timeout=2.0)
+
+        resolved = []
+        while not out_q.empty():
+            e = out_q.get_nowait()
+            if isinstance(e, QuestionResolved):
+                resolved.append(e)
+        assert len(resolved) == 1
+        assert resolved[0].selected is None
+        assert resolved[0].to_wire()["selected"] is None
+
+    asyncio.run(run())
+
+
+def test_askuserquestion_multi_question_each_answer_emits_resolved_immediately():
+    """In a multi-question call, each answer emits its own QuestionResolved as soon
+    as that future resolves — not batched after the whole gather — so a reattach
+    between answers only resurrects the genuinely-unanswered cards."""
+    from server.sessions.events import Question, QuestionResolved
+
+    async def run():
+        d = SessionDriver("sq-resolved-multi", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
+        tool_input = {
+            "questions": [
+                {"header": "H1", "question": "Q1?", "options": [{"label": "Yes"}], "multiSelect": False},
+                {"header": "H2", "question": "Q2?", "options": [{"label": "A"}], "multiSelect": False},
+            ]
+        }
+        callback_task = asyncio.create_task(d._can_use_tool("AskUserQuestion", tool_input))
+        for _ in range(4):
+            await asyncio.sleep(0)
+        q_events = []
+        while not out_q.empty():
+            e = out_q.get_nowait()
+            if isinstance(e, Question):
+                q_events.append(e)
+        assert len(q_events) == 2
+
+        # Answer ONLY the first question; its QuestionResolved must be emitted
+        # before the second is answered.
+        d.answer_question(q_events[0].question_id, ["Yes"], "me")
+        for _ in range(4):
+            await asyncio.sleep(0)
+        first_resolved = []
+        while not out_q.empty():
+            e = out_q.get_nowait()
+            if isinstance(e, QuestionResolved):
+                first_resolved.append(e)
+        assert len(first_resolved) == 1
+        assert first_resolved[0].question_id == q_events[0].question_id
+
+        d.answer_question(q_events[1].question_id, ["A"], "me")
+        await asyncio.wait_for(callback_task, timeout=2.0)
+
+    asyncio.run(run())
+
+
 def test_askuserquestion_multi_question_single_call():
     """A tool_input with multiple questions emits one Question event per question
     and formats all answers in the deny message."""

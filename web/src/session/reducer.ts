@@ -208,6 +208,59 @@ function replaceTurn(turns: Turn[], idx: number, fn: (t: Turn) => Turn): Turn[] 
 }
 
 /**
+ * Remove a decided permission's block. Shared by the optimistic local
+ * `_resolvePermission` (confirmed decision send) and the server's
+ * `permissionResolved` frame (authoritative; clears the block a mid-turn
+ * reattach's ring resupply recreates). Returns the same state reference when no
+ * matching block exists.
+ */
+function removePermissionBlock(state: TranscriptState, permId: string): TranscriptState {
+  let changed = false
+  const nextTurns = state.turns.map((turn) => {
+    const hasIt = turn.blocks.some((b) => b.kind === 'permission' && b.permId === permId)
+    if (!hasIt) return turn
+    changed = true
+    return { ...turn, blocks: turn.blocks.filter((b) => !(b.kind === 'permission' && b.permId === permId)) }
+  })
+  if (!changed) return state
+  return { ...state, turns: nextTurns }
+}
+
+/**
+ * Resolve a question IN PLACE — mark it answered and no longer live, keeping it
+ * at its original position in the turn that asked it. The server delivers the
+ * answer only as a tool result (never echoed as a user turn), so the client used
+ * to fake a user bubble appended at the transcript TAIL. But the agent continues
+ * the turn that asked the question, which sits ABOVE that tail bubble, so every
+ * post-answer update rendered above the user's answer — the answer looked stranded
+ * at the bottom. Keeping the answered question inline anchors it chronologically:
+ * the resolved card renders where it was asked, and all continuation lands after it.
+ *
+ * Shared by the optimistic local `_resolveQuestion` (confirmed answer send) and the
+ * server's `questionResolved` frame (authoritative; re-resolves the block a mid-turn
+ * reattach's ring resupply recreates). Returns the same state reference when no
+ * matching block exists.
+ */
+function resolveQuestionInPlace(state: TranscriptState, questionId: string, answered: string[]): TranscriptState {
+  let changed = false
+  const nextTurns = state.turns.map((turn) => {
+    const hasIt = turn.blocks.some((b) => b.kind === 'question' && b.questionId === questionId)
+    if (!hasIt) return turn
+    changed = true
+    return {
+      ...turn,
+      blocks: turn.blocks.map((b) =>
+        b.kind === 'question' && b.questionId === questionId
+          ? { ...b, live: false, answered }
+          : b,
+      ),
+    }
+  })
+  if (!changed) return state
+  return { ...state, turns: nextTurns }
+}
+
+/**
  * Ensure a turn exists at turnId; if it doesn't, append an empty assistant
  * turn. Returns [nextTurns, idx].
  */
@@ -576,6 +629,15 @@ export function transcriptReducer(
       return { ...state, turns: nextTurns }
     }
 
+    // ── permissionResolved ────────────────────────────────────────────────────
+    // The server's authoritative decision. Idempotent with the optimistic
+    // _resolvePermission; its real job is clearing the block that a mid-turn
+    // reattach's ring resupply recreates, and clearing cards in OTHER attached
+    // clients.
+    case 'permissionResolved': {
+      return removePermissionBlock(state, ev.permId)
+    }
+
     // ── question ─────────────────────────────────────────────────────────────
     case 'question': {
       const { questionId, turnId, header, question, options, multiSelect } = ev
@@ -586,10 +648,13 @@ export function transcriptReducer(
       // question after replayComplete. The replay copy was created live:false
       // (replaying was true); the re-emit (replaying now false) must upgrade it
       // to live:true, otherwise a question pending across a refresh/reconnect
-      // renders read-only forever. Only ever flip false→true; never downgrade.
+      // renders read-only forever. Only ever flip false→true; never downgrade —
+      // and never resurrect an ANSWERED block: the ring resupply on a mid-turn
+      // reattach re-delivers the original question frame, which must not flip an
+      // already-resolved card back into the PendingQuestionPanel.
       const existing = turn.blocks.find((b) => b.kind === 'question' && b.questionId === questionId)
       if (existing) {
-        if (existing.kind === 'question' && !existing.live && !state.replaying) {
+        if (existing.kind === 'question' && !existing.live && existing.answered === undefined && !state.replaying) {
           const nextTurns = replaceTurn(turns, idx, (t) => ({
             ...t,
             blocks: t.blocks.map((b) =>
@@ -607,6 +672,15 @@ export function transcriptReducer(
         blocks: [...t.blocks, newBlock],
       }))
       return { ...state, turns: nextTurns }
+    }
+
+    // ── questionResolved ─────────────────────────────────────────────────────
+    // The server's authoritative resolution (answered or dismissed — selected is
+    // null when dismissed). Idempotent with the optimistic _resolveQuestion; its
+    // real job is re-resolving the block that a mid-turn reattach's ring resupply
+    // recreates live, and resolving cards in OTHER attached clients.
+    case 'questionResolved': {
+      return resolveQuestionInPlace(state, ev.questionId, ev.selected ?? [])
     }
 
     // ── sessionMeta ───────────────────────────────────────────────────────────
@@ -797,16 +871,8 @@ export function transcriptReducer(
     // ── Local synthetic actions ────────────────────────────────────────────────
 
     case '_resolvePermission': {
-      const { permId } = ev
-      let changed = false
-      const nextTurns = state.turns.map((turn) => {
-        const hasIt = turn.blocks.some((b) => b.kind === 'permission' && b.permId === permId)
-        if (!hasIt) return turn
-        changed = true
-        return { ...turn, blocks: turn.blocks.filter((b) => !(b.kind === 'permission' && b.permId === permId)) }
-      })
-      if (!changed) return state // No matching permission block found; return unchanged state
-      return { ...state, turns: nextTurns }
+      // Optimistic local clear on a confirmed decision send — see removePermissionBlock.
+      return removePermissionBlock(state, ev.permId)
     }
 
     case '_rotation': {
@@ -818,31 +884,9 @@ export function transcriptReducer(
     }
 
     case '_resolveQuestion': {
-      const { questionId, selected } = ev
-      // Resolve the question IN PLACE — mark it answered and no longer live, keeping
-      // it at its original position in the turn that asked it. The server delivers the
-      // answer only as a tool result (never echoed as a user turn), so the client used
-      // to fake a user bubble appended at the transcript TAIL. But the agent continues
-      // the turn that asked the question, which sits ABOVE that tail bubble, so every
-      // post-answer update rendered above the user's answer — the answer looked stranded
-      // at the bottom. Keeping the answered question inline anchors it chronologically:
-      // the resolved card renders where it was asked, and all continuation lands after it.
-      let changed = false
-      const nextTurns = state.turns.map((turn) => {
-        const hasIt = turn.blocks.some((b) => b.kind === 'question' && b.questionId === questionId)
-        if (!hasIt) return turn
-        changed = true
-        return {
-          ...turn,
-          blocks: turn.blocks.map((b) =>
-            b.kind === 'question' && b.questionId === questionId
-              ? { ...b, live: false, answered: selected ?? [] }
-              : b,
-          ),
-        }
-      })
-      if (!changed) return state // No matching question block found; return unchanged state
-      return { ...state, turns: nextTurns }
+      // Optimistic local resolve on a confirmed answer send — see resolveQuestionInPlace
+      // for why the block resolves inline rather than echoing a tail user bubble.
+      return resolveQuestionInPlace(state, ev.questionId, ev.selected ?? [])
     }
 
     case '_notice': {

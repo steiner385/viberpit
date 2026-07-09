@@ -293,11 +293,15 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   )
   const hasOpenPermission = viewState.turns.some((t) => t.blocks.some((b) => b.kind === 'permission'))
 
-  // If the armed question is no longer present (resolved/replaced), disarm.
+  // If the armed question is no longer LIVE (resolved/replaced), disarm. A resolved
+  // question stays inline as an answered block (live:false), so presence alone is not
+  // enough — e.g. the server's questionResolved frame (answered from another tab, or
+  // re-resolved after a mid-turn reattach) resolves the block without this client's
+  // deliverAnswer ever disarming.
   useEffect(() => {
     if (!armedQuestionId) return
     const stillOpen = viewState.turns.some((t) =>
-      t.blocks.some((b) => b.kind === 'question' && b.questionId === armedQuestionId),
+      t.blocks.some((b) => b.kind === 'question' && b.questionId === armedQuestionId && b.live),
     )
     // eslint-disable-next-line react-hooks/set-state-in-effect -- disarm in sync with transcript changes
     if (!stillOpen) setArmedQuestionId(null)
