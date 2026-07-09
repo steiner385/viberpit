@@ -465,7 +465,14 @@ async def _search_ids(items, resolve, terms) -> list[str]:
     async def _matches(sid: str, name: str) -> bool:
         text = ""
         if terms:
-            path = await resolve(sid)
+            # One session whose transcript can't be resolved (dangling account
+            # name, daemon hiccup) degrades to name-only matching; it must not
+            # fail the whole search — the UI silently drops a failed filter.
+            try:
+                path = await resolve(sid)
+            except Exception:
+                log.warning("session.search transcript resolve failed id=%s", sid, exc_info=True)
+                path = None
             if path:
                 # Read happens in the edge process (not the daemon). Safe because the
                 # daemon shares the host filesystem over a local Unix socket. If the

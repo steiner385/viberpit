@@ -155,3 +155,49 @@ def test_search_live_scope_excludes_archived(tmp_path, monkeypatch):
 def test_search_bad_scope_is_422():
     client, _ = _client()
     assert client.get("/api/sessions/search?q=hi&scope=nope", headers=H).status_code == 422
+
+
+def test_search_archived_survives_per_row_resolve_failure(tmp_path, monkeypatch):
+    """One session whose transcript can't be resolved (e.g. its account was
+    renamed/deleted, so credential composition blows up) must not fail the whole
+    search — it degrades to name-only matching for that row."""
+    client, orch = _client()
+    monkeypatch.setattr(orch, "list_sessions", lambda: [])
+    monkeypatch.setattr(orch, "transcript_path", lambda sid: None)
+    p = tmp_path / "a2.jsonl"
+    p.write_text('{"type":"user","message":{"role":"user","content":"auth token refresh"}}\n')
+
+    async def _list_archived():
+        return [{"id": "a1", "name": "Auth cleanup"},
+                {"id": "a2", "name": "Billing"},
+                {"id": "a3", "name": "Docs"}]
+
+    async def _resolve(sid):
+        if sid == "a1":
+            raise FileNotFoundError("store/ghost_account.cred.json")
+        return str(p) if sid == "a2" else None
+
+    monkeypatch.setattr(orch, "list_archived", _list_archived)
+    monkeypatch.setattr(orch, "resolve_transcript_path", _resolve)
+    r = client.get("/api/sessions/search?q=auth&scope=archived", headers=H)
+    assert r.status_code == 200
+    # a1 still matches by name despite the resolve failure; a2 by transcript.
+    assert sorted(r.json()["ids"]) == ["a1", "a2"]
+
+
+def test_search_live_survives_per_row_resolve_failure(tmp_path, monkeypatch):
+    client, orch = _client()
+    records = [_rec("s1", "Auth cleanup"), _rec("s2", "Billing")]
+    p = tmp_path / "s2.jsonl"
+    p.write_text('{"type":"user","message":{"role":"user","content":"auth token refresh"}}\n')
+
+    def _transcript_path(sid):
+        if sid == "s1":
+            raise FileNotFoundError("store/ghost_account.cred.json")
+        return str(p)
+
+    monkeypatch.setattr(orch, "list_sessions", lambda: list(records))
+    monkeypatch.setattr(orch, "transcript_path", _transcript_path)
+    r = client.get("/api/sessions/search?q=auth", headers=H)
+    assert r.status_code == 200
+    assert sorted(r.json()["ids"]) == ["s1", "s2"]
