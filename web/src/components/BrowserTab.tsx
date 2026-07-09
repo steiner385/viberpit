@@ -52,17 +52,43 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
   const pasteHintTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(pasteHintTimer.current), [])
 
-  async function pasteFromClipboard() {
-    const result = await pasteClipboardToSession(() => navigator.clipboard.readText(), send)
-    setPasteHint(
-      result === 'denied'
-        ? 'Clipboard blocked — allow access, or type it in.'
-        : result === 'empty'
-          ? 'Clipboard is empty.'
-          : 'Pasted into the session.',
-    )
+  function showPasteHint(msg: string) {
+    setPasteHint(msg)
     clearTimeout(pasteHintTimer.current)
     pasteHintTimer.current = setTimeout(() => setPasteHint(null), 2500)
+  }
+
+  // Paste-capture fallback: the async Clipboard API only exists in secure
+  // contexts (HTTPS/localhost), so on a plain-http tailnet origin
+  // navigator.clipboard is undefined and readText can never run. The `paste`
+  // ClipboardEvent has no such restriction — the user performs the gesture —
+  // so we surface a small field to paste into and relay its text as keystrokes.
+  const [pasteCapture, setPasteCapture] = useState(false)
+  const pasteCaptureRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (pasteCapture) pasteCaptureRef.current?.focus()
+  }, [pasteCapture])
+
+  async function pasteFromClipboard() {
+    if (!navigator.clipboard?.readText) {
+      setPasteCapture(true)
+      return
+    }
+    const result = await pasteClipboardToSession(() => navigator.clipboard.readText(), send)
+    if (result === 'denied') {
+      setPasteCapture(true)
+      return
+    }
+    showPasteHint(result === 'empty' ? 'Clipboard is empty.' : 'Pasted into the session.')
+  }
+
+  function relayCapturedPaste(text: string) {
+    setPasteCapture(false)
+    if (text) {
+      relayInput(text, send)
+      showPasteHint('Pasted into the session.')
+    }
+    canvasRef.current?.focus()
   }
 
   function toggleKeyboard() {
@@ -327,6 +353,40 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
           </button>
         )}
       </div>
+
+      {/* Paste-capture fallback field — the user pastes here with the native
+          gesture (Ctrl+V / long-press → Paste); the text relays as keystrokes
+          and is never stored. Closes on paste, Escape, or focus loss. */}
+      {pasteCapture && (
+        <input
+          ref={pasteCaptureRef}
+          aria-label="Paste target"
+          placeholder="Paste here (Ctrl+V / long-press)"
+          className="absolute right-2 top-14 w-64 rounded border border-border bg-background px-2 py-2 text-sm shadow"
+          autoCapitalize="none"
+          autoCorrect="off"
+          autoComplete="off"
+          spellCheck={false}
+          onPaste={(e) => {
+            e.preventDefault()
+            relayCapturedPaste(e.clipboardData.getData('text'))
+          }}
+          onInput={(e) => {
+            // Some mobile keyboards insert clipboard suggestions as plain input
+            // (no paste event) — relay whatever lands here the same way.
+            const v = e.currentTarget.value
+            e.currentTarget.value = ''
+            if (v) relayCapturedPaste(v)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.stopPropagation()
+              setPasteCapture(false)
+            }
+          }}
+          onBlur={() => setPasteCapture(false)}
+        />
+      )}
 
       {/* Transient paste feedback (auto-clears) — sits just under the button cluster. */}
       {pasteHint && (
