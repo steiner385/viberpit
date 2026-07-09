@@ -217,6 +217,12 @@ def acquire_valid_token(name: str) -> dict:
 _NO_SETUP_TOKEN: object = object()
 
 
+def _note_usage_fetch_failure(name: str) -> None:
+    """Record a failed usage fetch in the ledger (grows the shared cooldown)."""
+    with ledger.locked_ledger() as led:
+        ledger.note_usage_fetch_failure(led, name, time.time())
+
+
 def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "oauth.Usage | None | object":
     """Auth fallback for accounts that hold a long-lived setup-token.
 
@@ -241,6 +247,8 @@ def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "oa
     with ledger.locked_ledger() as led:
         if u is not None:
             ledger.record_usage(led, name, u, now)
+        else:
+            ledger.note_usage_fetch_failure(led, name, time.time())
         ledger.set_status(led, name, "ok")
     return u
 
@@ -266,6 +274,13 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         cached = ledger.cached_usage(led, name, cfg, now)
         if cached is not None:
             return cached
+        # Failure cooldown: after a failed fetch, serve "unknown" without any
+        # network I/O (token OR usage endpoint) until the backoff elapses.
+        # Synchronous callers like pick_account_detailed otherwise re-fetch a
+        # failing account on every probe and can sustain a 429 indefinitely.
+        if ledger.usage_fetch_cooldown_active(led, name, time.time()):
+            log.debug("usage_for(%s): fetch-failure cooldown active — skipping", name)
+            return None
 
     if not allow_refresh:
         # Live-session path: sync_back first so we pick up the SDK's latest
@@ -281,6 +296,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             u = oauth.fetch_usage(blob["accessToken"], **retry_kw)
         except (oauth.UsageError, oauth.TransientError, oauth.AuthError) as e:
             log.warning("usage_for(%s, allow_refresh=False): usage fetch failed: %s", name, e)
+            _note_usage_fetch_failure(name)
             return None
         with ledger.locked_ledger() as led:
             ledger.record_usage(led, name, u, now)
@@ -296,6 +312,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         # is presumed valid — leave status unchanged so a transient throttle can't
         # flip an idle account to needs-reauth.
         log.warning("usage_for(%s): transient refresh error, leaving status unchanged: %s", name, e)
+        _note_usage_fetch_failure(name)
         return None
     except oauth.AuthError as e:
         # A live setup-token keeps the account usable — don't flip to needs-reauth.
@@ -308,6 +325,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             path=path, token_expires_at=_slot_expires_at(name), attempts=1))
         with ledger.locked_ledger() as led:
             ledger.set_status(led, name, "needs-reauth")
+            ledger.note_usage_fetch_failure(led, name, time.time())
         return None
 
     # Step 2: fetch usage; on 401 do exactly ONE refresh+refetch.
@@ -320,6 +338,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         # callers (the accounts list) degrade gracefully instead of 500-ing the
         # whole dashboard.
         log.warning("usage_for(%s): transient usage error, leaving status unchanged: %s", name, e)
+        _note_usage_fetch_failure(name)
         return None
     except oauth.AuthError:
         try:
@@ -337,6 +356,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             u = oauth.fetch_usage(slot["accessToken"], **retry_kw)
         except (oauth.UsageError, oauth.TransientError) as e:
             log.warning("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
+            _note_usage_fetch_failure(name)
             return None
         except oauth.AuthError as e:
             # A live setup-token keeps the account usable — don't flip to needs-reauth.
@@ -346,6 +366,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             log.warning("usage_for(%s): 401 survived a fresh refresh (%s) — marking needs-reauth", name, e)
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, name, "needs-reauth")
+                ledger.note_usage_fetch_failure(led, name, time.time())
             return None
 
     with ledger.locked_ledger() as led:
