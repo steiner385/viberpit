@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import datetime, timezone
 
 from server.automations.backlog_github import (
     claim_batch,
@@ -99,7 +100,9 @@ def test_query_candidates_blank_label_drops_the_label_gate():
               "repository": {"nameWithOwner": "o/r"}}]
     fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
 
-    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": ""}, gh_run=fake)
+    out = query_candidates(
+        {"enabled_repos": ["o/r"], "eligible_label": "", "needs_human_retry_days": 0},
+        gh_run=fake)
 
     query = next(a for a in fake.calls[0] if a.startswith("query="))
     assert "label:ready" not in query          # no silent default
@@ -111,6 +114,95 @@ def test_query_candidates_blank_label_drops_the_label_gate():
     assert "no:assignee" in query and "is:open" in query
     assert out == [{"ref": "o/r#7", "number": 7, "repo": "o/r", "title": "Fix login",
                     "url": "https://github.com/o/r/issues/7"}]
+
+
+# --------------------------------------------------------------------------- #
+# needs-human retry pool                                                       #
+# --------------------------------------------------------------------------- #
+
+def _graphql_stdout_with_retry(fresh: list[dict], retry: list[dict]) -> str:
+    return json.dumps({"data": {"issues": {"nodes": fresh}, "retry": {"nodes": retry}}})
+
+
+_NOW = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_query_candidates_retry_pool_includes_cooled_needs_human_issues():
+    """With ``needs_human_retry_days`` > 0 the query carries a SECOND search for
+    ``needs-human`` issues untouched since the cutoff (escalation bumps
+    ``updatedAt``, so every give-up re-arms the cooldown). Retry candidates are
+    appended AFTER fresh ones — fresh work always outranks a retry."""
+    fresh = [{"number": 7, "title": "Fresh", "url": "https://github.com/o/r/issues/7",
+              "repository": {"nameWithOwner": "o/r"}}]
+    retry = [{"number": 3, "title": "Cooled", "url": "https://github.com/o/r/issues/3",
+              "repository": {"nameWithOwner": "o/r"}}]
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout_with_retry(fresh, retry))})
+    config = {"enabled_repos": ["o/r"], "eligible_label": "", "needs_human_retry_days": 7}
+
+    out = query_candidates(config, gh_run=fake, now=_NOW)
+
+    query = next(a for a in fake.calls[0] if a.startswith("query="))
+    # The retry search: needs-human ON, still unclaimed/unassigned, cooled off.
+    assert "retry:" in query
+    assert "label:needs-human" in query.replace("-label:needs-human", "")
+    assert "updated:<2026-07-02" in query  # now (2026-07-09) minus 7 days
+    # Both pools parsed; fresh first.
+    assert [c["ref"] for c in out] == ["o/r#7", "o/r#3"]
+
+
+def test_query_candidates_retry_search_keeps_claim_and_assignee_gates():
+    """The retry search must still exclude ``in-progress`` (the claim lock) and
+    assigned issues, and honor the eligible-label gate when one is set."""
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout_with_retry([], []))})
+    config = {"enabled_repos": ["o/r"], "eligible_label": "ready",
+              "needs_human_retry_days": 7}
+
+    query_candidates(config, gh_run=fake, now=_NOW)
+
+    query = next(a for a in fake.calls[0] if a.startswith("query="))
+    retry_part = query[query.index("retry:"):]
+    assert "-label:in-progress" in retry_part
+    assert "no:assignee" in retry_part
+    assert "label:ready" in retry_part
+
+
+def test_query_candidates_retry_days_zero_disables_retry_pool():
+    """``needs_human_retry_days: 0`` is the opt-out: needs-human stays a
+    permanent handoff and the query carries no retry search."""
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout([]))})
+    config = {"enabled_repos": ["o/r"], "eligible_label": "", "needs_human_retry_days": 0}
+
+    query_candidates(config, gh_run=fake, now=_NOW)
+
+    query = next(a for a in fake.calls[0] if a.startswith("query="))
+    assert "retry:" not in query
+    assert "updated:<" not in query
+
+
+def test_query_candidates_retry_defaults_on_when_key_missing():
+    """A pre-existing stored config has no ``needs_human_retry_days`` key — the
+    schema default (7 days) must apply so deployed runners pick up the retry
+    pool without a config re-save."""
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout_with_retry([], []))})
+    config = {"enabled_repos": ["o/r"], "eligible_label": ""}
+
+    query_candidates(config, gh_run=fake, now=_NOW)
+
+    query = next(a for a in fake.calls[0] if a.startswith("query="))
+    assert "retry:" in query
+    assert "updated:<2026-07-02" in query
+
+
+def test_query_candidates_dedupes_ref_across_pools():
+    """A ref surfacing in both searches (label edited mid-query) must appear once."""
+    dup = {"number": 3, "title": "Dup", "url": "https://github.com/o/r/issues/3",
+           "repository": {"nameWithOwner": "o/r"}}
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout_with_retry([dup], [dup]))})
+    config = {"enabled_repos": ["o/r"], "eligible_label": "", "needs_human_retry_days": 7}
+
+    out = query_candidates(config, gh_run=fake, now=_NOW)
+
+    assert [c["ref"] for c in out] == ["o/r#3"]
 
 
 # --------------------------------------------------------------------------- #

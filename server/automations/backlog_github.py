@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
 
 from ccswitch import gitrepos
@@ -24,6 +25,13 @@ GhRun = Callable[..., "object"]
 
 IN_PROGRESS_LABEL = "in-progress"
 NEEDS_HUMAN_LABEL = "needs-human"
+
+# How long an escalated (``needs-human``) issue must sit untouched before the
+# runner reconsiders it. Escalation itself bumps the issue's ``updatedAt``, so
+# every give-up re-arms the cooldown — a permanently-failing issue is retried at
+# most once per window, never in a tight loop. 0 disables retry entirely
+# (needs-human becomes a permanent handoff again).
+NEEDS_HUMAN_RETRY_DAYS_DEFAULT = 7
 
 
 # --------------------------------------------------------------------------- #
@@ -40,7 +48,23 @@ def _split_ref(ref: str) -> tuple[str, str]:
 # Candidate query                                                             #
 # --------------------------------------------------------------------------- #
 
-def _build_candidates_query(repos: list[str], eligible_label: str) -> str:
+_ISSUE_NODES = "nodes { ... on Issue { number title url repository { nameWithOwner } } }"
+
+
+def _common_quals(repos: list[str], eligible_label: str) -> list[str]:
+    """Gates shared by BOTH candidate pools: repo scope, open, unassigned, the
+    optional eligible label, and never ``in-progress`` (the claim lock — a
+    claimed issue is live work, no pool may resurface it)."""
+    quals = [f"repo:{r}" for r in repos]
+    quals += ["is:issue", "is:open", "no:assignee"]
+    if eligible_label:
+        quals.append(f"label:{eligible_label}")
+    quals.append(f"-label:{IN_PROGRESS_LABEL}")
+    return quals
+
+
+def _build_candidates_query(repos: list[str], eligible_label: str,
+                            retry_cutoff: str | None) -> str:
     """A GitHub search-issues GraphQL doc for eligible, unclaimed OPEN issues.
 
     The search string carries every gate: the eligible label (OMITTED when
@@ -49,32 +73,47 @@ def _build_candidates_query(repos: list[str], eligible_label: str) -> str:
     ``needs-human``.  Repos are OR'd via ``repo:`` qualifiers.  Strings are
     JSON-encoded so a label or repo name can never break out of the search
     literal.
+
+    When ``retry_cutoff`` (a ``YYYY-MM-DD`` date) is given, a second aliased
+    search adds the RETRY pool: ``needs-human`` issues whose last update
+    precedes the cutoff. Escalation bumps ``updatedAt``, so the qualifier doubles
+    as the cooldown clock — and a human commenting on an escalated issue keeps it
+    out of the pool for another window.
     """
-    quals = [f"repo:{r}" for r in repos]
-    quals += ["is:issue", "is:open", "no:assignee"]
-    if eligible_label:
-        quals.append(f"label:{eligible_label}")
-    quals += [
-        f"-label:{IN_PROGRESS_LABEL}",
-        f"-label:{NEEDS_HUMAN_LABEL}",
-    ]
-    search = " ".join(quals)
-    return (
+    fresh = _common_quals(repos, eligible_label) + [f"-label:{NEEDS_HUMAN_LABEL}"]
+    parts = [
         "query {\n"
-        f"  issues: search(query: {json.dumps(search)}, type: ISSUE, first: 100) {{\n"
-        "    nodes { ... on Issue { number title url repository { nameWithOwner } } }\n"
+        f"  issues: search(query: {json.dumps(' '.join(fresh))}, type: ISSUE, first: 100) {{\n"
+        f"    {_ISSUE_NODES}\n"
         "  }\n"
-        "}"
-    )
+    ]
+    if retry_cutoff:
+        retry = _common_quals(repos, eligible_label) + [
+            f"label:{NEEDS_HUMAN_LABEL}",
+            f"updated:<{retry_cutoff}",
+        ]
+        parts.append(
+            f"  retry: search(query: {json.dumps(' '.join(retry))}, type: ISSUE, first: 100) {{\n"
+            f"    {_ISSUE_NODES}\n"
+            "  }\n"
+        )
+    parts.append("}")
+    return "".join(parts)
 
 
-def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh) -> list[dict]:
+def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
+                     now: datetime | None = None) -> list[dict]:
     """Return eligible, unclaimed OPEN issues as candidate dicts.
 
     Candidate shape (what :func:`rank_and_batch` consumes)::
 
         {"ref": "owner/repo#N", "number": N, "repo": "owner/repo", "title": ...,
          "url": "https://github.com/owner/repo/issues/N"}
+
+    Two pools, fresh first: never-escalated issues, then ``needs-human`` issues
+    untouched for ``needs_human_retry_days`` (missing key → the schema default,
+    so already-stored configs pick the retry pool up without a re-save; explicit
+    0 opts out). Fresh-first ordering means a retry can never displace new work.
 
     For v1, ``enabled_repos`` must be non-empty — an empty list returns ``[]``
     without a gh call (drawing from *all* repos is intentionally deferred).  A gh
@@ -88,7 +127,13 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh) -> list[
     # default ("ready") is applied to a *fresh* config by validate_config, so an
     # explicit blank is the user opting out of the label gate.
     eligible_label = (config.get("eligible_label") or "").strip()
-    query = _build_candidates_query(repos, eligible_label)
+    raw_days = config.get("needs_human_retry_days")
+    retry_days = NEEDS_HUMAN_RETRY_DAYS_DEFAULT if raw_days is None else max(0, int(raw_days))
+    retry_cutoff = None
+    if retry_days:
+        moment = now or datetime.now(timezone.utc)
+        retry_cutoff = (moment - timedelta(days=retry_days)).strftime("%Y-%m-%d")
+    query = _build_candidates_query(repos, eligible_label, retry_cutoff)
 
     proc = gh_run(["api", "graphql", "-f", f"query={query}"])
     if getattr(proc, "returncode", 1) != 0:
@@ -101,12 +146,11 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh) -> list[
         log.warning("backlog_github.query_unparseable", exc_info=True)
         return []
 
-    nodes = (
-        (payload.get("data") or {})
-        .get("issues", {})
-        .get("nodes", [])
-    ) or []
+    data = payload.get("data") or {}
+    nodes = list((data.get("issues") or {}).get("nodes") or [])
+    nodes += list((data.get("retry") or {}).get("nodes") or [])
     out: list[dict] = []
+    seen: set[str] = set()
     for node in nodes:
         if not node:
             continue
@@ -114,8 +158,12 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh) -> list[
         repo = (node.get("repository") or {}).get("nameWithOwner")
         if number is None or not repo:
             continue
+        ref = f"{repo}#{number}"
+        if ref in seen:  # label edited between the two searches — keep first
+            continue
+        seen.add(ref)
         out.append({
-            "ref": f"{repo}#{number}",
+            "ref": ref,
             "number": number,
             "repo": repo,
             "title": node.get("title"),
