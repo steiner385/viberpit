@@ -49,7 +49,7 @@ def test_transcript_path_detached_session_file_exists(tmp_path):
 
     orch = _seed_and_rehydrate(db_url, session_id, cwd, claude_sid)
 
-    with patch("server.sessions.orchestrator.compose", return_value=fake_config_dir):
+    with patch("server.sessions.orchestrator.account_cfg_dir", return_value=fake_config_dir):
         result = orch.transcript_path(session_id)
 
     assert result == str(transcript_file)
@@ -66,7 +66,7 @@ def test_transcript_path_detached_session_file_missing(tmp_path):
 
     orch = _seed_and_rehydrate(db_url, session_id, cwd, claude_sid)
 
-    with patch("server.sessions.orchestrator.compose", return_value=fake_config_dir):
+    with patch("server.sessions.orchestrator.account_cfg_dir", return_value=fake_config_dir):
         result = orch.transcript_path(session_id)
 
     assert result is None
@@ -94,7 +94,7 @@ def test_transcript_path_found_under_nonmatching_project_dir(tmp_path):
     transcript_file.write_text('{"type":"text"}\n')
 
     orch = _seed_and_rehydrate(db_url, session_id, cwd, claude_sid)
-    with patch("server.sessions.orchestrator.compose", return_value=fake_config_dir):
+    with patch("server.sessions.orchestrator.account_cfg_dir", return_value=fake_config_dir):
         result = orch.transcript_path(session_id)
 
     assert result == str(transcript_file), (
@@ -132,7 +132,7 @@ def test_transcript_path_resolves_via_shared_base_when_account_symlink_broken(tm
     assert not broken_link.exists()
 
     orch = _seed_and_rehydrate(db_url, session_id, cwd, claude_sid)
-    with patch("server.sessions.orchestrator.compose", return_value=account_cfg), \
+    with patch("server.sessions.orchestrator.account_cfg_dir", return_value=account_cfg), \
          patch("server.sessions.orchestrator.shared_base", return_value=shared):
         result = orch.transcript_path(session_id)
 

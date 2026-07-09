@@ -35,7 +35,7 @@ from ccswitch.accounts import provider_of as _provider_of
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
-from ccswitch.paths import shared_base
+from ccswitch.paths import account_cfg_dir, shared_base
 from server.audit import record_audit
 from server.db import db_session
 from server.db.models import INACTIVE_SESSION_STATUSES, Session as DbSession
@@ -4205,8 +4205,8 @@ class SessionOrchestrator:
         robust to the naming convention AND to cwd/project mismatches (a session whose
         recorded cwd differs from where it actually ran still resolves).
 
-        Falls back to the SessionRecord + compose(account) when the driver is absent
-        or has no claude_session_id (e.g. rehydrated/detached sessions).
+        Falls back to the SessionRecord + account_cfg_dir(account) when the driver is
+        absent or has no claude_session_id (e.g. rehydrated/detached sessions).
 
         Each account's per-account `projects` dir is itself a symlink to the one shared
         projects tree (configdir.SHARE_ALLOWLIST). That symlink can rot — point at itself
@@ -4217,8 +4217,6 @@ class SessionOrchestrator:
         physically lives under the shared base, we also search shared_base()/projects so
         replay survives a broken per-account symlink.
         """
-        import glob as _glob
-
         d = self._drivers.get(session_id)
         if d and d.claude_session_id:
             config_dir, csid = d.config_dir, d.claude_session_id
@@ -4226,11 +4224,22 @@ class SessionOrchestrator:
             rec = self._records.get(session_id)
             if rec is None or not rec.claude_session_id:
                 return None
-            config_dir, csid = str(compose(rec.account)), rec.claude_session_id
+            config_dir, csid = str(account_cfg_dir(rec.account)), rec.claude_session_id
+        return self._find_transcript(config_dir, csid)
 
-        # Probe the per-account config dir first (the common, healthy case), then the
-        # canonical shared base as a backstop against a broken per-account symlink.
-        # Dedup by resolved path so a healthy symlink isn't globbed twice.
+    def _find_transcript(self, config_dir: str, csid: str) -> str | None:
+        """Glob `<root>/projects/*/<csid>.jsonl` in the per-account config dir, then
+        the canonical shared base as a backstop against a broken per-account symlink.
+        Dedup by resolved path so a healthy symlink isn't globbed twice.
+
+        Resolution is a READ: roots come from pure path helpers, never compose().
+        compose() writes credentials and raises FileNotFoundError for an account
+        whose store slot is gone (renamed/deleted account still referenced by old
+        session rows) — which used to fail every caller fanning out over sessions,
+        e.g. one dangling archived row 409'd the entire /sessions/search.
+        """
+        import glob as _glob
+
         seen: set[str] = set()
         for root in (Path(config_dir), Path(shared_base())):
             projects = root / "projects"
@@ -5114,7 +5123,6 @@ class SessionOrchestrator:
         (not in _records) fall back to a DB lookup + glob.
         """
         from sqlalchemy import select as sa_select
-        import glob as _glob
 
         path = self.transcript_path(session_id)
         if path is None:
@@ -5124,11 +5132,9 @@ class SessionOrchestrator:
                     sa_select(DbSession).where(DbSession.id == session_id)
                 )).scalars().first()
             if row and row.claude_session_id:
-                cfg_dir = str(compose(row.account_name))
-                matches = _glob.glob(
-                    str(Path(cfg_dir) / "projects" / "*" / f"{row.claude_session_id}.jsonl")
+                path = self._find_transcript(
+                    str(account_cfg_dir(row.account_name)), row.claude_session_id
                 )
-                path = matches[0] if matches else None
         return path
 
     async def transcript_events(self, session_id: str, *, max_turns: int | None = 20) -> list:

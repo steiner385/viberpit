@@ -551,3 +551,34 @@ def test_transcript_events_returns_empty_when_no_transcript(tmp_path):
                 return await orch.transcript_events("t2")
 
     assert asyncio.run(run()) == []
+
+
+def test_resolve_transcript_path_without_credential_slot(tmp_path):
+    """Archived transcripts resolve WITHOUT composing the account config dir.
+
+    compose() writes credentials and raises FileNotFoundError for an account
+    whose store slot no longer exists (renamed/deleted account — e.g. an old
+    copilot account name kept forever by archived rows). Resolution is a READ
+    and must stay side-effect free: glob the account cfg dir directly.
+    """
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+
+    async def run():
+        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+            await init_db(db_url=db_url)
+            await _seed([
+                dict(id="g1", name="Ghost", account_name="ghost_account",
+                     claude_session_id="csid-ghost", status="archived",
+                     cwd="/old"),
+            ])
+            # Transcript exists under the account cfg dir; NO store slot
+            # (store/ghost_account.cred.json) and no copilot token dir exist.
+            proj = tmp_path / "cfg" / "ghost_account" / "projects" / "-home-u-repo"
+            proj.mkdir(parents=True)
+            transcript = proj / "csid-ghost.jsonl"
+            transcript.write_text("{}\n")
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            return await orch.resolve_transcript_path("g1"), str(transcript)
+
+    path, expected = asyncio.run(run())
+    assert path == expected
