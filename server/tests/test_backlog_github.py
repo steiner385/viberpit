@@ -362,3 +362,89 @@ def test_reconcile_dangling_no_op_when_all_live():
     fake = FakeGh()
     reconcile_dangling(["o/r#1"], {"o/r#1"}, gh_run=fake)
     assert fake.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# find_referencing_pr                                                          #
+# --------------------------------------------------------------------------- #
+
+def _timeline_stdout(sources: list[dict]) -> str:
+    return json.dumps({"data": {"repository": {"issue": {"timelineItems": {
+        "nodes": [{"source": s} for s in sources]}}}}})
+
+
+def _pr_node(number: int, state: str, repo: str = "o/r", *, is_draft: bool = False,
+             auto_merge: bool = False, branch: str = "b") -> dict:
+    return {"number": number, "url": f"https://github.com/{repo}/pull/{number}",
+            "title": f"pr {number}", "state": state, "isDraft": is_draft,
+            "headRefName": branch,
+            "autoMergeRequest": {"enabledAt": "x"} if auto_merge else None,
+            "repository": {"nameWithOwner": repo}}
+
+
+def test_find_referencing_pr_prefers_merged_and_filters_repo():
+    from server.automations.backlog_github import find_referencing_pr
+    sources = [
+        _pr_node(1, "MERGED", repo="other/repo"),   # wrong repo — ignored
+        _pr_node(2, "CLOSED"),                       # closed unmerged — ignored
+        _pr_node(3, "OPEN"),
+        _pr_node(4, "MERGED", branch="fix/it"),
+    ]
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_timeline_stdout(sources))})
+
+    info = find_referencing_pr("o/r#11467", gh_run=fake)
+
+    assert info is not None
+    assert (info.number, info.state, info.merged) == (4, "merged", True)
+    assert info.head_ref == "fix/it"
+    # The query targets the issue's cross-referenced timeline.
+    flat = " ".join(fake.calls[0])
+    assert "CROSS_REFERENCED_EVENT" in flat
+    assert "11467" in flat
+
+
+def test_find_referencing_pr_open_maps_draft_and_auto_merge():
+    from server.automations.backlog_github import find_referencing_pr
+    fake = FakeGh({("api", "graphql"): _proc(
+        stdout=_timeline_stdout([_pr_node(9, "OPEN", auto_merge=True)]))})
+
+    info = find_referencing_pr("o/r#3", gh_run=fake)
+
+    assert info is not None
+    assert (info.number, info.state) == (9, "open")
+    assert info.auto_merge_enabled is True
+
+
+def test_find_referencing_pr_ignores_closed_only_and_failures():
+    from server.automations.backlog_github import find_referencing_pr
+    only_closed = FakeGh({("api", "graphql"): _proc(
+        stdout=_timeline_stdout([_pr_node(2, "CLOSED")]))})
+    assert find_referencing_pr("o/r#3", gh_run=only_closed) is None
+
+    gh_fail = FakeGh({("api", "graphql"): _proc(returncode=1, stderr="boom")})
+    assert find_referencing_pr("o/r#3", gh_run=gh_fail) is None
+
+    unparseable = FakeGh({("api", "graphql"): _proc(stdout="not json")})
+    assert find_referencing_pr("o/r#3", gh_run=unparseable) is None
+
+
+# --------------------------------------------------------------------------- #
+# close_batch_issues                                                           #
+# --------------------------------------------------------------------------- #
+
+def test_close_batch_issues_closes_each_with_a_linking_comment():
+    from server.automations.backlog_github import close_batch_issues
+    from server.github.pr_status import PullRequestInfo
+    fake = FakeGh()
+    b = Batch(primary="o/r#8", issues=["o/r#8", "o/r#9"], repo="o/r")
+    info = PullRequestInfo(number=42, url="https://github.com/o/r/pull/42",
+                           state="merged", checks="none", title="t", merged=True)
+
+    close_batch_issues(b, info, gh_run=fake)
+
+    closes = [c for c in fake.calls if c[:2] == ["issue", "close"]]
+    assert {c[2] for c in closes} == {"8", "9"}
+    for c in closes:
+        assert "--repo" in c and c[c.index("--repo") + 1] == "o/r"
+        comment = c[c.index("--comment") + 1]
+        assert "https://github.com/o/r/pull/42" in comment

@@ -71,6 +71,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
             self.releases: list = []
             self.needs_humans: list = []
             self.reconciles: list = []
+            self.close_outs: list = []
             # candidate queue: pop from the front on each select_batch
             self.candidates: list = list(candidates or [])
             self.in_flight = 0
@@ -118,6 +119,9 @@ def build_loop(*, mode="auto", config=None, clock=None,
     async def reconcile(claimed_refs, live_refs):
         rec.reconciles.append((list(claimed_refs), set(live_refs)))
 
+    async def close_out(target, info):
+        rec.close_outs.append((target, info))
+
     async def count_candidates():
         return candidate_count if candidate_count is not None else 0
 
@@ -135,6 +139,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
         release=release,
         needs_human=needs_human,
         reconcile=reconcile,
+        close_out=close_out,
         count_candidates=count_candidates if candidate_count is not None else None,
     )
     return loop, rec, ctx
@@ -403,5 +408,51 @@ def test_restart_safety_counts_existing_rows(tmp_path):
         )
         await loop.tick()
         assert rec.spawns == []  # already at max_concurrent from the DB → no spawn
+
+    asyncio.run(run())
+
+
+def test_merged_pr_closes_out_issues_then_frees_slot(tmp_path):
+    """A merged PR that never carried `Fixes #N` leaves its issues open —
+    the sweep must close them out (comment + close) before dropping the row."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'g.db'}"
+
+    async def run():
+        from server.github.pr_status import PullRequestInfo
+        await init_db(db_url=db_url)
+        await _seed_row()
+        merged = PullRequestInfo(number=42, url="", state="merged",
+                                 checks="none", title="", merged=True)
+        loop, rec, ctx = build_loop(pr_status={"r#1": merged})
+        await ctx.set_target_state(
+            "r#1", {"session_id": "s1", "issues": ["r#1", "r#2"], "claimed": True})
+
+        await loop.tick()
+
+        assert rec.close_outs == [("r#1", merged)]
+        assert await ctx.list_target_states() == {}
+
+    asyncio.run(run())
+
+
+def test_reconcile_deletes_dangling_claim_rows(tmp_path):
+    """A claimed row that never recorded a session_id (crash between claim and
+    spawn) must be deleted after reconciliation releases its label — otherwise
+    it holds a concurrency slot forever (KinDash#9957 sat for 6 days)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'h.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(mode="off")
+        await ctx.set_target_state("r#1", {"claimed": True})                    # dangler
+        await ctx.set_target_state("r#2", {"claimed": True, "session_id": "s2"})  # live
+
+        await loop.tick()
+
+        assert rec.reconciles, "reconcile seam should run"
+        states = await ctx.list_target_states()
+        assert "r#1" not in states, "dangling claim row must be deleted"
+        assert "r#2" in states, "a row with a spawned session must survive"
 
     asyncio.run(run())

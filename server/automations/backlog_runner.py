@@ -279,6 +279,10 @@ Release = Callable[[str], Awaitable[None]]
 # GIVE-UP path: add ``needs-human`` + remove ``in-progress``. Used only when a
 # target has exhausted ``max_attempts`` or PR Doctor gave up on it.
 NeedsHuman = Callable[[str], Awaitable[None]]
+# MERGED path: the work landed but the PR may not have carried a closing
+# keyword — comment + close every issue in the batch so it can't stay open
+# (and label-excluded) forever.
+CloseOut = Callable[[str, "PullRequestInfo"], Awaitable[None]]
 SessionEnded = Callable[[str], Awaitable[bool]]
 # Reconciliation seam: given the durably-claimed refs and the live origin_refs
 # (non-terminal runner sessions), release any dangling claim to the pool.
@@ -340,6 +344,7 @@ class BacklogRunnerLoop:
         session_ended: SessionEnded | None = None,
         reconcile: Reconcile | None = None,
         count_candidates: CountCandidates | None = None,
+        close_out: CloseOut | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
@@ -356,6 +361,7 @@ class BacklogRunnerLoop:
         self._session_ended = session_ended         # (session_id) -> bool | None
         self._reconcile = reconcile                 # (claimed_refs, live_refs) -> None
         self._count_candidates = count_candidates    # -> int (true eligible backlog size)
+        self._close_out = close_out                 # (target, info) -> close merged batch issues
         self._lock = asyncio.Lock()
         self._spawns_today: list[float] = []        # spawn timestamps within the rolling day
         self._circuit_open_emitted = False          # debounce the circuit_open event
@@ -438,6 +444,7 @@ class BacklogRunnerLoop:
             return
         claimed_refs: list[str] = []
         live_refs: set[str] = set()
+        danglers: list[str] = []
         for target, st in states.items():
             if not st.get("claimed"):
                 continue
@@ -448,11 +455,18 @@ class BacklogRunnerLoop:
             # never got a ``session_id`` is the crash-between-claim-and-spawn leak.
             if st.get("session_id") is not None:
                 live_refs.update(issues)
+            else:
+                danglers.append(target)
         if claimed_refs:
             try:
                 await self._reconcile(claimed_refs, live_refs)
             except Exception:  # pragma: no cover — best-effort reconciliation
                 log.warning("backlog_runner.reconcile_failed", exc_info=True)
+                return
+            # The labels are released — drop the leaked rows too, or they hold
+            # a concurrency slot forever (count_in_flight counts active rows).
+            for target in danglers:
+                await self._ctx.delete_target_state(target)
 
     async def _refill(self, mode: str, config: dict) -> None:
         in_flight = await self._count_in_flight()
@@ -562,8 +576,12 @@ class BacklogRunnerLoop:
         repo = target.split("#", 1)[0]
         info = await self._pr_status_for(target)
 
-        # PR merged → the work landed; free the slot and drop the guard row.
+        # PR merged → the work landed; close out the batch's issues (the PR may
+        # not have carried a `Fixes #N`, leaving them open and label-excluded
+        # forever), then free the slot and drop the guard row.
         if info is not None and info.state == "merged":
+            if self._close_out is not None:
+                await self._close_out(target, info)
             await self._ctx.emit("info", f"{target} merged", kind="merged", target=target)
             await self._ctx.delete_target_state(target)
             return
