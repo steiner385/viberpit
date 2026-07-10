@@ -236,9 +236,30 @@ async def list_sessions(
     # Read each session's repo (live, from its cwd), cached suggestions, PR list, and
     # status summary in parallel.
     repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
-    suggs = await asyncio.gather(*(orch.latest_suggestions(r.id) for r in records))
-    prs = await asyncio.gather(*(_resolve_prs(orch, r) for r in records))
-    summaries = await asyncio.gather(*(_resolve_summary(orch, r, viewing) for r in records))
+    # Auxiliary RPC calls degrade gracefully: a daemon blip (DaemonUnavailable /
+    # TransportError) returns an empty default for affected sessions rather than
+    # crashing the whole list with a 500.
+    _suggs_raw = await asyncio.gather(
+        *(orch.latest_suggestions(r.id) for r in records), return_exceptions=True
+    )
+    suggs = [s if not isinstance(s, BaseException) else [] for s in _suggs_raw]
+    if any(isinstance(s, BaseException) for s in _suggs_raw):
+        log.warning("list_sessions: suggestions fetch failed for %d session(s)",
+                    sum(1 for s in _suggs_raw if isinstance(s, BaseException)))
+    _prs_raw = await asyncio.gather(
+        *(_resolve_prs(orch, r) for r in records), return_exceptions=True
+    )
+    prs = [p if not isinstance(p, BaseException) else [] for p in _prs_raw]
+    if any(isinstance(p, BaseException) for p in _prs_raw):
+        log.warning("list_sessions: prs fetch failed for %d session(s)",
+                    sum(1 for p in _prs_raw if isinstance(p, BaseException)))
+    _summaries_raw = await asyncio.gather(
+        *(_resolve_summary(orch, r, viewing) for r in records), return_exceptions=True
+    )
+    summaries = [s if not isinstance(s, BaseException) else "" for s in _summaries_raw]
+    if any(isinstance(s, BaseException) for s in _summaries_raw):
+        log.warning("list_sessions: summary fetch failed for %d session(s)",
+                    sum(1 for s in _summaries_raw if isinstance(s, BaseException)))
     return [
         _record_to_dict(r, repo=repo, suggestions=s, prs=pr_list, summary=summary)
         for r, repo, s, pr_list, summary in zip(records, repos, suggs, prs, summaries)

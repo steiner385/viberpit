@@ -116,10 +116,12 @@ class DaemonClient:
         post_kwargs = {} if timeout is None else {"timeout": timeout}
         try:
             resp = await self._http.post(f"/rpc/{method}", json=params, **post_kwargs)
-        except httpx.ConnectError as exc:
-            raise DaemonUnavailable(str(exc)) from exc
         except httpx.TimeoutException as exc:
             raise DaemonUnavailable(f"{method} timed out: {exc}") from exc
+        except httpx.TransportError as exc:
+            # Covers ConnectError, ReadError, WriteError, CloseError — any transport-level
+            # failure that means the daemon is unreachable or reset mid-response.
+            raise DaemonUnavailable(str(exc)) from exc
         body = resp.json()
         if "error" in body:
             err = body["error"]
