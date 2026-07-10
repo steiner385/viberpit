@@ -240,6 +240,42 @@ _install_durable_inmemory_db()
 
 
 # --------------------------------------------------------------------------- #
+# No-real-model guard for the "auto" session-model assessor.                   #
+#                                                                              #
+# Automation spawns resolve their session model via                            #
+# `model_pick.resolve_model`, whose default config value is "auto" — a one-    #
+# shot claude-agent-sdk query. Every orchestrator/automation test that walks   #
+# a spawn path (pr-doctor fix/consolidate, backlog spawn) would therefore      #
+# attempt a REAL model call unless it stubbed the assessor — a silent,         #
+# nondeterministic network dependency in ~any spawn test, present or future.   #
+#                                                                              #
+# `assess_model` is the SOLE entry to the real SDK on this path and already    #
+# has a fail-open contract (any failure → None → account default), so the      #
+# guard makes "SDK unavailable" the universal test-time truth: calls without   #
+# an injected `_query_fn` return None (production's own degraded behavior)     #
+# instead of touching the SDK. Direct assessor tests inject `_query_fn` and    #
+# exercise the real logic; resolve_model tests inject `_assess`.               #
+# --------------------------------------------------------------------------- #
+def _install_no_real_model_guard():
+    import server.automations.model_pick as _mp
+
+    _orig = _mp.assess_model
+    if getattr(_orig, "_no_real_model_guard", False):
+        return  # already guarded (conftest re-imported)
+
+    async def _guarded_assess_model(task_summary, *, _query_fn=None, **kw):
+        if _query_fn is None:
+            return None  # tests never reach the real model; None = fail-open
+        return await _orig(task_summary, _query_fn=_query_fn, **kw)
+
+    _guarded_assess_model._no_real_model_guard = True
+    _mp.assess_model = _guarded_assess_model
+
+
+_install_no_real_model_guard()
+
+
+# --------------------------------------------------------------------------- #
 # mTLS cert fixture for testing mutual TLS scenarios                         #
 # --------------------------------------------------------------------------- #
 import dataclasses

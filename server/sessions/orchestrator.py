@@ -1413,6 +1413,7 @@ class SessionOrchestrator:
         spawner (stamps origin/origin_ref, enforces one session per primary, and
         emits ``spawned`` with ``detail.issues``). Returns the SessionRecord."""
         from server.automations.backlog_prompt import build_implement_prompt
+        from server.automations.model_pick import resolve_model
         from server.config import get_settings
         url = f"https://github.com/{batch.repo}.git"
         try:
@@ -1423,6 +1424,12 @@ class SessionOrchestrator:
             default_branch = "master"
         cwd = await asyncio.to_thread(
             gitrepos.ensure_clone, get_settings().repo_root, batch.repo, url)
+        _mode, config = await self._backlog_read_config()
+        model, model_source = await resolve_model(config, "\n".join(
+            f"{ref}  {batch.titles.get(ref) or '(no title)'}" for ref in batch.issues))
+        detail: dict = {"issues": batch.issues}
+        if model is not None:
+            detail.update(model=model, model_source=model_source)
         return await self._backlog_ctx.spawn_session(
             origin_ref=batch.primary,
             dedupe_key=batch.primary,
@@ -1431,7 +1438,8 @@ class SessionOrchestrator:
             account=account,
             name=f"backlog {batch.primary}",
             initial_prompt=build_implement_prompt(batch, default_branch),
-            detail={"issues": batch.issues},
+            model=model,
+            detail=detail,
         )
 
     async def backlog_runner_implement_core(self, primary: str) -> str:
@@ -1452,7 +1460,8 @@ class SessionOrchestrator:
         by_ref = {c["ref"]: c for c in candidates}
         if primary not in by_ref:
             return "unknown"
-        batch = Batch(primary=primary, issues=[primary], repo=by_ref[primary]["repo"])
+        batch = Batch(primary=primary, issues=[primary], repo=by_ref[primary]["repo"],
+                      titles={primary: t} if (t := by_ref[primary].get("title")) else {})
         st = await self._backlog_ctx.get_target_state(primary)
         already_claimed = bool(st.get("issues"))
         if not already_claimed:
@@ -2310,6 +2319,13 @@ class SessionOrchestrator:
                 "error", f"clone failed for {target}: {exc}",
                 kind="spawn_failed", target=target)
             return "clone_failed", None
+        from server.automations.model_pick import resolve_model
+        failing = ", ".join(
+            d.name for d in info.checks_detail if d.conclusion == "failure")
+        model, model_source = await resolve_model(
+            await self._pr_doctor_config(),
+            f"{kind} fix for PR {target}: {info.title}"
+            + (f"\nfailing checks: {failing}" if failing else ""))
         try:
             rec2 = await self._pr_doctor_ctx.spawn_session(
                 origin_ref=target,
@@ -2320,6 +2336,9 @@ class SessionOrchestrator:
                 account=None,  # create_session picks a healthy account
                 name=f"pr-doctor fix {target}",
                 initial_prompt=prompt,
+                model=model,
+                detail={"model": model, "model_source": model_source}
+                if model is not None else None,
             )
         except AllAccountsBusy:
             # Every account is at/above the usage ceiling → defer, not fail. Attempt
@@ -2423,12 +2442,20 @@ class SessionOrchestrator:
                 "error", f"clone failed for {target}: {exc}",
                 kind="spawn_failed", target=target)
             return "clone_failed", None
+        from server.automations.model_pick import resolve_model
+        model, model_source = await resolve_model(
+            await self._pr_doctor_config(),
+            f"consolidate {len(prs)} PRs in {repo}:\n"
+            + "\n".join(f"#{p.number}  {p.title}" for p in prs))
         try:
             rec = await self._pr_doctor_ctx.spawn_session(
                 origin_ref=target, dedupe_key=target, repo=repo,
                 account=None, cwd=cwd,
                 name=f"pr-doctor consolidate {repo} ({len(prs)} PRs)",
-                initial_prompt=prompt)
+                initial_prompt=prompt,
+                model=model,
+                detail={"model": model, "model_source": model_source}
+                if model is not None else None)
         except AllAccountsBusy:
             await self._pr_doctor_ctx.emit(
                 "warn", f"consolidate deferred for {target}: all accounts at/above usage ceiling",

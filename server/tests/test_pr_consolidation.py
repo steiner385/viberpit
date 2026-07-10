@@ -77,6 +77,30 @@ async def test_consolidate_spawns_one_deduped_session(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_consolidate_passes_pinned_session_model(tmp_path, monkeypatch):
+    from ccswitch import gitrepos
+    await _init_db(tmp_path)
+    orch = _build_orch([_pr(1), _pr(2)])
+    monkeypatch.setattr(gitrepos, "ensure_clone", lambda root, repo, url: str(tmp_path))
+
+    async def config():
+        return {"default_model": "fable"}
+    orch._pr_doctor_config = config  # type: ignore[method-assign]
+
+    spawned = {}
+
+    async def fake_spawn(**kw):
+        spawned.update(kw)
+        return types.SimpleNamespace(id="new-sess")
+
+    orch._pr_doctor_ctx.spawn_session = fake_spawn  # type: ignore[assignment]
+    status, _ = await orch._pr_doctor_consolidate("o/r", [1, 2])
+    assert status == "spawned"
+    assert spawned["model"] == "fable"
+    assert spawned["detail"] == {"model": "fable", "model_source": "pinned"}
+
+
+@pytest.mark.asyncio
 async def test_consolidate_too_few_and_not_actionable(tmp_path, monkeypatch):
     from ccswitch import gitrepos
     await _init_db(tmp_path)

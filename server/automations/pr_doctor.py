@@ -8,6 +8,7 @@ from __future__ import annotations
 from server.sessions.pr_fix import VALID_AUTOFIX_MODES
 
 from .base import AutomationStatus, ConfigField
+from .model_pick import AUTOMATION_MODEL_CHOICES
 
 
 def _ordered_modes() -> tuple[str, ...]:
@@ -35,6 +36,11 @@ class PrDoctor:
                     type="bool", default=True, help="Spawns a session to fix failing CI jobs."),
         ConfigField(key="auto_resolve_conflicts", label="Auto-resolve merge conflicts",
                     type="bool", default=False, help="Risky — spawns a session to rebase/resolve."),
+        ConfigField(key="default_model", label="Session model", type="enum",
+                    default="auto", choices=AUTOMATION_MODEL_CHOICES,
+                    help="Model for spawned fix/consolidation sessions. 'auto' "
+                         "assesses each job's complexity and picks a tier; "
+                         "'default' uses the account's default model."),
     ]
 
     def status(self, ctx) -> AutomationStatus:

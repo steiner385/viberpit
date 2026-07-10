@@ -13,6 +13,7 @@ from server.github.pr_status import PullRequestInfo
 from .backlog_github import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, GhRun, query_candidates
 from .backlog_selection import Batch, rank_and_batch, should_free_slot
 from .base import AutomationStatus, ConfigField
+from .model_pick import AUTOMATION_MODEL_CHOICES
 from .context import AutomationContext
 
 log = logging.getLogger(__name__)
@@ -239,6 +240,11 @@ class BacklogRunner:
                     help="Reconsider escalated (needs-human) issues once they sit "
                          "untouched this many days. 0 = never retry (permanent "
                          "handoff). Any activity on the issue restarts the clock."),
+        ConfigField(key="default_model", label="Session model", type="enum",
+                    default="auto", choices=AUTOMATION_MODEL_CHOICES,
+                    help="Model for spawned sessions. 'auto' assesses each job's "
+                         "complexity and picks a tier; 'default' uses the "
+                         "account's default model."),
     ]
 
     def status(self, ctx) -> AutomationStatus:

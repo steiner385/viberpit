@@ -58,3 +58,16 @@ def test_partial_malformed_ranking_keeps_known_refs():
     b = rank_and_batch(C, 3, lambda cs: ["o/r#9", "bogus", "o/r#2"])
     assert b.issues == ["o/r#9", "o/r#2"]
     assert b.primary == "o/r#9"
+
+
+def test_batch_carries_titles_for_chosen_issues():
+    """titles map only the CHOSEN refs (they feed the auto model assessor);
+    candidates without a title are simply absent from the map."""
+    cands = [
+        {"ref": "o/r#5", "number": 5, "repo": "o/r", "title": "fix login typo"},
+        {"ref": "o/r#2", "number": 2, "repo": "o/r"},                # no title
+        {"ref": "o/r#9", "number": 9, "repo": "o/r", "title": "rework auth"},
+    ]
+    b = rank_and_batch(cands, 2, lambda cs: ["o/r#9", "o/r#2", "o/r#5"])
+    assert b.issues == ["o/r#9", "o/r#2"]
+    assert b.titles == {"o/r#9": "rework auth"}  # #2 untitled, #5 not chosen

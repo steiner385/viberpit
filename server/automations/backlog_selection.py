@@ -16,6 +16,9 @@ class Batch:
     primary: str
     issues: list[str] = field(default_factory=list)
     repo: str = ""
+    # ref → issue title for the batched issues; feeds the "auto" model
+    # assessor's job summary (refs alone carry no complexity signal).
+    titles: dict[str, str] = field(default_factory=dict)
 
 
 def rank_and_batch(
@@ -55,7 +58,8 @@ def rank_and_batch(
         ]
     chosen = ordered[: max(1, max_issues_per_pr)]
     primary = chosen[0]
-    return Batch(primary=primary, issues=list(chosen), repo=by_ref[primary]["repo"])
+    return Batch(primary=primary, issues=list(chosen), repo=by_ref[primary]["repo"],
+                 titles={r: t for r in chosen if (t := by_ref[r].get("title"))})
 
 
 def should_free_slot(pr_info: PullRequestInfo, pr_doctor_active: bool) -> bool:
