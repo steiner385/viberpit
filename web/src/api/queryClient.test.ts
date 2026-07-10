@@ -4,7 +4,10 @@ import { ApiRequestError } from '@/api/client'
 import {
   extractMutationErrorMessage,
   handleMutationError,
+  shouldRetryQuery,
+  queryClient,
   MUTATION_ERROR_FALLBACK,
+  TRANSIENT_RETRY_LIMIT,
 } from './queryClient'
 import { clientLogger } from '@/obs/logger'
 
@@ -53,6 +56,34 @@ describe('handleMutationError', () => {
     const err = new ApiRequestError(404, { detail: { code: 'not_found', message: 'Session not found' } })
     handleMutationError(err, fakeMutation({ suppressErrorToast: true }))
     expect(toast.error).not.toHaveBeenCalled()
+  })
+})
+
+describe('shouldRetryQuery', () => {
+  it.each([502, 503, 504])('retries a transient %i up to the limit', (status) => {
+    const err = new ApiRequestError(status, { detail: 'session daemon unavailable' })
+    expect(shouldRetryQuery(0, err)).toBe(true)
+    expect(shouldRetryQuery(TRANSIENT_RETRY_LIMIT - 1, err)).toBe(true)
+    expect(shouldRetryQuery(TRANSIENT_RETRY_LIMIT, err)).toBe(false)
+  })
+
+  it('retries network-level failures (fetch rejects before any HTTP status)', () => {
+    expect(shouldRetryQuery(0, new TypeError('Failed to fetch'))).toBe(true)
+    expect(shouldRetryQuery(TRANSIENT_RETRY_LIMIT, new TypeError('Failed to fetch'))).toBe(false)
+  })
+
+  it.each([400, 401, 403, 404, 409, 422])('never retries a deterministic %i', (status) => {
+    expect(shouldRetryQuery(0, new ApiRequestError(status, {}))).toBe(false)
+  })
+
+  it('never retries a 500 — internal errors are bugs, not blips', () => {
+    expect(shouldRetryQuery(0, new ApiRequestError(500, {}))).toBe(false)
+  })
+})
+
+describe('queryClient defaults', () => {
+  it('wires shouldRetryQuery as the default query retry policy', () => {
+    expect(queryClient.getDefaultOptions().queries?.retry).toBe(shouldRetryQuery)
   })
 })
 
