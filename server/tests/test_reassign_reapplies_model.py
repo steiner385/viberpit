@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 
@@ -34,6 +36,8 @@ async def test_reassign_reapplies_persisted_model(monkeypatch):
     orch._records = {"s1": rec}
     orch._drivers = {"s1": _OldDriver()}
     orch._last_prompt = {}
+    orch._turn_restart_at = {}
+    orch._clock = time.time
     orch._registry = None
     orch._suggester = None
     orch._session_factory = lambda sid: None
@@ -83,6 +87,8 @@ async def test_reassign_fires_driver_replaced_hook(monkeypatch):
     old = _OldDriver()
     orch._drivers = {"s1": old}
     orch._last_prompt = {}
+    orch._turn_restart_at = {}
+    orch._clock = time.time
     orch._registry = None
     orch._suggester = None
     orch._session_factory = lambda sid: None
@@ -149,6 +155,8 @@ async def test_reassign_rotated_event_carries_rev_token(monkeypatch):
     orch._records = {"s1": rec}
     orch._drivers = {"s1": _OldDriver()}
     orch._last_prompt = {}
+    orch._turn_restart_at = {}
+    orch._clock = time.time
     orch._registry = None
     orch._suggester = None
     orch._session_factory = lambda sid: None

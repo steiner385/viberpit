@@ -16,6 +16,7 @@ def _bare_orch():
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
     orch._draining = False
     orch._records = {}
+    orch._turn_restart_at = {}
     return orch
 
 
