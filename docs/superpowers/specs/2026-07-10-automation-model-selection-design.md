@@ -29,17 +29,18 @@ Each of the two automations adds one field to its `config_schema`:
 
 ```python
 ConfigField(key="default_model", label="Session model", type="enum",
-            default="auto", choices=model_choices(),
+            default="auto", choices=AUTOMATION_MODEL_CHOICES,
             help="Model for sessions this automation spawns. 'auto' assesses "
                  "job complexity and picks a tier; 'default' uses the "
                  "account's default model.")
 ```
 
-`model_choices()` lives in `server/sessions/model_catalog.py` and returns
-`["auto"] + ALIASES` — i.e. `auto, default, sonnet, opus, haiku, fable, best,
-sonnet[1m], opus[1m], fable[1m], opusplan`. The catalog stays the single source
-of truth; a future alias added there appears in every automation dropdown
-automatically.
+`AUTOMATION_MODEL_CHOICES` lives in `server/automations/model_pick.py`
+(automation-side concept; `model_catalog` stays a pure mirror of the binary's
+picker) and is `["auto", *ALIASES]` — i.e. `auto, default, sonnet, opus,
+haiku, fable, best, sonnet[1m], opus[1m], fable[1m], opusplan`. The catalog
+stays the single source of truth; a future alias added there appears in every
+automation dropdown automatically.
 
 - Frontend: `AutomationCard.tsx` already renders `type="enum"` fields as a
   native `<select>`; nothing to add.
