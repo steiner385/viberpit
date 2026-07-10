@@ -40,7 +40,31 @@ export function handleMutationError(
   toast.error(message)
 }
 
+/**
+ * Query retries beyond this count stop; with react-query's default exponential
+ * backoff (1s, 2s, 4s, 8s, 16s) five retries rides out a ~30s outage — comfortably
+ * covering the few-second window where a deploy restart answers 503.
+ */
+export const TRANSIENT_RETRY_LIMIT = 5
+
+/**
+ * Default query retry policy. The server maps an unreachable session daemon to
+ * 503 (see app.py's DaemonUnavailable handler) as an explicit "try again" signal,
+ * so transient statuses and network-level failures get a generous retry budget,
+ * while deterministic errors (4xx, 500) fail fast — retrying a 401 or 404 can
+ * never succeed. Per-query `retry` options still override this default.
+ */
+export function shouldRetryQuery(failureCount: number, error: unknown): boolean {
+  if (error instanceof ApiRequestError && ![502, 503, 504].includes(error.status)) {
+    return false
+  }
+  return failureCount < TRANSIENT_RETRY_LIMIT
+}
+
 export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: shouldRetryQuery },
+  },
   mutationCache: new MutationCache({
     // v5 onError signature: (error, variables, onMutateResult, mutation, context)
     onError: (error, _variables, _onMutateResult, mutation) => handleMutationError(error, mutation),
