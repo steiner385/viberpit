@@ -86,6 +86,15 @@ _TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — th
 # but no longer retried — retrying a worktree-deleted / repo-gone session is futile.
 RESUME_RECOVERY_MAX_ATTEMPTS = 3
 
+# How long autopilot defers a session after its turn-restart dance began (a model
+# swap's interrupt → set_model → replay, or _reassign's cross-driver equivalent).
+# The interrupt flips the session through an actionable status, which fires the
+# status-change autopilot nudge tick — without the defer, autopilot could inject a
+# competing prompt into the very session that is about to replay its own. Time-based
+# (vs. cleared-on-turn-start) so a swap with nothing to replay never strands the
+# session ungoverned; 60s comfortably covers the interrupt unwind + replay pickup.
+TURN_RESTART_DEFER_S: float = 60.0
+
 # Top-tier "needs you" and "crashed/failed" statuses that warrant an outbound push alert.
 # Derived from the same vocabulary as server/sessions/status.py — not a parallel list.
 PUSH_STATUSES: frozenset[str] = frozenset(
@@ -247,6 +256,9 @@ class SessionOrchestrator:
         self._review_proposals: dict[tuple[str, int], tuple[float, str | None]] = {}
         self._review_inflight: set[tuple[str, int]] = set()
         self._last_prompt: dict[str, str] = {}
+        # session_id → clock() when its turn-restart dance (model swap / reassign)
+        # began; autopilot skips the session for TURN_RESTART_DEFER_S from that mark.
+        self._turn_restart_at: dict[str, float] = {}
         # Failure-driven recovery: quarantine + per-session rotation cap. Clock is
         # injectable for deterministic tests; production uses wall-clock time. The
         # recompose-attempt map distinguishes a first 401 (heal in place) from a
@@ -852,6 +864,7 @@ class SessionOrchestrator:
 
         driver = self._drivers.pop(session_id, None)
         self._last_prompt.pop(session_id, None)
+        self._turn_restart_at.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
         if driver is not None:
             await driver.aclose()
@@ -1677,15 +1690,25 @@ class SessionOrchestrator:
             effective = "off"
         return effective, config
 
+    def _turn_restart_in_flight(self, session_id: str) -> bool:
+        """True while a turn restart (model swap / reassign) may still be unwinding —
+        autopilot must not act on the session until the replayed turn has had time to
+        start (or the defer window lapses for a swap with nothing to replay)."""
+        ts = self._turn_restart_at.get(session_id)
+        return ts is not None and (self._clock() - ts) < TURN_RESTART_DEFER_S
+
     async def _autopilot_list_governed(self) -> list[str]:
         """Session ids autopilot may act on this tick: non-terminal, not opted-out,
-        in an actionable status, and (if enabled_repos is set) in one of those repos."""
+        in an actionable status, not mid turn-restart, and (if enabled_repos is set)
+        in one of those repos."""
         from server.automations.autopilot_policy import ACTIONABLE_STATUSES
         _mode, config = await self._autopilot_read_config()
         repos = set(config.get("enabled_repos") or [])
         out: list[str] = []
         for sid, rec in list(self._records.items()):
             if rec.status not in ACTIONABLE_STATUSES:
+                continue
+            if self._turn_restart_in_flight(sid):
                 continue
             # A completed backlog-runner session is owned by the dedicated auto-archive
             # path (`_maybe_autoarchive_completed`); governing it here too would let two
@@ -1845,6 +1868,11 @@ class SessionOrchestrator:
         from server.automations.autopilot_policy import matches_denylist
         act = decision.action
         if act in ("escalate", "complete", "skip"):
+            return False
+        # A model swap / reassign that began during the decider's await window makes
+        # the decide-time stuck state stale — the turn is being restarted, so acting
+        # on it would inject into (or resolve state belonging to) the replaced turn.
+        if self._turn_restart_in_flight(session_id):
             return False
         stuck = ctx.stuck if ctx is not None else {}
         ok = False
@@ -4725,6 +4753,9 @@ class SessionOrchestrator:
         restarted = False
         driver = self._drivers.get(session_id)
         if driver is not None:
+            # Stamp BEFORE the interrupt: its status flap fires the autopilot nudge
+            # tick, and autopilot must already see the swap as in flight by then.
+            self._turn_restart_at[session_id] = self._clock()
             if driver.turn_active:
                 await driver.interrupt()
                 await driver.set_model(model)
@@ -4798,6 +4829,9 @@ class SessionOrchestrator:
         (e.g. the driver died while the session was idle — in that case params are
         derived from the SessionRecord instead of the old driver).
         """
+        # Same defer contract as a model swap: the dance below flips the session
+        # through actionable statuses autopilot would otherwise act on mid-restart.
+        self._turn_restart_at[record.id] = self._clock()
         old_driver = self._drivers.get(record.id)
         old = record.account
 
@@ -4909,6 +4943,7 @@ class SessionOrchestrator:
         # Stop the driver and clear in-memory state (mirrors close_session head).
         driver = self._drivers.pop(session_id, None)
         self._last_prompt.pop(session_id, None)
+        self._turn_restart_at.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
         if driver is not None:
             await driver.aclose()

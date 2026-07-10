@@ -1,3 +1,5 @@
+import time
+
 import pytest
 from server.sessions.types import SessionRecord
 
@@ -26,6 +28,8 @@ def orchestrator_with_session():
     driver = _FakeDriver()
     orch._records = {"s1": rec}
     orch._drivers = {"s1": driver}
+    orch._turn_restart_at = {}
+    orch._clock = time.time
 
     async def _noop_persist(sid, model):  # patched persistence
         rec.model = model

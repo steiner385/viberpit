@@ -4,6 +4,7 @@ does across drivers, here on the same driver); on a detached session it must per
 so the model applies on resume; and ensure_driver must re-apply the persisted model
 (it previously dropped it while _reassign re-applied it)."""
 import asyncio
+import time
 from unittest.mock import patch
 
 import pytest
@@ -41,6 +42,8 @@ def _mini_orch(driver=None, last_prompt=None, session_id="s1"):
     orch._records = {session_id: rec}
     orch._drivers = {session_id: driver} if driver is not None else {}
     orch._last_prompt = {session_id: last_prompt} if last_prompt else {}
+    orch._turn_restart_at = {}
+    orch._clock = time.time
     persisted = {}
 
     async def _persist(sid, model):
