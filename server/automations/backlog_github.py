@@ -175,6 +175,84 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
 
 
 # --------------------------------------------------------------------------- #
+# Cross-reference PR lookup                                                    #
+# --------------------------------------------------------------------------- #
+
+def find_referencing_pr(ref: str, *, gh_run: GhRun = gitrepos._run_gh):
+    """The best same-repo PR cross-referencing issue *ref*, or ``None``.
+
+    The runner's sessions don't reliably record their branch (shared-clone
+    reflog discovery misses worktree-created branches) and don't reliably put
+    ``Fixes #N`` in the PR body — so when the cached-branch lookup misses, this
+    asks GitHub directly which PRs mention the issue (a PR titled ``… (#N)``
+    creates the cross-reference even without a closing keyword).
+
+    Preference: MERGED beats OPEN (the work landed); a later reference beats an
+    earlier one. CLOSED-unmerged and cross-repo references are ignored — a
+    drive-by mention from a closed PR must never read as "PR closed unmerged →
+    give up". Any gh failure or unparseable payload returns ``None``.
+    """
+    from server.github.pr_status import PullRequestInfo
+
+    repo, number = _split_ref(ref)
+    owner, _, name = repo.partition("/")
+    if not owner or not name or not number.isdigit():
+        return None
+    query = (
+        "query {\n"
+        f"  repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
+        f"    issue(number: {int(number)}) {{\n"
+        "      timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], last: 50) {\n"
+        "        nodes { ... on CrossReferencedEvent { source { ... on PullRequest {\n"
+        "          number url title state isDraft headRefName\n"
+        "          autoMergeRequest { enabledAt }\n"
+        "          repository { nameWithOwner }\n"
+        "        } } } }\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "}"
+    )
+    proc = gh_run(["api", "graphql", "-f", f"query={query}"])
+    if getattr(proc, "returncode", 1) != 0:
+        log.warning("backlog_github.find_referencing_pr_failed ref=%s err=%s",
+                    ref, (getattr(proc, "stderr", "") or "").strip())
+        return None
+    try:
+        payload = json.loads(getattr(proc, "stdout", "") or "{}")
+    except json.JSONDecodeError:
+        log.warning("backlog_github.find_referencing_pr_unparseable ref=%s", ref)
+        return None
+    nodes = ((((payload.get("data") or {}).get("repository") or {})
+              .get("issue") or {}).get("timelineItems") or {}).get("nodes") or []
+    merged_pr = open_pr = None
+    for node in nodes:
+        src = (node or {}).get("source") or {}
+        if ((src.get("repository") or {}).get("nameWithOwner")) != repo:
+            continue
+        state = src.get("state")
+        if state == "MERGED":
+            merged_pr = src        # last reference wins within a priority tier
+        elif state == "OPEN":
+            open_pr = src
+    best = merged_pr or open_pr
+    if best is None:
+        return None
+    merged = best.get("state") == "MERGED"
+    return PullRequestInfo(
+        number=best.get("number") or 0,
+        url=best.get("url") or "",
+        state="merged" if merged else ("draft" if best.get("isDraft") else "open"),
+        checks="none",
+        title=best.get("title") or "",
+        is_draft=bool(best.get("isDraft")),
+        merged=merged,
+        head_ref=best.get("headRefName") or "",
+        auto_merge_enabled=best.get("autoMergeRequest") is not None,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Label mutations                                                             #
 # --------------------------------------------------------------------------- #
 
@@ -271,6 +349,29 @@ def label_needs_human(batch, *, gh_run: GhRun = gitrepos._run_gh) -> None:
                 log.warning("backlog_github.needs_human_failed ref=%s", ref)
         except Exception:  # pragma: no cover — best-effort
             log.warning("backlog_github.needs_human_error ref=%s", ref, exc_info=True)
+
+
+def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> None:
+    """Close every issue in ``batch`` after its PR merged, with a linking comment.
+
+    The implement prompt asks for ``Fixes #N`` in the PR body, but sessions
+    don't reliably comply — and an issue a merged PR fixed must not stay open
+    wearing ``in-progress``/``needs-human`` (it would be excluded from the
+    candidate pools forever). Best-effort: an individual failure is logged and
+    the rest of the batch is still closed.
+    """
+    pr_link = getattr(info, "url", "") or f"PR #{getattr(info, 'number', '?')}"
+    comment = (f"Implemented by {pr_link} (merged) — "
+               f"closed by ccswitch Backlog Runner.")
+    for ref in batch.issues:
+        repo, number = _split_ref(ref)
+        try:
+            proc = gh_run(["issue", "close", number, "--repo", repo,
+                           "--comment", comment])
+            if getattr(proc, "returncode", 1) != 0:
+                log.warning("backlog_github.close_issue_failed ref=%s", ref)
+        except Exception:  # pragma: no cover — best-effort
+            log.warning("backlog_github.close_issue_error ref=%s", ref, exc_info=True)
 
 
 def reconcile_dangling(open_claim_refs: list[str], live_origin_refs, *,

@@ -365,6 +365,7 @@ class SessionOrchestrator:
             needs_human=self._backlog_needs_human,
             session_ended=self._backlog_session_ended,
             reconcile=self._backlog_reconcile,
+            close_out=self._backlog_close_out,
         )
         self._backlog_task: asyncio.Task | None = None
         # Autopilot control loop: advances every governed session through its stuck
@@ -1178,27 +1179,51 @@ class SessionOrchestrator:
         return picked.name
 
     async def _backlog_pr_status_for(self, target: str) -> PullRequestInfo | None:
-        """The poller-cached PullRequestInfo for a runner target.
+        """The PullRequestInfo for a runner target, or None.
 
-        The target key is ``owner/repo#N``; the loop stores the spawned session's
-        (repo, branch) in the target state, so we look up the branch there and
-        read the poller cache. Falls back to a repo-wide scan by PR number."""
+        The target key is ``owner/repo#N``. The branch is unknowable at spawn
+        time (a fresh session has no branch yet), so the spawn-time snapshot in
+        the target state is usually null — resolve branches at SWEEP time from
+        the session itself (live record first, then the DB row's
+        ``branch``/``authored_branches``) and read the poller cache for each.
+
+        When every cached-branch lookup misses AND the session has ended — the
+        exact moment the sweep would charge a failed attempt — fall back to
+        asking GitHub which PRs cross-reference the issue. Gating on session
+        end keeps the gh call off the per-tick hot path for live targets, and
+        never matching by bare PR number keeps an unrelated PR that happens to
+        share the issue's number from freeing the slot."""
         repo = target.split("#", 1)[0]
         st = await self._backlog_ctx.get_target_state(target)
-        branch = st.get("branch")
-        if branch:
+        branches: list[str] = []
+        if st.get("branch"):
+            branches.append(st["branch"])
+        sid = st.get("session_id")
+        if sid:
+            rec = self._records.get(sid)
+            if rec is not None:
+                if rec.branch:
+                    branches.append(rec.branch)
+                branches.extend(getattr(rec, "authored_branches", None) or [])
+            else:
+                from sqlalchemy import select as sa_select
+                async with db_session() as db:
+                    row = (await db.execute(sa_select(
+                        DbSession.branch, DbSession.authored_branches,
+                    ).where(DbSession.id == sid))).first()
+                if row is not None:
+                    if row.branch:
+                        branches.append(row.branch)
+                    branches.extend(row.authored_branches or [])
+        for branch in dict.fromkeys(branches):
             info = self._pr_poller.cached(repo, branch)
             if info is not None:
                 return info
-        # Fallback: no recorded branch — match by number across cached pairs.
-        try:
-            number = int(target.split("#", 1)[1])
-        except (IndexError, ValueError):
+        if sid is None or not await self._backlog_session_ended(sid):
             return None
-        for (crepo, cbranch), info in list(self._pr_poller._cache.items()):
-            if crepo == repo and info.number == number:
-                return info
-        return None
+        from server.automations import backlog_github
+        return await asyncio.to_thread(
+            backlog_github.find_referencing_pr, target, gh_run=self._gh_run)
 
     async def _pr_doctor_enabled(self) -> bool:
         """True iff the pr-doctor automation row exists and is enabled.
@@ -1316,6 +1341,16 @@ class SessionOrchestrator:
         batch = await self._backlog_batch_for(target)
         await asyncio.to_thread(
             backlog_github.label_needs_human, batch, gh_run=self._gh_run)
+
+    async def _backlog_close_out(self, target: str, info) -> None:
+        """MERGED path: close every issue in the batch with a comment linking
+        the merged PR — the PR body may have lacked ``Fixes #N``, and an issue
+        left open under ``in-progress``/``needs-human`` is excluded from the
+        candidate pools forever. Best-effort, off the event loop."""
+        from server.automations import backlog_github
+        batch = await self._backlog_batch_for(target)
+        await asyncio.to_thread(
+            backlog_github.close_batch_issues, batch, info, gh_run=self._gh_run)
 
     async def _backlog_reconcile(self, claimed_refs: list[str],
                                  live_refs: set[str]) -> None:
