@@ -441,7 +441,9 @@ class BacklogRunnerLoop:
         recorded a ``session_id`` (the crash-between-claim-and-spawn leak) is a
         dangler; a row whose spawn succeeded (has a ``session_id``) is owned by
         the sweep's give-up / handoff bookkeeping and is carried as "live" so the
-        seam leaves its labels intact and never races the attempt counting."""
+        seam leaves its labels intact and never races the attempt counting.
+        A ``handed_off`` row is likewise sweep-owned — its session is gone by design
+        (PR Doctor carries the PR), so it must never read as a dangler."""
         if self._reconcile is None:
             return
         try:
@@ -459,7 +461,7 @@ class BacklogRunnerLoop:
             # A row that ever recorded a session (spawn succeeded) is owned by the
             # sweep, not reconciliation — treat it as live. Only a claimed row that
             # never got a ``session_id`` is the crash-between-claim-and-spawn leak.
-            if st.get("session_id") is not None:
+            if st.get("session_id") is not None or st.get("handed_off"):
                 live_refs.update(issues)
             else:
                 danglers.append(target)
@@ -615,11 +617,6 @@ class BacklogRunnerLoop:
                 if not st.get("handed_off"):
                     new_st = dict(st)
                     new_st["handed_off"] = True
-                    # Keep session_id so reconciliation doesn't see this as a dangler
-                    # (a dangling claim is one that never recorded a session; a handed_off
-                    # row is owned by the sweep and must survive until merge/close-out).
-                    if new_st.get("session_id") is None:
-                        new_st["session_id"] = f"handed-off-{target}"
                     await self._ctx.set_target_state(target, new_st)
                     await self._ctx.emit("info", f"{target} handed off to PR Doctor",
                                          kind="handoff", target=target)
