@@ -293,6 +293,14 @@ SessionEnded = Callable[[str], Awaitable[bool]]
 # Reconciliation seam: given the durably-claimed refs and the live origin_refs
 # (non-terminal runner sessions), release any dangling claim to the pool.
 Reconcile = Callable[[list[str], "set[str]"], Awaitable[None]]
+# GitHub-truth orphan healing: (config, tracked_refs) -> [(ref, action), ...]
+# where action is "closed" (merged PR found → issue closed) or "reclaimed"
+# (stale lock released back to the pool).
+HealOrphans = Callable[[dict, "set[str]"], Awaitable["list[tuple[str, str]]"]]
+
+# The heal pass costs a gh search plus up to `limit` cross-ref lookups, so it
+# runs at most once per interval — orphans are a slow leak, not a hot path.
+_ORPHAN_SWEEP_INTERVAL = 3600.0
 
 
 async def _stub_select_batch(_config: dict) -> Batch | None:
@@ -351,6 +359,7 @@ class BacklogRunnerLoop:
         reconcile: Reconcile | None = None,
         count_candidates: CountCandidates | None = None,
         close_out: CloseOut | None = None,
+        heal_orphans: HealOrphans | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
@@ -368,6 +377,8 @@ class BacklogRunnerLoop:
         self._reconcile = reconcile                 # (claimed_refs, live_refs) -> None
         self._count_candidates = count_candidates    # -> int (true eligible backlog size)
         self._close_out = close_out                 # (target, info) -> close merged batch issues
+        self._heal_orphans = heal_orphans               # GitHub-truth orphan healing
+        self._last_orphan_sweep: float | None = None    # monotonic; throttles the heal pass
         self._lock = asyncio.Lock()
         self._spawns_today: list[float] = []        # spawn timestamps within the rolling day
         self._circuit_open_emitted = False          # debounce the circuit_open event
@@ -397,6 +408,16 @@ class BacklogRunnerLoop:
         await self._sweep(config)
         # Return orphaned claims to the pool (crash-between-claim-and-spawn leak).
         await self._reconcile_dangling()
+        # GitHub-truth healing: claim labels NO state row tracks (crash, DB
+        # loss, or pre-handed_off handoffs) are invisible to the row-derived
+        # reconciliation above and lock issues out of the pools forever.
+        # Propose mode is excluded: propose claims the batch (label + comment) so
+        # parallel runners can't double-pick it, but writes no durable state row.
+        # From the heal's perspective a propose-mode claim looks identical to an
+        # orphan, so running the heal in propose mode would strip the label and
+        # re-claim (with a fresh comment) on every sweep — hourly comment spam.
+        if mode == "auto":
+            await self._orphan_sweep(config)
         # Stash live counts on the ctx so ``BacklogRunner.status(ctx)`` renders
         # "N implementing, M eligible, K needs-human" instead of always "idle".
         await self._stash_counts(config)
@@ -441,7 +462,9 @@ class BacklogRunnerLoop:
         recorded a ``session_id`` (the crash-between-claim-and-spawn leak) is a
         dangler; a row whose spawn succeeded (has a ``session_id``) is owned by
         the sweep's give-up / handoff bookkeeping and is carried as "live" so the
-        seam leaves its labels intact and never races the attempt counting."""
+        seam leaves its labels intact and never races the attempt counting.
+        A ``handed_off`` row is likewise sweep-owned — its session is gone by design
+        (PR Doctor carries the PR), so it must never read as a dangler."""
         if self._reconcile is None:
             return
         try:
@@ -459,7 +482,7 @@ class BacklogRunnerLoop:
             # A row that ever recorded a session (spawn succeeded) is owned by the
             # sweep, not reconciliation — treat it as live. Only a claimed row that
             # never got a ``session_id`` is the crash-between-claim-and-spawn leak.
-            if st.get("session_id") is not None:
+            if st.get("session_id") is not None or st.get("handed_off"):
                 live_refs.update(issues)
             else:
                 danglers.append(target)
@@ -473,6 +496,41 @@ class BacklogRunnerLoop:
             # a concurrency slot forever (count_in_flight counts active rows).
             for target in danglers:
                 await self._ctx.delete_target_state(target)
+
+    async def _orphan_sweep(self, config: dict) -> None:
+        """Heal orphaned claim labels from GitHub truth, at most once per
+        ``_ORPHAN_SWEEP_INTERVAL``.
+
+        Tracked refs are the union of every state row's ``issues`` — anything
+        else wearing ``in-progress`` in the enabled repos is an orphan the
+        injected seam heals (close if its PR merged, release if nothing carries
+        it). The window stamp is taken up front so a failing pass also waits a
+        full interval instead of hammering gh every tick."""
+        if self._heal_orphans is None:
+            return
+        now = self._clock()
+        if (self._last_orphan_sweep is not None
+                and now - self._last_orphan_sweep < _ORPHAN_SWEEP_INTERVAL):
+            return
+        self._last_orphan_sweep = now
+        try:
+            states = await self._ctx.list_target_states()
+            tracked: set[str] = set()
+            for target, st in states.items():
+                tracked.update(st.get("issues") or [target])
+            healed = await self._heal_orphans(config, tracked)
+        except Exception:  # pragma: no cover — healing must never break a tick
+            log.warning("backlog_runner.orphan_sweep_failed", exc_info=True)
+            return
+        for ref, action in healed or []:
+            if action == "closed":
+                await self._ctx.emit(
+                    "info", f"{ref}: orphaned claim — merged PR found, issue closed",
+                    kind="orphan_closed", target=ref)
+            else:
+                await self._ctx.emit(
+                    "info", f"{ref}: orphaned claim released back to the pool",
+                    kind="orphan_reclaimed", target=ref)
 
     async def _refill(self, mode: str, config: dict) -> None:
         in_flight = await self._count_in_flight()
@@ -499,9 +557,12 @@ class BacklogRunnerLoop:
             if st.get("gave_up"):
                 continue
             if mode == "propose":
-                # Propose mode only surfaces the candidate; it does NOT claim or
-                # write durable state (spawn happens on a user tap). No label is
-                # written, so there is nothing to leak on a crash here.
+                # Propose mode claims the batch (label + comment) so parallel
+                # runners can't double-pick it, but writes no durable state row
+                # — spawn happens on a user tap (Plan B endpoint). Because there
+                # is no state row, the orphan-heal sweep would read a propose-mode
+                # claim as an orphan and strip it, then re-claim next tick (hourly
+                # comment spam); the heal is therefore gated to auto mode only.
                 if not await self._claim(batch):
                     continue  # lost the race / already claimed
                 await self._ctx.emit("info", f"claimed {batch.primary}",
@@ -603,18 +664,29 @@ class BacklogRunnerLoop:
             return
 
         # PR reached the handoff point (PR Doctor carries it to auto-merge).
+        # Mark the row handed_off instead of deleting it: the merged close-out
+        # above must still run when the PR lands. Deleting here orphaned the
+        # batch's ``in-progress`` labels whenever the merged PR lacked a
+        # closing keyword — the labels never came off and the issues were
+        # excluded from the candidate pools forever. The slot still frees now:
+        # the orchestrator's in-flight count skips handed_off rows.
         if info is not None:
             active = await self._pr_doctor_active(repo)
             if should_free_slot(info, active):
-                await self._ctx.emit("info", f"{target} handed off to PR Doctor",
-                                     kind="handoff", target=target)
-                await self._ctx.delete_target_state(target)
+                if not st.get("handed_off"):
+                    new_st = dict(st)
+                    new_st["handed_off"] = True
+                    await self._ctx.set_target_state(target, new_st)
+                    await self._ctx.emit("info", f"{target} handed off to PR Doctor",
+                                         kind="handoff", target=target)
                 return
 
         # No mergeable PR and the runner session ended → count an attempt; give up
         # once we've burned through max_attempts. The attempt is charged HERE (on
-        # a session ending without a mergeable PR), never at spawn time.
-        if info is None and not await self._session_alive(st):
+        # a session ending without a mergeable PR), never at spawn time. A
+        # handed_off row is exempt: its session is long gone by design, and a
+        # transient PR-lookup miss must not read as "ended with no PR".
+        if info is None and not st.get("handed_off") and not await self._session_alive(st):
             attempts = st.get("attempts", 0) + 1
             if attempts >= config["max_attempts"]:
                 await self._ctx.emit("warn", f"{target}: {attempts} attempts, no PR — giving up",

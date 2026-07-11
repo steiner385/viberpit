@@ -351,6 +351,21 @@ def label_needs_human(batch, *, gh_run: GhRun = gitrepos._run_gh) -> None:
             log.warning("backlog_github.needs_human_error ref=%s", ref, exc_info=True)
 
 
+def _close_issue(ref: str, comment: str, *, gh_run: GhRun) -> bool:
+    """Close one issue with a linking comment. Best-effort; returns success."""
+    repo, number = _split_ref(ref)
+    try:
+        proc = gh_run(["issue", "close", number, "--repo", repo,
+                       "--comment", comment])
+        if getattr(proc, "returncode", 1) != 0:
+            log.warning("backlog_github.close_issue_failed ref=%s", ref)
+            return False
+        return True
+    except Exception:  # pragma: no cover — best-effort
+        log.warning("backlog_github.close_issue_error ref=%s", ref, exc_info=True)
+        return False
+
+
 def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> None:
     """Close every issue in ``batch`` after its PR merged, with a linking comment.
 
@@ -364,14 +379,103 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> None
     comment = (f"Implemented by {pr_link} (merged) — "
                f"closed by ccswitch Backlog Runner.")
     for ref in batch.issues:
-        repo, number = _split_ref(ref)
+        _close_issue(ref, comment, gh_run=gh_run)
+
+
+# --------------------------------------------------------------------------- #
+# Orphaned-claim healing (GitHub truth)                                        #
+# --------------------------------------------------------------------------- #
+
+def query_claimed_refs(repos: list[str], *, gh_run: GhRun = gitrepos._run_gh) -> list[str]:
+    """Refs of OPEN issues wearing ``in-progress`` across *repos* — GitHub's
+    view of the runner's outstanding claims.
+
+    The runner owns the ``in-progress`` label, so any labeled issue no target
+    state tracks is an orphaned lock (crash, DB loss, or the pre-handed-off
+    handoff leak) silently excluded from the candidate pools. This is the
+    ground-truth read the heal pass diffs against. Failures return ``[]``.
+    """
+    if not repos:
+        return []
+    quals = [f"repo:{r}" for r in repos] + [
+        "is:issue", "is:open", f"label:{IN_PROGRESS_LABEL}"]
+    query = (
+        "query {\n"
+        f"  claimed: search(query: {json.dumps(' '.join(quals))}, type: ISSUE, first: 100) {{\n"
+        f"    {_ISSUE_NODES}\n"
+        "  }\n"
+        "}"
+    )
+    proc = gh_run(["api", "graphql", "-f", f"query={query}"])
+    if getattr(proc, "returncode", 1) != 0:
+        log.warning("backlog_github.claimed_query_failed err=%s",
+                    (getattr(proc, "stderr", "") or "").strip())
+        return []
+    try:
+        payload = json.loads(getattr(proc, "stdout", "") or "{}")
+    except json.JSONDecodeError:
+        log.warning("backlog_github.claimed_query_unparseable", exc_info=True)
+        return []
+    nodes = (((payload.get("data") or {}).get("claimed") or {}).get("nodes")) or []
+    out: list[str] = []
+    for node in nodes:
+        if not node:
+            continue
+        number = node.get("number")
+        repo = (node.get("repository") or {}).get("nameWithOwner")
+        if number is None or not repo:
+            continue
+        out.append(f"{repo}#{number}")
+    return out
+
+
+def heal_orphan_claims(refs: list[str], tracked: set[str], *,
+                       gh_run: GhRun = gitrepos._run_gh,
+                       limit: int = 20) -> list[tuple[str, str]]:
+    """Heal claim labels no target state tracks. Returns ``(ref, action)`` pairs.
+
+    Per untracked ref, the referencing PR decides (via
+    :func:`find_referencing_pr`, same-repo only):
+
+    - **merged** → the work landed but the close-out never ran (the handoff
+      leak): close the issue with a linking comment and strip ``in-progress``
+      → ``("closed")``.
+    - **open/draft** → live work; leave the lock alone (a later pass heals it
+      once the PR merges).
+    - **none / closed-unmerged only** → a stale lock with nothing carrying it:
+      strip ``in-progress`` so the issue re-enters the candidate pool
+      → ``("reclaimed")``.
+
+    ``limit`` caps cross-ref lookups per pass (each is a gh call — rate-limit
+    hygiene; the hourly sweep catches the remainder next pass). Best-effort:
+    an individual failure skips that ref and the pass continues.
+    """
+    healed: list[tuple[str, str]] = []
+    looked_up = 0
+    for ref in refs:
+        if ref in tracked:
+            continue
+        if looked_up >= limit:
+            break
+        looked_up += 1
         try:
-            proc = gh_run(["issue", "close", number, "--repo", repo,
-                           "--comment", comment])
-            if getattr(proc, "returncode", 1) != 0:
-                log.warning("backlog_github.close_issue_failed ref=%s", ref)
-        except Exception:  # pragma: no cover — best-effort
-            log.warning("backlog_github.close_issue_error ref=%s", ref, exc_info=True)
+            info = find_referencing_pr(ref, gh_run=gh_run)
+            if info is not None and info.state == "merged":
+                pr_link = info.url or f"PR #{info.number}"
+                comment = (f"Implemented by {pr_link} (merged) — closed by "
+                           f"ccswitch Backlog Runner (orphaned-claim heal).")
+                if _close_issue(ref, comment, gh_run=gh_run):
+                    _issue_edit(ref, remove=IN_PROGRESS_LABEL, gh_run=gh_run)
+                    healed.append((ref, "closed"))
+            elif info is None:
+                if _issue_edit(ref, remove=IN_PROGRESS_LABEL, gh_run=gh_run):
+                    healed.append((ref, "reclaimed"))
+                else:
+                    log.warning("backlog_github.heal_reclaim_failed ref=%s", ref)
+            # open/draft → live work; leave untouched.
+        except Exception:  # pragma: no cover — one ref must not stall the pass
+            log.warning("backlog_github.heal_orphan_failed ref=%s", ref, exc_info=True)
+    return healed
 
 
 def reconcile_dangling(open_claim_refs: list[str], live_origin_refs, *,

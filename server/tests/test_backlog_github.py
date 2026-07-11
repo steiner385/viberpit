@@ -13,6 +13,8 @@ from server.automations.backlog_github import (
     claim_batch,
     label_needs_human,
     query_candidates,
+    query_claimed_refs,
+    heal_orphan_claims,
     reconcile_dangling,
     unclaim_batch,
 )
@@ -448,3 +450,77 @@ def test_close_batch_issues_closes_each_with_a_linking_comment():
         assert "--repo" in c and c[c.index("--repo") + 1] == "o/r"
         comment = c[c.index("--comment") + 1]
         assert "https://github.com/o/r/pull/42" in comment
+
+
+# --------------------------------------------------------------------------- #
+# query_claimed_refs / heal_orphan_claims (orphaned-claim healing)            #
+# --------------------------------------------------------------------------- #
+
+def _claimed_stdout(refs: list[tuple[str, int]]) -> str:
+    nodes = [{"number": n, "title": f"t{n}", "url": f"https://github.com/{r}/issues/{n}",
+              "repository": {"nameWithOwner": r}} for r, n in refs]
+    return json.dumps({"data": {"claimed": {"nodes": nodes}}})
+
+
+def test_query_claimed_refs_builds_label_query_and_parses():
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_claimed_stdout([("o/r", 5), ("o/k", 9)]))})
+    out = query_claimed_refs(["o/r", "o/k"], gh_run=fake)
+    assert out == ["o/r#5", "o/k#9"]
+    query = next(a for a in fake.calls[0] if a.startswith("query="))
+    assert "label:in-progress" in query
+    assert "repo:o/r" in query and "repo:o/k" in query
+    assert "is:open" in query
+
+
+def test_query_claimed_refs_empty_repos_and_gh_failure_return_empty():
+    assert query_claimed_refs([], gh_run=FakeGh()) == []
+    fake = FakeGh({("api", "graphql"): _proc(returncode=1, stderr="boom")})
+    assert query_claimed_refs(["o/r"], gh_run=fake) == []
+
+
+def _crossref_stdout(prs: list[dict]) -> str:
+    nodes = [{"source": {**pr, "repository": {"nameWithOwner": "o/r"}}} for pr in prs]
+    return json.dumps({"data": {"repository": {"issue": {"timelineItems": {"nodes": nodes}}}}})
+
+
+def test_heal_orphan_merged_pr_closes_issue_and_strips_label():
+    """An orphan whose referencing PR merged → close the issue + remove the claim."""
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_crossref_stdout(
+        [{"number": 40, "url": "https://github.com/o/r/pull/40", "title": "fix",
+          "state": "MERGED", "isDraft": False, "headRefName": "b",
+          "autoMergeRequest": None}]))})
+    healed = heal_orphan_claims(["o/r#5"], set(), gh_run=fake)
+    assert healed == [("o/r#5", "closed")]
+    close = next(c for c in fake.calls if c[:2] == ["issue", "close"])
+    assert "--comment" in close and "o/r" in close
+    edit = next(c for c in fake.calls if c[:2] == ["issue", "edit"])
+    assert "--remove-label" in edit and "in-progress" in edit
+
+
+def test_heal_orphan_open_pr_left_untouched():
+    """An orphan with a live OPEN PR is real work — never unclaim or close it."""
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_crossref_stdout(
+        [{"number": 41, "url": "u", "title": "wip", "state": "OPEN",
+          "isDraft": False, "headRefName": "b", "autoMergeRequest": None}]))})
+    healed = heal_orphan_claims(["o/r#5"], set(), gh_run=fake)
+    assert healed == []
+    assert not [c for c in fake.calls if c[:2] in (["issue", "edit"], ["issue", "close"])]
+
+
+def test_heal_orphan_no_pr_reclaims_label():
+    """No referencing PR (or closed-unmerged only) → stale lock; return to pool."""
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_crossref_stdout([]))})
+    healed = heal_orphan_claims(["o/r#5"], set(), gh_run=fake)
+    assert healed == [("o/r#5", "reclaimed")]
+    edit = next(c for c in fake.calls if c[:2] == ["issue", "edit"])
+    assert "--remove-label" in edit and "in-progress" in edit
+    assert not [c for c in fake.calls if c[:2] == ["issue", "close"]]
+
+
+def test_heal_orphan_skips_tracked_refs_and_honors_limit():
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_crossref_stdout([]))})
+    healed = heal_orphan_claims(["o/r#1", "o/r#2", "o/r#3"], {"o/r#1"},
+                                gh_run=fake, limit=1)
+    # #1 is tracked (skipped without a lookup); the cap allows exactly one heal.
+    assert healed == [("o/r#2", "reclaimed")]
+    assert len([c for c in fake.calls if c[:2] == ["api", "graphql"]]) == 1
