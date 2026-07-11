@@ -25,7 +25,7 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
   const label = meta?.type ?? 'sub-agent'
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="flex flex-col flex-1 min-h-0 bg-gray-50 dark:bg-gray-900">
       {/* paddingTop pushes content below the iOS status bar; env() is 0 on desktop. */}
       <header
         className={cn('flex items-center gap-3 px-3 pb-3 border-b',

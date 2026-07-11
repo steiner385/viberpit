@@ -495,7 +495,7 @@ export function DesktopShell() {
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
   )
   const shell = (
-    <div className="flex flex-col h-screen bg-background text-foreground">
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-background text-foreground">
       <header className="flex items-stretch justify-between border-b border-border flex-shrink-0">
         <div className="flex items-center px-4 shrink-0">
           <h1 className="text-lg font-bold tracking-tight">ccswitch</h1>

@@ -56,7 +56,7 @@ export function ReviewView({ sessionId, onBack }: Props) {
   }, [sessionId, state.earliestTurn])
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="flex flex-col flex-1 min-h-0 bg-gray-50 dark:bg-gray-900">
       {/* Header */}
       {/* paddingTop pushes content below the iOS status bar; env() is 0 on desktop. */}
       <header

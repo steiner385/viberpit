@@ -117,15 +117,19 @@ describe('SessionView', () => {
     expect(screen.getByRole('button', { name: /back to session list/i })).toBeInTheDocument()
   })
 
-  it('uses dynamic viewport height (h-dvh) so the top bar and composer stay pinned on mobile', () => {
-    // Regression guard: `h-screen` (=100vh) is the *large* viewport on mobile, so
-    // while the browser toolbar is shown the composer is pushed behind it and the
-    // whole document scrolls — dragging the "static" top bar off-screen. `h-dvh`
-    // tracks the currently-visible viewport, keeping top/bottom pinned and only the
-    // transcript scrollable.
+  it('fills its parent with flex-1 min-h-0 (no viewport units) so the composer stays pinned', () => {
+    // Regression guard: the single viewport-height source of truth is
+    // `#root { height: 100dvh }` (index.css) — see documentScrollClamp.test.ts.
+    // A shell that re-measures the viewport itself (`h-dvh`/`h-screen`) overflows
+    // the moment an in-flow sibling (update banner) renders above it, making the
+    // document scrollable and letting focus/scrollIntoView drag the app partly
+    // off-screen (dead whitespace below the composer). Shells must derive height
+    // from the clamped root: `flex-1 min-h-0`.
     const { container } = render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     const root = container.firstChild as HTMLElement
-    expect(root.className).toContain('h-dvh')
+    expect(root.className).toContain('flex-1')
+    expect(root.className).toContain('min-h-0')
+    expect(root.className).not.toContain('h-dvh')
     expect(root.className).not.toContain('h-screen')
   })
 
