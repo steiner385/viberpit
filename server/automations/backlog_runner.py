@@ -411,12 +411,10 @@ class BacklogRunnerLoop:
         # GitHub-truth healing: claim labels NO state row tracks (crash, DB
         # loss, or pre-handed_off handoffs) are invisible to the row-derived
         # reconciliation above and lock issues out of the pools forever.
-        # Propose mode is excluded: propose claims the batch (label + comment) so
-        # parallel runners can't double-pick it, but writes no durable state row.
-        # From the heal's perspective a propose-mode claim looks identical to an
-        # orphan, so running the heal in propose mode would strip the label and
-        # re-claim (with a fresh comment) on every sweep — hourly comment spam.
-        if mode == "auto":
+        # Propose mode is now included: propose-mode claims write a state row
+        # (proposed=True) before the gh label write, so the heal sees them as
+        # tracked (not orphans) and leaves their labels alone.
+        if mode != "off":
             await self._orphan_sweep(config)
         # Stash live counts on the ctx so ``BacklogRunner.status(ctx)`` renders
         # "N implementing, M eligible, K needs-human" instead of always "idle".
@@ -480,9 +478,12 @@ class BacklogRunnerLoop:
             issues = st.get("issues") or [target]
             claimed_refs.extend(issues)
             # A row that ever recorded a session (spawn succeeded) is owned by the
-            # sweep, not reconciliation — treat it as live. Only a claimed row that
-            # never got a ``session_id`` is the crash-between-claim-and-spawn leak.
-            if st.get("session_id") is not None or st.get("handed_off"):
+            # sweep, not reconciliation — treat it as live. Handed-off rows (PR
+            # Doctor has taken over) are also live. A proposed-mode row (claimed,
+            # waiting for the user tap) is intentional: its ``proposed`` flag
+            # distinguishes it from the crash-between-claim-and-spawn leak (no
+            # session_id, no proposed flag, no handed_off), which IS a dangler.
+            if st.get("session_id") is not None or st.get("handed_off") or st.get("proposed"):
                 live_refs.update(issues)
             else:
                 danglers.append(target)
@@ -557,13 +558,22 @@ class BacklogRunnerLoop:
             if st.get("gave_up"):
                 continue
             if mode == "propose":
-                # Propose mode claims the batch (label + comment) so parallel
-                # runners can't double-pick it, but writes no durable state row
-                # — spawn happens on a user tap (Plan B endpoint). Because there
-                # is no state row, the orphan-heal sweep would read a propose-mode
-                # claim as an orphan and strip it, then re-claim next tick (hourly
-                # comment spam); the heal is therefore gated to auto mode only.
+                # RECORDS-BEFORE-LABELS: write the durable claim BEFORE the gh
+                # label write so a crash after the label lands still leaves a
+                # recoverable row. The ``proposed`` flag marks this as an
+                # intentional pending-tap claim, distinguishing it from the
+                # crash-between-claim-and-spawn leak (no session_id, no proposed)
+                # which reconciliation treats as a dangler and releases.
+                await self._ctx.set_target_state(batch.primary, {
+                    "repo": batch.repo,
+                    "attempts": st.get("attempts", 0),
+                    "issues": batch.issues,
+                    "claimed": True,
+                    "proposed": True,
+                })
                 if not await self._claim(batch):
+                    # Never actually held the claim → drop the speculative row.
+                    await self._ctx.delete_target_state(batch.primary)
                     continue  # lost the race / already claimed
                 await self._ctx.emit("info", f"claimed {batch.primary}",
                                      kind="claimed", target=batch.primary,
