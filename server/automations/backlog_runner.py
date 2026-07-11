@@ -293,6 +293,14 @@ SessionEnded = Callable[[str], Awaitable[bool]]
 # Reconciliation seam: given the durably-claimed refs and the live origin_refs
 # (non-terminal runner sessions), release any dangling claim to the pool.
 Reconcile = Callable[[list[str], "set[str]"], Awaitable[None]]
+# GitHub-truth orphan healing: (config, tracked_refs) -> [(ref, action), ...]
+# where action is "closed" (merged PR found → issue closed) or "reclaimed"
+# (stale lock released back to the pool).
+HealOrphans = Callable[[dict, "set[str]"], Awaitable["list[tuple[str, str]]"]]
+
+# The heal pass costs a gh search plus up to `limit` cross-ref lookups, so it
+# runs at most once per interval — orphans are a slow leak, not a hot path.
+_ORPHAN_SWEEP_INTERVAL = 3600.0
 
 
 async def _stub_select_batch(_config: dict) -> Batch | None:
@@ -351,6 +359,7 @@ class BacklogRunnerLoop:
         reconcile: Reconcile | None = None,
         count_candidates: CountCandidates | None = None,
         close_out: CloseOut | None = None,
+        heal_orphans: HealOrphans | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
@@ -368,6 +377,8 @@ class BacklogRunnerLoop:
         self._reconcile = reconcile                 # (claimed_refs, live_refs) -> None
         self._count_candidates = count_candidates    # -> int (true eligible backlog size)
         self._close_out = close_out                 # (target, info) -> close merged batch issues
+        self._heal_orphans = heal_orphans               # GitHub-truth orphan healing
+        self._last_orphan_sweep: float | None = None    # monotonic; throttles the heal pass
         self._lock = asyncio.Lock()
         self._spawns_today: list[float] = []        # spawn timestamps within the rolling day
         self._circuit_open_emitted = False          # debounce the circuit_open event
@@ -397,6 +408,11 @@ class BacklogRunnerLoop:
         await self._sweep(config)
         # Return orphaned claims to the pool (crash-between-claim-and-spawn leak).
         await self._reconcile_dangling()
+        # GitHub-truth healing: claim labels NO state row tracks (crash, DB
+        # loss, or pre-handed_off handoffs) are invisible to the row-derived
+        # reconciliation above and lock issues out of the pools forever.
+        if mode != "off":
+            await self._orphan_sweep(config)
         # Stash live counts on the ctx so ``BacklogRunner.status(ctx)`` renders
         # "N implementing, M eligible, K needs-human" instead of always "idle".
         await self._stash_counts(config)
@@ -475,6 +491,41 @@ class BacklogRunnerLoop:
             # a concurrency slot forever (count_in_flight counts active rows).
             for target in danglers:
                 await self._ctx.delete_target_state(target)
+
+    async def _orphan_sweep(self, config: dict) -> None:
+        """Heal orphaned claim labels from GitHub truth, at most once per
+        ``_ORPHAN_SWEEP_INTERVAL``.
+
+        Tracked refs are the union of every state row's ``issues`` — anything
+        else wearing ``in-progress`` in the enabled repos is an orphan the
+        injected seam heals (close if its PR merged, release if nothing carries
+        it). The window stamp is taken up front so a failing pass also waits a
+        full interval instead of hammering gh every tick."""
+        if self._heal_orphans is None:
+            return
+        now = self._clock()
+        if (self._last_orphan_sweep is not None
+                and now - self._last_orphan_sweep < _ORPHAN_SWEEP_INTERVAL):
+            return
+        self._last_orphan_sweep = now
+        try:
+            states = await self._ctx.list_target_states()
+            tracked: set[str] = set()
+            for target, st in states.items():
+                tracked.update(st.get("issues") or [target])
+            healed = await self._heal_orphans(config, tracked)
+        except Exception:  # pragma: no cover — healing must never break a tick
+            log.warning("backlog_runner.orphan_sweep_failed", exc_info=True)
+            return
+        for ref, action in healed or []:
+            if action == "closed":
+                await self._ctx.emit(
+                    "info", f"{ref}: orphaned claim — merged PR found, issue closed",
+                    kind="orphan_closed", target=ref)
+            else:
+                await self._ctx.emit(
+                    "info", f"{ref}: orphaned claim released back to the pool",
+                    kind="orphan_reclaimed", target=ref)
 
     async def _refill(self, mode: str, config: dict) -> None:
         in_flight = await self._count_in_flight()

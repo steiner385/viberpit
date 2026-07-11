@@ -52,7 +52,7 @@ async def _seed_row(automation_id: str = "backlog-runner") -> None:
 def build_loop(*, mode="auto", config=None, clock=None,
                candidates=None, healthy="a", in_flight_counter=None,
                pr_status=None, pr_doctor_active=True, claim_result=True,
-               candidate_count=None):
+               candidate_count=None, heal_orphans_result=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .claims /
@@ -72,6 +72,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
             self.needs_humans: list = []
             self.reconciles: list = []
             self.close_outs: list = []
+            self.heals: list = []
             # candidate queue: pop from the front on each select_batch
             self.candidates: list = list(candidates or [])
             self.in_flight = 0
@@ -125,6 +126,10 @@ def build_loop(*, mode="auto", config=None, clock=None,
     async def count_candidates():
         return candidate_count if candidate_count is not None else 0
 
+    async def heal_orphans(config, tracked):
+        rec.heals.append((config, set(tracked)))
+        return list(heal_orphans_result or [])
+
     loop = BacklogRunnerLoop(
         ctx,
         select_batch=select_batch,
@@ -141,6 +146,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
         reconcile=reconcile,
         close_out=close_out,
         count_candidates=count_candidates if candidate_count is not None else None,
+        heal_orphans=heal_orphans if heal_orphans_result is not None else None,
     )
     return loop, rec, ctx
 
@@ -527,5 +533,61 @@ def test_handed_off_row_never_charges_attempts(tmp_path):
         st = await ctx.get_target_state("r#1")
         assert st.get("handed_off") is True
         assert st.get("attempts", 0) == 0
+
+    asyncio.run(run())
+
+
+def test_orphan_sweep_throttled_to_interval(tmp_path):
+    """The heal pass runs at most once per _ORPHAN_SWEEP_INTERVAL — every tick
+    would burn a gh search + up to `limit` cross-ref lookups."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'os1.db'}"
+
+    async def run():
+        from server.automations.backlog_runner import _ORPHAN_SWEEP_INTERVAL
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clk = FakeClock()
+        loop, rec, ctx = build_loop(clock=clk, heal_orphans_result=[])
+        await loop.tick()
+        await loop.tick()
+        assert len(rec.heals) == 1  # second tick inside the window → skipped
+        clk.advance(_ORPHAN_SWEEP_INTERVAL + 1)
+        await loop.tick()
+        assert len(rec.heals) == 2
+
+    asyncio.run(run())
+
+
+def test_orphan_sweep_passes_tracked_refs_and_emits_events(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'os2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            heal_orphans_result=[("o/r#7", "closed"), ("o/r#9", "reclaimed")])
+        # A live batch row tracking two issues — both must be reported tracked.
+        await ctx.set_target_state("o/r#1", {
+            "claimed": True, "issues": ["o/r#1", "o/r#2"], "session_id": "s1"})
+        await loop.tick()
+        _config, tracked = rec.heals[0]
+        assert {"o/r#1", "o/r#2"} <= tracked
+        assert len(await ctx.list_events(kind="orphan_closed")) == 1
+        assert len(await ctx.list_events(kind="orphan_reclaimed")) == 1
+
+    asyncio.run(run())
+
+
+def test_orphan_sweep_skipped_when_mode_off(tmp_path):
+    """Mode off = the automation must take NO autonomous GitHub action —
+    including healing (label writes are mutations)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'os3.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(mode="off", heal_orphans_result=[])
+        await loop.tick()
+        assert rec.heals == []
 
     asyncio.run(run())
