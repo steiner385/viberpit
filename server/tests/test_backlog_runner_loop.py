@@ -591,3 +591,93 @@ def test_orphan_sweep_skipped_when_mode_off(tmp_path):
         assert rec.heals == []
 
     asyncio.run(run())
+
+
+def test_orphan_sweep_skipped_when_mode_propose(tmp_path):
+    """Propose mode claims the batch (label + comment) but writes no durable state
+    row — the heal would read every propose-mode claim as an orphan and strip it,
+    causing an hourly re-claim and comment spam. The heal must be excluded."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'os4.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(mode="propose", heal_orphans_result=[])
+        await loop.tick()
+        assert rec.heals == []
+
+    asyncio.run(run())
+
+
+def test_closed_unmerged_after_handoff_escalates_to_needs_human(tmp_path):
+    """A PR that was handed off to PR Doctor but then closed unmerged must
+    escalate to needs-human and delete the state row — the runner doesn't
+    re-spawn indefinitely."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ho3.db'}"
+
+    async def run():
+        from server.github.pr_status import PullRequestInfo
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        pr_status = {"r#1": PullRequestInfo(
+            number=1, url="", state="open", checks="pending", title="",
+            auto_merge_enabled=True)}
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("r#1")],
+            pr_status=pr_status,
+            pr_doctor_active=True,
+        )
+        # Tick 1: spawn r#1
+        await loop.tick()
+        assert len(rec.spawns) == 1
+        # Tick 2: handoff (auto_merge armed + pr_doctor active)
+        rec.in_flight = 0
+        await loop.tick()
+        st = await ctx.get_target_state("r#1")
+        assert st.get("handed_off") is True
+
+        # PR closes unmerged after handoff
+        pr_status["r#1"] = PullRequestInfo(
+            number=1, url="", state="closed", checks="none", title="", merged=False)
+        await loop.tick()
+
+        assert "r#1" in rec.needs_humans
+        assert await ctx.get_target_state("r#1") == {}
+
+    asyncio.run(run())
+
+
+def test_handed_off_row_with_no_session_id_is_not_reconciled_away(tmp_path):
+    """A handed_off state row with no session_id (seeded directly, no spawn path)
+    must survive reconciliation — handed_off rows are sweep-owned, not danglers.
+    The reconcile seam must see r#1 in live_refs, not released."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ho4.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        # No candidates — only reconciliation and sweep run.
+        loop, rec, ctx = build_loop(mode="auto", candidates=[])
+        # Seed a handed_off row with no session_id (e.g. from a prior worktree
+        # that handed off before recording the spawn, or a direct DB seed).
+        await ctx.set_target_state("r#1", {
+            "claimed": True,
+            "handed_off": True,
+            "issues": ["r#1"],
+            "repo": "r",
+        })
+
+        await loop.tick()
+
+        # The row must survive: handed_off rows are sweep-owned, never danglers.
+        st = await ctx.get_target_state("r#1")
+        assert st.get("handed_off") is True
+
+        # Reconcile must have been called and r#1 must appear in live_refs.
+        assert rec.reconciles, "reconcile seam should have been called"
+        _claimed, live = rec.reconciles[-1]
+        assert "r#1" in live, "handed_off row must be carried as live, not dangled"
+
+    asyncio.run(run())

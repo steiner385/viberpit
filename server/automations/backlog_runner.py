@@ -411,7 +411,12 @@ class BacklogRunnerLoop:
         # GitHub-truth healing: claim labels NO state row tracks (crash, DB
         # loss, or pre-handed_off handoffs) are invisible to the row-derived
         # reconciliation above and lock issues out of the pools forever.
-        if mode != "off":
+        # Propose mode is excluded: propose claims the batch (label + comment) so
+        # parallel runners can't double-pick it, but writes no durable state row.
+        # From the heal's perspective a propose-mode claim looks identical to an
+        # orphan, so running the heal in propose mode would strip the label and
+        # re-claim (with a fresh comment) on every sweep — hourly comment spam.
+        if mode == "auto":
             await self._orphan_sweep(config)
         # Stash live counts on the ctx so ``BacklogRunner.status(ctx)`` renders
         # "N implementing, M eligible, K needs-human" instead of always "idle".
@@ -552,9 +557,12 @@ class BacklogRunnerLoop:
             if st.get("gave_up"):
                 continue
             if mode == "propose":
-                # Propose mode only surfaces the candidate; it does NOT claim or
-                # write durable state (spawn happens on a user tap). No label is
-                # written, so there is nothing to leak on a crash here.
+                # Propose mode claims the batch (label + comment) so parallel
+                # runners can't double-pick it, but writes no durable state row
+                # — spawn happens on a user tap (Plan B endpoint). Because there
+                # is no state row, the orphan-heal sweep would read a propose-mode
+                # claim as an orphan and strip it, then re-claim next tick (hourly
+                # comment spam); the heal is therefore gated to auto mode only.
                 if not await self._claim(batch):
                     continue  # lost the race / already claimed
                 await self._ctx.emit("info", f"claimed {batch.primary}",

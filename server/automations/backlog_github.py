@@ -470,6 +470,8 @@ def heal_orphan_claims(refs: list[str], tracked: set[str], *,
             elif info is None:
                 if _issue_edit(ref, remove=IN_PROGRESS_LABEL, gh_run=gh_run):
                     healed.append((ref, "reclaimed"))
+                else:
+                    log.warning("backlog_github.heal_reclaim_failed ref=%s", ref)
             # open/draft → live work; leave untouched.
         except Exception:  # pragma: no cover — one ref must not stall the pass
             log.warning("backlog_github.heal_orphan_failed ref=%s", ref, exc_info=True)
