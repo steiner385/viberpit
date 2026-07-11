@@ -333,13 +333,18 @@ def test_handoff_frees_slot_next_tick(tmp_path):
         await loop.tick()
         assert len(rec.spawns) == 1  # slot full with r#1
         # r#1's PR is open + auto_merge armed and pr-doctor covers it →
-        # should_free_slot() frees the slot; sweep hands it off and deletes state,
-        # so the next tick refills with r#2.
-        rec.in_flight = 0  # session handed off / ended → DB count drops
+        # should_free_slot() frees the slot; the sweep marks the row handed_off
+        # (it does NOT delete it — the close-out must still run when the PR
+        # merges) and the next tick refills with r#2.
+        rec.in_flight = 0  # orchestrator-side count excludes handed_off rows
         await loop.tick()
         assert len(rec.spawns) == 2
+        st = await ctx.get_target_state("r#1")
+        assert st.get("handed_off") is True  # row survives handoff
+        # A third tick must not re-emit handoff for the already-flagged row.
+        await loop.tick()
         handoffs = await ctx.list_events(kind="handoff")
-        assert len(handoffs) >= 1
+        assert len(handoffs) == 1
 
     asyncio.run(run())
 
@@ -454,5 +459,73 @@ def test_reconcile_deletes_dangling_claim_rows(tmp_path):
         states = await ctx.list_target_states()
         assert "r#1" not in states, "dangling claim row must be deleted"
         assert "r#2" in states, "a row with a spawned session must survive"
+
+    asyncio.run(run())
+
+
+def test_merged_after_handoff_still_runs_close_out(tmp_path):
+    """The handoff leak (KinDash lockout): a PR that merges AFTER handoff must
+    still close out the batch's issues. The row survives handoff exactly so
+    this path can run; only the merge deletes it."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ho1.db'}"
+
+    async def run():
+        from server.github.pr_status import PullRequestInfo
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        pr_status = {"r#1": PullRequestInfo(
+            number=1, url="", state="open", checks="pending", title="",
+            auto_merge_enabled=True)}
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("r#1")],
+            pr_status=pr_status,
+            pr_doctor_active=True,
+        )
+        await loop.tick()   # spawn
+        await loop.tick()   # handoff (row flagged, not deleted)
+        assert (await ctx.get_target_state("r#1")).get("handed_off") is True
+        assert rec.close_outs == []
+
+        # The PR merges while handed off → close-out runs, row deleted.
+        pr_status["r#1"] = PullRequestInfo(
+            number=1, url="", state="merged", checks="passing", title="")
+        await loop.tick()
+        assert [t for t, _ in rec.close_outs] == ["r#1"]
+        assert await ctx.get_target_state("r#1") == {}
+
+    asyncio.run(run())
+
+
+def test_handed_off_row_never_charges_attempts(tmp_path):
+    """After handoff the runner session has ended; a transient PR-lookup miss
+    (info=None) must NOT burn attempts or escalate to needs-human."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ho2.db'}"
+
+    async def run():
+        from server.github.pr_status import PullRequestInfo
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        pr_status = {"r#1": PullRequestInfo(
+            number=1, url="", state="open", checks="pending", title="",
+            auto_merge_enabled=True)}
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1, max_attempts=1),
+            candidates=[batch("r#1")],
+            pr_status=pr_status,
+            pr_doctor_active=True,
+        )
+        await loop.tick()   # spawn
+        await loop.tick()   # handoff
+        # PR status blips to None (poller cache miss) for two sweeps.
+        del pr_status["r#1"]
+        await loop.tick()
+        await loop.tick()
+        assert rec.needs_humans == []
+        st = await ctx.get_target_state("r#1")
+        assert st.get("handed_off") is True
+        assert st.get("attempts", 0) == 0
 
     asyncio.run(run())

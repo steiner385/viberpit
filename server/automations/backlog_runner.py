@@ -603,18 +603,34 @@ class BacklogRunnerLoop:
             return
 
         # PR reached the handoff point (PR Doctor carries it to auto-merge).
+        # Mark the row handed_off instead of deleting it: the merged close-out
+        # above must still run when the PR lands. Deleting here orphaned the
+        # batch's ``in-progress`` labels whenever the merged PR lacked a
+        # closing keyword — the labels never came off and the issues were
+        # excluded from the candidate pools forever. The slot still frees now:
+        # the orchestrator's in-flight count skips handed_off rows.
         if info is not None:
             active = await self._pr_doctor_active(repo)
             if should_free_slot(info, active):
-                await self._ctx.emit("info", f"{target} handed off to PR Doctor",
-                                     kind="handoff", target=target)
-                await self._ctx.delete_target_state(target)
+                if not st.get("handed_off"):
+                    new_st = dict(st)
+                    new_st["handed_off"] = True
+                    # Keep session_id so reconciliation doesn't see this as a dangler
+                    # (a dangling claim is one that never recorded a session; a handed_off
+                    # row is owned by the sweep and must survive until merge/close-out).
+                    if new_st.get("session_id") is None:
+                        new_st["session_id"] = f"handed-off-{target}"
+                    await self._ctx.set_target_state(target, new_st)
+                    await self._ctx.emit("info", f"{target} handed off to PR Doctor",
+                                         kind="handoff", target=target)
                 return
 
         # No mergeable PR and the runner session ended → count an attempt; give up
         # once we've burned through max_attempts. The attempt is charged HERE (on
-        # a session ending without a mergeable PR), never at spawn time.
-        if info is None and not await self._session_alive(st):
+        # a session ending without a mergeable PR), never at spawn time. A
+        # handed_off row is exempt: its session is long gone by design, and a
+        # transient PR-lookup miss must not read as "ended with no PR".
+        if info is None and not st.get("handed_off") and not await self._session_alive(st):
             attempts = st.get("attempts", 0) + 1
             if attempts >= config["max_attempts"]:
                 await self._ctx.emit("warn", f"{target}: {attempts} attempts, no PR — giving up",
