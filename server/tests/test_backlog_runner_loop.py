@@ -504,6 +504,30 @@ def test_merged_after_handoff_still_runs_close_out(tmp_path):
     asyncio.run(run())
 
 
+def test_propose_mode_writes_state_row_before_claim(tmp_path):
+    """Propose-mode must write a durable state row (proposed=True) BEFORE calling
+    claim — RECORDS-BEFORE-LABELS so a crash after the gh label write leaves a
+    recoverable row rather than a row-less orphaned label."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'p1.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            mode="propose",
+            candidates=[batch("r#1")],
+        )
+        await loop.tick()
+
+        assert rec.claims, "claim should have been called"
+        st = await ctx.get_target_state("r#1")
+        assert st.get("claimed") is True
+        assert st.get("proposed") is True
+        assert st.get("issues") == ["r#1"]
+
+    asyncio.run(run())
+
+
 def test_handed_off_row_never_charges_attempts(tmp_path):
     """After handoff the runner session has ended; a transient PR-lookup miss
     (info=None) must NOT burn attempts or escalate to needs-human."""
@@ -533,6 +557,28 @@ def test_handed_off_row_never_charges_attempts(tmp_path):
         st = await ctx.get_target_state("r#1")
         assert st.get("handed_off") is True
         assert st.get("attempts", 0) == 0
+
+    asyncio.run(run())
+
+
+def test_propose_mode_deletes_state_row_on_claim_failure(tmp_path):
+    """If the claim call fails (lost the race), the speculative state row must be
+    deleted — a row with no label is worse than nothing (it holds a slot forever)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'p2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            mode="propose",
+            candidates=[batch("r#1")],
+            claim_result=False,
+        )
+        await loop.tick()
+
+        assert rec.claims == []
+        st = await ctx.get_target_state("r#1")
+        assert st == {}, "speculative row must be deleted on claim failure"
 
     asyncio.run(run())
 
@@ -578,6 +624,37 @@ def test_orphan_sweep_passes_tracked_refs_and_emits_events(tmp_path):
     asyncio.run(run())
 
 
+def test_propose_mode_row_not_treated_as_dangler(tmp_path):
+    """A proposed-mode pending-tap row (claimed=True, proposed=True, no session_id)
+    must NOT be treated as a crash-between-claim-and-spawn dangler — reconciliation
+    should leave its label intact until the user taps or the runner reconciles."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'p3.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(mode="off")
+        # A pending-tap proposed row
+        await ctx.set_target_state("r#1", {"claimed": True, "proposed": True,
+                                            "issues": ["r#1"]})
+        # A real crash-between-claim-and-spawn dangler (no proposed, no session_id)
+        await ctx.set_target_state("r#2", {"claimed": True, "issues": ["r#2"]})
+
+        await loop.tick()
+
+        assert rec.reconciles, "reconcile seam should run"
+        # r#1 (proposed) must be in live_refs — not released
+        claimed_refs, live_refs = rec.reconciles[-1]
+        assert "r#1" in live_refs, "proposed row must be treated as live"
+        assert "r#2" not in live_refs, "dangler must not be in live_refs"
+
+        states = await ctx.list_target_states()
+        assert "r#1" in states, "proposed row must survive reconciliation"
+        assert "r#2" not in states, "dangling row must be deleted"
+
+    asyncio.run(run())
+
+
 def test_orphan_sweep_skipped_when_mode_off(tmp_path):
     """Mode off = the automation must take NO autonomous GitHub action —
     including healing (label writes are mutations)."""
@@ -593,10 +670,10 @@ def test_orphan_sweep_skipped_when_mode_off(tmp_path):
     asyncio.run(run())
 
 
-def test_orphan_sweep_skipped_when_mode_propose(tmp_path):
-    """Propose mode claims the batch (label + comment) but writes no durable state
-    row — the heal would read every propose-mode claim as an orphan and strip it,
-    causing an hourly re-claim and comment spam. The heal must be excluded."""
+def test_orphan_sweep_runs_when_mode_propose(tmp_path):
+    """Propose mode now writes state rows (proposed=True) before the gh label
+    write, so the heal sees propose-mode claims as tracked refs (not orphans)
+    and can safely widen its gate to mode != 'off'."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'os4.db'}"
 
     async def run():
@@ -604,7 +681,7 @@ def test_orphan_sweep_skipped_when_mode_propose(tmp_path):
         await _seed_row()
         loop, rec, ctx = build_loop(mode="propose", heal_orphans_result=[])
         await loop.tick()
-        assert rec.heals == []
+        assert len(rec.heals) == 1
 
     asyncio.run(run())
 

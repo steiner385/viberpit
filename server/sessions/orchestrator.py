@@ -1487,11 +1487,29 @@ class SessionOrchestrator:
         st = await self._backlog_ctx.get_target_state(primary)
         already_claimed = bool(st.get("issues"))
         if not already_claimed:
+            # RECORDS-BEFORE-LABELS: write the durable claim row BEFORE the gh
+            # label write so a crash after the label lands still leaves a
+            # recoverable state row (reconciliation sees a claimed ref with no
+            # session_id and no proposed flag → dangler → released).
+            await self._backlog_ctx.set_target_state(primary, {
+                "repo": batch.repo,
+                "attempts": st.get("attempts", 0),
+                "issues": batch.issues,
+                "claimed": True,
+            })
             if not await self._backlog_claim(batch):
+                # Never actually held the claim → drop the speculative row.
+                await self._backlog_ctx.delete_target_state(primary)
                 return "claim_failed"
             await self._backlog_ctx.emit("info", f"claimed {primary}",
                                          kind="claimed", target=primary,
                                          detail={"issues": batch.issues})
+        elif st.get("proposed"):
+            # Tapping a propose-mode pending claim: clear the proposed flag so
+            # reconciliation sees a normal claimed row after the session_id is set.
+            new_st = dict(st)
+            new_st.pop("proposed", None)
+            await self._backlog_ctx.set_target_state(primary, new_st)
         account = await self._backlog_healthy_account()
         if account is None:
             return "no_account"
