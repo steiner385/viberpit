@@ -67,3 +67,71 @@ def test_no_states_is_zero(tmp_path):
         assert await orch._backlog_count_in_flight() == 0
 
     asyncio.run(run())
+
+
+def test_handed_off_rows_do_not_hold_slots(tmp_path):
+    """A handed_off row is kept only so the merged close-out can run — PR
+    Doctor owns the PR now, so the row must not occupy a concurrency slot
+    (or the runner would stall at max_concurrent handed-off rows)."""
+    async def run():
+        await _init(tmp_path)
+        orch = _orch_with_ctx()
+        ctx = orch._backlog_ctx
+        await ctx.set_target_state("o/r#1", {"claimed": True, "session_id": "s1"})
+        await ctx.set_target_state("o/r#2", {"claimed": True, "session_id": "s2",
+                                             "handed_off": True})
+        assert await orch._backlog_count_in_flight() == 1
+
+    asyncio.run(run())
+
+
+def test_repo_load_skips_handed_off_rows(tmp_path):
+    async def run():
+        await _init(tmp_path)
+        orch = _orch_with_ctx()
+        ctx = orch._backlog_ctx
+        await ctx.set_target_state("o/r#1", {"claimed": True, "repo": "o/r"})
+        await ctx.set_target_state("o/r#2", {"claimed": True, "repo": "o/r",
+                                             "handed_off": True})
+        await ctx.set_target_state("o/k#3", {"gave_up": True, "repo": "o/k"})
+        assert await orch._backlog_repo_load() == {"o/r": 1}
+
+    asyncio.run(run())
+
+
+def test_heal_orphans_seam_queries_then_heals(tmp_path):
+    """_backlog_heal_orphans = query_claimed_refs → heal_orphan_claims, both
+    through the shared _gh_run seam; empty repo scope short-circuits."""
+    async def run():
+        import json as _json
+        import subprocess
+
+        await _init(tmp_path)
+        orch = _orch_with_ctx()
+        claimed = _json.dumps({"data": {"claimed": {"nodes": [
+            {"number": 5, "title": "t", "url": "u",
+             "repository": {"nameWithOwner": "o/r"}}]}}})
+        crossref = _json.dumps({"data": {"repository": {"issue": {
+            "timelineItems": {"nodes": []}}}}})
+        procs = iter([
+            subprocess.CompletedProcess([], 0, stdout=claimed, stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=crossref, stderr=""),
+        ])
+        calls: list[list[str]] = []
+
+        def gh_run(args, token=None):
+            calls.append(list(args))
+            if args[:2] == ["api", "graphql"]:
+                return next(procs)
+            return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        orch._gh_run = gh_run
+        healed = await orch._backlog_heal_orphans(
+            {"enabled_repos": ["o/r"]}, set())
+        assert healed == [("o/r#5", "reclaimed")]
+        # Empty repo scope → no gh call at all.
+        n = len(calls)
+        assert await orch._backlog_heal_orphans({"enabled_repos": []}, set()) == []
+        assert len(calls) == n
+
+    asyncio.run(run())

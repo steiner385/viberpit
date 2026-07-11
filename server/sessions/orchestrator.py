@@ -378,6 +378,7 @@ class SessionOrchestrator:
             session_ended=self._backlog_session_ended,
             reconcile=self._backlog_reconcile,
             close_out=self._backlog_close_out,
+            heal_orphans=self._backlog_heal_orphans,
         )
         self._backlog_task: asyncio.Task | None = None
         # Autopilot control loop: advances every governed session through its stuck
@@ -1167,9 +1168,12 @@ class SessionOrchestrator:
         shutdown), so a finished-but-lingering ``done``/``idle``/``archived``
         session used to keep holding its slot forever and the runner stopped
         spawning new work. Target states are the authoritative slot ledger the
-        sweep already maintains."""
+        sweep already maintains.
+
+        A handed_off row is PR Doctor's to carry — it is kept only so the merged close-out can run, and must not occupy a slot."""
         states = await self._backlog_ctx.list_target_states()
-        return sum(1 for st in states.values() if not st.get("gave_up"))
+        return sum(1 for st in states.values()
+                   if not st.get("gave_up") and not st.get("handed_off"))
 
     async def _backlog_healthy_account(self) -> str | None:
         """A non-quarantined, non-limited account with headroom, or None.
@@ -1310,7 +1314,7 @@ class SessionOrchestrator:
         states = await self._backlog_ctx.list_target_states()
         load: dict[str, int] = {}
         for st in states.values():
-            if st.get("gave_up"):
+            if st.get("gave_up") or st.get("handed_off"):
                 continue
             repo = st.get("repo")
             if repo:
@@ -1376,6 +1380,24 @@ class SessionOrchestrator:
         await asyncio.to_thread(
             backlog_github.reconcile_dangling, list(claimed_refs), set(live_refs),
             gh_run=self._gh_run)
+
+    async def _backlog_heal_orphans(self, config: dict,
+                                    tracked: set[str]) -> list[tuple[str, str]]:
+        """GitHub-truth orphan healing: diff the open ``in-progress`` labels in
+        the enabled repos against the refs the state rows track, and heal the
+        rest (close if the referencing PR merged, release the claim if nothing
+        carries it). Best-effort, off the event loop; the per-pass lookup cap
+        lives in ``heal_orphan_claims``."""
+        from server.automations import backlog_github
+        repos = list(config.get("enabled_repos") or [])
+        if not repos:
+            return []
+        refs = await asyncio.to_thread(
+            backlog_github.query_claimed_refs, repos, gh_run=self._gh_run)
+        if not refs:
+            return []
+        return await asyncio.to_thread(
+            backlog_github.heal_orphan_claims, refs, tracked, gh_run=self._gh_run)
 
     async def _backlog_session_ended(self, session_id: str) -> bool:
         """True once the runner session *session_id* has reached a terminal state.
