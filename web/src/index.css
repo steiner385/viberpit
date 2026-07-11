@@ -38,6 +38,17 @@
   }
 }
 
+/* The app is a fixed-viewport column: the *document* must never scroll. Without
+   this clamp, any descendant that (even transiently) lays out past the viewport
+   makes the page itself scrollable, and a focus()/scrollIntoView then scrolls
+   the whole app partly off-screen — leaving dead whitespace below the composer
+   that persists until reload. Interior panes own all scrolling via
+   `overflow-y-auto` regions. */
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
 #root {
   /* Full-bleed: fill the entire viewport. The old `width: 1126px; margin: 0 auto`
      was a leftover Vite scaffold default that caged the whole app in a centered
@@ -48,7 +59,12 @@
      scaffold default that center-justified all text app-wide (chat prompts,
      responses, headings, account rows). */
   text-align: left;
-  min-height: 100svh;
+  /* Fixed height, not `min-height: 100svh`: `min-` lets in-flow siblings of the
+     shell (banners, overlay fallbacks) GROW the column past the viewport. dvh so
+     the Android keyboard (interactive-widget=resizes-content, see index.html)
+     shrinks the layout instead of covering the composer. Shells below size with
+     `flex-1 min-h-0`, never their own viewport units. */
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;

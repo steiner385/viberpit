@@ -5,7 +5,8 @@ import { describe, it, expect } from 'vitest'
 /**
  * Regression guard for the Android soft-keyboard header bug.
  *
- * SessionView is a `flex flex-col h-dvh` column. On Android Chrome the viewport's
+ * The app is a flex column sized by `#root { height: 100dvh }` (index.css). On
+ * Android Chrome the viewport's
  * default `interactive-widget=resizes-visual` means the soft keyboard overlays the
  * page without shrinking the *layout* viewport, so `dvh` stays full-height and the
  * browser scrolls the top bar off-screen to keep the focused composer visible.

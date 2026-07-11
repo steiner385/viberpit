@@ -121,7 +121,7 @@ export function SessionView({ sessionId, onBack, onDone, onNavigateSession, init
   }, [onSetMode, handleBack, hasOpenAction])
 
   return (
-    <div className="flex flex-col h-dvh bg-white dark:bg-gray-950">
+    <div className="flex flex-col flex-1 min-h-0 bg-white dark:bg-gray-950">
       <CommandResultOverlay
         result={rt.commandResult}
         commands={rt.commands}

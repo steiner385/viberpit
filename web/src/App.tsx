@@ -24,7 +24,7 @@ function DashboardRoute({ tab }: { tab: TabId }) {
   const rawDialog = searchParams.get('dialog')
   const dialog = rawDialog === 'new' || rawDialog === 'settings' ? rawDialog : null
   return (
-    <div className="h-dvh flex flex-col overflow-hidden bg-background text-foreground">
+    <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-background text-foreground">
       {/* paddingTop pushes content below the iOS status bar; env() is 0 on desktop. */}
       <header className="shrink-0 px-4 pb-4 border-b border-border" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1rem)' }}>
         <h1 className="text-2xl font-bold tracking-tight">ccswitch</h1>
@@ -78,7 +78,7 @@ function SessionRoute() {
     navigate(next ? `/session/${next}` : '/sessions')
   }
   return (
-    <div className="min-h-dvh bg-background text-foreground">
+    <div className="flex-1 min-h-0 flex flex-col bg-background text-foreground">
       <SessionView
         key={sessionId}
         sessionId={sessionId}
@@ -96,7 +96,7 @@ function ReviewRoute() {
   const navigate = useNavigate()
   if (!sessionId) return <Navigate to="/sessions" replace />
   return (
-    <div className="min-h-dvh bg-background text-foreground">
+    <div className="flex-1 min-h-0 flex flex-col bg-background text-foreground">
       <ReviewView sessionId={sessionId} onBack={() => navigate('/sessions')} />
     </div>
   )
@@ -107,7 +107,7 @@ function SubSessionRoute() {
   const navigate = useNavigate()
   if (!sessionId || !agentId) return <Navigate to="/sessions" replace />
   return (
-    <div className="min-h-dvh bg-background text-foreground">
+    <div className="flex-1 min-h-0 flex flex-col bg-background text-foreground">
       <SubSessionView sessionId={sessionId} agentId={agentId} onBack={() => navigate(`/session/${sessionId}`)} />
     </div>
   )
