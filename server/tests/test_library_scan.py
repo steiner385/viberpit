@@ -143,3 +143,44 @@ def test_read_traversal_rejected(shared: Path):
     assert scan.read_skill("../evil") is None
     assert scan.read_command("../evil") is None
     assert scan.read_command("a/../../evil") is None
+
+
+def test_list_plugins_token_cost_from_catalog(shared: Path):
+    """tokenCost is derived from catalog tokens, taking MAX across models."""
+    _seed_plugin(shared, "alpha", enabled=True)
+    pid = "alpha@test-market"
+    catalog_data = {
+        "catalog": {
+            "plugins": {
+                pid: {
+                    "tokens": {
+                        "claude-3-5-sonnet": {"always_on": 200, "on_invoke": 100},
+                        "claude-3-haiku": {"always_on": 150, "on_invoke": 80},
+                    }
+                }
+            }
+        }
+    }
+    (shared / "plugins" / "plugin-catalog-cache.json").write_text(json.dumps(catalog_data))
+    out = scan.list_plugins()
+    p = next(pl for pl in out["plugins"] if pl["id"] == pid)
+    assert p["tokenCost"] == {"alwaysOn": 200, "onInvoke": 100}
+
+
+def test_list_plugins_no_tokens_is_none(shared: Path):
+    """Plugin with no tokens field in catalog → tokenCost is None."""
+    _seed_plugin(shared, "alpha", enabled=True)
+    pid = "alpha@test-market"
+    catalog_data = {
+        "catalog": {
+            "plugins": {
+                pid: {
+                    "marketplace_entry": {"description": "A plugin"},
+                }
+            }
+        }
+    }
+    (shared / "plugins" / "plugin-catalog-cache.json").write_text(json.dumps(catalog_data))
+    out = scan.list_plugins()
+    p = next(pl for pl in out["plugins"] if pl["id"] == pid)
+    assert p["tokenCost"] is None

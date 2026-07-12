@@ -94,3 +94,31 @@ def test_validate_mcp_config():
     assert mutate.validate_mcp_config({"command": ""}) is not None
     assert mutate.validate_mcp_config({"command": "b", "args": "notalist"}) is not None
     assert mutate.validate_mcp_config({"type": "sse", "url": "https://x", "headers": {"A": "b"}}) is None
+
+
+def test_set_plugin_enabled_corrupt_settings_raises(shared: Path):
+    settings_path = shared / "settings.json"
+    settings_path.write_text("not json")
+    with pytest.raises(mutate.ConfigUnreadableError):
+        mutate.set_plugin_enabled("a@m", True)
+    assert settings_path.read_text() == "not json"
+
+
+def test_put_mcp_server_corrupt_shared_raises(shared: Path):
+    from ccswitch import paths as cpaths
+    shared_path = cpaths.shared_claude_json_path()
+    shared_path.parent.mkdir(parents=True, exist_ok=True)
+    shared_path.write_text("not json")
+    with pytest.raises(mutate.ConfigUnreadableError):
+        mutate.put_mcp_server("srv", {"command": "bin"})
+    assert shared_path.read_text() == "not json"
+
+
+def test_delete_mcp_server_corrupt_shared_raises(shared: Path):
+    from ccswitch import paths as cpaths
+    shared_path = cpaths.shared_claude_json_path()
+    shared_path.parent.mkdir(parents=True, exist_ok=True)
+    shared_path.write_text("not json")
+    with pytest.raises(mutate.ConfigUnreadableError):
+        mutate.delete_mcp_server("srv")
+    assert shared_path.read_text() == "not json"

@@ -18,6 +18,22 @@ from .names import resolve_under
 from .scan import installed_registry, read_json_safe
 
 
+class ConfigUnreadableError(RuntimeError):
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"Config file exists but cannot be parsed: {path}")
+        self.path = path
+
+
+def _load_or_empty(path: Path) -> dict[str, Any]:
+    """Return parsed JSON dict, {} if file absent, or raise ConfigUnreadableError if corrupt."""
+    if not path.exists():
+        return {}
+    data = read_json_safe(path)
+    if data is None:
+        raise ConfigUnreadableError(path)
+    return data
+
+
 def _write_text_atomic(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-lib-")
@@ -33,7 +49,7 @@ def _write_text_atomic(path: Path, content: str) -> None:
 
 def set_plugin_enabled(plugin_id: str, enabled: bool) -> bool:
     settings_path = paths.shared_base() / "settings.json"
-    data = read_json_safe(settings_path) or {}
+    data = _load_or_empty(settings_path)
     known = data.get("enabledPlugins") or {}
     if plugin_id not in known and plugin_id not in installed_registry():
         return False
@@ -115,7 +131,7 @@ def validate_mcp_config(config: dict[str, Any]) -> str | None:
 
 def put_mcp_server(name: str, config: dict[str, Any]) -> None:
     shared_path = paths.shared_claude_json_path()
-    data = read_json_safe(shared_path) or {}
+    data = _load_or_empty(shared_path)
     servers = data.get("mcpServers")
     if not isinstance(servers, dict):
         servers = {}
@@ -126,7 +142,7 @@ def put_mcp_server(name: str, config: dict[str, Any]) -> None:
 
 def delete_mcp_server(name: str) -> bool:
     shared_path = paths.shared_claude_json_path()
-    data = read_json_safe(shared_path) or {}
+    data = _load_or_empty(shared_path)
     servers = data.get("mcpServers")
     if not isinstance(servers, dict) or name not in servers:
         return False

@@ -87,6 +87,18 @@ def list_plugins() -> dict[str, Any]:
         entry = cat.get("marketplace_entry") or {}
         components = cat.get("components") or {}
         name, _, marketplace = pid.partition("@")
+        tokens = cat.get("tokens")
+        token_cost: dict[str, int] | None = None
+        if tokens and isinstance(tokens, dict):
+            max_always_on = max(
+                (v.get("always_on", 0) for v in tokens.values() if isinstance(v, dict)),
+                default=0,
+            )
+            max_on_invoke = max(
+                (v.get("on_invoke", 0) for v in tokens.values() if isinstance(v, dict)),
+                default=0,
+            )
+            token_cost = {"alwaysOn": max_always_on, "onInvoke": max_on_invoke}
         plugins.append({
             "id": pid,
             "name": name,
@@ -102,6 +114,7 @@ def list_plugins() -> dict[str, Any]:
                 key: len(components.get(key) or [])
                 for key in ("commands", "skills", "agents", "mcpServers", "hooks")
             },
+            "tokenCost": token_cost,
         })
     markets = read_json_safe(paths.shared_base() / "plugins" / "known_marketplaces.json") or {}
     marketplaces = [

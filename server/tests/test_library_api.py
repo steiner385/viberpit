@@ -90,3 +90,53 @@ def test_requires_identity(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     # identity header. A request with no header at all must still 401.
     r = client.get("/api/library/plugins")
     assert r.status_code == 401
+
+
+def test_toggle_plugin_corrupt_settings_returns_409(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "shared"
+    base.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(base))
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    (tmp_path / "home" / "store").mkdir(parents=True)
+    # Write a corrupt settings.json — note: plugin must also appear in settings
+    # so it passes the "known" check; but corrupt parse fires before the key lookup.
+    (base / "settings.json").write_text("not json")
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.patch(
+            "/api/library/plugins/a@m",
+            json={"enabled": False},
+            headers=IDENTITY_HEADERS,
+        )
+    assert r.status_code == 409
+    body = r.json()
+    assert body["error"] == "config_unreadable"
+    assert body["path"] == "settings.json"
+
+
+def test_put_mcp_corrupt_shared_returns_409(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ccswitch import paths as cpaths
+
+    base = tmp_path / "shared"
+    base.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(base))
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    (tmp_path / "home" / "store").mkdir(parents=True)
+    (base / "settings.json").write_text("{}")
+    shared_path = cpaths.shared_claude_json_path()
+    shared_path.parent.mkdir(parents=True, exist_ok=True)
+    shared_path.write_text("not json")
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.put(
+            "/api/library/mcp/srv",
+            json={"config": {"command": "bin"}},
+            headers=IDENTITY_HEADERS,
+        )
+    assert r.status_code == 409
+    body = r.json()
+    assert body["error"] == "config_unreadable"

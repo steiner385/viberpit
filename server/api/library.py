@@ -3,13 +3,17 @@ shared config base. Read routes are direct filesystem scans; mutations are
 atomic writes + audit events. No orchestrator/daemon involvement."""
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.library import mutate, scan
+from server.library.mutate import ConfigUnreadableError
 from server.library.names import (
     valid_command_path,
     valid_mcp_name,
@@ -55,10 +59,14 @@ async def get_plugin(plugin_id: str, _identity: str = Depends(current_identity))
 async def toggle_plugin(
     plugin_id: str, body: ToggleBody,
     identity: str = Depends(current_identity), db=Depends(get_db),
-) -> dict:
+) -> Any:
     if not valid_plugin_id(plugin_id):
         raise _bad("invalid plugin id")
-    if not mutate.set_plugin_enabled(plugin_id, body.enabled):
+    try:
+        found = mutate.set_plugin_enabled(plugin_id, body.enabled)
+    except ConfigUnreadableError as err:
+        return JSONResponse(status_code=409, content={"error": "config_unreadable", "path": err.path.name})
+    if not found:
         raise HTTPException(status_code=404, detail={"error": "unknown_plugin"})
     await record_audit(db=db, type="library_plugin_toggled", identity=identity,
                        detail={"plugin": plugin_id, "enabled": body.enabled})
@@ -148,13 +156,16 @@ async def get_mcp(_identity: str = Depends(current_identity)) -> dict:
 
 @router.put("/mcp/{name}")
 async def put_mcp(name: str, body: McpBody,
-                  identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
+                  identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
     if not valid_mcp_name(name):
         raise _bad("invalid server name")
     error = mutate.validate_mcp_config(body.config)
     if error:
         raise HTTPException(status_code=400, detail={"error": "invalid_config", "message": error})
-    mutate.put_mcp_server(name, body.config)
+    try:
+        mutate.put_mcp_server(name, body.config)
+    except ConfigUnreadableError as err:
+        return JSONResponse(status_code=409, content={"error": "config_unreadable", "path": err.path.name})
     transport = scan.infer_transport(body.config)
     # Audit name+transport only — config/headers/env may contain tokens.
     await record_audit(db=db, type="library_mcp_saved", identity=identity,
@@ -167,7 +178,11 @@ async def delete_mcp(name: str,
                      identity: str = Depends(current_identity), db=Depends(get_db)) -> None:
     if not valid_mcp_name(name):
         raise _bad("invalid server name")
-    if not mutate.delete_mcp_server(name):
+    try:
+        found = mutate.delete_mcp_server(name)
+    except ConfigUnreadableError as err:
+        raise HTTPException(status_code=409, detail={"error": "config_unreadable", "path": err.path.name})
+    if not found:
         raise HTTPException(status_code=404, detail={"error": "unknown_server"})
     await record_audit(db=db, type="library_mcp_deleted", identity=identity,
                        detail={"name": name})
