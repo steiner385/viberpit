@@ -46,3 +46,49 @@ async def test_pending_permissions_wraps_registry():
     f = InProcessOrchestratorAdapter(orch)
     assert await f.pending_permissions("s1") == ["p1"]
     orch._registry.pending.assert_called_once_with("s1")
+
+
+# --- regression: pipeline route family must be covered by the adapter ---
+
+def _pipeline_orch():
+    """Mock orchestrator with the three pipeline methods."""
+    orch = mock.MagicMock()
+    orch.poller = mock.MagicMock()
+    orch._registry = mock.MagicMock()
+    orch.latest_queue_entries = mock.AsyncMock(return_value={"repo/a": [{"id": 1}]})
+    orch.all_merge_trains = mock.AsyncMock(return_value={"repo/a": {"status": "idle"}})
+    orch.check_insights = mock.MagicMock(return_value={"repo": "repo/a", "window": "7d",
+                                                        "slowest": [], "flakiest": [],
+                                                        "regressions": [], "runner_wait_health": []})
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_latest_queue_entries_delegates():
+    """GET /api/pipeline/events must not raise AttributeError in in-process mode."""
+    orch = _pipeline_orch()
+    f = InProcessOrchestratorAdapter(orch)
+    result = await f.latest_queue_entries()
+    assert result == {"repo/a": [{"id": 1}]}
+    orch.latest_queue_entries.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_all_merge_trains_delegates():
+    """Pipeline merge-train endpoint must work in in-process mode."""
+    orch = _pipeline_orch()
+    f = InProcessOrchestratorAdapter(orch)
+    result = await f.all_merge_trains()
+    assert result == {"repo/a": {"status": "idle"}}
+    orch.all_merge_trains.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_check_insights_delegates():
+    """Pipeline check-insights endpoint must work in in-process mode (sync underlying method)."""
+    orch = _pipeline_orch()
+    f = InProcessOrchestratorAdapter(orch)
+    result = await f.check_insights("repo/a", "7d")
+    assert result["repo"] == "repo/a"
+    assert result["window"] == "7d"
+    orch.check_insights.assert_called_once_with("repo/a", "7d")

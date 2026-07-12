@@ -84,3 +84,7 @@ class InProcessOrchestratorAdapter:
     async def copilot_add_status(self, *a, **k): return await _maybe_await(self._orch.copilot_add_status(*a, **k))
     async def copilot_add_cancel(self, *a, **k): return await _maybe_await(self._orch.copilot_add_cancel(*a, **k))
     async def copilot_usage(self, *a, **k): return await _maybe_await(self._orch.copilot_usage(*a, **k))
+    # --- pipeline / merge-queue methods (GET /api/pipeline/events and siblings) ---
+    async def latest_queue_entries(self, *a, **k): return await _maybe_await(self._orch.latest_queue_entries(*a, **k))
+    async def all_merge_trains(self, *a, **k): return await _maybe_await(self._orch.all_merge_trains(*a, **k))
+    async def check_insights(self, *a, **k): return await _maybe_await(self._orch.check_insights(*a, **k))
