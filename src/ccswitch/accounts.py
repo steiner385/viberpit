@@ -402,8 +402,9 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
     with ledger.locked_ledger() as led:
         reserved = {n for n in names if ledger.reservation_active(led, n, now_ts)}
         unhealthy = frozenset(n for n in names if ledger.get_status(led, n) == "needs-reauth")
+        reserves = ledger.weekly_reserves(led)
         picked = select_picked(usages, reserved, cfg, now, exclude, load or {},
-                               unhealthy, optimistic_fallback=True)
+                               unhealthy, optimistic_fallback=True, reserves=reserves)
         if reserve:
             ledger.reserve(led, picked.name, now_ts + cfg.reservation_ttl_sec)
     return picked

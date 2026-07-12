@@ -58,3 +58,29 @@ def test_pick_account_detailed_reserve_true_still_reserves(monkeypatch):
          patch("ccswitch.ledger.reserve") as reserve:
         accounts.pick_account_detailed(Config())  # reserve defaults to True
     reserve.assert_called_once()
+
+
+def test_pick_account_detailed_respects_weekly_reserve(monkeypatch):
+    """An over-reserve account is demoted: the pick flips once a reserve is set."""
+    from tests.helpers import usage
+    monkeypatch.setattr(accounts, "_account_names", lambda: ["hot", "cool"])
+    # Both windows reset in 2h (helpers default). Perishability = binding-dimension
+    # headroom / hours: hot = 5%/2h = 2.5/h beats cool = 4%/2h = 2/h, so hot wins
+    # WITHOUT a reserve — the flip below is attributable to the reserve alone.
+    usages = {
+        "hot": usage(session=10.0, weekly=95.0),
+        "cool": usage(session=10.0, weekly=96.0),
+    }
+    common = dict(side_effect=lambda n: usages[n])
+    with patch.object(accounts, "usage_for", **common), \
+         patch("ccswitch.ledger.get_status", return_value="ok"), \
+         patch("ccswitch.ledger.reservation_active", return_value=False), \
+         patch("ccswitch.ledger.weekly_reserves", return_value={}), \
+         patch("ccswitch.ledger.reserve"):
+        assert accounts.pick_account_detailed(Config()).name == "hot"
+    with patch.object(accounts, "usage_for", **common), \
+         patch("ccswitch.ledger.get_status", return_value="ok"), \
+         patch("ccswitch.ledger.reservation_active", return_value=False), \
+         patch("ccswitch.ledger.weekly_reserves", return_value={"hot": 90.0}), \
+         patch("ccswitch.ledger.reserve"):
+        assert accounts.pick_account_detailed(Config()).name == "cool"
