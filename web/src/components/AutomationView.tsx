@@ -12,7 +12,7 @@ export function AutomationView({ onOpenSession, onReviewSession }: {
   useEffect(() => { setSessionsViewing(false) }, [])
   if (isLoading) return <p className="text-sm text-muted-foreground p-4">Loading…</p>
   return (
-    <div className="space-y-3" role="tabpanel" id="tabpanel-automation" aria-labelledby="tab-automation">
+    <div className="space-y-3">
       {(data ?? []).map((a) => (
         <AutomationCard key={a.id} automation={a} onOpenSession={onOpenSession} onReviewSession={onReviewSession} />
       ))}

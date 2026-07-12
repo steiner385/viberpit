@@ -1,0 +1,153 @@
+/**
+ * GeneralSection — the app-wide settings form, inline in the Settings tab
+ * (formerly the SettingsPanel modal).
+ */
+import { useState } from 'react'
+import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
+import { useSettings, useUpdateSettings, type AppSettings } from '@/api/hooks'
+import { PERMISSION_MODES } from '@/session/permissionModes'
+import { NotificationsToggle } from './NotificationsToggle'
+import { toast } from 'sonner'
+
+export function GeneralSection() {
+  const { data: settings } = useSettings()
+  // Remount the form when settings transition absent → present so it
+  // initializes from server values via useState (not setState-in-effect).
+  return <GeneralForm key={settings ? 'loaded' : 'loading'} settings={settings} />
+}
+
+function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
+  const updateSettings = useUpdateSettings()
+  const [permissionMode, setPermissionMode] = useState(settings?.defaultPermissionMode ?? 'interactive')
+  const [thinkingCollapsed, setThinkingCollapsed] = useState(settings?.thinkingCollapsed ?? false)
+  const [repoRoot, setRepoRoot] = useState(settings?.repoRoot ?? '')
+  const [toolDetail, setToolDetail] = useState<AppSettings['defaultToolDetail']>(settings?.defaultToolDetail ?? 'auto')
+
+  function handleSave() {
+    updateSettings.mutate({
+      defaultPermissionMode: permissionMode,
+      thinkingCollapsed,
+      repoRoot: repoRoot.trim() || null,
+      defaultToolDetail: toolDetail,
+    }, { onSuccess: () => toast('Settings saved') })
+  }
+
+  const inputClass = cn(
+    'w-full rounded-md border border-gray-300 dark:border-gray-600',
+    'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
+    'px-3 py-2 text-sm min-h-[44px]',
+    'focus:outline-none focus:ring-2 focus:ring-blue-500',
+    'placeholder:text-gray-400 dark:placeholder:text-gray-500',
+  )
+
+  return (
+    <div className="space-y-4 max-w-md">
+      <div className="space-y-4">
+        {/* Default tool approvals */}
+        <div className="space-y-1">
+          <label
+            htmlFor="settings-permission-mode"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            Default tool approvals
+          </label>
+          <select
+            id="settings-permission-mode"
+            value={permissionMode}
+            onChange={(e) => setPermissionMode(e.target.value)}
+            className={inputClass}
+          >
+            {PERMISSION_MODES.map(({ value, label }) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+          {permissionMode === 'full-auto' && (
+            <p
+              role="alert"
+              className="text-sm text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30 rounded-md px-3 py-2"
+            >
+              ⚠ Full auto lets sessions run shell/edits without prompting. Anyone who can reach this server can run code as you.
+            </p>
+          )}
+        </div>
+
+        {/* Transcript display */}
+        <div className="space-y-3 border-t border-gray-200 dark:border-gray-700 pt-4">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            Transcript display
+          </h3>
+          <div className="space-y-1">
+            <label
+              htmlFor="settings-tool-detail"
+              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Tool calls default
+            </label>
+            <select
+              id="settings-tool-detail"
+              value={toolDetail}
+              onChange={(e) => setToolDetail(e.target.value as AppSettings['defaultToolDetail'])}
+              className={inputClass}
+            >
+              <option value="auto">Auto-fold long groups</option>
+              <option value="all-open">Expand all</option>
+              <option value="all-closed">Collapse all</option>
+            </select>
+          </div>
+          {/* Collapse thinking by default */}
+          <div className="flex items-center gap-3">
+            <input
+              id="settings-thinking-collapsed"
+              type="checkbox"
+              checked={thinkingCollapsed}
+              onChange={(e) => setThinkingCollapsed(e.target.checked)}
+              className={cn(
+                'h-4 w-4 rounded border-gray-300 dark:border-gray-600',
+                'text-blue-600 focus:ring-2 focus:ring-blue-500',
+              )}
+            />
+            <label
+              htmlFor="settings-thinking-collapsed"
+              className="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer"
+            >
+              Collapse thinking by default
+            </label>
+          </div>
+        </div>
+
+        {/* Repo clone root */}
+        <div className="space-y-1">
+          <label
+            htmlFor="settings-repo-root"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            Repo clone root <span className="text-gray-400">(optional)</span>
+          </label>
+          <input
+            id="settings-repo-root"
+            type="text"
+            value={repoRoot}
+            onChange={(e) => setRepoRoot(e.target.value)}
+            placeholder="/home/user/repos"
+            className={inputClass}
+          />
+        </div>
+
+        {/* Notifications */}
+        <div className="space-y-3 border-t border-gray-200 dark:border-gray-700 pt-4">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            Notifications
+          </h3>
+          <NotificationsToggle />
+        </div>
+      </div>
+
+      <div className="flex justify-end pt-2">
+        <Button type="button" onClick={handleSave} disabled={updateSettings.isPending} className="min-h-[44px]">
+          {updateSettings.isPending ? 'Saving…' : 'Save'}
+        </Button>
+      </div>
+    </div>
+  )
+}

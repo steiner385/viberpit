@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { Dashboard } from '../Dashboard'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
@@ -92,10 +93,17 @@ function makeReauthState(overrides: Partial<ReauthState> = {}): ReauthState {
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  // MemoryRouter at ?section=accounts: the Accounts panel is a Settings-tab
+  // section now, so the wrapper mounts it active for every test.
+  return (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/settings?section=accounts']}>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
 }
 
-/** Accounts are now behind a tab — switch to it before asserting account content. */
+/** The Accounts section tab is pre-selected by the wrapper's ?section=accounts;
+ *  clicking it again is a harmless no-op kept for test readability. */
 async function switchToAccountsTab(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('tab', { name: /accounts/i }))
 }
@@ -153,7 +161,7 @@ describe('AccountRow — Re-authenticate button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByRole('button', { name: /re-authenticate kindash/i })).toBeInTheDocument()
@@ -166,7 +174,7 @@ describe('AccountRow — Re-authenticate button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByRole('button', { name: /re-authenticate kindash/i })).toBeInTheDocument()
@@ -179,7 +187,7 @@ describe('AccountRow — Re-authenticate button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     // ok accounts are re-authenticatable via the quiet icon affordance,
@@ -198,7 +206,7 @@ describe('AccountRow — Re-authenticate button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /re-authenticate kindash/i }))
@@ -217,7 +225,7 @@ describe('AccountRow — Re-authenticate button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useReauthStatus>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByText(/on the host screen/i)).toBeInTheDocument()
@@ -235,7 +243,7 @@ describe('AccountRow — Re-authenticate button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useReauthStatus>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(await screen.findByTestId('reauth-vnc')).toHaveTextContent('__reauth__')
@@ -253,7 +261,7 @@ describe('AccountRow — Re-authenticate button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useReauthStatus>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByRole('button', { name: /cancel reauth/i })).toBeInTheDocument()
@@ -270,7 +278,7 @@ describe('AccountRow — Re-authenticate button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useReauthStatus>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /cancel reauth/i }))
@@ -298,10 +306,12 @@ describe('AccountRow — Re-authenticate button', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const spy = vi.spyOn(queryClient, 'invalidateQueries')
     const localWrapper = ({ children }: { children: React.ReactNode }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/settings?section=accounts']}>{children}</MemoryRouter>
+      </QueryClientProvider>
     )
 
-    render(<Dashboard />, { wrapper: localWrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper: localWrapper })
     await switchToAccountsTab(user)
 
     // Should show a success indicator with checkmark
@@ -324,7 +334,7 @@ describe('AccountRow — Re-authenticate button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useReauthStatus>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByText(/Login failed: timeout/i)).toBeInTheDocument()
@@ -341,7 +351,7 @@ describe('AccountRow — Re-authenticate button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useReauthStatus>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByText(/timed out/i)).toBeInTheDocument()
@@ -379,7 +389,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByRole('button', { name: /generate long-lived token for kindash/i })).toBeInTheDocument()
@@ -392,7 +402,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /generate long-lived token for kindash/i }))
@@ -415,7 +425,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
       isLoading: false,
     } as ReturnType<typeof hooks.useReauthStatus>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     // Auth URL anchor should be present with the correct href and safe rel
@@ -442,7 +452,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
       isLoading: false,
     } as ReturnType<typeof hooks.useReauthStatus>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     const codeInput = screen.getByRole('textbox', { name: /authorization code for kindash/i })
@@ -467,7 +477,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
       isLoading: false,
     } as ReturnType<typeof hooks.useReauthStatus>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByRole('button', { name: /generate long-lived token for kindash/i })).toBeDisabled()

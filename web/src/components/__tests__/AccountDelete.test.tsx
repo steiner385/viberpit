@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { Dashboard } from '../Dashboard'
 import * as hooks from '@/api/hooks'
 import type { Account, Session } from '@/api/types'
@@ -92,7 +93,13 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  // MemoryRouter at ?section=accounts: the Accounts panel is a Settings-tab
+  // section now, so the wrapper mounts it active for every test.
+  return (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/settings?section=accounts']}>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
 }
 
 function setupDefaultMocks(deleteMutate = vi.fn()) {
@@ -133,7 +140,7 @@ describe('AccountRow — Delete button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
 
     // Default tab is Sessions; switch to Accounts
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
@@ -148,7 +155,7 @@ describe('AccountRow — Delete button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
 
     // Switch to Accounts tab
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
@@ -166,7 +173,7 @@ describe('AccountRow — Delete button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
 
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
@@ -185,7 +192,7 @@ describe('AccountRow — Delete button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
 
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
@@ -205,7 +212,7 @@ describe('AccountRow — Delete button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
 
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
@@ -232,7 +239,7 @@ describe('AccountRow — Delete button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useSessions>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
 
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
@@ -252,7 +259,7 @@ describe('AccountRow — Delete button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useSessions>)
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
 
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))

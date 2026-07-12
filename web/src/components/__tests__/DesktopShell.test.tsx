@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, within, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { DesktopShell } from '../DesktopShell'
 import * as hooks from '@/api/hooks'
 import { toast } from 'sonner'
@@ -56,7 +57,12 @@ function mkAccount(o: Partial<Account> = {}): Account {
 }
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  // MemoryRouter: the Settings tab's SettingsView keeps its section in ?section=.
+  return (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
 }
 function setup() {
   vi.mocked(hooks.useAccounts).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useAccounts>)
@@ -101,19 +107,21 @@ describe('DesktopShell', () => {
     expect(screen.queryByRole('textbox', { name: /new session prompt/i })).not.toBeInTheDocument()
   })
 
-  it('Accounts tab renders the accounts manager in the main pane', async () => {
+  it('Settings tab → Accounts section renders the accounts manager in the main pane', async () => {
     const user = userEvent.setup()
     render(<DesktopShell />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /accounts/i }))
+    await user.click(screen.getByRole('tab', { name: /settings/i }))
+    const sections = within(screen.getByRole('tablist', { name: /settings sections/i }))
+    await user.click(sections.getByRole('tab', { name: /accounts/i }))
     expect(screen.getByRole('heading', { name: /^accounts$/i })).toBeInTheDocument()
   })
 
-  it('exposes the Automation and Insights tabs (wide-shell parity with the routed Dashboard)', () => {
+  it('exposes the Insights and Settings tabs (wide-shell parity with the routed Dashboard)', () => {
     // Regression: these tabs existed only on the narrow routed Dashboard, so on
     // wide screens (which render DesktopShell) they were unreachable.
     render(<DesktopShell />, { wrapper })
-    expect(screen.getByRole('tab', { name: /automation/i })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /insights/i })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /settings/i })).toBeInTheDocument()
   })
 
   it('deleting a session opens a confirm dialog; the mutation runs only on confirm', async () => {

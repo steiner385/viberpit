@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { Dashboard } from '../Dashboard'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
@@ -77,10 +78,17 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  // MemoryRouter at ?section=accounts: the Accounts panel is a Settings-tab
+  // section now, so the wrapper mounts it active for every test.
+  return (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/settings?section=accounts']}>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
 }
 
-/** Accounts are now behind a tab — switch to it before asserting account content. */
+/** The Accounts section tab is pre-selected by the wrapper's ?section=accounts;
+ *  clicking it again is a harmless no-op kept for test readability. */
 async function switchToAccountsTab(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('tab', { name: /accounts/i }))
 }
@@ -120,7 +128,7 @@ describe('AccountsStrip — session counts & next-pick rank', () => {
       data: [makeAccount(account)],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
   }
 

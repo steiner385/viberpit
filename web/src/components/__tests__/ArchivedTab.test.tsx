@@ -123,11 +123,11 @@ describe('Dashboard — Archived tab', () => {
     setupDefaultMocks()
   })
 
-  it('renders Sessions, Accounts, and Archived tabs', () => {
+  it('renders Sessions, Settings, and Archived tabs', () => {
     render(<Dashboard />, { wrapper })
 
     expect(screen.getByRole('tab', { name: /sessions/i })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /accounts/i })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /settings/i })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /archived/i })).toBeInTheDocument()
   })
 
@@ -154,36 +154,36 @@ describe('Dashboard — Archived tab', () => {
     expect(screen.getByText(/no archived sessions/i)).toBeInTheDocument()
   })
 
-  // ── Arrow-key nav cycles all 3 tabs ──────────────────────────────────────────
+  // ── Arrow-key nav cycles the tab strip ───────────────────────────────────────
 
-  it('ArrowRight from Sessions moves focus to Accounts', async () => {
+  it('ArrowRight from Sessions moves focus to Pipeline', async () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
 
     screen.getByRole('tab', { name: /sessions/i }).focus()
     await user.keyboard('{ArrowRight}')
 
-    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /accounts/i }))
-  })
-
-  it('ArrowRight from Accounts moves focus to Pipeline', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    screen.getByRole('tab', { name: /accounts/i }).focus()
-    await user.keyboard('{ArrowRight}')
-
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: /pipeline/i }))
   })
 
-  it('ArrowRight from Archived moves focus to Automation', async () => {
+  it('ArrowRight from Pipeline moves focus to Archived', async () => {
+    const user = userEvent.setup()
+    render(<Dashboard />, { wrapper })
+
+    screen.getByRole('tab', { name: /pipeline/i }).focus()
+    await user.keyboard('{ArrowRight}')
+
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /archived/i }))
+  })
+
+  it('ArrowRight from Archived moves focus to Insights', async () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
 
     screen.getByRole('tab', { name: /archived/i }).focus()
     await user.keyboard('{ArrowRight}')
 
-    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /automation/i }))
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /insights/i }))
   })
 
   it('ArrowLeft from Archived moves focus to Pipeline', async () => {

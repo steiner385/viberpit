@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Dashboard } from '../Dashboard'
@@ -62,54 +62,45 @@ function wrapper({ children }: { children: React.ReactNode }) {
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 }
 
-describe('Automation tab', () => {
-  it('shows the Automation tab button in the tab list', () => {
-    render(
-      <MemoryRouter>
-        <Dashboard activeTab="automation" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
+describe('Automation section (Settings tab)', () => {
+  // Automation lives inside the Settings tab as a ?section=automation section.
+  function renderAutomation() {
+    return render(
+      <MemoryRouter initialEntries={['/settings?section=automation']}>
+        <Dashboard activeTab="settings" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
       </MemoryRouter>,
       { wrapper },
     )
-    expect(screen.getByRole('tab', { name: 'Automation' })).toBeInTheDocument()
+  }
+
+  it('shows the Automation section tab in the Settings section strip', () => {
+    renderAutomation()
+    const sections = within(screen.getByRole('tablist', { name: /settings sections/i }))
+    expect(sections.getByRole('tab', { name: 'Automation' })).toBeInTheDocument()
   })
 
-  it('marks the Automation tab as selected when activeTab="automation"', () => {
-    render(
-      <MemoryRouter>
-        <Dashboard activeTab="automation" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
-      </MemoryRouter>,
-      { wrapper },
-    )
-    expect(screen.getByRole('tab', { name: 'Automation' })).toHaveAttribute('aria-selected', 'true')
+  it('marks the Automation section as selected when ?section=automation', () => {
+    renderAutomation()
+    const sections = within(screen.getByRole('tablist', { name: /settings sections/i }))
+    expect(sections.getByRole('tab', { name: 'Automation' })).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('renders the automation tabpanel when the Automation tab is active', () => {
-    render(
-      <MemoryRouter>
-        <Dashboard activeTab="automation" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
-      </MemoryRouter>,
-      { wrapper },
-    )
+  it('renders the settings tabpanel when the Settings tab is active', () => {
+    renderAutomation()
     const panel = screen.getByRole('tabpanel', { hidden: false })
     expect(panel).toBeTruthy()
-    expect(panel.id).toBe('tabpanel-automation')
+    expect(panel.id).toBe('tabpanel-settings')
   })
 
-  it('renders the automation panel inside a vertical scroll container (mobile scroll fix)', () => {
+  it('renders the automation section inside a vertical scroll container (mobile scroll fix)', () => {
     // In the mobile Dashboard, the tab area is a fixed-height flex column
     // (flex-1 min-h-0). Every tab panel must be its own overflow-y-auto region
     // or its content — e.g. an expanded automation card — overflows the clipped
-    // parent with nowhere to scroll. The automation panel used to be mounted
-    // bare, unlike its accounts/archived/pipeline/insights siblings.
-    render(
-      <MemoryRouter>
-        <Dashboard activeTab="automation" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
-      </MemoryRouter>,
-      { wrapper },
-    )
+    // parent with nowhere to scroll. The settings panel owns that scroll region
+    // for all of its sections, automation included.
+    renderAutomation()
     const panel = screen.getByRole('tabpanel', { hidden: false })
-    const scroller = panel.closest('.overflow-y-auto')
-    expect(scroller).not.toBeNull()
-    expect(scroller!.className).toContain('min-h-0')
+    expect(panel.className).toContain('overflow-y-auto')
+    expect(panel.className).toContain('min-h-0')
   })
 })

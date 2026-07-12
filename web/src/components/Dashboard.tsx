@@ -8,18 +8,15 @@ import { AdoptPanel } from './AdoptPanel'
 import { AllLimitedBanner } from './AllLimitedBanner'
 import { UpdatePendingBanner } from './UpdatePendingBanner'
 import { useInputHold } from '@/hooks/useInputHold'
-import { SettingsPanel } from './settings/SettingsPanel'
+import { SettingsView } from './settings/SettingsView'
 import { DaemonHealthIndicator } from './DaemonHealthIndicator'
 import { DispatchBar } from './DispatchBar'
 import { useGlobalListNav } from './useGlobalListNav'
 import { useGlobalHelpKey } from './useGlobalHelpKey'
 import { HelpDrawer } from './HelpDrawer'
-import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
 import { PipelineTab } from '@/pipeline/PipelineTab'
-import { AutomationView } from './AutomationView'
 import { InsightsView } from './InsightsView'
-import { LibraryView } from './library/LibraryView'
 import { TabBar } from './TabBar'
 import { buildTabs } from './tabDefs'
 import { inFlightPrCount } from '@/session/prStatus'
@@ -459,7 +456,7 @@ export function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPend
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-export type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline' | 'automation' | 'library' | 'insights'
+export type TabId = 'sessions' | 'archived' | 'pipeline' | 'insights' | 'settings'
 
 interface DashboardProps {
   /** Called when the user opens a session (navigates to Terminal view).
@@ -477,9 +474,9 @@ interface DashboardProps {
   /** Called when the user selects a tab. Presence switches the component to controlled mode. */
   onTabChange?: (tab: TabId) => void
   /** Controlled dialog state. Presence of onDialogChange switches to controlled mode. */
-  dialog?: 'new' | 'settings' | null
+  dialog?: 'new' | null
   /** Called to open/close a URL-addressable dialog. */
-  onDialogChange?: (dialog: 'new' | 'settings' | null) => void
+  onDialogChange?: (dialog: 'new' | null) => void
 }
 
 export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession, initialTab, activeTab: activeTabProp, onTabChange, dialog, onDialogChange }: DashboardProps) {
@@ -509,10 +506,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     else setInternalTab(tab)
   }
   const [showNewDialog, setShowNewDialog] = useState(false)
-  const [showSettings, setShowSettings] = useState(false)
   const dialogControlled = !!onDialogChange
   const newDialogOpen = dialogControlled ? dialog === 'new' : showNewDialog
-  const settingsOpen = dialogControlled ? dialog === 'settings' : showSettings
   function dismissNewDialog() {
     if (dialogControlled) onDialogChange!(null)
     else setShowNewDialog(false)
@@ -550,7 +545,6 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   }
 
   const newButtonRef = useRef<HTMLButtonElement>(null)
-  const settingsButtonRef = useRef<HTMLButtonElement>(null)
 
   const hasNeedsReauth = accounts.some(
     (a) => a.status === 'needs-reauth' || a.status === 'needs-relogin',
@@ -560,10 +554,9 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const { data: prs = [] } = useAllPrs()
   const tabs = buildTabs({
     sessions: orderedSessions.length,
-    accounts: accounts.length,
     pipeline: inFlightPrCount(prs),
     archived: archivedSessions.length,
-    accountsAttention: hasNeedsReauth,
+    settingsAttention: hasNeedsReauth,
   })
 
   // Auto-clear the all-limited banner once any account becomes selectable.
@@ -610,7 +603,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           if (body?.error?.code === 'branch_switch_failed') {
             setBranchError(body.error.message ?? 'Could not switch branch')
           } else if (body?.error?.code === 'accounts_need_reauth') {
-            toast.error('No usable accounts — check the Accounts tab to re-authenticate.')
+            toast.error('No usable accounts — check Settings → Accounts to re-authenticate.')
             dismissNewDialog()
           } else {
             const reset = body.earliestReset ?? null
@@ -755,11 +748,10 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
                 <HelpCircle size={14} aria-hidden="true" />
               </Button>
               <Button
-                ref={settingsButtonRef}
                 size="sm"
                 variant="outline"
                 className="min-h-[44px]"
-                onClick={() => { if (dialogControlled) onDialogChange!('settings'); else setShowSettings(true) }}
+                onClick={() => setActiveTab('settings')}
                 aria-label="Settings"
               >
                 <Settings size={14} aria-hidden="true" className="mr-1" />
@@ -846,20 +838,6 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         </div>
       )}
 
-      {/* Accounts panel */}
-      {activeTab === 'accounts' && (
-        <div
-          id="tabpanel-accounts"
-          role="tabpanel"
-          aria-labelledby="tab-accounts"
-          className="flex-1 min-h-0 overflow-y-auto space-y-2 pb-4"
-        >
-          {/* Single source of truth for the accounts panel — the same
-              self-contained component DesktopShell mounts in the desktop pane. */}
-          <AccountsManager />
-        </div>
-      )}
-
       {/* Archived panel — single source of truth: ArchivedManager owns its own data/state */}
       {activeTab === 'archived' && (
         <div
@@ -881,18 +859,6 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         </div>
       )}
 
-      {/* Automation panel — own scroll region, like every sibling panel: the tab
-          area is a clipped flex column (flex-1 min-h-0), so without this an
-          expanded automation card overflows with nowhere to scroll on mobile. */}
-      {activeTab === 'automation' && (
-        <div className="flex-1 min-h-0 overflow-y-auto pb-4">
-          <AutomationView
-            onOpenSession={onOpenSession ? (id) => onOpenSession(id) : undefined}
-            onReviewSession={onReviewSession ? handleReview : undefined}
-          />
-        </div>
-      )}
-
       {/* Insights panel */}
       {activeTab === 'insights' && (
         <div className="flex-1 min-h-0 overflow-y-auto pb-4">
@@ -900,10 +866,20 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         </div>
       )}
 
-      {/* Library panel */}
-      {activeTab === 'library' && (
-        <div className="flex-1 min-h-0 overflow-y-auto pb-4 px-4">
-          <LibraryView />
+      {/* Settings panel — own scroll region, like every sibling panel: the tab
+          area is a clipped flex column (flex-1 min-h-0), so without this an
+          expanded section overflows with nowhere to scroll on mobile. */}
+      {activeTab === 'settings' && (
+        <div
+          id="tabpanel-settings"
+          role="tabpanel"
+          aria-labelledby="tab-settings"
+          className="flex-1 min-h-0 overflow-y-auto pb-4 px-4"
+        >
+          <SettingsView
+            onOpenSession={onOpenSession ? (id) => onOpenSession(id) : undefined}
+            onReviewSession={onReviewSession ? handleReview : undefined}
+          />
         </div>
       )}
 
@@ -939,16 +915,6 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       )}
 
       {showHelp && <HelpDrawer onClose={() => setShowHelp(false)} />}
-
-      {settingsOpen && (
-        <SettingsPanel
-          onClose={() => {
-            if (dialogControlled) onDialogChange!(null)
-            else setShowSettings(false)
-            settingsButtonRef.current?.focus()
-          }}
-        />
-      )}
     </div>
   )
 }

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { Dashboard } from '../Dashboard'
 import * as hooks from '@/api/hooks'
 import type { Account, ReauthState } from '@/api/types'
@@ -76,7 +77,13 @@ function makeReauthState(overrides: Partial<ReauthState> = {}): ReauthState {
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  // MemoryRouter at ?section=accounts: the Accounts panel is a Settings-tab
+  // section now, so the wrapper mounts it active for every test.
+  return (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/settings?section=accounts']}>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
 }
 
 async function switchToAccountsTab(user: ReturnType<typeof userEvent.setup>) {
@@ -121,7 +128,7 @@ describe('AccountsManager — Add account', () => {
 
   it('shows an "Add account" button on the accounts tab', async () => {
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByRole('button', { name: /add account/i })).toBeInTheDocument()
@@ -129,7 +136,7 @@ describe('AccountsManager — Add account', () => {
 
   it('opens a dialog with a name field when "Add account" is clicked', async () => {
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /add account/i }))
@@ -140,7 +147,7 @@ describe('AccountsManager — Add account', () => {
 
   it('submitting the name calls the add mutation with that name', async () => {
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /add account/i }))
@@ -152,7 +159,7 @@ describe('AccountsManager — Add account', () => {
 
   it('disables the submit button when the name is empty', async () => {
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /add account/i }))
@@ -169,7 +176,7 @@ describe('AccountsManager — Add account', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAddAccountStatus>))
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
     await user.click(screen.getByRole('button', { name: /add account/i }))
     await user.type(screen.getByLabelText(/account name/i), 'work')
@@ -185,7 +192,7 @@ describe('AccountsManager — Add account', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAddAccountStatus>))
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
     await user.click(screen.getByRole('button', { name: /add account/i }))
     await user.type(screen.getByLabelText(/account name/i), 'work')
@@ -205,10 +212,12 @@ describe('AccountsManager — Add account', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const spy = vi.spyOn(queryClient, 'invalidateQueries')
     const localWrapper = ({ children }: { children: React.ReactNode }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/settings?section=accounts']}>{children}</MemoryRouter>
+      </QueryClientProvider>
     )
 
-    render(<Dashboard />, { wrapper: localWrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper: localWrapper })
     await switchToAccountsTab(user)
     await user.click(screen.getByRole('button', { name: /add account/i }))
     await user.type(screen.getByLabelText(/account name/i), 'work')
@@ -228,7 +237,7 @@ describe('AccountsManager — Add account', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAddAccountStatus>))
 
-    render(<Dashboard />, { wrapper })
+    render(<Dashboard initialTab="settings" />, { wrapper })
     await switchToAccountsTab(user)
     await user.click(screen.getByRole('button', { name: /add account/i }))
     await user.type(screen.getByLabelText(/account name/i), 'work')

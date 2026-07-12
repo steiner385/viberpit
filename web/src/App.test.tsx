@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
@@ -185,18 +185,24 @@ describe('App routing', () => {
     })
   })
 
-  it('deep-links to the accounts tab at /accounts', async () => {
+  it('redirects legacy /accounts to the Settings tab accounts section', async () => {
     renderAt('/accounts')
     await waitFor(() => {
-      expect(screen.getByRole('tab', { name: /accounts/i })).toHaveAttribute('aria-selected', 'true')
+      const strip = within(screen.getByRole('tablist', { name: /dashboard sections/i }))
+      expect(strip.getByRole('tab', { name: /settings/i })).toHaveAttribute('aria-selected', 'true')
     })
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/settings')
+    // The redirect carries the section param, so the Accounts section is active.
+    const sections = within(screen.getByRole('tablist', { name: /settings sections/i }))
+    expect(sections.getByRole('tab', { name: /accounts/i })).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('clicking the Accounts tab updates the URL to /accounts', async () => {
+  it('clicking the Settings tab updates the URL to /settings', async () => {
     const user = userEvent.setup()
     renderAt('/sessions')
-    await user.click(screen.getByRole('tab', { name: /accounts/i }))
-    expect(screen.getByTestId('pathname')).toHaveTextContent('/accounts')
+    const strip = within(screen.getByRole('tablist', { name: /dashboard sections/i }))
+    await user.click(strip.getByRole('tab', { name: /settings/i }))
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/settings')
   })
 
   it('navigates to the next session via the › chevron', async () => {
