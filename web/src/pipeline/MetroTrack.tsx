@@ -1,4 +1,4 @@
-// Ported from plotroom@5166b52 frontend/src/MetroTrack.tsx; edits: import repointing (./types, ./format); eslint-disable react-refresh/only-export-components (mixed export file — intentional port); eslint-disable @typescript-eslint/no-unused-vars for pos (unused in original source, port fidelity)
+// Ported from plotroom@5166b52 frontend/src/MetroTrack.tsx; edits: import repointing (./types, ./format); eslint-disable react-refresh/only-export-components (mixed export file — intentional port); dead currentIdx/lastDone/pos locals removed (unused in upstream source; our tsc -b noUnusedLocals rejects them)
 /* eslint-disable react-refresh/only-export-components */
 import { Fragment } from 'react';
 import type { StageResult } from './types';
@@ -109,9 +109,6 @@ function segment(prev: TrackNode, percent: number | null, key: string) {
 
 export function MetroTrack({ stage, hasDeploy }: { stage: StageResult; hasDeploy: boolean }) {
   const nodes = trackState(stage, hasDeploy);
-  const currentIdx = nodes.findIndex((n) => n.status === 'active' || n.status === 'fail' || n.status === 'parked');
-  const lastDone = nodes.reduce((acc, n, i) => (n.status === 'done' ? i : acc), 0);
-  const pos = currentIdx >= 0 ? currentIdx : lastDone; // eslint-disable-line @typescript-eslint/no-unused-vars
   const nodeEta = stage.etaSeconds != null && stage.etaSeconds > 0 && !stage.overdue
     ? `~${formatDur(stage.etaSeconds)}` : null;
   return (
