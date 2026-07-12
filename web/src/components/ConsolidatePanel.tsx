@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { useConsolidation, useConsolidate } from '@/api/hooks'
-import type { ConsolidationCandidate, ConsolidationCluster } from '@/api/automations'
+import type { ActiveConsolidation, ConsolidationCandidate, ConsolidationCluster } from '@/api/automations'
 
 function ciDot(checks: string): string {
   if (checks === 'passing') return 'bg-green-500'
@@ -9,7 +9,10 @@ function ciDot(checks: string): string {
   return 'bg-amber-500'
 }
 
-export function ConsolidatePanel({ enabled }: { enabled: boolean }) {
+export function ConsolidatePanel({ enabled, onOpenSession }: {
+  enabled: boolean
+  onOpenSession?: (id: string) => void
+}) {
   const { data } = useConsolidation(enabled)
   const consolidate = useConsolidate()
   const [selected, setSelected] = useState<Record<number, boolean>>({})
@@ -19,8 +22,21 @@ export function ConsolidatePanel({ enabled }: { enabled: boolean }) {
   // cross-repo consolidation can never be assembled.
   const [repo, group] = useMemo(() => {
     const repos = Object.entries(data?.repos ?? {})
-    return repos.length ? repos[0] : ['', { candidates: [], clusters: [] }]
-  }, [data]) as [string, { candidates: ConsolidationCandidate[]; clusters: ConsolidationCluster[] }]
+    return repos.length ? repos[0] : ['', { candidates: [], clusters: [], active: [] }]
+  }, [data]) as [string, {
+    candidates: ConsolidationCandidate[]
+    clusters: ConsolidationCluster[]
+    active: ActiveConsolidation[]
+  }]
+
+  // PR number → live consolidation session covering it.
+  const underway = useMemo(() => {
+    const m = new Map<number, string>()
+    for (const a of group.active ?? []) {
+      for (const n of a.numbers) m.set(n, a.session_id)
+    }
+    return m
+  }, [group])
 
   const chosen = group.candidates.filter((c) => selected[c.number]).map((c) => c.number)
   const canConsolidate = chosen.length >= 2 && !consolidate.isPending
@@ -86,6 +102,16 @@ export function ConsolidatePanel({ enabled }: { enabled: boolean }) {
             </a>
             {c.mergeable === 'CONFLICTING' && (
               <span className="rounded bg-red-950 px-1 text-xs text-red-300">conflict</span>
+            )}
+            {underway.has(c.number) && (
+              <button
+                type="button"
+                aria-label={`consolidation underway for PR ${c.number} — open session`}
+                onClick={() => onOpenSession?.(underway.get(c.number)!)}
+                className="rounded bg-amber-950 px-1 text-xs text-amber-300 hover:bg-amber-900 shrink-0"
+              >
+                consolidating…
+              </button>
             )}
           </li>
         ))}

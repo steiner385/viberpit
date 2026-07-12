@@ -120,8 +120,18 @@ export interface ConsolidationCluster {
   risk: 'low' | 'risky'
 }
 
+/** A live consolidation session and the PR numbers it covers. */
+export interface ActiveConsolidation {
+  session_id: string
+  numbers: number[]
+}
+
 export interface ConsolidationView {
-  repos: Record<string, { candidates: ConsolidationCandidate[]; clusters: ConsolidationCluster[] }>
+  repos: Record<string, {
+    candidates: ConsolidationCandidate[]
+    clusters: ConsolidationCluster[]
+    active: ActiveConsolidation[]
+  }>
 }
 
 export function fetchConsolidation(): Promise<ConsolidationView> {

@@ -2402,11 +2402,15 @@ class SessionOrchestrator:
 
     async def consolidation_candidates(self, repo: str | None = None) -> dict:
         """Open, non-draft PRs per repo (from the population cache, within
-        pr-doctor scope) as ConsolidationCandidate dicts + suggested clusters.
+        pr-doctor scope) as ConsolidationCandidate dicts + suggested clusters,
+        plus `active`: live consolidation sessions covering PRs in that repo
+        (so the picker can flag rows already underway and link the session).
         Read-only; the picker calls this. Broader than _pr_doctor_scope_pairs
         (every open PR, not just session-authored ones)."""
+        from sqlalchemy import select
         from server.automations.consolidation_engine import (
-            ConsolidationCandidate, derive_scope, suggest_clusters)
+            ConsolidationCandidate, derive_scope, parse_consolidation_target,
+            suggest_clusters)
         scope = await self._pr_doctor_scope()          # set[str] | None (None = all)
         out: dict[str, dict] = {}
         for r, prs in self._pr_population.all().items():
@@ -2424,7 +2428,23 @@ class SessionOrchestrator:
             if not cands:
                 continue
             out[r] = {"candidates": [c.to_dict() for c in cands],
-                      "clusters": [cl.to_dict() for cl in suggest_clusters(cands)]}
+                      "clusters": [cl.to_dict() for cl in suggest_clusters(cands)],
+                      "active": []}
+        if out:
+            async with db_session() as db:
+                rows = (await db.execute(select(DbSession).where(
+                    DbSession.origin == "pr-doctor",
+                    DbSession.origin_ref.like("consolidate:%"),
+                    DbSession.status.not_in(INACTIVE_SESSION_STATUSES),
+                ))).scalars().all()
+            for row in rows:
+                parsed = parse_consolidation_target(row.origin_ref or "")
+                if parsed is None or parsed[0] not in out:
+                    continue
+                out[parsed[0]]["active"].append(
+                    {"session_id": row.id, "numbers": parsed[1]})
+            for group in out.values():
+                group["active"].sort(key=lambda a: a["numbers"])
         return {"repos": out}
 
     async def _pr_doctor_consolidate(
@@ -2437,7 +2457,7 @@ class SessionOrchestrator:
         (status, session_id)."""
         from sqlalchemy import select
         from server.automations.consolidation_engine import (
-            ConsolidationCandidate, validate_selection)
+            ConsolidationCandidate, consolidation_target, validate_selection)
         from server.sessions.pr_fix import build_consolidation_prompt
         from server.config import get_settings
 
@@ -2455,7 +2475,7 @@ class SessionOrchestrator:
         if err is not None:
             return err, None                      # "too_few"
 
-        target = f"consolidate:{repo}#{'+'.join(str(n) for n in want)}"
+        target = consolidation_target(repo, want)
         # Pre-check the dedupe: a live consolidation session for this exact set →
         # duplicate (skip a needless clone + second spawn).
         async with db_session() as db:

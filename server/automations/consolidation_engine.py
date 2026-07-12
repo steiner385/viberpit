@@ -72,6 +72,28 @@ def suggest_clusters(candidates: list[ConsolidationCandidate]) -> list[Cluster]:
     return clusters
 
 
+def consolidation_target(repo: str, numbers: list[int]) -> str:
+    """Session origin_ref/dedupe target for a consolidation, e.g.
+    'consolidate:o/r#1+2'. Numbers are de-duped and sorted so the same PR set
+    always maps to the same target."""
+    want = sorted({int(n) for n in numbers})
+    return f"consolidate:{repo}#{'+'.join(str(n) for n in want)}"
+
+
+def parse_consolidation_target(ref: str) -> tuple[str, list[int]] | None:
+    """Inverse of consolidation_target: (repo, sorted numbers), or None for a
+    foreign or malformed ref."""
+    if not ref.startswith("consolidate:"):
+        return None
+    repo, sep, nums = ref[len("consolidate:"):].rpartition("#")
+    if not sep or not repo or not nums:
+        return None
+    try:
+        return repo, sorted({int(n) for n in nums.split("+")})
+    except ValueError:
+        return None
+
+
 def validate_selection(candidates: list[ConsolidationCandidate]) -> str | None:
     """Return an error status ('too_few') or None if consolidatable. Distinct
     numbers only; the caller pre-filters to open/non-draft PRs."""

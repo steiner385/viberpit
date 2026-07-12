@@ -417,7 +417,7 @@ export function AutomationCard({ automation: a, onOpenSession, onReviewSession }
               )}
           </section>
           <AutomationActions automationId={a.id} enabled={open} />
-          {a.id === 'pr-doctor' && <ConsolidatePanel enabled={open} />}
+          {a.id === 'pr-doctor' && <ConsolidatePanel enabled={open} onOpenSession={onOpenSession} />}
           <SpawnedSessionsSection id={a.id} enabled={open} onOpenSession={onOpenSession} onReviewSession={onReviewSession} />
           {a.configSchema.length > 0 && <ConfigPanel automation={a} />}
         </div>

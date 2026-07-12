@@ -56,6 +56,27 @@ async def test_candidates_groups_open_prs_and_suggests_clusters(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_candidates_reports_active_consolidations(tmp_path):
+    """A live consolidation session for a repo surfaces in that repo's `active`
+    list (session id + covered PR numbers); archived/ended sessions and
+    non-consolidation pr-doctor sessions do not."""
+    from server.db import db_session
+    from server.db.models import Session
+    await _init_db(tmp_path)
+    orch = _build_orch([_pr(1), _pr(2), _pr(3)])
+    async with db_session() as db:
+        db.add(Session(id="live", name="c", account_name="a", status="idle",
+                       cwd=".", origin="pr-doctor", origin_ref="consolidate:o/r#1+2"))
+        db.add(Session(id="old", name="c", account_name="a", status="archived",
+                       cwd=".", origin="pr-doctor", origin_ref="consolidate:o/r#2+3"))
+        db.add(Session(id="fix", name="c", account_name="a", status="idle",
+                       cwd=".", origin="pr-doctor", origin_ref="pr:o/r#3"))
+    out = await orch.consolidation_candidates()
+    assert out["repos"]["o/r"]["active"] == [
+        {"session_id": "live", "numbers": [1, 2]}]
+
+
+@pytest.mark.asyncio
 async def test_consolidate_spawns_one_deduped_session(tmp_path, monkeypatch):
     from ccswitch import gitrepos
     await _init_db(tmp_path)
