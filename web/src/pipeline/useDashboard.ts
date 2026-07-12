@@ -1,0 +1,107 @@
+// Ported from plotroom@5166b52 frontend/src/useDashboard.ts; edits: import repointed (./embed/ApiBaseContext → ./ApiBaseContext); notifyEnabledRef.current sync moved to useEffect (react-hooks/refs lint gate)
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { DashboardState, NotificationEvent } from './types';
+import { useApiBase } from './ApiBaseContext';
+
+// ---- browser notifications (issue #19) ----
+// Opt-in Web Notifications for the named `notification` SSE frames. No service
+// worker is involved: the tab must be open (even backgrounded) to receive them.
+// Display text comes pre-rendered from the server (ev.rendered) so the bell, the
+// host-command sink, and the webhook never disagree — see server/notifier.ts.
+
+const LS_NOTIFY_KEY = 'prdash.notifications';
+
+function notifySupported(): boolean {
+  return typeof Notification !== 'undefined';
+}
+
+function readNotifyPref(): boolean {
+  try { return localStorage.getItem(LS_NOTIFY_KEY) === 'true'; } catch { return false; }
+}
+
+function writeNotifyPref(v: boolean): void {
+  try { localStorage.setItem(LS_NOTIFY_KEY, String(v)); } catch { /* private mode — ignore */ }
+}
+
+/** Frames arrive once per poll cycle; if none lands within this window while the
+ *  socket is still open, the feed has stalled (poller hung / GitHub throttled) —
+ *  a distinct state from a dropped connection. */
+const STALE_AFTER_MS = 90_000;
+
+export interface DashboardHook {
+  state: DashboardState | null;
+  connected: boolean;
+  /** Connected but no fresh frame within STALE_AFTER_MS — the data on screen is
+   *  aging even though the socket is up. Drives the spine's three-state indicator. */
+  stale: boolean;
+  /** Whether this browser supports Web Notifications (bell hidden otherwise). */
+  notifySupported: boolean;
+  /** Bell state: notifications are shown only when true AND permission granted. */
+  notifyEnabled: boolean;
+  /** Toggle the bell; turning it on requests Notification permission if needed. */
+  toggleNotify: () => void;
+}
+
+export function useDashboard(): DashboardHook {
+  const [state, setState] = useState<DashboardState | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [stale, setStale] = useState(false);
+  const staleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const supported = notifySupported();
+  const { apiUrl, withCredentials } = useApiBase();
+  // restore the persisted bell only while permission is still granted — a
+  // revoked permission would otherwise show an on-bell that does nothing
+  const [notifyEnabled, setNotifyEnabled] = useState(() =>
+    supported && readNotifyPref() && Notification.permission === 'granted');
+  const notifyEnabledRef = useRef(notifyEnabled);
+  useLayoutEffect(() => { notifyEnabledRef.current = notifyEnabled; }, [notifyEnabled]);
+
+  useEffect(() => {
+    // No initial fetch: the SSE endpoint sends a full state frame on connect,
+    // and a parallel fetch can race it and overwrite fresher data.
+    // Each frame resets the staleness watchdog; if the timer fires first, the feed
+    // has gone quiet while the socket stayed open → stale (not disconnected).
+    const armStale = () => {
+      if (staleTimer.current) clearTimeout(staleTimer.current);
+      staleTimer.current = setTimeout(() => setStale(true), STALE_AFTER_MS);
+    };
+    const onFrame = (data: string) => { setConnected(true); setStale(false); armStale(); setState(JSON.parse(data) as DashboardState); };
+    const es = new EventSource(apiUrl('/events'), withCredentials ? { withCredentials: true } : undefined);
+    es.onopen = () => setConnected(true);
+    es.onmessage = (e) => onFrame(e.data);
+    es.onerror = () => setConnected(false);
+    // Named `notification` frames (issue #19) — never delivered to onmessage.
+    es.addEventListener('notification', (e: MessageEvent) => {
+      if (!notifyEnabledRef.current) return;
+      if (!notifySupported() || Notification.permission !== 'granted') return;
+      try {
+        const ev = JSON.parse(e.data as string) as NotificationEvent;
+        // Display text is server-rendered (the single source of truth); the bell
+        // shows it verbatim and never re-derives labels/subjects. A frame without
+        // it (only from a pre-upgrade server) is skipped rather than re-rendered.
+        if (!ev.rendered) return;
+        new Notification(ev.rendered.title, {
+          body: ev.rendered.body,
+          // tag collapses repeats of the same (PR, event) if the server restarts
+          tag: ev.type === 'digest' ? 'digest' : `${ev.repo}#${ev.prNumber}|${ev.type}`,
+        });
+      } catch { /* malformed frame — ignore */ }
+    });
+    return () => { es.close(); if (staleTimer.current) clearTimeout(staleTimer.current); };
+  }, [apiUrl, withCredentials]);
+
+  const toggleNotify = useCallback(() => {
+    if (!notifySupported()) return;
+    if (notifyEnabledRef.current) {
+      setNotifyEnabled(false);
+      writeNotifyPref(false);
+      return;
+    }
+    const enable = () => { setNotifyEnabled(true); writeNotifyPref(true); };
+    if (Notification.permission === 'granted') { enable(); return; }
+    if (Notification.permission === 'denied') return; // browser-level block — bell stays off
+    void Notification.requestPermission().then((p) => { if (p === 'granted') enable(); });
+  }, []);
+
+  return { state, connected, stale, notifySupported: supported, notifyEnabled, toggleNotify };
+}
