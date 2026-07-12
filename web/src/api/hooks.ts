@@ -305,11 +305,17 @@ export function useRefreshAccount() {
   })
 }
 
-export function useUpdateAccountNickname() {
+export interface AccountUpdate {
+  name: string
+  nickname?: string | null
+  weeklyReservePct?: number | null
+}
+
+export function useUpdateAccount() {
   const qc = useQueryClient()
-  return useMutation<Account, ApiRequestError, { name: string; nickname: string | null }>({
-    mutationFn: ({ name, nickname }) =>
-      api.patch<Account>(`/accounts/${encodeURIComponent(name)}`, { nickname }),
+  return useMutation<Account, ApiRequestError, AccountUpdate>({
+    mutationFn: ({ name, ...fields }) =>
+      api.patch<Account>(`/accounts/${encodeURIComponent(name)}`, fields),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
   })
 }

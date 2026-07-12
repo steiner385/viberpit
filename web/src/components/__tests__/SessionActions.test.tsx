@@ -18,7 +18,7 @@ vi.mock('@/api/hooks', () => ({
   useRenameSession: vi.fn(),
   useCloseSession: vi.fn(),
   useRefreshAccount: vi.fn(),
-  useUpdateAccountNickname: vi.fn(),
+  useUpdateAccount: vi.fn(),
   useDeleteAccount: vi.fn(),
   useGithubRepos: vi.fn(),
   useGithubBranches: vi.fn(),
@@ -110,10 +110,10 @@ describe('SessionActions (via Dashboard)', () => {
       mutate: vi.fn(),
     } as unknown as ReturnType<typeof hooks.useRefreshAccount>)
 
-    vi.mocked(hooks.useUpdateAccountNickname).mockReturnValue({
+    vi.mocked(hooks.useUpdateAccount).mockReturnValue({
       ...NOOP_MUTATION,
       mutate: vi.fn(),
-    } as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+    } as unknown as ReturnType<typeof hooks.useUpdateAccount>)
 
     vi.mocked(hooks.useDeleteAccount).mockReturnValue({
       ...NOOP_MUTATION,
