@@ -58,20 +58,28 @@ vi.mock('@/session/useSessionSearch', () => ({
   useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
 }))
 
+// The pipeline tab now hosts the ported plotroom island (PipelineTab), which
+// opens an SSE EventSource on mount — undefined in jsdom. PipelineTab has its own
+// suite (src/pipeline/__tests__/PipelineTab.test.tsx); here we only assert that
+// Dashboard mounts it for the active pipeline tab, so a stub is sufficient.
+vi.mock('@/pipeline/PipelineTab', () => ({
+  PipelineTab: () => <div>pipeline-tab-stub</div>,
+}))
+
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 }
 
 describe('Pipeline tab', () => {
-  it('renders the Pipeline board when the pipeline tab is active', () => {
+  it('mounts the PipelineTab island when the pipeline tab is active', () => {
     render(
       <MemoryRouter>
         <Dashboard activeTab="pipeline" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
       </MemoryRouter>,
       { wrapper },
     )
-    // empty board → empty state copy from PipelineView
-    expect(screen.getByText(/no open prs/i)).toBeInTheDocument()
+    // the pipeline tab now hosts the ported plotroom PipelineTab island
+    expect(screen.getByText('pipeline-tab-stub')).toBeInTheDocument()
   })
 })

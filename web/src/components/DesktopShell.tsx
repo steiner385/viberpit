@@ -31,7 +31,7 @@ import { useGlobalHelpKey } from './useGlobalHelpKey'
 import { SettingsPanel } from './settings/SettingsPanel'
 import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
-import { PipelineView } from './PipelineView'
+import { PipelineTab } from '@/pipeline/PipelineTab'
 import { AdoptPanel } from './AdoptPanel'
 import { AutomationView } from './AutomationView'
 import { InsightsView } from './InsightsView'
@@ -445,7 +445,7 @@ export function DesktopShell() {
       ? <ReviewView sessionId={reviewId} onBack={() => setReviewId(null)} />
       : <div className="p-4 overflow-y-auto h-full"><ArchivedManager onReviewSession={setReviewId} /></div>
   } else if (tab === 'pipeline') {
-    mainPane = <div className="p-4 overflow-y-auto h-full"><PipelineView /></div>
+    mainPane = <div className="flex flex-col h-full"><PipelineTab /></div>
   } else if (tab === 'automation') {
     mainPane = <div className="p-4 overflow-y-auto h-full"><AutomationView onOpenSession={focusSession} /></div>
   } else if (tab === 'insights') {

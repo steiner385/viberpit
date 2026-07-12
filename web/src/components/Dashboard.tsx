@@ -16,7 +16,7 @@ import { useGlobalHelpKey } from './useGlobalHelpKey'
 import { HelpDrawer } from './HelpDrawer'
 import { AccountsManager } from './AccountsManager'
 import { ArchivedManager } from './ArchivedManager'
-import { PipelineView } from './PipelineView'
+import { PipelineTab } from '@/pipeline/PipelineTab'
 import { AutomationView } from './AutomationView'
 import { InsightsView } from './InsightsView'
 import { TabBar } from './TabBar'
@@ -871,10 +871,12 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         </div>
       )}
 
-      {/* Pipeline panel */}
+      {/* Pipeline panel — PipelineTab owns its own scroll region
+          (flex-1 min-h-0 overflow-y-auto), so the panel wrapper only
+          provides the flex-column context it needs. */}
       {activeTab === 'pipeline' && (
-        <div className="flex-1 min-h-0 overflow-y-auto pb-4">
-          <PipelineView />
+        <div className="flex flex-col flex-1 min-h-0">
+          <PipelineTab />
         </div>
       )}
 
