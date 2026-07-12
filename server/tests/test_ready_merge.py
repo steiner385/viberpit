@@ -43,7 +43,8 @@ async def test_ready_merge_route_calls_orchestrator():
 
     async def fake_ready_merge(repo, number):
         calls.append((repo, number))
-        return {"markedReady": True, "autoMergeArmed": True}
+        return {"markedReady": True, "autoMergeArmed": True,
+                "alreadyArmed": False, "cleanReadyToMerge": False}
 
     app.state.sessions.ready_merge = fake_ready_merge
 
@@ -58,7 +59,8 @@ async def test_ready_merge_route_calls_orchestrator():
             )
 
     assert resp.status_code == 200
-    assert resp.json() == {"markedReady": True, "autoMergeArmed": True}
+    assert resp.json() == {"markedReady": True, "autoMergeArmed": True,
+                           "alreadyArmed": False, "cleanReadyToMerge": False}
     assert calls == [("o/r", 7)]
 
 
@@ -120,7 +122,8 @@ async def test_ready_merge_orchestrator_happy_path():
 
     orch._gh_run = fake_gh
     result = await orch.ready_merge("o/r", 7)
-    assert result == {"markedReady": True, "autoMergeArmed": True}
+    assert result == {"markedReady": True, "autoMergeArmed": True,
+                      "alreadyArmed": False, "cleanReadyToMerge": False}
     assert calls == [
         ["pr", "ready", "7", "-R", "o/r"],
         ["pr", "merge", "7", "-R", "o/r", "--squash", "--auto"],
@@ -148,7 +151,8 @@ async def test_ready_merge_orchestrator_tolerates_already_ready_and_armed():
 
     orch._gh_run = fake_gh
     result = await orch.ready_merge("o/r", 7)
-    assert result == {"markedReady": False, "autoMergeArmed": True}
+    assert result == {"markedReady": False, "autoMergeArmed": True,
+                      "alreadyArmed": True, "cleanReadyToMerge": False}
 
 
 @pytest.mark.asyncio
@@ -167,4 +171,5 @@ async def test_ready_merge_orchestrator_merge_failure_reports_unarmed():
 
     orch._gh_run = fake_gh
     result = await orch.ready_merge("o/r", 7)
-    assert result == {"markedReady": True, "autoMergeArmed": False}
+    assert result == {"markedReady": True, "autoMergeArmed": False,
+                      "alreadyArmed": False, "cleanReadyToMerge": False}

@@ -163,3 +163,25 @@ def test_dashboard_state_assembly_sets_queue_ahead():
     # repo with no queue entries → queue is null (QueueTrain renders nothing)
     st2 = dashboard_state(prs, {}, {}, {"o/r": False}, generated_at="x")
     assert st2["repos"][0]["queue"] is None
+
+
+def test_dashboard_state_injects_queue_substates():
+    prs = {"o/r": [PipelinePr(pr=_pr(number=12, in_merge_queue=True)),
+                   PipelinePr(pr=_pr(number=13, in_merge_queue=True))]}
+    queues = {"o/r": [_entry(pr_number=12, position=1, state="UNMERGEABLE"),
+                      _entry(pr_number=13, position=2, state="UNMERGEABLE")]}
+    st = dashboard_state(prs, queues, {}, {"o/r": False}, generated_at="x")
+    by_num = {p["number"]: p for p in st["repos"][0]["prs"]}
+    assert by_num[12]["stage"]["substate"] == "unmergeable"
+    assert by_num[13]["stage"]["substate"] == "queue-blocked"
+
+
+def test_dashboard_state_group_failed_wins_over_queue_substate():
+    # group-failed (from stage_result) must not be clobbered by injection
+    failing_group = CheckGroup(kind="merge", checks=(_row(conclusion="failure"),),
+                               total_seconds=0, cost_usd=None)
+    prs = {"o/r": [PipelinePr(pr=_pr(number=12, in_merge_queue=True,
+                                     check_groups=(failing_group,)))]}
+    queues = {"o/r": [_entry(pr_number=12, position=1, state="UNMERGEABLE")]}
+    st = dashboard_state(prs, queues, {}, {"o/r": False}, generated_at="x")
+    assert st["repos"][0]["prs"][0]["stage"]["substate"] == "group-failed"
