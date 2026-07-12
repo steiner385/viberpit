@@ -2985,14 +2985,21 @@ class SessionOrchestrator:
            query unboundedly.  A branch with no cache yet (None) is kept.
         """
         await self._refresh_live_branches()
+        # Remote-tracking names (origin/*) can persist in rows written before
+        # authored_branches filtered them; a PR headRefName never carries the
+        # remote prefix, so drop them here rather than migrate old rows.
         seen: set[tuple[str, str]] = set()
+
+        def _add(repo: str, br: str | None) -> None:
+            if br and not worktrees.is_remote_ref(br):
+                seen.add((repo, br))
+
         for r in self._records.values():
             if not r.repo:
                 continue
             for br in getattr(r, "authored_branches", None) or []:
-                seen.add((r.repo, br))
-            if r.branch:
-                seen.add((r.repo, r.branch))
+                _add(r.repo, br)
+            _add(r.repo, r.branch)
 
         # --- Source 2: archived / all DB sessions (best-effort) ---
         try:
@@ -3011,9 +3018,8 @@ class SessionOrchestrator:
                 if not row_repo:
                     continue
                 for br in (row_authored or []):
-                    seen.add((row_repo, br))
-                if row_branch:
-                    seen.add((row_repo, row_branch))
+                    _add(row_repo, br)
+                _add(row_repo, row_branch)
         except Exception:
             log.warning("orchestrator._pr_pairs_db_query_failed", exc_info=True)
 

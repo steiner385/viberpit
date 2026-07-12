@@ -115,6 +115,17 @@ _REFLOG_CHECKOUT_RE = re.compile(r"^checkout: moving from (\S+) to (\S+)$")
 _NON_AUTHORED = {"master", "main", "HEAD"}
 
 
+def is_remote_ref(name: str) -> bool:
+    """True for remote-tracking ref names (``origin/foo``, ``remotes/origin/foo``).
+
+    Reflog checkout entries can name remote refs (``git checkout origin/main``
+    records "moving from … to origin/main"); a PR headRefName never carries the
+    remote prefix, so such names are never pollable PR branches — they only
+    bloat the PR poller's batched GraphQL query.
+    """
+    return name.startswith(("origin/", "remotes/"))
+
+
 def authored_branches(cwd: str, scratch_branch: str | None = None) -> list[str]:
     """Sorted, deduped feature branches this worktree has checked out.
 
@@ -138,7 +149,7 @@ def authored_branches(cwd: str, scratch_branch: str | None = None) -> list[str]:
     skip = _NON_AUTHORED | {scratch_branch}
     return sorted(
         b for b in branches
-        if b and b not in skip and not _SHA_RE.match(b)
+        if b and b not in skip and not _SHA_RE.match(b) and not is_remote_ref(b)
     )
 
 

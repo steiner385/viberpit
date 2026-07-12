@@ -45,9 +45,11 @@ class PrStatusPoller:
         clock: Callable[[], float] = time.monotonic,
         backoff_base: float | None = None,
         backoff_cap: float = 900.0,
+        chunk_size: int = 40,
     ) -> None:
         self._poll_interval = poll_interval
         self._query_fn = query_fn if query_fn is not None else _default_query
+        self._chunk_size = max(1, chunk_size)
         self._jitter_frac = jitter_frac
         self._rng = rng
         self._clock = clock
@@ -110,25 +112,42 @@ class PrStatusPoller:
     async def refresh_once(self, pairs: list[tuple[str, str]]) -> bool:
         if not pairs:
             return True
-        try:
-            response = await asyncio.to_thread(self._query_fn, pairs)
-            fresh = parse_pr_response(response, pairs)
-        except Exception:
-            log.warning("pr_poller.refresh_failed", exc_info=True)
+        # GitHub's GraphQL endpoint enforces a ~10s execution budget; one
+        # document with hundreds of aliased repository() blocks 502/504s.
+        # Query in bounded chunks and apply each chunk's results as it lands,
+        # so a failing chunk can never starve the whole cache — the
+        # _pr_pairs self-prune needs cache entries to shrink the pair list,
+        # and an all-or-nothing refresh deadlocked once the list outgrew the
+        # execution budget.
+        fresh: dict[tuple[str, str], PullRequestInfo] = {}
+        ok_pairs: list[tuple[str, str]] = []
+        failed = False
+        for start in range(0, len(pairs), self._chunk_size):
+            chunk = pairs[start:start + self._chunk_size]
+            try:
+                response = await asyncio.to_thread(self._query_fn, chunk)
+                fresh.update(parse_pr_response(response, chunk))
+                ok_pairs.extend(chunk)
+            except Exception:
+                log.warning("pr_poller.refresh_failed", exc_info=True)
+                failed = True
+        if failed:
             self._fail_count += 1
             self._cooldown_until = self._clock() + min(
                 self._backoff_base * (2 ** (self._fail_count - 1)), self._backoff_cap
             )
-            return False
-        self._fail_count = 0
-        self._cooldown_until = 0.0
+            if not ok_pairs:
+                return False
+        else:
+            self._fail_count = 0
+            self._cooldown_until = 0.0
         # Snapshot old values before mutating the cache so we can diff after.
         old_snapshot: dict[tuple[str, str], PullRequestInfo | None] = {
-            k: self._cache.get(k) for k in pairs
+            k: self._cache.get(k) for k in ok_pairs
         }
         # Rebuild cache entries for the pairs we just queried: drop stale keys
         # (PR closed/branch gone) and refresh present ones.
-        for key in pairs:
+        for key in ok_pairs:
             self._cache.pop(key, None)
         self._cache.update(fresh)
         # Fire the on_change callback for each pair whose checks value changed.
@@ -143,7 +162,7 @@ class PrStatusPoller:
                             await result
                     except Exception:
                         log.warning("pr_poller.on_change callback raised", exc_info=True)
-        return True
+        return not failed
 
     async def start(self) -> None:
         if self._task is None:
