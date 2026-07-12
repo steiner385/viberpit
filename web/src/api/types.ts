@@ -344,3 +344,90 @@ export interface CopilotAddState {
   userCode: string | null
   verificationUri: string | null
 }
+
+// --- Library (plugins / skills / commands / MCP) ---
+
+export interface LibraryComponentCounts {
+  commands: number
+  skills: number
+  agents: number
+  mcpServers: number
+  hooks: number
+}
+
+export interface LibraryPlugin {
+  id: string
+  name: string
+  marketplace: string
+  enabled: boolean
+  version?: string | null
+  installPath?: string | null
+  installedAt?: string | null
+  lastUpdated?: string | null
+  description?: string | null
+  category?: string | null
+  components: LibraryComponentCounts
+}
+
+export interface LibraryPluginDetail extends LibraryPlugin {
+  commands: { path: string; description?: string | null }[]
+  skills: { name: string; description?: string | null }[]
+  agents: string[]
+  mcpServers: { name: string; transport: string }[]
+  hasHooks: boolean
+}
+
+export interface LibraryMarketplace {
+  name: string
+  source?: string | null
+  lastUpdated?: string | null
+}
+
+export interface LibraryPluginsResponse {
+  plugins: LibraryPlugin[]
+  marketplaces: LibraryMarketplace[]
+}
+
+export interface LibrarySkill {
+  name: string
+  description?: string | null
+  source: string          // 'user' | plugin id
+  readonly: boolean
+  parseError?: boolean
+}
+
+export interface LibraryCommand {
+  path: string
+  name: string
+  description?: string | null
+  source: string
+  readonly: boolean
+  parseError?: boolean
+}
+
+export interface McpServerConfig {
+  type?: string
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+  httpUrl?: string
+  headers?: Record<string, string>
+  [key: string]: unknown
+}
+
+export interface LibraryMcpServer {
+  name: string
+  source: string
+  readonly: boolean
+  transport: 'stdio' | 'http' | 'sse'
+  config: McpServerConfig
+  needsAuth: string[]
+}
+
+export interface LibraryContent {
+  name?: string
+  path?: string
+  content: string
+  readonly: boolean
+}
