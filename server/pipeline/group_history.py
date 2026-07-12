@@ -35,6 +35,17 @@ def _iso_seconds(iso: str) -> float:
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
 
 
+def _z_form(iso: str) -> str:
+    """Normalize a UTC ISO timestamp to trailing-Z form.
+
+    completed_at comes from GitHub in Z form while callers pass
+    datetime.isoformat() (+00:00) for observed_at; the windowed counts compare
+    ISO strings lexicographically, and '+' sorts below digits — mixing forms
+    would silently mis-filter one window. One stored form ends that class.
+    """
+    return iso.replace("+00:00", "Z")
+
+
 def _get(check: dict, snake: str, camel: str) -> object:
     """Read a check field tolerating snake_case (parser output) or camelCase."""
     val = check.get(snake)
@@ -123,7 +134,7 @@ async def _record_failures(
                     repo=repo,
                     check_name=name,
                     group_sha=group_sha,
-                    observed_at=now_iso,
+                    observed_at=_z_form(now_iso),
                     conclusion=concl,
                 )
                 .on_conflict_do_nothing(

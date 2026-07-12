@@ -14,6 +14,22 @@ from server.pipeline.group_history import (
     record_group_outcome,
 )
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clean_group_tables():
+    """Tests here assert with table-wide selects; the conftest DB is shared
+    across the whole pytest session, so wipe our two tables per test."""
+    async def wipe():
+        from sqlalchemy import delete
+        await init_db()
+        async with db_session() as db:
+            await db.execute(delete(GroupRun))
+            await db.execute(delete(GroupFailure))
+    asyncio.run(wipe())
+
+
 
 def _green_checks() -> list[dict]:
     return [
@@ -165,5 +181,23 @@ def test_uppercase_conclusion_comparison():
             runs = (await db.execute(select(GroupRun))).scalars().all()
             assert len(runs) == 1
             assert runs[0].duration_secs == 240
+
+    asyncio.run(run())
+
+
+def test_eject_window_matches_live_observed_at_format():
+    """The live recorder passes datetime.isoformat() (+00:00); observed_at must
+    be stored Z-form so a Z-form since_iso windows it correctly (lexicographic
+    ISO comparison — '+' sorts below digits)."""
+    async def run():
+        await init_db()
+        checks = [
+            {"name": "e2e", "status": "COMPLETED", "conclusion": "FAILURE",
+             "started_at": "2026-07-12T10:00:00Z", "completed_at": "2026-07-12T10:10:00Z"},
+        ]
+        await record_group_outcome("o/r", "sha-z", checks,
+                                   now_iso="2026-07-12T12:00:00+00:00")
+        assert await count_group_ejects("o/r", "2026-07-12T00:00:00Z") == 1
+        assert await count_group_ejects("o/r", "2026-07-13T00:00:00Z") == 0
 
     asyncio.run(run())

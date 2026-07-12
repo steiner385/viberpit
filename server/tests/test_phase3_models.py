@@ -7,6 +7,22 @@ import json
 from server.db import db_session, init_db
 from server.db.models import GroupFailure, GroupRun, MergedPr, RepoDeployConfig
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clean_phase3_tables():
+    """Table-wide asserts + the session-shared conftest DB (and sibling suites
+    writing the same repo keys) — wipe the phase-3 tables per test."""
+    async def wipe():
+        from sqlalchemy import delete
+        await init_db()
+        async with db_session() as db:
+            for model in (GroupRun, GroupFailure, MergedPr, RepoDeployConfig):
+                await db.execute(delete(model))
+    asyncio.run(wipe())
+
+
 
 def test_merged_pr_upsert_semantics():
     async def run():
