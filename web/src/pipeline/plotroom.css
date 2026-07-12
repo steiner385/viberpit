@@ -1187,4 +1187,8 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 .pipeline-option.active { outline: 2px solid var(--accent, #6af); outline-offset: -2px; }
 .pipeline-option.focused { color: var(--accent); font-weight: 600; }
 .pipeline-option.empty { color: var(--muted); cursor: default; }
+/* mobile: workspace.css:342 — narrower switcher button so the header fits */
+@media (max-width: 767px) {
+  .pipeline-switcher-current { max-width: 48vw; }
+}
 }
