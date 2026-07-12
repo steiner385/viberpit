@@ -42,9 +42,11 @@ def test_set_plugin_enabled_known_via_registry(shared: Path):
 
 def test_skill_crud(shared: Path):
     mutate.write_skill("new-skill", "---\nname: new-skill\n---\nbody\n")
-    assert scan.read_skill("new-skill")["content"].endswith("body\n")
+    created = scan.read_skill("new-skill")
+    assert created is not None and created["content"].endswith("body\n")
     mutate.write_skill("new-skill", "updated\n")
-    assert scan.read_skill("new-skill")["content"] == "updated\n"
+    updated = scan.read_skill("new-skill")
+    assert updated is not None and updated["content"] == "updated\n"
     assert mutate.delete_skill("new-skill") is True
     assert scan.read_skill("new-skill") is None
     assert mutate.delete_skill("new-skill") is False
@@ -52,7 +54,8 @@ def test_skill_crud(shared: Path):
 
 def test_command_crud_nested(shared: Path):
     mutate.write_command("project/deep", "cmd\n")
-    assert scan.read_command("project/deep")["content"] == "cmd\n"
+    deep = scan.read_command("project/deep")
+    assert deep is not None and deep["content"] == "cmd\n"
     assert mutate.delete_command("project/deep") is True
     assert mutate.delete_command("project/deep") is False
 

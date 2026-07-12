@@ -1,5 +1,6 @@
 """Library API routes over a fabricated shared base."""
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "libtest@example.com"}
 
 
 @pytest.fixture()
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     base = tmp_path / "shared"
     base.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(base))

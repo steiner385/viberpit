@@ -90,8 +90,10 @@ def test_list_skills_user_and_plugin(shared: Path):
         ("my-skill", "user", False),
         ("helper", "alpha@test-market", True),
     ]
-    assert scan.read_skill("my-skill")["content"].endswith("body\n")
-    assert scan.read_skill("helper", plugin="alpha@test-market")["readonly"] is True
+    mine = scan.read_skill("my-skill")
+    assert mine is not None and mine["content"].endswith("body\n")
+    helper = scan.read_skill("helper", plugin="alpha@test-market")
+    assert helper is not None and helper["readonly"] is True
     assert scan.read_skill("absent") is None
 
 
@@ -111,7 +113,8 @@ def test_list_commands_nested(shared: Path):
     assert [(c["path"], c["source"]) for c in out] == [
         ("project/nested", "user"), ("top", "user"),
     ]
-    assert scan.read_command("project/nested")["content"] == "x\n"
+    nested = scan.read_command("project/nested")
+    assert nested is not None and nested["content"] == "x\n"
 
 
 def test_list_mcp_servers_user_plugin_and_auth(shared: Path, tmp_path: Path):
