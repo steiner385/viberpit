@@ -1,4 +1,3 @@
-import * as React from 'react'
 import { useState, useRef, useEffect } from 'react'
 import { useSaveMcpServer, useDeleteMcpServer } from '@/api/hooks'
 import type { LibraryMcpServer, McpServerConfig } from '@/api/types'
