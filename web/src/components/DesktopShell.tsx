@@ -35,6 +35,7 @@ import { PipelineView } from './PipelineView'
 import { AdoptPanel } from './AdoptPanel'
 import { AutomationView } from './AutomationView'
 import { InsightsView } from './InsightsView'
+import { LibraryView } from './library/LibraryView'
 import { ReviewView } from './ReviewView'
 import { SidebarResizer } from './SidebarResizer'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
@@ -69,7 +70,7 @@ import { useSessionSearch } from '@/session/useSessionSearch'
 import { useListNavigation } from '@/session/useListNavigation'
 import { nextVisibleSessionId } from '@/session/nextAfterArchive'
 
-type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline' | 'automation' | 'insights'
+type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline' | 'automation' | 'library' | 'insights'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
 
 // ── Session subtree (rendered only under SessionRuntimeProvider) ──────────────
@@ -450,6 +451,8 @@ export function DesktopShell() {
     mainPane = <div className="p-4 overflow-y-auto h-full"><AutomationView onOpenSession={focusSession} /></div>
   } else if (tab === 'insights') {
     mainPane = <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
+  } else if (tab === 'library') {
+    mainPane = <div className="p-4 overflow-y-auto h-full"><LibraryView /></div>
   } else {
     mainPane = selection.type === 'session'
       ? <MainPaneSession sessionId={selection.id} onClosed={() => setSelection(advanceFrom(selection.id))} />
