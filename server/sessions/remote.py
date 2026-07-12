@@ -286,9 +286,26 @@ class RemoteOrchestrator:
         r = await self._client.call("all_merge_trains")
         return {k: MergeTrainState.from_dict(v) for k, v in (r.get("trains") or {}).items()}
 
+    async def latest_queue_entries(self) -> "dict":
+        """Resolve the newest merge-queue observation per repo from the daemon.
+
+        QueueEntry is a flat frozen dataclass with no to_dict/from_dict, so the RPC
+        wires each entry as a plain field dict (dataclasses.asdict) and we rebuild it.
+        """
+        from server.github.merge_queue import QueueEntry
+        r = await self._client.call("latest_queue_entries")
+        return {
+            repo: [QueueEntry(**e) for e in entries]
+            for repo, entries in (r.get("queues") or {}).items()
+        }
+
     async def check_insights(self, repo: str, window: str) -> dict:
         """Resolve per-repo Check Health insights from the daemon (already JSON-safe)."""
         return await self._client.call("check_insights", repo=repo, window=window)
+
+    async def ready_merge(self, repo: str, number: int) -> dict:
+        """Arm ready + auto-merge on a PR via the daemon (already JSON-safe)."""
+        return await self._client.call("ready_merge", repo=repo, number=number)
 
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
         """Inject the branch-aware fix prompt for PR #pr_number via the daemon.

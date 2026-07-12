@@ -190,8 +190,24 @@ def register_orchestrator_rpc(app, orch) -> None:
             trains = await trains
         return {"trains": {k: v.to_dict() for k, v in trains.items()}}
 
+    async def latest_queue_entries(params: dict) -> dict:
+        import dataclasses
+        queues = orch.latest_queue_entries()
+        if inspect.isawaitable(queues):
+            queues = await queues
+        return {"queues": {
+            repo: [dataclasses.asdict(e) for e in entries]
+            for repo, entries in queues.items()
+        }}
+
     async def check_insights(params: dict) -> dict:
         result = orch.check_insights(params["repo"], params.get("window", "7d"))
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    async def ready_merge(params: dict) -> dict:
+        result = orch.ready_merge(params["repo"], params["number"])
         if inspect.isawaitable(result):
             result = await result
         return result
@@ -209,7 +225,9 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "all_prs", all_prs)
     register_rpc(app, "all_repos_stage_models", all_repos_stage_models)
     register_rpc(app, "all_merge_trains", all_merge_trains)
+    register_rpc(app, "latest_queue_entries", latest_queue_entries)
     register_rpc(app, "check_insights", check_insights)
+    register_rpc(app, "ready_merge", ready_merge)
 
     async def automation_actionable(params: dict) -> dict:
         items = await orch.automation_actionable(params["automation_id"])
