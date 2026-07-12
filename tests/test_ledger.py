@@ -38,3 +38,47 @@ class TestLedger(unittest.TestCase):
                 ledger.reserve(led, "alpha", now + 100)
                 self.assertTrue(ledger.reservation_active(led, "alpha", now))
                 self.assertFalse(ledger.reservation_active(led, "alpha", now + 200))
+
+
+# --- weekly reserve (per-account) ---
+
+
+def test_weekly_reserve_set_read_clear():
+    with temp_env():
+        from ccswitch import ledger
+        with ledger.locked_ledger() as led:
+            ledger.set_weekly_reserve(led, "a", 90.0)
+        with ledger.locked_ledger() as led:
+            assert ledger.get_weekly_reserve(led, "a") == 90.0
+            assert ledger.weekly_reserves(led) == {"a": 90.0}
+            ledger.set_weekly_reserve(led, "a", None)
+        with ledger.locked_ledger() as led:
+            assert ledger.get_weekly_reserve(led, "a") is None
+            assert ledger.weekly_reserves(led) == {}
+            assert "weeklyReservePct" not in led["accounts"]["a"]
+
+
+def test_weekly_reserve_non_numeric_treated_as_unset():
+    with temp_env():
+        from ccswitch import ledger
+        with ledger.locked_ledger() as led:
+            led["accounts"]["junk"] = {"weeklyReservePct": "ninety"}
+            led["accounts"]["boolish"] = {"weeklyReservePct": True}
+            assert ledger.get_weekly_reserve(led, "junk") is None
+            assert ledger.get_weekly_reserve(led, "boolish") is None
+            assert ledger.weekly_reserves(led) == {}
+
+
+def test_list_accounts_includes_weekly_reserve():
+    with temp_env():
+        from ccswitch import paths, accounts
+        store = paths.store_dir()
+        store.mkdir(parents=True, exist_ok=True)
+        (store / "a.cred.json").write_text(
+            '{"accessToken":"t","refreshToken":"r","expiresAt":9999999999999}')
+        accounts.set_weekly_reserve("a", 88.0)
+        [acct] = accounts.list_accounts()
+        assert acct["weeklyReservePct"] == 88.0
+        accounts.set_weekly_reserve("a", None)
+        [acct] = accounts.list_accounts()
+        assert acct["weeklyReservePct"] is None

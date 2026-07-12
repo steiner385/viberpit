@@ -347,3 +347,86 @@ def test_optimistic_ranked_after_readable_in_list():
                               set(), _cfg(), NOW, optimistic_fallback=True)
     assert [r.name for r in ranked] == ["a", "b"]
     assert ranked[0].optimistic is False and ranked[1].optimistic is True
+
+
+# --- per-account weekly reserve (soft fallback tier) ---
+
+LATER = NOW + timedelta(hours=5)
+
+
+def test_reserve_demotes_over_reserve_account_to_last():
+    from ccswitch.selector import rank_accounts
+    # Perishability = binding-dimension headroom / hours-to-reset (higher = pick first).
+    usages = {
+        "hot": Usage(10.0, SOON, 91.0, SOON, False),    # weekly binding: 9%/0.5h = 18/h
+        "cool": Usage(10.0, LATER, 20.0, LATER, False),  # weekly binding: 80%/5h = 16/h
+    }
+    # WITHOUT a reserve, hot is the more perishable account and wins…
+    ranked_no_reserve, _ = rank_accounts(usages, set(), _cfg(), NOW)
+    assert [r.name for r in ranked_no_reserve] == ["hot", "cool"]
+    # …so the flip below is attributable to the reserve alone.
+    ranked, _ = rank_accounts(usages, set(), _cfg(), NOW, reserves={"hot": 90.0})
+    assert [r.name for r in ranked] == ["cool", "hot"]
+    assert ranked[1].reason == "over weekly reserve — fallback"
+    assert ranked[1].optimistic is False
+    assert [r.rank for r in ranked] == [1, 2]
+
+
+def test_reserve_boundary_is_inclusive():
+    from ccswitch.selector import rank_accounts
+    # "at" (20/h) outranks "under" (2.02/h) without reserves; with weekly_pct == reserve
+    # it must be blocked (>= semantics), flipping the order.
+    usages = {
+        "at": Usage(10.0, SOON, 90.0, SOON, False),      # exactly at reserve → blocked
+        "under": Usage(10.0, LATER, 89.9, LATER, False),  # just under → normal candidate
+    }
+    ranked_no_reserve, _ = rank_accounts(usages, set(), _cfg(), NOW)
+    assert [r.name for r in ranked_no_reserve] == ["at", "under"]
+    ranked, _ = rank_accounts(usages, set(), _cfg(), NOW,
+                              reserves={"at": 90.0, "under": 90.0})
+    assert [r.name for r in ranked] == ["under", "at"]
+    assert ranked[1].reason == "over weekly reserve — fallback"
+
+
+def test_reserve_soft_fallback_picks_least_weekly_used():
+    from ccswitch.selector import select_picked, Picked
+    usages = {
+        "worse": Usage(10.0, SOON, 97.0, SOON, False),
+        "better": Usage(10.0, SOON, 92.0, SOON, False),
+    }
+    picked = select_picked(usages, set(), _cfg(), NOW,
+                           reserves={"worse": 90.0, "better": 90.0})
+    assert picked == Picked(name="better", optimistic=False)
+
+
+def test_reserve_hard_ceiling_still_excludes_outright():
+    from ccswitch.selector import rank_accounts
+    reset = NOW + timedelta(hours=2)
+    usages = {
+        "maxed": Usage(10.0, SOON, 100.0, reset, False),  # at ceiling — NOT fallback
+        "ok": Usage(10.0, SOON, 5.0, SOON, False),
+    }
+    ranked, earliest = rank_accounts(usages, set(), _cfg(), NOW,
+                                     reserves={"maxed": 90.0})
+    assert [r.name for r in ranked] == ["ok"]
+    assert earliest == reset
+
+
+def test_optimistic_tier_outranks_reserve_blocked():
+    from ccswitch.selector import rank_accounts
+    usages = {"r": Usage(10.0, SOON, 95.0, SOON, False), "o": None}
+    ranked, _ = rank_accounts(usages, set(), _cfg(), NOW,
+                              optimistic_fallback=True, reserves={"r": 90.0})
+    assert [r.name for r in ranked] == ["o", "r"]
+
+
+def test_no_reserves_behavior_unchanged():
+    from ccswitch.selector import rank_accounts
+    usages = {
+        "a": Usage(40.0, SOON, 20.0, SOON, False),
+        "b": Usage(10.0, SOON, 95.0, SOON, False),
+    }
+    base, _ = rank_accounts(usages, set(), _cfg(), NOW)
+    empty, _ = rank_accounts(usages, set(), _cfg(), NOW, reserves={})
+    under, _ = rank_accounts(usages, set(), _cfg(), NOW, reserves={"a": 99.0})
+    assert [r.name for r in base] == [r.name for r in empty] == [r.name for r in under]

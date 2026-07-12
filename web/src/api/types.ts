@@ -28,6 +28,7 @@ export interface Account {
     weekly: UsageWindow
   } | null
   nickname?: string | null
+  weeklyReservePct?: number | null
   liveSessions: LiveSessionCounts
   rank: number | null
   rankReason: string | null

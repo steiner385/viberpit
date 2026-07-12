@@ -1,5 +1,5 @@
 """Pure account selection: exclude accounts at/above ceiling, rank by perishability."""
-from collections.abc import Set as AbstractSet
+from collections.abc import Mapping, Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -86,6 +86,7 @@ def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
                   load: dict[str, float] | None = None,
                   unhealthy: AbstractSet[str] = frozenset(),
                   optimistic_fallback: bool = False,
+                  reserves: Mapping[str, float] | None = None,
                   ) -> tuple[list[RankedAccount], datetime | None]:
     """Rank all eligible accounts in selection-priority order.
 
@@ -97,11 +98,18 @@ def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
     excluded entirely — identical to legacy behavior. When ``True``, healthy accounts
     with unreadable usage are appended as a last-resort tier, ranked strictly after
     every readable candidate, ordered by least load.
+
+    ``reserves`` maps account name -> weekly reserve threshold (0-100 pct). An
+    account whose ``weekly_pct`` is at/over its reserve (but under the hard
+    ceiling) is demoted to a final last-resort tier — ranked after every normal
+    and optimistic candidate, least weekly-used first — so the reserve alone can
+    never make selection fail (soft fallback).
     """
     load = load or {}
     ceiling = cfg.hard_ceiling * 100.0
     candidates: list[tuple[float, float, float, float, str]] = []
     optimistic: list[tuple[float, str]] = []   # (load, name) — last-resort tier
+    reserve_blocked: list[tuple[float, str]] = []  # (weekly_pct, name) — final tier
     busy_resets: list[datetime] = []
     for name, u in usages.items():
         if name in exclude or name in reserved:
@@ -122,6 +130,10 @@ def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
             if resets:
                 busy_resets.append(min(resets))
             continue
+        reserve = (reserves or {}).get(name)
+        if reserve is not None and u.weekly_pct >= reserve:
+            reserve_blocked.append((u.weekly_pct, name))
+            continue
         acct_load = load.get(name, 0.0)
         perish = _perishability(u, ceiling, now) if cfg.prefer_soon_reset else 0.0
         composite = perish / (1.0 + cfg.load_sensitivity * acct_load)
@@ -138,6 +150,12 @@ def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
                       reason="usage unverified — optimistic pick", optimistic=True)
         for i, (_, name) in enumerate(optimistic)
     ]
+    reserve_blocked.sort()  # least weekly-used first — burn reserved headroom last
+    ranked += [
+        RankedAccount(name=name, rank=len(ranked) + i + 1,
+                      reason="over weekly reserve — fallback")
+        for i, (_, name) in enumerate(reserve_blocked)
+    ]
     return ranked, earliest
 
 
@@ -145,9 +163,10 @@ def select_picked(usages: dict[str, Usage | None], reserved: AbstractSet[str],
                   cfg: Config, now: datetime, exclude: AbstractSet[str] = frozenset(),
                   load: dict[str, float] | None = None,
                   unhealthy: AbstractSet[str] = frozenset(),
-                  optimistic_fallback: bool = False) -> Picked:
+                  optimistic_fallback: bool = False,
+                  reserves: Mapping[str, float] | None = None) -> Picked:
     ranked, earliest = rank_accounts(usages, reserved, cfg, now, exclude, load,
-                                     unhealthy, optimistic_fallback)
+                                     unhealthy, optimistic_fallback, reserves=reserves)
     if not ranked:
         kind = "at_ceiling" if earliest is not None else "no_usable_accounts"
         raise AllAccountsBusy(earliest, kind)
@@ -157,5 +176,7 @@ def select_picked(usages: dict[str, Usage | None], reserved: AbstractSet[str],
 
 def select_best(usages: dict[str, Usage | None], reserved: AbstractSet[str],
                 cfg: Config, now: datetime, exclude: AbstractSet[str] = frozenset(),
-                load: dict[str, float] | None = None) -> str:
-    return select_picked(usages, reserved, cfg, now, exclude, load).name
+                load: dict[str, float] | None = None,
+                reserves: Mapping[str, float] | None = None) -> str:
+    return select_picked(usages, reserved, cfg, now, exclude, load,
+                         reserves=reserves).name

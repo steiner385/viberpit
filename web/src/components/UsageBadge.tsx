@@ -16,10 +16,12 @@ interface UsageBadgeProps {
   label?: string  // e.g. "session" or "weekly"
   /** ISO timestamp the window resets at, or null when no window is active. */
   resetsAt?: string | null
+  /** Reserve marker position (0–100); renders a vertical line on the bar when set. */
+  markerPct?: number | null
   className?: string
 }
 
-export function UsageBadge({ pct, label, resetsAt, className }: UsageBadgeProps) {
+export function UsageBadge({ pct, label, resetsAt, markerPct, className }: UsageBadgeProps) {
   const clampedPct = Math.min(100, Math.max(0, pct))
   // Color classes supplementary only — text carries the info
   const barColor =
@@ -54,12 +56,20 @@ export function UsageBadge({ pct, label, resetsAt, className }: UsageBadgeProps)
           {clampedPct}%
         </span>
       </span>
-      <span className="h-1 w-12 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+      <span className="relative h-1 w-12 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
         <span
           className={cn('h-full block rounded-full transition-all', barColor)}
           style={{ width: `${clampedPct}%` }}
           aria-hidden="true"
         />
+        {markerPct != null && (
+          <span
+            className="absolute top-0 h-full w-px bg-gray-900/70 dark:bg-gray-100/70"
+            style={{ left: `${Math.min(100, Math.max(0, markerPct))}%` }}
+            data-testid="reserve-marker"
+            aria-hidden="true"
+          />
+        )}
       </span>
     </span>
   )

@@ -19,7 +19,7 @@ vi.mock('@/api/hooks', () => ({
   useRenameSession: vi.fn(),
   useCloseSession: vi.fn(),
   useRefreshAccount: vi.fn(),
-  useUpdateAccountNickname: vi.fn(),
+  useUpdateAccount: vi.fn(),
   useDeleteAccount: vi.fn(),
   useGithubRepos: vi.fn(),
   useGithubBranches: vi.fn(),
@@ -106,10 +106,10 @@ describe('AccountsStrip — nickname display & edit', () => {
     vi.mocked(hooks.useGithubBranches).mockReturnValue({ data: { default: null, branches: [] }, isLoading: false } as ReturnType<typeof hooks.useGithubBranches>)
     vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
     vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateSettings>)
-    vi.mocked(hooks.useUpdateAccountNickname).mockReturnValue({
+    vi.mocked(hooks.useUpdateAccount).mockReturnValue({
       ...NOOP_MUTATION,
       mutate: nicknameMutate,
-    } as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+    } as unknown as ReturnType<typeof hooks.useUpdateAccount>)
     vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
     vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
     vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
@@ -194,9 +194,9 @@ describe('AccountsStrip — nickname display & edit', () => {
     const input = screen.getByRole('textbox', { name: /nickname for work/i })
     await user.clear(input)
     await user.type(input, 'Personal')
-    await user.click(screen.getByRole('button', { name: /save nickname/i }))
+    await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
-    expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: 'Personal' })
+    expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: 'Personal', weeklyReservePct: null })
   })
 
   it('pressing Enter in the input saves the nickname', async () => {
@@ -214,7 +214,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     await user.clear(input)
     await user.type(input, 'Freelance{Enter}')
 
-    expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: 'Freelance' })
+    expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: 'Freelance', weeklyReservePct: null })
   })
 
   it('pressing Escape cancels edit without calling mutation', async () => {
@@ -251,9 +251,9 @@ describe('AccountsStrip — nickname display & edit', () => {
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     const input = screen.getByRole('textbox', { name: /nickname for work/i })
     await user.clear(input)
-    await user.click(screen.getByRole('button', { name: /save nickname/i }))
+    await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
-    expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: null })
+    expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: null, weeklyReservePct: null })
   })
 })
 
@@ -276,7 +276,7 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
     vi.mocked(hooks.useGithubBranches).mockReturnValue({ data: { default: null, branches: [] }, isLoading: false } as ReturnType<typeof hooks.useGithubBranches>)
     vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
     vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateSettings>)
-    vi.mocked(hooks.useUpdateAccountNickname).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+    vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccount>)
     vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
     vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
     vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
@@ -338,7 +338,7 @@ describe('NewSessionDialog — account select uses nickname', () => {
     vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRenameSession>)
     vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
     vi.mocked(hooks.useRefreshAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRefreshAccount>)
-    vi.mocked(hooks.useUpdateAccountNickname).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+    vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccount>)
     vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
     vi.mocked(hooks.useGithubRepos).mockReturnValue({ data: [], isLoading: false, isError: false } as ReturnType<typeof hooks.useGithubRepos>)
     vi.mocked(hooks.useGithubBranches).mockReturnValue({ data: { default: null, branches: [] }, isLoading: false } as ReturnType<typeof hooks.useGithubBranches>)

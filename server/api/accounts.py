@@ -21,9 +21,10 @@ from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from ccswitch.accounts import list_accounts, provider_of, remove_account, set_nickname
+from ccswitch.accounts import (list_accounts, provider_of, remove_account,
+                               set_nickname, set_weekly_reserve)
 from ccswitch import paths
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.config import load_config
@@ -111,6 +112,7 @@ def _account_response(
     live_sessions: dict[str, int] | None = None,
     rank: int | None = None,
     rank_reason: str | None = None,
+    weekly_reserve_pct: float | None = None,
 ) -> dict[str, Any]:
     """Build the account wire format — never includes tokens."""
     return {
@@ -122,6 +124,7 @@ def _account_response(
         "liveSessions": live_sessions or {"active": 0, "idle": 0},
         "rank": rank,
         "rankReason": rank_reason,
+        "weeklyReservePct": weekly_reserve_pct,
     }
 
 
@@ -176,11 +179,16 @@ async def get_accounts(
     counts = await orch.live_session_counts()
     load = await orch.live_session_load()
 
+    # Build per-account weekly reserve map for display ranking.
+    reserves = {a["name"]: a["weeklyReservePct"] for a in accounts_info
+                if a.get("weeklyReservePct") is not None}
+
     # Rank for display: ignore transient soft reservations so ranks stay stable
     # (a just-picked account would otherwise vanish for reservation_ttl_sec).
     ranked, _earliest = rank_accounts(
         usages, reserved=frozenset(), cfg=load_config(),
         now=datetime.now(timezone.utc), load=load,
+        reserves=reserves,
     )
     rank_by_name = {r.name: (r.rank, r.reason) for r in ranked}
 
@@ -196,6 +204,7 @@ async def get_accounts(
             live_sessions=counts.get(name) or {"active": 0, "idle": 0},
             rank=rank,
             rank_reason=reason,
+            weekly_reserve_pct=acct.get("weeklyReservePct"),
         ))
     return result
 
@@ -222,16 +231,19 @@ async def refresh_account(
     accounts_info = list_accounts()
     status_str = "unknown"
     nickname = None
+    weekly_reserve = None
     for acct in accounts_info:
         if acct["name"] == name:
             status_str = acct.get("status", "unknown")
             nickname = acct.get("nickname")
+            weekly_reserve = acct.get("weeklyReservePct")
             break
 
     counts = await orch.live_session_counts()
     return _account_response(
         name, status_str, usage, nickname,
         live_sessions=counts.get(name) or {"active": 0, "idle": 0},
+        weekly_reserve_pct=weekly_reserve,
     )
 
 
@@ -254,36 +266,37 @@ async def delete_account(
     )
 
 
-class NicknameBody(BaseModel):
+class AccountPatchBody(BaseModel):
     nickname: str | None = None
+    weeklyReservePct: float | None = Field(default=None, ge=1.0, le=100.0)
 
 
 @router.patch("/{name}")
-async def set_account_nickname(
+async def update_account(
     name: str,
-    body: NicknameBody,
+    body: AccountPatchBody,
     _identity: str = Depends(current_identity),
 ) -> dict:
-    """Set or clear a display nickname for an account.
+    """Update per-account settings: nickname and/or weekly usage reserve.
 
+    Fields absent from the body are left untouched; an explicit ``null`` clears.
     A blank or whitespace-only nickname clears the existing nickname.
     Returns 404 if the account name is invalid or slot does not exist.
     """
     _check_name_and_slot(name)
 
-    cleaned = (body.nickname or "").strip() or None
-    set_nickname(name, cleaned)
+    if "nickname" in body.model_fields_set:
+        set_nickname(name, (body.nickname or "").strip() or None)
+    if "weeklyReservePct" in body.model_fields_set:
+        set_weekly_reserve(name, body.weeklyReservePct)
 
-    accounts_info = list_accounts()
-    status_str = "unknown"
-    stored_nickname = None
-    for acct in accounts_info:
+    for acct in list_accounts():
         if acct["name"] == name:
-            status_str = acct.get("status", "unknown")
-            stored_nickname = acct.get("nickname")
-            break
-
-    return _account_response(name, status_str, None, stored_nickname)
+            return _account_response(
+                name, acct.get("status", "unknown"), None, acct.get("nickname"),
+                weekly_reserve_pct=acct.get("weeklyReservePct"),
+            )
+    return _account_response(name, "unknown", None, None)
 
 
 # ---------------------------------------------------------------------------

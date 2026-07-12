@@ -25,7 +25,7 @@ vi.mock('@/api/hooks', () => ({
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useAccounts: vi.fn(), useSessions: vi.fn(), useCreateSession: vi.fn(),
   useRenameSession: vi.fn(), useCloseSession: vi.fn(), useRefreshAccount: vi.fn(),
-  useUpdateAccountNickname: vi.fn(), useDeleteAccount: vi.fn(), useGithubRepos: vi.fn(),
+  useUpdateAccount: vi.fn(), useDeleteAccount: vi.fn(), useGithubRepos: vi.fn(),
   useGithubBranches: vi.fn(), useSettings: vi.fn(), useUpdateSettings: vi.fn(),
   useReauthAccount: vi.fn(), useReauthStatus: vi.fn(), useCancelReauth: vi.fn(),
   useArchivedSessions: vi.fn(), useUnarchiveSession: vi.fn(), usePermanentDeleteSession: vi.fn(),
@@ -62,7 +62,7 @@ function setup() {
   vi.mocked(hooks.useAccounts).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useAccounts>)
   vi.mocked(hooks.useSessions).mockReturnValue({ data: [mk()], isLoading: false } as ReturnType<typeof hooks.useSessions>)
   vi.mocked(hooks.useModels).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useModels>)
-  for (const h of ['useCreateSession','useRenameSession','useCloseSession','useRefreshAccount','useUpdateAccountNickname','useDeleteAccount','useUpdateSettings','useReauthAccount','useCancelReauth','useUnarchiveSession','usePermanentDeleteSession','useSendPrompt','useFixPr','useStartDeploy'] as const) {
+  for (const h of ['useCreateSession','useRenameSession','useCloseSession','useRefreshAccount','useUpdateAccount','useDeleteAccount','useUpdateSettings','useReauthAccount','useCancelReauth','useUnarchiveSession','usePermanentDeleteSession','useSendPrompt','useFixPr','useStartDeploy'] as const) {
     vi.mocked(hooks[h]).mockReturnValue(NOOP as never)
   }
   // DeployPanel (mounted in DesktopShell) reads these; default to "up to date" so it renders null.

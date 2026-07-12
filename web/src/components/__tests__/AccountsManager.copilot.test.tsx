@@ -16,7 +16,7 @@ vi.mock('@/api/hooks', () => ({
   useAccounts: vi.fn(),
   useSessions: vi.fn(),
   useRefreshAccount: vi.fn(),
-  useUpdateAccountNickname: vi.fn(),
+  useUpdateAccount: vi.fn(),
   useDeleteAccount: vi.fn(),
   useReauthAccount: vi.fn(),
   useReauthStatus: vi.fn(),
@@ -72,7 +72,7 @@ function setupDefaultMocks() {
     isLoading: false,
   } as ReturnType<typeof hooks.useSessions>)
   vi.mocked(hooks.useRefreshAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRefreshAccount>)
-  vi.mocked(hooks.useUpdateAccountNickname).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+  vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccount>)
   vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
   vi.mocked(hooks.useReauthStatus).mockReturnValue({

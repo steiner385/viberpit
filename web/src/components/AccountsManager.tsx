@@ -16,7 +16,7 @@ import {
   useAccounts,
   useSessions,
   useRefreshAccount,
-  useUpdateAccountNickname,
+  useUpdateAccount,
   useDeleteAccount,
   useReauthAccount,
   useReauthStatus,
@@ -191,21 +191,36 @@ function CopilotChip() {
   )
 }
 
+function OverReserveChip() {
+  return (
+    <span
+      className={cn(
+        'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
+        'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+      )}
+      title="Weekly usage is at/over this account's reserve — only picked as a last resort"
+    >
+      over reserve
+    </span>
+  )
+}
+
 // ── Account Row ──────────────────────────────────────────────────────────────
 
 interface AccountRowProps {
   account: Account
   onRefresh: (name: string) => void
   refreshing: boolean
-  onSaveNickname: (name: string, nickname: string | null) => void
+  onSave: (update: { name: string; nickname?: string | null; weeklyReservePct?: number | null }) => void
   onDelete: (account: Account) => void
   /** Called when a Copilot account's reauth button is clicked — opens the device-flow dialog. */
   onCopilotReauth?: (account: Account) => void
 }
 
-function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete, onCopilotReauth }: AccountRowProps) {
+function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilotReauth }: AccountRowProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  const [reserveDraft, setReserveDraft] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Reauth state: track whether we've started a reauth (controls polling)
@@ -262,6 +277,7 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete, 
 
   function startEdit() {
     setDraft(account.nickname ?? '')
+    setReserveDraft(account.weeklyReservePct != null ? String(account.weeklyReservePct) : '')
     setEditing(true)
     setTimeout(() => inputRef.current?.focus(), 0)
   }
@@ -269,12 +285,20 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete, 
   function cancelEdit() {
     setEditing(false)
     setDraft('')
+    setReserveDraft('')
   }
 
   function saveEdit() {
-    onSaveNickname(account.name, draft.trim() || null)
+    const trimmed = reserveDraft.trim()
+    let reserve: number | null = null
+    if (trimmed !== '') {
+      const parsed = Number(trimmed)
+      if (Number.isFinite(parsed) && parsed > 0) reserve = Math.min(100, Math.max(1, parsed))
+    }
+    onSave({ name: account.name, nickname: draft.trim() || null, weeklyReservePct: reserve })
     setEditing(false)
     setDraft('')
+    setReserveDraft('')
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -314,10 +338,27 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete, 
                 'focus:outline-none focus:ring-2 focus:ring-blue-500',
               )}
             />
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={reserveDraft}
+              onChange={(e) => setReserveDraft(e.target.value)}
+              onKeyDown={handleKeyDown}
+              aria-label={`Weekly reserve % for ${account.name}`}
+              placeholder="reserve %"
+              title="Stop auto-selecting this account once weekly usage reaches this % (blank = no reserve)"
+              className={cn(
+                'w-24 rounded border border-gray-300 dark:border-gray-600',
+                'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
+                'px-2 py-1 text-sm',
+                'focus:outline-none focus:ring-2 focus:ring-blue-500',
+              )}
+            />
             <button
               type="button"
               onClick={saveEdit}
-              aria-label="Save nickname"
+              aria-label="Save account settings"
               className={cn(
                 'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
                 'text-green-600 dark:text-green-400',
@@ -354,6 +395,8 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete, 
             <StatusPill status={account.status} />
             <SessionsBadge counts={account.liveSessions} />
             <RankBadge rank={account.rank} reason={account.rankReason} />
+            {account.weeklyReservePct != null && account.usage != null &&
+              account.usage.weekly.pct >= account.weeklyReservePct && <OverReserveChip />}
             {account.usage && (
               <>
                 <UsageBadge
@@ -365,6 +408,7 @@ function AccountRow({ account, onRefresh, refreshing, onSaveNickname, onDelete, 
                   pct={account.usage.weekly.pct}
                   label="weekly"
                   resetsAt={account.usage.weekly.resetsAt}
+                  markerPct={account.weeklyReservePct ?? null}
                 />
               </>
             )}
@@ -597,12 +641,12 @@ interface AccountsStripProps {
   accounts: Account[]
   onRefresh: (name: string) => void
   refreshingName: string | null
-  onSaveNickname: (name: string, nickname: string | null) => void
+  onSave: (update: { name: string; nickname?: string | null; weeklyReservePct?: number | null }) => void
   onDelete: (account: Account) => void
   onCopilotReauth: (account: Account) => void
 }
 
-function AccountsStrip({ accounts, onRefresh, refreshingName, onSaveNickname, onDelete, onCopilotReauth }: AccountsStripProps) {
+function AccountsStrip({ accounts, onRefresh, refreshingName, onSave, onDelete, onCopilotReauth }: AccountsStripProps) {
   if (accounts.length === 0) return null
 
   return (
@@ -613,7 +657,7 @@ function AccountsStrip({ accounts, onRefresh, refreshingName, onSaveNickname, on
           account={account}
           onRefresh={onRefresh}
           refreshing={refreshingName === account.name}
-          onSaveNickname={onSaveNickname}
+          onSave={onSave}
           onDelete={onDelete}
           onCopilotReauth={onCopilotReauth}
         />
@@ -628,7 +672,7 @@ export function AccountsManager() {
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [] } = useSessions()
   const refreshAccount = useRefreshAccount()
-  const updateNickname = useUpdateAccountNickname()
+  const updateAccount = useUpdateAccount()
   const deleteAccount = useDeleteAccount()
 
   const [refreshingAccount, setRefreshingAccount] = useState<string | null>(null)
@@ -644,8 +688,8 @@ export function AccountsManager() {
     })
   }
 
-  function handleSaveNickname(name: string, nickname: string | null) {
-    updateNickname.mutate({ name, nickname })
+  function handleSave(update: { name: string; nickname?: string | null; weeklyReservePct?: number | null }) {
+    updateAccount.mutate(update)
   }
 
   function handleDeleteAccount(account: Account) {
@@ -686,7 +730,7 @@ export function AccountsManager() {
           accounts={accounts}
           onRefresh={handleRefreshAccount}
           refreshingName={refreshingAccount}
-          onSaveNickname={handleSaveNickname}
+          onSave={handleSave}
           onDelete={handleDeleteAccount}
           onCopilotReauth={(acct) => setCopilotReauthAccount(acct)}
         />

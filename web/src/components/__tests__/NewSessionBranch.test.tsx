@@ -18,7 +18,7 @@ vi.mock('@/api/hooks', () => ({
   useRenameSession: vi.fn(),
   useCloseSession: vi.fn(),
   useRefreshAccount: vi.fn(),
-  useUpdateAccountNickname: vi.fn(),
+  useUpdateAccount: vi.fn(),
   useDeleteAccount: vi.fn(),
   useGithubRepos: vi.fn(),
   useGithubBranches: vi.fn(),
@@ -73,7 +73,7 @@ function setupMocks() {
   vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useRenameSession>)
   vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useCloseSession>)
   vi.mocked(hooks.useRefreshAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useRefreshAccount>)
-  vi.mocked(hooks.useUpdateAccountNickname).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useUpdateAccountNickname>)
+  vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useUpdateAccount>)
   vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useDeleteAccount>)
   // One repo whose default branch is "main".
   vi.mocked(hooks.useGithubRepos).mockReturnValue({
