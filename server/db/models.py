@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -393,3 +393,96 @@ class CiFinding(Base):
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=_utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=_utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
+
+# ---------------------------------------------------------------------------
+# Phase-3 plotroom tables: merged PR timeline, group runs/failures, deploy cfg
+# ---------------------------------------------------------------------------
+
+
+class MergedPr(Base):
+    """One row per merged PR, carrying waypoint timestamps for the pipeline
+    deploy-chain and lead-time metrics (SPEC §2 — PRTIMELINE CAPTURE).
+
+    Timestamps are ISO-8601 TEXT strings (not epoch ints) because they feed
+    directly into the JSON SSE payload without conversion — unlike the epoch-int
+    approach in MergeQueueObservation which models internal polling state.
+
+    All timestamp columns are NULLABLE except merged_at (the insertion trigger).
+    Composite PK (repo, number) — create_all never ALTERs; add only nullable cols.
+    Upsert uses COALESCE(excluded.X, X) first-value-wins semantics (caller's job).
+    """
+
+    __tablename__ = "merged_prs"
+
+    repo: Mapped[str] = mapped_column(String, primary_key=True)
+    number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # merged_at is the insertion trigger — always written, never null.
+    merged_at: Mapped[str] = mapped_column(String, nullable=False)
+    merge_commit_sha: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    first_green_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    enqueued_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    qa_live_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    prod_live_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class GroupRun(Base):
+    """One completed merge-group CI run whose checks all concluded SUCCESS|SKIPPED|NEUTRAL.
+
+    Supplies duration samples for the MERGEETASIM p50/p90 ETA analytic (SPEC §1).
+    completed_at is unique per repo — one canonical record per run completion.
+    """
+
+    __tablename__ = "group_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    duration_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ISO-8601 TEXT — see MergedPr docstring for rationale vs. epoch int.
+    completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("repo", "completed_at", name="uq_group_runs_repo_completed_at"),
+    )
+
+
+class GroupFailure(Base):
+    """One failed/timed-out check within a merge-group run (SPEC §1 — eject probability).
+
+    Deduped on (repo, group_sha, check_name): INSERT OR IGNORE semantics (caller's job).
+    conclusion: FAILURE | TIMED_OUT | STARTUP_FAILURE.
+    """
+
+    __tablename__ = "group_failures"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    check_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    group_sha: Mapped[str | None] = mapped_column(String, nullable=True)
+    # ISO-8601 TEXT — see MergedPr docstring for rationale vs. epoch int.
+    observed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    conclusion: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "repo", "group_sha", "check_name",
+            name="uq_group_failures_repo_sha_check",
+        ),
+    )
+
+
+class RepoDeployConfig(Base):
+    """Per-repo deploy-environment configuration (SPEC §3).
+
+    environments: JSON text — list of {name, healthUrl, auto, shaKey?}.
+    enabled gates whether deploy health polling runs for this repo.
+    """
+
+    __tablename__ = "repo_deploy_config"
+
+    repo: Mapped[str] = mapped_column(String, primary_key=True)
+    environments: Mapped[str | None] = mapped_column(String, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
