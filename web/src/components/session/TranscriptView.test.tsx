@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, fireEvent } from '@testing-library/react'
+import { render, fireEvent, screen } from '@testing-library/react'
 import { TranscriptView } from './TranscriptView'
 import type { Turn } from '@/session/reducer'
 
@@ -18,9 +18,8 @@ const base = {
 describe('TranscriptView scrollback', () => {
   it('calls onLoadOlder when scrolled to top and more history exists', () => {
     const onLoadOlder = vi.fn()
-    const { container } = render(
-      <TranscriptView {...base} earliestTurn={5} loadingOlder={false} onLoadOlder={onLoadOlder} />)
-    const scroller = container.firstChild as HTMLElement
+    render(<TranscriptView {...base} earliestTurn={5} loadingOlder={false} onLoadOlder={onLoadOlder} />)
+    const scroller = screen.getByTestId('transcript-scroll')
     Object.defineProperty(scroller, 'scrollTop', { value: 0, writable: true })
     fireEvent.scroll(scroller)
     expect(onLoadOlder).toHaveBeenCalled()
@@ -28,9 +27,8 @@ describe('TranscriptView scrollback', () => {
 
   it('does not call onLoadOlder at session start', () => {
     const onLoadOlder = vi.fn()
-    const { container } = render(
-      <TranscriptView {...base} earliestTurn={0} loadingOlder={false} onLoadOlder={onLoadOlder} />)
-    const scroller = container.firstChild as HTMLElement
+    render(<TranscriptView {...base} earliestTurn={0} loadingOlder={false} onLoadOlder={onLoadOlder} />)
+    const scroller = screen.getByTestId('transcript-scroll')
     Object.defineProperty(scroller, 'scrollTop', { value: 0, writable: true })
     fireEvent.scroll(scroller)
     expect(onLoadOlder).not.toHaveBeenCalled()
@@ -41,8 +39,8 @@ describe('TranscriptView scrollback', () => {
     // auto — so without an explicit clip, any descendant wider than the pane (a
     // long unbreakable token, a wide image) drags the whole transcript sideways.
     // overflow-x-hidden is the backstop; wrappable content wraps via CSS.
-    const { container } = render(<TranscriptView {...base} />)
-    const scroller = container.firstChild as HTMLElement
+    render(<TranscriptView {...base} />)
+    const scroller = screen.getByTestId('transcript-scroll')
     expect(scroller.className).toContain('overflow-x-hidden')
     expect(scroller.className).toContain('overflow-y-auto')
   })

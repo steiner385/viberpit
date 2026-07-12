@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useMemo } from 'react'
+import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { Turn as TurnType, RotationMarker, SubThread } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
@@ -49,6 +49,8 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
   const contentRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
   const isNearBottomRef = useRef(true)
+  // Drives the scroll-to-bottom button — separate from the ref so React re-renders when it flips.
+  const [showScrollButton, setShowScrollButton] = useState(false)
   // Snapshot of scrollHeight taken just before onLoadOlder() is called, used to
   // restore the scroll anchor after older turns are prepended.
   const prevScrollHeightRef = useRef<number | null>(null)
@@ -102,7 +104,9 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
     // auto-pin latches off above the true bottom.
     if (programmaticScrollRef.current) return
     const threshold = 80 // px from bottom counts as "near bottom"
-    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
+    if (nearBottom !== isNearBottomRef.current) setShowScrollButton(!nearBottom)
+    isNearBottomRef.current = nearBottom
     if (el.scrollTop <= TOP_THRESHOLD && (earliestTurn ?? 0) > 0 && !loadingOlder && onLoadOlder) {
       prevScrollHeightRef.current = el.scrollHeight // anchor before the prepend
       onLoadOlder()
@@ -172,35 +176,60 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
     }
   }
 
+  function scrollToBottom() {
+    const el = containerRef.current
+    if (!el) return
+    isNearBottomRef.current = true
+    setShowScrollButton(false)
+    scrollProgrammatically(el, el.scrollHeight)
+  }
+
   return (
-    <div
-      ref={containerRef}
-      onScroll={handleScroll}
-      data-testid="transcript-scroll"
-      // overflow-x-hidden is the backstop: an overflow-y-auto box makes
-      // overflow-x compute to auto, so any descendant wider than the pane (a
-      // stray wide image/embed) would scroll the WHOLE pane sideways. Wrappable
-      // content (inline code, links) wraps and code/tables self-scroll via CSS;
-      // this clips anything else to the pane instead of scrolling it.
-      className="flex-1 overflow-y-auto overflow-x-hidden"
-    >
-      {/* The spacer reserves the full virtual height so the scrollbar reflects the
-          whole transcript; only the windowed rows are mounted, absolutely
-          positioned at their measured offsets. The ResizeObserver above watches
-          this element, so its height (=== getTotalSize()) driving the pin is the
-          same signal the render-all version got from real content growth. */}
-      <div ref={contentRef} style={{ height: totalSize, position: 'relative', width: '100%' }}>
-        {virtualRows.map((vi) => (
-          <div
-            key={vi.key}
-            data-index={vi.index}
-            ref={virtualizer.measureElement}
-            style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${vi.start}px)` }}
-          >
-            {renderRow(rows[vi.index])}
-          </div>
-        ))}
+    <div className="relative flex-1 min-h-0 flex flex-col">
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        data-testid="transcript-scroll"
+        // overflow-x-hidden is the backstop: an overflow-y-auto box makes
+        // overflow-x compute to auto, so any descendant wider than the pane (a
+        // stray wide image/embed) would scroll the WHOLE pane sideways. Wrappable
+        // content (inline code, links) wraps and code/tables self-scroll via CSS;
+        // this clips anything else to the pane instead of scrolling it.
+        className="flex-1 overflow-y-auto overflow-x-hidden"
+      >
+        {/* The spacer reserves the full virtual height so the scrollbar reflects the
+            whole transcript; only the windowed rows are mounted, absolutely
+            positioned at their measured offsets. The ResizeObserver above watches
+            this element, so its height (=== getTotalSize()) driving the pin is the
+            same signal the render-all version got from real content growth. */}
+        <div ref={contentRef} style={{ height: totalSize, position: 'relative', width: '100%' }}>
+          {virtualRows.map((vi) => (
+            <div
+              key={vi.key}
+              data-index={vi.index}
+              ref={virtualizer.measureElement}
+              style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${vi.start}px)` }}
+            >
+              {renderRow(rows[vi.index])}
+            </div>
+          ))}
+        </div>
       </div>
+
+      {showScrollButton && (
+        <div className="absolute bottom-4 left-0 right-0 flex justify-center pointer-events-none">
+          <button
+            onClick={scrollToBottom}
+            aria-label="Scroll to bottom"
+            className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 shadow-md transition hover:bg-gray-50 hover:shadow-lg dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="size-3.5">
+              <path fillRule="evenodd" d="M8 1a.75.75 0 0 1 .75.75v8.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 0 1 1.06-1.06l2.72 2.72V1.75A.75.75 0 0 1 8 1Z" clipRule="evenodd" />
+            </svg>
+            Scroll to bottom
+          </button>
+        </div>
+      )}
     </div>
   )
 }
