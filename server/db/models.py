@@ -408,9 +408,12 @@ class MergedPr(Base):
     directly into the JSON SSE payload without conversion — unlike the epoch-int
     approach in MergeQueueObservation which models internal polling state.
 
-    All timestamp columns are NULLABLE except merged_at (the insertion trigger).
-    Composite PK (repo, number) — create_all never ALTERs; add only nullable cols.
-    Upsert uses COALESCE(excluded.X, X) first-value-wins semantics (caller's job).
+    Every non-key column is NULLABLE (the SQLite reconcile rule — see
+    test_schema_reconcile_coverage). merged_at is the insertion trigger and is
+    ALWAYS written by the timeline store (writer-side invariant), but stays
+    nullable at the schema level so reconcile can add it to an existing DB.
+    Composite PK (repo, number). Upsert uses COALESCE(excluded.X, X)
+    first-value-wins semantics (caller's job).
     """
 
     __tablename__ = "merged_prs"
@@ -419,8 +422,8 @@ class MergedPr(Base):
     number: Mapped[int] = mapped_column(Integer, primary_key=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     url: Mapped[str | None] = mapped_column(String, nullable=True)
-    # merged_at is the insertion trigger — always written, never null.
-    merged_at: Mapped[str] = mapped_column(String, nullable=False)
+    # Writer-side invariant: always set on insert (the merge observation).
+    merged_at: Mapped[str | None] = mapped_column(String, nullable=True)
     merge_commit_sha: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str | None] = mapped_column(String, nullable=True)
     first_green_at: Mapped[str | None] = mapped_column(String, nullable=True)
