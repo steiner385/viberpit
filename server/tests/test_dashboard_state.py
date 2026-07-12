@@ -4,8 +4,10 @@ Field vocabulary mirrors plotroom@5166b52 frontend/src/types.ts (PrView,
 StageResult, CheckView). Phase-1 fields ccswitch can't populate yet are
 emitted as honest nulls/False — never fabricated.
 """
-from server.github.pr_status import CheckGroup, CheckRow, PullRequestInfo
-from server.pipeline.dashboard_state import check_view, stage_result
+from server.github.merge_queue import QueueEntry
+from server.github.pr_status import CheckGroup, CheckRow, PipelinePr, PullRequestInfo
+from server.pipeline.dashboard_state import check_view, dashboard_state, pr_view, queue_view, stage_result
+from server.pipeline.merge_train import MergeTrainState, TrainBuild
 
 
 def _row(**kw) -> CheckRow:
@@ -82,12 +84,6 @@ def test_stage_result_merged_and_awaiting_prod():
     assert stage_result(_pr(state="merged", merged=True))["stage"] == "merged"
 
 
-from server.github.merge_queue import QueueEntry
-from server.github.pr_status import PipelinePr
-from server.pipeline.dashboard_state import dashboard_state, pr_view, queue_view
-from server.pipeline.merge_train import MergeTrainState, TrainBuild
-
-
 def _entry(**kw) -> QueueEntry:
     base = dict(pr_number=1, position=1, state="AWAITING_CHECKS",
                 enqueued_at=None, batch_head_oid=None, group_checks=None,
@@ -126,6 +122,18 @@ def test_queue_view_groups_waiting_and_cascade():
     assert q["queueBlocked"] == [13]         # cascade victim behind it
     assert q["unmergeableCulprit"] == 12
     assert q["batchSize"] == 6 and q["depth"] == 5
+
+
+def test_queue_view_second_conflict_after_gap_is_still_blocked():
+    entries = [
+        _entry(pr_number=12, position=1, state="UNMERGEABLE"),
+        _entry(pr_number=13, position=2),  # AWAITING_CHECKS gap (no oid → waiting)
+        _entry(pr_number=14, position=3, state="UNMERGEABLE"),
+    ]
+    q = queue_view(entries, None)
+    assert q["unmergeable"] == [12]
+    assert q["queueBlocked"] == [14]
+    assert q["unmergeableCulprit"] == 12
 
 
 def test_queue_view_failed_group_and_train_ops():

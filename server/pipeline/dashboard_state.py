@@ -122,7 +122,8 @@ def queue_view(entries: Sequence[QueueEntry], train: MergeTrainState | None) -> 
         if e.state == "UNMERGEABLE":
             # GitHub marks cascade victims UNMERGEABLE too; without a DIRTY
             # snapshot, presume the front-most is the genuine conflict
-            # (plotroom types.ts unmergeableCulprit contract).
+            # (plotroom types.ts unmergeableCulprit contract). Note: conflict_seen
+            # never resets, so any later UNMERGEABLE entry is classified queueBlocked.
             (blocked if conflict_seen else unmergeable).append(e.pr_number)
             conflict_seen = True
         elif e.batch_head_oid and e.state in _BUILDING_STATES:
@@ -132,6 +133,8 @@ def queue_view(entries: Sequence[QueueEntry], train: MergeTrainState | None) -> 
             })
             g["prNumbers"].append(e.pr_number)
             if e.checks_total and e.checks_done is not None:
+                # Assumes all entries sharing a batch_head_oid carry identical rollup
+                # values from GitHub; last entry in position order updates the group.
                 g["percent"] = round(100 * e.checks_done / e.checks_total)
             if e.eta_seconds is not None:
                 g["etaSeconds"] = e.eta_seconds
