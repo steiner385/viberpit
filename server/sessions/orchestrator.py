@@ -3169,6 +3169,21 @@ class SessionOrchestrator:
                 out[repo] = list(obs[-1].entries)
         return out
 
+    async def ready_merge(self, repo: str, number: int) -> dict:
+        """Plotroom PrRow 'Ready + auto-merge' action: mark a draft PR ready,
+        then arm squash auto-merge. Tolerates already-ready / already-armed."""
+        def _do() -> dict:
+            ready = self._gh_run(["pr", "ready", str(number), "-R", repo])
+            # gh exits non-zero when the PR is already ready — that's not an error.
+            marked = ready.returncode == 0
+            merge = self._gh_run(
+                ["pr", "merge", str(number), "-R", repo, "--squash", "--auto"]
+            )
+            armed = merge.returncode == 0 or "already enabled" in (merge.stderr or "")
+            return {"markedReady": marked, "autoMergeArmed": armed}
+
+        return await asyncio.to_thread(_do)
+
     def check_insights(self, repo: str, window: str, now=None) -> dict:
         """Per-repo Check Health: slowest + flakiest checks, duration regressions,
         and runner-wait health over a time window.

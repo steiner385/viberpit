@@ -60,6 +60,7 @@ def _pipeline_orch():
     orch.check_insights = mock.MagicMock(return_value={"repo": "repo/a", "window": "7d",
                                                         "slowest": [], "flakiest": [],
                                                         "regressions": [], "runner_wait_health": []})
+    orch.ready_merge = mock.AsyncMock(return_value={"markedReady": True, "autoMergeArmed": True})
     return orch
 
 
@@ -92,3 +93,13 @@ async def test_check_insights_delegates():
     assert result["repo"] == "repo/a"
     assert result["window"] == "7d"
     orch.check_insights.assert_called_once_with("repo/a", "7d")
+
+
+@pytest.mark.asyncio
+async def test_ready_merge_delegates():
+    """POST /api/pipeline/pr/ready-merge must work in in-process mode."""
+    orch = _pipeline_orch()
+    f = InProcessOrchestratorAdapter(orch)
+    result = await f.ready_merge("repo/a", 7)
+    assert result == {"markedReady": True, "autoMergeArmed": True}
+    orch.ready_merge.assert_awaited_once_with("repo/a", 7)

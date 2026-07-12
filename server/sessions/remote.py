@@ -303,6 +303,10 @@ class RemoteOrchestrator:
         """Resolve per-repo Check Health insights from the daemon (already JSON-safe)."""
         return await self._client.call("check_insights", repo=repo, window=window)
 
+    async def ready_merge(self, repo: str, number: int) -> dict:
+        """Arm ready + auto-merge on a PR via the daemon (already JSON-safe)."""
+        return await self._client.call("ready_merge", repo=repo, number=number)
+
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
         """Inject the branch-aware fix prompt for PR #pr_number via the daemon.
 

@@ -206,6 +206,12 @@ def register_orchestrator_rpc(app, orch) -> None:
             result = await result
         return result
 
+    async def ready_merge(params: dict) -> dict:
+        result = orch.ready_merge(params["repo"], params["number"])
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
     register_rpc(app, "ensure_driver", ensure_driver)
     register_rpc(app, "ring_covers", ring_covers)
     register_rpc(app, "ring_tail", ring_tail)
@@ -221,6 +227,7 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "all_merge_trains", all_merge_trains)
     register_rpc(app, "latest_queue_entries", latest_queue_entries)
     register_rpc(app, "check_insights", check_insights)
+    register_rpc(app, "ready_merge", ready_merge)
 
     async def automation_actionable(params: dict) -> dict:
         items = await orch.automation_actionable(params["automation_id"])

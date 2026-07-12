@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from server.auth.middleware import current_identity
 from server.pipeline.dashboard_state import dashboard_state
@@ -98,6 +99,22 @@ async def pipeline_events(
         gen(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+class ReadyMergeBody(BaseModel):
+    repo: str
+    number: int
+
+
+@repos_router.post("/pr/ready-merge")
+async def ready_merge(
+    body: ReadyMergeBody,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Plotroom PrRow parity: mark a draft PR ready + arm squash auto-merge."""
+    orch = request.app.state.sessions
+    return await orch.ready_merge(body.repo, body.number)
 
 
 @repos_router.get("/insights/checks")

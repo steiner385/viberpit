@@ -88,3 +88,4 @@ class InProcessOrchestratorAdapter:
     async def latest_queue_entries(self, *a, **k): return await _maybe_await(self._orch.latest_queue_entries(*a, **k))
     async def all_merge_trains(self, *a, **k): return await _maybe_await(self._orch.all_merge_trains(*a, **k))
     async def check_insights(self, *a, **k): return await _maybe_await(self._orch.check_insights(*a, **k))
+    async def ready_merge(self, *a, **k): return await _maybe_await(self._orch.ready_merge(*a, **k))
