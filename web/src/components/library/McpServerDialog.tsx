@@ -86,13 +86,13 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
   const [newName, setNewName] = useState('')
 
   // Form state — initialized from server config or defaults
-  const initialTransport: Transport = (server?.transport as Transport) ?? 'stdio'
+  const initialTransport: Transport = server?.transport ?? 'stdio'
   const [transport, setTransport] = useState<Transport>(initialTransport)
   const [command, setCommand] = useState(server?.config.command ?? '')
   const [argsText, setArgsText] = useState((server?.config.args ?? []).join('\n'))
-  const [envText, setEnvText] = useState(serializeKV(server?.config.env as Record<string, string> | undefined))
+  const [envText, setEnvText] = useState(serializeKV(server?.config.env))
   const [url, setUrl] = useState(server?.config.url ?? '')
-  const [headersText, setHeadersText] = useState(serializeHeaders(server?.config.headers as Record<string, string> | undefined))
+  const [headersText, setHeadersText] = useState(serializeHeaders(server?.config.headers))
 
   // JSON toggle mode
   const [jsonMode, setJsonMode] = useState(false)
@@ -180,8 +180,12 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
         onSuccess: () => onClose(),
         onError: (err) => {
           if (err instanceof ApiRequestError) {
-            const detail = (err as ApiRequestError & { body?: { detail?: { message?: string } } }).body?.detail
-            setApiError(detail?.message ?? err.message)
+            const bodyDetail = err.body['detail']
+            const msg =
+              bodyDetail != null && typeof bodyDetail === 'object' && 'message' in bodyDetail
+                ? String((bodyDetail as { message: unknown }).message)
+                : err.message
+            setApiError(msg)
           } else {
             setApiError((err as Error).message)
           }
