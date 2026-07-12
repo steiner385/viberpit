@@ -25,6 +25,15 @@ log = logging.getLogger(__name__)
 # up the edge for the 30s client default (incident 2026-07-02).
 USAGE_RPC_TIMEOUT = 5.0
 
+# The opposite extreme: automation_consolidate / automation_trigger run the whole
+# clone→model-pick→spawn pipeline INLINE inside the daemon RPC and legitimately
+# take longer than the 30s client default (a healthy fetch + Haiku model pick +
+# worktree create + claude start). Without headroom the edge times out and 503s a
+# spawn the daemon actually completes — and a user retry then hits `duplicate`
+# (issue #567). Bound it well above that worst case, which the origin-only fetch
+# and the assess_model timeout already cap.
+AUTOMATION_RPC_TIMEOUT = 90.0
+
 
 class _WireEvent:
     """Wraps an already-serialized event dict so ws.py's e.to_wire() works.
@@ -333,7 +342,8 @@ class RemoteOrchestrator:
     async def automation_trigger(self, automation_id: str, item_id: str, kind: str) -> dict:
         """Trigger a manual action for an item on *automation_id*, via the daemon."""
         return await self._client.call("automation_trigger", automation_id=automation_id,
-                                       item_id=item_id, kind=kind)
+                                       item_id=item_id, kind=kind,
+                                       timeout=AUTOMATION_RPC_TIMEOUT)
 
     async def consolidation_candidates(self, repo: str | None = None) -> dict:
         """Open PRs + suggested consolidation clusters, via the daemon."""
@@ -341,7 +351,8 @@ class RemoteOrchestrator:
 
     async def automation_consolidate(self, repo: str, numbers: list[int]) -> dict:
         """Spawn a consolidation session for the selected PRs, via the daemon."""
-        return await self._client.call("automation_consolidate", repo=repo, numbers=numbers)
+        return await self._client.call("automation_consolidate", repo=repo, numbers=numbers,
+                                       timeout=AUTOMATION_RPC_TIMEOUT)
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)

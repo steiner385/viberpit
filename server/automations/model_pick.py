@@ -18,6 +18,7 @@ account default.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -27,6 +28,13 @@ log = logging.getLogger("ccswitch.automations")
 
 # Tiers "auto" chooses between, cheapest first (user-confirmed pool).
 AUTO_MODEL_POOL: list[str] = ["haiku", "sonnet", "opus", "fable"]
+
+# The one-shot assessment is a network SDK call with no inherent timeout, and an
+# automation spawn runs it INLINE inside the (bounded) edge→daemon RPC. A wedged
+# or pathologically slow assessment must fail open to the account default, never
+# hang the spawn (issue #567). Override via env for ops tuning.
+ASSESS_MODEL_TIMEOUT_S: float = float(
+    os.environ.get("CCSWITCH_ASSESS_MODEL_TIMEOUT_S", "30"))
 
 # The `default_model` dropdown contents: "auto" + every alias the binary's
 # /model picker offers (ALIASES already leads with "default"). Deriving from
@@ -62,16 +70,21 @@ async def assess_model(
     _query_fn=None,
     _config_dir: str | None = None,
     _cwd: str | None = None,
+    _timeout: float | None = None,
 ) -> str | None:
     """One-shot Haiku query mapping *task_summary* to a tier in AUTO_MODEL_POOL.
 
     Mirrors ``backlog_runner.rank_issues``: tool-less one-shot query with an
     injected ``_query_fn`` seam so tests never call the real model. Returns the
-    picked alias, or ``None`` on ANY failure (exception, empty or out-of-pool
-    reply) so the caller falls back to the account default.
+    picked alias, or ``None`` on ANY failure (exception, timeout, empty or
+    out-of-pool reply) so the caller falls back to the account default.
+
+    The assessment is bounded by ``_timeout`` (default ``ASSESS_MODEL_TIMEOUT_S``)
+    so a wedged model call can never hang the inline spawn pipeline.
     """
     if not task_summary.strip():
         return None
+    timeout = _timeout if _timeout is not None else ASSESS_MODEL_TIMEOUT_S
 
     body = (
         f"Job summary:\n{task_summary}\n\n"
@@ -97,15 +110,19 @@ async def assess_model(
             setting_sources=[],
         )
         text_parts: list[str] = []
-        async for msg in query_fn(prompt=body, options=options):
-            content = getattr(msg, "content", None)
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                t = getattr(block, "text", None)
-                if isinstance(t, str):
-                    text_parts.append(t)
+        async with asyncio.timeout(timeout):
+            async for msg in query_fn(prompt=body, options=options):
+                content = getattr(msg, "content", None)
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    t = getattr(block, "text", None)
+                    if isinstance(t, str):
+                        text_parts.append(t)
         raw = "".join(text_parts).strip()
+    except TimeoutError:
+        log.warning("assess_model: assessment exceeded %.0fs — falling back to default", timeout)
+        return None
     except Exception as exc:
         log.warning("assess_model: model call failed: %s", exc)
         return None

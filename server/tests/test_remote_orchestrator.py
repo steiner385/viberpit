@@ -83,6 +83,31 @@ async def test_prs_for_over_uds():
 
 
 @pytest.mark.asyncio
+async def test_automation_spawn_rpcs_use_extended_timeout():
+    """consolidate/trigger run the whole clone→model-pick→spawn pipeline inline
+    in the daemon RPC and legitimately exceed the 30s client default, so the
+    edge must pass an extended per-call timeout or it 503s a spawn the daemon
+    actually completes (issue #567)."""
+    from server.sessions.remote import AUTOMATION_RPC_TIMEOUT, RemoteOrchestrator
+
+    calls: list[tuple[str, float | None]] = []
+
+    class _RecordingClient:
+        async def call(self, method, *, timeout=None, **params):
+            calls.append((method, timeout))
+            return {"status": "spawned"}
+
+    ro = RemoteOrchestrator(_RecordingClient())
+    await ro.automation_consolidate("o/r", [1, 2])
+    await ro.automation_trigger("pr-doctor", "o/r#1", "ci_failure")
+
+    assert AUTOMATION_RPC_TIMEOUT > 30.0
+    by_method = dict(calls)
+    assert by_method["automation_consolidate"] == AUTOMATION_RPC_TIMEOUT
+    assert by_method["automation_trigger"] == AUTOMATION_RPC_TIMEOUT
+
+
+@pytest.mark.asyncio
 async def test_run_command_translates_daemon_keyerror_back_to_keyerror():
     """Unknown-slash-command parity across the IPC boundary (#164).
 

@@ -67,6 +67,27 @@ class CloneTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertTrue((Path(second) / ".git").exists())
 
+    def test_ensure_clone_refresh_fetches_origin_only(self) -> None:
+        # Refreshing an existing clone must fetch ONLY origin, never --all:
+        # a spawned session can leave stray remotes on this shared clone, and
+        # `--all` would fetch (or fail on) each one, slowing/breaking every
+        # future automation spawn (issue #567).
+        gitrepos.ensure_clone(str(self.root), "acme/widget", self.url)
+        calls: list[list[str]] = []
+        real = gitrepos._run_git
+
+        def spy(args, **kw):
+            calls.append(list(args))
+            return real(args, **kw)
+
+        with mock.patch.object(gitrepos, "_run_git", spy):
+            gitrepos.ensure_clone(str(self.root), "acme/widget", self.url)
+        fetches = [a for a in calls if "fetch" in a]
+        self.assertTrue(fetches, "expected a refresh fetch on the existing clone")
+        for a in fetches:
+            self.assertIn("origin", a)
+            self.assertNotIn("--all", a)
+
     def test_ensure_clone_failure_raises(self) -> None:
         with self.assertRaises(gitrepos.CloneError):
             gitrepos.ensure_clone(
