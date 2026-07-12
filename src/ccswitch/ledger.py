@@ -124,6 +124,33 @@ def set_nickname(led: dict, name: str, nickname: str | None) -> None:
         acct.pop("nickname", None)
 
 
+def set_weekly_reserve(led: dict, name: str, pct: float | None) -> None:
+    """Set or clear the per-account weekly usage reserve threshold (0–100 pct)."""
+    acct = _acct(led, name)
+    if pct is None:
+        acct.pop("weeklyReservePct", None)
+    else:
+        acct["weeklyReservePct"] = float(pct)
+
+
+def get_weekly_reserve(led: dict, name: str) -> float | None:
+    """Read one account's reserve; anything non-numeric is treated as unset."""
+    pct = led["accounts"].get(name, {}).get("weeklyReservePct")
+    if isinstance(pct, bool) or not isinstance(pct, (int, float)):
+        return None
+    return float(pct)
+
+
+def weekly_reserves(led: dict) -> dict[str, float]:
+    """All configured reserves, keyed by account name (unset accounts omitted)."""
+    out: dict[str, float] = {}
+    for name in led["accounts"]:
+        pct = get_weekly_reserve(led, name)
+        if pct is not None:
+            out[name] = pct
+    return out
+
+
 def reserve(led: dict, name: str, until_ts: float) -> None:
     _acct(led, name)["reservationUntil"] = until_ts
 

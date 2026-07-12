@@ -466,6 +466,7 @@ def list_accounts() -> list[dict]:
                 "usage": acct.get("usage"),
                 "nickname": acct.get("nickname"),
                 "provider": provider_of(name),
+                "weeklyReservePct": ledger.get_weekly_reserve(led, name),
             })
     return out
 
@@ -473,6 +474,11 @@ def list_accounts() -> list[dict]:
 def set_nickname(name: str, nickname: str | None) -> None:
     with ledger.locked_ledger() as led:
         ledger.set_nickname(led, name, nickname)
+
+
+def set_weekly_reserve(name: str, pct: float | None) -> None:
+    with ledger.locked_ledger() as led:
+        ledger.set_weekly_reserve(led, name, pct)
 
 
 def mark_reauthenticated(name: str) -> None:
