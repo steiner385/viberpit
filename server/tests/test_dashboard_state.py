@@ -80,3 +80,78 @@ def test_stage_result_merged_and_awaiting_prod():
     assert s["stage"] == "awaiting-prod"
     # merged, no deploy pipeline at all → plain merged
     assert stage_result(_pr(state="merged", merged=True))["stage"] == "merged"
+
+
+from server.github.merge_queue import QueueEntry
+from server.github.pr_status import PipelinePr
+from server.pipeline.dashboard_state import dashboard_state, pr_view, queue_view
+from server.pipeline.merge_train import MergeTrainState, TrainBuild
+
+
+def _entry(**kw) -> QueueEntry:
+    base = dict(pr_number=1, position=1, state="AWAITING_CHECKS",
+                enqueued_at=None, batch_head_oid=None, group_checks=None,
+                checks_total=None, checks_done=None, eta_seconds=None)
+    base.update(kw)
+    return QueueEntry(**base)
+
+
+def test_pr_view_shape_and_session_extension():
+    p = PipelinePr(pr=_pr(checks="failing", state="open"), session_id="s1",
+                   session_name="fix-auth")
+    v = pr_view(p, queue_ahead=None, fixable=True)
+    assert v["repo"] == "o/r" and v["number"] == 7
+    assert v["stage"]["stage"] == "ci"
+    assert v["session"] == {"id": "s1", "name": "fix-auth", "fixable": True}
+    assert v["mergeEtaSim"] is None and v["timeline"] is None
+    assert v["groupChecks"] is None and v["queueAheadCount"] is None
+    p2 = PipelinePr(pr=_pr())
+    assert pr_view(p2)["session"] is None
+
+
+def test_queue_view_groups_waiting_and_cascade():
+    entries = [
+        _entry(pr_number=10, position=1, batch_head_oid="abc",
+               checks_total=4, checks_done=2, eta_seconds=120, group_checks="pending"),
+        _entry(pr_number=11, position=2, batch_head_oid="abc"),
+        _entry(pr_number=12, position=3, state="UNMERGEABLE"),
+        _entry(pr_number=13, position=4, state="UNMERGEABLE"),
+        _entry(pr_number=14, position=5, state="QUEUED"),
+    ]
+    q = queue_view(entries, None)
+    assert q["groups"] == [{"oid": "abc", "prNumbers": [10, 11], "percent": 50,
+                            "etaSeconds": 120, "failed": False}]
+    assert q["waiting"] == [{"prNumber": 14, "position": 5, "sim": None}]
+    assert q["unmergeable"] == [12]          # lowest-position genuine conflict
+    assert q["queueBlocked"] == [13]         # cascade victim behind it
+    assert q["unmergeableCulprit"] == 12
+    assert q["batchSize"] == 6 and q["depth"] == 5
+
+
+def test_queue_view_failed_group_and_train_ops():
+    entries = [_entry(pr_number=10, position=1, batch_head_oid="abc",
+                      group_checks="failing")]
+    train = MergeTrainState(repo="o/r", depth=1, trains_per_hour=2.5,
+                            batch_success_pct=80.0, ejects_24h=3,
+                            oldest_wait_seconds=600, failing=(10,),
+                            building=TrainBuild(10, 50, 60), blocked=(),
+                            awaiting_qa=0, awaiting_prod=0, merges_next=None)
+    q = queue_view(entries, train)
+    assert q["groups"][0]["failed"] is True
+    assert q["trainsPerHour"] == 2.5 and q["batchSuccessRatePct"] == 80.0
+    assert q["ejects24h"] == 3
+
+
+def test_dashboard_state_assembly_sets_queue_ahead():
+    prs = {"o/r": [PipelinePr(pr=_pr(number=14, in_merge_queue=True))]}
+    queues = {"o/r": [_entry(pr_number=14, position=3, state="QUEUED")]}
+    st = dashboard_state(prs, queues, {}, {"o/r": False},
+                         generated_at="2026-07-12T00:00:00Z")
+    repo = st["repos"][0]
+    assert st["generatedAt"] == "2026-07-12T00:00:00Z" and st["staleSince"] is None
+    assert repo["repo"] == "o/r" and repo["hasDeploy"] is False
+    assert repo["prs"][0]["queueAheadCount"] == 2      # position - 1
+    assert repo["queue"]["depth"] == 1
+    # repo with no queue entries → queue is null (QueueTrain renders nothing)
+    st2 = dashboard_state(prs, {}, {}, {"o/r": False}, generated_at="x")
+    assert st2["repos"][0]["queue"] is None
