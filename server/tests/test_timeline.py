@@ -328,3 +328,33 @@ def test_poller_merge_without_prior_green_leaves_first_green_null():
         assert got.first_green_at is None
 
     asyncio.run(run())
+
+
+def test_poller_ci_to_parked_is_not_green():
+    """SPEC §2: firstGreenAt records only on ci → ready|queue. A PR whose CI
+    FAILS (ci → parked/ci-failed) must NOT record a green waypoint, even if it
+    later merges (e.g. admin-merged)."""
+    async def run():
+        await init_db()
+        cycles = [
+            _pop_resp(9, "OPEN", rollup="PENDING", merge_status="BLOCKED"),  # ci
+            _pop_resp(9, "OPEN", rollup="FAILURE", merge_status="BLOCKED"),  # parked
+            _pop_resp(9, "MERGED", rollup="FAILURE",
+                      merged_at="2026-07-12T04:00:00Z"),
+        ]
+        idx = {"i": 0}
+
+        def qfn(repo: str) -> dict:
+            return cycles[idx["i"]]
+
+        p = PrPopulationPoller(query_fn=qfn)
+        for i in range(3):
+            idx["i"] = i
+            await p.refresh_once(["o/r"])
+
+        async with db_session() as db:
+            got = await db.get(MergedPr, ("o/r", 9))
+        assert got is not None
+        assert got.first_green_at is None
+
+    asyncio.run(run())

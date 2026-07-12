@@ -406,7 +406,9 @@ class PrPopulationPoller:
                 # "Left ci" = previously in ci, now advanced past it (ready stage
                 # or entered the merge queue). First observation only.
                 prev = self._prev_stage.get(key)
-                left_ci = prev == "ci" and (pr.stage != "ci" or pr.in_merge_queue)
+                # SPEC §2: green means ci → ready|queue specifically — ci → parked
+                # (ci-failed / conflicting) is NOT green and must not record.
+                left_ci = prev == "ci" and (pr.stage == "ready" or pr.in_merge_queue)
                 if left_ci and key not in self._first_green:
                     self._first_green[key] = now_iso
                 self._prev_stage[key] = pr.stage
