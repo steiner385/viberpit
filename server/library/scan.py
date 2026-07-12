@@ -16,6 +16,7 @@ from typing import Any
 import yaml
 
 from ccswitch import paths
+from server.library.names import resolve_under
 
 _FM_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.S)
 
@@ -215,8 +216,8 @@ def read_skill(name: str, plugin: str | None = None) -> dict[str, Any] | None:
         root = paths.shared_base() / "skills"
     if root is None:
         return None
-    path = root / name / "SKILL.md"
-    if not path.is_file():
+    path = resolve_under(root, name, "SKILL.md")
+    if path is None or not path.is_file():
         return None
     return {"name": name, "content": path.read_text(), "readonly": plugin is not None}
 
@@ -236,7 +237,10 @@ def read_command(path: str, plugin: str | None = None) -> dict[str, Any] | None:
         root = paths.shared_base() / "commands"
     if root is None:
         return None
-    file = root / f"{path}.md"
+    resolved = resolve_under(root, *path.split("/"))
+    if resolved is None:
+        return None
+    file = resolved.with_name(resolved.name + ".md")
     if not file.is_file():
         return None
     return {"path": path, "content": file.read_text(), "readonly": plugin is not None}

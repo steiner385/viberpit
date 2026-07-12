@@ -132,3 +132,11 @@ def test_list_mcp_servers_user_plugin_and_auth(shared: Path, tmp_path: Path):
     assert by_name["mine"]["needsAuth"] == ["acct1"]
     assert by_name["alpha-srv"]["readonly"] is True
     assert by_name["alpha-srv"]["needsAuth"] == ["acct1"]
+
+
+def test_read_traversal_rejected(shared: Path):
+    (shared / "skills").mkdir()
+    (shared / "commands").mkdir()
+    assert scan.read_skill("../evil") is None
+    assert scan.read_command("../evil") is None
+    assert scan.read_command("a/../../evil") is None
