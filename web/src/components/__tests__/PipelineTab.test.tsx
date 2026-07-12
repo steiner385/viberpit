@@ -38,7 +38,6 @@ vi.mock('@/api/hooks', () => ({
   useStartDeploy: () => ({ mutate: vi.fn(), isPending: false }),
   useAllPrs: vi.fn(() => ({ data: [], dataUpdatedAt: 0 })),
   useStageModels: vi.fn(() => ({ data: {} })),
-  useMergeTrains: vi.fn(() => ({ data: {} })),
   useSessionsViewing: vi.fn(),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),

@@ -51,16 +51,6 @@ async def list_stage_models(
     return {repo: m.to_dict() for repo, m in models.items()}
 
 
-@repos_router.get("/trains")
-async def list_merge_trains(
-    request: Request,
-    _identity: str = Depends(current_identity),
-) -> dict:
-    orch = request.app.state.sessions
-    trains = await orch.all_merge_trains()
-    return {repo: st.to_dict() for repo, st in trains.items()}
-
-
 async def _state_frame(orch) -> str:
     prs = await orch.all_prs()
     trains = await orch.all_merge_trains()

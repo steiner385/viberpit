@@ -10,7 +10,7 @@ import {
 } from './automations'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
-  DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, MergeTrainState, CheckInsights,
+  DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, CheckInsights,
   DaemonHealth, CopilotAddState,
   LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
   LibraryMcpServer, McpServerConfig, LibraryContent,
@@ -40,7 +40,6 @@ export const QK = {
   automations: ['automations'] as const,
   automationEvents: (id: string) => ['automation-events', id] as const,
   automationSessions: (id: string) => ['automation-sessions', id] as const,
-  pipelineTrains: ['pipeline-trains'] as const,
   pipelineInsights: (repo?: string, window?: string) =>
     ['pipeline-insights', repo, window] as const,
   automationActionable: (id: string) => ['automation-actionable', id] as const,
@@ -716,15 +715,6 @@ export function usePatchAutomation() {
   return useMutation<Automation, ApiRequestError, { id: string; body: AutomationPatch }>({
     mutationFn: ({ id, body }) => patchAutomation(id, body),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.automations }) },
-  })
-}
-
-export function useMergeTrains() {
-  return useQuery<Record<string, MergeTrainState>>({
-    queryKey: QK.pipelineTrains,
-    queryFn: () => api.get<Record<string, MergeTrainState>>('/pipeline/trains'),
-    staleTime: 10_000,
-    refetchInterval: 15_000,
   })
 }
 
