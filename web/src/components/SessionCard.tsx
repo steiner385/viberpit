@@ -118,6 +118,19 @@ export function SessionCard({ session, account, selected = false, listMode = fal
     .sort((a, b) => a.number - b.number)[0]
   const showFix = prAutofixMode === 'propose' && !!failingPr
 
+  // Whether the wide-card badge footer has anything to show — mirrors the
+  // render conditions of each badge below so an empty row never adds height.
+  const hasBadges = Boolean(
+    session.activeGoal
+    || (session.goalSource === 'inferred' && session.effectiveGoal)
+    || session.autopilotPaused
+    || session.autoArchiveOptOut
+    || session.origin
+    || session.assistedBy
+    || (session.prs?.length ?? 0) > 0
+    || showFix,
+  )
+
   // Scroll selected row into view when selection changes (jsdom doesn't implement scrollIntoView)
   useEffect(() => {
     if (selected && articleRef.current?.scrollIntoView) {
@@ -228,7 +241,12 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         // border-gray; the `selected` ring sits outside the border and is unaffected.
         guidedByAutopilot && 'border-l-4 border-l-emerald-500 dark:border-l-emerald-400',
         selected && 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-950/30',
-        !isWide && 'relative overflow-hidden', // clip the edge panels; mobile only so the desktop quick-reply menu is never clipped
+        // Clip the swipe edge panels only while they are mounted (drag in flight
+        // or a side held open). A permanent overflow-hidden on every sub-lg
+        // viewport also clipped the quick-replies dropdown on wide touch
+        // devices (tablets), where the card is ≥ @md and the menu renders.
+        !isWide && 'relative',
+        !isWide && (swipe.dragging || swipe.openSide !== null) && 'overflow-hidden',
       )}
     >
       {/* Edge panels mount only while a swipe is in flight or held open. The
@@ -326,11 +344,14 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         aria-label={`Open session ${session.name}`}
       >
         {/* The card lives in a drag-resizable sidebar, so the layout must read
-            identically at every width: three fixed rows, each truncating rather
-            than wrapping. Flex-wrap was content-dependent — the account chip and
-            usage bar landed in a different place on every card. Truncation +
-            `min-w-0` collapses uniformly at any sidebar/viewport width with no
-            breakpoints, so every card shares one skeleton. */}
+            identically at every width: fixed rows (identity / summary / context /
+            telemetry), each truncating rather than wrapping — mixed-content rows
+            that wrap land their pieces in a different place on every card.
+            Truncation + `min-w-0` collapses uniformly at any sidebar/viewport
+            width, so every card shares one skeleton. The one exception is the
+            badge FOOTER below (outside this button): uniform chips wrapping in a
+            dedicated row are deterministic, and wrapping is what keeps them from
+            overflowing the card. */}
 
         {/* Row 1 — identity: title truncates, account chip pinned right. */}
         <div data-testid="card-identity" className="flex items-center gap-2 min-w-0">
@@ -387,11 +408,12 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             {session.summary}
           </div>
         )}
-        {/* Row 2 — context: repo gives way (truncates) so the status pill and
-            goal/PR markers stay visible. Repo anchors the left and absorbs slack
-            (flex-1 min-w-0 → truncates under pressure); the state chips form a
-            single non-shrinking group anchored to the right, so the status pill
-            always lands at the same edge regardless of repo length. */}
+        {/* Row 2 — context: repo anchors the left and absorbs slack (flex-1
+            min-w-0 → truncates under pressure); the status pill is pinned to
+            the right edge. This row is IDENTICAL at every card width — the
+            secondary badges (goal / autopilot / provenance / PRs) live in the
+            wrapping badge footer below, so nothing can push the pill around or
+            overflow this row. */}
         <div data-testid="card-context" className="flex items-center gap-2 min-w-0">
           <span
             className={cn(
@@ -405,104 +427,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
             <span className="truncate">{repoLabel.text}</span>
           </span>
-          {/* Status pill is the one context signal kept at every width; the Goal
-              badge and the PR badge are secondary, so they are gated to a wide
-              card (`hidden @md:*`, container-query on the card ≥ 28rem) — in a
-              narrow sidebar they bunched against the status pill and forced the
-              repo label to a few characters. They remain reachable in the
-              session detail view. */}
-          <div className="flex flex-shrink-0 items-center gap-2">
-            <StatusPill status={session.status} interruptedByRestart={session.interruptedByRestart} />
-            {session.activeGoal && (
-              <span
-                data-testid="card-goal"
-                className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
-                title={`Goal: ${session.activeGoal}`}
-              >
-                <Target size={12} aria-hidden="true" className="flex-shrink-0" />
-                <span className="truncate">Goal</span>
-              </span>
-            )}
-            {!session.activeGoal && session.goalSource === 'inferred' && session.effectiveGoal && (
-              /* Subdued variant: the goal is LLM-inferred, not user-set — outline
-                 styling distinguishes it from the solid explicit-/goal pill. */
-              <span
-                data-testid="card-goal-inferred"
-                className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800 text-indigo-500 dark:text-indigo-400 max-w-[12rem]"
-                title={`Goal (inferred): ${session.effectiveGoal}`}
-              >
-                <Target size={12} aria-hidden="true" className="flex-shrink-0" />
-                <span className="truncate">Goal</span>
-              </span>
-            )}
-            {session.autopilotPaused && (
-              <span
-                data-testid="card-autopilot-badge"
-                className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
-                title="Autopilot paused — this session is on manual"
-              >
-                <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
-                <span className="truncate">Manual</span>
-              </span>
-            )}
-            {session.autoArchiveOptOut && (
-              /* Passive indicator (not interactive — a11y): this session was manually
-                 unarchived, so autopilot will never auto-archive it again. */
-              <span
-                data-testid="card-no-autoarchive-badge"
-                className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
-                title="Auto-archive off — you unarchived this session, so autopilot won't archive it again"
-              >
-                <Archive size={12} aria-hidden="true" className="flex-shrink-0" />
-                <span className="truncate">Auto-archive off</span>
-              </span>
-            )}
-            {(session.origin || session.assistedBy) && (
-              /* Provenance: one violet badge for any automation involvement.
-                 Spawned-by (origin) outranks assisted-by when both apply. */
-              <Link
-                to="/automation"
-                data-testid="card-provenance"
-                onClick={(e) => e.stopPropagation()}
-                className={cn(
-                  'hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-w-[12rem]',
-                  // Emerald when autopilot is actively guiding (matches the edge +
-                  // marker); generic violet for created-by/other automation, and for
-                  // an autopilot session that's paused (guidedByAutopilot is false).
-                  guidedByAutopilot && !session.origin
-                    ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-900/60'
-                    : 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 hover:bg-violet-200 dark:hover:bg-violet-900/60',
-                )}
-                title={session.origin
-                  ? `Created by automation: ${session.origin}`
-                  : `Assisted by automation: ${session.assistedBy}`}
-              >
-                <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
-                <span className="truncate">
-                  {session.origin
-                    ? `Created by ${automationLabel(session.origin)}`
-                    : `Assisted by ${automationLabel(session.assistedBy!)}`}
-                </span>
-              </Link>
-            )}
-            {session.prs?.length > 0 && (
-              <span data-testid="card-prs" className="hidden @md:inline-flex items-center">
-                <PrList prs={session.prs} />
-              </span>
-            )}
-            {showFix && failingPr && (
-              <button
-                type="button"
-                data-testid="card-fix-pr"
-                onClick={(e) => { e.stopPropagation(); onFixPr?.(session.id, failingPr.number) }}
-                aria-label={`Fix PR #${failingPr.number}`}
-                className="hidden @md:inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              >
-                <Wrench size={11} aria-hidden />
-                <span>Fix PR #{failingPr.number}</span>
-              </button>
-            )}
-          </div>
+          <StatusPill
+            className="flex-shrink-0"
+            status={session.status}
+            interruptedByRestart={session.interruptedByRestart}
+          />
         </div>
 
         {/* Row 3 — telemetry: session usage left, last-active pinned right via
@@ -560,7 +489,13 @@ export function SessionCard({ session, account, selected = false, listMode = fal
       <div
         className={cn(
           'flex flex-shrink-0 items-center gap-0.5 transition-opacity',
-          '@md:grid @md:grid-cols-3 @md:justify-items-center',
+          // On a wide card the (up to six) controls form a 3-column grid,
+          // anchored to the TOP of the row (`self-start`) so they read as a
+          // toolbar in the card's corner — vertically centered, the second grid
+          // row floated free next to unrelated content (a stray delete icon
+          // mid-card). When narrow only Resume renders, and a single centered
+          // button aligns better with the two-line body.
+          '@md:grid @md:grid-cols-3 @md:justify-items-center @md:self-start',
           '[@media(hover:hover)]:opacity-0',
           '[@media(hover:hover)]:group-hover:opacity-100',
           '[@media(hover:hover)]:group-focus-within:opacity-100',
@@ -711,6 +646,109 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         </div>
       </div>
      </div>
+
+      {/* Badge footer — wide-card only (`hidden @md:flex`), a SIBLING of the
+          open-session button rather than content inside it. Two reasons:
+          1. Overflow safety: this row `flex-wrap`s, so any number of badges
+             lays out within the card instead of overflowing the border and
+             colliding with the action buttons (the old single-line cluster was
+             flex-shrink-0 inside a row it could exceed).
+          2. A11y: the PR chip, provenance link and Fix-PR button are
+             interactive — inside the open button they were nested-interactive
+             violations; as siblings they are legal targets. */}
+      {hasBadges && (
+        <div data-testid="card-badges" className="hidden @md:flex flex-wrap items-center gap-1.5 mt-1 min-w-0">
+          {session.activeGoal && (
+            <span
+              data-testid="card-goal"
+              className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
+              title={`Goal: ${session.activeGoal}`}
+            >
+              <Target size={12} aria-hidden="true" className="flex-shrink-0" />
+              <span className="truncate">Goal</span>
+            </span>
+          )}
+          {!session.activeGoal && session.goalSource === 'inferred' && session.effectiveGoal && (
+            /* Subdued variant: the goal is LLM-inferred, not user-set — outline
+               styling distinguishes it from the solid explicit-goal pill. */
+            <span
+              data-testid="card-goal-inferred"
+              className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800 text-indigo-500 dark:text-indigo-400 max-w-[12rem]"
+              title={`Goal (inferred): ${session.effectiveGoal}`}
+            >
+              <Target size={12} aria-hidden="true" className="flex-shrink-0" />
+              <span className="truncate">Goal</span>
+            </span>
+          )}
+          {session.autopilotPaused && (
+            <span
+              data-testid="card-autopilot-badge"
+              className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+              title="Autopilot paused — this session is on manual"
+            >
+              <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
+              <span className="truncate">Manual</span>
+            </span>
+          )}
+          {session.autoArchiveOptOut && (
+            /* Passive indicator (not interactive — a11y): this session was manually
+               unarchived, so autopilot will never auto-archive it again. */
+            <span
+              data-testid="card-no-autoarchive-badge"
+              className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
+              title="Auto-archive off — you unarchived this session, so autopilot won't archive it again"
+            >
+              <Archive size={12} aria-hidden="true" className="flex-shrink-0" />
+              <span className="truncate">Auto-archive off</span>
+            </span>
+          )}
+          {(session.origin || session.assistedBy) && (
+            /* Provenance: one violet badge for any automation involvement.
+               Spawned-by (origin) outranks assisted-by when both apply. */
+            <Link
+              to="/automation"
+              data-testid="card-provenance"
+              className={cn(
+                'hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-w-[12rem]',
+                // Emerald when autopilot is actively guiding (matches the edge +
+                // marker); generic violet for created-by/other automation, and for
+                // an autopilot session that's paused (guidedByAutopilot is false).
+                guidedByAutopilot && !session.origin
+                  ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-900/60'
+                  : 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 hover:bg-violet-200 dark:hover:bg-violet-900/60',
+              )}
+              title={session.origin
+                ? `Created by automation: ${session.origin}`
+                : `Assisted by automation: ${session.assistedBy}`}
+            >
+              <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
+              <span className="truncate">
+                {session.origin
+                  ? `Created by ${automationLabel(session.origin)}`
+                  : `Assisted by ${automationLabel(session.assistedBy!)}`}
+              </span>
+            </Link>
+          )}
+          {session.prs?.length > 0 && (
+            <span data-testid="card-prs" className="hidden @md:inline-flex items-center">
+              <PrList prs={session.prs} />
+            </span>
+          )}
+          {showFix && failingPr && (
+            <button
+              type="button"
+              data-testid="card-fix-pr"
+              onClick={() => onFixPr?.(session.id, failingPr.number)}
+              aria-label={`Fix PR #${failingPr.number}`}
+              className="hidden @md:inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >
+              <Wrench size={11} aria-hidden />
+              <span>Fix PR #{failingPr.number}</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {hasSubAgents && expanded && <SubAgentRows sessionId={session.id} subAgents={subAgents} />}
       </div>
     </article>
