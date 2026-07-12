@@ -11,7 +11,7 @@ from server.pipeline.merge_train import MergeTrainState, TrainBuild
 
 
 def _row(**kw) -> CheckRow:
-    base = dict(name="test/unit", workflow="CI", status="COMPLETED",
+    base: dict = dict(name="test/unit", workflow="CI", status="COMPLETED",
                 conclusion="success", duration_seconds=120, required=True,
                 overdue=False, rem_low_seconds=None, rem_nominal_seconds=None,
                 rem_high_seconds=None)
@@ -20,7 +20,7 @@ def _row(**kw) -> CheckRow:
 
 
 def _pr(**kw) -> PullRequestInfo:
-    base = dict(number=7, url="https://github.com/o/r/pull/7", state="open",
+    base: dict = dict(number=7, url="https://github.com/o/r/pull/7", state="open",
                 checks="pending", title="t", stage="ci", repo="o/r")
     base.update(kw)
     return PullRequestInfo(**base)
@@ -85,7 +85,7 @@ def test_stage_result_merged_and_awaiting_prod():
 
 
 def _entry(**kw) -> QueueEntry:
-    base = dict(pr_number=1, position=1, state="AWAITING_CHECKS",
+    base: dict = dict(pr_number=1, position=1, state="AWAITING_CHECKS",
                 enqueued_at=None, batch_head_oid=None, group_checks=None,
                 checks_total=None, checks_done=None, eta_seconds=None)
     base.update(kw)

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from server.automations.completion_bar import PrFacts
+    from server.github.merge_queue import QueueEntry
     from server.github.pr_status import PipelinePr
     from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
@@ -3150,6 +3151,22 @@ class SessionOrchestrator:
             obs = await merge_queue_store.window(repo, since)
             qa, prod = self._deploy_backlog(prs)
             out[repo] = derive_merge_train_state(repo, obs, now, qa, prod)
+        return out
+
+    async def latest_queue_entries(self) -> "dict[str, list[QueueEntry]]":
+        """Newest merge-queue observation per repo (for the pipeline SSE feed).
+
+        Same 24-hour window all_merge_trains reads; only the last (newest)
+        observation matters here — it is the queue's current shape.
+        """
+        from server.pipeline import merge_queue_store
+        import time as _time
+        since = int(_time.time()) - 86400
+        out: dict[str, list[QueueEntry]] = {}
+        for repo in self._pr_population.all():
+            obs = await merge_queue_store.window(repo, since)
+            if obs:
+                out[repo] = list(obs[-1].entries)
         return out
 
     def check_insights(self, repo: str, window: str, now=None) -> dict:
