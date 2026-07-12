@@ -1854,11 +1854,8 @@ class SessionOrchestrator:
         only (no new I/O). Mirrors request_pr_fix: check every authored branch plus
         the scratch branch, dedupe by PR number."""
         from server.automations.completion_bar import PrFact, PrFacts
-        branches = list(getattr(rec, "authored_branches", None) or [])
-        if getattr(rec, "branch", None):
-            branches.append(rec.branch)
         seen: dict[int, PrFact] = {}
-        for br in branches:
+        for br in self._session_pr_branches(rec):
             info = self.pr_for(rec.repo, br) if rec.repo else None
             if info is not None and info.number not in seen:
                 seen[info.number] = PrFact(
@@ -2997,9 +2994,8 @@ class SessionOrchestrator:
         for r in self._records.values():
             if not r.repo:
                 continue
-            for br in getattr(r, "authored_branches", None) or []:
+            for br in self._session_pr_branches(r):
                 _add(r.repo, br)
-            _add(r.repo, r.branch)
 
         # --- Source 2: archived / all DB sessions (best-effort) ---
         try:
@@ -3082,6 +3078,20 @@ class SessionOrchestrator:
                     seen.add((repo, info.head_ref))
         return list(seen)
 
+    @staticmethod
+    def _session_pr_branches(rec) -> list[str]:
+        """Every branch that may carry a PR this session authored: the accumulated
+        authored_branches set plus the live-refreshed current branch.
+        refresh_authored_branches filters rec.branch as the scratch branch, so a
+        session sitting ON its PR branch has it ONLY in rec.branch — every
+        consumer (prs_for, _autopilot_pr_facts, _pr_pairs) must union both or a
+        just-opened PR stays invisible until the session checks out elsewhere."""
+        branches = list(getattr(rec, "authored_branches", None) or [])
+        br = getattr(rec, "branch", None)
+        if br and br not in branches:
+            branches.append(br)
+        return branches
+
     def prs_for(self, session_id: str) -> list[PullRequestInfo]:
         """Deduped, ordered PR list for a session's authored branches.
 
@@ -3094,7 +3104,7 @@ class SessionOrchestrator:
         if rec is None or not rec.repo:
             return []
         by_number: dict[int, PullRequestInfo] = {}
-        for br in getattr(rec, "authored_branches", None) or []:
+        for br in self._session_pr_branches(rec):
             info = self._pr_poller.cached(rec.repo, br)
             if info is not None:
                 by_number.setdefault(info.number, info)

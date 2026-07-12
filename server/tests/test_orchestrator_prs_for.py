@@ -31,6 +31,23 @@ def test_prs_for_gathers_dedups_and_orders():
     assert [p.number for p in out] == [1, 2]  # open before merged; #1 deduped
 
 
+def test_prs_for_includes_live_branch():
+    """The live-refreshed rec.branch joins the lookup, matching _pr_pairs and
+    _autopilot_pr_facts. refresh_authored_branches filters rec.branch as the
+    scratch branch, so a session sitting ON its PR branch (the normal state
+    right after opening a PR) has that branch ONLY in rec.branch — omitting it
+    hid the PR badge until the session checked out something else."""
+    orch = _orch()
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        cwd="/tmp", repo="o/r", branch="fix/current",
+        authored_branches=["ccswitch/master-s1"],
+    )
+    cache = {("o/r", "fix/current"): _pr(7, "open")}
+    orch._pr_poller.cached = lambda repo, br: cache.get((repo, br))
+    assert [p.number for p in orch.prs_for("s1")] == [7]
+
+
 def test_prs_for_empty_when_no_repo_or_cache():
     orch = _orch()
     orch._records["s1"] = SessionRecord(
