@@ -3,11 +3,19 @@
 // ../../StatusStrip → ./StatusStrip; ./ordering + ./queueFront unchanged); ccswitch blend (spec §6) —
 // optional onFixPr? prop threaded to PrRow in the row() helper.
 //
+// Phase-2 blend edits (declared): (1) CONTROLLED FILTER — optional activeFilter?/onFilter?
+// props let the host (PipelineTab) drive the status filter (e.g. HealthHeader lane-jump);
+// internal state is used only when uncontrolled (activeFilter === undefined). (2) COLLAPSE
+// PERSISTENCE — the collapsed-repo set persists to localStorage under 'prdash.collapsed'
+// via the private-mode-safe readCollapsedSet/writeCollapsedSet helpers copied verbatim from
+// $PLOT/App.tsx:33-55. (3) KIOSK — optional kiosk? prop maps to StatusStrip interactive={!kiosk}
+// and PrRow expandable={!kiosk} (the $PLOT/App.tsx:348,403 pattern) for the wall-display view.
+//
 // Pipeline section — the original PR pipeline view, ported into the unified
 // workspace IA. Reuses the existing PrRow / QueueTrain / StatusStrip verbatim so
 // the rich per-PR rows (stage, queue, checks, ready+auto-merge actions) and the
 // status filter are identical to the classic dashboard; only the framing (focused
-// repo first, no kiosk branch) is workspace-native. Data is the live Tier-1 state.
+// repo first) is workspace-native. Data is the live Tier-1 state.
 import { useState, useMemo } from 'react';
 import type { DashboardState } from './types';
 import { PrRow } from './PrRow';
@@ -16,6 +24,30 @@ import { StatusStrip, bucketPr, isActivePr, isFailedPr, type Bucket } from './St
 import { splitCohort, deployBreakdown } from './ordering';
 import { nextToMerge } from './queueFront';
 
+// ---- localStorage helpers (private-mode safe) — copied verbatim from $PLOT/App.tsx:33-55 ----
+
+const LS_KEY = 'prdash.collapsed';
+
+function readCollapsedSet(): Set<string> {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) return new Set(parsed as string[]);
+  } catch {
+    // invalid JSON or storage access denied — return empty set
+  }
+  return new Set();
+}
+
+function writeCollapsedSet(set: Set<string>): void {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify([...set]));
+  } catch {
+    // private-mode storage full — silently ignore
+  }
+}
+
 /** Compact ETA like "~5m" / "~1h"; null when unknown. */
 function eta(secs: number | null): string | null {
   if (secs == null) return null;
@@ -23,9 +55,21 @@ function eta(secs: number | null): string | null {
 }
 
 
-export function PipelineView({ state, focusedRepo, onFixPr }: { state: DashboardState | null; focusedRepo: string | null; onFixPr?: (sessionId: string, prNumber: number) => void }) {
-  const [activeFilter, setActiveFilter] = useState<Bucket | null>(null);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: controlledFilter, onFilter, kiosk = false }: {
+  state: DashboardState | null;
+  focusedRepo: string | null;
+  onFixPr?: (sessionId: string, prNumber: number) => void;
+  /** Controlled status filter: when provided (including null), the host owns the
+   *  filter and internal state is bypassed. Omit for the standalone/uncontrolled use. */
+  activeFilter?: Bucket | null;
+  onFilter?: (bucket: Bucket | null) => void;
+  /** Kiosk / wall-display: read-only tiles + non-expandable rows ($PLOT App.tsx:348,403). */
+  kiosk?: boolean;
+}) {
+  const [ownFilter, setOwnFilter] = useState<Bucket | null>(null);
+  const activeFilter = controlledFilter !== undefined ? controlledFilter : ownFilter;
+  const setFilter = onFilter ?? setOwnFilter;
+  const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsedSet);
   const [openCohorts, setOpenCohorts] = useState<Set<string>>(new Set());
 
   // Hooks must come before any early return (Rules of Hooks).
@@ -40,16 +84,16 @@ export function PipelineView({ state, focusedRepo, onFixPr }: { state: Dashboard
   const allPrs = useMemo(() => repos.flatMap((r) => r.prs), [repos]);
 
   if (!state) return <div className="pipeline-view" role="status">Loading pipeline…</div>;
-  const toggle = (repo: string) => setCollapsed((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
+  const toggle = (repo: string) => setCollapsed((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); writeCollapsedSet(n); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
   const toggleCohort = (repo: string) => setOpenCohorts((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
   const row = (pr: typeof allPrs[number], r: typeof repos[number]) => (
-    <PrRow key={pr.number} pr={pr} hasDeploy={r.hasDeploy} queueCulprit={r.queue?.unmergeableCulprit ?? null} expandable onFixPr={onFixPr} />
+    <PrRow key={pr.number} pr={pr} hasDeploy={r.hasDeploy} queueCulprit={r.queue?.unmergeableCulprit ?? null} expandable={!kiosk} onFixPr={onFixPr} />
   );
 
   return (
     <div className="pipeline-view">
       <h2 className="sr-only">Pipeline</h2>
-      <StatusStrip prs={allPrs} activeFilter={activeFilter} onFilter={setActiveFilter} />
+      <StatusStrip prs={allPrs} activeFilter={activeFilter} onFilter={setFilter} interactive={!kiosk} />
       {repos.map((r) => {
         const isCollapsed = collapsed.has(r.repo);
         const visiblePrs = activeFilter ? r.prs.filter((pr) => bucketPr(pr) === activeFilter) : r.prs;

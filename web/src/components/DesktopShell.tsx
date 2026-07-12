@@ -437,7 +437,7 @@ export function DesktopShell() {
       ? <ReviewView sessionId={reviewId} onBack={() => setReviewId(null)} />
       : <div className="p-4 overflow-y-auto h-full"><ArchivedManager onReviewSession={setReviewId} /></div>
   } else if (tab === 'pipeline') {
-    mainPane = <div className="flex flex-col h-full"><PipelineTab /></div>
+    mainPane = <div className="flex flex-col h-full"><PipelineTab onOpenInsights={() => setTab('insights')} /></div>
   } else if (tab === 'insights') {
     mainPane = <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
   } else if (tab === 'settings') {

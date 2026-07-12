@@ -1191,4 +1191,16 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 @media (max-width: 767px) {
   .pipeline-switcher-current { max-width: 48vw; }
 }
+
+/* --- ccswitch extensions (spec §5): chrome bar + stale banner (carry-forward g) --- */
+.pipeline-chrome-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.pipeline-chrome-bar .legend-btn,
+.pipeline-chrome-bar .notify-bell {
+  font: inherit; font-size: 15px; line-height: 1; cursor: pointer;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; min-width: 36px; min-height: 36px; padding: 0 8px;
+}
+.pipeline-chrome-bar .notify-bell[aria-pressed="true"] { border-color: var(--accent, #6af); }
+.pipeline-stale { margin: 4px 0; padding: 4px 10px; border: 1px solid #d29922;
+  border-radius: 6px; color: #d29922; font-size: 12px; }
 }
