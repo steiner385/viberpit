@@ -1,4 +1,4 @@
-// Ported from plotroom@5166b52 frontend/src/useDashboard.ts; edits: import repointed (./embed/ApiBaseContext → ./ApiBaseContext); notifyEnabledRef.current sync moved to useEffect (react-hooks/refs lint gate)
+// Ported from plotroom@5166b52 frontend/src/useDashboard.ts; edits: import repointed (./embed/ApiBaseContext → ./ApiBaseContext); notifyEnabledRef.current sync moved to useLayoutEffect (react-hooks/refs lint gate)
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { DashboardState, NotificationEvent } from './types';
 import { useApiBase } from './ApiBaseContext';
