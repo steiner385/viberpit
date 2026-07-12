@@ -13,7 +13,7 @@ def test_query_includes_merge_queue_entry_block():
 def test_parse_merge_group_extracts_checks_and_eta():
     resp = {"data": {"r0": {"pullRequest": {"mergeQueueEntry": {
         "estimatedTimeToMerge": 300,
-        "headCommit": {"statusCheckRollup": {"contexts": {"nodes": [
+        "headCommit": {"oid": "batchsha", "statusCheckRollup": {"contexts": {"nodes": [
             {"__typename": "CheckRun", "name": "build", "status": "COMPLETED",
              "conclusion": "SUCCESS", "startedAt": "2026-06-28T12:00:00Z",
              "completedAt": "2026-06-28T12:05:00Z",
@@ -23,6 +23,7 @@ def test_parse_merge_group_extracts_checks_and_eta():
     out = parse_merge_group_response(resp, [("octo/repo", 7)])
     entry = out[("octo/repo", 7)]
     assert entry["eta_seconds"] == 300
+    assert entry["group_sha"] == "batchsha"
     assert len(entry["checks"]) == 1
     c = entry["checks"][0]
     assert c["name"] == "build" and c["event"] == "merge_group" and c["isRequired"] is False
@@ -32,4 +33,4 @@ def test_parse_merge_group_extracts_checks_and_eta():
 def test_parse_merge_group_absent_entry_is_empty():
     resp = {"data": {"r0": {"pullRequest": {"mergeQueueEntry": None}}}}
     out = parse_merge_group_response(resp, [("octo/repo", 7)])
-    assert out[("octo/repo", 7)] == {"checks": [], "eta_seconds": None}
+    assert out[("octo/repo", 7)] == {"checks": [], "eta_seconds": None, "group_sha": None}

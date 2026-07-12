@@ -237,6 +237,15 @@ class PrPopulationPoller:
 
         now = self._now_fn()
 
+        # Record merge-group run durations + ejects (SPEC §1 — mergeEtaSim
+        # substrate). Deduped by group_sha (the batch head-commit oid): several
+        # PRs in one merge train share a headCommit, so record each train once.
+        # NEVER let a history-write break the poll — swallow + log.
+        try:
+            await self._record_group_history(merge_by_pr, now)
+        except Exception:
+            log.warning("pr_population.group_history_failed", exc_info=True)
+
         # build_check_groups is always needed (store-independent). compute_pr_eta needs
         # the history store, so import + run it only when we actually have one.
         try:
@@ -286,6 +295,36 @@ class PrPopulationPoller:
                 enriched.append(pr)
             result[repo] = tuple(enriched)
         return result
+
+    async def _record_group_history(
+        self,
+        merge_by_pr: dict[tuple[str, int], dict],
+        now: datetime,
+    ) -> None:
+        """Persist merge-group run durations + ejects (SPEC §1).
+
+        ``merge_by_pr`` is keyed by (repo, number); each value carries the
+        train's ``checks`` and ``group_sha`` (batch head-commit oid). PRs in
+        the same train share a group_sha, so record each (repo, group_sha)
+        once. The store applies the terminal/clean/timestamp guards and dedupes
+        on its unique constraints — this method only fans out unique trains.
+        """
+        from server.pipeline import group_history
+
+        now_iso = now.isoformat()
+        seen: set[tuple[str, str]] = set()
+        for (repo, _number), entry in merge_by_pr.items():
+            group_sha = entry.get("group_sha")
+            checks = entry.get("checks") or []
+            if not group_sha or not checks:
+                continue
+            dedupe_key = (repo, group_sha)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            await group_history.record_group_outcome(
+                repo, group_sha, checks, now_iso
+            )
 
     async def refresh_once(self, repos: list[str]) -> bool:
         if not repos:

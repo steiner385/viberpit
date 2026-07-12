@@ -311,7 +311,7 @@ def build_eta_checks_query(prs: list[tuple[str, int]]) -> str:
             f"        ... on StatusContext {{ context state }}\n"
             f"      }} }}\n"
             f"    }} }} }} }}\n"
-            f"    mergeQueueEntry {{ estimatedTimeToMerge headCommit {{ statusCheckRollup {{\n"
+            f"    mergeQueueEntry {{ estimatedTimeToMerge headCommit {{ oid statusCheckRollup {{\n"
             f"      contexts(first: 100) {{ nodes {{\n"
             f"        __typename\n"
             f"        ... on CheckRun {{ name status conclusion startedAt completedAt "
@@ -373,8 +373,11 @@ def parse_merge_group_response(
 ) -> dict[tuple[str, int], dict]:
     """Parse the mergeQueueEntry block of a ``build_eta_checks_query`` response.
 
-    Returns (repo, number) -> {"checks": [...], "eta_seconds": int | None}.
-    Empty checks + None eta when the PR is not enqueued (mergeQueueEntry null).
+    Returns (repo, number) -> {"checks": [...], "eta_seconds": int | None,
+    "group_sha": str | None}. group_sha is the merge-group head commit oid
+    (the batch identity), used to record group-run/eject history (SPEC §1).
+    Empty checks + None eta + None group_sha when the PR is not enqueued
+    (mergeQueueEntry null).
     """
     data = (response or {}).get("data") or {}
     out: dict[tuple[str, int], dict] = {}
@@ -382,9 +385,10 @@ def parse_merge_group_response(
         node = data.get(_alias(i)) or {}
         entry = (node.get("pullRequest") or {}).get("mergeQueueEntry")
         if not entry:
-            out[key] = {"checks": [], "eta_seconds": None}
+            out[key] = {"checks": [], "eta_seconds": None, "group_sha": None}
             continue
-        rollup = (entry.get("headCommit") or {}).get("statusCheckRollup") or {}
+        head_commit = entry.get("headCommit") or {}
+        rollup = head_commit.get("statusCheckRollup") or {}
         contexts = ((rollup.get("contexts") or {}).get("nodes")) or []
         checks: list[dict] = []
         for c in contexts:
@@ -406,7 +410,11 @@ def parse_merge_group_response(
                 })
         # GitHub's MergeQueueEntry.estimatedTimeToMerge is in SECONDS (per the GraphQL
         # schema) — stored raw and rendered via formatEta (seconds). Do NOT multiply.
-        out[key] = {"checks": checks, "eta_seconds": entry.get("estimatedTimeToMerge")}
+        out[key] = {
+            "checks": checks,
+            "eta_seconds": entry.get("estimatedTimeToMerge"),
+            "group_sha": head_commit.get("oid"),
+        }
     return out
 
 
