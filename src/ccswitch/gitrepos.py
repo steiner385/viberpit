@@ -192,7 +192,7 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
     """Ensure a ccswitch-owned clone of ``<owner>/<name>`` exists; return its path.
 
     If the clone already exists (``<clone_path>/.git``), best-effort
-    ``git fetch --all --prune`` and return it.  Otherwise create the parent
+    ``git fetch --prune origin`` and return it.  Otherwise create the parent
     dirs, look for a local reference to speed up the clone, run ``git clone``
     (with ``--reference-if-able <ref> --dissociate`` when a reference is found),
     then leave the clone on a DETACHED head.
@@ -203,8 +203,14 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
     dest = clone_path(repo_root, name_with_owner)
 
     if (dest / ".git").exists():
-        # Best-effort refresh; ignore failures (offline, etc.).
-        fetch = _run_git(["-C", str(dest), "fetch", "--all", "--prune"])
+        # Best-effort refresh; ignore failures (offline, etc.). Fetch ONLY
+        # `origin` — NOT `--all`: a session that ran in a worktree off this
+        # shared clone can leave stray remotes behind, and `--all` fetches
+        # every one of them. That inflates spawn latency and, when a stray
+        # remote points at a since-deleted path, makes the fetch fail on every
+        # future automation spawn (issue #567). `origin` is the only remote
+        # ensure_clone itself creates.
+        fetch = _run_git(["-C", str(dest), "fetch", "--prune", "origin"])
         if fetch.returncode != 0:
             log.warning("clone.fetch_failed path=%s err=%s", dest, fetch.stderr.strip())
         return str(dest)

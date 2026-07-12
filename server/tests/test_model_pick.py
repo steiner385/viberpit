@@ -85,6 +85,21 @@ async def test_assess_model_raising_is_none():
 
 
 @pytest.mark.asyncio
+async def test_assess_times_out_to_none():
+    # A wedged/slow model call must fail open to the account default rather
+    # than hang the inline automation spawn pipeline (issue #567).
+    import asyncio
+
+    async def hang(*, prompt, options):
+        await asyncio.sleep(10)
+        yield  # pragma: no cover
+
+    got = await assess_model("do things", _query_fn=hang,
+                             _config_dir="", _cwd="/tmp", _timeout=0.05)
+    assert got is None
+
+
+@pytest.mark.asyncio
 async def test_assess_empty_summary_skips_the_model():
     async def never(*, prompt, options):
         raise AssertionError("must not be called")
