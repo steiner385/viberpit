@@ -97,14 +97,14 @@ def _pr_result(status: str) -> TriggerResult:
     return TriggerResult(status=status, level=level, message=message)
 
 
+# Only the statuses the synchronous fast path can answer: the clone/model/spawn
+# tail runs in a background task and reports its outcome (spawned, ceiling
+# deferral, clone/spawn failure) through the automation feed instead (issue #567).
 _CONSOLIDATE_STATUS_MAP = {
-    "spawned": ("ok", "Spawned consolidation session"),
+    "spawning": ("ok", "Spawning consolidation session — follow the automation feed"),
     "duplicate": ("warn", "Already consolidating this set"),
     "too_few": ("warn", "Select at least 2 PRs"),
     "not_actionable": ("warn", "One or more PRs are no longer open"),
-    "ceiling": ("warn", "All accounts at/above usage ceiling — try later"),
-    "clone_failed": ("error", "Clone failed — see the automation feed"),
-    "spawn_failed": ("error", "Spawn failed — see the automation feed"),
 }
 
 
