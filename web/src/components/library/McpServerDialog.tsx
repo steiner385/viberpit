@@ -156,7 +156,8 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
 
   const effectiveName = isCreate ? newName : server!.name
   const nameIsValid = !isCreate || NAME_RE.test(newName)
-  const canSave = !saveMutation.isPending && nameIsValid && effectiveName.length > 0
+  const canSave =
+    !saveMutation.isPending && !deleteMutation.isPending && nameIsValid && effectiveName.length > 0
 
   let title: string
   if (isCreate) {
@@ -456,7 +457,7 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
             <button
               type="button"
               onClick={handleDelete}
-              disabled={deleteMutation.isPending}
+              disabled={deleteMutation.isPending || saveMutation.isPending}
               className="rounded border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 px-3 py-2 text-sm hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-60"
             >
               Delete
