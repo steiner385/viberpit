@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from server.audit import record_audit
@@ -173,16 +173,17 @@ async def put_mcp(name: str, body: McpBody,
     return {"name": name, "transport": transport}
 
 
-@router.delete("/mcp/{name}", status_code=204)
+@router.delete("/mcp/{name}")
 async def delete_mcp(name: str,
-                     identity: str = Depends(current_identity), db=Depends(get_db)) -> None:
+                     identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
     if not valid_mcp_name(name):
         raise _bad("invalid server name")
     try:
         found = mutate.delete_mcp_server(name)
     except ConfigUnreadableError as err:
-        raise HTTPException(status_code=409, detail={"error": "config_unreadable", "path": err.path.name})
+        return JSONResponse(status_code=409, content={"error": "config_unreadable", "path": err.path.name})
     if not found:
         raise HTTPException(status_code=404, detail={"error": "unknown_server"})
     await record_audit(db=db, type="library_mcp_deleted", identity=identity,
                        detail={"name": name})
+    return Response(status_code=204)

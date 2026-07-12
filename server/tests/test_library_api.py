@@ -140,3 +140,29 @@ def test_put_mcp_corrupt_shared_returns_409(
     assert r.status_code == 409
     body = r.json()
     assert body["error"] == "config_unreadable"
+
+
+def test_delete_mcp_corrupt_shared_returns_409(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ccswitch import paths as cpaths
+
+    base = tmp_path / "shared"
+    base.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(base))
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    (tmp_path / "home" / "store").mkdir(parents=True)
+    (base / "settings.json").write_text("{}")
+    shared_path = cpaths.shared_claude_json_path()
+    shared_path.parent.mkdir(parents=True, exist_ok=True)
+    shared_path.write_text("not json")
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.delete(
+            "/api/library/mcp/srv",
+            headers=IDENTITY_HEADERS,
+        )
+    assert r.status_code == 409
+    body = r.json()
+    assert body["error"] == "config_unreadable"
+    assert body["path"] == shared_path.name
