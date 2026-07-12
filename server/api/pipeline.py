@@ -13,7 +13,7 @@ import asyncio
 import inspect
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -21,6 +21,12 @@ from pydantic import BaseModel
 
 from server.auth.middleware import current_identity
 from server.pipeline.dashboard_state import dashboard_state
+from server.pipeline.group_history import (
+    count_group_ejects,
+    count_group_runs,
+    group_run_samples,
+)
+from server.pipeline.merge_sim import eject_probability
 from server.pipeline.notifier import TransitionNotifier
 
 log = logging.getLogger(__name__)
@@ -68,10 +74,35 @@ async def _build_state(orch) -> dict:
     has_deploy = {
         repo: any(n.kind == "deploy" for n in m.nodes) for repo, m in models.items()
     }
+    sim_ctx = await _sim_ctx(list(prs_by_repo))
     return dashboard_state(
         prs_by_repo, queues, trains, has_deploy,
         generated_at=datetime.now(timezone.utc).isoformat(),
+        sim_ctx=sim_ctx,
     )
+
+
+async def _sim_ctx(repos: list[str]) -> dict[str, dict]:
+    """Per-repo mergeEtaSim inputs, gathered once per frame (SPEC §1).
+
+    One set of store reads per repo (last-20 durations + 7-day run/eject counts
+    → ejectProb), NOT per PR. ``since_iso`` is trailing-Z form to match
+    group_history's stored ISO form (lexicographic ISO windowing).
+    """
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    since_iso = week_ago.isoformat().replace("+00:00", "Z")
+    ctx: dict[str, dict] = {}
+    for repo in repos:
+        samples = await group_run_samples(repo)
+        if not samples:
+            continue  # simulate_merge_eta would return None anyway; skip the reads
+        runs = await count_group_runs(repo, since_iso)
+        ejects = await count_group_ejects(repo, since_iso)
+        ctx[repo] = {
+            "duration_samples": samples,
+            "eject_prob": eject_probability(runs, ejects),
+        }
+    return ctx
 
 
 @repos_router.get("/events")

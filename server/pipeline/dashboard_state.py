@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from server.github.merge_queue import QueueEntry
 from server.github.pr_status import CheckGroup, CheckRow, PipelinePr, PullRequestInfo
+from server.pipeline.merge_sim import simulate_merge_eta
 from server.pipeline.merge_train import MergeTrainState
 
 # Plotroom's default merge-queue batch size (config.example.json). Becomes a
@@ -95,6 +96,7 @@ def pr_view(
     queue_ahead: int | None = None,
     fixable: bool = False,
     queue_substate: str | None = None,
+    merge_eta_sim: dict | None = None,
 ) -> dict:
     pr = p.pr
     head = next((g for g in pr.check_groups if g.kind == "head"), None)
@@ -111,7 +113,7 @@ def pr_view(
         "checks": [check_view(c) for c in head.checks] if head else [],
         "timeline": None, "touchesWorkflows": False, "workflowImpact": None,
         "groupChecks": [check_view(c) for c in merge.checks] if (merge and pr.in_merge_queue) else None,
-        "mergeEtaSim": None,
+        "mergeEtaSim": merge_eta_sim,
         "costMinutes": None, "costDollars": None, "costDollarsPartial": False,
         # ccswitch extension (spec §6): the authoring session + Fix eligibility.
         "session": (
@@ -121,7 +123,52 @@ def pr_view(
     }
 
 
-def queue_view(entries: Sequence[QueueEntry], train: MergeTrainState | None) -> dict:
+# QueueEntry states excluded from the mergeEtaSim "ahead" reckoning entirely
+# (plotroom poller:2469-2472: neither MERGEABLE nor UNMERGEABLE counts).
+_SIM_AHEAD_EXCLUDED = frozenset({"MERGEABLE", "UNMERGEABLE"})
+
+
+def _waiting_sim(
+    me: QueueEntry, entries: Sequence[QueueEntry], sim_ctx: dict | None
+) -> dict | None:
+    """mergeEtaSim for one WAITING entry (plotroom poller:2460-2486).
+
+    ``queued_ahead`` = entries at a strictly lower position that are neither
+    MERGEABLE nor UNMERGEABLE, minus the ones currently building.
+    ``current_train_eta_secs`` = the deepest (max-position) building train
+    ahead's etaSeconds, or None when nothing is building ahead. ``deepest``
+    resolves the "multiple building groups" ambiguity: SPEC §1 / poller:2473
+    sort building-ahead by position descending and take the first, i.e. the
+    building train closest in line to ``me``.
+    """
+    if sim_ctx is None:
+        return None
+    samples = sim_ctx.get("duration_samples") or []
+    if not samples:
+        return None
+    my_pos = me.position or 0
+    ahead = [
+        e for e in entries
+        if (e.position or 0) < my_pos and e.state not in _SIM_AHEAD_EXCLUDED
+    ]
+    building = [e for e in ahead if e.batch_head_oid and e.state in _BUILDING_STATES]
+    queued_ahead = len(ahead) - len(building)
+    deepest = max(building, key=lambda e: e.position or 0, default=None)
+    current_train_eta = deepest.eta_seconds if deepest else None
+    return simulate_merge_eta(
+        queued_ahead=queued_ahead,
+        batch_size=DEFAULT_BATCH_SIZE,
+        duration_samples=list(samples),
+        eject_prob=float(sim_ctx.get("eject_prob") or 0.0),
+        current_train_eta_secs=current_train_eta,
+    )
+
+
+def queue_view(
+    entries: Sequence[QueueEntry],
+    train: MergeTrainState | None,
+    sim_ctx: dict | None = None,
+) -> dict:
     groups: dict[str, dict] = {}
     waiting: list[dict] = []
     unmergeable: list[int] = []
@@ -151,7 +198,7 @@ def queue_view(entries: Sequence[QueueEntry], train: MergeTrainState | None) -> 
                 g["failed"] = True
         else:
             waiting.append({"prNumber": e.pr_number, "position": e.position or 0,
-                            "sim": None})
+                            "sim": _waiting_sim(e, entries, sim_ctx)})
     return {
         "groups": list(groups.values()), "waiting": waiting,
         "unmergeable": unmergeable, "queueBlocked": blocked,
@@ -174,16 +221,24 @@ def dashboard_state(
     trains: dict[str, MergeTrainState],
     has_deploy: dict[str, bool],
     generated_at: str,
+    sim_ctx: dict[str, dict] | None = None,
 ) -> dict:
     repos = []
     for repo in sorted(prs_by_repo):
         entries = queues.get(repo, [])
         pos = {e.pr_number: e.position for e in entries}
+        repo_sim_ctx = (sim_ctx or {}).get(repo)
         # Compute queue_view once per repo; reuse for the queue value and per-PR
         # substate lookup (avoids calling queue_view N times, once per PR).
-        qv = queue_view(entries, trains.get(repo)) if entries else None
+        qv = queue_view(entries, trains.get(repo), sim_ctx=repo_sim_ctx) if entries else None
         unmergeable_set: set[int] = set(qv["unmergeable"]) if qv else set()
         blocked_set: set[int] = set(qv["queueBlocked"]) if qv else set()
+        # Waiting entries carry the mergeEtaSim; the same sim lands on the
+        # matching pr_view (waiting queue PRs only).
+        sim_by_pr: dict[int, dict] = (
+            {w["prNumber"]: w["sim"] for w in qv["waiting"] if w["sim"] is not None}
+            if qv else {}
+        )
         prs = []
         for p in prs_by_repo[repo]:
             position = pos.get(p.pr.number)
@@ -197,6 +252,7 @@ def dashboard_state(
                 queue_ahead=(position - 1) if position is not None else None,
                 fixable=_fixable(p.pr),
                 queue_substate=qs,
+                merge_eta_sim=sim_by_pr.get(p.pr.number),
             ))
         repos.append({
             "repo": repo, "hasDeploy": has_deploy.get(repo, False),

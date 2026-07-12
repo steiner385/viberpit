@@ -185,3 +185,102 @@ def test_dashboard_state_group_failed_wins_over_queue_substate():
     queues = {"o/r": [_entry(pr_number=12, position=1, state="UNMERGEABLE")]}
     st = dashboard_state(prs, queues, {}, {"o/r": False}, generated_at="x")
     assert st["repos"][0]["prs"][0]["stage"]["substate"] == "group-failed"
+
+
+# --- mergeEtaSim wiring (Task 3) -------------------------------------------
+
+
+def _sim_ctx(**kw) -> dict:
+    base: dict = dict(duration_samples=[600], eject_prob=0.0)
+    base.update(kw)
+    return base
+
+
+def test_queue_view_sim_attaches_to_waiting_entry():
+    # A lone waiting entry, no building train ahead => trains=1, base ETA 0.
+    entries = [_entry(pr_number=14, position=1, state="QUEUED")]
+    q = queue_view(entries, None, sim_ctx=_sim_ctx())
+    assert q["waiting"] == [{
+        "prNumber": 14, "position": 1,
+        "sim": {"p50Secs": 600, "p90Secs": 600, "trainsAhead": 0,
+                "assumesEjects": False},
+    }]
+
+
+def test_queue_view_sim_none_without_ctx():
+    entries = [_entry(pr_number=14, position=1, state="QUEUED")]
+    assert queue_view(entries, None)["waiting"][0]["sim"] is None
+
+
+def test_queue_view_sim_none_without_samples():
+    entries = [_entry(pr_number=14, position=1, state="QUEUED")]
+    q = queue_view(entries, None, sim_ctx=_sim_ctx(duration_samples=[]))
+    assert q["waiting"][0]["sim"] is None
+
+
+def test_queue_view_sim_counts_queued_ahead_and_building_train_eta():
+    # A building group at position 1 (its etaSeconds is the currentTrainEta),
+    # a queued waiting entry at position 2, and my waiting entry at position 3.
+    entries = [
+        _entry(pr_number=10, position=1, batch_head_oid="abc",
+               state="AWAITING_CHECKS", eta_seconds=120),
+        _entry(pr_number=11, position=2, state="QUEUED"),
+        _entry(pr_number=12, position=3, state="QUEUED"),
+    ]
+    q = queue_view(entries, None, sim_ctx=_sim_ctx())
+    sims = {w["prNumber"]: w["sim"] for w in q["waiting"]}
+    # PR 12: ahead = {10(building), 11(queued)}; building=1 => queuedAhead=1;
+    # trains = ceil(2/6) = 1; deepest building eta 120 => base 120.
+    assert sims[12]["p50Secs"] == 720          # 120 + 1 * 600
+    assert sims[12]["trainsAhead"] == 1        # trains(1) - 1 + 1 (building ahead)
+    # PR 11: ahead = {10(building)}; building=1 => queuedAhead=0; base 120.
+    assert sims[11]["p50Secs"] == 720
+    assert sims[11]["trainsAhead"] == 1
+
+
+def test_queue_view_sim_excludes_mergeable_unmergeable_from_queued_ahead():
+    # UNMERGEABLE + MERGEABLE ahead must not inflate queuedAhead.
+    entries = [
+        _entry(pr_number=9, position=1, state="UNMERGEABLE"),
+        _entry(pr_number=10, position=2, state="MERGEABLE", batch_head_oid="abc"),
+        _entry(pr_number=11, position=3, state="QUEUED"),
+        _entry(pr_number=12, position=4, state="QUEUED"),
+    ]
+    q = queue_view(entries, None, sim_ctx=_sim_ctx())
+    sims = {w["prNumber"]: w["sim"] for w in q["waiting"]}
+    # PR 12: ahead excludes 9 (UNMERGEABLE) + 10 (MERGEABLE); only 11 counts
+    # => queuedAhead=1, no building train => base 0, trains=ceil(2/6)=1.
+    assert sims[12]["p50Secs"] == 600
+    assert sims[12]["trainsAhead"] == 0
+
+
+def test_dashboard_state_threads_sim_to_queue_and_pr_view():
+    prs = {"o/r": [PipelinePr(pr=_pr(number=14, in_merge_queue=True))]}
+    queues = {"o/r": [_entry(pr_number=14, position=1, state="QUEUED")]}
+    sim_ctx = {"o/r": {"duration_samples": [600], "eject_prob": 0.0}}
+    st = dashboard_state(prs, queues, {}, {"o/r": False},
+                         generated_at="x", sim_ctx=sim_ctx)
+    repo = st["repos"][0]
+    waiting_sim = repo["queue"]["waiting"][0]["sim"]
+    assert waiting_sim == {"p50Secs": 600, "p90Secs": 600, "trainsAhead": 0,
+                           "assumesEjects": False}
+    # Same sim lands on the matching pr_view.mergeEtaSim (waiting queue PR).
+    assert repo["prs"][0]["mergeEtaSim"] == waiting_sim
+
+
+def test_dashboard_state_sim_absent_for_non_waiting_pr():
+    # An UNMERGEABLE queue PR is not waiting => mergeEtaSim stays None even with ctx.
+    prs = {"o/r": [PipelinePr(pr=_pr(number=12, in_merge_queue=True))]}
+    queues = {"o/r": [_entry(pr_number=12, position=1, state="UNMERGEABLE")]}
+    sim_ctx = {"o/r": {"duration_samples": [600], "eject_prob": 0.0}}
+    st = dashboard_state(prs, queues, {}, {"o/r": False},
+                         generated_at="x", sim_ctx=sim_ctx)
+    assert st["repos"][0]["prs"][0]["mergeEtaSim"] is None
+
+
+def test_dashboard_state_backward_compatible_without_sim_ctx():
+    prs = {"o/r": [PipelinePr(pr=_pr(number=14, in_merge_queue=True))]}
+    queues = {"o/r": [_entry(pr_number=14, position=1, state="QUEUED")]}
+    st = dashboard_state(prs, queues, {}, {"o/r": False}, generated_at="x")
+    assert st["repos"][0]["queue"]["waiting"][0]["sim"] is None
+    assert st["repos"][0]["prs"][0]["mergeEtaSim"] is None
