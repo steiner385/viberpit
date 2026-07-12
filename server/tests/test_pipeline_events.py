@@ -128,6 +128,102 @@ async def test_events_stream_emits_dashboard_state_frame():
 
 
 @pytest.mark.asyncio
+async def test_events_emits_notification_on_new_ci_failure():
+    """Second frame introduces a ci-failed PR → expect an event: notification line.
+
+    We patch _build_state at the module level so we control both frames precisely:
+    frame 1 is a baseline (empty repos), frame 2 has a ci-failed PR. The notifier
+    in the SSE generator should emit an event: notification line after frame 2.
+    """
+    import server.api.pipeline as _pipeline_mod  # noqa: PLC0415
+
+    _build_state_calls = 0
+    _FAILING_STATE = {
+        "generatedAt": "2026-01-01T00:00:00+00:00",
+        "staleSince": None,
+        "repos": [{
+            "repo": "o/r", "hasDeploy": False, "queue": None,
+            "prs": [{
+                "repo": "o/r", "number": 42, "title": "break things", "url": "u",
+                "stage": {"stage": "parked", "substate": "ci-failed",
+                          "percent": None, "etaSeconds": None,
+                          "etaRangeSeconds": None, "overdue": False},
+            }],
+        }],
+    }
+    _EMPTY_STATE = {
+        "generatedAt": "2026-01-01T00:00:00+00:00",
+        "staleSince": None,
+        "repos": [],
+    }
+
+    original_build_state = _pipeline_mod._build_state
+
+    async def _patched_build_state(orch):
+        nonlocal _build_state_calls
+        _build_state_calls += 1
+        if _build_state_calls == 1:
+            return _EMPTY_STATE           # baseline — no notifications
+        return _FAILING_STATE             # triggers ci-failed notification
+
+    app = _make_app()
+    scope = {
+        "type": "http", "method": "GET", "path": "/api/pipeline/events",
+        "raw_path": b"/api/pipeline/events", "query_string": b"",
+        "headers": [(b"tailscale-user-login", b"testuser@example.com")],
+        "client": ("1.2.3.4", 9999), "scheme": "http", "server": ("t", 80),
+    }
+    sent_request = False
+    disconnect = asyncio.Event()
+    notification_found = asyncio.Event()
+    chunks: list[bytes] = []
+    start: dict = {}
+
+    async def receive():
+        nonlocal sent_request
+        if not sent_request:
+            sent_request = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            start.update(msg)
+        elif msg["type"] == "http.response.body" and msg.get("body"):
+            chunks.append(msg["body"])
+            combined = b"".join(chunks).decode()
+            if "event: notification" in combined:
+                notification_found.set()
+
+    with patch.object(_pipeline_mod, "_build_state", _patched_build_state), \
+         patch.object(_pipeline_mod, "_EVENTS_INTERVAL_S", 0.0):
+        task = asyncio.create_task(app(scope, receive, send))
+        try:
+            with patch.dict(os.environ, _ENV):
+                await asyncio.wait_for(notification_found.wait(), timeout=10)
+        finally:
+            disconnect.set()
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    combined = b"".join(chunks).decode()
+    assert "event: notification" in combined
+    # Find the data line after event: notification
+    lines = combined.splitlines()
+    notif_idx = next(i for i, ln in enumerate(lines) if ln == "event: notification")
+    data_line = lines[notif_idx + 1]
+    assert data_line.startswith("data: ")
+    ev = json.loads(data_line[len("data: "):])
+    assert ev["type"] == "ci-failed"
+    assert ev["rendered"]["title"] == "o/r#42 CI failed"
+    assert ev["rendered"]["body"] == "break things"
+
+
+@pytest.mark.asyncio
 async def test_events_requires_identity():
     """No identity header -> 401 from the auth middleware (never opens the stream)."""
     app = _make_app()

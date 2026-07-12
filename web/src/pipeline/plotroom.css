@@ -1161,4 +1161,46 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 .pr-session:hover { text-decoration: underline; }
 .pr-fix { font-size: 11px; padding: 1px 8px; border-radius: 4px;
   border: 1px solid #d29922; color: #d29922; background: transparent; cursor: pointer; }
+
+/* --- ported from plotroom@5166b52 shell/workspace.css: PipelineSwitcher --- */
+.pipeline-switcher { position: relative; }
+.pipeline-switcher-current {
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 12px; min-height: 36px; max-width: 60vw;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pipeline-switcher-current::after { content: " ▾"; color: var(--muted); }
+.pipeline-switcher-popover {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: var(--z-popover);
+  min-width: 280px; max-width: 92vw; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 10px; padding: 6px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.18);
+}
+.pipeline-switcher-filter {
+  font: inherit; width: 100%; box-sizing: border-box; padding: 8px 10px; margin-bottom: 4px;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 7px;
+}
+.pipeline-switcher-popover ul { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow: auto; }
+.pipeline-option { padding: 9px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; }
+.pipeline-option:hover, .pipeline-option.active { background: var(--bg); }
+.pipeline-option.active { outline: 2px solid var(--accent, #6af); outline-offset: -2px; }
+.pipeline-option.focused { color: var(--accent); font-weight: 600; }
+.pipeline-option.empty { color: var(--muted); cursor: default; }
+/* mobile: workspace.css:342 — narrower switcher button so the header fits */
+@media (max-width: 767px) {
+  .pipeline-switcher-current { max-width: 48vw; }
+}
+
+/* --- ccswitch extensions (spec §5): chrome bar + stale banner (carry-forward g) --- */
+.pipeline-chrome-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.pipeline-chrome-bar .legend-btn,
+.pipeline-chrome-bar .notify-bell {
+  font: inherit; font-size: 15px; line-height: 1; cursor: pointer;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; min-width: 36px; min-height: 36px; padding: 0 8px;
+}
+.pipeline-chrome-bar .notify-bell[aria-pressed="true"] { border-color: var(--accent, #6af); }
+.pipeline-stale { margin: 4px 0; padding: 4px 10px; border: 1px solid #d29922;
+  border-radius: 6px; color: #d29922; font-size: 12px; }
 }

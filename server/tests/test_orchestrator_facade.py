@@ -103,3 +103,19 @@ async def test_ready_merge_delegates():
     result = await f.ready_merge("repo/a", 7)
     assert result == {"markedReady": True, "autoMergeArmed": True}
     orch.ready_merge.assert_awaited_once_with("repo/a", 7)
+
+
+def test_facade_covers_every_orchestrator_method_the_api_calls():
+    """Every `orch.<method>(` call in server/api/*.py must exist on the facade —
+    the RemoteOrchestrator breadth test guards daemon mode; this guards in-process
+    mode (the Task-3 facade gap class)."""
+    import re
+    from pathlib import Path
+    from server.sessions.facade import InProcessOrchestratorAdapter
+
+    api_dir = Path(__file__).resolve().parents[1] / "api"
+    called = set()
+    for f in api_dir.glob("*.py"):
+        called |= set(re.findall(r"\borch\.(\w+)\(", f.read_text()))
+    missing = {m for m in called if not hasattr(InProcessOrchestratorAdapter, m)}
+    assert not missing, f"facade missing: {sorted(missing)}"

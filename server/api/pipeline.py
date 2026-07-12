@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
@@ -20,6 +21,9 @@ from pydantic import BaseModel
 
 from server.auth.middleware import current_identity
 from server.pipeline.dashboard_state import dashboard_state
+from server.pipeline.notifier import TransitionNotifier
+
+log = logging.getLogger(__name__)
 
 _EVENTS_INTERVAL_S = 10.0
 
@@ -51,7 +55,7 @@ async def list_stage_models(
     return {repo: m.to_dict() for repo, m in models.items()}
 
 
-async def _state_frame(orch) -> str:
+async def _build_state(orch) -> dict:
     prs = await orch.all_prs()
     trains = await orch.all_merge_trains()
     queues = await orch.latest_queue_entries()
@@ -64,11 +68,10 @@ async def _state_frame(orch) -> str:
     has_deploy = {
         repo: any(n.kind == "deploy" for n in m.nodes) for repo, m in models.items()
     }
-    state = dashboard_state(
+    return dashboard_state(
         prs_by_repo, queues, trains, has_deploy,
         generated_at=datetime.now(timezone.utc).isoformat(),
     )
-    return f"data: {json.dumps(state)}\n\n"
 
 
 @repos_router.get("/events")
@@ -77,12 +80,21 @@ async def pipeline_events(
     _identity: str = Depends(current_identity),
 ) -> StreamingResponse:
     orch = request.app.state.sessions
+    notifier = TransitionNotifier()
 
     async def gen():
         while True:
             if await request.is_disconnected():
                 return
-            yield await _state_frame(orch)
+            try:
+                state = await _build_state(orch)
+            except Exception:                 # carry-forward (b): one bad frame must
+                log.exception("pipeline SSE frame build failed")  # not kill the feed
+                await asyncio.sleep(_EVENTS_INTERVAL_S)
+                continue
+            yield f"data: {json.dumps(state)}\n\n"
+            for ev in notifier.diff(state):
+                yield f"event: notification\ndata: {json.dumps(ev)}\n\n"
             await asyncio.sleep(_EVENTS_INTERVAL_S)
 
     return StreamingResponse(

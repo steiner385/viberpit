@@ -89,3 +89,6 @@ class InProcessOrchestratorAdapter:
     async def all_merge_trains(self, *a, **k): return await _maybe_await(self._orch.all_merge_trains(*a, **k))
     async def check_insights(self, *a, **k): return await _maybe_await(self._orch.check_insights(*a, **k))
     async def ready_merge(self, *a, **k): return await _maybe_await(self._orch.ready_merge(*a, **k))
+    # --- automation consolidation methods ---
+    async def consolidation_candidates(self, *a, **k): return await _maybe_await(self._orch.consolidation_candidates(*a, **k))
+    async def automation_consolidate(self, *a, **k): return await _maybe_await(self._orch.automation_consolidate(*a, **k))

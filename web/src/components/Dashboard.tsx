@@ -855,7 +855,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           provides the flex-column context it needs. */}
       {activeTab === 'pipeline' && (
         <div className="flex flex-col flex-1 min-h-0">
-          <PipelineTab />
+          <PipelineTab onOpenInsights={() => setActiveTab('insights')} />
         </div>
       )}
 

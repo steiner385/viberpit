@@ -90,13 +90,22 @@ def stage_result(pr: PullRequestInfo) -> dict:
 _BUILDING_STATES = frozenset({"AWAITING_CHECKS", "MERGEABLE", "LOCKED", "QUEUED"})
 
 
-def pr_view(p: PipelinePr, queue_ahead: int | None = None, fixable: bool = False) -> dict:
+def pr_view(
+    p: PipelinePr,
+    queue_ahead: int | None = None,
+    fixable: bool = False,
+    queue_substate: str | None = None,
+) -> dict:
     pr = p.pr
     head = next((g for g in pr.check_groups if g.kind == "head"), None)
     merge = _merge_group(pr)
+    stage = stage_result(pr)
+    # Inject queue substate when stage_result left it None (group-failed wins).
+    if queue_substate and stage["stage"] == "queue" and stage["substate"] is None:
+        stage["substate"] = queue_substate
     return {
         "repo": pr.repo, "number": pr.number, "title": pr.title, "url": pr.url,
-        "stage": stage_result(pr),
+        "stage": stage,
         "mergeStateStatus": pr.merge_state_status or None,
         "queueAheadCount": queue_ahead,
         "checks": [check_view(c) for c in head.checks] if head else [],
@@ -170,17 +179,28 @@ def dashboard_state(
     for repo in sorted(prs_by_repo):
         entries = queues.get(repo, [])
         pos = {e.pr_number: e.position for e in entries}
+        # Compute queue_view once per repo; reuse for the queue value and per-PR
+        # substate lookup (avoids calling queue_view N times, once per PR).
+        qv = queue_view(entries, trains.get(repo)) if entries else None
+        unmergeable_set: set[int] = set(qv["unmergeable"]) if qv else set()
+        blocked_set: set[int] = set(qv["queueBlocked"]) if qv else set()
         prs = []
         for p in prs_by_repo[repo]:
             position = pos.get(p.pr.number)
+            qs: str | None = (
+                "unmergeable" if p.pr.number in unmergeable_set
+                else "queue-blocked" if p.pr.number in blocked_set
+                else None
+            )
             prs.append(pr_view(
                 p,
                 queue_ahead=(position - 1) if position is not None else None,
                 fixable=_fixable(p.pr),
+                queue_substate=qs,
             ))
         repos.append({
             "repo": repo, "hasDeploy": has_deploy.get(repo, False),
             "prs": prs,
-            "queue": queue_view(entries, trains.get(repo)) if entries else None,
+            "queue": qv,
         })
     return {"generatedAt": generated_at, "staleSince": None, "repos": repos}

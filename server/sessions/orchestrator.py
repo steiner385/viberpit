@@ -3197,8 +3197,12 @@ class SessionOrchestrator:
             )
             # gh (2.x) fails with "...auto-merge is already enabled for this pull
             # request" when re-arming; that state is the caller's goal, not an error.
-            armed = merge.returncode == 0 or "already enabled" in (merge.stderr or "")
-            return {"markedReady": marked, "autoMergeArmed": armed}
+            already = merge.returncode != 0 and "already enabled" in (merge.stderr or "")
+            armed = merge.returncode == 0 or already
+            # cleanReadyToMerge requires a mergeability probe (Phase 3); honest False
+            # until that probe exists — never fabricate.
+            return {"markedReady": marked, "autoMergeArmed": armed,
+                    "alreadyArmed": already, "cleanReadyToMerge": False}
 
         return await asyncio.to_thread(_do)
 
