@@ -18,7 +18,7 @@ export function SkillsSection() {
   const pluginIds = [...new Set(pluginSkills.map((s) => s.source))]
 
   function openSkill(s: LibrarySkill) {
-    setDialog({ id: s.name, plugin: s.readonly ? s.source : undefined, readonly: s.readonly })
+    setDialog({ id: s.name, plugin: s.source !== 'user' ? s.source : undefined, readonly: s.readonly })
   }
 
   return (

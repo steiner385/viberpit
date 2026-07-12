@@ -17,7 +17,7 @@ export function CommandsSection() {
   const pluginIds = [...new Set(pluginCommands.map((c) => c.source))]
 
   function openCommand(c: LibraryCommand) {
-    setDialog({ id: c.path, plugin: c.readonly ? c.source : undefined, readonly: c.readonly })
+    setDialog({ id: c.path, plugin: c.source !== 'user' ? c.source : undefined, readonly: c.readonly })
   }
 
   return (
