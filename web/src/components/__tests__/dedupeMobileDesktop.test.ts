@@ -30,16 +30,25 @@ function read(rel: string): string {
 const dashboard = read('src/components/Dashboard.tsx')
 const desktopShell = read('src/components/DesktopShell.tsx')
 const sessionView = read('src/components/session/SessionView.tsx')
+const settingsView = read('src/components/settings/SettingsView.tsx')
 
 describe('#43 accounts/archived panels — one implementation, both breakpoints', () => {
-  it('mobile Dashboard renders the shared AccountsManager + ArchivedManager', () => {
-    expect(dashboard).toMatch(/<AccountsManager\b/)
+  // The accounts panel now lives inside the shared SettingsView (Settings tab);
+  // both shells mount that one component, which mounts the one AccountsManager.
+  it('mobile Dashboard renders the shared SettingsView + ArchivedManager', () => {
+    expect(dashboard).toMatch(/<SettingsView\b/)
     expect(dashboard).toMatch(/<ArchivedManager\b/)
   })
 
-  it('desktop DesktopShell renders the same shared AccountsManager + ArchivedManager', () => {
-    expect(desktopShell).toMatch(/<AccountsManager\b/)
+  it('desktop DesktopShell renders the same shared SettingsView + ArchivedManager', () => {
+    expect(desktopShell).toMatch(/<SettingsView\b/)
     expect(desktopShell).toMatch(/<ArchivedManager\b/)
+  })
+
+  it('SettingsView is the single mount point for the shared AccountsManager', () => {
+    expect(settingsView).toMatch(/<AccountsManager\b/)
+    expect(dashboard).not.toMatch(/<AccountsManager\b/)
+    expect(desktopShell).not.toMatch(/<AccountsManager\b/)
   })
 
   it('Dashboard does NOT re-inline the extracted account/archived internals', () => {

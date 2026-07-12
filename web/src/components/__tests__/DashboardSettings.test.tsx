@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { Dashboard } from '../Dashboard'
 import * as hooks from '@/api/hooks'
 
@@ -31,6 +32,7 @@ vi.mock('@/api/hooks', () => ({
   useReauthAccount: vi.fn(),
   useReauthStatus: vi.fn(),
   useCancelReauth: vi.fn(),
+  useSubmitReauthCode: vi.fn(),
   useArchivedSessions: vi.fn(),
   useUnarchiveSession: vi.fn(),
   usePermanentDeleteSession: vi.fn(),
@@ -73,7 +75,12 @@ const SETTINGS = {
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  // MemoryRouter: the Settings tab's SettingsView keeps its section in ?section=.
+  return (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
 }
 
 describe('Dashboard — settings integration', () => {
@@ -156,28 +163,17 @@ describe('Dashboard — settings integration', () => {
     expect(screen.getByRole('button', { name: /settings/i })).toBeInTheDocument()
   })
 
-  it('opens the Settings dialog when the Settings button is clicked', async () => {
+  it('switches to the Settings tab when the Settings button is clicked', async () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
 
-    await user.click(screen.getByRole('button', { name: /settings/i }))
+    await user.click(screen.getByRole('button', { name: /^settings$/i }))
 
-    expect(screen.getByRole('dialog', { name: /settings/i })).toBeInTheDocument()
-  })
-
-  it('closes the Settings dialog when Close is clicked inside it', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    await user.click(screen.getByRole('button', { name: /settings/i }))
-    expect(screen.getByRole('dialog', { name: /settings/i })).toBeInTheDocument()
-
-    // The SettingsPanel's close button (not Cancel — it's labeled "Close")
-    await user.click(screen.getByRole('button', { name: /^close$/i }))
-
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: /settings/i })).not.toBeInTheDocument()
-    })
+    const strip = within(screen.getByRole('tablist', { name: /dashboard sections/i }))
+    expect(strip.getByRole('tab', { name: /settings/i })).toHaveAttribute('aria-selected', 'true')
+    // The General section form renders inline — no modal dialog.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByLabelText(/default tool approvals/i)).toBeInTheDocument()
   })
 
   // ── New session dialog — Tool approvals ────────────────────────────────

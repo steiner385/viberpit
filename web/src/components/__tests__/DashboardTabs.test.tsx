@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { Dashboard } from '../Dashboard'
 import * as hooks from '@/api/hooks'
 import type { Account, Session } from '@/api/types'
@@ -89,7 +90,17 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  // MemoryRouter: the Settings tab's SettingsView keeps its section in ?section=.
+  return (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
+}
+
+/** The top-level tab strip (distinct from the Settings tab's inner section strip). */
+function topTabs() {
+  return within(screen.getByRole('tablist', { name: /dashboard sections/i }))
 }
 
 function setupDefaultMocks() {
@@ -116,17 +127,17 @@ function setupDefaultMocks() {
   vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
 }
 
-describe('Dashboard — Sessions/Accounts tabs', () => {
+describe('Dashboard — Sessions/Settings tabs', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setupDefaultMocks()
   })
 
-  it('renders both Sessions and Accounts tabs', () => {
+  it('renders both Sessions and Settings tabs', () => {
     render(<Dashboard />, { wrapper })
 
     expect(screen.getByRole('tab', { name: /sessions/i })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /accounts/i })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /settings/i })).toBeInTheDocument()
   })
 
   it('Sessions tab is selected by default', () => {
@@ -135,8 +146,8 @@ describe('Dashboard — Sessions/Accounts tabs', () => {
     const sessionsTab = screen.getByRole('tab', { name: /sessions/i })
     expect(sessionsTab).toHaveAttribute('aria-selected', 'true')
 
-    const accountsTab = screen.getByRole('tab', { name: /accounts/i })
-    expect(accountsTab).toHaveAttribute('aria-selected', 'false')
+    const settingsTab = screen.getByRole('tab', { name: /settings/i })
+    expect(settingsTab).toHaveAttribute('aria-selected', 'false')
   })
 
   it('Sessions panel is visible by default', () => {
@@ -157,7 +168,7 @@ describe('Dashboard — Sessions/Accounts tabs', () => {
     expect(screen.queryByRole('region', { name: /account status/i })).not.toBeInTheDocument()
   })
 
-  it('clicking Accounts tab switches to the Accounts panel', async () => {
+  it('clicking Settings tab then the Accounts section shows the accounts manager', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'work' })],
@@ -166,16 +177,18 @@ describe('Dashboard — Sessions/Accounts tabs', () => {
 
     render(<Dashboard />, { wrapper })
 
-    await user.click(screen.getByRole('tab', { name: /accounts/i }))
+    await user.click(topTabs().getByRole('tab', { name: /settings/i }))
+    expect(topTabs().getByRole('tab', { name: /settings/i })).toHaveAttribute('aria-selected', 'true')
 
-    const accountsTab = screen.getByRole('tab', { name: /accounts/i })
-    expect(accountsTab).toHaveAttribute('aria-selected', 'true')
+    // The inner section strip renders; switch to its Accounts section.
+    const sections = within(screen.getByRole('tablist', { name: /settings sections/i }))
+    await user.click(sections.getByRole('tab', { name: /accounts/i }))
 
     // The Accounts region content should be visible
     expect(screen.getByText('work')).toBeInTheDocument()
   })
 
-  it('clicking Sessions tab after Accounts switches back', async () => {
+  it('clicking Sessions tab after Settings switches back', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useSessions).mockReturnValue({
       data: [makeSession({ name: 'My Session' })],
@@ -184,12 +197,12 @@ describe('Dashboard — Sessions/Accounts tabs', () => {
 
     render(<Dashboard />, { wrapper })
 
-    // Switch to Accounts
-    await user.click(screen.getByRole('tab', { name: /accounts/i }))
+    // Switch to Settings
+    await user.click(topTabs().getByRole('tab', { name: /settings/i }))
     // Switch back to Sessions
-    await user.click(screen.getByRole('tab', { name: /sessions/i }))
+    await user.click(topTabs().getByRole('tab', { name: /sessions/i }))
 
-    const sessionsTab = screen.getByRole('tab', { name: /sessions/i })
+    const sessionsTab = topTabs().getByRole('tab', { name: /sessions/i })
     expect(sessionsTab).toHaveAttribute('aria-selected', 'true')
   })
 
@@ -197,21 +210,21 @@ describe('Dashboard — Sessions/Accounts tabs', () => {
     render(<Dashboard />, { wrapper })
 
     const sessionsTab = screen.getByRole('tab', { name: /sessions/i })
-    const accountsTab = screen.getByRole('tab', { name: /accounts/i })
+    const settingsTab = screen.getByRole('tab', { name: /settings/i })
 
     const sessionsControlId = sessionsTab.getAttribute('aria-controls')
-    const accountsControlId = accountsTab.getAttribute('aria-controls')
+    const settingsControlId = settingsTab.getAttribute('aria-controls')
 
     expect(sessionsControlId).toBeTruthy()
-    expect(accountsControlId).toBeTruthy()
-    expect(sessionsControlId).not.toBe(accountsControlId)
+    expect(settingsControlId).toBeTruthy()
+    expect(sessionsControlId).not.toBe(settingsControlId)
 
     // The active panel's id should match its tab's aria-controls
     const panel = screen.getByRole('tabpanel')
     expect(panel.id).toBe(sessionsControlId)
   })
 
-  it('arrow-right moves focus from Sessions to Accounts tab', async () => {
+  it('arrow-right moves focus from Sessions to Pipeline tab', async () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
 
@@ -219,21 +232,21 @@ describe('Dashboard — Sessions/Accounts tabs', () => {
     sessionsTab.focus()
     await user.keyboard('{ArrowRight}')
 
-    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /accounts/i }))
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /pipeline/i }))
   })
 
-  it('arrow-left moves focus from Accounts to Sessions tab', async () => {
+  it('arrow-left moves focus from Pipeline to Sessions tab', async () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
 
-    const accountsTab = screen.getByRole('tab', { name: /accounts/i })
-    accountsTab.focus()
+    const pipelineTab = screen.getByRole('tab', { name: /pipeline/i })
+    pipelineTab.focus()
     await user.keyboard('{ArrowLeft}')
 
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: /sessions/i }))
   })
 
-  it('shows needs-reauth badge on Accounts tab when any account needs reauth', () => {
+  it('shows needs-reauth badge on Settings tab when any account needs reauth', () => {
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({ name: 'work', status: 'needs-reauth' })],
       isLoading: false,
@@ -241,10 +254,10 @@ describe('Dashboard — Sessions/Accounts tabs', () => {
 
     render(<Dashboard />, { wrapper })
 
-    // The Accounts tab should have a visible indicator (a badge element)
+    // The Settings tab should have a visible indicator (a badge element)
     // and the tab's accessible label should mention "needs attention"
-    const accountsTab = screen.getByRole('tab', { name: /accounts.*needs attention/i })
-    expect(accountsTab).toBeInTheDocument()
+    const settingsTab = screen.getByRole('tab', { name: /settings.*needs attention/i })
+    expect(settingsTab).toBeInTheDocument()
   })
 
   it('does NOT show needs-reauth badge when no account needs reauth', () => {
@@ -256,9 +269,9 @@ describe('Dashboard — Sessions/Accounts tabs', () => {
     render(<Dashboard />, { wrapper })
 
     // Tab name should NOT include "needs attention"
-    expect(screen.queryByRole('tab', { name: /accounts.*needs attention/i })).not.toBeInTheDocument()
-    // But the Accounts tab itself should still exist
-    expect(screen.getByRole('tab', { name: /accounts/i })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /settings.*needs attention/i })).not.toBeInTheDocument()
+    // But the Settings tab itself should still exist
+    expect(screen.getByRole('tab', { name: /settings/i })).toBeInTheDocument()
   })
 
   it('shows needs-reauth badge for needs-relogin status too', () => {
@@ -269,8 +282,8 @@ describe('Dashboard — Sessions/Accounts tabs', () => {
 
     render(<Dashboard />, { wrapper })
 
-    const accountsTab = screen.getByRole('tab', { name: /accounts.*needs attention/i })
-    expect(accountsTab).toBeInTheDocument()
+    const settingsTab = screen.getByRole('tab', { name: /settings.*needs attention/i })
+    expect(settingsTab).toBeInTheDocument()
   })
 
   it('New session button is reachable on the Sessions tab', () => {

@@ -18,27 +18,25 @@ export interface TabDef {
 /** Canonical tab order + labels. */
 export const TAB_DEFS: { id: TabId; label: string }[] = [
   { id: 'sessions', label: 'Sessions' },
-  { id: 'accounts', label: 'Accounts' },
   { id: 'pipeline', label: 'Pipeline' },
   { id: 'archived', label: 'Archived' },
-  { id: 'automation', label: 'Automation' },
-  { id: 'library', label: 'Library' },
   { id: 'insights', label: 'Insights' },
+  { id: 'settings', label: 'Settings' },
 ]
 
 /** Live counts/flags that decorate the canonical tabs with badges. */
 export interface TabCounts {
   sessions?: number
-  accounts?: number
   pipeline?: number
   archived?: number
-  accountsAttention?: boolean
+  /** Amber dot on Settings — an account needs re-auth (Accounts section). */
+  settingsAttention?: boolean
 }
 
 export function buildTabs(counts: TabCounts): TabDef[] {
   return TAB_DEFS.map((t) => ({
     ...t,
     count: counts[t.id as keyof TabCounts] as number | undefined,
-    attention: t.id === 'accounts' ? counts.accountsAttention : undefined,
+    attention: t.id === 'settings' ? counts.settingsAttention : undefined,
   }))
 }

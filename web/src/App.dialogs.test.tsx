@@ -70,9 +70,14 @@ describe('URL-addressable dialogs', () => {
     expect(await screen.findByRole('dialog', { name: /new session/i })).toBeInTheDocument()
   })
 
-  it('opens the Settings dialog from ?dialog=settings', async () => {
+  it('redirects legacy ?dialog=settings to the Settings tab', async () => {
     renderAt('/sessions?dialog=settings')
-    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByTestId('search')).not.toHaveTextContent('dialog=settings')
+    })
+    // The Settings tab renders its inner section strip — no modal dialog.
+    expect(await screen.findByRole('tablist', { name: /settings sections/i })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('sets ?dialog=new when the New button is clicked', async () => {

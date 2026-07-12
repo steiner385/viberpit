@@ -166,17 +166,16 @@ test.describe('T044 — Dashboard', () => {
     // Wait for the shell to settle.
     await expect(page.getByText('Work session')).toBeVisible()
 
-    // All seven sections render as tabs in the strip — nothing is dropped on a
-    // narrow viewport.
+    // All five sections render as tabs in the strip — nothing is dropped on a
+    // narrow viewport. (Accounts/Automation/Library live inside Settings now.)
     const tablist = page.getByRole('tablist', { name: /dashboard sections/i })
-    await expect(tablist.getByRole('tab')).toHaveCount(7)
-    for (const name of [/sessions/i, /accounts/i, /pipeline/i, /archived/i, /automation/i, /library/i, /insights/i]) {
+    await expect(tablist.getByRole('tab')).toHaveCount(5)
+    for (const name of [/sessions/i, /pipeline/i, /archived/i, /insights/i, /settings/i]) {
       await expect(tablist.getByRole('tab', { name })).toHaveCount(1)
     }
 
-    // Count badges follow the "Archived 111" pattern: 1 live session, 1 account.
+    // Count badges follow the "Archived 111" pattern: 1 live session.
     await expect(tablist.getByRole('tab', { name: /sessions \(1\)/i })).toBeVisible()
-    await expect(tablist.getByRole('tab', { name: /accounts \(1\)/i })).toBeVisible()
 
     // The strip itself scrolls horizontally rather than widening the page, so the
     // body never overflows the viewport.
@@ -187,10 +186,10 @@ test.describe('T044 — Dashboard', () => {
     // An off-screen tab (last in the strip) is still reachable: scroll to it,
     // click it, and confirm it activates. This is the core "reachable on mobile"
     // guarantee.
-    const insights = tablist.getByRole('tab', { name: /insights/i })
-    await insights.scrollIntoViewIfNeeded()
-    await insights.click()
-    await expect(insights).toHaveAttribute('aria-selected', 'true')
+    const settings = tablist.getByRole('tab', { name: /settings/i })
+    await settings.scrollIntoViewIfNeeded()
+    await settings.click()
+    await expect(settings).toHaveAttribute('aria-selected', 'true')
 
     await page.screenshot({ path: 'test-results/mobile-header-tabs.png' })
   })

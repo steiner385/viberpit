@@ -17,7 +17,7 @@
  * via SessionRuntimeProvider keyed by the focused id.
  */
 
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Plus, Settings, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SessionGoalText } from './session/SessionGoalText'
@@ -28,14 +28,11 @@ import { AllLimitedBanner } from './AllLimitedBanner'
 import { DeployPanel } from './DeployPanel'
 import { HelpDrawer } from './HelpDrawer'
 import { useGlobalHelpKey } from './useGlobalHelpKey'
-import { SettingsPanel } from './settings/SettingsPanel'
-import { AccountsManager } from './AccountsManager'
+import { SettingsView } from './settings/SettingsView'
 import { ArchivedManager } from './ArchivedManager'
 import { PipelineTab } from '@/pipeline/PipelineTab'
 import { AdoptPanel } from './AdoptPanel'
-import { AutomationView } from './AutomationView'
 import { InsightsView } from './InsightsView'
-import { LibraryView } from './library/LibraryView'
 import { ReviewView } from './ReviewView'
 import { SidebarResizer } from './SidebarResizer'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
@@ -70,7 +67,7 @@ import { useSessionSearch } from '@/session/useSessionSearch'
 import { useListNavigation } from '@/session/useListNavigation'
 import { nextVisibleSessionId } from '@/session/nextAfterArchive'
 
-type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline' | 'automation' | 'library' | 'insights'
+type TabId = 'sessions' | 'archived' | 'pipeline' | 'insights' | 'settings'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
 
 // ── Session subtree (rendered only under SessionRuntimeProvider) ──────────────
@@ -147,7 +144,6 @@ export function DesktopShell() {
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth()
   const [selection, setSelection] = useState<Target>({ type: 'new' })
   const [reviewId, setReviewId] = useState<string | null>(null)
-  const [showSettings, setShowSettings] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
   const [sessionDeleteTarget, setSessionDeleteTarget] = useState<{ id: string; name: string } | null>(null)
@@ -167,8 +163,6 @@ export function DesktopShell() {
 
   // `?` opens the help slide-out from anywhere on the sessions tab.
   useGlobalHelpKey({ enabled: tab === 'sessions', onShowHelp: () => setShowHelp(true) })
-
-  const settingsButtonRef = useRef<HTMLButtonElement>(null)
 
   const selectedSessionId = selection.type === 'session' ? selection.id : null
 
@@ -322,7 +316,7 @@ export function DesktopShell() {
             if (body?.error?.code === 'branch_switch_failed') {
               // branch errors are handled elsewhere; ignore here
             } else if (body?.error?.code === 'accounts_need_reauth') {
-              toast.error('No usable accounts — check the Accounts tab to re-authenticate.')
+              toast.error('No usable accounts — check Settings → Accounts to re-authenticate.')
             } else {
               setAllLimitedReset(body.earliestReset ?? null)
             }
@@ -341,10 +335,9 @@ export function DesktopShell() {
   const { data: prs = [] } = useAllPrs()
   const tabs = buildTabs({
     sessions: orderedSessions.length,
-    accounts: accounts.length,
     pipeline: inFlightPrCount(prs),
     archived: archivedSessions.length,
-    accountsAttention: hasNeedsReauth,
+    settingsAttention: hasNeedsReauth,
   })
 
   // Auto-clear the all-limited banner once any account becomes selectable.
@@ -439,20 +432,16 @@ export function DesktopShell() {
   )
 
   let mainPane: React.ReactNode
-  if (tab === 'accounts') {
-    mainPane = <div className="p-4 overflow-y-auto h-full"><AccountsManager /></div>
-  } else if (tab === 'archived') {
+  if (tab === 'archived') {
     mainPane = reviewId
       ? <ReviewView sessionId={reviewId} onBack={() => setReviewId(null)} />
       : <div className="p-4 overflow-y-auto h-full"><ArchivedManager onReviewSession={setReviewId} /></div>
   } else if (tab === 'pipeline') {
     mainPane = <div className="flex flex-col h-full"><PipelineTab /></div>
-  } else if (tab === 'automation') {
-    mainPane = <div className="p-4 overflow-y-auto h-full"><AutomationView onOpenSession={focusSession} /></div>
   } else if (tab === 'insights') {
     mainPane = <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
-  } else if (tab === 'library') {
-    mainPane = <div className="p-4 overflow-y-auto h-full"><LibraryView /></div>
+  } else if (tab === 'settings') {
+    mainPane = <div className="p-4 overflow-y-auto h-full"><SettingsView onOpenSession={focusSession} /></div>
   } else {
     mainPane = selection.type === 'session'
       ? <MainPaneSession sessionId={selection.id} onClosed={() => setSelection(advanceFrom(selection.id))} />
@@ -522,9 +511,8 @@ export function DesktopShell() {
             <HelpCircle size={18} aria-hidden="true" />
           </button>
           <button
-            ref={settingsButtonRef}
             type="button"
-            onClick={() => setShowSettings(true)}
+            onClick={() => setTab('settings')}
             aria-label="Settings"
             className={iconBtn}
           >
@@ -573,9 +561,6 @@ export function DesktopShell() {
         />
       )}
       {showHelp && <HelpDrawer onClose={() => setShowHelp(false)} />}
-      {showSettings && (
-        <SettingsPanel onClose={() => { setShowSettings(false); settingsButtonRef.current?.focus() }} />
-      )}
     </div>
   )
 
