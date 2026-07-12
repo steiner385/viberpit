@@ -4,15 +4,18 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { ConsolidatePanel } from './ConsolidatePanel'
 
 const mutate = vi.fn()
+const baseGroup = () => ({
+  candidates: [
+    { number: 1, title: 'fix(deploy): a', url: 'u1', checks: 'passing', mergeable: 'MERGEABLE', updated_at: '', scope: 'deploy' },
+    { number: 2, title: 'fix(deploy): b', url: 'u2', checks: 'passing', mergeable: 'MERGEABLE', updated_at: '', scope: 'deploy' },
+  ],
+  clusters: [{ numbers: [1, 2], rationale: '2 PRs share scope `deploy`, all green', risk: 'low' }],
+  active: [] as { session_id: string; numbers: number[] }[],
+})
+let group = baseGroup()
 vi.mock('@/api/hooks', () => ({
   useConsolidation: () => ({
-    data: { repos: { 'o/r': {
-      candidates: [
-        { number: 1, title: 'fix(deploy): a', url: 'u1', checks: 'passing', mergeable: 'MERGEABLE', updated_at: '', scope: 'deploy' },
-        { number: 2, title: 'fix(deploy): b', url: 'u2', checks: 'passing', mergeable: 'MERGEABLE', updated_at: '', scope: 'deploy' },
-      ],
-      clusters: [{ numbers: [1, 2], rationale: '2 PRs share scope `deploy`, all green', risk: 'low' }],
-    } } },
+    data: { repos: { 'o/r': group } },
     isLoading: false,
   }),
   useConsolidate: () => ({ mutateAsync: mutate, isPending: false }),
@@ -23,7 +26,11 @@ vi.mock('@/api/hooks', () => ({
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() } }))
 
 describe('ConsolidatePanel', () => {
-  beforeEach(() => { mutate.mockReset(); mutate.mockResolvedValue({ status: 'spawned', level: 'ok', message: 'ok' }) })
+  beforeEach(() => {
+    group = baseGroup()
+    mutate.mockReset()
+    mutate.mockResolvedValue({ status: 'spawned', level: 'ok', message: 'ok' })
+  })
 
   it('renders candidate rows and a cluster chip', () => {
     render(<ConsolidatePanel enabled />)
@@ -47,5 +54,20 @@ describe('ConsolidatePanel', () => {
     fireEvent.click(screen.getByText(/2 PRs share scope/))
     expect(screen.getByLabelText('select PR 1')).toBeChecked()
     expect(screen.getByLabelText('select PR 2')).toBeChecked()
+  })
+
+  it('shows no underway indicator when no consolidation session is live', () => {
+    render(<ConsolidatePanel enabled />)
+    expect(screen.queryByRole('button', { name: /consolidation underway/i })).toBeNull()
+  })
+
+  it('flags rows covered by a live consolidation and links to its session', () => {
+    group.active = [{ session_id: 's1', numbers: [1, 2] }]
+    const onOpenSession = vi.fn()
+    render(<ConsolidatePanel enabled onOpenSession={onOpenSession} />)
+    const badges = screen.getAllByRole('button', { name: /consolidation underway/i })
+    expect(badges).toHaveLength(2)
+    fireEvent.click(badges[0])
+    expect(onOpenSession).toHaveBeenCalledWith('s1')
   })
 })

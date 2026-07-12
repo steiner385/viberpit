@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from server.automations.consolidation_engine import (
-    ConsolidationCandidate, derive_scope, suggest_clusters, validate_selection,
+    ConsolidationCandidate, consolidation_target, derive_scope,
+    parse_consolidation_target, suggest_clusters, validate_selection,
 )
 
 
@@ -48,3 +49,16 @@ def test_validate_selection_requires_at_least_two_distinct():
     assert validate_selection([_c(1)]) == "too_few"
     assert validate_selection([_c(1), _c(1)]) == "too_few"
     assert validate_selection([_c(1), _c(2)]) is None
+
+
+def test_consolidation_target_round_trip():
+    target = consolidation_target("o/r", [2, 1, 2])
+    assert target == "consolidate:o/r#1+2"
+    assert parse_consolidation_target(target) == ("o/r", [1, 2])
+
+
+def test_parse_consolidation_target_rejects_foreign_or_malformed_refs():
+    assert parse_consolidation_target("pr:o/r#5") is None
+    assert parse_consolidation_target("consolidate:o/r") is None
+    assert parse_consolidation_target("consolidate:o/r#") is None
+    assert parse_consolidation_target("consolidate:o/r#1+x") is None
