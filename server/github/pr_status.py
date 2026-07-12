@@ -106,6 +106,9 @@ class PullRequestInfo:
     is_draft: bool = False
     merged: bool = False
     updated_at: str = ""
+    created_at: str = ""          # GraphQL createdAt — timeline waypoint (SPEC §2)
+    merged_at: str = ""           # GraphQL mergedAt — merge waypoint / insert trigger (§2)
+    merge_commit_sha: str = ""    # GraphQL mergeCommit.oid — deploy-ancestry key (§2/§3)
     checks_detail: tuple[CheckDetail, ...] = ()
     stage: str = ""  # open-stage classifier output: 'ci' | 'ready' | 'parked' | ''
     repo: str = ""  # nameWithOwner, e.g. "owner/name"; populated by the population poller
@@ -134,6 +137,9 @@ class PullRequestInfo:
             "is_draft": self.is_draft,
             "merged": self.merged,
             "updated_at": self.updated_at,
+            "created_at": self.created_at,
+            "merged_at": self.merged_at,
+            "merge_commit_sha": self.merge_commit_sha,
             "checks_detail": [c.to_dict() for c in self.checks_detail],
             "stage": self.stage,
             "repo": self.repo,
@@ -165,6 +171,9 @@ class PullRequestInfo:
             is_draft=d.get("is_draft", False),
             merged=d.get("merged", False),
             updated_at=d.get("updated_at", ""),
+            created_at=d.get("created_at", ""),
+            merged_at=d.get("merged_at", ""),
+            merge_commit_sha=d.get("merge_commit_sha", ""),
             checks_detail=tuple(CheckDetail.from_dict(c) for c in d.get("checks_detail", [])),
             stage=d.get("stage", ""),
             repo=d.get("repo", ""),
@@ -219,7 +228,8 @@ def _alias(i: int) -> str:
 # Shared PR-node selection so build_pr_query (per-branch) and the population
 # query (per-repo) can never drift in which fields they fetch.
 _PR_NODE_FIELDS = (
-    "number url title state isDraft updatedAt mergedAt headRefName headRefOid mergeStateStatus mergeable\n"
+    "number url title state isDraft createdAt updatedAt mergedAt headRefName headRefOid mergeStateStatus mergeable\n"
+    "      mergeCommit { oid }\n"
     "      autoMergeRequest { enabledAt }\n"
     "      mergeQueueEntry { state }\n"
     "      commits(last: 1) { nodes { commit { statusCheckRollup { state\n"
@@ -541,6 +551,9 @@ def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
         is_draft=bool(pr.get("isDraft")),
         merged=(state == "merged"),
         updated_at=pr.get("updatedAt", ""),
+        created_at=pr.get("createdAt", "") or "",
+        merged_at=merged_at or "",
+        merge_commit_sha=(pr.get("mergeCommit") or {}).get("oid", "") or "",
         checks_detail=_checks_detail(pr),
         stage=stage,
         deployed_envs=deployed_envs,
