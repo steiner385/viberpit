@@ -367,6 +367,7 @@ export interface LibraryPlugin {
   description?: string | null
   category?: string | null
   components: LibraryComponentCounts
+  tokenCost?: { alwaysOn: number; onInvoke: number } | null
 }
 
 export interface LibraryPluginDetail extends LibraryPlugin {

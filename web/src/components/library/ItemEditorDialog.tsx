@@ -6,6 +6,7 @@ import {
   useDeleteLibraryItem,
 } from '@/api/hooks'
 import type { LibraryItemKind } from '@/api/hooks'
+import { ApiRequestError } from '@/api/client'
 
 interface ItemEditorDialogProps {
   kind: LibraryItemKind
@@ -19,19 +20,21 @@ interface ItemEditorDialogProps {
 
 // --- Validation helpers ---
 
-/** Skills: lowercase slug segments joined with hyphens */
+/** Skills: lowercase slug segments joined with hyphens, max 64 chars */
 function isValidSkillName(name: string): boolean {
-  return /^[a-z0-9][a-z0-9-]*$/.test(name)
+  return /^[a-z0-9][a-z0-9-]{0,63}$/.test(name)
 }
 
 /**
- * Commands: slug segments joined by '/'; each segment `^[A-Za-z0-9][A-Za-z0-9._-]*$`;
- * max 4 segments.
+ * Commands: slug segments joined by '/'; each segment `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`;
+ * max 4 segments; no segment may end in '.md'.
  */
 function isValidCommandPath(path: string): boolean {
   const segments = path.split('/')
   if (segments.length < 1 || segments.length > 4) return false
-  return segments.every((seg) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(seg))
+  return segments.every(
+    (seg) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(seg) && !seg.endsWith('.md'),
+  )
 }
 
 function isValidId(kind: LibraryItemKind, id: string): boolean {
@@ -61,6 +64,9 @@ export function ItemEditorDialog({ kind, id, plugin, readonly = false, onClose }
   // For edit mode: derive from query data until the user edits (isDirty state).
   const [editedContent, setEditedContent] = useState(() => isCreate ? starterTemplate(kind, '') : '')
   const [isDirty, setIsDirty] = useState(false)
+
+  // Error state for save/delete mutations
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   // Hooks
   const contentQuery = useLibraryItemContent(kind, id ?? '', plugin)
@@ -108,18 +114,42 @@ export function ItemEditorDialog({ kind, id, plugin, readonly = false, onClose }
 
   const effectiveId = isCreate ? newName : id!
   const nameIsValid = !isCreate || isValidId(kind, newName)
-  const canSave = !saveMutation.isPending && nameIsValid && effectiveId.length > 0
+  // Also gate on: content loaded (edit mode), and no in-flight delete
+  const contentLoading = !isCreate && contentQuery.data === undefined
+  const canSave = !saveMutation.isPending && !deleteMutation.isPending && nameIsValid && effectiveId.length > 0 && !contentLoading
 
   const isReadonly = readonly || contentQuery.data?.readonly === true
 
+  function extractErrorMessage(err: unknown): string {
+    if (err instanceof ApiRequestError && typeof err.body === 'object' && err.body !== null && 'detail' in err.body) {
+      const detail = (err.body as Record<string, unknown>)['detail']
+      return typeof detail === 'string' ? detail : err.message
+    }
+    return err instanceof Error ? err.message : String(err)
+  }
+
   function handleSave() {
     if (!canSave) return
-    saveMutation.mutate({ id: effectiveId, content }, { onSuccess: () => onClose() })
+    setSaveError(null)
+    saveMutation.mutate(
+      { id: effectiveId, content },
+      {
+        onSuccess: () => onClose(),
+        onError: (err) => setSaveError(extractErrorMessage(err)),
+      },
+    )
   }
 
   function handleDelete() {
     if (!window.confirm(`Delete "${effectiveId}"?`)) return
-    deleteMutation.mutate({ id: effectiveId }, { onSuccess: () => onClose() })
+    setSaveError(null)
+    deleteMutation.mutate(
+      { id: effectiveId },
+      {
+        onSuccess: () => onClose(),
+        onError: (err) => setSaveError(extractErrorMessage(err)),
+      },
+    )
   }
 
   // Title
@@ -205,8 +235,14 @@ export function ItemEditorDialog({ kind, id, plugin, readonly = false, onClose }
           value={content}
           onChange={(e) => handleContentChange(e.target.value)}
           readOnly={isReadonly}
+          disabled={contentLoading}
           className="font-mono text-sm w-full h-72 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y disabled:opacity-60"
         />
+
+        {/* Save/delete error */}
+        {saveError && (
+          <p className="text-xs text-red-600 dark:text-red-400" role="alert">{saveError}</p>
+        )}
 
         {/* Footer */}
         <div className="flex gap-3 justify-end pt-2">
@@ -221,7 +257,7 @@ export function ItemEditorDialog({ kind, id, plugin, readonly = false, onClose }
             <button
               type="button"
               onClick={handleDelete}
-              disabled={deleteMutation.isPending}
+              disabled={deleteMutation.isPending || saveMutation.isPending}
               className="rounded border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 px-3 py-2 text-sm hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-60"
             >
               Delete

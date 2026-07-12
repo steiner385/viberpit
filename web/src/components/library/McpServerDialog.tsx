@@ -91,8 +91,13 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
   const [command, setCommand] = useState(server?.config.command ?? '')
   const [argsText, setArgsText] = useState((server?.config.args ?? []).join('\n'))
   const [envText, setEnvText] = useState(serializeKV(server?.config.env))
-  const [url, setUrl] = useState(server?.config.url ?? '')
+  const [url, setUrl] = useState(
+    server?.config.url ?? (server?.config as Record<string, unknown>)?.httpUrl as string ?? ''
+  )
   const [headersText, setHeadersText] = useState(serializeHeaders(server?.config.headers))
+
+  // Track whether the user has modified form fields (for pristine JSON mode)
+  const [formIsDirty, setFormIsDirty] = useState(false)
 
   // JSON toggle mode
   const [jsonMode, setJsonMode] = useState(false)
@@ -105,10 +110,14 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
   const saveMutation = useSaveMcpServer()
   const deleteMutation = useDeleteMcpServer()
 
-  // When entering JSON mode, serialize current form state to JSON
+  // When entering JSON mode, use server.config for a pristine edit form
   function enterJsonMode() {
-    const cfg = buildConfig(transport, command, argsText, envText, url, headersText)
-    setJsonText(JSON.stringify(cfg, null, 2))
+    if (!isCreate && server && !formIsDirty) {
+      setJsonText(JSON.stringify(server.config, null, 2))
+    } else {
+      const cfg = buildConfig(transport, command, argsText, envText, url, headersText)
+      setJsonText(JSON.stringify(cfg, null, 2))
+    }
     setJsonError(null)
     setJsonMode(true)
   }
@@ -171,7 +180,22 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
         return
       }
     } else {
-      config = buildConfig(transport, command, argsText, envText, url, headersText)
+      const builtFields = buildConfig(transport, command, argsText, envText, url, headersText)
+      if (!isCreate && server) {
+        config = { ...server.config, ...builtFields }
+        // Remove stale transport-specific keys after switching transport
+        if (transport === 'stdio') {
+          delete config.url
+          delete config.httpUrl
+          delete config.headers
+        } else {
+          delete config.command
+          delete config.args
+          delete config.env
+        }
+      } else {
+        config = builtFields
+      }
     }
 
     saveMutation.mutate(
@@ -302,7 +326,7 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
                     ref={(el) => { if (!isCreate) firstFieldRef.current = el }}
                     id="mcp-transport"
                     value={transport}
-                    onChange={(e) => setTransport(e.target.value as Transport)}
+                    onChange={(e) => { setTransport(e.target.value as Transport); setFormIsDirty(true) }}
                     aria-label="Transport"
                     className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
@@ -326,7 +350,7 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
                         id="mcp-command"
                         type="text"
                         value={command}
-                        onChange={(e) => setCommand(e.target.value)}
+                        onChange={(e) => { setCommand(e.target.value); setFormIsDirty(true) }}
                         placeholder="npx"
                         aria-label="Command"
                         className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -344,7 +368,7 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
                       <textarea
                         id="mcp-args"
                         value={argsText}
-                        onChange={(e) => setArgsText(e.target.value)}
+                        onChange={(e) => { setArgsText(e.target.value); setFormIsDirty(true) }}
                         placeholder="-y&#10;some-mcp-package"
                         aria-label="Args"
                         className="font-mono text-sm w-full h-24 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
@@ -362,7 +386,7 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
                       <textarea
                         id="mcp-env"
                         value={envText}
-                        onChange={(e) => setEnvText(e.target.value)}
+                        onChange={(e) => { setEnvText(e.target.value); setFormIsDirty(true) }}
                         placeholder="API_KEY=secret"
                         aria-label="Env"
                         className="font-mono text-sm w-full h-24 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
@@ -383,7 +407,7 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
                         id="mcp-url"
                         type="text"
                         value={url}
-                        onChange={(e) => setUrl(e.target.value)}
+                        onChange={(e) => { setUrl(e.target.value); setFormIsDirty(true) }}
                         placeholder="https://example.com/mcp"
                         aria-label="URL"
                         className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -401,7 +425,7 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
                       <textarea
                         id="mcp-headers"
                         value={headersText}
-                        onChange={(e) => setHeadersText(e.target.value)}
+                        onChange={(e) => { setHeadersText(e.target.value); setFormIsDirty(true) }}
                         placeholder="Authorization: Bearer token"
                         aria-label="Headers"
                         className="font-mono text-sm w-full h-24 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"

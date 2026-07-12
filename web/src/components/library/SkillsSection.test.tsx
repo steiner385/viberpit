@@ -131,4 +131,77 @@ describe('SkillsSection', () => {
     // Close / Cancel present
     expect(screen.getByRole('button', { name: /cancel/i })).toBeTruthy()
   })
+
+  // (e) Textarea disabled while content is loading
+  it('textarea is disabled while content is loading', async () => {
+    // Replace the content GET with a never-resolving promise
+    vi.mocked(api.get).mockImplementation((path: string) => {
+      if (path === '/library/skills') return Promise.resolve(skillsResponse)
+      if (path === '/library/skills/my-skill') return new Promise(() => {}) // never resolves
+      return Promise.resolve({})
+    })
+
+    renderSection()
+
+    const skillRow = await screen.findByRole('button', { name: /my-skill/i })
+    await userEvent.click(skillRow)
+
+    // Dialog opens
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+
+    // Textarea should be disabled while loading
+    const textarea = screen.getByRole('textbox', { name: /content/i })
+    expect(textarea).toHaveAttribute('disabled')
+  })
+
+  // (f) Save error is shown when mutation fails
+  it('shows error message when save mutation fails', async () => {
+    vi.mocked(api.put).mockRejectedValue(new Error('name too long'))
+
+    renderSection()
+    const newBtn = await screen.findByRole('button', { name: /new skill/i })
+    await userEvent.click(newBtn)
+
+    const nameInput = screen.getByPlaceholderText('my-skill')
+    await userEvent.clear(nameInput)
+    await userEvent.type(nameInput, 'valid-skill')
+
+    const saveBtn = screen.getByRole('button', { name: /^save$/i })
+    await userEvent.click(saveBtn)
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeTruthy()
+      expect(screen.getByText('name too long')).toBeTruthy()
+    })
+  })
+
+  // (g) Skill name validation: 65-char name is invalid
+  it('rejects a 65-character skill name', async () => {
+    renderSection()
+    const newBtn = await screen.findByRole('button', { name: /new skill/i })
+    await userEvent.click(newBtn)
+
+    const nameInput = screen.getByPlaceholderText('my-skill')
+    await userEvent.clear(nameInput)
+    await userEvent.type(nameInput, 'a'.repeat(65))
+
+    // Save button should be disabled (name too long)
+    const saveBtn = screen.getByRole('button', { name: /^save$/i })
+    expect(saveBtn).toBeDisabled()
+  })
+
+  // (h) Skill name validation: valid 64-char name is accepted
+  it('accepts a 64-character skill name', async () => {
+    renderSection()
+    const newBtn = await screen.findByRole('button', { name: /new skill/i })
+    await userEvent.click(newBtn)
+
+    const nameInput = screen.getByPlaceholderText('my-skill')
+    await userEvent.clear(nameInput)
+    // 1 starting char + 63 chars = 64 total, which matches /^[a-z0-9][a-z0-9-]{0,63}$/
+    await userEvent.type(nameInput, 'a' + 'b'.repeat(63))
+
+    const saveBtn = screen.getByRole('button', { name: /^save$/i })
+    expect(saveBtn).not.toBeDisabled()
+  })
 })

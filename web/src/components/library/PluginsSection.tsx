@@ -62,6 +62,9 @@ function PluginRow({ plugin }: { plugin: LibraryPlugin }) {
             <p className="text-sm opacity-70 truncate">{plugin.description}</p>
           )}
           {componentSummary && <p className="text-xs opacity-50 mt-0.5">{componentSummary}</p>}
+          {plugin.tokenCost && (
+            <span className="text-xs opacity-50">≈{plugin.tokenCost.alwaysOn} tok always-on</span>
+          )}
         </button>
         <label className="flex items-center gap-2 shrink-0 cursor-pointer min-h-[44px]">
           <span className="text-xs opacity-60">{plugin.enabled ? 'On' : 'Off'}</span>

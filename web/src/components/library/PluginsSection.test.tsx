@@ -20,6 +20,7 @@ vi.mock('@/api/client', () => ({
               description: 'Alpha plugin',
               category: 'tools',
               components: { commands: 1, skills: 0, agents: 0, mcpServers: 0, hooks: 0 },
+              tokenCost: { alwaysOn: 200, onInvoke: 100 },
             },
           ],
           marketplaces: [{ name: 'default' }],
@@ -96,5 +97,11 @@ describe('PluginsSection', () => {
     await userEvent.click(expandBtn)
     // After expansion, the detail GET fires and the command path should appear
     expect(await screen.findByText('/do:thing')).toBeTruthy()
+  })
+
+  it('shows token cost badge when tokenCost is present', async () => {
+    renderSection()
+    // The alpha plugin has tokenCost: { alwaysOn: 200, onInvoke: 100 }
+    expect(await screen.findByText('≈200 tok always-on')).toBeTruthy()
   })
 })
