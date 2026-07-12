@@ -161,6 +161,67 @@ async def test_fire_on_cycle_noop_without_hook():
     await p._fire_on_cycle()  # must not raise
 
 
+# ---------------------------------------------------------------------------
+# Chunked refresh — GitHub's GraphQL endpoint enforces a ~10s execution budget,
+# so one document with hundreds of aliased repository() blocks 502/504s. That
+# starved the cache permanently: _pr_pairs' self-prune needs cache entries to
+# shrink the pair list, so an oversized list could never recover (bootstrap
+# deadlock observed in prod at 262 pairs / 200 KB query).
+# ---------------------------------------------------------------------------
+
+def _query_for(pairs):
+    """query_fn that returns an OPEN PR for every requested pair."""
+    data = {}
+    for i, (_repo, br) in enumerate(pairs):
+        data[f"r{i}"] = {"pullRequests": {"nodes": [{
+            "number": i + 1, "url": f"https://github.com/o/r/pull/{i + 1}",
+            "title": br, "state": "OPEN", "isDraft": False,
+            "updatedAt": "2026-06-22T10:00:00Z",
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
+        }]}}
+    return {"data": data}
+
+
+@pytest.mark.asyncio
+async def test_refresh_chunks_large_pair_lists():
+    """A pair list larger than chunk_size is split across multiple queries."""
+    calls = []
+
+    def qfn(pairs):
+        calls.append(len(pairs))
+        return _query_for(pairs)
+
+    p = PrStatusPoller(query_fn=qfn, chunk_size=40)
+    pairs = [("o/r", f"feat/b{i}") for i in range(100)]
+    assert await p.refresh_once(pairs) is True
+    assert calls == [40, 40, 20]
+    # Entries from every chunk land in the cache.
+    assert p.cached("o/r", "feat/b0") is not None
+    assert p.cached("o/r", "feat/b99") is not None
+
+
+@pytest.mark.asyncio
+async def test_partial_chunk_failure_applies_successes_and_backs_off():
+    """One failing chunk must not discard the other chunks' fresh data."""
+    def qfn(pairs):
+        if any(br == "feat/b1" for _, br in pairs):
+            raise RuntimeError("gh: HTTP 504")
+        return _query_for(pairs)
+
+    p = PrStatusPoller(query_fn=qfn, chunk_size=1)
+    pairs = [("o/r", "feat/b0"), ("o/r", "feat/b1"), ("o/r", "feat/b2")]
+    assert await p.refresh_once(pairs) is False
+    assert p.cached("o/r", "feat/b0") is not None   # earlier chunk applied
+    assert p.cached("o/r", "feat/b1") is None        # failed chunk skipped
+    assert p.cached("o/r", "feat/b2") is not None   # later chunk still attempted
+    assert p._fail_count == 1                        # one backoff step per cycle
+
+
+def test_default_chunk_size_is_bounded():
+    """Default chunk size stays under the empirically-safe 50-pair ceiling."""
+    assert 1 <= PrStatusPoller(query_fn=_good_query)._chunk_size <= 50
+
+
 @pytest.mark.asyncio
 async def test_on_cycle_fires_after_refresh_and_reads_fresh_cache():
     """The sweep hook runs after refresh_once, so it sees the fresh cache."""

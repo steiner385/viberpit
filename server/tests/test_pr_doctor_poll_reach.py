@@ -265,6 +265,44 @@ def test_union_live_and_archived(tmp_path):
     asyncio.run(run())
 
 
+def test_remote_prefixed_branches_are_excluded(tmp_path):
+    """origin/* names (legacy reflog pollution in authored_branches) never reach
+    the poller: a PR headRefName has no remote prefix, so such pairs only bloat
+    the batched GraphQL query."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'remote_refs.db'}"
+
+    async def run():
+        from server.db import init_db, db_session
+        from server.db.models import Session as DbSession
+        await init_db(db_url=db_url)
+
+        async with db_session() as db:
+            db.add(DbSession(
+                id=str(uuid.uuid4()),
+                name="polluted",
+                account_name="acct-a",
+                cwd="/tmp/old",
+                status="ended",
+                repo="o/r",
+                branch="origin/main",
+                authored_branches=["origin/dependabot/npm_and_yarn/x", "feat/real"],
+            ))
+
+        orch = _build_orch(
+            records={"sess1": _make_record(
+                repo="o/r", branch="feat/live",
+                authored_branches=["feat/live", "origin/main"])},
+            poller_cache={},
+        )
+        pairs = await orch._pr_pairs()
+
+        assert ("o/r", "feat/real") in pairs
+        assert ("o/r", "feat/live") in pairs
+        assert not any(br.startswith("origin/") for _, br in pairs)
+
+    asyncio.run(run())
+
+
 def test_db_failure_falls_back_to_live_only(tmp_path):
     """If the DB read raises, _pr_pairs still returns the live-session pairs."""
     # Do NOT init_db — so db_session() will fail.

@@ -318,5 +318,34 @@ class CurrentBranchTests(unittest.TestCase):
         self.assertIsNone(worktrees.current_branch(str(plain)))
 
 
+class AuthoredBranchesTests(unittest.TestCase):
+    """worktrees.authored_branches — feature branches from reflog + current branch."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_remote_refs_from_reflog_are_excluded(self) -> None:
+        # `git checkout origin/main` writes "checkout: moving from … to origin/main"
+        # into the reflog; a PR headRefName never carries the remote prefix, so
+        # remote-tracking names must not leak into authored_branches (they bloat
+        # the PR poller's GraphQL pair list — observed as origin/* DB pollution).
+        repo = self.root / "repo"
+        _make_repo(repo, branch="main")
+        _git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=str(repo))
+        _git("checkout", "--detach", "origin/main", cwd=str(repo))
+        _git("checkout", "-b", "feat/x", cwd=str(repo))
+        self.assertEqual(worktrees.authored_branches(str(repo)), ["feat/x"])
+
+    def test_is_remote_ref(self) -> None:
+        self.assertTrue(worktrees.is_remote_ref("origin/main"))
+        self.assertTrue(worktrees.is_remote_ref("remotes/origin/feat/x"))
+        self.assertFalse(worktrees.is_remote_ref("feat/origin-fix"))
+        self.assertFalse(worktrees.is_remote_ref("main"))
+
+
 if __name__ == "__main__":
     unittest.main()
