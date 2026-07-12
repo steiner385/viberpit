@@ -155,3 +155,64 @@ describe('SessionCard narrow-card declutter contract', () => {
     expect(within(identity).getByText('work')).not.toHaveClass('hidden')
   })
 })
+
+// Badge-footer contract (session-card overlap fix).
+// The secondary badges used to live in a single non-wrapping, non-shrinking
+// cluster inside the context row. With a badge-rich session (goal + autopilot +
+// provenance + PRs) that cluster was WIDER than the row, so it overflowed the
+// card border and painted underneath the hover action buttons — measured
+// 25–32px of real overlap at a wide (≥505px) sidebar. The fix moves the badges
+// into a dedicated footer row that (a) wraps, so any badge count stays inside
+// the card, and (b) is a sibling of the open-session button, so its interactive
+// chips (PR popover, provenance link, Fix-PR) are no longer nested-interactive
+// violations. These tests lock both properties.
+describe('SessionCard badge footer', () => {
+  const rich: Session = {
+    ...base,
+    activeGoal: 'ship the thing',
+    autoArchiveOptOut: true,
+    assistedBy: 'autopilot',
+    prs: [
+      { number: 1, url: 'u1', state: 'open', checks: 'passing', title: 'A', deployed: true },
+      { number: 2, url: 'u2', state: 'open', checks: 'passing', title: 'B', deployed: false },
+    ],
+  }
+
+  it('collects the secondary badges into a wrapping footer row', () => {
+    renderCard(rich)
+    const footer = screen.getByTestId('card-badges')
+    // `flex-wrap` is the overflow-safety property: N badges lay out inside the
+    // card at any width instead of exceeding the row and colliding with the
+    // action buttons. Wide-card-only, like the badges it hosts.
+    expect(footer).toHaveClass('flex-wrap', 'hidden', '@md:flex')
+    expect(footer).toContainElement(screen.getByTestId('card-goal'))
+    expect(footer).toContainElement(screen.getByTestId('card-no-autoarchive-badge'))
+    expect(footer).toContainElement(screen.getByTestId('card-provenance'))
+    expect(footer).toContainElement(screen.getByTestId('card-prs'))
+  })
+
+  it('renders no footer row when the session has no badges', () => {
+    renderCard(base)
+    // An empty flex row still costs gap/margin height — it must not mount.
+    expect(screen.queryByTestId('card-badges')).not.toBeInTheDocument()
+  })
+
+  it('keeps interactive elements out of the open-session button (nested-interactive)', () => {
+    renderCard(rich)
+    const open = screen.getByRole('button', { name: /open session/i })
+    // Nested <button>/<a> inside the open button is invalid HTML and an axe
+    // nested-interactive violation; it also made badge clicks fight the
+    // open-session click. The button may contain text and passive spans only.
+    expect(open.querySelectorAll('button, a, [tabindex]')).toHaveLength(0)
+  })
+
+  it('keeps the status pill pinned in the context row at every width', () => {
+    renderCard(rich)
+    const context = screen.getByTestId('card-context')
+    // The pill is the context row's ONLY chip — placement can't vary with badge
+    // count anymore (badges live in the footer). Not gated: visible when narrow.
+    expect(within(context).getByLabelText(/^Status:/)).toBeInTheDocument()
+    expect(context).not.toContainElement(screen.getByTestId('card-prs'))
+    expect(context).not.toContainElement(screen.getByTestId('card-goal'))
+  })
+})
