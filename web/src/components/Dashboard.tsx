@@ -19,6 +19,7 @@ import { ArchivedManager } from './ArchivedManager'
 import { PipelineView } from './PipelineView'
 import { AutomationView } from './AutomationView'
 import { InsightsView } from './InsightsView'
+import { LibraryView } from './library/LibraryView'
 import { TabBar } from './TabBar'
 import { buildTabs } from './tabDefs'
 import { inFlightPrCount } from '@/session/prStatus'
@@ -458,7 +459,7 @@ export function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPend
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-export type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline' | 'automation' | 'insights'
+export type TabId = 'sessions' | 'accounts' | 'archived' | 'pipeline' | 'automation' | 'library' | 'insights'
 
 interface DashboardProps {
   /** Called when the user opens a session (navigates to Terminal view).
@@ -894,6 +895,13 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       {activeTab === 'insights' && (
         <div className="flex-1 min-h-0 overflow-y-auto pb-4">
           <InsightsView />
+        </div>
+      )}
+
+      {/* Library panel */}
+      {activeTab === 'library' && (
+        <div className="flex-1 min-h-0 overflow-y-auto pb-4 px-4">
+          <LibraryView />
         </div>
       )}
 

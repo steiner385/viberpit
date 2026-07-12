@@ -12,6 +12,8 @@ import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
   DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, MergeTrainState, CheckInsights,
   DaemonHealth, CopilotAddState,
+  LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
+  LibraryMcpServer, McpServerConfig, LibraryContent,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
@@ -44,6 +46,13 @@ export const QK = {
   automationActionable: (id: string) => ['automation-actionable', id] as const,
   consolidation: ['automation-consolidation'] as const,
   daemonHealth: ['daemon-health'] as const,
+  libraryPlugins: ['library', 'plugins'] as const,
+  libraryPlugin: (id: string) => ['library', 'plugin', id] as const,
+  librarySkills: ['library', 'skills'] as const,
+  libraryCommands: ['library', 'commands'] as const,
+  libraryMcp: ['library', 'mcp'] as const,
+  libraryContent: (kind: string, id: string, plugin?: string) =>
+    ['library', 'content', kind, id, plugin ?? null] as const,
 }
 
 export function useModels() {
@@ -764,5 +773,113 @@ export function useConsolidate() {
       qc.invalidateQueries({ queryKey: QK.automationActionable('pr-doctor') })
       qc.invalidateQueries({ queryKey: QK.automationSessions('pr-doctor') })
     },
+  })
+}
+
+// --- Library (plugins / skills / commands / MCP) ---
+
+export function useLibraryPlugins() {
+  return useQuery<LibraryPluginsResponse>({
+    queryKey: QK.libraryPlugins,
+    queryFn: () => api.get<LibraryPluginsResponse>('/library/plugins'),
+    staleTime: 30_000,
+  })
+}
+
+export function useLibraryPluginDetail(id: string, enabled: boolean) {
+  return useQuery<LibraryPluginDetail>({
+    queryKey: QK.libraryPlugin(id),
+    queryFn: () => api.get<LibraryPluginDetail>(`/library/plugins/${encodeURIComponent(id)}`),
+    enabled,
+    staleTime: 60_000,
+  })
+}
+
+export function useTogglePlugin() {
+  const qc = useQueryClient()
+  return useMutation<{ id: string; enabled: boolean }, ApiRequestError, { id: string; enabled: boolean }>({
+    mutationFn: ({ id, enabled }) =>
+      api.patch(`/library/plugins/${encodeURIComponent(id)}`, { enabled }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.libraryPlugins })
+      void qc.invalidateQueries({ queryKey: ['library', 'plugin'] })
+      // plugin enablement changes which skills/commands/servers are visible
+      void qc.invalidateQueries({ queryKey: QK.librarySkills })
+      void qc.invalidateQueries({ queryKey: QK.libraryCommands })
+      void qc.invalidateQueries({ queryKey: QK.libraryMcp })
+    },
+  })
+}
+
+export function useLibrarySkills() {
+  return useQuery<{ skills: LibrarySkill[] }>({
+    queryKey: QK.librarySkills,
+    queryFn: () => api.get('/library/skills'),
+    staleTime: 30_000,
+  })
+}
+
+export function useLibraryCommands() {
+  return useQuery<{ commands: LibraryCommand[] }>({
+    queryKey: QK.libraryCommands,
+    queryFn: () => api.get('/library/commands'),
+    staleTime: 30_000,
+  })
+}
+
+export type LibraryItemKind = 'skills' | 'commands'
+
+export function useLibraryItemContent(kind: LibraryItemKind, id: string, plugin?: string) {
+  const suffix = plugin ? `?plugin=${encodeURIComponent(plugin)}` : ''
+  return useQuery<LibraryContent>({
+    queryKey: QK.libraryContent(kind, id, plugin),
+    queryFn: () => api.get<LibraryContent>(`/library/${kind}/${id}${suffix}`),
+    enabled: id.length > 0,
+  })
+}
+
+export function useSaveLibraryItem(kind: LibraryItemKind) {
+  const qc = useQueryClient()
+  return useMutation<unknown, ApiRequestError, { id: string; content: string }>({
+    mutationFn: ({ id, content }) => api.put(`/library/${kind}/${id}`, { content }),
+    onSuccess: (_data, { id }) => {
+      void qc.invalidateQueries({ queryKey: kind === 'skills' ? QK.librarySkills : QK.libraryCommands })
+      void qc.invalidateQueries({ queryKey: QK.libraryContent(kind, id) })
+    },
+  })
+}
+
+export function useDeleteLibraryItem(kind: LibraryItemKind) {
+  const qc = useQueryClient()
+  return useMutation<unknown, ApiRequestError, { id: string }>({
+    mutationFn: ({ id }) => api.del(`/library/${kind}/${id}`),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: kind === 'skills' ? QK.librarySkills : QK.libraryCommands })
+    },
+  })
+}
+
+export function useLibraryMcp() {
+  return useQuery<{ servers: LibraryMcpServer[] }>({
+    queryKey: QK.libraryMcp,
+    queryFn: () => api.get('/library/mcp'),
+    staleTime: 30_000,
+  })
+}
+
+export function useSaveMcpServer() {
+  const qc = useQueryClient()
+  return useMutation<unknown, ApiRequestError, { name: string; config: McpServerConfig }>({
+    mutationFn: ({ name, config }) =>
+      api.put(`/library/mcp/${encodeURIComponent(name)}`, { config }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.libraryMcp }),
+  })
+}
+
+export function useDeleteMcpServer() {
+  const qc = useQueryClient()
+  return useMutation<unknown, ApiRequestError, { name: string }>({
+    mutationFn: ({ name }) => api.del(`/library/mcp/${encodeURIComponent(name)}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.libraryMcp }),
   })
 }
