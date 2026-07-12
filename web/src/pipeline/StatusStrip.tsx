@@ -1,7 +1,6 @@
-// Ported from plotroom@5166b52 frontend/src/StatusStrip.tsx; edits: import repointing (./types); eslint-disable react-refresh/only-export-components (mixed export file — intentional port), react-hooks/refs (latestFailed.current write in render body — stable pattern, safe here)
+// Ported from plotroom@5166b52 frontend/src/StatusStrip.tsx; edits: import repointing (./types); eslint-disable react-refresh/only-export-components (mixed export file — intentional port); latestFailed.current sync moved to useLayoutEffect (react-hooks/refs lint gate, same convention as useDashboard.ts)
 /* eslint-disable react-refresh/only-export-components */
-/* eslint-disable react-hooks/refs */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { PrView } from './types';
 
 export type Bucket = 'running' | 'queued' | 'deploy' | 'failed' | 'idle';
@@ -82,7 +81,7 @@ export function StatusStrip({ prs, activeFilter, onFilter, interactive = true }:
   // delta — a changing queue/deploy/idle count isn't an urgency signal.
   const failedCount = counts.get('failed') ?? 0;
   const latestFailed = useRef(failedCount);
-  latestFailed.current = failedCount;
+  useLayoutEffect(() => { latestFailed.current = failedCount; }, [failedCount]);
   const [failedBaseline, setFailedBaseline] = useState(failedCount);
   useEffect(() => {
     const id = setInterval(() => setFailedBaseline(latestFailed.current), 5 * 60_000);
