@@ -194,7 +194,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     const input = screen.getByRole('textbox', { name: /nickname for work/i })
     await user.clear(input)
     await user.type(input, 'Personal')
-    await user.click(screen.getByRole('button', { name: /save nickname/i }))
+    await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
     expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: 'Personal', weeklyReservePct: null })
   })
@@ -251,7 +251,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     const input = screen.getByRole('textbox', { name: /nickname for work/i })
     await user.clear(input)
-    await user.click(screen.getByRole('button', { name: /save nickname/i }))
+    await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
     expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: null, weeklyReservePct: null })
   })

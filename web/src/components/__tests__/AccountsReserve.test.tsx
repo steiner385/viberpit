@@ -151,7 +151,7 @@ describe('AccountRow — weekly reserve', () => {
     const reserveInput = screen.getByRole('spinbutton', { name: /weekly reserve % for work/i })
     await user.clear(reserveInput)
     await user.type(reserveInput, '85')
-    await user.click(screen.getByRole('button', { name: /save nickname/i }))
+    await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
     expect(updateMutate).toHaveBeenCalledWith({
       name: 'work', nickname: null, weeklyReservePct: 85,
@@ -169,7 +169,27 @@ describe('AccountRow — weekly reserve', () => {
     await switchToAccountsTab(user)
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     await user.clear(screen.getByRole('spinbutton', { name: /weekly reserve % for work/i }))
-    await user.click(screen.getByRole('button', { name: /save nickname/i }))
+    await user.click(screen.getByRole('button', { name: /save account settings/i }))
+
+    expect(updateMutate).toHaveBeenCalledWith({
+      name: 'work', nickname: null, weeklyReservePct: null,
+    })
+  })
+
+  it('typing 0 into the reserve input and saving sends null (not 1)', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useAccounts).mockReturnValue({
+      data: [makeAccount({ name: 'work', weeklyReservePct: 90 })],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useAccounts>)
+
+    render(<Dashboard />, { wrapper })
+    await switchToAccountsTab(user)
+    await user.click(screen.getByRole('button', { name: /rename work/i }))
+    const reserveInput = screen.getByRole('spinbutton', { name: /weekly reserve % for work/i })
+    await user.clear(reserveInput)
+    await user.type(reserveInput, '0')
+    await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
     expect(updateMutate).toHaveBeenCalledWith({
       name: 'work', nickname: null, weeklyReservePct: null,

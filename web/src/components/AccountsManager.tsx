@@ -293,7 +293,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
     let reserve: number | null = null
     if (trimmed !== '') {
       const parsed = Number(trimmed)
-      if (Number.isFinite(parsed)) reserve = Math.min(100, Math.max(1, parsed))
+      if (Number.isFinite(parsed) && parsed > 0) reserve = Math.min(100, Math.max(1, parsed))
     }
     onSave({ name: account.name, nickname: draft.trim() || null, weeklyReservePct: reserve })
     setEditing(false)
@@ -358,7 +358,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
             <button
               type="button"
               onClick={saveEdit}
-              aria-label="Save nickname"
+              aria-label="Save account settings"
               className={cn(
                 'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
                 'text-green-600 dark:text-green-400',
