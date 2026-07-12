@@ -95,3 +95,76 @@ async def test_ready_merge_requires_identity():
             )
 
     assert resp.status_code == 401
+
+
+def _orch() -> SessionOrchestrator:
+    with patch.dict(os.environ, _ENV):
+        return SessionOrchestrator(
+            sdk_factory=fake_sdk_factory(),
+            poll_interval=9999.0,
+            usage_fn=lambda name: None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_ready_merge_orchestrator_happy_path():
+    """Draft PR: gh marks it ready and arms auto-merge; both flags True."""
+    import subprocess
+
+    orch = _orch()
+    calls: list[list[str]] = []
+
+    def fake_gh(args, token=None, *, input=None):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    orch._gh_run = fake_gh
+    result = await orch.ready_merge("o/r", 7)
+    assert result == {"markedReady": True, "autoMergeArmed": True}
+    assert calls == [
+        ["pr", "ready", "7", "-R", "o/r"],
+        ["pr", "merge", "7", "-R", "o/r", "--squash", "--auto"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ready_merge_orchestrator_tolerates_already_ready_and_armed():
+    """Non-draft PR with auto-merge already on: markedReady False, armed True
+
+    (gh 2.x stderr: '...auto-merge is already enabled for this pull request')."""
+    import subprocess
+
+    orch = _orch()
+
+    def fake_gh(args, token=None, *, input=None):
+        if args[:2] == ["pr", "ready"]:
+            return subprocess.CompletedProcess(
+                args, 1, stdout="", stderr="PR #7 is not a draft"
+            )
+        return subprocess.CompletedProcess(
+            args, 1, stdout="",
+            stderr="auto-merge is already enabled for this pull request",
+        )
+
+    orch._gh_run = fake_gh
+    result = await orch.ready_merge("o/r", 7)
+    assert result == {"markedReady": False, "autoMergeArmed": True}
+
+
+@pytest.mark.asyncio
+async def test_ready_merge_orchestrator_merge_failure_reports_unarmed():
+    """A genuine gh failure (e.g. auto-merge disallowed on the repo) → armed False."""
+    import subprocess
+
+    orch = _orch()
+
+    def fake_gh(args, token=None, *, input=None):
+        code = 0 if args[:2] == ["pr", "ready"] else 1
+        return subprocess.CompletedProcess(
+            args, code, stdout="",
+            stderr="" if code == 0 else "auto-merge is not allowed for this repository",
+        )
+
+    orch._gh_run = fake_gh
+    result = await orch.ready_merge("o/r", 7)
+    assert result == {"markedReady": True, "autoMergeArmed": False}

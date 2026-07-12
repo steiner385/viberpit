@@ -3179,6 +3179,8 @@ class SessionOrchestrator:
             merge = self._gh_run(
                 ["pr", "merge", str(number), "-R", repo, "--squash", "--auto"]
             )
+            # gh (2.x) fails with "...auto-merge is already enabled for this pull
+            # request" when re-arming; that state is the caller's goal, not an error.
             armed = merge.returncode == 0 or "already enabled" in (merge.stderr or "")
             return {"markedReady": marked, "autoMergeArmed": armed}
 
