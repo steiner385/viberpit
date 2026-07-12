@@ -351,6 +351,12 @@ class SessionOrchestrator:
         from server.automations.context import AutomationContext
         self._pr_doctor_ctx = AutomationContext(
             "pr-doctor", create_session=self.create_session)
+        # Consolidations whose clone/model/spawn tail is still running in a
+        # background task (no DB row yet, so spawn_session's DB de-dup can't see
+        # them): the consolidate fast path answers `duplicate` for these. Task
+        # refs are held so in-flight tasks aren't GC'd.
+        self._consolidation_inflight: set[str] = set()
+        self._consolidation_tasks: set[asyncio.Task] = set()
         # Injectable seam for the pr-doctor Mechanical (update-branch) executor:
         # a swappable ``gh`` runner so tests can record argv without touching the
         # network. Defaults to the real ``gh`` shell-out.
@@ -2448,16 +2454,19 @@ class SessionOrchestrator:
     async def _pr_doctor_consolidate(
         self, repo: str, numbers: list[int]
     ) -> tuple[str, str | None]:
-        """Spawn ONE session to consolidate the given PRs. Validates the
-        selection, resolves each PR from the population cache, seeds the
-        consolidation prompt, and de-dups on the sorted number set. Mirrors
-        _pr_doctor_session_fix's clone/spawn/ceiling handling. Returns
-        (status, session_id)."""
+        """Start ONE session consolidating the given PRs; answer immediately.
+
+        Validates the selection against the population cache and de-dups on the
+        sorted number set (live DB row OR an in-flight background spawn), all
+        fast and inline. The slow tail — default-branch lookup, clone, model
+        pick, spawn — runs in a background task (_pr_doctor_consolidate_spawn)
+        so the edge→daemon RPC answers in milliseconds instead of 503ing at its
+        timeout while the daemon spawns anyway (issue #567). Returns
+        ("spawning", None) once the tail is scheduled; its outcome reaches the
+        user through the automation feed events the tail emits."""
         from sqlalchemy import select
         from server.automations.consolidation_engine import (
             ConsolidationCandidate, consolidation_target, validate_selection)
-        from server.sessions.pr_fix import build_consolidation_prompt
-        from server.config import get_settings
 
         want = sorted({int(n) for n in numbers})
         by_number = {p.number: p for p in self._pr_population.cached(repo)}
@@ -2474,8 +2483,12 @@ class SessionOrchestrator:
             return err, None                      # "too_few"
 
         target = consolidation_target(repo, want)
-        # Pre-check the dedupe: a live consolidation session for this exact set →
-        # duplicate (skip a needless clone + second spawn).
+        # De-dup, cheapest first: a background spawn for this exact set is still
+        # in flight (its DB row doesn't exist yet) → duplicate; then a live
+        # consolidation session in the DB → duplicate. No await between the
+        # in-flight check and the add below, so concurrent RPCs can't both pass.
+        if target in self._consolidation_inflight:
+            return "duplicate", None
         async with db_session() as db:
             existing = (await db.execute(select(DbSession).where(
                 DbSession.origin == "pr-doctor",
@@ -2484,51 +2497,73 @@ class SessionOrchestrator:
         if existing is not None:
             return "duplicate", existing.id
 
+        self._consolidation_inflight.add(target)
+        task = asyncio.create_task(
+            self._pr_doctor_consolidate_spawn(repo, target, prs),
+            name=f"pr-doctor-consolidate:{target}")
+        self._consolidation_tasks.add(task)
+        task.add_done_callback(self._consolidation_tasks.discard)
+        return "spawning", None
+
+    async def _pr_doctor_consolidate_spawn(self, repo: str, target: str, prs) -> None:
+        """Background tail of _pr_doctor_consolidate: clone, model pick, spawn.
+
+        Every outcome (spawned / ceiling deferral / clone or spawn failure) is
+        emitted to the pr-doctor feed — there is no RPC caller left to return a
+        status to. Always releases the in-flight guard so a failure never wedges
+        the PR set against retries."""
+        from server.sessions.pr_fix import build_consolidation_prompt
+        from server.config import get_settings
+
         try:
-            default_branch = await asyncio.to_thread(
-                lambda: gitrepos.list_remote_branches(repo).get("default") or "master"
-            )
-        except Exception:
-            default_branch = "master"
-        prompt = build_consolidation_prompt(repo, default_branch, prs)
-        url = f"https://github.com/{repo}.git"
-        try:
-            cwd = await asyncio.to_thread(
-                gitrepos.ensure_clone, get_settings().repo_root, repo, url)
-        except (gitrepos.CloneError, gitrepos.GhError) as exc:
+            try:
+                default_branch = await asyncio.to_thread(
+                    lambda: gitrepos.list_remote_branches(repo).get("default") or "master"
+                )
+            except Exception:
+                default_branch = "master"
+            prompt = build_consolidation_prompt(repo, default_branch, prs)
+            url = f"https://github.com/{repo}.git"
+            try:
+                cwd = await asyncio.to_thread(
+                    gitrepos.ensure_clone, get_settings().repo_root, repo, url)
+            except (gitrepos.CloneError, gitrepos.GhError) as exc:
+                await self._pr_doctor_ctx.emit(
+                    "error", f"clone failed for {target}: {exc}",
+                    kind="spawn_failed", target=target)
+                return
+            from server.automations.model_pick import resolve_model
+            model, model_source = await resolve_model(
+                await self._pr_doctor_config(),
+                f"consolidate {len(prs)} PRs in {repo}:\n"
+                + "\n".join(f"#{p.number}  {p.title}" for p in prs))
+            try:
+                rec = await self._pr_doctor_ctx.spawn_session(
+                    origin_ref=target, dedupe_key=target, repo=repo,
+                    account=None, cwd=cwd,
+                    name=f"pr-doctor consolidate {repo} ({len(prs)} PRs)",
+                    initial_prompt=prompt,
+                    model=model,
+                    detail={"model": model, "model_source": model_source}
+                    if model is not None else None)
+            except AllAccountsBusy:
+                await self._pr_doctor_ctx.emit(
+                    "warn", f"consolidate deferred for {target}: all accounts at/above usage ceiling",
+                    kind="spawn_failed", target=target)
+                return
+            except Exception as exc:  # noqa: BLE001
+                await self._pr_doctor_ctx.emit(
+                    "error", f"consolidate spawn failed for {target}: {exc}",
+                    kind="spawn_failed", target=target)
+                return
+            sid = getattr(rec, "id", None)
             await self._pr_doctor_ctx.emit(
-                "error", f"clone failed for {target}: {exc}",
-                kind="spawn_failed", target=target)
-            return "clone_failed", None
-        from server.automations.model_pick import resolve_model
-        model, model_source = await resolve_model(
-            await self._pr_doctor_config(),
-            f"consolidate {len(prs)} PRs in {repo}:\n"
-            + "\n".join(f"#{p.number}  {p.title}" for p in prs))
-        try:
-            rec = await self._pr_doctor_ctx.spawn_session(
-                origin_ref=target, dedupe_key=target, repo=repo,
-                account=None, cwd=cwd,
-                name=f"pr-doctor consolidate {repo} ({len(prs)} PRs)",
-                initial_prompt=prompt,
-                model=model,
-                detail={"model": model, "model_source": model_source}
-                if model is not None else None)
-        except AllAccountsBusy:
-            await self._pr_doctor_ctx.emit(
-                "warn", f"consolidate deferred for {target}: all accounts at/above usage ceiling",
-                kind="spawn_failed", target=target)
-            return "ceiling", None
-        except Exception as exc:  # noqa: BLE001
-            await self._pr_doctor_ctx.emit(
-                "error", f"consolidate spawn failed for {target}: {exc}",
-                kind="spawn_failed", target=target)
-            return "spawn_failed", None
-        sid = getattr(rec, "id", None)
-        await self._pr_doctor_ctx.emit(
-            "info", f"consolidation spawned for {target}",
-            kind="attempted", target=target, session_id=sid)
-        return "spawned", sid
+                "info", f"consolidation spawned for {target}",
+                kind="attempted", target=target, session_id=sid)
+        except Exception:  # noqa: BLE001 — feed emit itself failed, or a bug
+            log.exception("pr_doctor.consolidate_background_failed target=%s", target)
+        finally:
+            self._consolidation_inflight.discard(target)
 
     async def _pr_doctor_mechanical(self, repo: str, info, kind: str) -> bool:
         """Run a mechanical (no-session) recovery action via the gh CLI seam.

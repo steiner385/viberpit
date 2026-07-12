@@ -7,14 +7,15 @@ class _Orch:
         self._status = status
 
     async def _pr_doctor_consolidate(self, repo, numbers):
-        return self._status, ("sid" if self._status == "spawned" else None)
+        return self._status, None
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status,level", [
-    ("spawned", "ok"), ("duplicate", "warn"), ("too_few", "warn"),
-    ("not_actionable", "warn"), ("ceiling", "warn"),
-    ("clone_failed", "error"), ("spawn_failed", "error"),
+    # The synchronous fast path can only answer these — clone/model/spawn run
+    # in a background task and report through the automation feed (issue #567).
+    ("spawning", "ok"), ("duplicate", "warn"), ("too_few", "warn"),
+    ("not_actionable", "warn"),
 ])
 async def test_consolidate_maps_status_to_level(status, level):
     provider = PrDoctorActionProvider(_Orch(status))
@@ -22,3 +23,11 @@ async def test_consolidate_maps_status_to_level(status, level):
     assert result.status == status
     assert result.level == level
     assert result.message                      # non-empty human message
+
+
+@pytest.mark.asyncio
+async def test_consolidate_unknown_status_maps_to_error():
+    provider = PrDoctorActionProvider(_Orch("mystery"))
+    result = await provider.consolidate("o/r", [1, 2])
+    assert result.level == "error"
+    assert result.message

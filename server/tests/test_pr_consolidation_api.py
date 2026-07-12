@@ -15,7 +15,8 @@ class _StubOrch:
         return {"repos": {"o/r": {"candidates": [{"number": 1}], "clusters": []}}}
 
     async def automation_consolidate(self, repo, numbers):
-        return {"status": "spawned", "level": "ok", "message": "Spawned consolidation session"}
+        return {"status": "spawning", "level": "ok",
+                "message": "Spawning consolidation session — follow the feed"}
 
 
 @contextmanager
@@ -48,7 +49,7 @@ def test_post_consolidate_returns_trigger_result():
         r = c.post("/api/automations/pr-doctor/consolidate",
                    json={"repo": "o/r", "numbers": [1, 2]}, headers=H)
     assert r.status_code == 200
-    assert r.json()["status"] == "spawned"
+    assert r.json()["status"] == "spawning"
 
 
 def test_post_consolidate_422_on_malformed_body():
