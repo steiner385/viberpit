@@ -201,3 +201,19 @@ def test_eject_window_matches_live_observed_at_format():
         assert await count_group_ejects("o/r", "2026-07-13T00:00:00Z") == 0
 
     asyncio.run(run())
+
+
+def test_sim_ctx_reads_real_store_rows():
+    """Direct coverage of the SSE frame's _sim_ctx glue (review follow-up):
+    real store rows in, per-repo sim inputs out; sample-less repos skipped."""
+    async def run():
+        await init_db()
+        checks = _green_checks()
+        await record_group_outcome("o/r", "g1", checks, "2026-07-12T12:10:00Z")
+        from server.api.pipeline import _sim_ctx
+        ctx = await _sim_ctx(["o/r", "other/empty"])
+        assert set(ctx) == {"o/r"}
+        assert ctx["o/r"]["duration_samples"] == [600]
+        assert ctx["o/r"]["eject_prob"] == 0.0  # 1 run, 0 ejects, <5 samples
+
+    asyncio.run(run())
