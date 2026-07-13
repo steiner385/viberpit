@@ -154,6 +154,16 @@ class PrPopulationPoller:
         self._store_init_attempted = history_store is not None
         self._merge_queue_query_fn = merge_queue_query_fn
         self._merge_queue_sink = merge_queue_sink
+        # --- PrTimeline capture state (SPEC §2) -------------------------------
+        # Previous cycle's open-PR stage per (repo, number) — drives the
+        # ci → ready|queue first-green transition detection.
+        self._prev_stage: dict[tuple[str, int], str] = {}
+        # first_green / enqueued waypoints observed live, consumed at merge.
+        self._first_green: dict[tuple[str, int], str] = {}
+        self._enqueued_iso: dict[tuple[str, int], str] = {}
+        # (repo, number) merges already captured this process — avoids
+        # re-upserting every cycle (store is first-wins, but skip is cheaper).
+        self._merged_captured: set[tuple[str, int]] = set()
 
     def set_repos_provider(
         self, fn: Union[Callable[[], list[str]], Callable[[], Awaitable[list[str]]]]
@@ -237,6 +247,15 @@ class PrPopulationPoller:
 
         now = self._now_fn()
 
+        # Record merge-group run durations + ejects (SPEC §1 — mergeEtaSim
+        # substrate). Deduped by group_sha (the batch head-commit oid): several
+        # PRs in one merge train share a headCommit, so record each train once.
+        # NEVER let a history-write break the poll — swallow + log.
+        try:
+            await self._record_group_history(merge_by_pr, now)
+        except Exception:
+            log.warning("pr_population.group_history_failed", exc_info=True)
+
         # build_check_groups is always needed (store-independent). compute_pr_eta needs
         # the history store, so import + run it only when we actually have one.
         try:
@@ -287,6 +306,125 @@ class PrPopulationPoller:
             result[repo] = tuple(enriched)
         return result
 
+    async def _record_group_history(
+        self,
+        merge_by_pr: dict[tuple[str, int], dict],
+        now: datetime,
+    ) -> None:
+        """Persist merge-group run durations + ejects (SPEC §1).
+
+        ``merge_by_pr`` is keyed by (repo, number); each value carries the
+        train's ``checks`` and ``group_sha`` (batch head-commit oid). PRs in
+        the same train share a group_sha, so record each (repo, group_sha)
+        once. The store applies the terminal/clean/timestamp guards and dedupes
+        on its unique constraints — this method only fans out unique trains.
+        """
+        from server.pipeline import group_history
+
+        now_iso = now.isoformat()
+        seen: set[tuple[str, str]] = set()
+        for (repo, _number), entry in merge_by_pr.items():
+            group_sha = entry.get("group_sha")
+            checks = entry.get("checks") or []
+            if not group_sha or not checks:
+                continue
+            dedupe_key = (repo, group_sha)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            await group_history.record_group_outcome(
+                repo, group_sha, checks, now_iso
+            )
+
+    async def _capture_timeline(
+        self,
+        new_cache: dict[str, tuple[PullRequestInfo, ...]],
+        mq_by_repo: dict[str, tuple],
+    ) -> None:
+        """Capture PrTimeline waypoints from one poll cycle (SPEC §2).
+
+        - first_green_at: an open PR's stage transitions ci → ready (or it enters
+          the merge queue) for the FIRST time → remember now (Z-form).
+        - enqueued_at: while a PR is observed in the queue, cache the queue
+          entry's enqueued_at epoch as Z-form ISO.
+        - on a newly-observed merge: upsert_merged_pr with every available
+          waypoint, then evict the PR's in-memory state.
+
+        In-memory maps are bounded: keys for PRs no longer present in the
+        population (nor still merge-captured) are evicted each cycle.
+        """
+        from server.pipeline import timeline
+
+        now_iso = self._now_fn().isoformat().replace("+00:00", "Z")
+
+        # 1) Cache enqueued_at from queue observations (epoch → Z-form ISO).
+        for repo, entries in mq_by_repo.items():
+            for entry in entries:
+                epoch = getattr(entry, "enqueued_at", None)
+                num = getattr(entry, "pr_number", None)
+                if epoch is None or num is None:
+                    continue
+                key = (repo, int(num))
+                if key not in self._enqueued_iso:
+                    iso = datetime.fromtimestamp(int(epoch), tz=timezone.utc).isoformat()
+                    self._enqueued_iso[key] = iso.replace("+00:00", "Z")
+
+        live_keys: set[tuple[str, int]] = set()
+        for repo, prs in new_cache.items():
+            for pr in prs:
+                key = (repo, pr.number)
+                live_keys.add(key)
+
+                if pr.state == "merged":
+                    if key in self._merged_captured:
+                        continue
+                    # merged_at is the required insertion trigger; skip if GitHub
+                    # somehow returned a merged PR without it (defensive — the
+                    # store's writer-invariant demands a value).
+                    merged_at = pr.merged_at
+                    if not merged_at:
+                        continue
+                    await timeline.upsert_merged_pr(
+                        repo,
+                        pr.number,
+                        merged_at=merged_at,
+                        title=pr.title or None,
+                        url=pr.url or None,
+                        merge_commit_sha=pr.merge_commit_sha or None,
+                        created_at=pr.created_at or None,
+                        first_green_at=self._first_green.get(key),
+                        enqueued_at=self._enqueued_iso.get(key),
+                    )
+                    self._merged_captured.add(key)
+                    # Evict consumed waypoints for this PR.
+                    self._first_green.pop(key, None)
+                    self._enqueued_iso.pop(key, None)
+                    self._prev_stage.pop(key, None)
+                    continue
+
+                # Open/draft PR — detect the ci → ready|queue first transition.
+                # "Left ci" = previously in ci, now advanced past it (ready stage
+                # or entered the merge queue). First observation only.
+                prev = self._prev_stage.get(key)
+                # SPEC §2: green means ci → ready|queue specifically — ci → parked
+                # (ci-failed / conflicting) is NOT green and must not record.
+                left_ci = prev == "ci" and (pr.stage == "ready" or pr.in_merge_queue)
+                if left_ci and key not in self._first_green:
+                    self._first_green[key] = now_iso
+                self._prev_stage[key] = pr.stage
+
+        # 2) Bound the maps: evict keys for PRs no longer in the population and
+        #    not pending a merge capture.
+        self._evict_stale(live_keys)
+
+    def _evict_stale(self, live_keys: set[tuple[str, int]]) -> None:
+        for store in (self._prev_stage, self._first_green, self._enqueued_iso):
+            for key in [k for k in store if k not in live_keys]:
+                del store[key]
+        # merged_captured retains only keys whose PR is still observed merged;
+        # once a merged PR ages out of the population window it's safe to forget.
+        self._merged_captured = {k for k in self._merged_captured if k in live_keys}
+
     async def refresh_once(self, repos: list[str]) -> bool:
         if not repos:
             return True
@@ -307,15 +445,23 @@ class PrPopulationPoller:
                 new_cache = await self._enrich_with_eta(new_cache)
             except Exception:
                 log.warning("pr_population.eta_enrich_failed", exc_info=True)
+        mq_by_repo: dict[str, tuple] = {}
         if self._merge_queue_query_fn and self._merge_queue_sink:
             repos_for_mq = list(new_cache.keys()) or repos
             try:
                 resp = await asyncio.to_thread(self._merge_queue_query_fn, repos_for_mq)
                 by_repo = parse_merge_queue_response(resp, repos_for_mq)
+                mq_by_repo = by_repo
                 captured_at = int(self._now_fn().timestamp())
                 await self._merge_queue_sink(by_repo, captured_at)
             except Exception:
                 log.warning("pr_population.merge_queue_failed", exc_info=True)
+        # Capture PrTimeline waypoints from this cycle's population + queue
+        # observations (SPEC §2). Best-effort — NEVER break the poll.
+        try:
+            await self._capture_timeline(new_cache, mq_by_repo)
+        except Exception:
+            log.warning("pr_population.timeline_capture_failed", exc_info=True)
         self._cache.update(new_cache)
         if any_fail and not any_ok:
             self._fail_count += 1

@@ -356,6 +356,49 @@ def test_build_population_query_scopes_to_repo_and_date():
     assert "statusCheckRollup" in q  # shared node fields are present
 
 
+def test_pr_node_fields_include_created_at_and_merge_commit():
+    """createdAt + mergeCommit.oid are timeline waypoints (SPEC §2); both the
+    per-branch and population queries share _PR_NODE_FIELDS, so both carry them."""
+    per_branch = build_pr_query([("o/r", "br")])
+    population = build_population_query("o/r", "2026-06-18")
+    for q in (per_branch, population):
+        assert "createdAt" in q
+        assert "mergeCommit { oid }" in q
+
+
+def test_created_at_and_merge_commit_sha_roundtrip():
+    pr = PullRequestInfo(
+        7, "u", "merged", "passing", "t",
+        created_at="2026-07-11T00:00:00Z", merge_commit_sha="deadbeef",
+    )
+    back = PullRequestInfo.from_dict(pr.to_dict())
+    assert back.created_at == "2026-07-11T00:00:00Z"
+    assert back.merge_commit_sha == "deadbeef"
+    # Old payload lacking the keys defaults to empty strings.
+    d = {"number": 1, "url": "u", "state": "open", "checks": "none"}
+    info = PullRequestInfo.from_dict(d)
+    assert info.created_at == "" and info.merge_commit_sha == ""
+
+
+def test_to_info_parses_created_at_and_merge_commit():
+    recent = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    response = {"data": {
+        "repo": {"deployments": {"nodes": []}, "pullRequests": {"nodes": []}},
+        "merged": {"nodes": [
+            {"number": 9, "url": "u9", "title": "m", "state": "MERGED",
+             "isDraft": False, "updatedAt": recent, "mergedAt": recent,
+             "createdAt": "2026-07-01T00:00:00Z",
+             "mergeCommit": {"oid": "abc123"},
+             "headRefOid": "def", "mergeStateStatus": None,
+             "commits": {"nodes": []}},
+        ]},
+    }}
+    prs = parse_population_response(response, "o/n")
+    pr = {p.number: p for p in prs}[9]
+    assert pr.created_at == "2026-07-01T00:00:00Z"
+    assert pr.merge_commit_sha == "abc123"
+
+
 def test_parse_population_response_sets_repo_and_buckets_open_and_merged():
     # Merged 2 days ago (relative to now) so it stays within derive_merged_stage's
     # retention window on any wall-clock date — a hardcoded date here was a time-bomb.

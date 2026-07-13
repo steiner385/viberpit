@@ -105,6 +105,22 @@ async def test_ready_merge_delegates():
     orch.ready_merge.assert_awaited_once_with("repo/a", 7)
 
 
+@pytest.mark.asyncio
+async def test_deploy_config_methods_delegate():
+    """GET/PUT /api/pipeline/deploy-config + deploy_status must work in-process."""
+    orch = mock.MagicMock()
+    orch.poller = mock.MagicMock()
+    orch._registry = mock.MagicMock()
+    orch.deploy_config_list = mock.AsyncMock(return_value={"o/r": {"enabled": True}})
+    orch.deploy_config_put = mock.AsyncMock(return_value=None)
+    orch.deploy_status = mock.MagicMock(return_value={"o/r": [{"name": "qa"}]})
+    f = InProcessOrchestratorAdapter(orch)
+    assert await f.deploy_config_list() == {"o/r": {"enabled": True}}
+    await f.deploy_config_put("o/r", [{"name": "qa"}], True)
+    orch.deploy_config_put.assert_awaited_once_with("o/r", [{"name": "qa"}], True)
+    assert await f.deploy_status() == {"o/r": [{"name": "qa"}]}
+
+
 def test_facade_covers_every_orchestrator_method_the_api_calls():
     """Every `orch.<method>(` call in server/api/*.py must exist on the facade —
     the RemoteOrchestrator breadth test guards daemon mode; this guards in-process

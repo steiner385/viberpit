@@ -317,6 +317,9 @@ class SessionOrchestrator:
             merge_queue_sink=_merge_queue_sink,
         )
         self._pr_population.set_repos_provider(self._pr_repos)
+        from server.pipeline.deploy_watch import DeployWatcher
+
+        self._deploy_watcher: DeployWatcher = DeployWatcher()
         from server.automations.action_providers import (
             PrDoctorActionProvider, BacklogRunnerActionProvider,
             CicdDoctorActionProvider,
@@ -543,6 +546,7 @@ class SessionOrchestrator:
         await self._poller.start()
         await self._pr_poller.start()
         await self._pr_population.start()
+        await self._deploy_watcher.start()
         self._pr_branch_task = asyncio.create_task(
             self._pr_branch_monitor(), name="pr-branch-monitor"
         )
@@ -666,6 +670,7 @@ class SessionOrchestrator:
         await self._poller.stop()
         await self._pr_poller.stop()
         await self._pr_population.stop()
+        await self._deploy_watcher.stop()
 
     # ------------------------------------------------------------------
     # Session CRUD
@@ -3240,6 +3245,54 @@ class SessionOrchestrator:
                     "alreadyArmed": already, "cleanReadyToMerge": False}
 
         return await asyncio.to_thread(_do)
+
+    # ------------------------------------------------------------------
+    # Deploy environment config + status (SPEC §3)
+    # ------------------------------------------------------------------
+
+    async def deploy_config_list(self) -> dict:
+        """All RepoDeployConfig rows as {repo: {environments, enabled}}."""
+        import json as _json
+        from sqlalchemy import select as _select
+        from server.db import db_session as _db_session
+        from server.db.models import RepoDeployConfig as _Cfg
+
+        async with _db_session() as db:
+            rows = (await db.execute(_select(_Cfg))).scalars().all()
+        out: dict[str, dict] = {}
+        for row in rows:
+            try:
+                envs = _json.loads(row.environments or "[]")
+            except (ValueError, TypeError):
+                envs = []
+            out[row.repo] = {"environments": envs, "enabled": bool(row.enabled)}
+        return out
+
+    async def deploy_config_put(
+        self, repo: str, environments: list[dict], enabled: bool = True
+    ) -> None:
+        """Upsert one repo's deploy-environment config."""
+        import json as _json
+        from sqlalchemy.dialects.sqlite import insert as _sqlite_insert
+        from server.db import db_session as _db_session
+        from server.db.models import RepoDeployConfig as _Cfg
+
+        stmt = _sqlite_insert(_Cfg).values(
+            repo=repo, environments=_json.dumps(environments), enabled=enabled
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["repo"],
+            set_={
+                "environments": stmt.excluded.environments,
+                "enabled": stmt.excluded.enabled,
+            },
+        )
+        async with _db_session() as db:
+            await db.execute(stmt)
+
+    def deploy_status(self) -> dict:
+        """Raw per-repo env health cache from the watcher (Task 6 payload)."""
+        return self._deploy_watcher.status()
 
     def check_insights(self, repo: str, window: str, now=None) -> dict:
         """Per-repo Check Health: slowest + flakiest checks, duration regressions,

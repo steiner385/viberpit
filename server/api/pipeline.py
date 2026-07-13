@@ -13,15 +13,23 @@ import asyncio
 import inspect
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from server.auth.middleware import current_identity
 from server.pipeline.dashboard_state import dashboard_state
+from server.pipeline.deploy_status import compute_repo_deploy
+from server.pipeline.group_history import (
+    count_group_ejects,
+    count_group_runs,
+    group_run_samples,
+)
+from server.pipeline.merge_sim import eject_probability
 from server.pipeline.notifier import TransitionNotifier
+from server.pipeline.timeline import timelines_for, tracked_merged
 
 log = logging.getLogger(__name__)
 
@@ -68,10 +76,73 @@ async def _build_state(orch) -> dict:
     has_deploy = {
         repo: any(n.kind == "deploy" for n in m.nodes) for repo, m in models.items()
     }
+    sim_ctx = await _sim_ctx(list(prs_by_repo))
+    deploy_ctx, timeline_ctx = await _deploy_ctx(orch, prs_by_repo)
     return dashboard_state(
         prs_by_repo, queues, trains, has_deploy,
         generated_at=datetime.now(timezone.utc).isoformat(),
+        sim_ctx=sim_ctx,
+        deploy_ctx=deploy_ctx,
+        timeline_ctx=timeline_ctx,
     )
+
+
+async def _deploy_ctx(
+    orch, prs_by_repo: dict[str, list]
+) -> tuple[dict[str, dict], dict[str, dict[int, dict]]]:
+    """Per-repo deploy block + PrTimeline map, gathered once per frame (SPEC §3).
+
+    For each configured + enabled repo: one ``tracked_merged`` store pass →
+    ``compute_repo_deploy`` (env-health snapshot from the watcher cache) and,
+    from the same rows, the timeline dicts for the merged PRs present in this
+    frame. Repos without a deploy config (or disabled) are absent from both
+    maps — the frame keeps the stage-model hasDeploy derivation for them.
+    """
+    configs = await orch.deploy_config_list()
+    if not configs:
+        return {}, {}
+    env_cache = await orch.deploy_status()  # {repo: [{name, liveSha, reachable}, ...]}
+    deploy_ctx: dict[str, dict] = {}
+    timeline_ctx: dict[str, dict[int, dict]] = {}
+    # Merged PR numbers actually present in this frame, per repo.
+    merged_in_frame: dict[str, list[int]] = {}
+    for repo, plist in prs_by_repo.items():
+        nums = [p.pr.number for p in plist if (p.pr.merged or p.pr.state == "merged")]
+        if nums:
+            merged_in_frame[repo] = nums
+    for repo, cfg in configs.items():
+        if not cfg.get("enabled", True):
+            continue
+        rows = await tracked_merged(repo)               # one store pass per repo
+        envs = env_cache.get(repo, [])
+        deploy_ctx[repo] = compute_repo_deploy(rows, envs)
+        frame_nums = merged_in_frame.get(repo)
+        if frame_nums:
+            timeline_ctx[repo] = await timelines_for(repo, frame_nums)
+    return deploy_ctx, timeline_ctx
+
+
+async def _sim_ctx(repos: list[str]) -> dict[str, dict]:
+    """Per-repo mergeEtaSim inputs, gathered once per frame (SPEC §1).
+
+    One set of store reads per repo (last-20 durations + 7-day run/eject counts
+    → ejectProb), NOT per PR. ``since_iso`` is trailing-Z form to match
+    group_history's stored ISO form (lexicographic ISO windowing).
+    """
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    since_iso = week_ago.isoformat().replace("+00:00", "Z")
+    ctx: dict[str, dict] = {}
+    for repo in repos:
+        samples = await group_run_samples(repo)
+        if not samples:
+            continue  # simulate_merge_eta would return None anyway; skip the reads
+        runs = await count_group_runs(repo, since_iso)
+        ejects = await count_group_ejects(repo, since_iso)
+        ctx[repo] = {
+            "duration_samples": samples,
+            "eject_prob": eject_probability(runs, ejects),
+        }
+    return ctx
 
 
 @repos_router.get("/events")
@@ -131,3 +202,54 @@ async def check_insights(
     if inspect.isawaitable(result):
         result = await result
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Deploy environment config (SPEC §3) — GET/PUT /api/pipeline/deploy-config     #
+# --------------------------------------------------------------------------- #
+
+
+class DeployEnv(BaseModel):
+    name: str
+    healthUrl: str
+    auto: bool = False
+    shaKey: str | None = None
+
+    @field_validator("healthUrl")
+    @classmethod
+    def _http_url(cls, v: str) -> str:
+        if not (v.startswith("http://") or v.startswith("https://")):
+            raise ValueError("healthUrl must start with http:// or https://")
+        return v
+
+
+class DeployConfigBody(BaseModel):
+    repo: str
+    environments: list[DeployEnv]
+    enabled: bool = True
+
+
+@repos_router.get("/deploy-config")
+async def deploy_config_list(
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    orch = request.app.state.sessions
+    result = orch.deploy_config_list()
+    if inspect.isawaitable(result):
+        result = await result
+    return result
+
+
+@repos_router.put("/deploy-config")
+async def deploy_config_put(
+    body: DeployConfigBody,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    orch = request.app.state.sessions
+    envs = [e.model_dump(exclude_none=True) for e in body.environments]
+    result = orch.deploy_config_put(body.repo, envs, body.enabled)
+    if inspect.isawaitable(result):
+        await result
+    return {"ok": True}

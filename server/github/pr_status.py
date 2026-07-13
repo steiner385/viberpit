@@ -106,6 +106,9 @@ class PullRequestInfo:
     is_draft: bool = False
     merged: bool = False
     updated_at: str = ""
+    created_at: str = ""          # GraphQL createdAt — timeline waypoint (SPEC §2)
+    merged_at: str = ""           # GraphQL mergedAt — merge waypoint / insert trigger (§2)
+    merge_commit_sha: str = ""    # GraphQL mergeCommit.oid — deploy-ancestry key (§2/§3)
     checks_detail: tuple[CheckDetail, ...] = ()
     stage: str = ""  # open-stage classifier output: 'ci' | 'ready' | 'parked' | ''
     repo: str = ""  # nameWithOwner, e.g. "owner/name"; populated by the population poller
@@ -134,6 +137,9 @@ class PullRequestInfo:
             "is_draft": self.is_draft,
             "merged": self.merged,
             "updated_at": self.updated_at,
+            "created_at": self.created_at,
+            "merged_at": self.merged_at,
+            "merge_commit_sha": self.merge_commit_sha,
             "checks_detail": [c.to_dict() for c in self.checks_detail],
             "stage": self.stage,
             "repo": self.repo,
@@ -165,6 +171,9 @@ class PullRequestInfo:
             is_draft=d.get("is_draft", False),
             merged=d.get("merged", False),
             updated_at=d.get("updated_at", ""),
+            created_at=d.get("created_at", ""),
+            merged_at=d.get("merged_at", ""),
+            merge_commit_sha=d.get("merge_commit_sha", ""),
             checks_detail=tuple(CheckDetail.from_dict(c) for c in d.get("checks_detail", [])),
             stage=d.get("stage", ""),
             repo=d.get("repo", ""),
@@ -219,7 +228,8 @@ def _alias(i: int) -> str:
 # Shared PR-node selection so build_pr_query (per-branch) and the population
 # query (per-repo) can never drift in which fields they fetch.
 _PR_NODE_FIELDS = (
-    "number url title state isDraft updatedAt mergedAt headRefName headRefOid mergeStateStatus mergeable\n"
+    "number url title state isDraft createdAt updatedAt mergedAt headRefName headRefOid mergeStateStatus mergeable\n"
+    "      mergeCommit { oid }\n"
     "      autoMergeRequest { enabledAt }\n"
     "      mergeQueueEntry { state }\n"
     "      commits(last: 1) { nodes { commit { statusCheckRollup { state\n"
@@ -311,7 +321,7 @@ def build_eta_checks_query(prs: list[tuple[str, int]]) -> str:
             f"        ... on StatusContext {{ context state }}\n"
             f"      }} }}\n"
             f"    }} }} }} }}\n"
-            f"    mergeQueueEntry {{ estimatedTimeToMerge headCommit {{ statusCheckRollup {{\n"
+            f"    mergeQueueEntry {{ estimatedTimeToMerge headCommit {{ oid statusCheckRollup {{\n"
             f"      contexts(first: 100) {{ nodes {{\n"
             f"        __typename\n"
             f"        ... on CheckRun {{ name status conclusion startedAt completedAt "
@@ -373,8 +383,11 @@ def parse_merge_group_response(
 ) -> dict[tuple[str, int], dict]:
     """Parse the mergeQueueEntry block of a ``build_eta_checks_query`` response.
 
-    Returns (repo, number) -> {"checks": [...], "eta_seconds": int | None}.
-    Empty checks + None eta when the PR is not enqueued (mergeQueueEntry null).
+    Returns (repo, number) -> {"checks": [...], "eta_seconds": int | None,
+    "group_sha": str | None}. group_sha is the merge-group head commit oid
+    (the batch identity), used to record group-run/eject history (SPEC §1).
+    Empty checks + None eta + None group_sha when the PR is not enqueued
+    (mergeQueueEntry null).
     """
     data = (response or {}).get("data") or {}
     out: dict[tuple[str, int], dict] = {}
@@ -382,9 +395,10 @@ def parse_merge_group_response(
         node = data.get(_alias(i)) or {}
         entry = (node.get("pullRequest") or {}).get("mergeQueueEntry")
         if not entry:
-            out[key] = {"checks": [], "eta_seconds": None}
+            out[key] = {"checks": [], "eta_seconds": None, "group_sha": None}
             continue
-        rollup = (entry.get("headCommit") or {}).get("statusCheckRollup") or {}
+        head_commit = entry.get("headCommit") or {}
+        rollup = head_commit.get("statusCheckRollup") or {}
         contexts = ((rollup.get("contexts") or {}).get("nodes")) or []
         checks: list[dict] = []
         for c in contexts:
@@ -406,7 +420,11 @@ def parse_merge_group_response(
                 })
         # GitHub's MergeQueueEntry.estimatedTimeToMerge is in SECONDS (per the GraphQL
         # schema) — stored raw and rendered via formatEta (seconds). Do NOT multiply.
-        out[key] = {"checks": checks, "eta_seconds": entry.get("estimatedTimeToMerge")}
+        out[key] = {
+            "checks": checks,
+            "eta_seconds": entry.get("estimatedTimeToMerge"),
+            "group_sha": head_commit.get("oid"),
+        }
     return out
 
 
@@ -533,6 +551,9 @@ def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
         is_draft=bool(pr.get("isDraft")),
         merged=(state == "merged"),
         updated_at=pr.get("updatedAt", ""),
+        created_at=pr.get("createdAt", "") or "",
+        merged_at=merged_at or "",
+        merge_commit_sha=(pr.get("mergeCommit") or {}).get("oid", "") or "",
         checks_detail=_checks_detail(pr),
         stage=stage,
         deployed_envs=deployed_envs,

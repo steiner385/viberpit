@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from server.github.merge_queue import QueueEntry
 from server.github.pr_status import CheckGroup, CheckRow, PipelinePr, PullRequestInfo
+from server.pipeline.merge_sim import simulate_merge_eta
 from server.pipeline.merge_train import MergeTrainState
 
 # Plotroom's default merge-queue batch size (config.example.json). Becomes a
@@ -56,12 +57,22 @@ def _group_failed(pr: PullRequestInfo) -> bool:
     return bool(g and any(c.conclusion == "failure" for c in g.checks))
 
 
-def stage_result(pr: PullRequestInfo) -> dict:
+def stage_result(pr: PullRequestInfo, timeline: dict | None = None) -> dict:
     if pr.merged or pr.state == "merged":
-        # qa-deploy detection needs Phase-3 deploy tracking; until then a
-        # merged PR on a deploy-enabled repo that hasn't reached prod is
-        # awaiting-prod, and everything else is plain merged.
-        stage = "awaiting-prod" if (pr.deployed_envs and not pr.deployed) else "merged"
+        # Deploy-config repos carry real qa/prod-live facts via ``timeline``
+        # (only populated for configured repos, SPEC §3): qa live + prod not →
+        # awaiting-prod; prod live (or neither) → plain merged (the deploy block
+        # carries the backlog truth). Non-configured repos keep the legacy
+        # deployed_envs fallback: a merged PR live in some env but not prod is
+        # awaiting-prod, everything else plain merged.
+        if timeline is not None:
+            stage = (
+                "awaiting-prod"
+                if (timeline.get("qaLiveAt") and not timeline.get("prodLiveAt"))
+                else "merged"
+            )
+        else:
+            stage = "awaiting-prod" if (pr.deployed_envs and not pr.deployed) else "merged"
         substate = None
     elif pr.in_merge_queue:
         stage = "queue"
@@ -95,11 +106,18 @@ def pr_view(
     queue_ahead: int | None = None,
     fixable: bool = False,
     queue_substate: str | None = None,
+    merge_eta_sim: dict | None = None,
+    timeline: dict | None = None,
 ) -> dict:
     pr = p.pr
     head = next((g for g in pr.check_groups if g.kind == "head"), None)
     merge = _merge_group(pr)
-    stage = stage_result(pr)
+    is_merged = bool(pr.merged or pr.state == "merged")
+    # PrTimeline is a merged-PR-only payload field (SPEC §2): emit it verbatim
+    # for merged PRs, stay None for open PRs even if a dict was passed. The
+    # merged-stage refinement (SPEC §3) also consumes it, so gate both on merge.
+    pr_timeline = timeline if (is_merged and timeline is not None) else None
+    stage = stage_result(pr, pr_timeline)
     # Inject queue substate when stage_result left it None (group-failed wins).
     if queue_substate and stage["stage"] == "queue" and stage["substate"] is None:
         stage["substate"] = queue_substate
@@ -109,9 +127,9 @@ def pr_view(
         "mergeStateStatus": pr.merge_state_status or None,
         "queueAheadCount": queue_ahead,
         "checks": [check_view(c) for c in head.checks] if head else [],
-        "timeline": None, "touchesWorkflows": False, "workflowImpact": None,
+        "timeline": pr_timeline, "touchesWorkflows": False, "workflowImpact": None,
         "groupChecks": [check_view(c) for c in merge.checks] if (merge and pr.in_merge_queue) else None,
-        "mergeEtaSim": None,
+        "mergeEtaSim": merge_eta_sim,
         "costMinutes": None, "costDollars": None, "costDollarsPartial": False,
         # ccswitch extension (spec §6): the authoring session + Fix eligibility.
         "session": (
@@ -121,7 +139,52 @@ def pr_view(
     }
 
 
-def queue_view(entries: Sequence[QueueEntry], train: MergeTrainState | None) -> dict:
+# QueueEntry states excluded from the mergeEtaSim "ahead" reckoning entirely
+# (plotroom poller:2469-2472: neither MERGEABLE nor UNMERGEABLE counts).
+_SIM_AHEAD_EXCLUDED = frozenset({"MERGEABLE", "UNMERGEABLE"})
+
+
+def _waiting_sim(
+    me: QueueEntry, entries: Sequence[QueueEntry], sim_ctx: dict | None
+) -> dict | None:
+    """mergeEtaSim for one WAITING entry (plotroom poller:2460-2486).
+
+    ``queued_ahead`` = entries at a strictly lower position that are neither
+    MERGEABLE nor UNMERGEABLE, minus the ones currently building.
+    ``current_train_eta_secs`` = the deepest (max-position) building train
+    ahead's etaSeconds, or None when nothing is building ahead. ``deepest``
+    resolves the "multiple building groups" ambiguity: SPEC §1 / poller:2473
+    sort building-ahead by position descending and take the first, i.e. the
+    building train closest in line to ``me``.
+    """
+    if sim_ctx is None:
+        return None
+    samples = sim_ctx.get("duration_samples") or []
+    if not samples:
+        return None
+    my_pos = me.position or 0
+    ahead = [
+        e for e in entries
+        if (e.position or 0) < my_pos and e.state not in _SIM_AHEAD_EXCLUDED
+    ]
+    building = [e for e in ahead if e.batch_head_oid and e.state in _BUILDING_STATES]
+    queued_ahead = len(ahead) - len(building)
+    deepest = max(building, key=lambda e: e.position or 0, default=None)
+    current_train_eta = deepest.eta_seconds if deepest else None
+    return simulate_merge_eta(
+        queued_ahead=queued_ahead,
+        batch_size=DEFAULT_BATCH_SIZE,
+        duration_samples=list(samples),
+        eject_prob=float(sim_ctx.get("eject_prob") or 0.0),
+        current_train_eta_secs=current_train_eta,
+    )
+
+
+def queue_view(
+    entries: Sequence[QueueEntry],
+    train: MergeTrainState | None,
+    sim_ctx: dict | None = None,
+) -> dict:
     groups: dict[str, dict] = {}
     waiting: list[dict] = []
     unmergeable: list[int] = []
@@ -151,7 +214,7 @@ def queue_view(entries: Sequence[QueueEntry], train: MergeTrainState | None) -> 
                 g["failed"] = True
         else:
             waiting.append({"prNumber": e.pr_number, "position": e.position or 0,
-                            "sim": None})
+                            "sim": _waiting_sim(e, entries, sim_ctx)})
     return {
         "groups": list(groups.values()), "waiting": waiting,
         "unmergeable": unmergeable, "queueBlocked": blocked,
@@ -174,16 +237,29 @@ def dashboard_state(
     trains: dict[str, MergeTrainState],
     has_deploy: dict[str, bool],
     generated_at: str,
+    sim_ctx: dict[str, dict] | None = None,
+    deploy_ctx: dict[str, dict] | None = None,
+    timeline_ctx: dict[str, dict[int, dict]] | None = None,
 ) -> dict:
+    deploy_ctx = deploy_ctx or {}
+    timeline_ctx = timeline_ctx or {}
     repos = []
     for repo in sorted(prs_by_repo):
         entries = queues.get(repo, [])
+        repo_timelines = timeline_ctx.get(repo, {})
         pos = {e.pr_number: e.position for e in entries}
+        repo_sim_ctx = (sim_ctx or {}).get(repo)
         # Compute queue_view once per repo; reuse for the queue value and per-PR
         # substate lookup (avoids calling queue_view N times, once per PR).
-        qv = queue_view(entries, trains.get(repo)) if entries else None
+        qv = queue_view(entries, trains.get(repo), sim_ctx=repo_sim_ctx) if entries else None
         unmergeable_set: set[int] = set(qv["unmergeable"]) if qv else set()
         blocked_set: set[int] = set(qv["queueBlocked"]) if qv else set()
+        # Waiting entries carry the mergeEtaSim; the same sim lands on the
+        # matching pr_view (waiting queue PRs only).
+        sim_by_pr: dict[int, dict] = (
+            {w["prNumber"]: w["sim"] for w in qv["waiting"] if w["sim"] is not None}
+            if qv else {}
+        )
         prs = []
         for p in prs_by_repo[repo]:
             position = pos.get(p.pr.number)
@@ -197,10 +273,19 @@ def dashboard_state(
                 queue_ahead=(position - 1) if position is not None else None,
                 fixable=_fixable(p.pr),
                 queue_substate=qs,
+                merge_eta_sim=sim_by_pr.get(p.pr.number),
+                timeline=repo_timelines.get(p.pr.number),
             ))
-        repos.append({
-            "repo": repo, "hasDeploy": has_deploy.get(repo, False),
+        repo_deploy = deploy_ctx.get(repo)
+        entry = {
+            # Deploy-config presence (deploy_ctx) drives hasDeploy — config wins
+            # over the stage-model derivation; other repos keep the derivation.
+            "repo": repo,
+            "hasDeploy": True if repo_deploy is not None else has_deploy.get(repo, False),
             "prs": prs,
             "queue": qv,
-        })
+        }
+        if repo_deploy is not None:
+            entry["deploy"] = repo_deploy
+        repos.append(entry)
     return {"generatedAt": generated_at, "staleSince": None, "repos": repos}
