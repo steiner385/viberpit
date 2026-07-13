@@ -17,6 +17,41 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from server.github.deploy_envs import EnvCategory, classify_env
+
+
+def backlog_from_prs(prs: Sequence[Any]) -> dict | None:
+    """Per-repo qa/prod/admin deploy backlog from GitHub-Deployments data.
+
+    ``prs``: the repo's PRs this frame (each needs ``.merged``/``.state`` and
+    ``.deployed_envs``). Only merged PRs count. ``deployed_envs`` already encodes
+    date-based liveness (an env is present iff its newest successful deploy is
+    at-or-after the PR's merge), so a PR is "awaiting <category>" exactly when no
+    env of that category is among its deployed_envs, and merges older than the
+    latest deploy are counted as done (supersession for free).
+
+    A category is "present" (tracked) only when at least one merged PR in the
+    window is live in it — so a repo that never deploys to a category shows 0
+    there, and a repo with no classifiable deploy env at all returns ``None``
+    (no backlog line). Always returns all three keys when non-None.
+    """
+    merged = [p for p in prs if getattr(p, "merged", False) or p.state == "merged"]
+    live_per_pr: list[set[EnvCategory]] = []
+    present: set[EnvCategory] = set()
+    for pr in merged:
+        cats = {c for e in pr.deployed_envs if (c := classify_env(e))}
+        present |= cats
+        live_per_pr.append(cats)
+    if not present:
+        return None
+    counts = {"qa": 0, "prod": 0, "admin": 0}
+    for cats in live_per_pr:
+        for cat in present:
+            if cat not in cats:
+                counts[cat] += 1
+    return {"awaitingQa": counts["qa"], "awaitingProd": counts["prod"],
+            "awaitingAdmin": counts["admin"]}
+
 
 def compute_repo_deploy(
     merges: Sequence[Any], envs: list[dict], chain_limit: int = 8

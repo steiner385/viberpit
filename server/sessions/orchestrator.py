@@ -3332,9 +3332,14 @@ class SessionOrchestrator:
 
         Reuses existing PipelinePr / PullRequestInfo fields — does NOT re-query GitHub.
         awaiting_qa  = merged & not deployed to any environment.
-        awaiting_prod = merged & not deployed to production (subset of awaiting_qa + staging).
+        awaiting_prod = merged & not live in a prod-category env.
+
+        ``p.deployed`` is the canonical "live in production" bool (routed through
+        ``classify_env`` in pr_status). Reusing it fixes namespaced prod envs
+        (e.g. "kindash / production") here too — the old ``"production" not in
+        deployed_envs`` exact-match silently counted every KinDash merge.
         """
-        awaiting_prod = sum(1 for p in prs if p.merged and "production" not in p.deployed_envs)
+        awaiting_prod = sum(1 for p in prs if p.merged and not p.deployed)
         awaiting_qa = sum(1 for p in prs if p.merged and not p.deployed_envs)
         return awaiting_qa, awaiting_prod
 

@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from server.github.merge_queue import QueueEntry
 from server.github.pr_status import CheckGroup, CheckRow, PipelinePr, PullRequestInfo
+from server.pipeline.deploy_status import backlog_from_prs
 from server.pipeline.merge_sim import simulate_merge_eta
 from server.pipeline.merge_train import MergeTrainState
 
@@ -296,5 +297,12 @@ def dashboard_state(
         }
         if repo_deploy is not None:
             entry["deploy"] = repo_deploy
+        # Per-repo qa/prod/admin backlog from GitHub-Deployments data (SPEC —
+        # flat 3-way). Independent of deploy-config: derived from the merged PRs'
+        # deployed_envs already in this frame. Absent when the repo has no
+        # classifiable deploy env (no backlog line).
+        backlog = backlog_from_prs([p.pr for p in prs_by_repo[repo]])
+        if backlog is not None:
+            entry["deployBacklog"] = backlog
         repos.append(entry)
     return {"generatedAt": generated_at, "staleSince": None, "repos": repos}

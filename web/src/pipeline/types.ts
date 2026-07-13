@@ -205,7 +205,12 @@ export interface DashboardState {
      *  Mirror of server estimator/flake-summary.ts RepoFlakeSummary. Optional to
      *  tolerate pre-upgrade payloads. */
     flake?: { topChecks: { name: string; event: string; flakeRatePct: number; flakeEvents: number }[];
-      flakyCount: number }; }[];
+      flakyCount: number };
+    /** Per-repo deploy backlog (flat 3-way: qa / prod / admin) derived from the
+     *  GitHub-Deployments `deployed_envs` of merged PRs — no deploy-config
+     *  required. Absent when the repo has no classifiable deploy env. Drives the
+     *  "📦 Deploy backlog" line. Mirror of server deploy_status.backlog_from_prs. */
+    deployBacklog?: { awaitingQa: number; awaitingProd: number; awaitingAdmin: number }; }[];
   /** Cross-cutting global CI cost summary (Cost lane, Spec 3) — top-level, not
    *  per-repo. Priced runner-minutes over a 7-day window across all repos,
    *  split by pipeline stage. `dollars` is null for an unpriced stage subset;

@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from server.github.deploy_envs import classify_env
 from server.pipeline.stage import derive_merged_stage, derive_open_stage
 
 if TYPE_CHECKING:
@@ -101,7 +102,7 @@ class PullRequestInfo:
     state: str   # 'open' | 'draft' | 'merged' | 'closed'
     checks: str  # 'passing' | 'failing' | 'pending' | 'none'
     title: str
-    deployed: bool = False  # merged AND live in production (= "production" in deployed_envs)
+    deployed: bool = False  # merged AND live in a prod-category env (classify_env, not exact "production")
     head_sha: str = ""
     is_draft: bool = False
     merged: bool = False
@@ -567,7 +568,7 @@ def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
         state=state,
         checks=checks,
         title=pr.get("title", ""),
-        deployed=("production" in deployed_envs),
+        deployed=any(classify_env(e) == "prod" for e in deployed_envs),
         head_sha=pr.get("headRefOid", ""),
         head_ref=pr.get("headRefName", ""),
         is_draft=bool(pr.get("isDraft")),

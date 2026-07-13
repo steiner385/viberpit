@@ -119,15 +119,21 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
             {!isCollapsed && (() => {
               const { lead, cohort } = splitCohort(visiblePrs);
               const cohortOpen = openCohorts.has(r.repo);
+              // Deploy backlog (flat 3-way): prefer the GitHub-Deployments-derived
+              // deployBacklog (adds admin, no config needed); fall back to the
+              // config/timeline deploy block (qa/prod only) for configured repos.
+              const backlog = r.deployBacklog
+                ?? (r.deploy ? { awaitingQa: r.deploy.awaitingQa, awaitingProd: r.deploy.awaitingProd, awaitingAdmin: 0 } : null);
               return (
                 <>
                   <QueueTrain queue={r.queue} />
-                  {r.deploy && (r.deploy.awaitingQa > 0 || r.deploy.awaitingProd > 0) && (
+                  {backlog && (backlog.awaitingQa > 0 || backlog.awaitingProd > 0 || backlog.awaitingAdmin > 0) && (
                     <p className="deploy-backlog" role="region" aria-label="Deploy backlog">
                       📦 Deploy backlog:{' '}
                       {[
-                        r.deploy.awaitingQa > 0 ? `${r.deploy.awaitingQa} awaiting QA` : null,
-                        r.deploy.awaitingProd > 0 ? `${r.deploy.awaitingProd} awaiting prod` : null,
+                        backlog.awaitingQa > 0 ? `${backlog.awaitingQa} awaiting QA` : null,
+                        backlog.awaitingProd > 0 ? `${backlog.awaitingProd} awaiting prod` : null,
+                        backlog.awaitingAdmin > 0 ? `${backlog.awaitingAdmin} awaiting admin` : null,
                       ].filter(Boolean).join(' · ')}
                     </p>
                   )}
