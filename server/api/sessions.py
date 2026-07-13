@@ -28,7 +28,7 @@ from server.sessions import adopt as _adopt
 from server.sessions.search import transcript_text, parse_terms, session_matches
 from server.audit import record_audit
 from server.config import get_settings
-from server.db import get_db
+from server.db import db_session, get_db
 from server.sessions.orchestrator import BranchSwitchError
 from server.sessions.selection import AllAccountsBusy
 from server.time_iso import iso_utc
@@ -95,7 +95,7 @@ _UNSET = object()
 
 def _record_to_dict(
     record, repo: Any = _UNSET, suggestions: list[str] | None = None,
-    prs: list | None = None, summary: str = "",
+    prs: list | None = None, summary: str = "", defer_seconds: int | None = None,
 ) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict.
 
@@ -113,8 +113,15 @@ def _record_to_dict(
     ``summary`` is the one-line status summary for the session (from
     ``orch.latest_summary``). Defaults to "" when omitted or unavailable.
     """
+    from datetime import datetime, timedelta
     from server.sessions.goals import effective_goal
     goal_text, goal_source = effective_goal(record)
+    cooldown_until = None
+    _last = getattr(record, "last_user_interaction_at", None)
+    if defer_seconds and _last is not None and not getattr(record, "autopilot_paused", False):
+        _until = _last + timedelta(seconds=defer_seconds)
+        if _until > datetime.utcnow():
+            cooldown_until = iso_utc(_until)
     return {
         "id": record.id,
         "name": record.name,
@@ -147,6 +154,7 @@ def _record_to_dict(
         "effectiveGoal": goal_text,
         "goalSource": goal_source,
         "autopilotPaused": getattr(record, "autopilot_paused", False),
+        "autopilotCooldownUntil": cooldown_until,
         "autoArchiveOptOut": getattr(record, "auto_archive_opt_out_reason", None),
         "prs": [p.to_dict() for p in (prs or [])],
         "usageUnverified": getattr(record, "usage_unverified", False),
@@ -215,6 +223,27 @@ async def _resolve_summary(orch, record, viewing: bool) -> str:
     return res or ""
 
 
+async def _autopilot_defer_seconds() -> int | None:
+    """Human-deference window (seconds) for the cooldown badge, or None when autopilot is
+    disabled/off (→ no badge). Reads the autopilot Automation row directly: the edge process owns
+    DB access, and the orchestrator's `_autopilot_read_config` is not exposed on the edge adapter.
+    Mirrors the row-read pattern in server/api/automations.py."""
+    from sqlalchemy import select
+    from server.automations.autopilot import Autopilot
+    from server.automations.base import validate_config
+    from server.db.models import Automation
+    try:
+        async with db_session() as db:
+            row = (await db.execute(
+                select(Automation).where(Automation.id == "autopilot"))).scalar_one_or_none()
+        if row is None or not row.enabled or row.mode == "off":
+            return None
+        cfg = validate_config(Autopilot.config_schema, dict(row.config or {}))
+        return int(cfg.get("human_defer_seconds", 120))
+    except Exception:
+        return None
+
+
 def _get_orchestrator(request: Request) -> "InProcessOrchestratorAdapter":
     return request.app.state.sessions
 
@@ -260,8 +289,10 @@ async def list_sessions(
     if any(isinstance(s, BaseException) for s in _summaries_raw):
         log.warning("list_sessions: summary fetch failed for %d session(s)",
                     sum(1 for s in _summaries_raw if isinstance(s, BaseException)))
+    defer_seconds = await _autopilot_defer_seconds()
     return [
-        _record_to_dict(r, repo=repo, suggestions=s, prs=pr_list, summary=summary)
+        _record_to_dict(r, repo=repo, suggestions=s, prs=pr_list, summary=summary,
+                        defer_seconds=defer_seconds)
         for r, repo, s, pr_list, summary in zip(records, repos, suggs, prs, summaries)
     ]
 
