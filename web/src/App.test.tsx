@@ -197,6 +197,14 @@ describe('App routing', () => {
     expect(sections.getByRole('tab', { name: /accounts/i })).toHaveAttribute('aria-selected', 'true')
   })
 
+  it('clicking the Automations tab updates the URL to /automations', async () => {
+    const user = userEvent.setup()
+    renderAt('/sessions')
+    const strip = within(screen.getByRole('tablist', { name: /dashboard sections/i }))
+    await user.click(strip.getByRole('tab', { name: /automations/i }))
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/automations')
+  })
+
   it('clicking the Settings tab updates the URL to /settings', async () => {
     const user = userEvent.setup()
     renderAt('/sessions')
