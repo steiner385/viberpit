@@ -124,6 +124,9 @@ class PullRequestInfo:
     merge_state_status: str = ""        # BEHIND | BLOCKED | CLEAN | DIRTY | DRAFT | UNSTABLE | UNKNOWN
     auto_merge_enabled: bool = False    # autoMergeRequest != null
     in_merge_queue: bool = False        # mergeQueueEntry != null
+    # any changed-file path under .github/workflows/ (files page-1, first 100;
+    # PRs with >100 files may under-report — same page-1 cap as plotroom) (§4)
+    touches_workflows: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -155,6 +158,7 @@ class PullRequestInfo:
             "merge_state_status": self.merge_state_status,
             "auto_merge_enabled": self.auto_merge_enabled,
             "in_merge_queue": self.in_merge_queue,
+            "touches_workflows": self.touches_workflows,
         }
 
     @classmethod
@@ -189,6 +193,7 @@ class PullRequestInfo:
             merge_state_status=d.get("merge_state_status", ""),
             auto_merge_enabled=d.get("auto_merge_enabled", False),
             in_merge_queue=d.get("in_merge_queue", False),
+            touches_workflows=d.get("touches_workflows", False),
         )
 
 
@@ -229,6 +234,7 @@ def _alias(i: int) -> str:
 # query (per-repo) can never drift in which fields they fetch.
 _PR_NODE_FIELDS = (
     "number url title state isDraft createdAt updatedAt mergedAt headRefName headRefOid mergeStateStatus mergeable\n"
+    "      files(first: 100) { nodes { path } }\n"
     "      mergeCommit { oid }\n"
     "      autoMergeRequest { enabledAt }\n"
     "      mergeQueueEntry { state }\n"
@@ -530,6 +536,22 @@ def _is_deployed_envs(pr: dict, state: str, active_dates: dict[str, str]) -> tup
     return tuple(env for env, date in active_dates.items() if date and merged_at <= date)
 
 
+def _touches_workflows(pr: dict) -> bool:
+    """True when any changed-file path starts with ``.github/workflows/`` (§4).
+
+    Reads the ``files(first: 100)`` GraphQL page only; a PR touching a workflow
+    beyond the first 100 changed files under-reports (accepted page-1 cap,
+    matching plotroom map.ts:52-54).
+    """
+    nodes = ((pr.get("files") or {}).get("nodes")) or []
+    return any(
+        isinstance(n, dict)
+        and isinstance(n.get("path"), str)
+        and n["path"].startswith(".github/workflows/")
+        for n in nodes
+    )
+
+
 def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
     state = _classify_state(pr.get("state", ""), bool(pr.get("isDraft")))
     checks = _classify_checks(_rollup_state(pr))
@@ -561,6 +583,7 @@ def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
         merge_state_status=pr.get("mergeStateStatus") or "",
         auto_merge_enabled=pr.get("autoMergeRequest") is not None,
         in_merge_queue=pr.get("mergeQueueEntry") is not None,
+        touches_workflows=_touches_workflows(pr),
     )
 
 

@@ -118,6 +118,61 @@ async def _drive_sse(app, headers: list[tuple[bytes, bytes]]):
     return start.get("status"), hdrs, chunks[0]
 
 
+class _FakeImpactResolver:
+    """Stands in for WorkflowImpactResolver in _workflow_impact_ctx tests."""
+
+    def __init__(self, impacts: dict):
+        self.impacts = impacts          # {(repo, head_sha): impact dict}
+        self.pruned: set | None = None
+        self.calls: list = []
+
+    async def impact_for_async(self, repo, head_sha):
+        self.calls.append((repo, head_sha))
+        return self.impacts.get((repo, head_sha))
+
+    def prune(self, live_keys):
+        self.pruned = set(live_keys)
+
+
+def _pipeline_pr(number: int, **kw):
+    from server.github.pr_status import PipelinePr, PullRequestInfo
+    base: dict = dict(number=number, url=f"https://github.com/o/r/pull/{number}",
+                      state="open", checks="pending", title="t", stage="ci", repo="o/r")
+    base.update(kw)
+    return PipelinePr(pr=PullRequestInfo(**base))
+
+
+@pytest.mark.asyncio
+async def test_workflow_impact_ctx_resolves_touching_open_prs_and_prunes():
+    import server.api.pipeline as _pipeline_mod
+    impact = {"summary": ["+ lint joins the merge_group gate"]}
+    fake = _FakeImpactResolver({("o/r", "sha7"): impact})
+    prs_by_repo = {"o/r": [
+        _pipeline_pr(7, touches_workflows=True, head_sha="sha7"),
+        _pipeline_pr(8, head_sha="sha8"),                          # not touching
+        _pipeline_pr(9, touches_workflows=True),                   # no head sha
+        _pipeline_pr(10, touches_workflows=True, head_sha="sha10",
+                     state="merged", merged=True),                 # merged → skip
+        _pipeline_pr(11, touches_workflows=True, head_sha="sha11"),  # no-change → None
+    ]}
+    with patch.object(_pipeline_mod, "_impact_resolver", fake):
+        ctx = await _pipeline_mod._workflow_impact_ctx(prs_by_repo)
+    assert ctx == {"o/r": {7: impact}}          # None impacts omitted
+    assert set(fake.calls) == {("o/r", "sha7"), ("o/r", "sha11")}
+    assert fake.pruned == {("o/r", "sha7"), ("o/r", "sha11")}
+
+
+@pytest.mark.asyncio
+async def test_workflow_impact_ctx_no_candidates_is_hermetic():
+    """No touching PRs → {} without constructing the resolver (no gh, no sqlite)."""
+    import server.api.pipeline as _pipeline_mod
+    prs_by_repo = {"o/r": [_pipeline_pr(8, head_sha="sha8")]}
+    with patch.object(_pipeline_mod, "_impact_resolver", None):
+        ctx = await _pipeline_mod._workflow_impact_ctx(prs_by_repo)
+        assert ctx == {}
+        assert _pipeline_mod._impact_resolver is None   # never built
+
+
 @pytest.mark.asyncio
 async def test_events_stream_emits_dashboard_state_frame():
     app = _make_app()

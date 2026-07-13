@@ -335,6 +335,36 @@ def test_dashboard_state_no_deploy_block_keeps_derivation_and_omits_key():
     assert "deploy" not in repo
 
 
+def test_pr_view_workflow_impact_gated_on_touches_workflows():
+    touching = PipelinePr(pr=_pr(touches_workflows=True))
+    impact = {"summary": ["+ lint joins the merge_group gate"]}
+    v = pr_view(touching, workflow_impact=impact)
+    assert v["touchesWorkflows"] is True
+    assert v["workflowImpact"] == impact
+    # Touching PR without a computed card → honest null.
+    assert pr_view(touching)["workflowImpact"] is None
+    # Non-touching PR never carries a card, even if one is passed.
+    plain = PipelinePr(pr=_pr())
+    v2 = pr_view(plain, workflow_impact=impact)
+    assert v2["touchesWorkflows"] is False
+    assert v2["workflowImpact"] is None
+
+
+def test_dashboard_state_threads_workflow_impact_ctx():
+    impact = {"summary": ["required-check set grows by 1: 3 → 4 checks"]}
+    prs = {"o/r": [
+        PipelinePr(pr=_pr(number=7, touches_workflows=True)),
+        PipelinePr(pr=_pr(number=8)),
+    ]}
+    st = dashboard_state(
+        prs, {}, {}, {"o/r": False}, generated_at="x",
+        workflow_impact_ctx={"o/r": {7: impact, 8: impact}},
+    )
+    by_num = {p["number"]: p for p in st["repos"][0]["prs"]}
+    assert by_num[7]["workflowImpact"] == impact
+    assert by_num[8]["workflowImpact"] is None   # not touching → gated off
+
+
 def test_dashboard_state_emits_timeline_for_merged_only():
     merged_tl = {"createdAt": None, "firstGreenAt": None, "enqueuedAt": None,
                  "mergedAt": "2026-07-12T00:00:00Z", "qaLiveAt": "2026-07-12T01:00:00Z",

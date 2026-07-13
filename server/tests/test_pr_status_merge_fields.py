@@ -93,3 +93,45 @@ def test_from_dict_defaults_in_merge_queue_false_when_missing():
     d = {"number": 12, "url": "u", "state": "open", "checks": "passing", "title": "t"}
     info = PullRequestInfo.from_dict(d)
     assert info.in_merge_queue is False
+
+
+# --- touchesWorkflows (§4): query field, path detection, round-trip ---
+
+def test_query_requests_files_field():
+    q = build_pr_query([("owner/repo", "feat/x")])
+    assert "files(first: 100)" in q
+    assert "path" in q
+
+
+def _node_with_files(paths):
+    return {"number": 20, "url": "u", "state": "OPEN", "title": "t", "isDraft": False,
+            "headRefOid": "abc", "updatedAt": "", "commits": {"nodes": []},
+            "files": {"nodes": [{"path": p} for p in paths]}}
+
+
+def test_to_info_touches_workflows_true_for_workflow_path():
+    info = _to_info(_node_with_files([".github/workflows/ci.yml", "src/x.py"]), {})
+    assert info.touches_workflows is True
+
+
+def test_to_info_touches_workflows_false_for_non_workflow_paths():
+    info = _to_info(_node_with_files(["src/x.py", ".github/dependabot.yml"]), {})
+    assert info.touches_workflows is False
+
+
+def test_to_info_touches_workflows_false_when_files_absent():
+    node = {"number": 21, "url": "u", "state": "OPEN", "title": "t", "isDraft": False,
+            "headRefOid": "", "updatedAt": "", "commits": {"nodes": []}}
+    assert _to_info(node, {}).touches_workflows is False
+
+
+def test_round_trip_preserves_touches_workflows():
+    info = PullRequestInfo(number=22, url="u", state="open", checks="passing", title="t",
+                           touches_workflows=True)
+    back = PullRequestInfo.from_dict(info.to_dict())
+    assert back.touches_workflows is True
+
+
+def test_from_dict_defaults_touches_workflows_false_when_missing():
+    d = {"number": 23, "url": "u", "state": "open", "checks": "passing", "title": "t"}
+    assert PullRequestInfo.from_dict(d).touches_workflows is False
