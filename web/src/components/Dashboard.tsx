@@ -896,10 +896,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           aria-labelledby="tab-settings"
           className="flex-1 min-h-0 overflow-y-auto pb-4 px-4"
         >
-          <SettingsView
-            onOpenSession={onOpenSession ? (id) => onOpenSession(id) : undefined}
-            onReviewSession={onReviewSession ? handleReview : undefined}
-          />
+          <SettingsView />
         </div>
       )}
 

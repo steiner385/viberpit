@@ -448,7 +448,7 @@ export function DesktopShell() {
   } else if (tab === 'insights') {
     mainPane = <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
   } else if (tab === 'settings') {
-    mainPane = <div className="p-4 overflow-y-auto h-full"><SettingsView onOpenSession={focusSession} /></div>
+    mainPane = <div className="p-4 overflow-y-auto h-full"><SettingsView /></div>
   } else {
     mainPane = selection.type === 'session'
       ? <MainPaneSession sessionId={selection.id} onClosed={() => setSelection(advanceFrom(selection.id))} />

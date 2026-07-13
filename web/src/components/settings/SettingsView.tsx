@@ -28,10 +28,7 @@ const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'mcp', label: 'MCP Servers' },
 ]
 
-export function SettingsView({ onOpenSession, onReviewSession }: {
-  onOpenSession?: (id: string) => void
-  onReviewSession?: (id: string) => void
-} = {}) {
+export function SettingsView() {
   const [params, setParams] = useSearchParams()
   const raw = params.get('section')
   const section: SettingsSection = SECTIONS.some((s) => s.id === raw) ? (raw as SettingsSection) : 'general'
@@ -55,7 +52,7 @@ export function SettingsView({ onOpenSession, onReviewSession }: {
       </div>
       {section === 'general' && <GeneralSection />}
       {section === 'accounts' && <AccountsManager />}
-      {section === 'automation' && <AutomationView onOpenSession={onOpenSession} onReviewSession={onReviewSession} />}
+      {section === 'automation' && <AutomationView />}
       {section === 'plugins' && <PluginsSection />}
       {section === 'skills' && <SkillsSection />}
       {section === 'commands' && <CommandsSection />}

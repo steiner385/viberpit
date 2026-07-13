@@ -3,10 +3,7 @@ import { useAutomations } from '@/api/hooks'
 import { setSessionsViewing } from '@/api/sessionsViewing'
 import { AutomationCard } from './AutomationCard'
 
-export function AutomationView({ onOpenSession, onReviewSession }: {
-  onOpenSession?: (id: string) => void
-  onReviewSession?: (id: string) => void
-} = {}) {
+export function AutomationView() {
   const { data, isLoading } = useAutomations()
   // No sessions-summary work needed here; leave the sessions-viewing flag off.
   useEffect(() => { setSessionsViewing(false) }, [])
