@@ -50,6 +50,10 @@ class DecisionContext:
     # Compact caution string ("N recent auto-archives in this repo were manually reversed…")
     # fed to the decider so the auto-archive judgement learns from prior reversals. None = none.
     reversal_hint: str | None = None
+    # Elapsed wall-seconds since the user last steered this session (prompt/answer/permission/typing).
+    # Precomputed by _autopilot_get_context (autopilot's clock is monotonic, so a raw timestamp
+    # cannot be compared against pre_decide's `now`). None = the human never touched it.
+    seconds_since_human: float | None = None
 
 
 @dataclass
@@ -120,6 +124,10 @@ def pre_decide(ctx: DecisionContext, config: dict, now: float) -> Decision | Non
     to defer the judgement to the LLM decider. Precedence per the spec."""
     ledger = ctx.ledger or {}
     stuck = ctx.stuck or {}
+
+    # 1. Human deference — stand down while the human is actively steering this session.
+    if ctx.seconds_since_human is not None and ctx.seconds_since_human < int(config.get("human_defer_seconds", 120)):
+        return Decision(action="skip", reason="human steering — deferring")
 
     # 2. Destructive deny-list (permission/plan only).
     if stuck.get("kind") in ("permission", "plan"):

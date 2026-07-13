@@ -148,3 +148,26 @@ def test_complete_unarmed_pr_regression_guard():
     ctx = _ctx(status="complete", stuck={"kind": "complete"}, pr_facts=_unarmed_facts())
     d = post_validate(Decision(action="complete", reason="agent said done"), ctx, CONFIG)
     assert d.action == "nudge" and d.prompt
+
+
+# --- Human deference rule ---
+
+def test_defers_while_human_recently_active():
+    ctx = _ctx(seconds_since_human=10.0)
+    d = pre_decide(ctx, {"human_defer_seconds": 120, "max_actions_per_session_per_hour": 12,
+                         "loop_repeat_limit": 3, "recovery_max_attempts": 2}, now=1000.0)
+    assert d is not None and d.action == "skip" and "human" in d.reason
+
+
+def test_acts_after_defer_window_elapsed():
+    ctx = _ctx(seconds_since_human=130.0)
+    d = pre_decide(ctx, {"human_defer_seconds": 120, "max_actions_per_session_per_hour": 12,
+                         "loop_repeat_limit": 3, "recovery_max_attempts": 2}, now=1000.0)
+    assert d is None  # falls through to the LLM decider
+
+
+def test_no_deference_when_human_never_touched():
+    ctx = _ctx(seconds_since_human=None)
+    d = pre_decide(ctx, {"human_defer_seconds": 120, "max_actions_per_session_per_hour": 12,
+                         "loop_repeat_limit": 3, "recovery_max_attempts": 2}, now=1000.0)
+    assert d is None
