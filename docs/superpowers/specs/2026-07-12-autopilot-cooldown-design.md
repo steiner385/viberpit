@@ -217,8 +217,14 @@ Autopilot sweep (every ~20s)
 
 ## Files Touched (anticipated)
 
-- `server/sessions/types.py` — add `last_user_interaction_at: datetime | None` to `SessionRecord`
-  (in-memory only; NOT added to `to_dict`/`from_dict` RPC payload — it's process-local transient).
+- `server/sessions/types.py` — add `last_user_interaction_at: datetime | None` to `SessionRecord`.
+  Not persisted to the DB (no column, no migration — a 120s window is meaningless across a restart),
+  BUT it IS carried on the RPC wire via `to_dict`/`from_dict`. In daemon mode the edge process
+  reconstructs records from the daemon over RPC (`RemoteOrchestrator.list_sessions` →
+  `SessionRecord.from_dict`); the badge serializer (`_record_to_dict`) runs on the edge, so the field
+  must survive the round trip or the badge is dead in production. NOTE: `iso_utc`→`fromisoformat`
+  yields a tz-AWARE datetime on the edge, so any consumer comparing it against a naive `utcnow()`
+  must normalize first (see `_record_to_dict`).
 - `server/bridge/ws.py` — stamp `rec.last_user_interaction_at = datetime.utcnow()` on `prompt` /
   `permissionResponse` / `answerQuestion`; handle new `activity` message (stamp only).
 - `server/automations/autopilot_policy.py` — add `seconds_since_human` to `DecisionContext`; add the
