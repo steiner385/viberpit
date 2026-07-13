@@ -19,6 +19,7 @@ export interface TabDef {
 export const TAB_DEFS: { id: TabId; label: string }[] = [
   { id: 'sessions', label: 'Sessions' },
   { id: 'pipeline', label: 'Pipeline' },
+  { id: 'automations', label: 'Automations' },
   { id: 'archived', label: 'Archived' },
   { id: 'insights', label: 'Insights' },
   { id: 'settings', label: 'Settings' },
@@ -28,6 +29,8 @@ export const TAB_DEFS: { id: TabId; label: string }[] = [
 export interface TabCounts {
   sessions?: number
   pipeline?: number
+  /** Total active sessions spawned by all automations — shown as a count badge. */
+  automations?: number
   archived?: number
   /** Amber dot on Settings — an account needs re-auth (Accounts section). */
   settingsAttention?: boolean

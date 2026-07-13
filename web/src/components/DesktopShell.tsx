@@ -33,6 +33,7 @@ import { ArchivedManager } from './ArchivedManager'
 import { PipelineTab } from '@/pipeline/PipelineTab'
 import { AdoptPanel } from './AdoptPanel'
 import { InsightsView } from './InsightsView'
+import { AutomationsTab } from '@/automations/AutomationsTab'
 import { ReviewView } from './ReviewView'
 import { SidebarResizer } from './SidebarResizer'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
@@ -56,6 +57,7 @@ import {
   useSendPrompt,
   useConfig,
   useAllPrs,
+  useAutomations,
 } from '@/api/hooks'
 import { TabBar } from './TabBar'
 import { buildTabs } from './tabDefs'
@@ -67,7 +69,7 @@ import { useSessionSearch } from '@/session/useSessionSearch'
 import { useListNavigation } from '@/session/useListNavigation'
 import { nextVisibleSessionId } from '@/session/nextAfterArchive'
 
-type TabId = 'sessions' | 'archived' | 'pipeline' | 'insights' | 'settings'
+type TabId = 'sessions' | 'archived' | 'pipeline' | 'automations' | 'insights' | 'settings'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
 
 // ── Session subtree (rendered only under SessionRuntimeProvider) ──────────────
@@ -333,9 +335,12 @@ export function DesktopShell() {
   // Live count badges for the header tabs (shared cache — the Pipeline tab reads
   // the same useAllPrs query, so this adds no extra fetch).
   const { data: prs = [] } = useAllPrs()
+  const { data: automationsData = [] } = useAutomations()
+  const automationsActiveSessions = automationsData.reduce((n, a) => n + a.activeSessions, 0)
   const tabs = buildTabs({
     sessions: orderedSessions.length,
     pipeline: inFlightPrCount(prs),
+    automations: automationsActiveSessions || undefined,
     archived: archivedSessions.length,
     settingsAttention: hasNeedsReauth,
   })
@@ -438,10 +443,12 @@ export function DesktopShell() {
       : <div className="p-4 overflow-y-auto h-full"><ArchivedManager onReviewSession={setReviewId} /></div>
   } else if (tab === 'pipeline') {
     mainPane = <div className="flex flex-col h-full"><PipelineTab onOpenInsights={() => setTab('insights')} /></div>
+  } else if (tab === 'automations') {
+    mainPane = <div className="overflow-y-auto h-full"><AutomationsTab onOpenSession={focusSession} onReviewSession={setReviewId} /></div>
   } else if (tab === 'insights') {
     mainPane = <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
   } else if (tab === 'settings') {
-    mainPane = <div className="p-4 overflow-y-auto h-full"><SettingsView onOpenSession={focusSession} /></div>
+    mainPane = <div className="p-4 overflow-y-auto h-full"><SettingsView /></div>
   } else {
     mainPane = selection.type === 'session'
       ? <MainPaneSession sessionId={selection.id} onClosed={() => setSelection(advanceFrom(selection.id))} />

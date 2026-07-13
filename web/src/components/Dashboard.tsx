@@ -17,6 +17,7 @@ import { HelpDrawer } from './HelpDrawer'
 import { ArchivedManager } from './ArchivedManager'
 import { PipelineTab } from '@/pipeline/PipelineTab'
 import { InsightsView } from './InsightsView'
+import { AutomationsTab } from '@/automations/AutomationsTab'
 import { TabBar } from './TabBar'
 import { buildTabs } from './tabDefs'
 import { inFlightPrCount } from '@/session/prStatus'
@@ -37,6 +38,7 @@ import {
   useConfig,
   useSendPrompt,
   useAllPrs,
+  useAutomations,
   type CreateSessionInput,
 } from '@/api/hooks'
 import { usePageVisible } from '@/hooks/usePageVisible'
@@ -456,7 +458,7 @@ export function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPend
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-export type TabId = 'sessions' | 'archived' | 'pipeline' | 'insights' | 'settings'
+export type TabId = 'sessions' | 'archived' | 'pipeline' | 'automations' | 'insights' | 'settings'
 
 interface DashboardProps {
   /** Called when the user opens a session (navigates to Terminal view).
@@ -552,9 +554,12 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   // Live count badges for the tab strip (shared cache with the Pipeline tab).
   const { data: prs = [] } = useAllPrs()
+  const { data: automationsData = [] } = useAutomations()
+  const automationsActiveSessions = automationsData.reduce((n, a) => n + a.activeSessions, 0)
   const tabs = buildTabs({
     sessions: orderedSessions.length,
     pipeline: inFlightPrCount(prs),
+    automations: automationsActiveSessions || undefined,
     archived: archivedSessions.length,
     settingsAttention: hasNeedsReauth,
   })
@@ -859,6 +864,21 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
         </div>
       )}
 
+      {/* Automations panel — live status and actions for each automation */}
+      {activeTab === 'automations' && (
+        <div
+          id="tabpanel-automations"
+          role="tabpanel"
+          aria-labelledby="tab-automations"
+          className="flex-1 min-h-0 overflow-y-auto pb-4"
+        >
+          <AutomationsTab
+            onOpenSession={onOpenSession ? (id) => onOpenSession(id) : undefined}
+            onReviewSession={onReviewSession ? handleReview : undefined}
+          />
+        </div>
+      )}
+
       {/* Insights panel */}
       {activeTab === 'insights' && (
         <div className="flex-1 min-h-0 overflow-y-auto pb-4">
@@ -876,10 +896,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           aria-labelledby="tab-settings"
           className="flex-1 min-h-0 overflow-y-auto pb-4 px-4"
         >
-          <SettingsView
-            onOpenSession={onOpenSession ? (id) => onOpenSession(id) : undefined}
-            onReviewSession={onReviewSession ? handleReview : undefined}
-          />
+          <SettingsView />
         </div>
       )}
 
