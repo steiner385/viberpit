@@ -365,3 +365,65 @@ def test_sweep_per_pr_error_does_not_abort(monkeypatch, tmp_path):
         assert set(reached) == {"feat/a", "feat/b"}  # both reached despite the raise
 
     asyncio.run(run())
+
+
+def test_stale_per_branch_cache_not_actionable_when_population_says_merged(tmp_path):
+    """A PR that is merged in the population cache must NOT appear in actionable items
+    even if the per-branch cache still shows it as open+failing (stale lag).
+
+    Regression guard: population loop in _pr_doctor_scope_pairs was adding merged PRs
+    to the scope without a state filter; a stale per-branch 'open' entry then made
+    actionable() classify the PR as 'failing_ci', showing a 'Fix CI' button for an
+    already-merged PR indefinitely."""
+
+    async def run():
+        await _init_pr_doctor_db(tmp_path)
+
+        stale_open = _pr(number=578, checks="failing", merge_state_status="BLOCKED")
+        stale_open = replace(stale_open, head_ref="feat/automations-tab")
+        merged_pop = replace(stale_open, state="merged", checks="none",
+                             merge_state_status="")
+
+        # Per-branch cache: stale entry still shows the PR as open+failing.
+        # Population cache: correctly shows the PR as merged.
+        orch = _build_orch(
+            cache={("steiner385/ccswitch", "feat/automations-tab"): stale_open},
+            pairs=[("steiner385/ccswitch", "feat/automations-tab")],
+            records={},
+            population={"steiner385/ccswitch": (merged_pop,)},
+        )
+
+        actionable = await orch.automation_actionable("pr-doctor")
+        ids = {a["id"] for a in actionable}
+        assert "steiner385/ccswitch#578" not in ids  # merged PR must not surface
+
+    asyncio.run(run())
+
+
+def test_population_loop_skips_merged_prs_in_scope_pairs(tmp_path):
+    """_pr_doctor_scope_pairs must not add merged/closed PRs from the population cache.
+
+    The population cache includes recently merged PRs; the scope loop should filter
+    them out so they never enter the doctor's watchlist via the population path."""
+
+    async def run():
+        await _init_pr_doctor_db(tmp_path)
+
+        merged = _pr(number=100, state="merged", checks="none")
+        merged = replace(merged, head_ref="old/branch")
+        open_pr = _pr(number=101, checks="failing", merge_state_status="BLOCKED")
+        open_pr = replace(open_pr, head_ref="new/branch")
+
+        orch = _build_orch(
+            cache={},
+            pairs=[],
+            records={},
+            population={"o/r": (merged, open_pr)},
+        )
+
+        pairs = await orch._pr_doctor_scope_pairs()
+        branches = {br for _, br in pairs}
+        assert "old/branch" not in branches   # merged PR excluded from scope
+        assert "new/branch" in branches       # open PR included
+
+    asyncio.run(run())

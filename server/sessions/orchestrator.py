@@ -2154,6 +2154,12 @@ class SessionOrchestrator:
         pairs = await self._pr_doctor_scope_pairs()
         for repo, branch in pairs:
             info = self.pr_for(repo, branch) or self._pr_population_pr(repo, branch)
+            # Reconcile: per-branch cache can lag behind a merge; if population confirms
+            # the PR is terminal while per-branch still shows it open, trust population.
+            if info is not None and not engine.target_terminal(info):
+                pop = self._pr_population_pr(repo, branch)
+                if pop is not None and engine.target_terminal(pop):
+                    info = pop
             if info is None or engine.target_terminal(info):
                 continue
             rec = self._pr_doctor_owning_rec(repo, branch)
@@ -3119,7 +3125,9 @@ class SessionOrchestrator:
             if scope is not None and repo not in scope:
                 continue
             for info in prs:
-                if info.head_ref:
+                # Population cache includes recently merged PRs; only open/draft PRs
+                # need PR Doctor attention — merged/closed ones are terminal.
+                if info.head_ref and info.state not in ("merged", "closed"):
                     seen.add((repo, info.head_ref))
         return list(seen)
 
