@@ -212,6 +212,26 @@ def register_orchestrator_rpc(app, orch) -> None:
             result = await result
         return result
 
+    async def deploy_config_list(params: dict) -> dict:
+        result = orch.deploy_config_list()
+        if inspect.isawaitable(result):
+            result = await result
+        return {"configs": result}
+
+    async def deploy_config_put(params: dict) -> dict:
+        result = orch.deploy_config_put(
+            params["repo"], params["environments"], params.get("enabled", True)
+        )
+        if inspect.isawaitable(result):
+            await result
+        return {"ok": True}
+
+    async def deploy_status(params: dict) -> dict:
+        result = orch.deploy_status()
+        if inspect.isawaitable(result):
+            result = await result
+        return {"status": result}
+
     register_rpc(app, "ensure_driver", ensure_driver)
     register_rpc(app, "ring_covers", ring_covers)
     register_rpc(app, "ring_tail", ring_tail)
@@ -228,6 +248,9 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "latest_queue_entries", latest_queue_entries)
     register_rpc(app, "check_insights", check_insights)
     register_rpc(app, "ready_merge", ready_merge)
+    register_rpc(app, "deploy_config_list", deploy_config_list)
+    register_rpc(app, "deploy_config_put", deploy_config_put)
+    register_rpc(app, "deploy_status", deploy_status)
 
     async def automation_actionable(params: dict) -> dict:
         items = await orch.automation_actionable(params["automation_id"])

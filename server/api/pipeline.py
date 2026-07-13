@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from server.auth.middleware import current_identity
 from server.pipeline.dashboard_state import dashboard_state
@@ -162,3 +162,54 @@ async def check_insights(
     if inspect.isawaitable(result):
         result = await result
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Deploy environment config (SPEC §3) — GET/PUT /api/pipeline/deploy-config     #
+# --------------------------------------------------------------------------- #
+
+
+class DeployEnv(BaseModel):
+    name: str
+    healthUrl: str
+    auto: bool = False
+    shaKey: str | None = None
+
+    @field_validator("healthUrl")
+    @classmethod
+    def _http_url(cls, v: str) -> str:
+        if not (v.startswith("http://") or v.startswith("https://")):
+            raise ValueError("healthUrl must start with http:// or https://")
+        return v
+
+
+class DeployConfigBody(BaseModel):
+    repo: str
+    environments: list[DeployEnv]
+    enabled: bool = True
+
+
+@repos_router.get("/deploy-config")
+async def deploy_config_list(
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    orch = request.app.state.sessions
+    result = orch.deploy_config_list()
+    if inspect.isawaitable(result):
+        result = await result
+    return result
+
+
+@repos_router.put("/deploy-config")
+async def deploy_config_put(
+    body: DeployConfigBody,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    orch = request.app.state.sessions
+    envs = [e.model_dump(exclude_none=True) for e in body.environments]
+    result = orch.deploy_config_put(body.repo, envs, body.enabled)
+    if inspect.isawaitable(result):
+        await result
+    return {"ok": True}

@@ -316,6 +316,24 @@ class RemoteOrchestrator:
         """Arm ready + auto-merge on a PR via the daemon (already JSON-safe)."""
         return await self._client.call("ready_merge", repo=repo, number=number)
 
+    async def deploy_config_list(self) -> dict:
+        """List all deploy-env configs via the daemon."""
+        r = await self._client.call("deploy_config_list")
+        return r.get("configs") or {}
+
+    async def deploy_config_put(
+        self, repo: str, environments: list[dict], enabled: bool = True
+    ) -> None:
+        """Upsert one repo's deploy-env config via the daemon."""
+        await self._client.call(
+            "deploy_config_put", repo=repo, environments=environments, enabled=enabled
+        )
+
+    async def deploy_status(self) -> dict:
+        """Watcher's per-repo env health cache via the daemon."""
+        r = await self._client.call("deploy_status")
+        return r.get("status") or {}
+
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
         """Inject the branch-aware fix prompt for PR #pr_number via the daemon.
 
