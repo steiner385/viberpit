@@ -9,7 +9,7 @@ Factory:
 
 Message protocol (JSON):
   client→server: attach, detach, prompt, interrupt, permissionResponse,
-                 setPermissionMode, answerQuestion
+                 setPermissionMode, answerQuestion, activity
   server→client: batch (carrying ALL session-scoped events, including the
                  replayReset/replay/replayComplete sequence and attach re-emits
                  like permissionRequest/status), plus top-level error /
@@ -904,6 +904,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                         text = msg.get("text", "")
                         attachment_ids = msg.get("attachmentIds")
                         status = await orchestrator.send_prompt(session_id, text, attachment_ids)
+                        await orchestrator.note_user_interaction(session_id)
                         if status == "draining":
                             # Deploy drain refused the turn — ack it so the browser
                             # re-queues instead of losing the prompt.
@@ -923,6 +924,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     decision = msg.get("decision", "")
                     perm_id = msg.get("permId", "")
                     await orchestrator.resolve_permission(session_id, perm_id, decision, identity)
+                    await orchestrator.note_user_interaction(session_id)
                     try:
                         async with db_session() as db:
                             await record_audit(db, "permission." + decision, identity,
@@ -947,6 +949,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     if mode not in ("option", "freeform", "chat"):
                         mode = "option"
                     await orchestrator.answer_question(session_id, question_id, selected, identity, mode)
+                    await orchestrator.note_user_interaction(session_id)
                     try:
                         async with db_session() as db:
                             await record_audit(db, "question.answer", identity,
@@ -955,6 +958,10 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     except Exception:
                         log.warning("ws.audit_failed event=%s session=%s",
                                     "question.answer", session_id, exc_info=True)
+                elif msg_type == "activity":
+                    # Lightweight steering signal — user typing / interacting before send. Refreshes
+                    # the human-deference window; no response frame.
+                    await orchestrator.note_user_interaction(session_id)
                 elif msg_type == "cancelQueued":
                     index = msg.get("index")
                     if isinstance(index, int) and not isinstance(index, bool):

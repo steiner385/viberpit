@@ -135,3 +135,13 @@ def test_facade_covers_every_orchestrator_method_the_api_calls():
         called |= set(re.findall(r"\borch\.(\w+)\(", f.read_text()))
     missing = {m for m in called if not hasattr(InProcessOrchestratorAdapter, m)}
     assert not missing, f"facade missing: {sorted(missing)}"
+
+
+@pytest.mark.asyncio
+async def test_note_user_interaction_delegates():
+    orch = mock.MagicMock()
+    orch.poller = mock.MagicMock(); orch._registry = mock.MagicMock()
+    orch.note_user_interaction = mock.MagicMock(return_value=None)
+    f = InProcessOrchestratorAdapter(orch)
+    await f.note_user_interaction("s1")
+    orch.note_user_interaction.assert_called_once_with("s1")

@@ -450,6 +450,9 @@ class RemoteOrchestrator:
     async def rename_session(self, session_id, name):
         return await self._client.call("rename_session", session_id=session_id, name=name)
 
+    async def note_user_interaction(self, session_id):
+        return await self._client.call("note_user_interaction", session_id=session_id)
+
     async def set_autopilot_paused(self, session_id, paused):
         return await self._client.call("set_autopilot_paused", session_id=session_id, paused=paused)
 

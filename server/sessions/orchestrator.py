@@ -5027,6 +5027,16 @@ class SessionOrchestrator:
                 sa_update(DbSession).where(DbSession.id == session_id).values(active_goal=goal)
             )
 
+    def note_user_interaction(self, session_id: str) -> None:
+        """Stamp the wall-clock time the user last steered this session (prompt/answer/permission/
+        typing ping). Drives autopilot human-deference + the cooldown badge. In-memory ONLY — no DB
+        write (a 120s window is meaningless across a restart), so this is safe to call on the WS
+        receive path (never blocks on I/O, cf. the no-DB-write-on-attach rule)."""
+        from datetime import datetime
+        record = self._records.get(session_id)
+        if record is not None:
+            record.last_user_interaction_at = datetime.utcnow()
+
     async def set_autopilot_paused(self, session_id: str, paused: bool) -> None:
         """Pin a session to manual (paused=True) or return it to autopilot governance.
         Mirrors the in-memory record and persists so the opt-out survives rehydrate."""
