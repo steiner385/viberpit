@@ -81,7 +81,12 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
       : [],
     [state, focusedRepo],
   );
-  const allPrs = useMemo(() => repos.flatMap((r) => r.prs), [repos]);
+  // Tile counts reflect the focused repo so the strip answers "what's happening
+  // in the repo I'm looking at?" rather than a global cross-repo aggregate.
+  const allPrs = useMemo(
+    () => (repos.find((r) => r.repo === focusedRepo) ?? repos[0])?.prs ?? [],
+    [repos, focusedRepo],
+  );
 
   if (!state) return <div className="pipeline-view" role="status">Loading pipeline…</div>;
   const toggle = (repo: string) => setCollapsed((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); writeCollapsedSet(n); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
