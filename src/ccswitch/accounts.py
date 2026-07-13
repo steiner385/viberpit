@@ -12,7 +12,7 @@ from typing import Callable
 from . import copilot, ledger, oauth, paths
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
-from .selector import Picked, select_picked
+from .selector import AllAccountsBusy, Picked, select_picked
 
 log = logging.getLogger(__name__)
 
@@ -403,8 +403,17 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
         reserved = {n for n in names if ledger.reservation_active(led, n, now_ts)}
         unhealthy = frozenset(n for n in names if ledger.get_status(led, n) == "needs-reauth")
         reserves = ledger.weekly_reserves(led)
-        picked = select_picked(usages, reserved, cfg, now, exclude, load or {},
-                               unhealthy, optimistic_fallback=True, reserves=reserves)
+        try:
+            picked = select_picked(usages, reserved, cfg, now, exclude, load or {},
+                                   unhealthy, optimistic_fallback=True, reserves=reserves)
+        except AllAccountsBusy:
+            if not exclude:
+                raise
+            # Every non-quarantined account is at ceiling. Fall back to quarantined
+            # accounts that still have headroom: one rate-limited session should not
+            # block all new spawns when the other accounts are exhausted.
+            picked = select_picked(usages, reserved, cfg, now, frozenset(), load or {},
+                                   unhealthy, optimistic_fallback=True, reserves=reserves)
         if reserve:
             ledger.reserve(led, picked.name, now_ts + cfg.reservation_ttl_sec)
     return picked

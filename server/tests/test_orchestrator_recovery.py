@@ -79,6 +79,17 @@ def test_429_with_no_retry_after_quarantines_default_and_rotates():
     assert "kindash" not in o._recovery.quarantined(now=1000.0 + R.QUARANTINE_429 + 1)
 
 
+def test_429_with_huge_retry_after_capped_at_quarantine_max():
+    """A very large Retry-After (e.g. 3600s from Anthropic) is capped at QUARANTINE_MAX
+    so one rate-limited session can't block the only available account for hours."""
+    o = _make_orch(); rec = _rec(o)
+    asyncio.run(o._recover_session(rec, "rate_limit", 3600.0))
+    assert ("rotate", "s1", "rate_limit") in o.calls
+    # Quarantine expires at now + QUARANTINE_MAX, not now + 3600
+    assert "kindash" in o._recovery.quarantined(now=1000.0 + R.QUARANTINE_MAX - 1)
+    assert "kindash" not in o._recovery.quarantined(now=1000.0 + R.QUARANTINE_MAX + 1)
+
+
 def test_401_first_recomposes_same_account():
     o = _make_orch(); rec = _rec(o)
     asyncio.run(o._recover_session(rec, "auth_401", None))
