@@ -579,6 +579,7 @@ export function useSessionSocket() {
   const setPermissionMode   = useCallback((sessionId: string, mode: string) => socket.setPermissionMode(sessionId, mode), [socket])
   const cancelQueued        = useCallback((sessionId: string, index: number) => socket.cancelQueued(sessionId, index), [socket])
   const command             = useCallback((sessionId: string, name: string, args: string) => socket.command(sessionId, name, args), [socket])
+  const activity            = useCallback((sessionId: string) => socket.activity(sessionId), [socket])
 
   const on  = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.on(event, cb), [socket])
   const off = useCallback(<K extends keyof EventMap>(event: K, cb: EventMap[K]) => socket.off(event, cb), [socket])
@@ -586,7 +587,7 @@ export function useSessionSocket() {
   return {
     attach, detach, interrupt,
     prompt, sendInterrupt, permissionResponse, answerQuestion, setPermissionMode, cancelQueued,
-    command,
+    command, activity,
     on, off,
     connectionState,
     socket,

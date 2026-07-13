@@ -30,9 +30,11 @@ interface Props {
   onRequestSuggestions?: () => Promise<string[]>
   history?: string[]
   sessionId?: string
+  /** Called while the user types — drives autopilot human-deference (throttled in the ws client). */
+  onActivity?: () => void
 }
 
-export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId }: Props) {
+export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity }: Props) {
   const draft = useSessionDraft(sessionId)
   const [text, setText] = useState(draft.initial.text)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -108,6 +110,7 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     if (histPosRef.current !== 0) histPosRef.current = 0
     setText(e.target.value)
+    onActivity?.()
     const el = e.target
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 192)}px`
