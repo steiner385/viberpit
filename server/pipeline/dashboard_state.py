@@ -57,12 +57,22 @@ def _group_failed(pr: PullRequestInfo) -> bool:
     return bool(g and any(c.conclusion == "failure" for c in g.checks))
 
 
-def stage_result(pr: PullRequestInfo) -> dict:
+def stage_result(pr: PullRequestInfo, timeline: dict | None = None) -> dict:
     if pr.merged or pr.state == "merged":
-        # qa-deploy detection needs Phase-3 deploy tracking; until then a
-        # merged PR on a deploy-enabled repo that hasn't reached prod is
-        # awaiting-prod, and everything else is plain merged.
-        stage = "awaiting-prod" if (pr.deployed_envs and not pr.deployed) else "merged"
+        # Deploy-config repos carry real qa/prod-live facts via ``timeline``
+        # (only populated for configured repos, SPEC §3): qa live + prod not →
+        # awaiting-prod; prod live (or neither) → plain merged (the deploy block
+        # carries the backlog truth). Non-configured repos keep the legacy
+        # deployed_envs fallback: a merged PR live in some env but not prod is
+        # awaiting-prod, everything else plain merged.
+        if timeline is not None:
+            stage = (
+                "awaiting-prod"
+                if (timeline.get("qaLiveAt") and not timeline.get("prodLiveAt"))
+                else "merged"
+            )
+        else:
+            stage = "awaiting-prod" if (pr.deployed_envs and not pr.deployed) else "merged"
         substate = None
     elif pr.in_merge_queue:
         stage = "queue"
@@ -97,11 +107,17 @@ def pr_view(
     fixable: bool = False,
     queue_substate: str | None = None,
     merge_eta_sim: dict | None = None,
+    timeline: dict | None = None,
 ) -> dict:
     pr = p.pr
     head = next((g for g in pr.check_groups if g.kind == "head"), None)
     merge = _merge_group(pr)
-    stage = stage_result(pr)
+    is_merged = bool(pr.merged or pr.state == "merged")
+    # PrTimeline is a merged-PR-only payload field (SPEC §2): emit it verbatim
+    # for merged PRs, stay None for open PRs even if a dict was passed. The
+    # merged-stage refinement (SPEC §3) also consumes it, so gate both on merge.
+    pr_timeline = timeline if (is_merged and timeline is not None) else None
+    stage = stage_result(pr, pr_timeline)
     # Inject queue substate when stage_result left it None (group-failed wins).
     if queue_substate and stage["stage"] == "queue" and stage["substate"] is None:
         stage["substate"] = queue_substate
@@ -111,7 +127,7 @@ def pr_view(
         "mergeStateStatus": pr.merge_state_status or None,
         "queueAheadCount": queue_ahead,
         "checks": [check_view(c) for c in head.checks] if head else [],
-        "timeline": None, "touchesWorkflows": False, "workflowImpact": None,
+        "timeline": pr_timeline, "touchesWorkflows": False, "workflowImpact": None,
         "groupChecks": [check_view(c) for c in merge.checks] if (merge and pr.in_merge_queue) else None,
         "mergeEtaSim": merge_eta_sim,
         "costMinutes": None, "costDollars": None, "costDollarsPartial": False,
@@ -222,10 +238,15 @@ def dashboard_state(
     has_deploy: dict[str, bool],
     generated_at: str,
     sim_ctx: dict[str, dict] | None = None,
+    deploy_ctx: dict[str, dict] | None = None,
+    timeline_ctx: dict[str, dict[int, dict]] | None = None,
 ) -> dict:
+    deploy_ctx = deploy_ctx or {}
+    timeline_ctx = timeline_ctx or {}
     repos = []
     for repo in sorted(prs_by_repo):
         entries = queues.get(repo, [])
+        repo_timelines = timeline_ctx.get(repo, {})
         pos = {e.pr_number: e.position for e in entries}
         repo_sim_ctx = (sim_ctx or {}).get(repo)
         # Compute queue_view once per repo; reuse for the queue value and per-PR
@@ -253,10 +274,18 @@ def dashboard_state(
                 fixable=_fixable(p.pr),
                 queue_substate=qs,
                 merge_eta_sim=sim_by_pr.get(p.pr.number),
+                timeline=repo_timelines.get(p.pr.number),
             ))
-        repos.append({
-            "repo": repo, "hasDeploy": has_deploy.get(repo, False),
+        repo_deploy = deploy_ctx.get(repo)
+        entry = {
+            # Deploy-config presence (deploy_ctx) drives hasDeploy — config wins
+            # over the stage-model derivation; other repos keep the derivation.
+            "repo": repo,
+            "hasDeploy": True if repo_deploy is not None else has_deploy.get(repo, False),
             "prs": prs,
             "queue": qv,
-        })
+        }
+        if repo_deploy is not None:
+            entry["deploy"] = repo_deploy
+        repos.append(entry)
     return {"generatedAt": generated_at, "staleSince": None, "repos": repos}

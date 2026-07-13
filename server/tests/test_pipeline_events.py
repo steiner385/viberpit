@@ -55,6 +55,12 @@ class _FakeSessions:
     async def all_repos_stage_models(self):
         return {}
 
+    async def deploy_config_list(self):
+        return {}
+
+    async def deploy_status(self):
+        return {}
+
 
 def _make_app():
     with patch.dict(os.environ, _ENV):

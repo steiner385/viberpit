@@ -284,3 +284,73 @@ def test_dashboard_state_backward_compatible_without_sim_ctx():
     st = dashboard_state(prs, queues, {}, {"o/r": False}, generated_at="x")
     assert st["repos"][0]["queue"]["waiting"][0]["sim"] is None
     assert st["repos"][0]["prs"][0]["mergeEtaSim"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Task 6 wiring: deploy block, hasDeploy override, timeline emission            #
+# --------------------------------------------------------------------------- #
+
+def test_stage_result_merged_uses_timeline_facts_for_configured_repo():
+    # Configured repo (timeline dict present): qa live + prod not → awaiting-prod.
+    tl = {"qaLiveAt": "2026-07-12T01:00:00Z", "prodLiveAt": None}
+    assert stage_result(_pr(state="merged", merged=True), tl)["stage"] == "awaiting-prod"
+    # prod live → plain merged even though qa live too.
+    tl2 = {"qaLiveAt": "2026-07-12T01:00:00Z", "prodLiveAt": "2026-07-12T02:00:00Z"}
+    assert stage_result(_pr(state="merged", merged=True), tl2)["stage"] == "merged"
+    # neither live → plain merged (deploy block carries the truth).
+    tl3 = {"qaLiveAt": None, "prodLiveAt": None}
+    assert stage_result(_pr(state="merged", merged=True), tl3)["stage"] == "merged"
+    # timeline facts win over the deployed_envs fallback: env-live but prod-facts
+    # say merged → merged (not awaiting-prod).
+    assert stage_result(
+        _pr(state="merged", merged=True, deployed_envs=("qa",)), tl2
+    )["stage"] == "merged"
+
+
+def _deploy_block(**kw) -> dict:
+    base = {"envs": [{"name": "qa", "liveSha": "abc", "reachable": True}],
+            "awaitingQa": 1, "awaitingProd": 0,
+            "chain": {"entries": [], "inFlight": None, "supersededCount": 0}}
+    base.update(kw)
+    return base
+
+
+def test_dashboard_state_attaches_deploy_block_and_overrides_has_deploy():
+    prs = {"o/r": [PipelinePr(pr=_pr(number=7, state="open"))]}
+    block = _deploy_block()
+    # has_deploy says False (stage-model derivation), but deploy_ctx presence wins.
+    st = dashboard_state(prs, {}, {}, {"o/r": False}, generated_at="x",
+                         deploy_ctx={"o/r": block})
+    repo = st["repos"][0]
+    assert repo["hasDeploy"] is True
+    assert repo["deploy"] == block
+
+
+def test_dashboard_state_no_deploy_block_keeps_derivation_and_omits_key():
+    prs = {"o/r": [PipelinePr(pr=_pr(number=7, state="open"))]}
+    # No deploy_ctx entry → keep the stage-model hasDeploy + no deploy key.
+    st = dashboard_state(prs, {}, {}, {"o/r": True}, generated_at="x", deploy_ctx={})
+    repo = st["repos"][0]
+    assert repo["hasDeploy"] is True
+    assert "deploy" not in repo
+
+
+def test_dashboard_state_emits_timeline_for_merged_only():
+    merged_tl = {"createdAt": None, "firstGreenAt": None, "enqueuedAt": None,
+                 "mergedAt": "2026-07-12T00:00:00Z", "qaLiveAt": "2026-07-12T01:00:00Z",
+                 "prodLiveAt": None}
+    open_tl = {"mergedAt": None, "qaLiveAt": None, "prodLiveAt": None}
+    prs = {"o/r": [
+        PipelinePr(pr=_pr(number=7, state="merged", merged=True)),
+        PipelinePr(pr=_pr(number=8, state="open")),
+    ]}
+    st = dashboard_state(
+        prs, {}, {}, {"o/r": False}, generated_at="x",
+        timeline_ctx={"o/r": {7: merged_tl, 8: open_tl}},
+    )
+    by_num = {p["number"]: p for p in st["repos"][0]["prs"]}
+    # Merged PR carries the timeline verbatim + awaiting-prod from its qa fact.
+    assert by_num[7]["timeline"] == merged_tl
+    assert by_num[7]["stage"]["stage"] == "awaiting-prod"
+    # Open PR stays timeline None even though a dict was passed for it.
+    assert by_num[8]["timeline"] is None
