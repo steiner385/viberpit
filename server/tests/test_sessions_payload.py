@@ -49,3 +49,15 @@ def test_cooldown_until_absent_when_defer_none():
 
 def test_cooldown_until_absent_when_never_interacted():
     assert _record_to_dict(_rec(), defer_seconds=120).get("autopilotCooldownUntil") is None
+
+
+# ---------------------------------------------------------------------------
+# Daemon-mode: aware datetime from RPC round-trip must not raise TypeError
+# ---------------------------------------------------------------------------
+
+def test_cooldown_until_handles_aware_datetime_from_rpc():
+    """After an RPC round-trip, last_user_interaction_at is tz-aware.
+    The comparison must NOT raise TypeError (aware vs naive). Regression guard."""
+    rec = _rec(last_user_interaction_at=_dt.datetime.now(_dt.timezone.utc))
+    out = _record_to_dict(rec, defer_seconds=120)   # must not raise
+    assert out.get("autopilotCooldownUntil") is not None

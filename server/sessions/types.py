@@ -114,6 +114,7 @@ class SessionRecord:
             "createdAt": iso_utc(self.created_at),
             "updatedAt": self.updated_at_iso,
             "lastTurnAt": iso_utc(self.last_turn_at),
+            "lastUserInteractionAt": iso_utc(self.last_user_interaction_at),
             "revAt": self.rev_at,
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
@@ -146,6 +147,8 @@ class SessionRecord:
             permission_mode=d.get("permissionMode", "interactive"),
             created_at=datetime.fromisoformat(created) if created else None,
             last_turn_at=datetime.fromisoformat(last_turn) if last_turn else None,
+            last_user_interaction_at=(datetime.fromisoformat(d["lastUserInteractionAt"])
+                                      if d.get("lastUserInteractionAt") else None),
             updated_at=datetime.fromisoformat(rev) if rev else None,
             adopted_in_place=d.get("adoptedInPlace", False),
             model=d.get("model"),

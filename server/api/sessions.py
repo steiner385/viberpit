@@ -113,12 +113,14 @@ def _record_to_dict(
     ``summary`` is the one-line status summary for the session (from
     ``orch.latest_summary``). Defaults to "" when omitted or unavailable.
     """
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     from server.sessions.goals import effective_goal
     goal_text, goal_source = effective_goal(record)
     cooldown_until = None
     _last = getattr(record, "last_user_interaction_at", None)
     if defer_seconds and _last is not None and not getattr(record, "autopilot_paused", False):
+        if _last.tzinfo is not None:                      # aware after an RPC round trip (daemon mode)
+            _last = _last.astimezone(timezone.utc).replace(tzinfo=None)
         _until = _last + timedelta(seconds=defer_seconds)
         if _until > datetime.utcnow():
             cooldown_until = iso_utc(_until)

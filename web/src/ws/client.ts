@@ -242,8 +242,7 @@ export class SessionSocket {
   activity(sessionId: string): void {
     const now = Date.now()
     if (now - this._lastActivitySent < ACTIVITY_THROTTLE_MS) return
-    this._lastActivitySent = now
-    this._send({ type: 'activity', sessionId })
+    if (this._send({ type: 'activity', sessionId })) this._lastActivitySent = now
   }
 
   setPermissionMode(sessionId: string, mode: string): boolean {
