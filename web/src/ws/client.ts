@@ -60,6 +60,7 @@ export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'rec
 
 const BACKOFF_BASE_MS = 500
 const BACKOFF_MAX_MS  = 10_000
+export const ACTIVITY_THROTTLE_MS = 5000
 // How long a socket must stay open before we treat it as healthy and reset the
 // reconnect backoff. Shorter than this and we assume it's a flapping connection
 // (e.g. a deploy restart accepting then dropping the socket) and let backoff grow.
@@ -230,6 +231,19 @@ export class SessionSocket {
    *  onto the wrong live question (see #505 and useSessionRuntime.onAnswer). */
   answerQuestion(sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option'): boolean {
     return this._sendControl({ type: 'answerQuestion', sessionId, questionId, selected, mode })
+  }
+
+  private _lastActivitySent = 0
+
+  /** Fire-and-forget "user is steering" ping (typing / interacting before send). Refreshes the
+   *  server's human-deference window so autopilot stands down. Throttled to one per
+   *  ACTIVITY_THROTTLE_MS; silent best-effort (dropped when the socket is closed — a missed ping
+   *  just means the window isn't refreshed that tick, which is harmless). */
+  activity(sessionId: string): void {
+    const now = Date.now()
+    if (now - this._lastActivitySent < ACTIVITY_THROTTLE_MS) return
+    this._lastActivitySent = now
+    this._send({ type: 'activity', sessionId })
   }
 
   setPermissionMode(sessionId: string, mode: string): boolean {

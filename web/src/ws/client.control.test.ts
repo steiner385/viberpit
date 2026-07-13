@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { SessionSocket } from './client'
+import { SessionSocket, ACTIVITY_THROTTLE_MS } from './client'
 import type { WsErrorMsg } from './client'
 
 class MockWebSocket {
@@ -104,5 +104,44 @@ describe('SessionSocket control-frame rejection (#505)', () => {
         expect(frame.type).toBe(m.frameType)
       })
     }
+  })
+})
+
+describe('SessionSocket.activity throttling', () => {
+  beforeEach(() => { MockWebSocket.instances = [] })
+
+  it('throttles to at most one activity frame per window, silently', () => {
+    vi.useFakeTimers()
+    try {
+      const sock = new SessionSocket('/ws')
+      sock.connect()
+      lastSock().simulateOpen()
+      const errors: WsErrorMsg[] = []
+      sock.on('error', (e) => errors.push(e))
+
+      const activityFrames = () =>
+        lastSock().sent.filter((s) => (JSON.parse(s) as { type: string }).type === 'activity')
+
+      sock.activity('s1')
+      sock.activity('s1')                       // within window → dropped
+      expect(activityFrames()).toHaveLength(1)
+      expect(errors).toHaveLength(0)            // silent — no NOT_CONNECTED spam
+
+      vi.advanceTimersByTime(ACTIVITY_THROTTLE_MS + 1)
+      sock.activity('s1')                       // window elapsed → allowed
+      expect(activityFrames()).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops silently when the socket is not open (no error emit)', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()                              // CONNECTING, never opened
+    const errors: WsErrorMsg[] = []
+    sock.on('error', (e) => errors.push(e))
+    sock.activity('s1')
+    expect(lastSock().sent).toHaveLength(0)
+    expect(errors).toHaveLength(0)
   })
 })

@@ -88,6 +88,9 @@ export interface Session {
   goalSource?: string | null
   /** Per-session autopilot opt-out; true = pinned to manual, false/absent = governed. */
   autopilotPaused?: boolean
+  /** ISO instant until which autopilot is deferring because the user is steering this
+   *  session; null/absent = not deferring. The card counts down locally from this. */
+  autopilotCooldownUntil?: string | null
   /** Sticky auto-archive opt-out reason (e.g. "manual-unarchive"); set when a human
    *  unarchived the session, so autopilot never auto-archives it again. Null/absent = eligible. */
   autoArchiveOptOut?: string | null
