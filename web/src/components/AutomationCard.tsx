@@ -1,12 +1,9 @@
-import { useState, useEffect } from 'react'
-import { toast } from 'sonner'
+import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import {
-  useAutomationEvents, useAutomationSessions, useGithubRepos, usePatchAutomation,
-  useAutomationActionable, useAutomationTrigger,
+  useGithubRepos, usePatchAutomation,
 } from '@/api/hooks'
-import type { Automation, AutomationPatch, ConfigField, ActionSpec } from '@/api/automations'
-import { ConsolidatePanel } from './ConsolidatePanel'
+import type { Automation, AutomationPatch, ConfigField } from '@/api/automations'
 
 const LEVEL_DOT: Record<string, string> = {
   idle: 'bg-gray-400', active: 'bg-blue-500', warn: 'bg-amber-500', error: 'bg-red-500',
@@ -117,7 +114,6 @@ interface ConfigPanelProps {
 
 function ConfigPanel({ automation: a }: ConfigPanelProps) {
   const patch = usePatchAutomation()
-  // Local config state seeded from server values (fall back to field defaults)
   const [localConfig, setLocalConfig] = useState<Record<string, unknown>>(() => {
     const init: Record<string, unknown> = {}
     for (const f of a.configSchema) {
@@ -161,178 +157,19 @@ function ConfigPanel({ automation: a }: ConfigPanelProps) {
   )
 }
 
-// --- Spawned sessions section ------------------------------------------------
-
-// Session statuses that mean the spawned session is no longer live. Mirrors the
-// backend's INACTIVE_SESSION_STATUSES (server/db/models.py), which drives the
-// automation's activeSessions count — kept in sync so the list agrees with the badge.
-const INACTIVE_SESSION_STATUSES = new Set(['ended', 'archived'])
-
-interface SpawnedSessionsSectionProps {
-  id: string
-  enabled: boolean
-  onOpenSession?: (id: string) => void
-  onReviewSession?: (id: string) => void
-}
-
-function SpawnedSessionsSection({ id, enabled, onOpenSession, onReviewSession }: SpawnedSessionsSectionProps) {
-  const sessions = useAutomationSessions(id, enabled)
-  const list = sessions.data ?? []
-  const activeCount = list.filter((s) => !INACTIVE_SESSION_STATUSES.has(s.status)).length
-
-  return (
-    <section>
-      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">
-        Spawned Sessions{list.length > 0 && ` (${activeCount} active)`}
-      </h4>
-      {list.length === 0
-        ? <p className="text-sm text-muted-foreground">No sessions spawned.</p>
-        : (
-          <div className="max-h-40 overflow-y-auto rounded border border-border p-2">
-            <ul className="space-y-1 text-sm">
-              {list.map((s) => (
-                <li key={s.id} className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    // Inactive (ended/archived) sessions have no live driver, so the
-                    // live-attach route 404s — route them to the read-only review view.
-                    onClick={() => (INACTIVE_SESSION_STATUSES.has(s.status) ? onReviewSession : onOpenSession)?.(s.id)}
-                    className="text-blue-600 hover:underline text-left"
-                  >
-                    {s.name}
-                  </button>
-                  <span className="text-muted-foreground">· {s.status}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-    </section>
-  )
-}
-
-// --- AutomationActions section -----------------------------------------------
-
-function outcomeToast(r: { level: string; message: string }) {
-  if (r.level === 'ok') toast.success(r.message)
-  else if (r.level === 'warn') toast.warning(r.message)
-  else toast.error(r.message)
-}
-
-function ActionButton(
-  { item, action, automationId }:
-  { item: { id: string }; action: ActionSpec; automationId: string },
-) {
-  const trigger = useAutomationTrigger(automationId)
-  const [armed, setArmed] = useState(false)     // risky: first click arms confirm
-  const [outcome, setOutcome] = useState<{ level: string; message: string } | null>(null)
-  const busy = trigger.isPending
-
-  useEffect(() => {
-    if (!outcome) return
-    const id = setTimeout(() => setOutcome(null), 4000)
-    return () => clearTimeout(id)
-  }, [outcome])
-
-  // A risky action arms a two-step confirm. Auto-disarm after a few seconds so a
-  // user who reconsiders isn't left with a sticky "Confirm?" they can only escape
-  // by firing — mirrors the outcome-badge auto-clear above (#466).
-  useEffect(() => {
-    if (!armed) return
-    const id = setTimeout(() => setArmed(false), 4000)
-    return () => clearTimeout(id)
-  }, [armed])
-
-  async function fire() {
-    setArmed(false)
-    const r = await trigger.mutateAsync({ item_id: item.id, kind: action.kind })
-    setOutcome({ level: r.level, message: r.message })
-    outcomeToast(r)
-  }
-
-  function onClick() {
-    if (action.style === 'risky' && !armed) { setArmed(true); return }
-    void fire()
-  }
-
-  const base = 'rounded border px-2 py-1 text-xs font-semibold disabled:opacity-50'
-  const btnTone = action.style === 'risky'
-    ? 'border-red-300 text-red-700 hover:bg-red-600 hover:text-white hover:border-red-600'
-    : 'border-border hover:bg-primary hover:text-primary-foreground hover:border-primary'
-  return (
-    <span className="inline-flex items-center gap-2">
-      <button type="button" disabled={busy} onClick={onClick} className={`${base} ${btnTone}`}>
-        {busy ? 'Working…' : armed ? `Confirm ${action.label}?` : action.label}
-      </button>
-      {armed && !busy && (
-        <button
-          type="button"
-          aria-label={`Cancel ${action.label}`}
-          onClick={() => setArmed(false)}
-          className={`${base} border-border text-muted-foreground hover:bg-muted`}
-        >
-          Cancel
-        </button>
-      )}
-      {outcome && (() => {
-        const badgeTone = outcome.level === 'ok' ? 'text-green-700 bg-green-50'
-          : outcome.level === 'warn' ? 'text-amber-700 bg-amber-50'
-          : 'text-red-700 bg-red-50'
-        return <span className={`rounded px-2 py-1 text-xs font-semibold ${badgeTone}`}>{outcome.message}</span>
-      })()}
-    </span>
-  )
-}
-
-function AutomationActions({ automationId, enabled }: { automationId: string; enabled: boolean }) {
-  const actionable = useAutomationActionable(automationId, enabled)
-  const list = actionable.data ?? []
-  return (
-    <section>
-      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Actionable items</h4>
-      {list.length === 0
-        ? <p className="text-sm text-muted-foreground">No actionable items.</p>
-        : (
-          <div className="max-h-48 overflow-y-auto rounded border border-border p-2">
-            <ul className="space-y-1.5 text-sm">
-              {list.map((item) => (
-                <li key={item.id} className="flex items-center gap-2">
-                  <span className="flex-1 truncate">
-                    <span className="text-muted-foreground tabular-nums">{item.id.split('#')[1] ? `#${item.id.split('#')[1]}` : ''}</span>{' '}
-                    {item.title}
-                  </span>
-                  {item.actions.map((action) => (
-                    <ActionButton key={action.kind} item={item} action={action} automationId={automationId} />
-                  ))}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-    </section>
-  )
-}
-
 // --- Main card ---------------------------------------------------------------
 
-export function AutomationCard({ automation: a, onOpenSession, onReviewSession }: {
+export function AutomationCard({ automation: a }: {
   automation: Automation
-  onOpenSession?: (id: string) => void
-  onReviewSession?: (id: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const patch = usePatchAutomation()
-  const events = useAutomationEvents(a.id, open)
+  const hasConfig = a.configSchema.length > 0
 
   return (
     <div className="rounded-lg border border-border bg-card">
       <div className="flex items-center gap-3 p-4">
-        <button
-          type="button"
-          aria-label={open ? 'Collapse' : 'Expand'}
-          onClick={() => setOpen((v) => !v)}
-          className="text-left flex-1 min-w-0"
-        >
+        <div className="text-left flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-medium">{a.name}</span>
             {a.activeSessions > 0 && (
@@ -348,7 +185,7 @@ export function AutomationCard({ automation: a, onOpenSession, onReviewSession }
             <span className={cn('inline-block w-2 h-2 rounded-full shrink-0', LEVEL_DOT[a.status.level])} />
             {a.status.text}
           </div>
-        </button>
+        </div>
         {a.modes.length > 2 && (
           <div className="flex flex-col items-end gap-0.5 shrink-0">
             <select
@@ -376,8 +213,7 @@ export function AutomationCard({ automation: a, onOpenSession, onReviewSession }
             const body: AutomationPatch = { enabled: enabling }
             // A 2-mode automation (off/propose) hides the mode <select>, so the
             // toggle is its only control: enabling with no active mode must also
-            // set one, else the row is enabled but stuck 'off'. Never stomp an
-            // already-chosen active mode (e.g. a 3-mode 'auto').
+            // set one, else the row is enabled but stuck 'off'.
             const active = a.modes.filter((m) => m !== 'off')
             if (enabling && active.length > 0 && !active.includes(a.mode ?? '')) {
               body.mode = active[0]
@@ -390,36 +226,26 @@ export function AutomationCard({ automation: a, onOpenSession, onReviewSession }
           <span className={cn('absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform',
             a.enabled && 'translate-x-4')} />
         </button>
+        {hasConfig && (
+          <button
+            type="button"
+            aria-label={open ? 'Collapse' : 'Expand'}
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            className="text-muted-foreground hover:text-foreground shrink-0 p-1"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d={open ? 'M4 10l4-4 4 4' : 'M4 6l4 4 4-4'}
+                stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        )}
       </div>
-      {open && (
-        <div className="border-t border-border p-4 space-y-4">
-          <section>
-            <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Activity</h4>
-            {(events.data ?? []).length === 0
-              ? <p className="text-sm text-muted-foreground">No activity yet.</p>
-              : (
-                <div className="max-h-40 overflow-y-auto rounded border border-border p-2">
-                  <ul className="space-y-1 text-sm">
-                    {(events.data ?? []).map((e) => (
-                      <li key={`${e.ts}-${e.sessionId ?? ''}`} className="flex gap-2">
-                        <span className="text-muted-foreground tabular-nums shrink-0">{e.ts.slice(11, 19)}</span>
-                        {e.sessionId
-                          ? <button
-                              type="button"
-                              onClick={() => onOpenSession?.(e.sessionId!)}
-                              className="text-blue-600 hover:underline text-left"
-                            >{e.summary}</button>
-                          : <span>{e.summary}</span>}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-          </section>
-          <AutomationActions automationId={a.id} enabled={open} />
-          {a.id === 'pr-doctor' && <ConsolidatePanel enabled={open} onOpenSession={onOpenSession} />}
-          <SpawnedSessionsSection id={a.id} enabled={open} onOpenSession={onOpenSession} onReviewSession={onReviewSession} />
-          {a.configSchema.length > 0 && <ConfigPanel automation={a} />}
+      {open && hasConfig && (
+        <div className="border-t border-border p-4">
+          <ConfigPanel automation={a} />
         </div>
       )}
     </div>
