@@ -62,6 +62,30 @@ function wrapper({ children }: { children: React.ReactNode }) {
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 }
 
+describe('Automations top-level tab', () => {
+  function renderAutomationsTab() {
+    return render(
+      <MemoryRouter>
+        <Dashboard activeTab="automations" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
+      </MemoryRouter>,
+      { wrapper },
+    )
+  }
+
+  it('renders the automations tabpanel', () => {
+    renderAutomationsTab()
+    const panel = screen.getByRole('tabpanel', { hidden: false })
+    expect(panel.id).toBe('tabpanel-automations')
+  })
+
+  it('automations panel is a scroll container (scroll-wrapper invariant)', () => {
+    renderAutomationsTab()
+    const panel = screen.getByRole('tabpanel', { hidden: false })
+    expect(panel.className).toContain('overflow-y-auto')
+    expect(panel.className).toContain('min-h-0')
+  })
+})
+
 describe('Automation section (Settings tab)', () => {
   // Automation lives inside the Settings tab as a ?section=automation section.
   function renderAutomation() {
