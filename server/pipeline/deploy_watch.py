@@ -46,9 +46,45 @@ HttpGet = Callable[[str], Awaitable[object]]
 GhRun = Callable[[list[str]], object]
 
 
+def _url_allowed(url: str) -> bool:
+    """SSRF guard for user-configured health URLs.
+
+    healthUrl is identity-gated config, but the fetch runs server-side — block
+    the dangerous target classes (loopback, link-local incl. the 169.254.169.254
+    cloud-metadata endpoint, unspecified/reserved/multicast) while ALLOWING
+    private + CGNAT ranges: tailnet-internal health endpoints are this feature's
+    primary legitimate use (constitution IV — exposure-conditional hardening;
+    public hosting revisits this in P4).
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except OSError:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (ip.is_loopback or ip.is_link_local or ip.is_unspecified
+                or ip.is_multicast or ip.is_reserved):
+            return False
+    return True
+
+
 async def _default_http_get(url: str) -> object:
     import httpx
 
+    if not _url_allowed(url):
+        raise ValueError(f"healthUrl target not allowed: {url!r}")
+    # follow_redirects stays False (httpx default): a redirect must not be able
+    # to bounce the fetch to a blocked target after the guard passed.
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_S) as client:
         return await client.get(url)
 
@@ -87,9 +123,10 @@ class DeployWatcher:
     async def _fetch_live_sha(self, url: str, sha_key: str) -> tuple[str | None, bool]:
         """GET ``url`` → extract flat ``sha_key`` from JSON. NEVER raises.
 
-        Returns ``(liveSha, reachable)``. Any HTTP error status, transport
-        exception, or JSON parse failure → ``(None, False)``. A reachable 2xx
-        whose body lacks the key or holds a non-string → ``(None, True)``.
+        Returns ``(liveSha, reachable)``. Plotroom invariant (deploy-status.ts:74):
+        ``reachable == (liveSha is not None)`` — HTTP errors, transport
+        exceptions, parse failures, AND a 2xx body lacking the key / holding a
+        non-string all collapse to ``(None, False)``.
         """
         try:
             resp = await self._http_get(url)
@@ -104,7 +141,7 @@ class DeployWatcher:
             return (None, False)
         value = body.get(sha_key) if isinstance(body, dict) else None
         if not isinstance(value, str):
-            return (None, True)
+            return (None, False)
         return (value, True)
 
     async def poll_once(self, now: datetime | None = None) -> None:

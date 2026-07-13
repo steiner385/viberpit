@@ -122,7 +122,8 @@ def test_health_non_string_value_is_none():
         await w.poll_once()
         env = w.status()["o/r"][0]
         assert env["liveSha"] is None
-        assert env["reachable"] is True  # reachable but no usable sha
+        # plotroom invariant (deploy-status.ts:74): reachable == (liveSha != null)
+        assert env["reachable"] is False
     asyncio.run(go())
 
 
@@ -406,3 +407,19 @@ def test_status_empty_before_poll():
 
 def test_interval_constant():
     assert _DEPLOY_INTERVAL_S == 30.0
+
+
+def test_url_guard_blocks_dangerous_targets_allows_tailnet():
+    """SSRF guard: loopback/link-local(metadata)/reserved/multicast blocked;
+    private + CGNAT (tailnet) and public hosts allowed; non-http schemes blocked."""
+    from server.pipeline.deploy_watch import _url_allowed
+
+    assert _url_allowed("http://127.0.0.1/health") is False
+    assert _url_allowed("http://localhost:8000/health") is False
+    assert _url_allowed("http://169.254.169.254/latest/meta-data/") is False
+    assert _url_allowed("http://0.0.0.0/h") is False
+    assert _url_allowed("http://224.0.0.1/h") is False
+    assert _url_allowed("file:///etc/passwd") is False
+    assert _url_allowed("http://10.0.0.5/health") is True          # private LAN
+    assert _url_allowed("http://100.101.102.103/health") is True   # tailnet CGNAT
+    assert _url_allowed("https://1.1.1.1/health") is True          # public
