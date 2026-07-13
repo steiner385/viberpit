@@ -278,6 +278,33 @@ def test_dashboard_state_sim_absent_for_non_waiting_pr():
     assert st["repos"][0]["prs"][0]["mergeEtaSim"] is None
 
 
+def test_dashboard_state_emits_deploy_backlog_from_deployed_envs():
+    # Merged KinDash PRs: #1 live everywhere, #2 only in main-qa + admin-qa,
+    # #3 nowhere yet. deployBacklog is derived purely from deployed_envs.
+    prs = {"cairnea/KinDash": [
+        PipelinePr(pr=_pr(number=1, repo="cairnea/KinDash", state="merged",
+                          merged=True, stage="merged",
+                          deployed_envs=("kindash / qa", "kindash / production",
+                                         "kindash / admin-qa", "kindash / admin-production"))),
+        PipelinePr(pr=_pr(number=2, repo="cairnea/KinDash", state="merged",
+                          merged=True, stage="merged",
+                          deployed_envs=("kindash / qa", "kindash / admin-qa"))),
+        PipelinePr(pr=_pr(number=3, repo="cairnea/KinDash", state="merged",
+                          merged=True, stage="merged", deployed_envs=())),
+    ]}
+    st = dashboard_state(prs, {}, {}, {"cairnea/KinDash": False}, generated_at="x")
+    assert st["repos"][0]["deployBacklog"] == {
+        "awaitingQa": 1, "awaitingProd": 2, "awaitingAdmin": 1}
+
+
+def test_dashboard_state_omits_deploy_backlog_without_deploy_envs():
+    # A repo with no classifiable deploy env carries no deployBacklog field.
+    prs = {"o/r": [PipelinePr(pr=_pr(number=1, state="merged", merged=True,
+                                     stage="merged"))]}
+    st = dashboard_state(prs, {}, {}, {"o/r": False}, generated_at="x")
+    assert "deployBacklog" not in st["repos"][0]
+
+
 def test_dashboard_state_backward_compatible_without_sim_ctx():
     prs = {"o/r": [PipelinePr(pr=_pr(number=14, in_merge_queue=True))]}
     queues = {"o/r": [_entry(pr_number=14, position=1, state="QUEUED")]}

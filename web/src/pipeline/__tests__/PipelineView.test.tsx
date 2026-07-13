@@ -111,6 +111,39 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
     expect(summary).not.toHaveTextContent(/awaiting QA/);
   });
 
+  it('renders the flat 3-way backlog (qa · prod · admin) from deployBacklog', () => {
+    const st = state({ repos: [{ repo: 'cairnea/KinDash', hasDeploy: false, queue: null,
+      prs: [pr('cairnea/KinDash', 1, 'running pr', 'ci')],
+      deployBacklog: { awaitingQa: 1, awaitingProd: 2, awaitingAdmin: 3 } }] } as never);
+    render(<PipelineView state={st} focusedRepo={null} />);
+    const summary = screen.getByRole('region', { name: /deploy backlog/i });
+    expect(summary).toHaveTextContent(/1 awaiting QA/);
+    expect(summary).toHaveTextContent(/2 awaiting prod/);
+    expect(summary).toHaveTextContent(/3 awaiting admin/);
+  });
+
+  it('omits the admin segment when nothing is awaiting admin', () => {
+    const st = state({ repos: [{ repo: 'cairnea/KinDash', hasDeploy: false, queue: null,
+      prs: [pr('cairnea/KinDash', 1, 'running pr', 'ci')],
+      deployBacklog: { awaitingQa: 0, awaitingProd: 5, awaitingAdmin: 0 } }] } as never);
+    render(<PipelineView state={st} focusedRepo={null} />);
+    const summary = screen.getByRole('region', { name: /deploy backlog/i });
+    expect(summary).toHaveTextContent(/5 awaiting prod/);
+    expect(summary).not.toHaveTextContent(/awaiting admin/);
+  });
+
+  it('prefers deployBacklog over the legacy deploy block when both are present', () => {
+    const st = state({ repos: [{ repo: 'cairnea/KinDash', hasDeploy: true, queue: null,
+      prs: [pr('cairnea/KinDash', 1, 'running pr', 'ci')],
+      deploy: { envs: [], awaitingQa: 9, awaitingProd: 9, chain: { entries: [], supersededCount: 0, inFlight: null } },
+      deployBacklog: { awaitingQa: 1, awaitingProd: 2, awaitingAdmin: 3 } }] } as never);
+    render(<PipelineView state={st} focusedRepo={null} />);
+    const summary = screen.getByRole('region', { name: /deploy backlog/i });
+    expect(summary).toHaveTextContent(/1 awaiting QA/);
+    expect(summary).toHaveTextContent(/3 awaiting admin/);
+    expect(summary).not.toHaveTextContent(/9 awaiting/);
+  });
+
   it('surfaces the deploy chain: the in-flight SHA + superseded count (roadmap 4.4c)', () => {
     const st = state({ repos: [{ repo: 'acme/alpha', hasDeploy: true, queue: null,
       prs: [pr('acme/alpha', 1, 'running pr', 'ci')],
