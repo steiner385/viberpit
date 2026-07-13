@@ -54,6 +54,10 @@ class SessionRecord:
     # Sticky auto-archive opt-out reason. None = eligible for auto-archive; "manual-unarchive"
     # = a human unarchived this session, so it is never auto-archived again (see orchestrator).
     auto_archive_opt_out_reason: str | None = None
+    # Wall-clock time the user last steered this session (prompt/answer/permission/typing ping).
+    # Drives autopilot human-deference + the cooldown badge. In-memory/process-local ONLY: NOT in
+    # to_dict/from_dict, NOT a DB column — a 120s window is meaningless across a restart.
+    last_user_interaction_at: datetime | None = None
     usage_unverified: bool = False    # transient: account picked without a usage read (optimistic)
     # transient (issue #434): set by rehydrate() when this session's mid-turn status
     # (working/in_progress/condensing) was normalized to idle on daemon boot — i.e. a
