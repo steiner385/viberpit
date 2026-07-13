@@ -56,8 +56,8 @@ from server.sessions.replay import replay_events
 from server.sessions.suggestions import SuggestionService, last_turn_context
 from server.sessions.summaries import SummaryService, should_regenerate
 from server.sessions.recovery import (
-    RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, STALL_TIMEOUT,
-    STALL_TIMEOUT_THROTTLED,
+    RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, QUARANTINE_MAX,
+    STALL_TIMEOUT, STALL_TIMEOUT_THROTTLED,
 )
 from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
@@ -4821,7 +4821,10 @@ class SessionOrchestrator:
             if retry_after is not None and retry_after <= RETRY_AFTER_MAX:
                 await self._replay_same_account(record, retry_after)
                 return
-            cooldown = retry_after if (retry_after and retry_after > 0) else QUARANTINE_429
+            cooldown = min(
+                retry_after if (retry_after and retry_after > 0) else QUARANTINE_429,
+                QUARANTINE_MAX,
+            )
             self._recovery.quarantine(record.account, until=now + cooldown)
             await self._rotate_away(record, reason="rate_limit")
             return

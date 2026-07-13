@@ -160,3 +160,60 @@ def test_exclude_prevents_current_account_selection():
             result = select_account(exclude=frozenset({"beta"}))
 
         assert result.name == "alpha"
+
+
+# ---------------------------------------------------------------------------
+# T020-e: quarantined account used as last resort when all others are at ceiling
+# ---------------------------------------------------------------------------
+
+def test_quarantined_account_selected_as_last_resort():
+    """If all non-quarantined accounts are at ceiling, the quarantined account
+    with headroom is returned as a last resort rather than raising AllAccountsBusy."""
+    with temp_env():
+        _seed_account("limited1")
+        _seed_account("limited2")
+        _seed_account("tonystein")
+
+        reset = datetime.now(timezone.utc) + timedelta(hours=3)
+        usage_map = {
+            "limited1":  Usage(100.0, reset, 100.0, reset, False),  # weekly ceiling
+            "limited2":  Usage(100.0, reset, 100.0, reset, False),  # weekly ceiling
+            "tonystein": _headroom_usage(session_pct=14.0),         # 14% / 81% — has headroom
+        }
+
+        def fake_usage(name: str) -> Usage:
+            return usage_map[name]
+
+        # tonystein is "quarantined" — passed in the exclude set just as the
+        # orchestrator passes self._recovery.quarantined().
+        with patch("ccswitch.accounts.usage_for", side_effect=fake_usage):
+            from server.sessions.selection import select_account
+
+            result = select_account(exclude=frozenset({"tonystein"}))
+
+        assert result.name == "tonystein", (
+            f"expected quarantined last-resort fallback to 'tonystein', got {result!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T020-f: AllAccountsBusy still raised when quarantined account is also at ceiling
+# ---------------------------------------------------------------------------
+
+def test_quarantined_last_resort_still_raises_when_all_at_ceiling():
+    """Even with the last-resort fallback, AllAccountsBusy is raised when
+    the quarantined account itself is also at the usage ceiling."""
+    with temp_env():
+        _seed_account("limited1")
+        _seed_account("limited2")
+
+        reset = datetime.now(timezone.utc) + timedelta(hours=3)
+
+        def fake_usage(name: str) -> Usage:
+            return Usage(100.0, reset, 100.0, reset, False)
+
+        with patch("ccswitch.accounts.usage_for", side_effect=fake_usage):
+            from server.sessions.selection import select_account, AllAccountsBusy
+
+            with pytest.raises(AllAccountsBusy):
+                select_account(exclude=frozenset({"limited1"}))

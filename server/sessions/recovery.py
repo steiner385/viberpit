@@ -19,6 +19,10 @@ from collections import defaultdict
 RETRY_AFTER_MAX: float = 30.0     # wait-and-retry the same account if Retry-After <= this
 QUARANTINE_429: float = 60.0      # cooldown after a 429 with no usable Retry-After
 QUARANTINE_401: float = 300.0     # cooldown after a recompose-failed 401 (creds genuinely bad)
+# Hard cap on quarantine duration so a large API Retry-After (Anthropic can return 3600s)
+# cannot block the only account with headroom for hours. The per-session recovery still
+# handles repeated 429s via rotation/crash caps.
+QUARANTINE_MAX: float = float(os.environ.get("CCSWITCH_QUARANTINE_MAX_SEC", "900"))
 MAX_ROTATIONS: int = 3            # rotations per session allowed within ROTATION_WINDOW
 ROTATION_WINDOW: float = 300.0
 CRASH_CAP: int = 3                # crashes per session allowed within CRASH_WINDOW
