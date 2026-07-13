@@ -192,3 +192,77 @@ def test_get_context_tail_empty_on_window_failure(tmp_path):
         assert ctx is not None and ctx.transcript_tail == []
 
     asyncio.run(run())
+
+
+def test_note_user_interaction_stamps(tmp_path):
+    async def run():
+        from server.sessions.types import SessionRecord
+        orch = _bare_orch()
+        orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+                                             cols=80, rows=24, cwd="/tmp", status="idle")}
+        assert orch._records["s1"].last_user_interaction_at is None
+        orch.note_user_interaction("s1")
+        assert orch._records["s1"].last_user_interaction_at is not None
+    asyncio.run(run())
+
+
+def test_autopilot_apply_does_not_stamp_interaction(tmp_path):
+    """Anti-self-reset: autopilot's apply path must never stamp the human-interaction time."""
+    async def run():
+        from server.sessions.types import SessionRecord
+        orch = _bare_orch()
+        orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+                                             cols=80, rows=24, cwd="/tmp", status="idle")}
+        orch._records["s1"].last_user_interaction_at = None
+        # escalate/complete/skip return False without a driver and never touch the field.
+        await orch._autopilot_apply("s1", Decision(action="escalate"))
+        assert orch._records["s1"].last_user_interaction_at is None
+    asyncio.run(run())
+
+
+def test_get_context_reports_seconds_since_human(tmp_path):
+    """seconds_since_human is computed from last_user_interaction_at when set."""
+    from datetime import datetime, timedelta
+
+    async def run():
+        from server.sessions.types import SessionRecord
+        orch = _bare_orch()
+        orch._records = {"s1": SessionRecord(
+            id="s1", name="n", account="a", claude_session_id="",
+            cols=80, rows=24, cwd="/tmp", status="done")}
+        orch._registry = None
+        orch.pending_questions = lambda sid: []
+
+        async def boom(session_id, *, before=None, limit=20):
+            raise RuntimeError("transcript unreadable")
+        orch.transcript_window = boom
+
+        orch._records["s1"].last_user_interaction_at = datetime.utcnow() - timedelta(seconds=5)
+        ctx = await orch._autopilot_get_context("s1")
+        assert ctx is not None
+        assert 4.0 <= ctx.seconds_since_human <= 30.0
+
+    asyncio.run(run())
+
+
+def test_get_context_none_when_never_touched(tmp_path):
+    """seconds_since_human is None when last_user_interaction_at has never been set."""
+    async def run():
+        from server.sessions.types import SessionRecord
+        orch = _bare_orch()
+        orch._records = {"s1": SessionRecord(
+            id="s1", name="n", account="a", claude_session_id="",
+            cols=80, rows=24, cwd="/tmp", status="done")}
+        orch._registry = None
+        orch.pending_questions = lambda sid: []
+
+        async def boom(session_id, *, before=None, limit=20):
+            raise RuntimeError("transcript unreadable")
+        orch.transcript_window = boom
+
+        orch._records["s1"].last_user_interaction_at = None
+        ctx = await orch._autopilot_get_context("s1")
+        assert ctx is not None
+        assert ctx.seconds_since_human is None
+
+    asyncio.run(run())

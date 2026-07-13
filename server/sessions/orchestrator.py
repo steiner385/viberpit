@@ -1812,6 +1812,9 @@ class SessionOrchestrator:
                 stuck = {"kind": "question", "question_id": q["question_id"],
                          "question": q.get("question", ""), "options": q.get("options", []),
                          "multi_select": q.get("multi_select", False)}
+        from datetime import datetime as _dtmod
+        _last = getattr(rec, "last_user_interaction_at", None)
+        _secs_since_human = (_dtmod.utcnow() - _last).total_seconds() if _last is not None else None
         return DecisionContext(
             session_id=session_id, status=rec.status, account=rec.account, repo=rec.repo,
             branch=getattr(rec, "branch", None), effective_goal=goal_text,
@@ -1819,7 +1822,8 @@ class SessionOrchestrator:
             transcript_tail=await self._autopilot_transcript_tail(session_id), ledger={},
             pr_facts=self._autopilot_pr_facts(rec),
             no_auto_archive=bool(getattr(rec, "auto_archive_opt_out_reason", None)),
-            reversal_hint=await self._autopilot_reversal_hint(rec.repo))
+            reversal_hint=await self._autopilot_reversal_hint(rec.repo),
+            seconds_since_human=_secs_since_human)
 
     async def _autopilot_reversal_hint(self, repo: str | None) -> str | None:
         """Summarize recent manual reversals of auto-archives into a compact caution the
@@ -5027,6 +5031,16 @@ class SessionOrchestrator:
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(active_goal=goal)
             )
+
+    def note_user_interaction(self, session_id: str) -> None:
+        """Stamp the wall-clock time the user last steered this session (prompt/answer/permission/
+        typing ping). Drives autopilot human-deference + the cooldown badge. In-memory ONLY — no DB
+        write (a 120s window is meaningless across a restart), so this is safe to call on the WS
+        receive path (never blocks on I/O, cf. the no-DB-write-on-attach rule)."""
+        from datetime import datetime
+        record = self._records.get(session_id)
+        if record is not None:
+            record.last_user_interaction_at = datetime.utcnow()
 
     async def set_autopilot_paused(self, session_id: str, paused: bool) -> None:
         """Pin a session to manual (paused=True) or return it to autopilot governance.

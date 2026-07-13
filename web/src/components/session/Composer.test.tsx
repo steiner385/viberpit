@@ -158,3 +158,13 @@ describe('Composer sparkle button', () => {
     expect(screen.getByRole('separator')).toBeInTheDocument()
   })
 })
+
+describe('Composer activity ping', () => {
+  it('calls onActivity while the user types', () => {
+    const onActivity = vi.fn()
+    renderComposer({ onActivity })
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: 'hel' } })
+    expect(onActivity).toHaveBeenCalled()
+  })
+})

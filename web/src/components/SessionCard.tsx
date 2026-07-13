@@ -118,6 +118,17 @@ export function SessionCard({ session, account, selected = false, listMode = fal
     .sort((a, b) => a.number - b.number)[0]
   const showFix = prAutofixMode === 'propose' && !!failingPr
 
+  const now = useNow()
+
+  // Autopilot human-deference countdown: show while the server-supplied cooldown instant is still
+  // in the future. `now === 0` is the pre-first-tick frame (useNow returns 0 until it ticks) — show
+  // the badge then too so there's no mount flash; the minutes label fills in on the first tick.
+  const cooldownUntilMs = session.autopilotCooldownUntil ? Date.parse(session.autopilotCooldownUntil) : null
+  const showCooldown = cooldownUntilMs !== null && (now === 0 || now < cooldownUntilMs)
+  const cooldownMinsLeft = cooldownUntilMs !== null && now > 0
+    ? Math.max(1, Math.ceil((cooldownUntilMs - now) / 60000))
+    : null
+
   // Whether the wide-card badge footer has anything to show — mirrors the
   // render conditions of each badge below so an empty row never adds height.
   const hasBadges = Boolean(
@@ -128,7 +139,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
     || session.origin
     || session.assistedBy
     || (session.prs?.length ?? 0) > 0
-    || showFix,
+    || showFix
+    || showCooldown,
   )
 
   // Scroll selected row into view when selection changes (jsdom doesn't implement scrollIntoView)
@@ -145,7 +157,6 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   }, [listMode, selected])
 
   const repoLabel = formatRepoLabel(session.repo)
-  const now = useNow()
 
   // Touch-only swipe actions. lg = the app's desktop breakpoint (App.tsx); jsdom
   // reports false → mobile, so tests exercise this branch by default.
@@ -688,6 +699,18 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             >
               <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
               <span className="truncate">Manual</span>
+            </span>
+          )}
+          {showCooldown && (
+            <span
+              data-testid="card-cooldown-badge"
+              className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
+              title="Autopilot is standing down while you steer this session"
+            >
+              <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
+              <span className="truncate">
+                Autopilot paused — you're steering{cooldownMinsLeft ? ` (${cooldownMinsLeft}m left)` : ''}
+              </span>
             </span>
           )}
           {session.autoArchiveOptOut && (

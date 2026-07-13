@@ -59,6 +59,8 @@ export interface SessionRuntime {
   /** Set/clear the chat-armed question (toggles off if the same id is passed again). */
   onChat: (questionId: string) => void
   onPrompt: (text: string, attachmentIds: AttachmentIds) => void
+  /** Fire while the user is typing/steering (before send) — refreshes autopilot's human-deference window. */
+  onActivity: () => void
   onInterrupt: () => void
   onSetMode: (mode: string) => void
   onCancelQueued: (index: number) => void
@@ -84,6 +86,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     setPermissionMode,
     cancelQueued,
     command,
+    activity,
   } = useSessionSocket()
 
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
@@ -278,6 +281,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     [sessionId, cancelQueued],
   )
   const onCommand = useCallback((name: string, args: string) => command(sessionId, name, args), [sessionId, command])
+  const onActivity = useCallback(() => { activity?.(sessionId) }, [sessionId, activity])
   const dismissCommandResult = useCallback(() => setCommandResult(null), [])
 
   // Keep modeRef current so external keydown handlers can read the latest mode.
@@ -390,6 +394,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     onAnswer,
     onChat,
     onPrompt,
+    onActivity,
     onInterrupt,
     onSetMode,
     onCancelQueued,

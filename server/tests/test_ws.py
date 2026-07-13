@@ -1146,3 +1146,33 @@ def test_prompt_during_drain_returns_promptRejected(ws_env):
     # No cancel_drain needed: the fixture tears down the app/loop on exit, which
     # cancels the in-memory drain + its self-clear timer task.
     client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
+# activity message stamps last_user_interaction_at
+# ---------------------------------------------------------------------------
+
+def test_activity_message_stamps_last_user_interaction_at(ws_env):
+    """Sending {"type":"activity","sessionId":...} must stamp last_user_interaction_at
+    on the session record (the human-deference cooldown window is activated)."""
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "test-activity")
+    session_id = session.id
+
+    # confirm it starts None
+    assert orch._records[session_id].last_user_interaction_at is None
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+
+        ws.send_text(json.dumps({"type": "activity", "sessionId": session_id}))
+        # Give the server a moment to process (TestClient / anyio portal is sync-driven;
+        # a tiny receive_text with a short timeout lets the event loop turn).
+        import time
+        time.sleep(0.1)
+
+    assert orch._records[session_id].last_user_interaction_at is not None, (
+        "activity frame must stamp last_user_interaction_at on the session record"
+    )
+    client.portal.call(orch.close_session, session_id)

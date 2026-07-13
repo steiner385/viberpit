@@ -19,6 +19,7 @@ export function SessionComposer({ rt }: { rt: SessionRuntime }) {
     <Composer
       status={rt.state.status}
       onPrompt={rt.onPrompt}
+      onActivity={rt.onActivity}
       onInterrupt={rt.onInterrupt}
       queued={rt.state.queued}
       onCancelQueued={rt.onCancelQueued}

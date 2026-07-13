@@ -28,3 +28,22 @@ def test_round_trip_with_none_created_at():
 def test_to_dict_is_json_safe():
     import json
     json.dumps(_rec(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc)).to_dict())
+
+
+# ---------------------------------------------------------------------------
+# last_user_interaction_at round-trip
+# ---------------------------------------------------------------------------
+
+def test_round_trip_with_last_user_interaction_at():
+    r = _rec(last_user_interaction_at=datetime(2026, 6, 22, 10, 30, tzinfo=timezone.utc))
+    d = r.to_dict()
+    assert d["lastUserInteractionAt"] == "2026-06-22T10:30:00+00:00"
+    back = SessionRecord.from_dict(d)
+    assert back == r
+
+
+def test_round_trip_with_none_last_user_interaction_at():
+    r = _rec(last_user_interaction_at=None)
+    d = r.to_dict()
+    assert d["lastUserInteractionAt"] is None
+    assert SessionRecord.from_dict(d) == r

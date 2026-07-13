@@ -87,3 +87,12 @@ def test_unarchive_preserves_autopilot_paused(tmp_path):
         assert orch._records["s1"].autopilot_paused is True
 
     asyncio.run(run())
+
+
+def test_note_user_interaction_on_remote_and_rpc():
+    from server.sessions.remote import RemoteOrchestrator
+    assert hasattr(RemoteOrchestrator, "note_user_interaction")
+    # RPC breadth: the name must be registered so daemon mode can dispatch it.
+    import server.ipc.orchestrator_rpc as rpc
+    import inspect
+    assert "note_user_interaction" in inspect.getsource(rpc)
