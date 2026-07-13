@@ -78,12 +78,14 @@ async def _build_state(orch) -> dict:
     }
     sim_ctx = await _sim_ctx(list(prs_by_repo))
     deploy_ctx, timeline_ctx = await _deploy_ctx(orch, prs_by_repo)
+    workflow_impact_ctx = await _workflow_impact_ctx(prs_by_repo)
     return dashboard_state(
         prs_by_repo, queues, trains, has_deploy,
         generated_at=datetime.now(timezone.utc).isoformat(),
         sim_ctx=sim_ctx,
         deploy_ctx=deploy_ctx,
         timeline_ctx=timeline_ctx,
+        workflow_impact_ctx=workflow_impact_ctx,
     )
 
 
@@ -120,6 +122,79 @@ async def _deploy_ctx(
         if frame_nums:
             timeline_ctx[repo] = await timelines_for(repo, frame_nums)
     return deploy_ctx, timeline_ctx
+
+
+# Workflow-impact state (SPEC §4) — lazy module singletons. The resolver wraps
+# gh subprocess fetches; the HistoryStore is the read-only pipeline_history.db
+# at the operational default path (same file the daemon's poller opens — the
+# edge reads it directly, like timelines_for reads the app DB, so no new
+# orchestrator RPC is needed).
+_impact_resolver = None
+_history_store = None
+_history_store_attempted = False
+
+
+def _history_ci_graph(repo: str) -> dict | None:
+    """ciGraph meta (``{prefixes, workflowName}``) for a repo, or None.
+
+    Opens the store once per process; an absent/unreadable db file stays None
+    (workflow impact then degrades to the honest null for every PR).
+    """
+    global _history_store, _history_store_attempted
+    if not _history_store_attempted:
+        _history_store_attempted = True
+        try:
+            from server.pipeline.history import HistoryStore
+            from server.pipeline.history_migrate import default_dest
+            _history_store = HistoryStore(default_dest())
+        except Exception:
+            _history_store = None
+    if _history_store is None:
+        return None
+    try:
+        return _history_store.ci_graph(repo)
+    except Exception:
+        return None
+
+
+def _get_impact_resolver():
+    global _impact_resolver
+    if _impact_resolver is None:
+        from server.pipeline.workflow_impact import GhBlobs, WorkflowImpactResolver
+        _impact_resolver = WorkflowImpactResolver(GhBlobs(), _history_ci_graph)
+    return _impact_resolver
+
+
+async def _workflow_impact_ctx(
+    prs_by_repo: dict[str, list]
+) -> dict[str, dict[int, dict]]:
+    """Per-repo workflowImpact cards, computed once per frame (SPEC §4).
+
+    Candidates: open PRs flagged ``touches_workflows`` with a known head sha.
+    The resolver caches per (repo, head_sha) and is pruned to the live candidate
+    set each frame (plotroom poller.ts:906-911). With no candidates the resolver
+    is never constructed — hermetic route tests stay free of gh and sqlite.
+    """
+    candidates: list[tuple[str, int, str]] = []
+    for repo, plist in prs_by_repo.items():
+        for p in plist:
+            pr = p.pr
+            if pr.merged or pr.state == "merged":
+                continue
+            if pr.touches_workflows and pr.head_sha:
+                candidates.append((repo, pr.number, pr.head_sha))
+    if not candidates:
+        if _impact_resolver is not None:      # evict leftovers from prior frames
+            _impact_resolver.prune(set())
+        return {}
+    resolver = _get_impact_resolver()
+    ctx: dict[str, dict[int, dict]] = {}
+    for repo, number, head_sha in candidates:
+        impact = await resolver.impact_for_async(repo, head_sha)
+        if impact is not None:
+            ctx.setdefault(repo, {})[number] = impact
+    resolver.prune({(repo, sha) for repo, _, sha in candidates})
+    return ctx
 
 
 async def _sim_ctx(repos: list[str]) -> dict[str, dict]:

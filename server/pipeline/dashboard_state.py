@@ -108,6 +108,7 @@ def pr_view(
     queue_substate: str | None = None,
     merge_eta_sim: dict | None = None,
     timeline: dict | None = None,
+    workflow_impact: dict | None = None,
 ) -> dict:
     pr = p.pr
     head = next((g for g in pr.check_groups if g.kind == "head"), None)
@@ -127,7 +128,11 @@ def pr_view(
         "mergeStateStatus": pr.merge_state_status or None,
         "queueAheadCount": queue_ahead,
         "checks": [check_view(c) for c in head.checks] if head else [],
-        "timeline": pr_timeline, "touchesWorkflows": False, "workflowImpact": None,
+        "timeline": pr_timeline,
+        "touchesWorkflows": bool(pr.touches_workflows),
+        # Impact card is computed upstream only for workflow-touching PRs with a
+        # known head sha (SPEC §4); None otherwise (honest null, no card).
+        "workflowImpact": workflow_impact if pr.touches_workflows else None,
         "groupChecks": [check_view(c) for c in merge.checks] if (merge and pr.in_merge_queue) else None,
         "mergeEtaSim": merge_eta_sim,
         "costMinutes": None, "costDollars": None, "costDollarsPartial": False,
@@ -240,13 +245,16 @@ def dashboard_state(
     sim_ctx: dict[str, dict] | None = None,
     deploy_ctx: dict[str, dict] | None = None,
     timeline_ctx: dict[str, dict[int, dict]] | None = None,
+    workflow_impact_ctx: dict[str, dict[int, dict]] | None = None,
 ) -> dict:
     deploy_ctx = deploy_ctx or {}
     timeline_ctx = timeline_ctx or {}
+    workflow_impact_ctx = workflow_impact_ctx or {}
     repos = []
     for repo in sorted(prs_by_repo):
         entries = queues.get(repo, [])
         repo_timelines = timeline_ctx.get(repo, {})
+        repo_impacts = workflow_impact_ctx.get(repo, {})
         pos = {e.pr_number: e.position for e in entries}
         repo_sim_ctx = (sim_ctx or {}).get(repo)
         # Compute queue_view once per repo; reuse for the queue value and per-PR
@@ -275,6 +283,7 @@ def dashboard_state(
                 queue_substate=qs,
                 merge_eta_sim=sim_by_pr.get(p.pr.number),
                 timeline=repo_timelines.get(p.pr.number),
+                workflow_impact=repo_impacts.get(p.pr.number),
             ))
         repo_deploy = deploy_ctx.get(repo)
         entry = {
