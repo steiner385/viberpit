@@ -14,7 +14,7 @@ export function AutomationView({ onOpenSession, onReviewSession }: {
   return (
     <div className="space-y-3">
       {(data ?? []).map((a) => (
-        <AutomationCard key={a.id} automation={a} onOpenSession={onOpenSession} onReviewSession={onReviewSession} />
+        <AutomationCard key={a.id} automation={a} />
       ))}
     </div>
   )
