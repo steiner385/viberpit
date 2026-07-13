@@ -13,7 +13,7 @@ import { useSessionOrdering } from './session/useSessionOrdering'
 import { nextVisibleSessionId } from './session/nextAfterArchive'
 
 // Routing is the source of truth for which view is shown:
-//   /sessions | /pipeline | /archived | /insights | /settings
+//   /sessions | /pipeline | /automations | /archived | /insights | /settings
 //                                      → dashboard with that tab active
 //   /settings?section=<general|accounts|automation|plugins|skills|commands|mcp>
 //                                      → the Settings tab's active section
@@ -144,6 +144,7 @@ function App() {
           <Route path="/sessions" element={<DashboardRoute tab="sessions" />} />
           <Route path="/archived" element={<DashboardRoute tab="archived" />} />
           <Route path="/pipeline" element={<DashboardRoute tab="pipeline" />} />
+          <Route path="/automations" element={<DashboardRoute tab="automations" />} />
           <Route path="/insights" element={<DashboardRoute tab="insights" />} />
           <Route path="/settings" element={<DashboardRoute tab="settings" />} />
           {/* Legacy top-level tabs — now Settings sections. */}
