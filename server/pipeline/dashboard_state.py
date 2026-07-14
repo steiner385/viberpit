@@ -110,6 +110,7 @@ def pr_view(
     merge_eta_sim: dict | None = None,
     timeline: dict | None = None,
     workflow_impact: dict | None = None,
+    queue_progress: dict | None = None,
 ) -> dict:
     pr = p.pr
     head = next((g for g in pr.check_groups if g.kind == "head"), None)
@@ -123,6 +124,17 @@ def pr_view(
     # Inject queue substate when stage_result left it None (group-failed wins).
     if queue_substate and stage["stage"] == "queue" and stage["substate"] is None:
         stage["substate"] = queue_substate
+    # Queue-stage percent/ETA track the merge-group BUILD, not the head-commit
+    # ETA (plotroom classify.ts:117 — queueProgress.percent, never ciProgress).
+    # stage_result seeds these from pr.eta_percent, which is the head checks —
+    # all green for a queued PR, so ~100%. Replace with the covering group's
+    # build progress; a WAITING entry (no building group → queue_progress None)
+    # gets nulls, matching queueStage's waiting-line path (no partial bar).
+    if stage["stage"] == "queue":
+        stage["percent"] = queue_progress["percent"] if queue_progress else None
+        stage["etaSeconds"] = queue_progress["etaSeconds"] if queue_progress else None
+        stage["etaRangeSeconds"] = None
+        stage["overdue"] = False
     return {
         "repo": pr.repo, "number": pr.number, "title": pr.title, "url": pr.url,
         "stage": stage,
@@ -269,6 +281,12 @@ def dashboard_state(
             {w["prNumber"]: w["sim"] for w in qv["waiting"] if w["sim"] is not None}
             if qv else {}
         )
+        # Merge-group build progress per queued PR (plotroom queueStage own-group
+        # path): every member of a building group rides that group's percent/ETA.
+        # Absent for waiting entries → the queue stage falls back to null percent.
+        group_progress_by_pr: dict[int, dict] = (
+            {n: g for g in qv["groups"] for n in g["prNumbers"]} if qv else {}
+        )
         prs = []
         for p in prs_by_repo[repo]:
             position = pos.get(p.pr.number)
@@ -285,6 +303,7 @@ def dashboard_state(
                 merge_eta_sim=sim_by_pr.get(p.pr.number),
                 timeline=repo_timelines.get(p.pr.number),
                 workflow_impact=repo_impacts.get(p.pr.number),
+                queue_progress=group_progress_by_pr.get(p.pr.number),
             ))
         repo_deploy = deploy_ctx.get(repo)
         entry = {
