@@ -104,3 +104,15 @@ def test_build_prompt_includes_pr_facts():
         pr_facts=PrFacts(has_repo=True, prs=(PrFact(7, "open", False, False, "u"),)))
     prompt = _build_prompt(ctx)
     assert "pr_facts" in prompt and "\"number\": 7" in prompt and "has_repo" in prompt
+
+
+def test_build_prompt_includes_fleet_context():
+    ctx = DecisionContext(
+        session_id="s1", status="idle", account="a", repo="o/r", branch="feat/x",
+        effective_goal="fix ci", goal_source="explicit", stuck={"kind": "idle"},
+        transcript_tail=[], ledger={},
+        fleet_context={"same_repo_sessions": [
+            {"session": "sib", "branch": "feat/sib", "status": "done",
+             "goal": "fix parser", "pr": "PR #591 merged"}]})
+    prompt = _build_prompt(ctx)
+    assert "fleet" in prompt and "PR #591 merged" in prompt and "feat/sib" in prompt

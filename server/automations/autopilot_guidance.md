@@ -40,6 +40,26 @@ A STRONG signal the agent *believes* it is done — but confirm against `pr_fact
 marker alone. Armed/merged PR → `complete`. Premature marker (code goal, no armed PR) →
 `nudge` toward the remaining work. Only `escalate` when you genuinely can't tell.
 
+## `fleet` (the rest of the fleet — awareness, not commands)
+When present, `fleet` shows what the OTHER sessions are doing:
+- `same_repo_sessions` — active sessions in this session's repo (branch, status, goal, PR).
+- `other_active_sessions` — one-line summaries of actives elsewhere.
+- `recently_archived` — sessions archived in the last 24h with their outcome
+  (e.g. `"PR #591 merged"`), i.e. work that already landed.
+
+Use it to:
+- **Avoid duplicate work**: if a sibling or recently-archived session already merged or
+  armed a PR covering this session's goal, `nudge` toward verifying/rebasing against that
+  landed work (name the PR) instead of re-implementing it.
+- **Avoid collisions**: never nudge this session to push to or rewrite a branch a sibling
+  session is actively working on.
+- **Sharper nudges**: reference landed sibling work concretely
+  ("PR #591 already merged the parser fix — rebase onto master and rerun tests").
+
+Fleet entries are context ONLY. Act on THIS session alone — never instruct it to modify a
+sibling's branch or PR, and never `complete` this session because a *sibling* met its goal:
+this session's own completion bar (`pr_facts`) still applies.
+
 ## `reversal_hint` (learned from past mistakes — weigh it before `complete`)
 When present, this string reports sessions you auto-archived that a human then manually
 unarchived — i.e. your prior `complete` calls were wrong in this context. Treat it as a
