@@ -187,6 +187,37 @@ def test_dashboard_state_group_failed_wins_over_queue_substate():
     assert st["repos"][0]["prs"][0]["stage"]["substate"] == "group-failed"
 
 
+def test_dashboard_state_queue_percent_tracks_group_build_not_head_eta():
+    # A queued PR's head checks are all green so its head ETA is ~100% — but the
+    # queue-stage bar must track the merge-group BUILD, not the head commit
+    # (plotroom classify.ts:117, queueProgress.percent). Group is 2/4 = 50%.
+    prs = {"o/r": [PipelinePr(pr=_pr(number=10, in_merge_queue=True,
+                                     eta_percent=100, eta_seconds=0,
+                                     eta_low_seconds=0, eta_high_seconds=0))]}
+    queues = {"o/r": [_entry(pr_number=10, position=1, batch_head_oid="abc",
+                             checks_total=4, checks_done=2, eta_seconds=120,
+                             group_checks="pending")]}
+    st = dashboard_state(prs, queues, {}, {"o/r": False}, generated_at="x")
+    stage = st["repos"][0]["prs"][0]["stage"]
+    assert stage["stage"] == "queue"
+    assert stage["percent"] == 50            # group build, NOT head 100
+    assert stage["etaSeconds"] == 120        # group ETA, NOT head 0
+    assert stage["etaRangeSeconds"] is None  # head range must not leak
+
+
+def test_dashboard_state_waiting_queue_pr_has_null_percent():
+    # A WAITING queued PR isn't in any building group → no partial bar
+    # (queueStage waiting-line path returns percent null; head ETA stays out).
+    prs = {"o/r": [PipelinePr(pr=_pr(number=14, in_merge_queue=True,
+                                     eta_percent=100, eta_seconds=90))]}
+    queues = {"o/r": [_entry(pr_number=14, position=3, state="QUEUED")]}
+    st = dashboard_state(prs, queues, {}, {"o/r": False}, generated_at="x")
+    stage = st["repos"][0]["prs"][0]["stage"]
+    assert stage["stage"] == "queue"
+    assert stage["percent"] is None
+    assert stage["etaSeconds"] is None
+
+
 # --- mergeEtaSim wiring (Task 3) -------------------------------------------
 
 
