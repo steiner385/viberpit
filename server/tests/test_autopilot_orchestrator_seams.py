@@ -266,3 +266,120 @@ def test_get_context_none_when_never_touched(tmp_path):
         assert ctx.seconds_since_human is None
 
     asyncio.run(run())
+
+
+# --- fleet context (cross-session awareness) --------------------------------------
+
+def _fleet_rec(sid, *, repo=None, branch=None, status="idle", name=None):
+    from server.sessions.types import SessionRecord
+    return SessionRecord(id=sid, name=name or sid, account="a", claude_session_id="",
+                         cols=80, rows=24, cwd="/tmp", status=status,
+                         repo=repo, branch=branch)
+
+
+def test_get_context_populates_fleet_context(tmp_path):
+    """get_context carries the sibling picture: same-repo detail + other one-liners."""
+    async def run():
+        await _init_db(tmp_path)
+        orch = _bare_orch()
+        orch._clock = lambda: 100.0
+        orch.pr_for = lambda repo, br: None
+        orch._records = {
+            "me": _fleet_rec("me", repo="o/r", branch="feat/me", status="done"),
+            "sib": _fleet_rec("sib", repo="o/r", branch="feat/sib",
+                              status="in_progress", name="fix parser"),
+            "other": _fleet_rec("other", repo="x/y", status="idle", name="docs pass"),
+        }
+        orch._registry = None
+        orch.pending_questions = lambda sid: []
+
+        async def no_window(session_id, *, before=None, limit=20):
+            return None
+        orch.transcript_window = no_window
+
+        ctx = await orch._autopilot_get_context("me")
+        assert ctx is not None and ctx.fleet_context is not None
+        sibs = ctx.fleet_context["same_repo_sessions"]
+        assert [s["session"] for s in sibs] == ["fix parser"]
+        assert sibs[0]["branch"] == "feat/sib"
+        assert any("docs pass" in line
+                   for line in ctx.fleet_context["other_active_sessions"])
+    asyncio.run(run())
+
+
+def test_get_context_fleet_degrades_to_none(tmp_path):
+    """A broken fleet snapshot (here: no _clock on the bare orch) must degrade to
+    fleet_context=None, never break get_context (mirrors the transcript-tail contract)."""
+    async def run():
+        orch = _bare_orch()   # no _clock, no DB → snapshot raises internally
+        orch._records = {"s1": _fleet_rec("s1", status="done")}
+        orch._registry = None
+        orch.pending_questions = lambda sid: []
+
+        async def no_window(session_id, *, before=None, limit=20):
+            return None
+        orch.transcript_window = no_window
+
+        ctx = await orch._autopilot_get_context("s1")
+        assert ctx is not None and ctx.fleet_context is None
+    asyncio.run(run())
+
+
+def test_fleet_snapshot_cached_within_ttl(tmp_path):
+    """One snapshot serves the whole tick: the archived-session query runs once
+    within the TTL and re-runs after it lapses."""
+    async def run():
+        orch = _bare_orch()
+        now = [100.0]
+        orch._clock = lambda: now[0]
+        orch.pr_for = lambda repo, br: None
+        orch._records = {}
+        calls = []
+
+        async def fake_archived(**kw):
+            calls.append(1)
+            return []
+        orch._autopilot_recent_archived = fake_archived
+
+        await orch._autopilot_fleet_snapshot()
+        await orch._autopilot_fleet_snapshot()
+        assert len(calls) == 1                 # second call hits the cache
+        now[0] += 16.0                          # TTL (15s) lapses
+        await orch._autopilot_fleet_snapshot()
+        assert len(calls) == 2
+    asyncio.run(run())
+
+
+def test_recent_archived_window_and_outcome(tmp_path):
+    """Archived rows inside the 24h window surface with their PR outcome; rows
+    outside the window (and never-archived rows) stay invisible."""
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace
+
+    async def run():
+        await _init_db(tmp_path)
+        from server.db import db_session
+        from server.db.models import Session as DbSession
+        now = datetime.utcnow()
+        async with db_session() as db:
+            db.add(DbSession(id="fresh", name="shipped parser fix", account_name="a",
+                             cwd="/tmp", status="ended", repo="o/r", branch="feat/p",
+                             active_goal="fix the parser",
+                             archived_at=now - timedelta(hours=3)))
+            db.add(DbSession(id="stale", name="old work", account_name="a",
+                             cwd="/tmp", status="ended", repo="o/r",
+                             archived_at=now - timedelta(hours=48)))
+            db.add(DbSession(id="live", name="not archived", account_name="a",
+                             cwd="/tmp", status="idle", repo="o/r"))
+
+        orch = _bare_orch()
+        orch.pr_for = lambda repo, br: SimpleNamespace(
+            number=591, state="merged", is_draft=False, auto_merge_enabled=False,
+            in_merge_queue=False, url="u") if br == "feat/p" else None
+
+        rows = await orch._autopilot_recent_archived()
+        assert [r.name for r in rows] == ["shipped parser fix"]
+        assert rows[0].outcome == "PR #591 merged"
+        assert rows[0].goal == "fix the parser"
+        assert 2.5 <= rows[0].hours_ago <= 3.5
+    asyncio.run(run())

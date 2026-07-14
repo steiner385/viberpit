@@ -407,6 +407,10 @@ class SessionOrchestrator:
             archive=self._autopilot_archive,
         )
         self._autopilot_task: asyncio.Task | None = None
+        # Per-tick fleet snapshot cache: (built_at, (active, archived)). One snapshot
+        # serves every governed session's get_context within the TTL, so an N-session
+        # tick runs the archived-session query once, not N times.
+        self._fleet_snapshot_cache: tuple[float, tuple[list, list]] | None = None
         # CI/CD Doctor control loop: system-level CI health (flaky tests, check
         # graduation, waste). Real seams shell out to gh via asyncio.to_thread.
         from server.automations.cicd_doctor import CicdDoctorLoop
@@ -1823,7 +1827,8 @@ class SessionOrchestrator:
             pr_facts=self._autopilot_pr_facts(rec),
             no_auto_archive=bool(getattr(rec, "auto_archive_opt_out_reason", None)),
             reversal_hint=await self._autopilot_reversal_hint(rec.repo),
-            seconds_since_human=_secs_since_human)
+            seconds_since_human=_secs_since_human,
+            fleet_context=await self._autopilot_fleet_context(session_id))
 
     async def _autopilot_reversal_hint(self, repo: str | None) -> str | None:
         """Summarize recent manual reversals of auto-archives into a compact caution the
@@ -1864,6 +1869,70 @@ class SessionOrchestrator:
         return (f"CAUTION: {len(rows)} recently auto-archived session(s) {scope} were "
                 f"manually unarchived — the goal-met call was wrong there. Hold `complete` "
                 f"to a clearly met goal (armed/merged PR, or non-code work).{tail}")
+
+    async def _autopilot_fleet_context(self, session_id: str) -> dict | None:
+        """This session's view of the fleet snapshot (see fleet_context.build_fleet_view).
+        Best-effort: any failure returns None — the decider still runs, just without
+        cross-session awareness (mirrors reversal_hint's degradation contract)."""
+        from server.automations.fleet_context import build_fleet_view
+        try:
+            active, archived = await self._autopilot_fleet_snapshot()
+            return build_fleet_view(session_id, active, archived)
+        except Exception:  # pragma: no cover — a fleet failure must never stall a decision
+            log.debug("autopilot.fleet_context failed sid=%s", session_id, exc_info=True)
+            return None
+
+    async def _autopilot_fleet_snapshot(self) -> tuple[list, list]:
+        """(active FleetSessions, recently archived) for the whole fleet, cached ~15s
+        so one snapshot serves every governed session within a 20s autopilot tick."""
+        from server.automations.fleet_context import FleetSession
+        from server.sessions.goals import effective_goal
+        from server.automations.fleet_context import pr_summary
+        TTL_S = 15.0
+        now = self._clock()
+        cached = getattr(self, "_fleet_snapshot_cache", None)
+        if cached is not None and now - cached[0] < TTL_S:
+            return cached[1]
+        active: list[FleetSession] = []
+        for sid, rec in list(self._records.items()):
+            if rec.status in INACTIVE_SESSION_STATUSES:
+                continue
+            goal_text, _src = effective_goal(rec)
+            active.append(FleetSession(
+                session_id=sid, name=rec.name, repo=rec.repo,
+                branch=getattr(rec, "branch", None), status=rec.status,
+                goal=goal_text, pr=pr_summary(self._autopilot_pr_facts(rec))))
+        snapshot = (active, await self._autopilot_recent_archived())
+        self._fleet_snapshot_cache = (now, snapshot)
+        return snapshot
+
+    async def _autopilot_recent_archived(self, *, window_hours: float = 24.0,
+                                         cap: int = 10) -> list:
+        """Sessions archived within the window, newest first, with their landed
+        outcome (from the PR poller cache — no new GitHub I/O). The window/cap are
+        the tunable 'how far back does autopilot remember' policy."""
+        from datetime import datetime, timedelta
+        from sqlalchemy import select as sa_select
+        from server.automations.fleet_context import ArchivedFleetSession, pr_summary
+        since = datetime.utcnow() - timedelta(hours=window_hours)
+        async with db_session() as db:
+            rows = (await db.execute(
+                sa_select(DbSession)
+                .where(DbSession.archived_at.is_not(None), DbSession.archived_at >= since)
+                .order_by(DbSession.archived_at.desc())
+                .limit(cap))).scalars().all()
+        now = datetime.utcnow()
+        out: list[ArchivedFleetSession] = []
+        for r in rows:
+            goal = (r.active_goal or r.inferred_goal or r.title or r.name or "").strip()
+            # A DB row quacks like a record for _autopilot_pr_facts (repo, branch,
+            # authored_branches) — reuse it rather than re-deriving PR lookup.
+            outcome = pr_summary(self._autopilot_pr_facts(r)) if r.repo else None
+            hours = max(0.0, (now - r.archived_at).total_seconds() / 3600.0) if r.archived_at else 0.0
+            out.append(ArchivedFleetSession(
+                name=r.name, repo=r.repo, goal=goal,
+                outcome=outcome or "archived", hours_ago=round(hours, 1)))
+        return out
 
     def _autopilot_pr_facts(self, rec) -> "PrFacts":
         """Verified PR ground-truth for a governed session, from the poller cache

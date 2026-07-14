@@ -28,6 +28,7 @@ def _build_prompt(ctx: DecisionContext) -> str:
         "stuck": ctx.stuck,
         "pr_facts": ctx.pr_facts.to_prompt() if ctx.pr_facts is not None else None,
         "reversal_hint": ctx.reversal_hint,
+        "fleet": ctx.fleet_context,
         "transcript_tail": ctx.transcript_tail[-12:],
     }, indent=2, default=str)
     # The format demand must live in the USER prompt too (the proven rank_issues
