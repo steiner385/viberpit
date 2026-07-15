@@ -7,15 +7,16 @@ const pr = (number: number, stage: string, substate: string | null = null, overd
   ({ number, stage: { stage, substate, percent: null, etaSeconds: null, etaRangeSeconds: null, overdue } } as unknown as PrView);
 
 describe('attentionSort (running/overdue/failed first, awaiting-prod last)', () => {
-  it('ranks failed < running < queued < idle < deploy', () => {
+  it('ranks failed < running < queued < ready < merged < deploy', () => {
     const out = attentionSort([
-      pr(1, 'qa-deploy'),         // deploy
-      pr(2, 'ci'),                // running
+      pr(1, 'qa-deploy'),           // deploy
+      pr(2, 'ci'),                  // running
       pr(3, 'parked', 'ci-failed'), // failed
-      pr(4, 'queue'),             // queued
-      pr(5, 'parked', 'ready'),   // idle
+      pr(4, 'queue'),               // queued
+      pr(5, 'ready'),               // ready (actionable open)
+      pr(6, 'merged'),              // merged (retention noise)
     ]).map((p) => p.number);
-    expect(out).toEqual([3, 2, 4, 5, 1]);
+    expect(out).toEqual([3, 2, 4, 5, 6, 1]);
   });
 
   it('an overdue PR sorts ahead of its non-overdue peers in the same bucket', () => {

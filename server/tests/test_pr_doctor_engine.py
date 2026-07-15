@@ -29,8 +29,21 @@ def test_classify_blocked_with_failing_required_check_is_failing_ci():
     # is fixable, so it must classify as failing_ci — otherwise PR Doctor only
     # ever notifies and never fixes branch-protected PRs (the common case).
     assert classify(_pr(merge_state_status="BLOCKED", checks="failing")) == "failing_ci"
-    # BLOCKED with non-failing checks is a genuine review/approval gate → notify.
+    # BLOCKED with non-failing checks and no auto-merge is a genuine review/approval gate → notify.
     assert classify(_pr(merge_state_status="BLOCKED", checks="passing")) == "blocked"
+
+
+def test_classify_stuck_enqueue():
+    # Armed + BLOCKED + not in queue = GitHub refused to enqueue (stuck-enqueue):
+    # a mechanical failure, not a human review gate.
+    assert classify(_pr(merge_state_status="BLOCKED", checks="passing",
+                        auto_merge_enabled=True, in_merge_queue=False)) == "stuck_enqueue"
+    # Armed + in queue already = not stuck.
+    assert classify(_pr(merge_state_status="BLOCKED", checks="passing",
+                        auto_merge_enabled=True, in_merge_queue=True)) == "blocked"
+    # Not armed + BLOCKED = still a review gate.
+    assert classify(_pr(merge_state_status="BLOCKED", checks="passing",
+                        auto_merge_enabled=False, in_merge_queue=False)) == "blocked"
 
 
 def test_classify_conflict_via_mergeable_or_dirty():
@@ -85,6 +98,23 @@ def test_mode_off_is_notify():
 
 def test_blocked_is_always_notify():
     assert isinstance(plan_recovery("blocked", "auto", _CFG, {}), Notify)
+
+
+def test_stuck_enqueue_auto_is_mechanical():
+    cfg = {**_CFG, "auto_fix_stuck_enqueue": True}
+    a = plan_recovery("stuck_enqueue", "auto", cfg, {})
+    assert isinstance(a, Mechanical) and a.kind == "stuck_enqueue"
+
+
+def test_stuck_enqueue_auto_falls_back_to_propose_when_not_opted_in():
+    # Flag absent (or False) → propose but don't auto-act.
+    a = plan_recovery("stuck_enqueue", "auto", _CFG, {})
+    assert isinstance(a, Propose) and a.kind == "stuck_enqueue"
+
+
+def test_stuck_enqueue_propose_mode_proposes():
+    a = plan_recovery("stuck_enqueue", "propose", _CFG, {})
+    assert isinstance(a, Propose) and a.kind == "stuck_enqueue"
 
 
 def test_propose_mode_proposes_every_mode():

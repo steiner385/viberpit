@@ -88,6 +88,13 @@ def stage_result(pr: PullRequestInfo, timeline: dict | None = None) -> dict:
                 substate = "conflicting"
             elif pr.checks == "failing":
                 substate = "ci-failed"
+        elif stage == "ready":
+            # Armed + BLOCKED + not queued = GitHub silently refused to enqueue
+            # (e.g. a shadowed required check). Bucket with "failed" in the UI
+            # so the tile signals it needs attention, not idle.
+            if (pr.auto_merge_enabled and pr.merge_state_status == "BLOCKED"
+                    and not pr.in_merge_queue):
+                substate = "stuck-enqueue"
     rng = (
         [pr.eta_low_seconds, pr.eta_high_seconds]
         if pr.eta_low_seconds is not None and pr.eta_high_seconds is not None

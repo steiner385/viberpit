@@ -136,6 +136,10 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 .pr-action-msg { font-size: 11px; }
 .pr-action-msg.ok { color: var(--done); }
 .pr-action-msg.err { color: var(--fail); }
+/* --- Stuck-enqueue warning badge (#586) --- */
+.stuck-enqueue-badge { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px;
+  background: color-mix(in srgb, var(--amber) 20%, transparent);
+  color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent); }
 /* --- Check Gantt (expanded panel, V4) --- */
 .checks { list-style: none; margin: 0; padding: 6px 14px 10px; border-top: 1px solid var(--border);
   font-size: 12px; }
@@ -251,6 +255,8 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 .tile-queued   { --tile-c: var(--purple);  background: var(--purple); }
 .tile-deploy   { --tile-c: var(--done);    background: var(--done); }
 .tile-failed   { --tile-c: var(--fail);    background: var(--fail); }
+.tile-ready    { --tile-c: var(--amber);   background: var(--amber); }
+.tile-merged   { --tile-c: var(--muted);   background: var(--muted); }
 .tile-idle     { --tile-c: var(--muted);   background: var(--muted); }
 .hidden-count  { font-weight: 400; color: var(--muted); font-size: 12px; }
 

@@ -49,5 +49,6 @@ export function stageLabel(stage: string, substate: string | null): string {
   if (substate === 'group-failed') return 'Queue group failed';
   if (substate === 'unmergeable') return 'Queue — unmergeable';
   if (substate === 'queue-blocked') return 'Queue — blocked behind conflict';
+  if (substate === 'stuck-enqueue') return 'Armed — not in queue';
   return STAGE_LABEL[stage] ?? stage;
 }

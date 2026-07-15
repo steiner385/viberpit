@@ -16,6 +16,9 @@ import { DEFS, defTitle, subLineTitle } from './definitions';
  *  RepoQueueView.unmergeableCulprit) — named in the queue-blocked sub line. */
 export function subLine(pr: PrView, queueCulprit: number | null): string | null {
   const s = pr.stage;
+  if (s.stage === 'ready' && s.substate === 'stuck-enqueue') {
+    return 'armed — not in queue (GitHub refused to enqueue; re-arm or re-run required check)';
+  }
   if (s.stage === 'parked') return stageLabel(s.stage, s.substate);
   if (s.stage === 'queue') {
     // genuinely conflicting with the base — facing ejection, rebase required
@@ -211,6 +214,12 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, expandable = true, onF
               title={pr.workflowImpact?.summary.join('\n')
                 ?? 'touches .github/workflows — CI behavior may change'}>
               ⚙ CI change
+            </span>
+          )}
+          {s.stage === 'ready' && s.substate === 'stuck-enqueue' && (
+            <span className="stuck-enqueue-badge"
+              title="auto-merge is armed and checks are green, but GitHub has not enqueued this PR — typically a shadowed required check; re-arm or re-run the required check to unstick">
+              ⚠ stuck
             </span>
           )}
           {sim ? (
