@@ -33,6 +33,32 @@ def test_window_filters_by_since(tmp_path):
     asyncio.run(body())
 
 
+def test_empty_queue_records_empty_observation(tmp_path):
+    """A poll that finds the queue EMPTY must still leave a trace: without it,
+    window()'s newest observation stays the last busy snapshot and the dashboard
+    replays a merged train for up to 24h (the #11778 "building 94%" ghost)."""
+    async def body():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        await store.record("r", 100, (_e(1), _e(2)))
+        await store.record("r", 200, ())
+        win = await store.window("r", since_epoch=0)
+        assert [o.captured_at for o in win] == [100, 200]
+        assert {e.pr_number for e in win[0].entries} == {1, 2}
+        assert win[1].entries == ()  # queue seen empty — newest truth
+    asyncio.run(body())
+
+
+def test_empty_observation_prunes_like_any_row(tmp_path):
+    async def body():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        await store.record("r", 100, ())
+        await store.record("r", 9000, ())
+        deleted = await store.prune(older_than_epoch=1000)
+        assert deleted == 1
+        assert [o.captured_at for o in await store.window("r", 0)] == [9000]
+    asyncio.run(body())
+
+
 def test_prune_drops_old_rows(tmp_path):
     async def body():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path}/t.db")

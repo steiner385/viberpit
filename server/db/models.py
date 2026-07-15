@@ -238,12 +238,14 @@ class MergeQueueObservation(Base):
     __tablename__ = "merge_queue_observations"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    # repo/captured_at/pr_number are always written (never null); the column stays
+    # repo/captured_at are always written (never null); the columns stay
     # nullable=True so init_db backfills existing dev DBs without a migration, but the
-    # Python attribute is typed non-optional since the store never reads a null here.
+    # Python attributes are typed non-optional since the store never reads a null there.
+    # pr_number IS nullable in earnest: a NULL row is the empty-queue sentinel —
+    # it pins an observation's captured_at while contributing no queue entry.
     repo: Mapped[str] = mapped_column(String, nullable=True, index=True)
     captured_at: Mapped[int] = mapped_column(Integer, nullable=True, index=True)
-    pr_number: Mapped[int] = mapped_column(Integer, nullable=True)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     position: Mapped[int | None] = mapped_column(Integer, nullable=True)
     state: Mapped[str | None] = mapped_column(String, nullable=True)
     enqueued_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
