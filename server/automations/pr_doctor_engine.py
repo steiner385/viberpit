@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from server.github.pr_status import PullRequestInfo
 
 # First match wins — conflict before CI (never fight CI on an unmergeable branch).
-FAILURE_PRIORITY = ("blocked", "merge_conflict", "out_of_date", "failing_ci")
+FAILURE_PRIORITY = ("blocked", "stuck_enqueue", "merge_conflict", "out_of_date", "failing_ci")
 
 
 def classify(info: PullRequestInfo) -> str | None:
@@ -36,13 +36,18 @@ def classify(info: PullRequestInfo) -> str | None:
     if info.merge_state_status == "DRAFT" or info.is_draft:
         return None
     if info.merge_state_status == "BLOCKED":
-        # BLOCKED gates the merge, but the CAUSE splits two ways: a failing
-        # *required* status check (branch protection) vs. a required review/
-        # approval. A failing check is exactly what PR Doctor fixes, so only the
-        # non-failing case is the human gate we merely notify about — otherwise a
-        # branch-protected repo (the common case) would never get an auto-fix.
+        # BLOCKED gates the merge, but the CAUSE splits three ways:
+        # 1. A failing *required* status check (branch protection) → failing_ci.
+        #    A failing check is exactly what PR Doctor fixes, so classify it
+        #    actionably rather than as a review gate.
+        # 2. Armed + not in queue → stuck_enqueue: GitHub silently refused to
+        #    enqueue the PR (e.g. a shadowed required check). A mechanical re-arm
+        #    often unsticks it. This is NOT a human review gate.
+        # 3. Everything else (review/approval required) → blocked: notify only.
         if info.checks == "failing":
             return "failing_ci"
+        if info.auto_merge_enabled and not info.in_merge_queue:
+            return "stuck_enqueue"
         return "blocked"  # review/approval gate — notify only (non-goal to approve)
     if info.mergeable == "CONFLICTING" or info.merge_state_status == "DIRTY":
         return "merge_conflict"
@@ -89,11 +94,12 @@ RecoveryAction = Notify | Propose | Mechanical | SessionFix | GiveUp
 
 # Which failure modes are mechanical (no session) vs session-driven, and the
 # config flag that gates each in auto mode.
-_MECHANICAL = {"out_of_date"}
+_MECHANICAL = {"out_of_date", "stuck_enqueue"}
 _AUTO_FLAG = {
     "out_of_date": "auto_update_out_of_date",
     "failing_ci": "auto_fix_failing_ci",
     "merge_conflict": "auto_resolve_conflicts",
+    "stuck_enqueue": "auto_fix_stuck_enqueue",
 }
 
 

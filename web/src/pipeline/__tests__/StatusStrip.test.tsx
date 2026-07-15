@@ -29,8 +29,8 @@ describe('bucketPr', () => {
     expect(bucketPr(pr('awaiting-prod'))).toBe('deploy');
   });
 
-  it('classifies merged as idle — retention-window stage for repos with no deploy environments', () => {
-    expect(bucketPr(pr('merged'))).toBe('idle');
+  it('classifies merged as merged — retention-window stage for repos with no deploy environments', () => {
+    expect(bucketPr(pr('merged'))).toBe('merged');
   });
 
   it('classifies parked/ci-failed as failed', () => {
@@ -41,16 +41,20 @@ describe('bucketPr', () => {
     expect(bucketPr(pr('queue', 'group-failed'))).toBe('failed');
   });
 
-  it('classifies parked (draft) as idle', () => {
-    expect(bucketPr(pr('parked', 'draft'))).toBe('idle');
+  it('classifies parked (draft) as merged — retention-window noise bucket', () => {
+    expect(bucketPr(pr('parked', 'draft'))).toBe('merged');
   });
 
-  it('classifies parked (conflicting) as idle', () => {
-    expect(bucketPr(pr('parked', 'conflicting'))).toBe('idle');
+  it('classifies parked (conflicting) as merged — retention-window noise bucket', () => {
+    expect(bucketPr(pr('parked', 'conflicting'))).toBe('merged');
   });
 
-  it('classifies ready as idle', () => {
-    expect(bucketPr(pr('ready'))).toBe('idle');
+  it('classifies ready as ready — the actionable bucket', () => {
+    expect(bucketPr(pr('ready'))).toBe('ready');
+  });
+
+  it('classifies ready/stuck-enqueue as failed — armed but GitHub refused to enqueue', () => {
+    expect(bucketPr(pr('ready', 'stuck-enqueue'))).toBe('failed');
   });
 });
 
@@ -58,7 +62,7 @@ describe('isFailedPr / isActivePr (the shared classifiers — no per-surface cop
   it('isFailedPr agrees with bucketPr === failed for every stage', () => {
     for (const [stage, sub] of [['ci', null], ['queue', null], ['queue', 'group-failed'],
       ['qa-deploy', null], ['awaiting-prod', null], ['parked', 'ci-failed'], ['parked', 'draft'],
-      ['ready', null], ['merged', null]] as const) {
+      ['ready', null], ['ready', 'stuck-enqueue'], ['merged', null]] as const) {
       expect(isFailedPr(pr(stage, sub))).toBe(bucketPr(pr(stage, sub)) === 'failed');
     }
   });
@@ -87,31 +91,34 @@ describe('StatusStrip', () => {
     pr('parked', 'ci-failed'),
     pr('parked', 'draft'),
     pr('ready'),
+    pr('ready', 'stuck-enqueue'),
   ];
 
-  it('renders all five tiles with correct counts', () => {
+  it('renders all six tiles with correct counts', () => {
     render(<StatusStrip prs={prs} activeFilter={null} onFilter={() => {}} />);
-    // running=2, queued=3, deploy=2 (qa-deploy + awaiting-prod only), failed=1,
-    // idle=3 (merged + parked/draft + ready)
+    // running=2, queued=3, deploy=2 (qa-deploy + awaiting-prod only),
+    // failed=2 (parked/ci-failed + ready/stuck-enqueue),
+    // ready=1 (open green), merged=2 (merged + parked/draft)
     const buttons = screen.getAllByRole('button');
-    expect(buttons).toHaveLength(5);
+    expect(buttons).toHaveLength(6);
     const countFor = (label: string) =>
       screen.getByText(label).closest('button')!.querySelector('b')!.textContent;
     expect(countFor('CI running')).toBe('2');
     expect(countFor('In queue')).toBe('3');
-    expect(countFor('Awaiting prod')).toBe('2');
-    expect(countFor('Failed')).toBe('1');
-    expect(countFor('Ready / other')).toBe('3');
+    expect(countFor('Deploying')).toBe('2');
+    expect(countFor('Failed')).toBe('2');
+    expect(countFor('Ready')).toBe('1');
+    expect(countFor('Merged / other')).toBe('2');
   });
 
   it('empty buckets still render but are disabled', () => {
     const onlyRunning: PrView[] = [pr('ci')];
     render(<StatusStrip prs={onlyRunning} activeFilter={null} onFilter={() => {}} />);
     const buttons = screen.getAllByRole('button');
-    expect(buttons).toHaveLength(5);
-    // queued, deploy, failed, idle all have count=0 and should be disabled
+    expect(buttons).toHaveLength(6);
+    // queued, deploy, failed, ready, merged all have count=0 and should be disabled
     const zeros = screen.getAllByText('0');
-    expect(zeros.length).toBeGreaterThanOrEqual(4);
+    expect(zeros.length).toBeGreaterThanOrEqual(5);
     zeros.forEach((el) => {
       expect(el.closest('button')).toHaveAttribute('disabled');
     });
@@ -178,8 +185,9 @@ describe('StatusStrip', () => {
         'CI running on the head commit',
         'In the merge queue — building or waiting for a slot',
         'Merged — deploying to QA or awaiting production deploy',
-        'CI failed or the merge-group build failed',
-        'Ready, draft, conflicting, or recently merged — nothing running',
+        'CI failed, merge-group build failed, or armed but stuck (not enqueued)',
+        'Open, checks green — actionable (ready to arm auto-merge or merge directly)',
+        'Recently merged (7-day retention), draft, or conflicting — no action needed',
       ]);
     });
   });

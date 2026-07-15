@@ -1,13 +1,13 @@
 // Ported from plotroom@5166b52 frontend/src/sections/pipeline/ordering.ts; edits: import repointing (./types, ./StatusStrip)
 // Pipeline ordering (roadmap 1.3) — the PR pipeline must lead with what needs eyes,
 // not bury 3 running/overdue PRs under 48 identical "awaiting prod" rows. Pure +
-// testable. `attentionSort` ranks failed > running > queued > idle > deploy (with
+// testable. `attentionSort` ranks failed > running > queued > ready > merged > deploy (with
 // overdue bumping a PR up within its tier); `splitCohort` peels the non-overdue
 // awaiting-prod herd into a collapsible cohort so the lead stays scannable.
 import type { PrView } from './types';
 import { bucketPr, type Bucket } from './StatusStrip';
 
-const RANK: Record<Bucket, number> = { failed: 0, running: 1, queued: 2, idle: 3, deploy: 4 };
+const RANK: Record<Bucket, number> = { failed: 0, running: 1, queued: 2, ready: 3, merged: 4, deploy: 5 };
 
 /** Lower = needs more attention. Overdue bumps up by half a tier. */
 export function attentionRank(pr: PrView): number {

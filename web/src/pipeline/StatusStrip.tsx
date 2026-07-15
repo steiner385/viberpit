@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { PrView } from './types';
 
-export type Bucket = 'running' | 'queued' | 'deploy' | 'failed' | 'idle';
+export type Bucket = 'running' | 'queued' | 'deploy' | 'failed' | 'ready' | 'merged';
 
 /** Map a PrView to its status bucket. */
 export function bucketPr(pr: PrView): Bucket {
@@ -15,14 +15,20 @@ export function bucketPr(pr: PrView): Bucket {
   }
   // qa-deploy / awaiting-prod only exist for repos with deploy environments;
   // bare 'merged' is the retention-window stage for repos WITHOUT deploys and
-  // must not inflate the deploy ("Awaiting prod") tile.
+  // must not inflate the deploy ("Deploying") tile.
   if (stage === 'qa-deploy' || stage === 'awaiting-prod') return 'deploy';
   if (stage === 'parked') {
     if (substate === 'ci-failed') return 'failed';
-    return 'idle';
+    return 'merged'; // draft / conflicting / other parked — retention noise
   }
-  // ready + merged + any other parked substate
-  return 'idle';
+  if (stage === 'ready') {
+    // Armed + BLOCKED + not in queue: GitHub silently refused to enqueue.
+    // Needs attention — surface in the Failed tile, not the Ready tile.
+    if (substate === 'stuck-enqueue') return 'failed';
+    return 'ready';
+  }
+  // merged stage (7-day retention window) + any other unknown stage
+  return 'merged';
 }
 
 /** Is the PR failed? The single source of truth — derived from bucketPr so the
@@ -49,12 +55,14 @@ export const TILE_DEFINITIONS: TileConfig[] = [
     title: 'CI running on the head commit' },
   { bucket: 'queued',  label: 'In queue',        cssClass: 'tile-queued',
     title: 'In the merge queue — building or waiting for a slot' },
-  { bucket: 'deploy',  label: 'Awaiting prod',   cssClass: 'tile-deploy',
+  { bucket: 'deploy',  label: 'Deploying',       cssClass: 'tile-deploy',
     title: 'Merged — deploying to QA or awaiting production deploy' },
   { bucket: 'failed',  label: 'Failed',          cssClass: 'tile-failed',
-    title: 'CI failed or the merge-group build failed' },
-  { bucket: 'idle',    label: 'Ready / other',   cssClass: 'tile-idle',
-    title: 'Ready, draft, conflicting, or recently merged — nothing running' },
+    title: 'CI failed, merge-group build failed, or armed but stuck (not enqueued)' },
+  { bucket: 'ready',   label: 'Ready',           cssClass: 'tile-ready',
+    title: 'Open, checks green — actionable (ready to arm auto-merge or merge directly)' },
+  { bucket: 'merged',  label: 'Merged / other',  cssClass: 'tile-merged',
+    title: 'Recently merged (7-day retention), draft, or conflicting — no action needed' },
 ];
 
 const TILES = TILE_DEFINITIONS;

@@ -66,6 +66,21 @@ def test_stage_result_parked_substates():
     assert stage_result(_pr(stage="parked"))["substate"] is None
 
 
+def test_stage_result_stuck_enqueue_substate():
+    # Armed + BLOCKED + not in queue → ready/stuck-enqueue (surfaces in Failed tile).
+    s = stage_result(_pr(stage="ready", checks="passing", merge_state_status="BLOCKED",
+                         auto_merge_enabled=True, in_merge_queue=False))
+    assert s["stage"] == "ready" and s["substate"] == "stuck-enqueue"
+    # Armed + in queue already → no stuck-enqueue substate.
+    ok = stage_result(_pr(stage="ready", checks="passing", merge_state_status="BLOCKED",
+                          auto_merge_enabled=True, in_merge_queue=True))
+    assert ok["substate"] is None
+    # Not armed → no stuck-enqueue substate.
+    unarmed = stage_result(_pr(stage="ready", checks="passing", merge_state_status="BLOCKED",
+                               auto_merge_enabled=False, in_merge_queue=False))
+    assert unarmed["substate"] is None
+
+
 def test_stage_result_queue_from_merge_queue_flag():
     ok = stage_result(_pr(in_merge_queue=True))
     assert ok["stage"] == "queue" and ok["substate"] is None

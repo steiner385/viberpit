@@ -140,12 +140,12 @@ describe('LegendPanel', () => {
 
   it('status tiles section shows a swatch and definition per bucket', () => {
     const { container } = render(<LegendPanel open={true} onClose={() => {}} />);
-    for (const cls of ['tile-running', 'tile-queued', 'tile-deploy', 'tile-failed', 'tile-idle']) {
+    for (const cls of ['tile-running', 'tile-queued', 'tile-deploy', 'tile-failed', 'tile-ready', 'tile-merged']) {
       expect(container.querySelector(`.legend-swatch.${cls}`)).not.toBeNull();
     }
     const dtLabels = [...container.querySelectorAll('.legend-swatch')]
       .map((s) => s.parentElement!.textContent!.trim());
-    expect(dtLabels).toEqual(['CI running', 'In queue', 'Awaiting prod', 'Failed', 'Ready / other']);
+    expect(dtLabels).toEqual(['CI running', 'In queue', 'Deploying', 'Failed', 'Ready', 'Merged / other']);
   });
 });
 

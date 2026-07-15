@@ -224,6 +224,8 @@ export const SUBLINE_TERMS: { term: string; text: string; match: RegExp }[] = [
     text: 'jobs are queued but no CI runner has picked them up yet' },
   { term: 'N% (ci)', match: /^\d+%|· \d+%/,
     text: 'progress of the head-commit CI run: completed required checks weighted by their typical durations' },
+  { term: 'armed — not in queue', match: /armed.*not in queue/i,
+    text: 'auto-merge is armed, checks are green, but GitHub has not enqueued this PR — typically a shadowed required check (e.g. ci-gate shadowing wedge); re-arming auto-merge or re-running the required check usually unsticks it' },
 ];
 
 /** Tooltip for a rendered sub line: the definitions of every recognized term,
