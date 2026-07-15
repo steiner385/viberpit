@@ -22,10 +22,18 @@ async def record(repo: str, captured_at: int, entries: tuple[QueueEntry, ...]) -
                 batch_head_oid=e.batch_head_oid, group_checks=e.group_checks,
                 checks_total=e.checks_total, checks_done=e.checks_done,
                 eta_seconds=e.eta_seconds))
+        if not entries:
+            # Data-of-absence sentinel (pr_number NULL): an EMPTY queue must
+            # still produce an observation, or window()'s newest snapshot stays
+            # the last busy one and the dashboard replays a merged train for up
+            # to 24h ("#11778 building 94%" three hours after it merged).
+            s.add(MergeQueueObservation(
+                repo=repo, captured_at=captured_at, pr_number=None))
         await s.commit()
 
 
 def _entry(row: MergeQueueObservation) -> QueueEntry:
+    assert row.pr_number is not None  # callers skip empty-queue sentinel rows
     return QueueEntry(
         pr_number=row.pr_number, position=row.position, state=row.state or "",
         enqueued_at=row.enqueued_at, batch_head_oid=row.batch_head_oid,
@@ -43,7 +51,11 @@ async def window(repo: str, since_epoch: int) -> list[Observation]:
         )).scalars().all()
     grouped: dict[int, list[QueueEntry]] = {}
     for row in rows:
-        grouped.setdefault(row.captured_at, []).append(_entry(row))
+        bucket = grouped.setdefault(row.captured_at, [])
+        # pr_number NULL is the empty-queue sentinel: it pins the observation's
+        # captured_at but contributes no entry.
+        if row.pr_number is not None:
+            bucket.append(_entry(row))
     return [Observation(captured_at=t, entries=tuple(es)) for t, es in sorted(grouped.items())]
 
 
