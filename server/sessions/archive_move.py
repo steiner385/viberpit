@@ -20,13 +20,24 @@ import os
 import shutil
 from pathlib import Path
 
-# Regenerable dependency dirs — never worth copying across a filesystem
-# boundary; an unarchived session just reinstalls them.
-PRUNE_DIRS: tuple[str, ...] = ("node_modules",)
+# Regenerable dependency dirs — never worth archiving; an unarchived session
+# just reinstalls them. Pruned on BOTH move paths: across a filesystem boundary
+# they'd bloat the copy, and even a free same-device rename permanently parks
+# their INODES in the archive (200 auto-archived KinDash sessions exhausted the
+# data disk's inode table, killing every new session's `git worktree add`).
+PRUNE_DIRS: tuple[str, ...] = ("node_modules", ".venv")
 
 # Required free headroom (beyond the copy itself) before a cross-device copy
 # is allowed to start, so archiving can never drive a disk to 0.
 FREE_SPACE_MARGIN_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
+
+
+def _prune_regenerable(src: Path, prune: tuple[str, ...]) -> None:
+    """Delete *prune*-named dirs anywhere under *src* (best-effort)."""
+    for root, dirs, _files in os.walk(src):
+        for name in [d for d in dirs if d in prune]:
+            shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+            dirs.remove(name)
 
 
 def _tree_size(path: Path, prune: tuple[str, ...]) -> int:
@@ -49,20 +60,25 @@ def move_into_archive(
     prune: tuple[str, ...] = PRUNE_DIRS,
     margin: int = FREE_SPACE_MARGIN_BYTES,
 ) -> str:
-    """Move directory *src* to *dest*.
+    """Move directory *src* to *dest*, pruning regenerable *prune* dirs first.
 
-    Same filesystem: atomic ``os.rename`` (instant, keeps everything including
-    ``node_modules`` — there is nothing to gain by pruning a free rename).
+    The prune happens on BOTH paths — a same-device rename is free in bytes
+    but permanently parks the pruned dirs' inodes in the archive otherwise,
+    and the cross-device copy would pay for them in bytes. Either way the
+    archive lands dependency-free; unarchiving reinstalls.
 
-    Cross filesystem: copy excluding regenerable *prune* dirs, guarded by a
-    free-space pre-check, then remove *src*. A copy that fails partway is
-    cleaned up so it never leaves a partial tree hogging the destination disk.
+    Same filesystem: atomic ``os.rename`` (instant).
+
+    Cross filesystem: copy guarded by a free-space pre-check, then remove
+    *src*. A copy that fails partway is cleaned up so it never leaves a
+    partial tree hogging the destination disk.
 
     Returns ``"renamed"``, ``"copied"``, or ``"skipped:nospace"``. Re-raises
     genuinely unexpected ``OSError``\\ s (anything other than the EXDEV that
     signals "different filesystem").
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
+    _prune_regenerable(src, prune)
 
     try:
         os.rename(src, dest)

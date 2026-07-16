@@ -39,16 +39,37 @@ class _Usage:
         self.free = free
 
 
-def test_same_device_uses_rename_and_keeps_everything(tmp_path):
+def test_same_device_uses_rename_and_prunes_regenerable_dirs(tmp_path):
+    """A same-device rename is free in BYTES but not in INODES: archives that
+    keep node_modules park tens of thousands of inodes each, forever. 200
+    auto-archived KinDash sessions exhausted /mnt/ssk-ssd's inode table and
+    every new session's `git worktree add` died with ENOSPC. Regenerable dirs
+    are pruned on BOTH paths so archives always land dependency-free."""
     src = _make_tree(tmp_path)
     dest = tmp_path / "archive" / "sess1"
 
     assert move_into_archive(src, dest) == "renamed"
 
     assert not src.exists()
-    assert (dest / "src" / "app.py").exists()
-    # A same-device rename is free, so it keeps node_modules — nothing to gain by pruning.
-    assert (dest / "node_modules").exists()
+    assert (dest / "src" / "app.py").exists()      # real work preserved
+    assert (dest / ".git" / "HEAD").exists()       # history preserved
+    assert not (dest / "node_modules").exists()    # regenerable deps pruned
+
+
+def test_same_device_prunes_nested_and_venv_dirs(tmp_path):
+    src = _make_tree(tmp_path)
+    (src / ".venv" / "lib").mkdir(parents=True)
+    (src / ".venv" / "lib" / "mod.py").write_text("x")
+    nested = src / "web" / "node_modules" / "pkg"
+    nested.mkdir(parents=True)
+    (nested / "index.js").write_text("x")
+    dest = tmp_path / "archive" / "sess5"
+
+    assert move_into_archive(src, dest) == "renamed"
+
+    assert not (dest / ".venv").exists()
+    assert not (dest / "web" / "node_modules").exists()
+    assert (dest / "web").exists()                 # parent of pruned dir survives
 
 
 def test_cross_device_prunes_node_modules(tmp_path, monkeypatch):
