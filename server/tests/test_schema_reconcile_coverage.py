@@ -49,6 +49,13 @@ RECONCILE_EXEMPT: set[str] = {
     # is mandatory at emit time, so no synthesizable default.
     "automation_event.automation_id",  # required at emit; the owning automation id
     "automation_event.summary",        # required at emit; the event text
+    # session_presets / prompt_templates / permission_profiles: NEW tables added in
+    # feat/power-user-features-595-600.  create_all builds them fully-formed on dev
+    # SQLite (they don't exist yet → no ALTER needed); name is the user-supplied
+    # display identifier, mandatory at INSERT, so no synthesizable default.
+    "session_presets.name",
+    "prompt_templates.name",
+    "permission_profiles.name",
 }
 
 
