@@ -5,6 +5,7 @@ import { SessionView } from './components/session/SessionView'
 import { SubSessionView } from './components/session/SubSessionView'
 import { ReviewView } from './components/ReviewView'
 import { GlobalUpdateBanner } from './components/GlobalUpdateBanner'
+import { BrandMark } from './components/BrandMark'
 import { useMediaQuery } from './lib/useMediaQuery'
 import { DeployControllerProvider } from './lib/deployController'
 import { DeployOverlay } from './components/DeployOverlay'
@@ -42,7 +43,10 @@ function DashboardRoute({ tab }: { tab: TabId }) {
     <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-background text-foreground">
       {/* paddingTop pushes content below the iOS status bar; env() is 0 on desktop. */}
       <header className="shrink-0 px-4 pb-4 border-b border-border" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1rem)' }}>
-        <h1 className="text-2xl font-bold tracking-tight">ccswitch</h1>
+        <div className="flex items-center gap-2.5">
+          <BrandMark size={26} />
+          <h1 className="text-2xl font-bold tracking-tight">ccswitch</h1>
+        </div>
       </header>
       <main className="flex-1 min-h-0 flex flex-col px-4">
         <Dashboard
