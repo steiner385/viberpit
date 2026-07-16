@@ -14,6 +14,7 @@
 
 import { useEffect, useCallback, useRef } from 'react'
 import { cn } from '@/lib/utils'
+import { detachKeyYieldsToTextEntry } from '@/lib/detachKeyGuard'
 import { useSessionSocket } from '@/ws/client'
 import { useSessionRuntime } from '@/session/useSessionRuntime'
 import { useSessionNeighbors } from '@/session/useSessionNeighbors'
@@ -69,10 +70,11 @@ export function SessionView({ sessionId, onBack, onDone, onNavigateSession, init
   }, [sessionId, onDone, detach])
 
   // In-session keyboard shortcuts:
-  //   Esc  → back to session list (guard: skip if composer textarea has text mid-draft,
-  //           or if a permission/question card is pending — let user act on the card first)
+  //   Esc  → back to session list (guard: skip if the focused text entry has text
+  //           mid-draft, or if a permission/question card is pending — act on the card first)
   //   ←    → back to session list, but only from the prompt's left edge: empty composer,
-  //           or caret at the very start with no selection. Otherwise ← moves the caret.
+  //           or caret at the very start with no selection. Other text entries hold ←
+  //           whenever they have text. Otherwise ← moves the caret.
   //   Shift+Tab → cycle permission mode through PERMISSION_MODES
   const { hasOpenAction, onSetMode } = rt
   useEffect(() => {
@@ -83,25 +85,22 @@ export function SessionView({ sessionId, onBack, onDone, onNavigateSession, init
         onSetMode(next)
         return
       }
-      const ae2 = document.activeElement as HTMLTextAreaElement | null
-      const inComposer = ae2?.getAttribute('aria-label') === 'Message'
-      // Esc/Ctrl+Z yield to the composer whenever it holds a draft (keep the text).
-      const inComposerWithText = inComposer && (ae2?.value ?? '') !== ''
-      // ← yields to the composer only when the caret is past the start or text is
-      // selected; from the left edge (or an empty prompt) it detaches to the list.
-      const caretPastComposerStart =
-        inComposer && !(ae2!.selectionStart === 0 && ae2!.selectionEnd === 0)
-      // Ctrl+Z → unconditional force-detach escape hatch (bypasses the pending-card guard).
+      // detachKeyYieldsToTextEntry: the composer keeps its contract (Esc/Ctrl+Z
+      // yield while it holds a draft; ← yields past the left edge), and any other
+      // text entry (question-card draft, search, rename …) holds all three keys
+      // while it has text, so typing is never hijacked mid-draft.
+      const ae2 = document.activeElement
+      // Ctrl+Z → force-detach escape hatch (bypasses the pending-card guard).
       if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
-        if (inComposerWithText) return
+        if (detachKeyYieldsToTextEntry('CtrlZ', ae2)) return
         e.preventDefault()
         handleBack()
         return
       }
-      // Esc → detach to the list. Guards: composer-with-text, and a pending
+      // Esc → detach to the list. Guards: text entry with a draft, and a pending
       // permission/question card (answer it first).
       if (e.key === 'Escape') {
-        if (inComposerWithText) return
+        if (detachKeyYieldsToTextEntry('Escape', ae2)) return
         if (hasOpenAction) return
         e.preventDefault()
         handleBack()
@@ -109,7 +108,7 @@ export function SessionView({ sessionId, onBack, onDone, onNavigateSession, init
       }
       // ← (from the prompt's left edge) → detach to the list. Same pending-card guard.
       if (e.key === 'ArrowLeft') {
-        if (caretPastComposerStart) return
+        if (detachKeyYieldsToTextEntry('ArrowLeft', ae2)) return
         if (hasOpenAction) return
         e.preventDefault()
         handleBack()
