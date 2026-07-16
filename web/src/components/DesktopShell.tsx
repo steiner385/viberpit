@@ -21,6 +21,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { Plus, Settings, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { detachKeyYieldsToTextEntry } from '@/lib/detachKeyGuard'
+import { BrandMark } from './BrandMark'
 import { SessionGoalText } from './session/SessionGoalText'
 import { SessionList } from './SessionList'
 import { SessionListControls } from './SessionListControls'
@@ -494,7 +495,8 @@ export function DesktopShell() {
   const shell = (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-background text-foreground">
       <header className="flex items-stretch justify-between border-b border-border flex-shrink-0">
-        <div className="flex items-center px-4 shrink-0">
+        <div className="flex items-center gap-2 px-4 shrink-0">
+          <BrandMark size={22} />
           <h1 className="text-lg font-bold tracking-tight">ccswitch</h1>
         </div>
         {/* Tabs span the header, between the logo and the action icons. `min-w-0`
