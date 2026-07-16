@@ -491,3 +491,69 @@ class RepoDeployConfig(Base):
     repo: Mapped[str] = mapped_column(String, primary_key=True)
     environments: Mapped[str | None] = mapped_column(String, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+# ---------------------------------------------------------------------------
+# Power-user feature tables: SessionPreset, PromptTemplate, PermissionProfile
+# ---------------------------------------------------------------------------
+
+
+class SessionPreset(Base):
+    """A named bundle of session launch settings (account, model, repo, etc.)
+    that can be selected in the DispatchBar to pre-fill all fields at once."""
+
+    __tablename__ = "session_presets"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True)
+    account: Mapped[str | None] = mapped_column(String, nullable=True)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    permission_mode: Mapped[str | None] = mapped_column(String, nullable=True)
+    initial_prompt: Mapped[str | None] = mapped_column(String, nullable=True)
+    branch_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
+    permission_profile_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_session_presets_name"),
+    )
+
+
+class PromptTemplate(Base):
+    """A named, server-stored prompt template with {{variable}} placeholders,
+    insertable from the DispatchBar or in-session composer."""
+
+    __tablename__ = "prompt_templates"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str | None] = mapped_column(String, nullable=True)
+    variables: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    tags: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_prompt_templates_name"),
+    )
+
+
+class PermissionProfile(Base):
+    """A named, ordered list of tool patterns (e.g. 'Bash(git *)', 'Read')
+    applied at session spawn to set the allowlist in one click."""
+
+    __tablename__ = "permission_profiles"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
+    mode: Mapped[str | None] = mapped_column(String, nullable=True)
+    patterns: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_permission_profiles_name"),
+    )
