@@ -13,10 +13,14 @@ import { PluginsSection } from '../library/PluginsSection'
 import { SkillsSection } from '../library/SkillsSection'
 import { CommandsSection } from '../library/CommandsSection'
 import { McpSection } from '../library/McpSection'
+import { PresetsSection } from './PresetsSection'
+import { TemplatesSection } from './TemplatesSection'
+import { PermissionProfilesSection } from './PermissionProfilesSection'
 
 export type SettingsSection =
   | 'general' | 'accounts' | 'automation'
   | 'plugins' | 'skills' | 'commands' | 'mcp'
+  | 'presets' | 'templates' | 'profiles'
 
 const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'general', label: 'General' },
@@ -26,6 +30,9 @@ const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'skills', label: 'Skills' },
   { id: 'commands', label: 'Commands' },
   { id: 'mcp', label: 'MCP Servers' },
+  { id: 'presets', label: 'Presets' },
+  { id: 'templates', label: 'Templates' },
+  { id: 'profiles', label: 'Profiles' },
 ]
 
 export function SettingsView() {
@@ -57,6 +64,9 @@ export function SettingsView() {
       {section === 'skills' && <SkillsSection />}
       {section === 'commands' && <CommandsSection />}
       {section === 'mcp' && <McpSection />}
+      {section === 'presets' && <PresetsSection />}
+      {section === 'templates' && <TemplatesSection />}
+      {section === 'profiles' && <PermissionProfilesSection />}
     </div>
   )
 }

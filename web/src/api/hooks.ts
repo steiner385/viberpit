@@ -14,6 +14,7 @@ import type {
   DaemonHealth, CopilotAddState,
   LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
   LibraryMcpServer, McpServerConfig, LibraryContent,
+  SessionPreset, PromptTemplate, PermissionProfile,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
@@ -871,5 +872,113 @@ export function useDeleteMcpServer() {
   return useMutation<unknown, ApiRequestError, { name: string }>({
     mutationFn: ({ name }) => api.del(`/library/mcp/${encodeURIComponent(name)}`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: QK.libraryMcp }),
+  })
+}
+
+// ─── Presets (#597) ───────────────────────────────────────────────────────
+
+export function usePresets() {
+  return useQuery<SessionPreset[]>({
+    queryKey: ['presets'],
+    queryFn: () => api.get<SessionPreset[]>('/presets'),
+  })
+}
+
+export function useCreatePreset() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Partial<SessionPreset> & { name: string }) =>
+      api.post('/presets', body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['presets'] }),
+  })
+}
+
+export function useUpdatePreset() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, ...body }: Partial<SessionPreset> & { id: string }) =>
+      api.patch(`/presets/${id}`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['presets'] }),
+  })
+}
+
+export function useDeletePreset() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.del(`/presets/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['presets'] }),
+  })
+}
+
+// ─── Templates (#598) ─────────────────────────────────────────────────────
+
+export function useTemplates(tag?: string) {
+  return useQuery<PromptTemplate[]>({
+    queryKey: ['templates', tag],
+    queryFn: () => {
+      const url = tag ? `/templates?tag=${encodeURIComponent(tag)}` : '/templates'
+      return api.get<PromptTemplate[]>(url)
+    },
+  })
+}
+
+export function useCreateTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { name: string; content: string; variables?: unknown[]; tags?: string[] }) =>
+      api.post('/templates', body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['templates'] }),
+  })
+}
+
+export function useUpdateTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, ...body }: Partial<PromptTemplate> & { id: string }) =>
+      api.patch(`/templates/${id}`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['templates'] }),
+  })
+}
+
+export function useDeleteTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.del(`/templates/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['templates'] }),
+  })
+}
+
+// ─── Permission Profiles (#600) ───────────────────────────────────────────
+
+export function usePermissionProfiles() {
+  return useQuery<PermissionProfile[]>({
+    queryKey: ['permission-profiles'],
+    queryFn: () => api.get<PermissionProfile[]>('/permission-profiles'),
+  })
+}
+
+export function useCreatePermissionProfile() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { name: string; description?: string; mode?: string; patterns?: string[] }) =>
+      api.post('/permission-profiles', body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['permission-profiles'] }),
+  })
+}
+
+export function useUpdatePermissionProfile() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, ...body }: Partial<PermissionProfile> & { id: string }) =>
+      api.patch(`/permission-profiles/${id}`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['permission-profiles'] }),
+  })
+}
+
+export function useDeletePermissionProfile() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.del(`/permission-profiles/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['permission-profiles'] }),
   })
 }
