@@ -39,6 +39,11 @@ export function PendingPermissionPanel({ turns, permissionMode, onDecision }: Pr
       className={cn(
         'flex-shrink-0 border-t border-amber-200 dark:border-amber-800',
         'bg-amber-50/60 dark:bg-amber-950/20 px-3 py-2',
+        // Same guard as PendingQuestionPanel: a long permission (tool details /
+        // diff preview + allow/deny/always) can overflow this flex-shrink-0 panel
+        // on a short viewport, pushing the decision buttons below the fold with no
+        // reachable scroll. Cap and scroll internally.
+        'max-h-[50vh] overflow-y-auto overscroll-contain',
       )}
       data-testid="pending-permission-panel"
     >

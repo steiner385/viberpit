@@ -42,6 +42,17 @@ describe('PendingPermissionPanel', () => {
     expect(screen.getByRole('region', { name: /pending permission/i })).toBeInTheDocument()
   })
 
+  it('caps its height and scrolls internally so long permission details keep the buttons reachable', () => {
+    // Mirrors PendingQuestionPanel: this panel is flex-shrink-0, so a long tool
+    // detail / diff preview would push the allow/deny buttons below the fold with
+    // no reachable scroll. It must bound its own height and scroll within.
+    render(
+      <PendingPermissionPanel turns={[turn(perm('p1'))]} permissionMode="interactive" onDecision={vi.fn()} />,
+    )
+    const region = screen.getByRole('region', { name: /pending permission/i })
+    expect(region).toHaveClass('overflow-y-auto', 'overscroll-contain', 'max-h-[50vh]')
+  })
+
   it('clicking allow calls onDecision with the permId and decision', () => {
     const onDecision = vi.fn()
     render(

@@ -38,6 +38,13 @@ export function PendingQuestionPanel({ turns, onAnswer, onChat, armedQuestionId 
       className={cn(
         'flex-shrink-0 border-t border-amber-200 dark:border-amber-800',
         'bg-amber-50/60 dark:bg-amber-950/20 px-3 py-2',
+        // A tall question (4+ options + heading + escape hatches + Submit) can
+        // exceed the column height on a short viewport. The panel is flex-shrink-0
+        // (it won't compress) and the transcript above is a *separate* scroller, so
+        // without an internal scroller the Submit button falls below the fold with
+        // no way to reach it. Cap the height and scroll within; overscroll-contain
+        // stops the scroll chaining up into the transcript.
+        'max-h-[50vh] overflow-y-auto overscroll-contain',
       )}
       data-testid="pending-question-panel"
     >

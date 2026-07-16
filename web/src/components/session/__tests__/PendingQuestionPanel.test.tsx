@@ -60,6 +60,20 @@ describe('PendingQuestionPanel', () => {
     expect(screen.getByRole('region', { name: /pending question/i })).toBeInTheDocument()
   })
 
+  it('caps its height and scrolls internally so a tall question keeps Submit reachable', () => {
+    // A single-select question answers on click, but multi-select / grouped
+    // questions add a Submit button below the options. With 4+ options the panel
+    // can outgrow a short viewport; it must scroll within itself (it is
+    // flex-shrink-0 and the transcript above is a separate scroller) or the
+    // Submit button falls below the fold with no reachable scroll. jsdom has no
+    // layout, so we assert the bounded-scroller classes rather than pixels.
+    render(
+      <PendingQuestionPanel turns={[turn(q('r1', true))]} onAnswer={vi.fn()} onChat={vi.fn()} armedQuestionId={null} />
+    )
+    const region = screen.getByRole('region', { name: /pending question/i })
+    expect(region).toHaveClass('overflow-y-auto', 'overscroll-contain', 'max-h-[50vh]')
+  })
+
   it('freeform: clicking "Write a response", typing, and "Send response" calls onAnswer with freeform mode', async () => {
     const user = userEvent.setup()
     const onAnswer = vi.fn()
