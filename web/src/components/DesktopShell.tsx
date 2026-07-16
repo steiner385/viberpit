@@ -370,8 +370,8 @@ export function DesktopShell() {
       {/* Tabs now live in the app header (see shell below); the sidebar is a pure
           session-list column. */}
 
-      {/* Session list with permanent New Session slot */}
-      <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
+      {/* Fixed header: New Session button + list controls stay above the scroll region */}
+      <div className="flex-shrink-0 p-2 space-y-2">
         <button
           type="button"
           aria-label="New session"
@@ -399,6 +399,10 @@ export function DesktopShell() {
             onSearchChange={sessionSearch.setQuery}
           />
         )}
+      </div>
+
+      {/* Scrollable session list */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 space-y-2">
         <SessionList
           sessions={orderedSessions}
           groups={groups}
