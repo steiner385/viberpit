@@ -1,5 +1,5 @@
 // web/src/ws/client.gapHealing.test.ts
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { SessionSocket } from './client'
 import { clientLogger } from '../obs/logger'
 
@@ -112,5 +112,78 @@ describe('SessionSocket gap healing', () => {
     seen.length = 0
     s._handleInbound({ type: 'batch', events: attachBatch.map((e) => ({ ...e, sessionId: 's2' })) })
     expect(seen).toEqual([])
+  })
+})
+
+describe('heal-loop detection', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+  })
+  afterEach(() => vi.useRealTimers())
+
+  // Drive one gap-triggering batch (seq jumps by 2 from wherever the baseline is).
+  const gapBatch = (seq: number) => ({
+    type: 'batch',
+    events: [{ type: 'textDelta', turnId: 't', text: 'x', seq, sessionId: 's1' }],
+  })
+
+  it('escalates to an error exactly at the 5th heal inside the rolling window', () => {
+    const { s } = makeSocket()
+    const error = vi.spyOn(clientLogger, 'error').mockImplementation(() => {})
+    // Baseline, then 6 gap-heals spaced past the 2s cooldown (all inside the 60s window).
+    s._handleInbound(gapBatch(0))
+    for (let i = 1; i <= 6; i++) {
+      vi.setSystemTime(i * 2_100)
+      s._handleInbound(gapBatch(i * 2)) // seq jumps +2 each time → gap → heal
+    }
+    const loops = error.mock.calls.filter(([m]) => String(m).includes('transcript.heal.loop'))
+    expect(loops).toHaveLength(1) // fired at the threshold crossing only, not per heal
+    expect(String(loops[0][0])).toContain('count=5')
+    error.mockRestore()
+  })
+
+  it('does not escalate for heals spread wider than the window', () => {
+    const { s } = makeSocket()
+    const error = vi.spyOn(clientLogger, 'error').mockImplementation(() => {})
+    s._handleInbound(gapBatch(0))
+    for (let i = 1; i <= 6; i++) {
+      vi.setSystemTime(i * 61_000) // each heal falls outside the previous window
+      s._handleInbound(gapBatch(i * 2))
+    }
+    expect(error.mock.calls.filter(([m]) => String(m).includes('transcript.heal.loop')))
+      .toHaveLength(0)
+    error.mockRestore()
+  })
+})
+
+describe('srcSeq gap log aggregation', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+  })
+  afterEach(() => vi.useRealTimers())
+
+  const srcGapBatch = (seq: number, srcSeq: number) => ({
+    type: 'batch',
+    events: [{ type: 'textDelta', turnId: 't', text: 'x', seq, sessionId: 's1', srcSeq }],
+  })
+
+  it('logs the first gap immediately, suppresses further gaps inside the interval, and reports the cumulative total after it', () => {
+    const { s } = makeSocket()
+    const warn = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    const srcGapWarns = () =>
+      warn.mock.calls.filter(([m]) => String(m).includes('transcript.srcseq.gap'))
+    s._handleInbound(srcGapBatch(0, 10))
+    s._handleInbound(srcGapBatch(1, 12)) // hole 10→12: first gap logs immediately
+    expect(srcGapWarns()).toHaveLength(1)
+    expect(String(srcGapWarns()[0][0])).toContain('total=1')
+    s._handleInbound(srcGapBatch(2, 14)) // hole inside the interval: counted, not logged
+    expect(srcGapWarns()).toHaveLength(1)
+    vi.setSystemTime(11_000)
+    s._handleInbound(srcGapBatch(3, 16)) // past the interval: logs with the running total
+    expect(srcGapWarns()).toHaveLength(2)
+    expect(String(srcGapWarns()[1][0])).toContain('total=3')
+    warn.mockRestore()
   })
 })

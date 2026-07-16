@@ -281,3 +281,23 @@ async def test_remote_driver_open_stream_shim():
     got = [e.to_wire() async for e in stream.events()]
     assert got == [{"type": "textDelta", "text": "hi"}]
     assert stream.close() is None   # nothing to release before events() is iterated
+
+
+def test_pin_catch_up_requires_join_live_first():
+    """FINDING-1 atomic-commitment order as a runtime invariant, not a comment: a
+    ring_tail snapshot pinned WITHOUT a joined fan-out has a silent-gap window
+    (events between its head and the eventual join are captured by nobody), so
+    pin_catch_up must refuse it loudly — and it must fire BEFORE the caller can
+    enqueue resumeOk, failing the attach into the safe full-replay path."""
+    d = RemoteDriver(_FakeClient([]), "s1")
+    with pytest.raises(RuntimeError, match="join_live"):
+        d.pin_catch_up([{"event": {"type": "textDelta"}, "seq": 1}], 1)
+    # The refused pin must not half-commit: no snapshot pinned.
+    assert d._catch_up_snapshot is None
+
+
+def test_pin_catch_up_after_join_live_pins():
+    d = RemoteDriver(_FakeClient([]), "s1")
+    d.join_live()
+    d.pin_catch_up([{"event": {"type": "textDelta"}, "seq": 1}], 1)
+    assert d._catch_up_head == 1

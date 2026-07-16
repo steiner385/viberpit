@@ -60,7 +60,10 @@ function refBatch(last: Map<string, number>, batch: GenFrame[]) {
   for (const f of batch) {
     if (f.kind === 'reset') {
       const sid = f.sid ?? ACTIVE
-      last.delete(sid)
+      // Seed -1, not delete: the server restarts its per-attach seq at 0, so the first
+      // post-reset frame must be seq 0 — a first frame above 0 is leading loss (a GAP
+      // sentinel consumed the seq) and must heal. See resetSeq in liveBatch.ts.
+      last.set(sid, -1)
     }
     if (f.sid && f.sid !== ACTIVE) continue // foreign session → dropped
     if (f.kind === 'event' && typeof f.seq === 'number' && f.sid) {

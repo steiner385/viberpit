@@ -181,7 +181,20 @@ class RemoteDriver:
         without the snapshot already in hand (closes the silent-gap window between the
         ring_covers probe and the snapshot fetch). events() replays this snapshot then
         continues on the already-joined fan-out, deduping the overlap by daemon seq
-        (src <= head)."""
+        (src <= head).
+
+        Raises RuntimeError when join_live() has not run first: a snapshot fetched
+        without a joined fan-out has a silent-gap window (events between its head and
+        the eventual join are captured by NOBODY), and joining late here cannot close
+        it. Both callers (ws._maybe_catch_up, prepare_open_turn_resupply) satisfy the
+        order today; this makes the invariant fail-fast under refactor instead of
+        comment-enforced. The raise fires BEFORE the caller enqueues resumeOk, so an
+        ordering regression fails the attach loudly (→ full replay on retry) rather
+        than committing a catch-up the client would render with a hole in it."""
+        if self._live is None:
+            raise RuntimeError(
+                "pin_catch_up before join_live (FINDING-1 ordering violated): "
+                "refusing to commit a catch-up snapshot that may have a silent gap")
         self._catch_up_snapshot = snapshot
         self._catch_up_head = head
 

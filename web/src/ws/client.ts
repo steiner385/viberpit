@@ -87,6 +87,19 @@ export class SessionSocket {
   private _gap: GapState = createGapState()
   private _lastHealAt = 0
   private static readonly HEAL_COOLDOWN_MS = 2_000
+  // Heal-loop detection: timestamps of recent heals (pruned to HEAL_LOOP_WINDOW_MS).
+  // Reaching HEAL_LOOP_THRESHOLD heals inside the window means healing is not
+  // converging — each full replay is itself producing a fresh gap — which the
+  // per-heal cooldown alone can sustain forever, silently.
+  private _healTimes: number[] = []
+  private static readonly HEAL_LOOP_WINDOW_MS = 60_000
+  private static readonly HEAL_LOOP_THRESHOLD = 5
+  // srcSeq loss telemetry aggregation: per-session cumulative gap counts, flushed to the
+  // obs sink at most once per SRC_GAP_LOG_INTERVAL_MS per session (first gap logs
+  // immediately) so a gap storm reports a count instead of flooding client_logs.
+  private _srcGapCounts: Map<string, number> = new Map()
+  private _srcGapLastLogAt: Map<string, number> = new Map()
+  private static readonly SRC_GAP_LOG_INTERVAL_MS = 10_000
 
   constructor(url: string = '/ws') {
     this.url = url
@@ -359,6 +372,20 @@ export class SessionSocket {
     const now = Date.now()
     if (now - this._lastHealAt < SessionSocket.HEAL_COOLDOWN_MS) return
     this._lastHealAt = now
+    // Heal-loop detection: the cooldown rate-limits heals but cannot tell converging
+    // (one heal, done) from diverging (every replay ends in a fresh gap). Count heals in
+    // a rolling window; escalate to error EXACTLY at the threshold crossing (not on every
+    // subsequent heal) so the loop is visible in client_logs without becoming a storm of
+    // its own. Behavior is unchanged — the heal below still runs; full replay from the
+    // durable transcript remains the safest available action.
+    this._healTimes = this._healTimes.filter(
+      (t) => now - t < SessionSocket.HEAL_LOOP_WINDOW_MS)
+    this._healTimes.push(now)
+    if (this._healTimes.length === SessionSocket.HEAL_LOOP_THRESHOLD) {
+      clientLogger.error(
+        `transcript.heal.loop count=${this._healTimes.length} windowMs=${SessionSocket.HEAL_LOOP_WINDOW_MS}`,
+        { sessionId: sid })
+    }
     clientLogger.warn('ws gap detected — healing transcript via detach+attach', { sessionId: sid })
     this._send({ type: 'detach', sessionId: sid })
     // Catch-up cursor when contiguous → server resumes from the ring (resumeOk); a gap
@@ -439,10 +466,21 @@ export class SessionSocket {
         // srcSeq loss telemetry (audit W2.3): record daemon→edge→browser holes to the
         // obs sink WITHOUT healing — this is diagnostic only, the foundation for the
         // wave-3 cursor protocol. The per-attach `seq` above still owns dedup/heal.
+        // Aggregated per session: the first gap logs immediately (with its prev/got
+        // anchor), further gaps within SRC_GAP_LOG_INTERVAL_MS only bump a cumulative
+        // count that rides the next flush — a storm reports "total=N", not N entries.
         for (const g of srcSeqGaps) {
-          clientLogger.warn(`transcript.srcseq.gap prev=${g.prev} got=${g.got}`, {
-            sessionId: g.sessionId,
-          })
+          const total = (this._srcGapCounts.get(g.sessionId) ?? 0) + 1
+          this._srcGapCounts.set(g.sessionId, total)
+          const lastLog = this._srcGapLastLogAt.get(g.sessionId)
+          const gapNow = Date.now()
+          if (lastLog === undefined
+              || gapNow - lastLog >= SessionSocket.SRC_GAP_LOG_INTERVAL_MS) {
+            this._srcGapLastLogAt.set(g.sessionId, gapNow)
+            clientLogger.warn(
+              `transcript.srcseq.gap prev=${g.prev} got=${g.got} total=${total}`,
+              { sessionId: g.sessionId })
+          }
         }
         if (needsHeal) this._healActiveSession()
         break

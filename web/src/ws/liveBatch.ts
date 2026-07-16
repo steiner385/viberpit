@@ -30,14 +30,21 @@ export function createGapState(): GapState {
   }
 }
 
-/** Clear the per-attach + source-seq BASELINES for a session — called on replayReset
+/** Reset the per-attach + source-seq BASELINES for a session — called on replayReset
  *  and resumeOk so the next live event re-baselines instead of registering a false gap
  *  (applies to the source-seq telemetry too, so a reconnect replay / ring resume doesn't
  *  emit a spurious srcSeq gap). Deliberately does NOT touch `srcContiguous`: that flag is
  *  managed at each protocol site (replayReset clears it, replayComplete/resumeOk set it)
- *  because the two events want opposite contiguity outcomes from the same baseline reset. */
+ *  because the two events want opposite contiguity outcomes from the same baseline reset.
+ *
+ *  The per-attach baseline is SEEDED to -1, not deleted: the server restarts its
+ *  per-attach seq at 0 on every attach (full replay and ring resume alike), and a GAP
+ *  sentinel consumes a seq precisely so the client sees a hole — but a hole BEFORE the
+ *  first delivered frame is invisible against a deleted (undefined) baseline, silently
+ *  swallowing leading loss (found by the cross-layer pipeline fuzz). Against -1, seq 0
+ *  is contiguous and a first frame at seq>0 correctly flags a heal. */
 export function resetSeq(state: GapState, sessionId: string): void {
-  state.lastSeq.delete(sessionId)
+  state.lastSeq.set(sessionId, -1)
   state.lastSrcSeq.delete(sessionId)
   // srcEpoch pairs with lastSrcSeq (it is that cursor's minting epoch), so clear it on the
   // same baseline reset (#497). The resumeOk/replayComplete that drives the reset re-sets it

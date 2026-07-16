@@ -116,6 +116,20 @@ describe('handleLiveBatch', () => {
     expect(r.needsHeal).toBe(false)
   })
 
+  it('flags a heal when the FIRST post-reset frame arrives above seq 0 (leading loss)', () => {
+    // The server restarts its per-attach seq at 0 and a GAP sentinel consumes a seq
+    // precisely to leave a detectable hole — but a hole BEFORE the first delivered
+    // frame was invisible against a deleted baseline (leading loss swallowed
+    // silently; found by the cross-layer pipeline fuzz). replayReset now seeds the
+    // baseline to -1 so seq 0 is contiguous and a first frame at seq>0 heals.
+    const state = createGapState()
+    handleLiveBatch([{ type: 'replayReset', sessionId: 's1' } as unknown as SessionEvent],
+      { activeSessionId: 's1', state })
+    const r = handleLiveBatch([ev({ seq: 2, sessionId: 's1' })], { activeSessionId: 's1', state })
+    expect(r.needsHeal).toBe(true)
+    expect(r.dispatch).toHaveLength(1) // the frame itself still renders; the heal back-fills
+  })
+
   // --- srcSeq loss telemetry (audit W2.3): additive, never heals or drops ---
 
   it('records a srcSeq gap without healing, and still dispatches the frame', () => {

@@ -2,6 +2,7 @@ import type {
   SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult, QueuedItem,
 } from './events'
 import type { ContextUsageExact } from '@/lib/contextWindow'
+import { clientLogger } from '@/obs/logger'
 
 /** Sentinel id for the optimistic user turn seeded before the SDK echoes the prompt. */
 export const OPTIMISTIC_USER_ID = 'optimistic:user'
@@ -137,7 +138,13 @@ function parkOrphanResult(
   let next = buffer
   if (!(toolId in buffer) && Object.keys(buffer).length >= ORPHAN_TOOL_RESULT_CAP) {
     next = { ...buffer }
-    delete next[Object.keys(buffer)[0]]
+    const evicted = Object.keys(buffer)[0]
+    delete next[evicted]
+    // An evicted orphan is a toolResult LOST FOREVER (its tool block renders resultless).
+    // The cap should never be hit in practice, so surface every eviction to the obs sink —
+    // a burst here means the stream is delivering results without their calls at scale,
+    // which is a pipeline bug, not noise. (Telemetry only; state stays pure.)
+    clientLogger.warn(`transcript.orphan.evicted toolId=${evicted} cap=${ORPHAN_TOOL_RESULT_CAP}`)
   }
   return { ...next, [toolId]: result }
 }
@@ -811,6 +818,12 @@ export function transcriptReducer(
 
     // ── _prependHistory ───────────────────────────────────────────────────────
     case '_prependHistory': {
+      // A heal's replayReset cleared `turns` and the replay is rebuilding them from a
+      // window that may not adjoin the one this (pre-heal, in-flight) page was fetched
+      // against — prepending it would splice disjoint windows with a silent hole between
+      // them. Drop the page; the scroll-up that wanted it re-fetches against the fresh
+      // transcript once the replay settles.
+      if (state.replaying) return { ...state, loadingOlder: false }
       const olderTurns = buildTurnsFromEvents(ev.events)
       // Drop any older turn whose id already exists (defensive; windows are disjoint server-side).
       const existing = new Set(state.turns.map((t) => t.id))
