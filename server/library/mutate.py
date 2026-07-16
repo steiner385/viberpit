@@ -16,6 +16,7 @@ from ccswitch.creds import write_json_secure
 
 from .names import resolve_under
 from .scan import installed_registry, read_json_safe
+from .snapshots import snapshot_before_mutation
 
 
 class ConfigUnreadableError(RuntimeError):
@@ -48,6 +49,7 @@ def _write_text_atomic(path: Path, content: str) -> None:
 
 
 def set_plugin_enabled(plugin_id: str, enabled: bool) -> bool:
+    snapshot_before_mutation()  # #604: cheap pre-mutation safety net (best-effort)
     settings_path = paths.shared_base() / "settings.json"
     data = _load_or_empty(settings_path)
     known = data.get("enabledPlugins") or {}
@@ -68,10 +70,12 @@ def _skill_dir(name: str) -> Path:
 
 
 def write_skill(name: str, content: str) -> None:
+    snapshot_before_mutation()
     _write_text_atomic(_skill_dir(name) / "SKILL.md", content)
 
 
 def delete_skill(name: str) -> bool:
+    snapshot_before_mutation()
     d = _skill_dir(name)
     if not d.is_dir():
         return False
@@ -89,10 +93,12 @@ def _command_file(path: str) -> Path:
 
 
 def write_command(path: str, content: str) -> None:
+    snapshot_before_mutation()
     _write_text_atomic(_command_file(path), content)
 
 
 def delete_command(path: str) -> bool:
+    snapshot_before_mutation()
     f = _command_file(path)
     if not f.is_file():
         return False
@@ -130,6 +136,7 @@ def validate_mcp_config(config: dict[str, Any]) -> str | None:
 
 
 def put_mcp_server(name: str, config: dict[str, Any]) -> None:
+    snapshot_before_mutation()
     shared_path = paths.shared_claude_json_path()
     data = _load_or_empty(shared_path)
     servers = data.get("mcpServers")
@@ -141,6 +148,7 @@ def put_mcp_server(name: str, config: dict[str, Any]) -> None:
 
 
 def delete_mcp_server(name: str) -> bool:
+    snapshot_before_mutation()
     shared_path = paths.shared_claude_json_path()
     data = _load_or_empty(shared_path)
     servers = data.get("mcpServers")

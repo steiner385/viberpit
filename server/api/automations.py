@@ -9,6 +9,7 @@ from server.auth.middleware import current_identity
 from server.automations.base import validate_config
 from server.automations.context import AutomationContext
 from server.automations.registry import registry
+from server.automations.schedule import PRESETS, ScheduleError, next_runs, parse_schedule
 from server.db import get_db
 from server.db.models import (
     INACTIVE_SESSION_STATUSES,
@@ -23,6 +24,8 @@ class PatchBody(BaseModel):
     enabled: bool | None = None
     mode: str | None = None
     config: dict | None = None
+    # Optional cadence (#603). Pass {} to clear the schedule, omit to leave it.
+    schedule: dict | None = None
 
 
 class TriggerBody(BaseModel):
@@ -81,10 +84,29 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
             "status": statuses.get(a.id) or a.status(ctx=None).to_dict(),
             "configSchema": [f.to_dict() for f in a.config_schema],
             "config": row.config or {},
+            "schedule": row.schedule or None,
             "lastActiveAt": row.last_active_at.isoformat() if row.last_active_at else None,
             "activeSessions": int(active_counts.get(a.id, 0)),
         })
     return out
+
+
+class SchedulePreviewBody(BaseModel):
+    schedule: dict
+
+
+@router.post("/schedule/preview")
+async def schedule_preview(body: SchedulePreviewBody,
+                           _identity: str = Depends(current_identity)) -> dict:
+    """Validate a candidate schedule and return its next fire times so the editor
+    can show a live "next 3 runs" preview. 422 on a malformed schedule/cron."""
+    from datetime import datetime
+    try:
+        parse_schedule(body.schedule)
+    except ScheduleError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    runs = next_runs(body.schedule, datetime.now(), count=3)
+    return {"nextRuns": [r.isoformat() for r in runs], "presets": PRESETS}
 
 
 @router.get("/{automation_id}/events")
@@ -121,6 +143,12 @@ async def patch_automation(automation_id: str, body: PatchBody,
             row.config = validate_config(automation.config_schema, body.config)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
+    if body.schedule is not None:
+        try:
+            parse_schedule(body.schedule)  # validate; reject a bad cron/window
+        except ScheduleError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        row.schedule = body.schedule or None
     if body.enabled is not None:
         row.enabled = body.enabled
     await db.flush()

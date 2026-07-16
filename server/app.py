@@ -39,6 +39,9 @@ from server.api.library import router as library_router
 from server.api.presets import router as presets_router
 from server.api.templates import router as templates_router
 from server.api.permission_profiles import router as permission_profiles_router
+from server.api.hooks import router as hooks_router
+from server.api.notifications import router as notifications_router
+from server.api.snapshots import router as snapshots_router
 
 
 def _daemon_present(endpoint) -> bool:
@@ -484,6 +487,9 @@ def create_app(
     app.include_router(presets_router)
     app.include_router(templates_router)
     app.include_router(permission_profiles_router)
+    app.include_router(hooks_router)
+    app.include_router(notifications_router)
+    app.include_router(snapshots_router)
 
     # WebSocket bridge
     ws_router = build_ws_router(app.state.sessions)
