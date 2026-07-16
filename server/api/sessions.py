@@ -381,6 +381,18 @@ async def create_session(
                 },
             )
 
+    # Resolve per-account defaults as fallbacks (only when account is explicitly pinned)
+    _resolved_permission_mode = body.permissionMode
+    _resolved_model = body.model
+    if body.account:
+        from ccswitch import ledger as _ledger
+        with _ledger.locked_ledger() as _led:
+            _acct_defs = _ledger.get_account_defaults(_led, body.account)
+        if not _resolved_permission_mode:
+            _resolved_permission_mode = _acct_defs.get("defaultPermissionMode")
+        if not _resolved_model:
+            _resolved_model = _acct_defs.get("defaultModel")
+
     try:
         record = await orch.create_session(
             name=name,
@@ -390,10 +402,10 @@ async def create_session(
             branch=body.branch,
             repo=body.repo,
             identity=identity,
-            permission_mode=body.permissionMode or "interactive",
+            permission_mode=_resolved_permission_mode or "interactive",
             attachment_ids=body.attachmentIds,
             name_is_auto=name_is_auto,
-            model=body.model,
+            model=_resolved_model,
         )
     except ValueError as exc:
         return JSONResponse(
