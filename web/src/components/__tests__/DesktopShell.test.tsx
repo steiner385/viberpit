@@ -8,16 +8,28 @@ import * as hooks from '@/api/hooks'
 import { toast } from 'sonner'
 import type { Account, Session, AdoptionCandidate } from '@/api/types'
 
+// Stable socket whose `on` captures handlers, so tests can push session frames
+// (e.g. a pending question) through the runtime — same pattern as
+// SessionView.keyboard.test.tsx. `capturedHandlers` is reset per test; the
+// implementation survives vi.clearAllMocks() (which clears calls, not impls).
+let capturedHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
+const stableMockSocket = {
+  attach: vi.fn(), detach: vi.fn(), interrupt: vi.fn(), prompt: vi.fn(),
+  sendInterrupt: vi.fn(), permissionResponse: vi.fn(), answerQuestion: vi.fn(),
+  setPermissionMode: vi.fn(), cancelQueued: vi.fn(),
+  on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+    if (!capturedHandlers[event]) capturedHandlers[event] = []
+    capturedHandlers[event].push(cb)
+  }),
+  off: vi.fn(),
+  connectionState: 'connected' as const, socket: null,
+}
+
 vi.mock('@/ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/ws/client')>()
   return {
     ...actual,
-    useSessionSocket: () => ({
-      attach: vi.fn(), detach: vi.fn(), interrupt: vi.fn(), prompt: vi.fn(),
-      sendInterrupt: vi.fn(), permissionResponse: vi.fn(), answerQuestion: vi.fn(),
-      setPermissionMode: vi.fn(), cancelQueued: vi.fn(), on: vi.fn(), off: vi.fn(),
-      connectionState: 'connected' as const, socket: null,
-    }),
+    useSessionSocket: () => stableMockSocket,
   }
 })
 
@@ -91,7 +103,7 @@ function renderDesktopShell() {
 }
 
 describe('DesktopShell', () => {
-  beforeEach(() => { vi.clearAllMocks(); setup(); window.localStorage.clear() })
+  beforeEach(() => { vi.clearAllMocks(); capturedHandlers = {}; setup(); window.localStorage.clear() })
 
   it('defaults to the New Session target: shows the new-session prompt and the slot is selected', () => {
     render(<DesktopShell />, { wrapper })
@@ -196,6 +208,67 @@ describe('DesktopShell', () => {
     await user.type(box, 'wip')
     box.setSelectionRange(0, 0) // caret at the very start of the prompt
     fireEvent.keyDown(box, { key: 'ArrowLeft' })
+    expect(screen.getByRole('textbox', { name: /new session prompt/i })).toBeInTheDocument()
+  })
+
+  // Opens session One, then delivers a live question so the pinned question
+  // panel renders with its "Write a response" escape hatch. replayComplete
+  // first: the reducer starts in replaying mode, and a question arriving during
+  // replay is live:false (the panel only shows live questions).
+  async function openSessionWithPendingQuestion(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByLabelText(/open session one/i))
+    await act(async () => {
+      const emit = (frame: Record<string, unknown>) =>
+        capturedHandlers['sessionEvent']?.forEach((cb) => cb(frame))
+      emit({ type: 'replayComplete' })
+      emit({ type: 'turnStart', turnId: 't1' })
+      emit({
+        type: 'question', questionId: 'q1', turnId: 't1',
+        header: 'Pick one', question: 'Which approach?',
+        options: [{ label: 'Option A' }, { label: 'Option B' }], multiSelect: false,
+      })
+    })
+    await user.click(screen.getByRole('button', { name: /write a response/i }))
+    return screen.getByRole('textbox', { name: /write a response/i }) as HTMLTextAreaElement
+  }
+
+  it('ArrowLeft while typing a custom question answer does NOT detach (draft preserved)', async () => {
+    const user = userEvent.setup()
+    render(<DesktopShell />, { wrapper })
+    const box = await openSessionWithPendingQuestion(user)
+    await user.type(box, 'my custom answer')
+    await user.keyboard('{ArrowLeft}')
+    expect(screen.queryByRole('textbox', { name: /new session prompt/i })).not.toBeInTheDocument()
+    expect(box).toHaveValue('my custom answer')
+  })
+
+  it('ArrowLeft at the START of a custom question answer still does NOT detach', async () => {
+    const user = userEvent.setup()
+    render(<DesktopShell />, { wrapper })
+    const box = await openSessionWithPendingQuestion(user)
+    await user.type(box, 'my custom answer')
+    box.setSelectionRange(0, 0) // unlike the composer, a non-empty draft never detaches
+    fireEvent.keyDown(box, { key: 'ArrowLeft' })
+    expect(screen.queryByRole('textbox', { name: /new session prompt/i })).not.toBeInTheDocument()
+    expect(box).toHaveValue('my custom answer')
+  })
+
+  it('Escape while typing a custom question answer does NOT detach (draft preserved)', async () => {
+    const user = userEvent.setup()
+    render(<DesktopShell />, { wrapper })
+    const box = await openSessionWithPendingQuestion(user)
+    await user.type(box, 'my custom answer')
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('textbox', { name: /new session prompt/i })).not.toBeInTheDocument()
+    expect(box).toHaveValue('my custom answer')
+  })
+
+  it('ArrowLeft in an EMPTY custom-answer box detaches (matches the composer left-edge rule)', async () => {
+    const user = userEvent.setup()
+    render(<DesktopShell />, { wrapper })
+    const box = await openSessionWithPendingQuestion(user)
+    box.focus()
+    await user.keyboard('{ArrowLeft}')
     expect(screen.getByRole('textbox', { name: /new session prompt/i })).toBeInTheDocument()
   })
 

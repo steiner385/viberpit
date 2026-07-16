@@ -20,6 +20,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { Plus, Settings, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { detachKeyYieldsToTextEntry } from '@/lib/detachKeyGuard'
 import { SessionGoalText } from './session/SessionGoalText'
 import { SessionList } from './SessionList'
 import { SessionListControls } from './SessionListControls'
@@ -195,33 +196,30 @@ export function DesktopShell() {
   }, [selection, highlightSession])
 
   // In-session detach gestures (desktop): ← / Esc / Ctrl+Z return to the list.
-  // Active only while a session is focused. Guards: Esc/Ctrl+Z yield to the composer
-  // while it holds a draft; ← only detaches from the prompt's left edge (empty, or
-  // caret at the very start with no selection) so it otherwise moves the caret.
+  // Active only while a session is focused. detachKeyYieldsToTextEntry guards
+  // every focused text entry: the composer keeps its left-edge ← contract, and
+  // any other field (question-card draft, search, rename …) holds all three
+  // keys while it has text, so typing is never hijacked mid-draft.
   // Faithful detach → main pane shows WelcomePane.
   useEffect(() => {
     const active = tab === 'sessions' && selection.type === 'session'
     if (!active) return
     function onKey(e: KeyboardEvent) {
-      const ae = document.activeElement as HTMLTextAreaElement | null
-      const inComposer = ae?.getAttribute('aria-label') === 'Message'
-      const inComposerWithText = inComposer && (ae?.value ?? '') !== ''
-      const caretPastComposerStart =
-        inComposer && !(ae!.selectionStart === 0 && ae!.selectionEnd === 0)
+      const ae = document.activeElement
       if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
-        if (inComposerWithText) return
+        if (detachKeyYieldsToTextEntry('CtrlZ', ae)) return
         e.preventDefault()
         detachToList()
         return
       }
       if (e.key === 'Escape') {
-        if (inComposerWithText) return
+        if (detachKeyYieldsToTextEntry('Escape', ae)) return
         e.preventDefault()
         detachToList()
         return
       }
       if (e.key === 'ArrowLeft') {
-        if (caretPastComposerStart) return
+        if (detachKeyYieldsToTextEntry('ArrowLeft', ae)) return
         e.preventDefault()
         detachToList()
       }
