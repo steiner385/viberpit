@@ -25,6 +25,9 @@ export interface Automation {
   status: AutomationStatus
   configSchema: ConfigField[]
   config: Record<string, unknown>
+  /** Optional user-configured cadence ({activeHours?, cron?}), or null (#603).
+   *  Always present in the list API; typed optional so older fixtures still compile. */
+  schedule?: Record<string, unknown> | null
   lastActiveAt: string | null
   /** Count of sessions this automation spawned that are still live (not ended/archived). */
   activeSessions: number
@@ -43,6 +46,8 @@ export interface AutomationPatch {
   enabled?: boolean
   mode?: string
   config?: Record<string, unknown>
+  /** Set to {} to clear the schedule, or a {activeHours?, cron?} object (#603). */
+  schedule?: Record<string, unknown>
 }
 
 export function fetchAutomations(): Promise<Automation[]> {

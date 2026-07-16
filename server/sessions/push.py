@@ -101,6 +101,102 @@ async def notify(title: str, body: str, *, url: str | None = None) -> None:
         log.warning("notify.webpush_failed", exc_info=True)
 
 
+def _deliver_channel(url: str, headers: dict | None, payload: dict, opener) -> None:
+    """POST a notification payload to a user webhook channel with optional headers."""
+    hdrs = {"Content-Type": "application/json", **(headers or {})}
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(), headers=hdrs, method="POST")
+    with opener(req, timeout=5):
+        pass
+
+
+async def notify_event(
+    event_class: str,
+    title: str,
+    body: str,
+    *,
+    repo: str | None = None,
+    account: str | None = None,
+    automation: str | None = None,
+    url: str | None = None,
+    critical: bool = False,
+    fanout_when_unconfigured: bool = True,
+) -> None:
+    """Route a *classified* event through the user's notification rules (#602).
+
+    ``fanout_when_unconfigured`` controls the no-rules-configured case: True
+    preserves the legacy push+webhook fanout (used by needs-input / PR-broke,
+    which always alerted); False stays silent unless a rule explicitly matches
+    (used by automation error/warn, which never alerted before rules existed —
+    so enabling rules must not suddenly spam every automation warning).
+
+    Loads rules/channels/quiet-hours from the DB, evaluates the pure routing
+    engine, and delivers to web-push or a webhook channel accordingly. Fails
+    OPEN to the legacy fanout (:func:`notify`) on any routing error, so a bug in
+    the rules layer can never silence an alert. Fire-and-forget; never raises."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from server.db.models import AppSettings, NotificationChannel, NotificationRule
+    from server.sessions.notify_rules import Event, RuleView, plan
+
+    try:
+        async with db_session() as db:
+            rows = (await db.execute(select(NotificationRule))).scalars().all()
+            rules = [
+                RuleView(
+                    id=r.id, enabled=r.enabled, event_class=r.event_class,
+                    scope_repo=r.scope_repo, scope_account=r.scope_account,
+                    scope_automation=r.scope_automation, action=r.action,
+                    channel_id=r.channel_id, critical=r.critical,
+                    priority=r.priority, created_at=r.created_at,
+                )
+                for r in rows
+            ]
+            settings = (await db.execute(select(AppSettings).where(
+                AppSettings.id == "singleton"))).scalar_one_or_none()
+            q_start = settings.quiet_hours_start if settings else None
+            q_end = settings.quiet_hours_end if settings else None
+            channels = {c.id: c for c in (await db.execute(
+                select(NotificationChannel))).scalars().all()}
+        ev = Event(event_class=event_class, title=title, body=body,
+                   repo=repo, account=account, automation=automation, url=url)
+        decision = plan(ev, rules, q_start, q_end, datetime.now(timezone.utc))
+    except Exception:
+        log.warning("notify_event.routing_failed", exc_info=True)
+        await notify(title, body, url=url)  # fail open to legacy fanout
+        return
+
+    if not decision.deliver:
+        return
+    if decision.action == "default":
+        if fanout_when_unconfigured:
+            await notify(title, body, url=url)  # no rules configured → legacy fanout
+        return
+    if decision.action == "push":
+        payload = {"title": title, "body": body}
+        if url:
+            payload["url"] = url
+        try:
+            await _webpush_sink(payload)
+        except Exception:
+            log.warning("notify_event.webpush_failed", exc_info=True)
+        return
+    if decision.action == "channel" and decision.channel_id:
+        chan = channels.get(decision.channel_id)
+        if chan is None or not chan.enabled:
+            return
+        payload = {"title": title, "message": body, "body": body}
+        if url:
+            payload["url"] = url
+        try:
+            await asyncio.to_thread(
+                _deliver_channel, chan.url, chan.headers, payload, urllib.request.urlopen)
+        except Exception:
+            log.warning("notify_event.channel_failed", exc_info=True)
+
+
 def generate_vapid_keys() -> tuple[str, str]:
     """Generate a VAPID keypair. Returns (private_key_pem, application_server_key_b64url).
 

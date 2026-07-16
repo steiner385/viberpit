@@ -202,6 +202,9 @@ class SessionOrchestrator:
         self._repo_root: str = repo_root
         # session_id → WorktreeInfo for sessions launched in an isolated worktree
         self._worktrees: dict[str, worktrees.WorktreeInfo] = {}
+        # automation_id → last-known "blocked by schedule" state, so the schedule
+        # gate emits one activity event per open→closed transition (#603).
+        self._schedule_blocked: dict[str, bool] = {}
         self._sdk_factory = sdk_factory or real_sdk_factory
         self._x11 = x11  # X11Manager | None — per-session virtual displays
         self._copilot = copilot  # CopilotProxyManager | None — per-account translating proxy
@@ -1134,7 +1137,11 @@ class SessionOrchestrator:
                 self._pushed.add(session_id)
                 rec = self._records.get(session_id)
                 name = rec.name if rec else session_id
-                await push_mod.notify("ccswitch — needs you", f"{name}: {status}", url=f"/session/{session_id}")
+                await push_mod.notify_event(
+                    "needs_input", "ccswitch — needs you", f"{name}: {status}",
+                    repo=getattr(rec, "repo", None),
+                    account=getattr(rec, "account_name", None),
+                    url=f"/session/{session_id}")
         else:
             self._pushed.discard(session_id)
 
@@ -1564,6 +1571,8 @@ class SessionOrchestrator:
         != 'off'), giving the card a fresh "last active" the way pr-doctor already
         gets one; a disabled row is intentionally left to go stale. Best-effort —
         neither the tick nor the heartbeat may crash the loop."""
+        if not await self._schedule_allows_tick("backlog-runner"):
+            return
         try:
             await self._backlog_loop.tick()
         except Exception:  # pragma: no cover — tick() already swallows; belt+braces
@@ -1586,6 +1595,8 @@ class SessionOrchestrator:
 
     async def _cicd_tick_once(self) -> None:
         """One tick + enabled-only last_active_at heartbeat (mirrors backlog)."""
+        if not await self._schedule_allows_tick("cicd-doctor"):
+            return
         await self._cicd_loop.tick()
         try:
             mode, _ = await self._cicd_read_config()
@@ -1646,6 +1657,8 @@ class SessionOrchestrator:
 
     async def _archaudit_tick_once(self) -> None:
         """One tick + enabled-only last_active_at heartbeat (mirrors cicd)."""
+        if not await self._schedule_allows_tick("archive-audit"):
+            return
         await self._archaudit_loop.tick()
         try:
             mode, _ = await self._archaudit_read_config()
@@ -2135,6 +2148,39 @@ class SessionOrchestrator:
         except Exception:
             log.debug("automation.bump_active_failed id=%s", automation_id, exc_info=True)
 
+    async def _schedule_allows_tick(self, automation_id: str) -> bool:
+        """Whether ``automation_id`` may tick now given its user-set schedule (#603).
+
+        Reads ``Automation.schedule`` and evaluates the active-hours window. No
+        schedule / no window → always True. When a tick is skipped, one event is
+        emitted per open→closed transition (throttled) so the activity feed shows
+        the schedule being honored without spamming a row every tick."""
+        from datetime import datetime
+        from server.automations.context import AutomationContext
+        from server.automations.schedule import should_tick
+        try:
+            from sqlalchemy import select
+            from server.db.models import Automation
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == automation_id))).scalar_one_or_none()
+                raw = row.schedule if row is not None else None
+        except Exception:
+            return True  # a read failure must never wedge the loop
+        if not raw:
+            return True
+        try:
+            allowed = should_tick(raw, datetime.now())
+        except Exception:
+            return True  # a malformed schedule fails open (never silently stalls)
+        prev = self._schedule_blocked.get(automation_id, False)
+        if not allowed and not prev:
+            await AutomationContext(automation_id).emit(
+                "info", "Paused — outside its scheduled active hours",
+                kind="skipped", detail={"reason": "schedule"})
+        self._schedule_blocked[automation_id] = not allowed
+        return allowed
+
     async def _on_pr_change(
         self, repo: str, branch: str, old_checks: str | None, new_checks: str
     ) -> None:
@@ -2197,8 +2243,10 @@ class SessionOrchestrator:
         if key in self._pushed_pr:
             return
         self._pushed_pr.add(key)
-        await push_mod.notify(
-            "ccswitch — PR broke", f"{rec.name}: {repo} CI failing", url=f"/session/{rec.id}"
+        await push_mod.notify_event(
+            "pr_broke", "ccswitch — PR broke", f"{rec.name}: {repo} CI failing",
+            repo=repo, account=getattr(rec, "account_name", None),
+            url=f"/session/{rec.id}",
         )
 
     async def _pr_doctor_sweep(self) -> None:
@@ -2220,6 +2268,8 @@ class SessionOrchestrator:
         """
         from server.automations import pr_doctor_engine as engine
 
+        if not await self._schedule_allows_tick("pr-doctor"):
+            return
         pairs = await self._pr_doctor_scope_pairs()
         for repo, branch in pairs:
             info = self.pr_for(repo, branch) or self._pr_population_pr(repo, branch)

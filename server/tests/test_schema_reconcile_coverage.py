@@ -56,6 +56,12 @@ RECONCILE_EXEMPT: set[str] = {
     "session_presets.name",
     "prompt_templates.name",
     "permission_profiles.name",
+    # notification_channel: a NEW table (create_all builds it fully-formed on dev SQLite;
+    # Alembic 0003_power_user_config_suite builds it on prod). name + url are part of the
+    # initial CREATE TABLE, never ALTER-added to a populated table, and each is mandatory
+    # at INSERT (a channel must have a name + destination URL), so no synthesizable default.
+    "notification_channel.name",  # required at create; user-chosen channel name
+    "notification_channel.url",   # required at create; webhook destination
 }
 
 

@@ -4,6 +4,7 @@ import {
   useGithubRepos, usePatchAutomation,
 } from '@/api/hooks'
 import type { Automation, AutomationPatch, ConfigField } from '@/api/automations'
+import { ScheduleEditor } from './ScheduleEditor'
 
 const LEVEL_DOT: Record<string, string> = {
   idle: 'bg-gray-400', active: 'bg-blue-500', warn: 'bg-amber-500', error: 'bg-red-500',
@@ -157,6 +158,27 @@ function ConfigPanel({ automation: a }: ConfigPanelProps) {
   )
 }
 
+// --- Schedule panel ----------------------------------------------------------
+
+function SchedulePanel({ automation: a }: ConfigPanelProps) {
+  const patch = usePatchAutomation()
+  return (
+    <section>
+      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Schedule</h4>
+      <p className="text-xs text-muted-foreground mb-2">
+        Restrict when this automation runs (active-hours window) or preview a cron cadence.
+        Outside its window the loop pauses and logs a "paused — outside scheduled active
+        hours" entry in the activity feed.
+      </p>
+      <ScheduleEditor
+        schedule={a.schedule ?? null}
+        saving={patch.isPending}
+        onSave={(schedule) => patch.mutate({ id: a.id, body: { schedule } })}
+      />
+    </section>
+  )
+}
+
 // --- Main card ---------------------------------------------------------------
 
 export function AutomationCard({ automation: a }: {
@@ -244,8 +266,9 @@ export function AutomationCard({ automation: a }: {
         )}
       </div>
       {open && hasConfig && (
-        <div className="border-t border-border p-4">
+        <div className="border-t border-border p-4 space-y-5">
           <ConfigPanel automation={a} />
+          <SchedulePanel automation={a} />
         </div>
       )}
     </div>

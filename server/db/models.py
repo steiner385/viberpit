@@ -268,6 +268,51 @@ class AppSettings(Base):
     default_tool_detail: Mapped[str | None] = mapped_column(String, nullable=True)
     compaction_ewma_ms: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     compaction_samples: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # Quiet-hours window for notifications (#602), "HH:MM" local. Both NULL = no
+    # quiet hours. A window with end <= start wraps midnight. Rules flagged
+    # ``critical`` bypass it. Nullable so init_db backfills without a migration.
+    quiet_hours_start: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    quiet_hours_end: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+
+
+class NotificationChannel(Base):
+    """A user-defined delivery channel for notifications (#602). v1 kind is
+    'webhook' — a POST to a user-supplied URL (covers ntfy/Slack/Discord).
+    Server-side delivery avoids the prod insecure-context constraint entirely."""
+
+    __tablename__ = "notification_channel"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="webhook")
+    url: Mapped[str] = mapped_column(String, nullable=False)
+    # Optional ntfy/Slack-style headers (e.g. {"Title": "...", "Priority": "high"}).
+    headers: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+
+class NotificationRule(Base):
+    """One routing rule (#602): match an event class + optional scope → an action.
+
+    Rules are evaluated in ascending ``priority`` (then created_at); the FIRST
+    enabled rule that matches decides the action. event_class '*' matches any."""
+
+    __tablename__ = "notification_rule"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # needs_input | session_ended | automation_error | automation_warn | pr_broke | pr_merged | *
+    event_class: Mapped[str] = mapped_column(String, nullable=False, default="*")
+    scope_repo: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    scope_account: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    scope_automation: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    action: Mapped[str] = mapped_column(String, nullable=False, default="push")  # push|channel|ignore
+    channel_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # When true this rule's delivery ignores quiet hours (critical bypass).
+    critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
 
 
 class Automation(Base):
@@ -280,6 +325,13 @@ class Automation(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     mode: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     config: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # Optional user-configured cadence (#603): {activeHours?, cron?}. NULL = the
+    # code-defined interval/trigger with no gating. Parsed by server/automations/
+    # schedule.py; the runner skips a tick outside the active-hours window.
+    # none_as_null so clearing via None persists SQL NULL. Nullable so init_db
+    # backfills it on the dev SQLite DB without a migration.
+    schedule: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
     # Heartbeat the automation bumps while alive; lets the UI flag a stalled loop.
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(

@@ -16,16 +16,22 @@ import { McpSection } from '../library/McpSection'
 import { PresetsSection } from './PresetsSection'
 import { TemplatesSection } from './TemplatesSection'
 import { PermissionProfilesSection } from './PermissionProfilesSection'
+import { HooksSection } from './HooksSection'
+import { NotificationsSection } from './NotificationsSection'
+import { SnapshotsSection } from './SnapshotsSection'
 
 export type SettingsSection =
   | 'general' | 'accounts' | 'automation'
   | 'plugins' | 'skills' | 'commands' | 'mcp'
   | 'presets' | 'templates' | 'profiles'
+  | 'hooks' | 'notifications' | 'snapshots'
 
 const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'general', label: 'General' },
   { id: 'accounts', label: 'Accounts' },
   { id: 'automation', label: 'Automation' },
+  { id: 'notifications', label: 'Notifications' },
+  { id: 'hooks', label: 'Hooks' },
   { id: 'plugins', label: 'Plugins' },
   { id: 'skills', label: 'Skills' },
   { id: 'commands', label: 'Commands' },
@@ -33,6 +39,7 @@ const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'presets', label: 'Presets' },
   { id: 'templates', label: 'Templates' },
   { id: 'profiles', label: 'Profiles' },
+  { id: 'snapshots', label: 'Snapshots' },
 ]
 
 export function SettingsView() {
@@ -60,6 +67,8 @@ export function SettingsView() {
       {section === 'general' && <GeneralSection />}
       {section === 'accounts' && <AccountsManager />}
       {section === 'automation' && <AutomationView />}
+      {section === 'notifications' && <NotificationsSection />}
+      {section === 'hooks' && <HooksSection />}
       {section === 'plugins' && <PluginsSection />}
       {section === 'skills' && <SkillsSection />}
       {section === 'commands' && <CommandsSection />}
@@ -67,6 +76,7 @@ export function SettingsView() {
       {section === 'presets' && <PresetsSection />}
       {section === 'templates' && <TemplatesSection />}
       {section === 'profiles' && <PermissionProfilesSection />}
+      {section === 'snapshots' && <SnapshotsSection />}
     </div>
   )
 }

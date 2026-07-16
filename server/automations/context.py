@@ -36,6 +36,18 @@ class AutomationContext:
         except Exception:
             log.warning("automation emit failed (automation=%s)", self.automation_id,
                         exc_info=True)
+        # Route error/warn activity through the notification rules (#602). Silent
+        # unless a rule matches — enabling rules must not spam every warning. Best
+        # effort: a notify failure must never propagate into the automation loop.
+        if level in ("error", "warn"):
+            try:
+                from server.sessions import push as push_mod
+                await push_mod.notify_event(
+                    "automation_error" if level == "error" else "automation_warn",
+                    f"ccswitch — {self.automation_id}", summary,
+                    automation=self.automation_id, fanout_when_unconfigured=False)
+            except Exception:
+                log.debug("automation notify_event failed", exc_info=True)
 
     async def _prune(self, db) -> None:
         ids = (await db.execute(
