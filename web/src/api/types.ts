@@ -32,6 +32,7 @@ export interface Account {
   liveSessions: LiveSessionCounts
   rank: number | null
   rankReason: string | null
+  accountDefaults?: AccountDefaults | null
 }
 
 export type SessionStatus =
@@ -414,4 +415,54 @@ export interface LibraryContent {
   path?: string
   content: string
   readonly: boolean
+}
+
+// Per-account spawn defaults (#599)
+export interface AccountDefaults {
+  defaultModel: string | null
+  defaultPermissionMode: string | null
+  envOverrides: Record<string, string> | null
+}
+
+// Session Preset (#597)
+export interface SessionPreset {
+  id: string
+  name: string
+  repo: string | null
+  account: string | null
+  model: string | null
+  permissionMode: string | null
+  initialPrompt: string | null
+  branchStrategy: string | null
+  permissionProfileId: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+// Prompt Template (#598)
+export interface TemplateVariable {
+  name: string
+  description?: string
+  default?: string
+}
+
+export interface PromptTemplate {
+  id: string
+  name: string
+  content: string
+  variables: TemplateVariable[]
+  tags: string[]
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+// Permission Profile (#600)
+export interface PermissionProfile {
+  id: string
+  name: string
+  description: string | null
+  mode: string | null
+  patterns: string[]
+  createdAt: string | null
+  updatedAt: string | null
 }

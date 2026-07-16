@@ -151,6 +151,46 @@ def weekly_reserves(led: dict) -> dict[str, float]:
     return out
 
 
+_BLOCKED_ENV_KEYS = frozenset({"CLAUDE_CONFIG_DIR", "CREDENTIALS_DIR", "HOME"})
+
+
+def set_account_defaults(
+    led: dict,
+    name: str,
+    *,
+    default_model: str | None = None,
+    clear_model: bool = False,
+    default_permission_mode: str | None = None,
+    clear_permission_mode: bool = False,
+    env_overrides: dict | None = None,
+    clear_env_overrides: bool = False,
+) -> None:
+    """Set per-account spawn defaults in the ledger."""
+    acct = _acct(led, name)
+    if default_model is not None:
+        acct["defaultModel"] = default_model
+    elif clear_model:
+        acct.pop("defaultModel", None)
+    if default_permission_mode is not None:
+        acct["defaultPermissionMode"] = default_permission_mode
+    elif clear_permission_mode:
+        acct.pop("defaultPermissionMode", None)
+    if env_overrides is not None:
+        acct["envOverrides"] = env_overrides
+    elif clear_env_overrides:
+        acct.pop("envOverrides", None)
+
+
+def get_account_defaults(led: dict, name: str) -> dict:
+    """Return per-account spawn defaults (any may be None if unset)."""
+    acct = led["accounts"].get(name, {})
+    return {
+        "defaultModel": acct.get("defaultModel"),
+        "defaultPermissionMode": acct.get("defaultPermissionMode"),
+        "envOverrides": acct.get("envOverrides"),
+    }
+
+
 def reserve(led: dict, name: str, until_ts: float) -> None:
     _acct(led, name)["reservationUntil"] = until_ts
 

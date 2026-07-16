@@ -14,6 +14,8 @@ interface ItemEditorDialogProps {
   /** plugin id when viewing a read-only plugin item */
   plugin?: string
   readonly?: boolean
+  /** Pre-seed content in create mode (e.g. from AI draft). Ignored in edit mode. */
+  initialContent?: string
   onClose: () => void
 }
 
@@ -50,7 +52,7 @@ function starterTemplate(kind: LibraryItemKind, name: string): string {
 
 // --- Component ---
 
-export function ItemEditorDialog({ kind, id, plugin, readonly = false, onClose }: ItemEditorDialogProps) {
+export function ItemEditorDialog({ kind, id, plugin, readonly = false, initialContent, onClose }: ItemEditorDialogProps) {
   const isCreate = id === null
   const dialogRef = useRef<HTMLDivElement>(null)
   const firstFieldRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
@@ -59,9 +61,9 @@ export function ItemEditorDialog({ kind, id, plugin, readonly = false, onClose }
   const [newName, setNewName] = useState('')
 
   // Content state (textarea).
-  // For create mode: initialize with starter template.
+  // For create mode: initialize with initialContent if provided, else starter template.
   // For edit mode: derive from query data until the user edits (isDirty state).
-  const [editedContent, setEditedContent] = useState(() => isCreate ? starterTemplate(kind, '') : '')
+  const [editedContent, setEditedContent] = useState(() => isCreate ? (initialContent ?? starterTemplate(kind, '')) : '')
   const [isDirty, setIsDirty] = useState(false)
 
   // Error state for save/delete mutations

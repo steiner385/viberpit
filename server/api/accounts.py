@@ -42,6 +42,24 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
+# Env keys that must never be overridable (constitution II: strict isolation)
+_BLOCKED_ENV_KEYS = frozenset({"CLAUDE_CONFIG_DIR", "CREDENTIALS_DIR", "HOME"})
+
+
+def _validate_env_overrides(overrides: dict | None) -> None:
+    if not overrides:
+        return
+    bad = [k for k in overrides if any(k.startswith(b) for b in _BLOCKED_ENV_KEYS)]
+    if bad:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "disallowed_env_key",
+                "keys": bad,
+                "message": "These environment variable keys are not allowed in account overrides",
+            },
+        )
+
 # A single account's usage fetch must never stall or 500 the whole accounts list.
 # The daemon serves usage from the poller cache (cheap); this ceiling only trips
 # when the daemon control loop is wedged/slow — in which case that one account
@@ -113,6 +131,7 @@ def _account_response(
     rank: int | None = None,
     rank_reason: str | None = None,
     weekly_reserve_pct: float | None = None,
+    account_defaults: dict | None = None,  # NEW
 ) -> dict[str, Any]:
     """Build the account wire format — never includes tokens."""
     return {
@@ -125,6 +144,7 @@ def _account_response(
         "rank": rank,
         "rankReason": rank_reason,
         "weeklyReservePct": weekly_reserve_pct,
+        "accountDefaults": account_defaults or {"defaultModel": None, "defaultPermissionMode": None, "envOverrides": None},
     }
 
 
@@ -205,6 +225,7 @@ async def get_accounts(
             rank=rank,
             rank_reason=reason,
             weekly_reserve_pct=acct.get("weeklyReservePct"),
+            account_defaults=acct.get("accountDefaults"),
         ))
     return result
 
@@ -232,11 +253,13 @@ async def refresh_account(
     status_str = "unknown"
     nickname = None
     weekly_reserve = None
+    account_defaults = None
     for acct in accounts_info:
         if acct["name"] == name:
             status_str = acct.get("status", "unknown")
             nickname = acct.get("nickname")
             weekly_reserve = acct.get("weeklyReservePct")
+            account_defaults = acct.get("accountDefaults")
             break
 
     counts = await orch.live_session_counts()
@@ -244,6 +267,7 @@ async def refresh_account(
         name, status_str, usage, nickname,
         live_sessions=counts.get(name) or {"active": 0, "idle": 0},
         weekly_reserve_pct=weekly_reserve,
+        account_defaults=account_defaults,
     )
 
 
@@ -269,6 +293,9 @@ async def delete_account(
 class AccountPatchBody(BaseModel):
     nickname: str | None = None
     weeklyReservePct: float | None = Field(default=None, ge=1.0, le=100.0)
+    defaultModel: str | None = None
+    defaultPermissionMode: str | None = None
+    envOverrides: dict | None = None
 
 
 @router.patch("/{name}")
@@ -289,12 +316,25 @@ async def update_account(
         set_nickname(name, (body.nickname or "").strip() or None)
     if "weeklyReservePct" in body.model_fields_set:
         set_weekly_reserve(name, body.weeklyReservePct)
+    if any(f in body.model_fields_set for f in ("defaultModel", "defaultPermissionMode", "envOverrides")):
+        _validate_env_overrides(body.envOverrides)
+        from ccswitch.accounts import set_account_defaults
+        set_account_defaults(
+            name,
+            default_model=body.defaultModel if "defaultModel" in body.model_fields_set else None,
+            clear_model="defaultModel" in body.model_fields_set and body.defaultModel is None,
+            default_permission_mode=body.defaultPermissionMode if "defaultPermissionMode" in body.model_fields_set else None,
+            clear_permission_mode="defaultPermissionMode" in body.model_fields_set and body.defaultPermissionMode is None,
+            env_overrides=body.envOverrides if "envOverrides" in body.model_fields_set else None,
+            clear_env_overrides="envOverrides" in body.model_fields_set and body.envOverrides is None,
+        )
 
     for acct in list_accounts():
         if acct["name"] == name:
             return _account_response(
                 name, acct.get("status", "unknown"), None, acct.get("nickname"),
                 weekly_reserve_pct=acct.get("weeklyReservePct"),
+                account_defaults=acct.get("accountDefaults"),
             )
     return _account_response(name, "unknown", None, None)
 

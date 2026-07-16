@@ -3,8 +3,12 @@ shared config base. Read routes are direct filesystem scans; mutations are
 atomic writes + audit events. No orchestrator/daemon involvement."""
 from __future__ import annotations
 
+import json
+import os
+import re
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -187,3 +191,101 @@ async def delete_mcp(name: str,
     await record_audit(db=db, type="library_mcp_deleted", identity=identity,
                        detail={"name": name})
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# AI Skill Draft (issue #595) — must come before /skills/{name} but FastAPI
+# prefers literal path segments, so placement here (after all /{name} routes)
+# is fine since /skills/draft is a distinct literal segment.
+# ---------------------------------------------------------------------------
+
+
+class SkillDraftRequest(BaseModel):
+    description: str
+    examples: str | None = None
+
+
+@router.post("/skills/draft")
+async def draft_skill(
+    body: SkillDraftRequest,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Generate a SKILL.md draft via AI. Returns {name, content}.
+
+    Uses the Anthropic Messages API directly. Requires ANTHROPIC_API_KEY env var.
+    Returns 503 if no key is configured, 502 on API error.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "no_api_key", "message": "No ANTHROPIC_API_KEY configured"},
+        )
+
+    system = (
+        "You are a ccswitch skill author. Generate a complete SKILL.md file.\n"
+        "The format is:\n"
+        "---\n"
+        "name: <kebab-case-slug>\n"
+        "description: <one line describing WHEN to invoke this skill — include trigger words>\n"
+        "---\n\n"
+        "<body: step-by-step instructions for Claude to follow>\n\n"
+        "Return ONLY the raw SKILL.md content, no explanation."
+    )
+    user_msg = f"Skill description: {body.description}"
+    if body.examples:
+        user_msg += f"\n\nExamples:\n{body.examples}"
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 1024,
+                "system": system,
+                "messages": [{"role": "user", "content": user_msg}],
+            },
+        )
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "api_error", "message": "AI model unavailable"},
+        )
+
+    content = resp.json()["content"][0]["text"].strip()
+    name_match = re.search(r"^name:\s*(\S+)", content, re.MULTILINE)
+    skill_name = name_match.group(1) if name_match else "generated-skill"
+    return {"name": skill_name, "content": content}
+
+
+# ---------------------------------------------------------------------------
+# Plugin Marketplace (issue #596)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/marketplace")
+async def list_marketplace(
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Return available plugins from the cached marketplace catalog.
+
+    Reads from the shared plugin-catalog-cache.json written by the Claude Code
+    plugin system. Returns an empty list if the cache does not exist yet.
+    """
+    from ccswitch import paths as _paths
+    catalog_path = _paths.shared_base() / "plugins" / "plugin-catalog-cache.json"
+    if not catalog_path.exists():
+        return {"plugins": [], "lastUpdated": None}
+    try:
+        data = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"plugins": [], "lastUpdated": None}
+
+    plugins = data.get("plugins", data) if isinstance(data, dict) else data
+    last_updated = data.get("lastUpdated") if isinstance(data, dict) else None
+    return {"plugins": plugins or [], "lastUpdated": last_updated}

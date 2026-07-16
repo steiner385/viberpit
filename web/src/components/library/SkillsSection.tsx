@@ -1,11 +1,32 @@
 import { useState } from 'react'
 import { useLibrarySkills } from '@/api/hooks'
+import { api } from '@/api/client'
 import type { LibrarySkill } from '@/api/types'
 import { ItemEditorDialog } from './ItemEditorDialog'
 
 export function SkillsSection() {
   const { data, isLoading } = useLibrarySkills()
-  const [dialog, setDialog] = useState<{ id: string | null; plugin?: string; readonly?: boolean } | null>(null)
+  const [dialog, setDialog] = useState<{ id: string | null; plugin?: string; readonly?: boolean; initialContent?: string } | null>(null)
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiDesc, setAiDesc] = useState('')
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState<string | null>(null)
+
+  async function handleAiGenerate() {
+    if (!aiDesc.trim()) return
+    setAiLoading(true)
+    setAiError(null)
+    try {
+      const result = await api.post<{ content: string }>('/library/skills/draft', { description: aiDesc })
+      setAiOpen(false)
+      setAiDesc('')
+      setDialog({ id: null, initialContent: result.content })
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'Draft generation failed')
+    } finally {
+      setAiLoading(false)
+    }
+  }
 
   if (isLoading) return <div className="text-sm opacity-70 p-4">Loading…</div>
 
@@ -26,14 +47,58 @@ export function SkillsSection() {
       {/* User skills */}
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Your skills</h3>
-        <button
-          type="button"
-          onClick={() => setDialog({ id: null })}
-          className="text-xs px-2 py-1 rounded border border-[var(--border)] hover:bg-gray-50 dark:hover:bg-gray-700"
-        >
-          New skill
-        </button>
+        <div className="flex gap-1">
+          <button
+            type="button"
+            onClick={() => { setAiOpen(true); setAiError(null) }}
+            className="text-xs px-2 py-1 rounded border border-[var(--border)] hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            Create with AI
+          </button>
+          <button
+            type="button"
+            onClick={() => setDialog({ id: null })}
+            className="text-xs px-2 py-1 rounded border border-[var(--border)] hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            New skill
+          </button>
+        </div>
       </div>
+
+      {aiOpen && (
+        <div className="border border-[var(--border)] rounded-md p-3 space-y-2 text-sm mb-4">
+          <div className="font-medium">Generate skill with AI</div>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-xs opacity-70">Describe what the skill should do</span>
+            <textarea
+              className="border border-[var(--border)] rounded px-2 py-1 text-sm bg-transparent resize-none"
+              rows={3}
+              placeholder="e.g. A skill that reviews PRs for security vulnerabilities and suggests fixes"
+              value={aiDesc}
+              onChange={e => setAiDesc(e.target.value)}
+              autoFocus
+            />
+          </label>
+          {aiError && <p className="text-xs text-red-500">{aiError}</p>}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="text-xs px-3 py-1 rounded bg-[var(--accent)] text-[var(--accent-foreground)] disabled:opacity-50"
+              disabled={!aiDesc.trim() || aiLoading}
+              onClick={handleAiGenerate}
+            >
+              {aiLoading ? 'Generating…' : 'Generate draft'}
+            </button>
+            <button
+              type="button"
+              className="text-xs px-3 py-1 rounded border border-[var(--border)] hover:bg-[var(--muted)]"
+              onClick={() => { setAiOpen(false); setAiDesc(''); setAiError(null) }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       <ul className="space-y-2 mb-6">
         {userSkills.map((s) => (
           <SkillRow key={s.name} skill={s} onClick={() => openSkill(s)} />
@@ -66,6 +131,7 @@ export function SkillsSection() {
           id={dialog.id}
           plugin={dialog.plugin}
           readonly={dialog.readonly}
+          initialContent={dialog.initialContent}
           onClose={() => setDialog(null)}
         />
       )}
