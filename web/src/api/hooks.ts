@@ -164,6 +164,9 @@ export interface AppSettings {
   thinkingCollapsed: boolean
   repoRoot: string | null
   defaultToolDetail: ToolDetailMode
+  // Cap on retained archived sessions; null = unlimited. On PUT, send 0 to clear to
+  // unlimited (the backend treats <=0 as null) — never send null.
+  maxArchivedSessions: number | null
 }
 
 export function useSettings() {

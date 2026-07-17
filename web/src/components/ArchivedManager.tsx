@@ -178,6 +178,52 @@ function PermanentDeleteDialog({ names, onClose, onConfirm, isPending, progress,
   )
 }
 
+// ── Quick Purge Bar ─────────────────────────────────────────────────────────────
+
+// Shortcut counts for one-click purge of the oldest archived sessions.
+const QUICK_PURGE_COUNTS = [25, 50, 100, 200] as const
+
+interface QuickPurgeBarProps {
+  total: number                 // how many archived sessions exist
+  onPurge: (n: number) => void
+  disabled: boolean             // a bulk delete is already running
+}
+
+function QuickPurgeBar({ total, onPurge, disabled }: QuickPurgeBarProps) {
+  return (
+    <div
+      role="region"
+      aria-label="Quick purge"
+      className={cn(
+        'flex flex-wrap items-center gap-2 rounded-lg px-3 py-2',
+        'bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700',
+      )}
+    >
+      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Purge oldest</span>
+      <div className="flex flex-wrap items-center gap-2">
+        {QUICK_PURGE_COUNTS.map((n) => (
+          <Button
+            key={n}
+            type="button"
+            variant="outline"
+            onClick={() => onPurge(n)}
+            disabled={disabled || total < n}
+            title={
+              total < n
+                ? `Only ${total} archived session${total === 1 ? '' : 's'}`
+                : `Permanently delete the ${n} oldest archived sessions`
+            }
+            aria-label={`Purge the ${n} oldest archived sessions`}
+            className="min-h-[44px]"
+          >
+            {n}
+          </Button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Bulk Action Bar ─────────────────────────────────────────────────────────────
 
 interface BulkActionBarProps {
@@ -341,6 +387,18 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
     setBulkDeleteOpen(true)
   }
 
+  // Quick-purge the N oldest archived sessions. Reuses the bulk-delete confirm dialog
+  // (progress + cancel come for free). archivedAt is an ISO string, so a lexical sort
+  // is chronological — oldest first.
+  function openQuickPurge(n: number) {
+    const oldest = [...archivedSessions]
+      .sort((a, b) => a.archivedAt.localeCompare(b.archivedAt))
+      .slice(0, n)
+    if (oldest.length === 0) return
+    setBulkSnapshot({ ids: oldest.map((s) => s.id), names: oldest.map(displayNameOf) })
+    setBulkDeleteOpen(true)
+  }
+
   function confirmBulkDelete() {
     const ids = bulkSnapshot?.ids ?? []
     if (ids.length === 0) { setBulkDeleteOpen(false); setBulkSnapshot(null); return }
@@ -458,6 +516,14 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
 
       {summary && (
         <p role="status" className="text-xs text-gray-500 dark:text-gray-400">{summary}</p>
+      )}
+
+      {archivedSessions.length > 0 && (
+        <QuickPurgeBar
+          total={archivedSessions.length}
+          onPurge={openQuickPurge}
+          disabled={bulkDelete.isPending}
+        />
       )}
 
       {selected.size > 0 && (

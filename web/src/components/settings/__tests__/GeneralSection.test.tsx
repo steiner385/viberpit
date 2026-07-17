@@ -21,6 +21,7 @@ const SETTINGS = {
   thinkingCollapsed: false,
   repoRoot: '/home/user/repos',
   defaultToolDetail: 'auto',
+  maxArchivedSessions: null,
 }
 
 const NOOP_MUTATION = {
@@ -77,6 +78,36 @@ describe('GeneralSection', () => {
     await user.click(screen.getByRole('button', { name: /save/i }))
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ defaultPermissionMode: 'full-auto', repoRoot: '/home/user/repos' }),
+      expect.anything(),
+    )
+  })
+
+  it('pre-fills max archived from settings (blank when null)', () => {
+    render(<GeneralSection />, { wrapper })
+    expect((screen.getByLabelText(/max archived sessions/i) as HTMLInputElement).value).toBe('')
+  })
+
+  it('sends 0 (unlimited) when max archived is left blank', async () => {
+    const mutate = vi.fn()
+    vi.mocked(hooks.useUpdateSettings).mockReturnValue({ ...NOOP_MUTATION, mutate } as unknown as ReturnType<typeof hooks.useUpdateSettings>)
+    const user = userEvent.setup()
+    render(<GeneralSection />, { wrapper })
+    await user.click(screen.getByRole('button', { name: /save/i }))
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ maxArchivedSessions: 0 }),
+      expect.anything(),
+    )
+  })
+
+  it('sends the entered number for max archived', async () => {
+    const mutate = vi.fn()
+    vi.mocked(hooks.useUpdateSettings).mockReturnValue({ ...NOOP_MUTATION, mutate } as unknown as ReturnType<typeof hooks.useUpdateSettings>)
+    const user = userEvent.setup()
+    render(<GeneralSection />, { wrapper })
+    await user.type(screen.getByLabelText(/max archived sessions/i), '150')
+    await user.click(screen.getByRole('button', { name: /save/i }))
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ maxArchivedSessions: 150 }),
       expect.anything(),
     )
   })

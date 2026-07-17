@@ -273,6 +273,10 @@ class AppSettings(Base):
     # ``critical`` bypass it. Nullable so init_db backfills without a migration.
     quiet_hours_start: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     quiet_hours_end: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Cap on retained archived sessions: when the archived count exceeds this, the
+    # oldest are permanently purged (on archive + a periodic sweep). NULL = unlimited
+    # (the default). Nullable so init_db backfills it without a migration.
+    max_archived_sessions: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
 
 
 class NotificationChannel(Base):

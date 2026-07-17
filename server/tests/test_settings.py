@@ -141,6 +141,62 @@ def test_put_rejects_invalid_tool_detail():
         assert put_resp.status_code == 200
         assert put_resp.json()["defaultToolDetail"] == "auto"
 
+# ---------------------------------------------------------------------------
+# maxArchivedSessions
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_max_archived_defaults_none():
+    """GET /api/settings returns maxArchivedSessions null by default (unlimited)."""
+    with _client() as client:
+        resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    assert resp.json()["maxArchivedSessions"] is None
+
+
+def test_put_max_archived_round_trips():
+    """PUT {maxArchivedSessions: 50} then GET → 50."""
+    with _client() as client:
+        put_resp = client.put(
+            "/api/settings",
+            json={"maxArchivedSessions": 50},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["maxArchivedSessions"] == 50
+
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.json()["maxArchivedSessions"] == 50
+
+
+def test_put_max_archived_zero_clears_to_unlimited():
+    """0 (and any <=0) clears the cap back to null (unlimited)."""
+    with _client() as client:
+        client.put("/api/settings", json={"maxArchivedSessions": 50}, headers=IDENTITY_HEADERS)
+        put_resp = client.put(
+            "/api/settings",
+            json={"maxArchivedSessions": 0},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["maxArchivedSessions"] is None
+
+
+def test_put_max_archived_clamps_to_ceiling():
+    """An absurd value is clamped to the sanity ceiling, not stored verbatim."""
+    from server.api.settings import _MAX_ARCHIVED_CEILING
+
+    with _client() as client:
+        put_resp = client.put(
+            "/api/settings",
+            json={"maxArchivedSessions": 10_000_000},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["maxArchivedSessions"] == _MAX_ARCHIVED_CEILING
+
+
 # NOTE: prAutofixMode is no longer an /api/settings field. The pr-doctor mode
 # moved onto the automation registry row (Automation id="pr-doctor", column
 # `mode`); see test_pr_autofix_migration.py. No parallel state in AppSettings.
