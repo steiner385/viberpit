@@ -151,6 +151,10 @@ _UNREACHABLE_ROTATION_THRESHOLD: int = 3
 # events, not recovery, so paused sessions need a separate periodic retry.
 _STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
 
+# Periodic re-check of the archived-session cap, so a limit LOWERED via settings takes
+# effect even with no new archive event (the on-archive path covers the fresh-archive case).
+_ARCHIVE_LIMIT_SWEEP_INTERVAL: float = 300.0
+
 
 class SessionOrchestrator:
     """Orchestrates session lifecycle: creation, rotation, termination.
@@ -474,6 +478,7 @@ class SessionOrchestrator:
         self._stall_task: asyncio.Task | None = None
         self._token_refresh_task: asyncio.Task | None = None
         self._sweep_task: asyncio.Task | None = None
+        self._archive_limit_task: asyncio.Task | None = None
         self._pr_branch_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
@@ -595,6 +600,11 @@ class SessionOrchestrator:
         self._sweep_task = asyncio.create_task(
             self._stuck_session_sweep(), name="stuck-session-sweep"
         )
+        # Archived-session cap sweep: re-enforce max_archived_sessions every 5 min so a
+        # lowered limit takes effect without waiting for the next archive event.
+        self._archive_limit_task = asyncio.create_task(
+            self._archive_limit_loop(), name="archive-limit-sweep"
+        )
 
     async def _refresh_idle_tokens_once(self) -> None:
         """Proactively refresh idle accounts' access tokens (best-effort).
@@ -646,7 +656,8 @@ class SessionOrchestrator:
             self._pr_branch_task = None
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
                      "_token_refresh_task", "_backlog_task", "_autopilot_task",
-                     "_cicd_task", "_archaudit_task", "_sweep_task", "_drain_timer"):
+                     "_cicd_task", "_archaudit_task", "_sweep_task",
+                     "_archive_limit_task", "_drain_timer"):
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
@@ -5396,6 +5407,100 @@ class SessionOrchestrator:
                   session_id=session_id,
                   **{"from": prev_status, "to": "archived", "reason": "archive"})
         log.info("session.archive id=%s done", session_id)
+
+        # Enforce the configured archived-session cap. Best-effort: a purge failure
+        # must never fail the archive that triggered it.
+        try:
+            await self._enforce_archive_limit()
+        except Exception:
+            log.exception("archive_limit: enforcement after archive failed id=%s", session_id)
+
+    async def _read_max_archived_sessions(self) -> int | None:
+        """Read ``max_archived_sessions`` from the app-settings singleton.
+
+        Returns the cap (>=1) or None for 'unlimited' — which is also the fallback if
+        no settings row exists or the read fails."""
+        from sqlalchemy import select as sa_select
+
+        from server.db.models import AppSettings
+        try:
+            async with db_session() as db:
+                val = (await db.execute(
+                    sa_select(AppSettings.max_archived_sessions)
+                    .where(AppSettings.id == "singleton")
+                )).scalar_one_or_none()
+        except Exception:
+            log.debug("archive_limit: settings read failed", exc_info=True)
+            return None
+        if val is None or val < 1:
+            return None
+        return int(val)
+
+    async def purge_oldest_archived(self, count: int) -> list[str]:
+        """Permanently delete the ``count`` oldest archived sessions (oldest first by
+        ``archived_at``). Returns the IDs actually deleted.
+
+        Selection is null-safe — legacy rows with no ``archived_at`` fall back to
+        ``created_at`` so they still sort as oldest. Best-effort: a failure on one
+        session is logged and skipped, never aborting the rest. ``count`` <= 0 no-ops.
+        """
+        if count <= 0:
+            return []
+        from sqlalchemy import func as sa_func
+        from sqlalchemy import select as sa_select
+
+        async with db_session() as db:
+            order_key = sa_func.coalesce(DbSession.archived_at, DbSession.created_at)
+            ids = list((await db.execute(
+                sa_select(DbSession.id)
+                .where(DbSession.status == "archived")
+                .order_by(order_key.asc())
+                .limit(count)
+            )).scalars().all())
+
+        deleted: list[str] = []
+        for sid in ids:
+            try:
+                if await self.permanent_delete(sid):
+                    deleted.append(sid)
+            except Exception:
+                log.exception("archive_limit: permanent_delete failed id=%s", sid)
+        if deleted:
+            log.info("archive_limit: purged %d oldest archived session(s)", len(deleted))
+        return deleted
+
+    async def _enforce_archive_limit(self) -> int:
+        """Purge oldest archived sessions until the count is within
+        ``max_archived_sessions``. Returns the number deleted (0 when the cap is unset
+        or already satisfied)."""
+        limit = await self._read_max_archived_sessions()
+        if limit is None:
+            return 0
+        from sqlalchemy import func as sa_func
+        from sqlalchemy import select as sa_select
+
+        async with db_session() as db:
+            total = (await db.execute(
+                sa_select(sa_func.count())
+                .select_from(DbSession)
+                .where(DbSession.status == "archived")
+            )).scalar_one()
+        excess = int(total) - limit
+        if excess <= 0:
+            return 0
+        return len(await self.purge_oldest_archived(excess))
+
+    async def _archive_limit_loop(self) -> None:
+        """Periodic sweep enforcing the archived-session cap (see start()). Sleeps first
+        so it never races rehydrate() at boot; the on-archive path covers fresh archives."""
+        while True:
+            await asyncio.sleep(_ARCHIVE_LIMIT_SWEEP_INTERVAL)
+            if self._shutting_down:
+                continue
+            try:
+                await self._enforce_archive_limit()
+            except Exception:
+                log.exception("archive_limit: periodic sweep failed")
 
     async def list_archived(self) -> list[dict]:
         """Return metadata dicts for all archived sessions (reads DB, not _records)."""

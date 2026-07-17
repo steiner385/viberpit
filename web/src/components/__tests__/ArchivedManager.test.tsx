@@ -348,3 +348,88 @@ describe('ArchivedManager — bulk delete progress', () => {
     expect(cancel).toHaveBeenCalled()
   })
 })
+
+describe('ArchivedManager — quick-purge shortcuts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.localStorage.clear()
+    searchState = { query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }
+  })
+
+  // N archived rows with strictly increasing archivedAt, so arc-0 is oldest and
+  // the "oldest 25" are arc-0..arc-24.
+  function manyArchived(n: number): ArchivedSession[] {
+    return Array.from({ length: n }, (_, i) =>
+      makeArchived({
+        id: `arc-${i}`,
+        name: `S${i}`,
+        archivedAt: `2026-06-10T00:${String(i).padStart(2, '0')}:00Z`,
+      }),
+    )
+  }
+
+  it('renders the four purge-oldest shortcut buttons when sessions exist', () => {
+    setupMocks(fourArchived())
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
+
+    for (const n of [25, 50, 100, 200]) {
+      expect(
+        screen.getByRole('button', { name: new RegExp(`purge the ${n} oldest`, 'i') }),
+      ).toBeInTheDocument()
+    }
+  })
+
+  it('does NOT render the quick-purge bar when there are no archived sessions', () => {
+    setupMocks([])
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
+    expect(screen.queryByRole('region', { name: /quick purge/i })).not.toBeInTheDocument()
+  })
+
+  it('disables a shortcut when fewer than N archived sessions exist', () => {
+    setupMocks(fourArchived()) // only 4 archived
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
+
+    // All four thresholds exceed 4 → every button disabled.
+    for (const n of [25, 50, 100, 200]) {
+      expect(
+        screen.getByRole('button', { name: new RegExp(`purge the ${n} oldest`, 'i') }),
+      ).toBeDisabled()
+    }
+  })
+
+  it('enables the 25 shortcut once ≥25 archived exist and it opens the bulk dialog', async () => {
+    const user = userEvent.setup()
+    setupMocks(manyArchived(30))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
+
+    const purge25 = screen.getByRole('button', { name: /purge the 25 oldest/i })
+    expect(purge25).toBeEnabled()
+    // 50/100/200 still disabled with only 30 archived.
+    expect(screen.getByRole('button', { name: /purge the 50 oldest/i })).toBeDisabled()
+
+    await user.click(purge25)
+    expect(screen.getByText('Permanently delete 25 sessions')).toBeInTheDocument()
+  })
+
+  it('purges exactly the oldest N (by archivedAt) on confirm', async () => {
+    const user = userEvent.setup()
+    const mutate = vi.fn()
+    setupMocks(manyArchived(30))
+    vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue({
+      mutate, isPending: false, progress: null, cancel: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
+
+    await user.click(screen.getByRole('button', { name: /purge the 25 oldest/i }))
+    await user.click(screen.getByRole('button', { name: /delete permanently/i }))
+
+    expect(mutate).toHaveBeenCalledTimes(1)
+    const ids = mutate.mock.calls[0][0] as string[]
+    expect(ids).toHaveLength(25)
+    // Oldest 25 are arc-0..arc-24; arc-25..arc-29 are the 5 newest and must be spared.
+    expect(ids).toContain('arc-0')
+    expect(ids).toContain('arc-24')
+    expect(ids).not.toContain('arc-25')
+    expect(ids).not.toContain('arc-29')
+  })
+})

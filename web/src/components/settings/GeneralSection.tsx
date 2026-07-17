@@ -23,13 +23,20 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
   const [thinkingCollapsed, setThinkingCollapsed] = useState(settings?.thinkingCollapsed ?? false)
   const [repoRoot, setRepoRoot] = useState(settings?.repoRoot ?? '')
   const [toolDetail, setToolDetail] = useState<AppSettings['defaultToolDetail']>(settings?.defaultToolDetail ?? 'auto')
+  // Empty string = unlimited (sent to the backend as 0, which it maps to null).
+  const [maxArchived, setMaxArchived] = useState(
+    settings?.maxArchivedSessions != null ? String(settings.maxArchivedSessions) : '',
+  )
 
   function handleSave() {
+    const parsed = Number.parseInt(maxArchived, 10)
     updateSettings.mutate({
       defaultPermissionMode: permissionMode,
       thinkingCollapsed,
       repoRoot: repoRoot.trim() || null,
       defaultToolDetail: toolDetail,
+      // Blank / non-positive → 0 = "clear to unlimited". Backend clamps the ceiling.
+      maxArchivedSessions: Number.isFinite(parsed) && parsed > 0 ? parsed : 0,
     }, { onSuccess: () => toast('Settings saved') })
   }
 
@@ -132,6 +139,30 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
             placeholder="/home/user/repos"
             className={inputClass}
           />
+        </div>
+
+        {/* Archived sessions */}
+        <div className="space-y-1 border-t border-gray-200 dark:border-gray-700 pt-4">
+          <label
+            htmlFor="settings-max-archived"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            Max archived sessions <span className="text-gray-400">(blank = unlimited)</span>
+          </label>
+          <input
+            id="settings-max-archived"
+            type="number"
+            min={1}
+            step={1}
+            inputMode="numeric"
+            value={maxArchived}
+            onChange={(e) => setMaxArchived(e.target.value)}
+            placeholder="Unlimited"
+            className={inputClass}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            When the archived count exceeds this, the oldest are permanently purged.
+          </p>
         </div>
 
         {/* Notifications */}
