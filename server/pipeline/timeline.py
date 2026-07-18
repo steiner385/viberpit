@@ -24,6 +24,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from server.db import db_session
 from server.db.models import MergedPr
+from server.github.deploy_envs import classify_env
 
 # Nullable columns that follow first-value-wins semantics on upsert. merged_at is
 # excluded: it's the writer-side invariant, always set on insert, never re-tried.
@@ -100,7 +101,7 @@ async def mark_env_live(repo: str, number: int, env: str, at_iso: str) -> None:
     when the target column is currently NULL (first observation wins), so
     repeated ancestry hits never overwrite the earliest live timestamp.
     """
-    col = "prod_live_at" if env in ("prod", "production") else "qa_live_at"
+    col = "prod_live_at" if classify_env(env) == "prod" else "qa_live_at"
     target = getattr(MergedPr, col)
     stmt = (
         update(MergedPr)
