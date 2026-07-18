@@ -30,6 +30,7 @@ from typing import Awaitable, Callable
 
 from server.db import db_session
 from server.db.models import RepoDeployConfig
+from server.github.deploy_envs import classify_env
 from server.pipeline.timeline import mark_env_live, tracked_merged
 
 log = logging.getLogger(__name__)
@@ -185,7 +186,7 @@ class DeployWatcher:
             live_sha = entry.get("liveSha") if entry else None
             if not live_sha:
                 continue
-            is_prod = env_name in ("prod", "production")
+            is_prod = classify_env(env_name) == "prod"
             for pr in candidates:
                 sha = pr.merge_commit_sha
                 if not sha:
