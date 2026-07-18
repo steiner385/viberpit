@@ -148,3 +148,28 @@ export function postConsolidate(
 ): Promise<TriggerResult> {
   return api.post<TriggerResult>('/automations/pr-doctor/consolidate', body)
 }
+
+// --- Backlog Runner grouping plan --------------------------------------------
+
+/** One precomputed group of related issues planned into a single PR. */
+export interface BacklogGroup {
+  id: number
+  repo: string | null
+  refs: string[]
+  titles: Record<string, string>
+  rationale: string | null
+  rank: number | null
+  generation: string | null
+  createdAt: string | null
+  consumedAt: string | null
+}
+
+export interface BacklogGroupsView {
+  generation: string | null
+  createdAt: string | null
+  groups: BacklogGroup[]
+}
+
+export function fetchBacklogGroups(): Promise<BacklogGroupsView> {
+  return api.get<BacklogGroupsView>('/automations/backlog-runner/groups')
+}

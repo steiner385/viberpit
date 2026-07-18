@@ -3,15 +3,14 @@ spawns implementation sessions, handing finished PRs to PR Doctor."""
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
-import os
 from typing import Any, Awaitable, Callable
 
 from server.github.pr_status import PullRequestInfo
 
 from .backlog_github import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, GhRun, query_candidates
-from .backlog_selection import Batch, rank_and_batch, should_free_slot
+from .backlog_grouping import load_plan, mark_consumed, plan_to_batch
+from .backlog_selection import Batch, should_free_slot
 from .base import AutomationStatus, ConfigField
 from .model_pick import AUTOMATION_MODEL_CHOICES
 from .context import AutomationContext
@@ -20,139 +19,28 @@ log = logging.getLogger(__name__)
 
 _DAY_SECONDS = 24 * 3600
 
-# --------------------------------------------------------------------------- #
-# One-shot LLM ranking seam                                                   #
-# --------------------------------------------------------------------------- #
-
-_RANK_SYSTEM = (
-    "You are a backlog prioritizer. You receive a list of GitHub issues and "
-    "return them ordered by implementation priority — highest value, lowest "
-    "risk first. When asked for a coherent group you also pick issues that "
-    "naturally belong in the same pull request."
-)
-
-
-def _default_sdk_query_fn():
-    from claude_agent_sdk import query  # lazy import — not available in tests
-    return query
-
-
-async def rank_issues(
-    candidates: list[dict],
-    config: dict,
-    *,
-    _query_fn=None,
-    _config_dir: str | None = None,
-    _cwd: str | None = None,
-) -> list[str]:
-    """One-shot Haiku query that returns candidate refs ordered by priority.
-
-    When ``config["max_issues_per_pr"] > 1`` the prompt asks the model to
-    return a COHERENT group (the best issue plus genuinely related ones) first,
-    so ``rank_and_batch`` can slice off the top-K for a bundled PR.
-
-    Parameters
-    ----------
-    candidates:
-        List of dicts with ``"ref"`` (str), ``"number"`` (int), and
-        ``"title"`` (str | None).
-    config:
-        Automation config dict (needs ``"max_issues_per_pr"``).
-    _query_fn:
-        Injected claude-agent-sdk ``query`` callable — tests pass a canned
-        function here so the real model is NEVER called in tests.
-    _config_dir:
-        ``CLAUDE_CONFIG_DIR`` for the one-shot session.  Defaults to the
-        current process env (fine for production; tests inject a canned fn).
-    _cwd:
-        Working directory for the one-shot session.  Defaults to ``os.getcwd()``.
-
-    Returns
-    -------
-    list[str]
-        Ordered list of refs.  On any failure returns ``[]`` (rank_and_batch
-        falls back to lowest-number ordering).
-    """
-    if not candidates:
-        return []
-
-    max_k = max(1, int(config.get("max_issues_per_pr") or 1))
-
-    lines = "\n".join(
-        f"{c['ref']}  {c.get('title') or '(no title)'}" for c in candidates
-    )
-    if max_k > 1:
-        body = (
-            f"Return the {max_k} most coherent issues to implement together "
-            f"(highest-value primary issue first, then genuinely related ones), "
-            f"then the remaining issues in priority order.\n\n"
-            f"Issues:\n{lines}\n\n"
-            f"Reply with ONLY the issue refs, one per line, in order. "
-            f"No explanation, no preamble."
-        )
-    else:
-        body = (
-            f"Order these issues by implementation priority "
-            f"(highest value / lowest risk first).\n\n"
-            f"Issues:\n{lines}\n\n"
-            f"Reply with ONLY the issue refs, one per line, in order. "
-            f"No explanation, no preamble."
-        )
-
-    query_fn = _query_fn or _default_sdk_query_fn()
-    config_dir = _config_dir or os.environ.get("CLAUDE_CONFIG_DIR", "")
-    cwd = _cwd or os.getcwd()
-
-    # rank_issues is awaited directly by ``select_batch`` (itself awaited by the
-    # loop's ``tick()``), so we run inside the caller's event loop — no
-    # ``asyncio.run`` / ThreadPoolExecutor nesting.
-    try:
-        from claude_agent_sdk import ClaudeAgentOptions
-
-        options = ClaudeAgentOptions(
-            model="haiku",
-            system_prompt=_RANK_SYSTEM,
-            cwd=cwd,
-            env={**os.environ, "CLAUDE_CONFIG_DIR": config_dir},
-            allowed_tools=[],
-            setting_sources=[],
-        )
-        text_parts: list[str] = []
-        async for msg in query_fn(prompt=body, options=options):
-            content = getattr(msg, "content", None)
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                t = getattr(block, "text", None)
-                if isinstance(t, str):
-                    text_parts.append(t)
-        raw = "".join(text_parts).strip()
-    except Exception as exc:
-        log.warning("rank_issues: model call failed: %s", exc)
-        return []
-
-    known = {c["ref"] for c in candidates}
-    refs: list[str] = []
-    for line in raw.splitlines():
-        ref = line.strip()
-        if ref in known:
-            refs.append(ref)
-    return refs
-
 
 # --------------------------------------------------------------------------- #
-# select_batch assembly (query → rank → batch)                               #
+# select_batch (plan consumption: query live candidates → pop a plan group)   #
 # --------------------------------------------------------------------------- #
 
 async def select_batch(
     config: dict,
     *,
     query: Callable[..., list[dict]] = query_candidates,
-    rank: Callable[..., Any] = rank_issues,
     gh_run: "GhRun | None" = None,
     repo_load: "dict[str, int] | None" = None,
+    load_plan: Callable[[], Awaitable[list[dict]]] = load_plan,
+    mark_consumed: Callable[[int], Awaitable[None]] = mark_consumed,
 ) -> "Batch | None":
-    """Assemble a ``Batch`` from live GitHub candidates ranked by the LLM.
+    """Pop the next precomputed group off the grouping plan as a ``Batch``.
+
+    The runner never chooses or bundles issues itself: the background grouping
+    optimizer (see :mod:`backlog_grouping`) writes the plan, and this function
+    only intersects it with the LIVE candidate pool (so refs claimed or closed
+    since the plan was computed are dropped) and returns the highest-priority
+    surviving group. No live group → ``None`` — the runner WAITS and the loop
+    nudges a plan refresh instead of inventing a selection.
 
     Parameters
     ----------
@@ -161,23 +49,20 @@ async def select_batch(
     query:
         Injectable candidate-discovery callable (default: ``query_candidates``).
         Signature: ``(config, *, gh_run) -> list[dict]``.
-    rank:
-        Injectable ranking callable (default: ``rank_issues``).
-        Signature: ``(candidates, config) -> list[str]`` and may be async
-        (``rank_issues`` is a coroutine); the result is awaited inside the
-        caller's event loop — no nested loops.  Tests inject a canned (sync or
-        async) function so the real model is NEVER called.
     gh_run:
         Injectable GitHub API runner (forwarded to ``query``).
     repo_load:
-        Optional ``{repo: active_run_count}`` map. When given, the primary is
-        biased toward the repo with the FEWEST active runs (per-repo fairness) so
-        a big backlog in one repo can't monopolise every slot. Absent/empty →
-        selection is exactly the LLM ranking, unchanged.
+        Optional ``{repo: active_run_count}`` map. When given, live plan groups
+        are stable-reordered toward the repo with the FEWEST active runs
+        (per-repo fairness) so a big backlog in one repo can't monopolise every
+        slot; plan priority is preserved within a repo.
+    load_plan / mark_consumed:
+        Injectable plan-store seams (default: the ``backlog_groups`` table).
+        Tests pass canned functions so no DB or model is ever touched here.
 
     Returns
     -------
-    ``Batch`` or ``None`` when there are no candidates.
+    ``Batch`` or ``None`` when there are no candidates or no live plan group.
     """
     from ccswitch import gitrepos
 
@@ -186,34 +71,15 @@ async def select_batch(
     if not candidates:
         return None
 
-    # Pre-resolve the ranking (awaiting an async seam like ``rank_issues``) so
-    # the pure ``rank_and_batch`` stays sync.  ``rank_and_batch`` skips ranking
-    # entirely for a single candidate, so only invoke ``rank`` when it matters.
-    ranked: list[str] = []
-    if len(candidates) > 1:
-        result = rank(candidates, config)
-        if inspect.isawaitable(result):
-            result = await result
-        ranked = list(result or [])
-
-    ranking: Callable[..., list[str]] = lambda cs: ranked  # noqa: E731
-    if repo_load:
-        # Per-repo fairness: STABLE-reorder the effective priority order (ranked,
-        # else lowest-number fallback) by ascending active-run count, so the
-        # lightest repo's highest-priority issue becomes the primary while
-        # priority WITHIN a repo is preserved. Resolve the fallback here (not in
-        # rank_and_batch) so fairness also applies when the LLM ranking is empty.
-        by_ref = {c["ref"]: c for c in candidates}
-        order = [r for r in ranked if r in by_ref] or [
-            c["ref"] for c in sorted(candidates, key=lambda c: c["number"])]
-        order = sorted(order, key=lambda ref: repo_load.get(by_ref[ref]["repo"], 0))
-        ranking = lambda cs, _o=order: _o  # noqa: E731
-
-    return rank_and_batch(
-        candidates,
-        max(1, int(config.get("max_issues_per_pr") or 1)),
-        ranking,
-    )
+    plan = await load_plan()
+    batch, group_id = plan_to_batch(plan, candidates, repo_load)
+    if batch is not None and group_id is not None:
+        try:
+            await mark_consumed(group_id)
+        except Exception:  # pragma: no cover — a UI stamp must never block a spawn
+            log.warning("backlog_runner.mark_consumed_failed group=%s", group_id,
+                        exc_info=True)
+    return batch
 
 
 class BacklogRunner:
@@ -234,7 +100,14 @@ class BacklogRunner:
                     help="Circuit-breaker: pause spawning past this many per day."),
         ConfigField(key="max_attempts", label="Max attempts per issue", type="int", default=2),
         ConfigField(key="max_issues_per_pr", label="Max issues per PR", type="int", default=1,
-                    help="Bundle up to this many related issues into one PR."),
+                    help="Bundle up to this many related issues into one PR. The "
+                         "background grouping optimizer treats this as a hard cap, "
+                         "not a target — only genuinely related issues share a PR."),
+        ConfigField(key="grouping_interval_minutes", label="Grouping refresh (minutes)",
+                    type="int", default=30,
+                    help="How often the background optimizer recomputes the group "
+                         "plan. It also refreshes immediately when the runner "
+                         "needs work and no plan group is live."),
         ConfigField(key="needs_human_retry_days", label="Retry needs-human after (days)",
                     type="int", default=NEEDS_HUMAN_RETRY_DAYS_DEFAULT,
                     help="Reconsider escalated (needs-human) issues once they sit "
@@ -297,6 +170,11 @@ Reconcile = Callable[[list[str], "set[str]"], Awaitable[None]]
 # where action is "closed" (merged PR found → issue closed) or "reclaimed"
 # (stale lock released back to the pool).
 HealOrphans = Callable[[dict, "set[str]"], Awaitable["list[tuple[str, str]]"]]
+# Grouping-optimizer seam: recompute + persist the group plan from the live
+# backlog; returns the number of groups stored. MUST raise on a model/plan
+# failure (rather than storing an empty plan over a real backlog) so the loop
+# backs off a full grouping interval instead of hammering the model every tick.
+RefreshGroups = Callable[[dict], Awaitable[int]]
 
 # The heal pass costs a gh search plus up to `limit` cross-ref lookups, so it
 # runs at most once per interval — orphans are a slow leak, not a hot path.
@@ -304,8 +182,8 @@ _ORPHAN_SWEEP_INTERVAL = 3600.0
 
 
 async def _stub_select_batch(_config: dict) -> Batch | None:
-    # TODO(Plan B): label-gated `gh` query → rank_and_batch. Until then the loop
-    # is wired but never selects a candidate, so no session is ever spawned.
+    # Fallback when no selection seam is wired: the loop runs but never selects
+    # a candidate, so no session is ever spawned.
     return None
 
 
@@ -360,6 +238,7 @@ class BacklogRunnerLoop:
         count_candidates: CountCandidates | None = None,
         close_out: CloseOut | None = None,
         heal_orphans: HealOrphans | None = None,
+        refresh_groups: RefreshGroups | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
@@ -378,7 +257,13 @@ class BacklogRunnerLoop:
         self._count_candidates = count_candidates    # -> int (true eligible backlog size)
         self._close_out = close_out                 # (target, info) -> close merged batch issues
         self._heal_orphans = heal_orphans               # GitHub-truth orphan healing
+        self._refresh_groups = refresh_groups           # grouping optimizer (plan writer)
         self._last_orphan_sweep: float | None = None    # monotonic; throttles the heal pass
+        self._last_group_refresh: float | None = None   # monotonic; throttles the optimizer
+        self._group_nudge = False                       # refill starved → refresh next tick
+        self._group_refresh_backoff = False             # failed → ignore nudges one interval
+        self._group_refresh_failed_emitted = False      # debounce the failure event
+        self._last_groups_emitted: int | None = None    # debounce the refreshed event
         self._lock = asyncio.Lock()
         self._spawns_today: list[float] = []        # spawn timestamps within the rolling day
         self._circuit_open_emitted = False          # debounce the circuit_open event
@@ -396,6 +281,9 @@ class BacklogRunnerLoop:
     async def _refill_and_sweep(self) -> None:
         mode, config = await self._read_config()
         if mode != "off":
+            # The grouping optimizer runs BEFORE refill so a cold start (or a
+            # just-consumed plan) can produce groups and spawn in the same tick.
+            await self._maybe_refresh_groups(config)
             self._prune_day()
             if len(self._spawns_today) < config["max_spawns_per_day"]:
                 self._circuit_open_emitted = False
@@ -533,6 +421,50 @@ class BacklogRunnerLoop:
                     "info", f"{ref}: orphaned claim released back to the pool",
                     kind="orphan_reclaimed", target=ref)
 
+    async def _maybe_refresh_groups(self, config: dict) -> None:
+        """Run the grouping optimizer when due: on the first enabled tick, every
+        ``grouping_interval_minutes``, or on the nudge a starved refill leaves
+        behind (``select_batch`` found no live plan group).
+
+        The window stamp is taken (and the nudge cleared) UP FRONT so a failing
+        refresh waits a full interval instead of hammering the model every tick
+        — the seam raises on failure rather than storing an empty plan over a
+        real backlog. The refreshed event is emitted only when the group count
+        CHANGES, so an idle empty backlog doesn't flood the activity feed."""
+        if self._refresh_groups is None:
+            return
+        now = self._clock()
+        interval = max(1, int(config.get("grouping_interval_minutes") or 30)) * 60.0
+        elapsed = (self._last_group_refresh is None
+                   or now - self._last_group_refresh >= interval)
+        if elapsed:
+            # A full interval has passed — any failure backoff is over.
+            self._group_refresh_backoff = False
+        # The nudge is ignored while backing off from a failure: a starved
+        # refill re-nudges EVERY tick, and without this gate a persistently
+        # broken model would be re-called once per tick instead of per interval.
+        if not (elapsed or (self._group_nudge and not self._group_refresh_backoff)):
+            return
+        self._last_group_refresh = now
+        self._group_nudge = False
+        try:
+            n = await self._refresh_groups(config)
+        except Exception:
+            log.warning("backlog_runner.group_refresh_failed", exc_info=True)
+            self._group_refresh_backoff = True
+            if not self._group_refresh_failed_emitted:
+                self._group_refresh_failed_emitted = True
+                await self._ctx.emit(
+                    "warn", "group plan refresh failed — retrying next interval",
+                    kind="groups_refresh_failed")
+            return
+        self._group_refresh_failed_emitted = False
+        if n != self._last_groups_emitted:
+            self._last_groups_emitted = n
+            await self._ctx.emit(
+                "info", f"group plan refreshed — {n} group(s) planned",
+                kind="groups_refreshed", detail={"groups": n})
+
     async def _refill(self, mode: str, config: dict) -> None:
         in_flight = await self._count_in_flight()
         free = config["max_concurrent"] - in_flight
@@ -553,7 +485,12 @@ class BacklogRunnerLoop:
             self._no_account_emitted = False  # an account is available again
             batch = await self._select_batch(config)
             if batch is None:
-                return  # no candidates
+                # Starved: empty backlog OR no live plan group. Either way the
+                # grouping optimizer is the answer — nudge it so the next tick
+                # refreshes the plan (WAIT-for-the-grouper; the runner never
+                # falls back to choosing issues itself).
+                self._group_nudge = True
+                return
             st = await self._ctx.get_target_state(batch.primary)
             if st.get("gave_up"):
                 continue

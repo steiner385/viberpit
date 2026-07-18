@@ -396,6 +396,7 @@ class SessionOrchestrator:
             reconcile=self._backlog_reconcile,
             close_out=self._backlog_close_out,
             heal_orphans=self._backlog_heal_orphans,
+            refresh_groups=self._backlog_refresh_groups,
         )
         self._backlog_task: asyncio.Task | None = None
         # Autopilot control loop: advances every governed session through its stuck
@@ -1318,27 +1319,47 @@ class SessionOrchestrator:
             return False
 
     async def _backlog_select_batch(self, config: dict):
-        """Real selection: label-gated ``gh`` candidate query → LLM rank → batch.
+        """Real selection: label-gated ``gh`` candidate query → pop the next
+        live group off the precomputed grouping plan (``backlog_groups``).
 
-        Runs entirely through the injected ``gh_run`` seam (default the real
-        ``gh`` shell-out) and the Haiku ranking; returns a ``Batch`` or ``None``.
+        No model call here — grouping happens in the background via
+        ``_backlog_refresh_groups``; this path only intersects the stored plan
+        with the live candidate pool. Returns ``None`` (the loop waits and
+        nudges the optimizer) when no plan group is live."""
+        from server.automations.backlog_runner import select_batch
+        repo_load = await self._backlog_repo_load()
+        return await select_batch(config, gh_run=self._gh_run, repo_load=repo_load)
 
-        The ranking is a one-shot SDK call, and the DAEMON process has no
-        ``CLAUDE_CONFIG_DIR`` — so ``rank_issues`` would fall back to the default
-        (often usage-capped) account and fail every tick, silently discarding the
-        LLM ranking. Bind it to a healthy account's config dir so ranking actually
-        works; a ``None`` account leaves the default and lets the pure fallback
-        (lowest-number ordering) take over."""
-        import functools
-        from server.automations.backlog_runner import select_batch, rank_issues
-        rank = rank_issues
+    async def _backlog_refresh_groups(self, config: dict) -> int:
+        """The grouping-optimizer seam: recompute + persist the group plan.
+
+        Queries the live candidate pool, asks Sonnet (``propose_groups``) to
+        partition it into coherent 1..K groups, and REPLACES the stored plan.
+        An empty backlog stores an empty plan (cheap, no model call). A model
+        failure over a real backlog RAISES instead of storing an empty plan, so
+        the loop backs off a full grouping interval and the runner keeps
+        waiting rather than losing the plan it has.
+
+        The one-shot SDK call needs a config dir — the DAEMON process has no
+        ``CLAUDE_CONFIG_DIR`` — so bind it to a healthy account (same trick the
+        old inline ranking used); with no healthy account the SDK default
+        applies and a failure is caught by the raise-on-empty contract."""
+        from server.automations.backlog_github import query_candidates
+        from server.automations.backlog_grouping import propose_groups, store_plan
+        candidates = await asyncio.to_thread(query_candidates, config,
+                                             gh_run=self._gh_run)
+        if not candidates:
+            return await store_plan([], [])
+        config_dir = None
         acct = await self._backlog_healthy_account()
         if acct is not None:
             from ccswitch import paths
-            rank = functools.partial(rank_issues, _config_dir=str(paths.account_cfg_dir(acct)))
-        repo_load = await self._backlog_repo_load()
-        return await select_batch(config, gh_run=self._gh_run, rank=rank,
-                                  repo_load=repo_load)
+            config_dir = str(paths.account_cfg_dir(acct))
+        groups = await propose_groups(candidates, config, _config_dir=config_dir)
+        if not groups:
+            raise RuntimeError("grouping model returned no plan for a non-empty backlog")
+        await store_plan(groups, candidates)
+        return len(groups)
 
     async def _backlog_repo_load(self) -> dict[str, int]:
         """Active runs per repo, derived from durable target states — the input to

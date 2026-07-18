@@ -275,6 +275,32 @@ def _install_no_real_model_guard():
 _install_no_real_model_guard()
 
 
+def _install_no_real_grouping_guard():
+    """Same contract as the assess_model guard, for the backlog grouping
+    optimizer: ``propose_groups`` is the sole entry to the real SDK on the
+    plan-refresh path, and any orchestrator/loop test that walks a refresh
+    would otherwise make a REAL Sonnet call. Without an injected ``_query_fn``
+    it returns ``[]`` — production's own model-failure behavior (the refresh
+    seam raises and the loop backs off). Direct grouping tests inject
+    ``_query_fn`` and exercise the real logic."""
+    import server.automations.backlog_grouping as _bg
+
+    _orig = _bg.propose_groups
+    if getattr(_orig, "_no_real_model_guard", False):
+        return  # already guarded (conftest re-imported)
+
+    async def _guarded_propose_groups(candidates, config, *, _query_fn=None, **kw):
+        if _query_fn is None:
+            return []
+        return await _orig(candidates, config, _query_fn=_query_fn, **kw)
+
+    _guarded_propose_groups._no_real_model_guard = True
+    _bg.propose_groups = _guarded_propose_groups
+
+
+_install_no_real_grouping_guard()
+
+
 # --------------------------------------------------------------------------- #
 # mTLS cert fixture for testing mutual TLS scenarios                         #
 # --------------------------------------------------------------------------- #

@@ -2,7 +2,6 @@
 
 Verifies:
 - FakeGh records every call and returns scripted / default procs.
-- fake_rank returns the canned order.
 - FakeSpawn persists a Session row queryable by origin and de-dups.
 """
 from __future__ import annotations
@@ -66,31 +65,6 @@ def test_fakegh_records_multiple_calls():
     fake(["a", "b"])
     fake(["c", "d"])
     assert fake.calls == [["a", "b"], ["c", "d"]]
-
-
-# --------------------------------------------------------------------------- #
-# fake_rank                                                                     #
-# --------------------------------------------------------------------------- #
-
-def test_fake_rank_returns_canned_order():
-    from server.tests.fakes.fake_backlog import fake_rank
-
-    order = ["o/r#9", "o/r#2", "o/r#5"]
-    rank_fn = fake_rank(order)
-    candidates = [
-        {"ref": "o/r#9", "number": 9, "repo": "o/r"},
-        {"ref": "o/r#2", "number": 2, "repo": "o/r"},
-    ]
-    assert rank_fn(candidates) == order
-
-
-def test_fake_rank_ignores_candidates():
-    """The canned order is returned regardless of what candidates are passed."""
-    from server.tests.fakes.fake_backlog import fake_rank
-
-    rank_fn = fake_rank(["x", "y"])
-    assert rank_fn([]) == ["x", "y"]
-    assert rank_fn([{"ref": "z", "number": 1, "repo": "r"}]) == ["x", "y"]
 
 
 # --------------------------------------------------------------------------- #

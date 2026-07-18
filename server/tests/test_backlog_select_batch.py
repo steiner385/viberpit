@@ -1,7 +1,9 @@
-"""Tests for select_batch (query → rank → batch assembly seam).
+"""Tests for select_batch (query live candidates → pop a precomputed plan group).
 
-All I/O seams are injected — FakeGh for the gh runner, canned rank functions
-for the LLM ranking — so the real model is NEVER called in these tests.
+All I/O seams are injected — canned query/plan-store functions — so no DB, no
+network, and no model is ever touched. The runner-side invariant under test:
+selection NEVER invents a grouping; it only consumes what the background
+grouping optimizer planned, intersected with the live candidate pool.
 """
 from __future__ import annotations
 
@@ -43,91 +45,117 @@ def canned_query(candidates: list[dict]):
     return _query
 
 
+def canned_plan(groups: list[dict]):
+    """Return an async load_plan seam serving canned plan groups."""
+    async def _load() -> list[dict]:
+        return [dict(g) for g in groups]
+    return _load
+
+
+def consumed_recorder(into: list[int]):
+    async def _mark(group_id: int) -> None:
+        into.append(group_id)
+    return _mark
+
+
 # --------------------------------------------------------------------------- #
-# Basic assembly                                                               #
+# Plan consumption                                                             #
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
-async def test_select_batch_returns_batch_with_ranked_primary():
-    """Canned rank [#9, #5, #2] → primary is #9."""
-    config = make_config(max_issues_per_pr=1)
+async def test_select_batch_pops_highest_priority_group():
+    """The first (rank-0) plan group becomes the batch, primary first."""
+    consumed: list[int] = []
     result = await select_batch(
-        config,
+        make_config(),
         query=canned_query(CANDIDATES),
-        rank=lambda cs, cfg: ["o/r#9", "o/r#5", "o/r#2"],
+        load_plan=canned_plan([
+            {"id": 1, "refs": ["o/r#9", "o/r#5"], "repo": "o/r"},
+            {"id": 2, "refs": ["o/r#2"], "repo": "o/r"},
+        ]),
+        mark_consumed=consumed_recorder(consumed),
     )
     assert isinstance(result, Batch)
     assert result.primary == "o/r#9"
-    assert result.issues == ["o/r#9"]
+    assert result.issues == ["o/r#9", "o/r#5"]
     assert result.repo == "o/r"
+    assert result.titles == {"o/r#9": "Fix nine", "o/r#5": "Fix five"}
+    assert consumed == [1]
 
 
 @pytest.mark.asyncio
-async def test_select_batch_bundles_multiple_issues():
-    """max_issues_per_pr=2 with canned rank → top two in batch."""
-    config = make_config(max_issues_per_pr=2)
+async def test_select_batch_drops_stale_refs_from_group():
+    """Refs no longer in the live pool (claimed/closed since planning) are
+    dropped from the batch — never re-invented, never replaced."""
     result = await select_batch(
-        config,
-        query=canned_query(CANDIDATES),
-        rank=lambda cs, cfg: ["o/r#9", "o/r#5", "o/r#2"],
+        make_config(),
+        query=canned_query([CANDIDATES[1]]),  # only #2 still live
+        load_plan=canned_plan([{"id": 7, "refs": ["o/r#9", "o/r#2"], "repo": "o/r"}]),
+        mark_consumed=consumed_recorder([]),
     )
     assert result is not None
-    assert result.primary == "o/r#9"
-    assert result.issues == ["o/r#9", "o/r#5"]
+    assert result.primary == "o/r#2"
+    assert result.issues == ["o/r#2"]
 
 
 @pytest.mark.asyncio
-async def test_select_batch_empty_candidates_returns_none():
-    """No candidates → None (no crash, no model call)."""
-    config = make_config()
-    real_model_called = False
+async def test_select_batch_waits_when_plan_is_empty():
+    """Candidates exist but no plan → None. The runner WAITS for the grouper
+    instead of choosing issues itself (the core behavior of this feature)."""
+    result = await select_batch(
+        make_config(),
+        query=canned_query(CANDIDATES),
+        load_plan=canned_plan([]),
+        mark_consumed=consumed_recorder([]),
+    )
+    assert result is None
 
-    def strict_rank(cs, cfg):
-        nonlocal real_model_called
-        real_model_called = True
+
+@pytest.mark.asyncio
+async def test_select_batch_waits_when_all_groups_stale():
+    """A plan whose every ref has left the live pool is dead weight → None."""
+    result = await select_batch(
+        make_config(),
+        query=canned_query(CANDIDATES),
+        load_plan=canned_plan([{"id": 3, "refs": ["o/r#77"], "repo": "o/r"}]),
+        mark_consumed=consumed_recorder([]),
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_select_batch_empty_candidates_returns_none_without_plan_read():
+    """No candidates → None; the plan store must not even be read."""
+    plan_read = False
+
+    async def strict_load() -> list[dict]:
+        nonlocal plan_read
+        plan_read = True
         return []
 
     result = await select_batch(
-        config,
+        make_config(),
         query=canned_query([]),
-        rank=strict_rank,
+        load_plan=strict_load,
+        mark_consumed=consumed_recorder([]),
     )
     assert result is None
-    assert not real_model_called, "rank must not be called when candidates are empty"
+    assert not plan_read, "load_plan must not be called when candidates are empty"
 
 
 @pytest.mark.asyncio
-async def test_select_batch_malformed_rank_falls_back_to_lowest_number():
-    """rank returns bogus refs → rank_and_batch fallback: lowest number first."""
-    config = make_config(max_issues_per_pr=1)
+async def test_select_batch_mark_consumed_failure_does_not_block_spawn():
+    """A failing consumed-stamp (UI-only bookkeeping) must not lose the batch."""
+    async def broken_mark(_gid: int) -> None:
+        raise RuntimeError("db hiccup")
+
     result = await select_batch(
-        config,
+        make_config(),
         query=canned_query(CANDIDATES),
-        rank=lambda cs, cfg: ["bogus-ref", "also-bad"],
+        load_plan=canned_plan([{"id": 1, "refs": ["o/r#2"], "repo": "o/r"}]),
+        mark_consumed=broken_mark,
     )
-    assert result is not None
-    assert result.primary == "o/r#2"  # deterministic fallback: lowest number
-
-
-@pytest.mark.asyncio
-async def test_select_batch_rank_never_called_when_single_candidate():
-    """With one candidate, rank_and_batch skips the ranking call entirely."""
-    config = make_config(max_issues_per_pr=1)
-    rank_called = False
-
-    def strict_rank(cs, cfg):
-        nonlocal rank_called
-        rank_called = True
-        raise AssertionError("rank must not be called for a single candidate")
-
-    result = await select_batch(
-        config,
-        query=canned_query([CANDIDATES[0]]),
-        rank=strict_rank,
-    )
-    assert result is not None
-    assert result.primary == "o/r#5"
-    assert not rank_called
+    assert result is not None and result.primary == "o/r#2"
 
 
 # --------------------------------------------------------------------------- #
@@ -139,120 +167,78 @@ _MULTI_REPO = [
     {"ref": "o/b#2", "number": 2, "repo": "o/b", "title": "b-two"},
 ]
 
+_MULTI_PLAN = [
+    {"id": 1, "refs": ["o/a#1"], "repo": "o/a"},
+    {"id": 2, "refs": ["o/b#2"], "repo": "o/b"},
+]
+
 
 @pytest.mark.asyncio
 async def test_select_batch_prefers_least_loaded_repo():
-    """The ranker top-picks o/a#1, but o/a already has active runs and o/b has
-    none → fairness re-biases the primary to the idle repo o/b."""
-    config = make_config(enabled_repos=["o/a", "o/b"], max_issues_per_pr=1)
+    """Plan priority puts o/a first, but o/a already has active runs and o/b has
+    none → fairness re-biases the pick to the idle repo o/b."""
     result = await select_batch(
-        config,
+        make_config(enabled_repos=["o/a", "o/b"]),
         query=canned_query(_MULTI_REPO),
-        rank=lambda cs, cfg: ["o/a#1", "o/b#2"],
+        load_plan=canned_plan(_MULTI_PLAN),
+        mark_consumed=consumed_recorder([]),
         repo_load={"o/a": 3, "o/b": 0},
     )
     assert result is not None
-    assert result.primary == "o/b#2"  # least-loaded repo wins the freed slot
+    assert result.primary == "o/b#2"
     assert result.repo == "o/b"
 
 
 @pytest.mark.asyncio
-async def test_repo_load_preserves_rank_within_a_repo():
-    """Fairness is a stable re-ordering: within one repo the ranker order stands."""
-    config = make_config(max_issues_per_pr=1)
+async def test_repo_load_preserves_plan_priority_within_a_repo():
+    """Fairness is a stable re-ordering: within one repo, plan order stands."""
     result = await select_batch(
-        config,
-        query=canned_query(CANDIDATES),  # all o/r
-        rank=lambda cs, cfg: ["o/r#9", "o/r#5", "o/r#2"],
+        make_config(),
+        query=canned_query(CANDIDATES),
+        load_plan=canned_plan([
+            {"id": 1, "refs": ["o/r#9"], "repo": "o/r"},
+            {"id": 2, "refs": ["o/r#2"], "repo": "o/r"},
+        ]),
+        mark_consumed=consumed_recorder([]),
         repo_load={"o/r": 5},
     )
     assert result is not None
-    assert result.primary == "o/r#9"  # single repo → ranker priority unchanged
+    assert result.primary == "o/r#9"  # single repo → plan priority unchanged
 
 
 @pytest.mark.asyncio
-async def test_no_repo_load_keeps_ranker_order():
-    """Absent repo_load (the default) leaves selection exactly as before."""
-    config = make_config(enabled_repos=["o/a", "o/b"], max_issues_per_pr=1)
+async def test_no_repo_load_keeps_plan_order():
+    """Absent repo_load (the default) leaves selection exactly the plan order."""
     result = await select_batch(
-        config,
+        make_config(enabled_repos=["o/a", "o/b"]),
         query=canned_query(_MULTI_REPO),
-        rank=lambda cs, cfg: ["o/a#1", "o/b#2"],
+        load_plan=canned_plan(_MULTI_PLAN),
+        mark_consumed=consumed_recorder([]),
     )
     assert result is not None
-    assert result.primary == "o/a#1"  # ranker's top pick, no fairness applied
+    assert result.primary == "o/a#1"  # plan's top group, no fairness applied
 
 
 # --------------------------------------------------------------------------- #
-# FakeGh wiring (gh_run injected)                                             #
+# FakeGh wiring (gh_run injected)                                              #
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_select_batch_passes_gh_run_to_query():
     """gh_run is forwarded to the query callable; FakeGh records the call."""
     gh = FakeGh()
-    gh_called = False
     received_gh_run = None
 
     def gh_aware_query(config: dict, *, gh_run=None) -> list[dict]:
-        nonlocal gh_called, received_gh_run
-        gh_called = True
+        nonlocal received_gh_run
         received_gh_run = gh_run
         return list(CANDIDATES)
 
-    config = make_config()
     await select_batch(
-        config,
+        make_config(),
         query=gh_aware_query,
-        rank=lambda cs, cfg: [cs[0]["ref"]],
         gh_run=gh,
+        load_plan=canned_plan([{"id": 1, "refs": ["o/r#2"], "repo": "o/r"}]),
+        mark_consumed=consumed_recorder([]),
     )
-    assert gh_called
     assert received_gh_run is gh
-
-
-# --------------------------------------------------------------------------- #
-# Real model is never called                                                   #
-# --------------------------------------------------------------------------- #
-
-@pytest.mark.asyncio
-async def test_real_model_never_called():
-    """Injected rank function is used; real SDK query is never invoked."""
-    config = make_config(max_issues_per_pr=1)
-    rank_calls: list[list[dict]] = []
-
-    def recorder(cs, cfg):
-        rank_calls.append(list(cs))
-        return [cs[0]["ref"]]
-
-    result = await select_batch(
-        config,
-        query=canned_query(CANDIDATES),
-        rank=recorder,
-    )
-    assert result is not None
-    # The injected rank was used (not the real model)
-    assert len(rank_calls) == 1
-    assert rank_calls[0] == CANDIDATES
-
-
-# --------------------------------------------------------------------------- #
-# Config forwarded to rank                                                     #
-# --------------------------------------------------------------------------- #
-
-@pytest.mark.asyncio
-async def test_config_forwarded_to_rank():
-    """select_batch passes config to rank so rank_issues can read max_issues_per_pr."""
-    received_config = {}
-
-    def config_recorder(cs, cfg):
-        received_config.update(cfg)
-        return [cs[0]["ref"]]
-
-    config = make_config(max_issues_per_pr=3)
-    await select_batch(
-        config,
-        query=canned_query(CANDIDATES),
-        rank=config_recorder,
-    )
-    assert received_config.get("max_issues_per_pr") == 3

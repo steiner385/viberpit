@@ -52,7 +52,8 @@ async def _seed_row(automation_id: str = "backlog-runner") -> None:
 def build_loop(*, mode="auto", config=None, clock=None,
                candidates=None, healthy="a", in_flight_counter=None,
                pr_status=None, pr_doctor_active=True, claim_result=True,
-               candidate_count=None, heal_orphans_result=None):
+               candidate_count=None, heal_orphans_result=None,
+               refresh_groups=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .claims /
@@ -147,6 +148,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
         close_out=close_out,
         count_candidates=count_candidates if candidate_count is not None else None,
         heal_orphans=heal_orphans if heal_orphans_result is not None else None,
+        refresh_groups=refresh_groups,
     )
     return loop, rec, ctx
 
@@ -756,5 +758,153 @@ def test_handed_off_row_with_no_session_id_is_not_reconciled_away(tmp_path):
         assert rec.reconciles, "reconcile seam should have been called"
         _claimed, live = rec.reconciles[-1]
         assert "r#1" in live, "handed_off row must be carried as live, not dangled"
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# Grouping-optimizer refresh gating (_maybe_refresh_groups)                    #
+# --------------------------------------------------------------------------- #
+
+def _refresh_recorder(fail: bool = False):
+    calls: list = []
+
+    async def refresh(config):
+        calls.append(config)
+        if fail:
+            raise RuntimeError("model down (injected)")
+        return 3
+
+    return refresh, calls
+
+
+def test_group_refresh_runs_on_first_enabled_tick_only(tmp_path):
+    """Cold start refreshes immediately; a satisfied loop (batches flowing)
+    does NOT refresh again inside the interval."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr1.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        refresh, calls = _refresh_recorder()
+        loop, rec, ctx = build_loop(
+            mode="auto", candidates=[batch("r#1"), batch("r#2")],
+            refresh_groups=refresh)
+        await loop.tick()
+        assert len(calls) == 1          # cold start → refresh before refill
+        await loop.tick()
+        assert len(calls) == 1          # in-interval, not starved → no refresh
+
+    asyncio.run(run())
+
+
+def test_group_refresh_nudged_when_starved(tmp_path):
+    """select_batch returning None (no live plan group) nudges a refresh on the
+    NEXT tick — the wait-for-the-grouper contract."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        refresh, calls = _refresh_recorder()
+        loop, rec, ctx = build_loop(mode="auto", candidates=[],
+                                    refresh_groups=refresh)
+        await loop.tick()               # cold start refresh + starved refill
+        assert len(calls) == 1
+        assert rec.spawns == []         # nothing selected → the runner WAITED
+        await loop.tick()               # the starvation nudge forces a refresh
+        assert len(calls) == 2
+
+    asyncio.run(run())
+
+
+def test_group_refresh_interval_elapsed_refreshes(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr3.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clock = FakeClock()
+        refresh, calls = _refresh_recorder()
+        loop, rec, ctx = build_loop(
+            mode="auto", clock=clock, candidates=[batch("r#1"), batch("r#2")],
+            config=make_config(grouping_interval_minutes=30),
+            refresh_groups=refresh)
+        await loop.tick()
+        assert len(calls) == 1
+        clock.advance(30 * 60)
+        await loop.tick()
+        assert len(calls) == 2
+
+    asyncio.run(run())
+
+
+def test_group_refresh_failure_backs_off_nudges_and_debounces_event(tmp_path):
+    """A failing refresh must NOT be re-driven every tick by the starvation
+    nudge (that would hammer the model once per tick); it retries after a full
+    interval, and the warn event is emitted once, not per failure."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr4.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clock = FakeClock()
+        refresh, calls = _refresh_recorder(fail=True)
+        loop, rec, ctx = build_loop(mode="auto", clock=clock, candidates=[],
+                                    refresh_groups=refresh)
+        await loop.tick()               # cold start → refresh fails
+        await loop.tick()               # nudged, but backing off → NO retry
+        await loop.tick()
+        assert len(calls) == 1
+        clock.advance(31 * 60)
+        await loop.tick()               # interval elapsed → retry (fails again)
+        assert len(calls) == 2
+
+        from sqlalchemy import select
+        from server.db.models import AutomationEvent
+        async with db_session() as db:
+            warns = (await db.execute(select(AutomationEvent).where(
+                AutomationEvent.kind == "groups_refresh_failed"))).scalars().all()
+        assert len(warns) == 1          # debounced across consecutive failures
+
+    asyncio.run(run())
+
+
+def test_group_refresh_emits_refreshed_event_on_count_change(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr5.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clock = FakeClock()
+        refresh, calls = _refresh_recorder()
+        loop, rec, ctx = build_loop(mode="auto", clock=clock, candidates=[],
+                                    refresh_groups=refresh)
+        await loop.tick()
+        clock.advance(31 * 60)
+        await loop.tick()               # same count (3) → no duplicate event
+
+        from sqlalchemy import select
+        from server.db.models import AutomationEvent
+        async with db_session() as db:
+            events = (await db.execute(select(AutomationEvent).where(
+                AutomationEvent.kind == "groups_refreshed"))).scalars().all()
+        assert len(events) == 1
+        assert events[0].detail == {"groups": 3}
+
+    asyncio.run(run())
+
+
+def test_group_refresh_skipped_when_mode_off(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr6.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        refresh, calls = _refresh_recorder()
+        loop, rec, ctx = build_loop(mode="off", candidates=[batch("r#1")],
+                                    refresh_groups=refresh)
+        await loop.tick()
+        assert calls == []              # a disabled runner never groups
 
     asyncio.run(run())

@@ -376,6 +376,35 @@ class AutomationTargetState(Base):
         DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
+class BacklogGroup(Base):
+    """One planned unit of Backlog Runner work: an ordered group of related
+    issue refs the background grouping optimizer decided belong in one PR.
+
+    Rows are written generation-at-a-time by the grouper (a refresh REPLACES
+    the previous generation wholesale) and consumed read-only by the runner's
+    selection path and the automations API. ``refs`` is ordered, primary
+    first; ``rank`` is the group's priority within its generation (0 = next).
+    ``consumed_at`` is stamped when the runner claims the group, purely for
+    the UI — correctness never depends on it (claimed issues drop out of the
+    live candidate pool, so a consumed group can't be re-selected).
+
+    Every non-key column is NULLABLE (the SQLite reconcile rule — see
+    MergedPr's docstring); timestamps are ISO-8601 TEXT for direct JSON use.
+    """
+
+    __tablename__ = "backlog_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    generation: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True)
+    refs: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    titles: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    consumed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class CiRun(Base):
     """One completed GitHub Actions workflow run (CI/CD Doctor sensing).
     id is the GitHub run id (globally unique). All non-PK columns nullable so
