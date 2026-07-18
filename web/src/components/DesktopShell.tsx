@@ -292,39 +292,43 @@ export function DesktopShell() {
   function handleCollapseHighlighted() { if (highlightedGroupKey) collapseGroup(highlightedGroupKey) }
   function handleToggleHighlighted() { if (highlightedGroupKey) toggleCollapse(highlightedGroupKey) }
 
-  function handleDispatch({ initialPrompt, repo, account, model, attachmentIds }: { initialPrompt: string; repo: string | null; account: string | null; model: string | null; attachmentIds: string[] }) {
+  function handleDispatch({ initialPrompt, repo, account, model, attachmentIds }: { initialPrompt: string; repo: string | null; account: string | null; model: string | null; attachmentIds: string[] }): Promise<void> {
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
-    createSession.mutate(
-      {
-        initialPrompt,
-        repo: repo ?? undefined,
-        branch: repoInfo?.defaultBranch ?? undefined,
-        account: account ?? undefined,
-        model: model ?? undefined,
-        attachmentIds: attachmentIds.length ? attachmentIds : undefined,
-      },
-      {
-        onSuccess: (session) => {
-          if (repo) setLastRepo(repo)
-          if (session.usageUnverified) {
-            toast("Couldn't verify account usage — started anyway.")
-          }
-          focusSession(session.id, initialPrompt)
+    return new Promise((resolve, reject) => {
+      createSession.mutate(
+        {
+          initialPrompt,
+          repo: repo ?? undefined,
+          branch: repoInfo?.defaultBranch ?? undefined,
+          account: account ?? undefined,
+          model: model ?? undefined,
+          attachmentIds: attachmentIds.length ? attachmentIds : undefined,
         },
-        onError: (err) => {
-          if (err.status === 409) {
-            const body = err.body as { error?: { code?: string }; earliestReset?: string | null }
-            if (body?.error?.code === 'branch_switch_failed') {
-              // branch errors are handled elsewhere; ignore here
-            } else if (body?.error?.code === 'accounts_need_reauth') {
-              toast.error('No usable accounts — check Settings → Accounts to re-authenticate.')
-            } else {
-              setAllLimitedReset(body.earliestReset ?? null)
+        {
+          onSuccess: (session) => {
+            if (repo) setLastRepo(repo)
+            if (session.usageUnverified) {
+              toast("Couldn't verify account usage — started anyway.")
             }
-          }
+            focusSession(session.id, initialPrompt)
+            resolve()
+          },
+          onError: (err) => {
+            if (err.status === 409) {
+              const body = err.body as { error?: { code?: string }; earliestReset?: string | null }
+              if (body?.error?.code === 'branch_switch_failed') {
+                // branch errors are handled elsewhere; ignore here
+              } else if (body?.error?.code === 'accounts_need_reauth') {
+                toast.error('No usable accounts — check Settings → Accounts to re-authenticate.')
+              } else {
+                setAllLimitedReset(body.earliestReset ?? null)
+              }
+            }
+            reject(err)
+          },
         },
-      },
-    )
+      )
+    })
   }
 
   const hasNeedsReauth = accounts.some(

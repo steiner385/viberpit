@@ -12,7 +12,7 @@ const baseProps: DispatchBarProps = {
   repos: [],
   reposLoading: false,
   reposError: false,
-  onDispatch: vi.fn(),
+  onDispatch: vi.fn().mockResolvedValue(undefined),
   onNavigate: vi.fn(),
   onOpenHighlighted: vi.fn(),
   onRowAction: vi.fn(),

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DispatchBar } from '../DispatchBar'
 import { caretLineEdges } from '@/lib/caretLineEdges'
@@ -29,7 +29,7 @@ function makeProps(overrides: Partial<React.ComponentProps<typeof DispatchBar>> 
     reposError: false,
     accounts: ACCOUNTS,
     models: MODELS,
-    onDispatch: vi.fn(),
+    onDispatch: vi.fn().mockResolvedValue(undefined),
     onNavigate: vi.fn(),
     onOpenHighlighted: vi.fn(),
     onEnterList: vi.fn(),
@@ -73,19 +73,19 @@ describe('DispatchBar', () => {
 
   it('Enter with text dispatches and clears', async () => {
     const user = userEvent.setup()
-    const onDispatch = vi.fn()
+    const onDispatch = vi.fn().mockResolvedValue(undefined)
     render(<DispatchBar {...makeProps({ onDispatch })} />)
     const box = screen.getByRole('textbox', { name: /new session prompt/i })
     await user.click(box)
     await user.type(box, 'fix the bug')
     await user.keyboard('{Enter}')
     expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, attachmentIds: [] })
-    expect(box).toHaveValue('')
+    await waitFor(() => expect(box).toHaveValue(''))
   })
 
   it('Shift+Enter inserts a newline (does not dispatch)', async () => {
     const user = userEvent.setup()
-    const onDispatch = vi.fn()
+    const onDispatch = vi.fn().mockResolvedValue(undefined)
     render(<DispatchBar {...makeProps({ onDispatch })} />)
     const box = screen.getByRole('textbox', { name: /new session prompt/i })
     await user.click(box)
@@ -107,7 +107,7 @@ describe('DispatchBar', () => {
 
   it('Create button is disabled until the prompt has text, then dispatches and clears', async () => {
     const user = userEvent.setup()
-    const onDispatch = vi.fn()
+    const onDispatch = vi.fn().mockResolvedValue(undefined)
     render(<DispatchBar {...makeProps({ onDispatch })} />)
     const create = screen.getByRole('button', { name: /create session/i })
     // Empty prompt → disabled (a "Create" button must never open an existing session)
@@ -117,12 +117,12 @@ describe('DispatchBar', () => {
     expect(create).toBeEnabled()
     await user.click(create)
     expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, attachmentIds: [] })
-    expect(box).toHaveValue('')
+    await waitFor(() => expect(box).toHaveValue(''))
   })
 
   it('offers Account and Model dropdowns next to Repository, and forwards the picks', async () => {
     const user = userEvent.setup()
-    const onDispatch = vi.fn()
+    const onDispatch = vi.fn().mockResolvedValue(undefined)
     render(<DispatchBar {...makeProps({ onDispatch })} />)
 
     // All three selectors are present in the bar.
@@ -146,7 +146,7 @@ describe('DispatchBar', () => {
 
   it('normalizes the "Default" model to null so the backend keeps the account default', async () => {
     const user = userEvent.setup()
-    const onDispatch = vi.fn()
+    const onDispatch = vi.fn().mockResolvedValue(undefined)
     render(<DispatchBar {...makeProps({ onDispatch })} />)
 
     // Pick an account but leave Model on "Default".

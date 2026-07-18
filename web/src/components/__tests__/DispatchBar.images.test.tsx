@@ -11,7 +11,7 @@ beforeEach(() => {
 })
 
 it('dispatch includes pasted image attachment ids', async () => {
-  const onDispatch = vi.fn()
+  const onDispatch = vi.fn().mockResolvedValue(undefined)
   render(<DispatchBar repos={[]} reposLoading={false} reposError={false} onDispatch={onDispatch} />)
   const ta = screen.getByRole('textbox')
   fireEvent.paste(ta, { clipboardData: {
@@ -25,7 +25,7 @@ it('dispatch includes pasted image attachment ids', async () => {
 })
 
 it('dispatch with image-only (empty prompt) calls onDispatch not onOpenHighlighted', async () => {
-  const onDispatch = vi.fn()
+  const onDispatch = vi.fn().mockResolvedValue(undefined)
   const onOpenHighlighted = vi.fn()
   render(
     <DispatchBar
@@ -53,7 +53,7 @@ it('dispatch with image-only (empty prompt) calls onDispatch not onOpenHighlight
 })
 
 it('file input uses image/* and is not camera-only', () => {
-  const { container } = render(<DispatchBar repos={[]} reposLoading={false} reposError={false} onDispatch={vi.fn()} />)
+  const { container } = render(<DispatchBar repos={[]} reposLoading={false} reposError={false} onDispatch={vi.fn().mockResolvedValue(undefined)} />)
   const input = container.querySelector('input[type=file]') as HTMLInputElement
   expect(input.getAttribute('accept')).toBe('image/*')
   expect(input.hasAttribute('capture')).toBe(false)
