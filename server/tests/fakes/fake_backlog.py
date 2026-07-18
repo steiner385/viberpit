@@ -1,12 +1,10 @@
 """Fake harness for Backlog Runner tests — zero-network, zero-LLM fixtures.
 
-Three fakes that cover every I/O seam the selection layer touches:
+Two fakes that cover every I/O seam the selection layer touches:
 
 - ``FakeGh``    — stand-in for ``gitrepos._run_gh(args)``.  Records every argv
                   and returns a scripted ``subprocess.CompletedProcess`` keyed on
                   argv-prefix, or a default-success proc.
-- ``fake_rank`` — factory that returns a canned ranking function (the injected
-                  LLM ranking seam).
 - ``FakeSpawn`` — async callable standing in for
                   ``AutomationContext.spawn_session``.  Writes a ``Session`` row
                   with ``origin="backlog-runner"`` and de-dups by
@@ -60,23 +58,6 @@ class FakeGh:
                 best = result
                 best_len = plen
         return best if best is not None else _default_proc()
-
-
-# --------------------------------------------------------------------------- #
-# fake_rank                                                                     #
-# --------------------------------------------------------------------------- #
-
-def fake_rank(order: list[str]):
-    """Return a ranking function that always returns the canned ``order``.
-
-    The returned function mirrors the ``ranking(candidates) -> list[str]`` seam
-    consumed by ``rank_and_batch``.
-    """
-
-    def _rank(candidates: list) -> list[str]:  # noqa: ARG001
-        return list(order)
-
-    return _rank
 
 
 # --------------------------------------------------------------------------- #

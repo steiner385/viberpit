@@ -21,47 +21,6 @@ class Batch:
     titles: dict[str, str] = field(default_factory=dict)
 
 
-def rank_and_batch(
-    candidates: list,
-    max_issues_per_pr: int,
-    ranking,
-) -> "Batch | None":
-    """Pure: pick a coherent work item from ``candidates``.
-
-    ``ranking(candidates)`` returns an ordered list of refs (or a coherent
-    group when K>1).  ≤1 candidate skips ranking.  Malformed/empty ranking →
-    deterministic fallback (lowest issue number first).
-
-    Parameters
-    ----------
-    candidates:
-        List of dicts with keys ``"ref"`` (str), ``"number"`` (int), and
-        ``"repo"`` (str).
-    max_issues_per_pr:
-        Maximum number of issues to bundle into the batch (cap K).
-    ranking:
-        Callable ``(candidates) -> list[str]`` — the injected LLM ranking seam.
-
-    Returns
-    -------
-    ``Batch`` or ``None`` when ``candidates`` is empty.
-    """
-    if not candidates:
-        return None
-    by_ref = {c["ref"]: c for c in candidates}
-    if len(candidates) == 1:
-        ordered: list[str] = [candidates[0]["ref"]]
-    else:
-        ranked = [r for r in (ranking(candidates) or []) if r in by_ref]
-        ordered = ranked or [
-            c["ref"] for c in sorted(candidates, key=lambda c: c["number"])
-        ]
-    chosen = ordered[: max(1, max_issues_per_pr)]
-    primary = chosen[0]
-    return Batch(primary=primary, issues=list(chosen), repo=by_ref[primary]["repo"],
-                 titles={r: t for r in chosen if (t := by_ref[r].get("title"))})
-
-
 def should_free_slot(pr_info: PullRequestInfo, pr_doctor_active: bool) -> bool:
     """A runner slot frees when the work item's PR has reached the point where
     something else carries it: PR Doctor keeps CI green toward auto-merge, so if

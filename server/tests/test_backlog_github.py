@@ -62,12 +62,12 @@ def test_query_candidates_builds_filtered_query_and_parses():
     assert "is:open" in query
     assert "no:assignee" in query
 
-    # Parsed into the candidate shape rank_and_batch consumes.
+    # Parsed into the candidate shape the grouping optimizer consumes.
     assert out == [
         {"ref": "o/r#7", "number": 7, "repo": "o/r", "title": "Fix login",
-         "url": "https://github.com/o/r/issues/7"},
+         "body": None, "url": "https://github.com/o/r/issues/7"},
         {"ref": "o/r#12", "number": 12, "repo": "o/r", "title": "Add search",
-         "url": "https://github.com/o/r/issues/12"},
+         "body": None, "url": "https://github.com/o/r/issues/12"},
     ]
 
 
@@ -78,7 +78,7 @@ def test_query_candidates_synthesizes_url_when_api_omits_it():
     fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
     out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
     assert out == [{"ref": "o/r#9", "number": 9, "repo": "o/r", "title": "No url",
-                    "url": "https://github.com/o/r/issues/9"}]
+                    "body": None, "url": "https://github.com/o/r/issues/9"}]
 
 
 def test_query_candidates_empty_enabled_repos_returns_empty_no_call():
@@ -115,7 +115,7 @@ def test_query_candidates_blank_label_drops_the_label_gate():
     # Other gates still present; the issue is still parsed.
     assert "no:assignee" in query and "is:open" in query
     assert out == [{"ref": "o/r#7", "number": 7, "repo": "o/r", "title": "Fix login",
-                    "url": "https://github.com/o/r/issues/7"}]
+                    "body": None, "url": "https://github.com/o/r/issues/7"}]
 
 
 # --------------------------------------------------------------------------- #

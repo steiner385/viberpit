@@ -1,4 +1,4 @@
-"""One-shot LLM decider for autopilot. Mirrors backlog_runner.rank_issues: injected
+"""One-shot LLM decider for autopilot. Mirrors backlog_grouping.propose_groups: injected
 _query_fn so the real model is NEVER called in tests; safe 'escalate' on any failure."""
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _build_prompt(ctx: DecisionContext) -> str:
         "fleet": ctx.fleet_context,
         "transcript_tail": ctx.transcript_tail[-12:],
     }, indent=2, default=str)
-    # The format demand must live in the USER prompt too (the proven rank_issues
+    # The format demand must live in the USER prompt too (the proven one-shot
     # pattern): a system-prompt-only instruction drifts under weak context and the
     # model answers in prose instead of the decision object (prod, 2026-07-03).
     return (payload + "\n\nDecide the single next action for this session. "

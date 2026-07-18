@@ -48,7 +48,9 @@ def _split_ref(ref: str) -> tuple[str, str]:
 # Candidate query                                                             #
 # --------------------------------------------------------------------------- #
 
-_ISSUE_NODES = "nodes { ... on Issue { number title url repository { nameWithOwner } } }"
+# ``body`` feeds the grouping optimizer's relatedness analysis (titles alone
+# were what produced over-bundling); it is excerpted before prompting.
+_ISSUE_NODES = "nodes { ... on Issue { number title body url repository { nameWithOwner } } }"
 
 
 def _common_quals(repos: list[str], eligible_label: str) -> list[str]:
@@ -105,10 +107,10 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
                      now: datetime | None = None) -> list[dict]:
     """Return eligible, unclaimed OPEN issues as candidate dicts.
 
-    Candidate shape (what :func:`rank_and_batch` consumes)::
+    Candidate shape (what the grouping optimizer and ``plan_to_batch`` consume)::
 
         {"ref": "owner/repo#N", "number": N, "repo": "owner/repo", "title": ...,
-         "url": "https://github.com/owner/repo/issues/N"}
+         "body": ..., "url": "https://github.com/owner/repo/issues/N"}
 
     Two pools, fresh first: never-escalated issues, then ``needs-human`` issues
     untouched for ``needs_human_retry_days`` (missing key → the schema default,
@@ -167,6 +169,8 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
             "number": number,
             "repo": repo,
             "title": node.get("title"),
+            # body feeds the grouping optimizer (excerpted before prompting).
+            "body": node.get("body"),
             # url lets the ActionableItem link out to the issue; fall back to the
             # canonical /issues/N path if the API somehow omitted it (#467).
             "url": node.get("url") or f"https://github.com/{repo}/issues/{number}",

@@ -7,6 +7,7 @@ import {
 } from '@/api/hooks'
 import type { Automation, ActionSpec } from '@/api/automations'
 import { ConsolidatePanel } from '@/components/ConsolidatePanel'
+import { BacklogGroupsPanel } from '@/components/BacklogGroupsPanel'
 
 const LEVEL_DOT: Record<string, string> = {
   idle: 'bg-gray-400', active: 'bg-blue-500', warn: 'bg-amber-500', error: 'bg-red-500',
@@ -221,6 +222,7 @@ function AutomationLiveCard({ automation: a, onOpenSession, onReviewSession }: {
           </section>
           <AutomationActions automationId={a.id} enabled={open} />
           {a.id === 'pr-doctor' && <ConsolidatePanel enabled={open} onOpenSession={onOpenSession} />}
+          {a.id === 'backlog-runner' && <BacklogGroupsPanel enabled={open} />}
           <SpawnedSessionsSection id={a.id} enabled={open} onOpenSession={onOpenSession} onReviewSession={onReviewSession} />
         </div>
       )}

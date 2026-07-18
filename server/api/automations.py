@@ -185,6 +185,24 @@ async def cicd_doctor_findings(status: str = "open", repo: str | None = None,
             for f in rows]
 
 
+@router.get("/backlog-runner/groups")
+async def backlog_runner_groups(_identity: str = Depends(current_identity),
+                                db=Depends(get_db)) -> dict:
+    """The current backlog grouping plan, priority order. Reads the DB directly
+    — the background optimizer persists every generation, so no orchestrator
+    round-trip is needed. Read-only: the runner consumes groups on its own."""
+    from server.automations.backlog_grouping import group_view
+    from server.db.models import BacklogGroup
+    _automation_or_404("backlog-runner")
+    rows = (await db.execute(
+        select(BacklogGroup).order_by(BacklogGroup.rank))).scalars().all()
+    return {
+        "generation": rows[0].generation if rows else None,
+        "createdAt": rows[0].created_at if rows else None,
+        "groups": [group_view(r) for r in rows],
+    }
+
+
 @router.get("/{automation_id}/actionable")
 async def list_automation_actionable(automation_id: str, request: Request,
                                      _identity: str = Depends(current_identity)) -> list[dict]:

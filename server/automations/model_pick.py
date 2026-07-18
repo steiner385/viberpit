@@ -74,7 +74,7 @@ async def assess_model(
 ) -> str | None:
     """One-shot Haiku query mapping *task_summary* to a tier in AUTO_MODEL_POOL.
 
-    Mirrors ``backlog_runner.rank_issues``: tool-less one-shot query with an
+    Mirrors ``backlog_grouping.propose_groups``: tool-less one-shot query with an
     injected ``_query_fn`` seam so tests never call the real model. Returns the
     picked alias, or ``None`` on ANY failure (exception, timeout, empty or
     out-of-pool reply) so the caller falls back to the account default.

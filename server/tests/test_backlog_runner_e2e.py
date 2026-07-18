@@ -2,11 +2,14 @@
 zero real sessions.
 
 The whole loop rides the real ``BacklogRunnerLoop`` wired to the real selection /
-claim / spawn seams (``select_batch`` → ``rank_and_batch``, ``claim_batch`` /
-``unclaim_batch`` / ``label_needs_human``) but with:
+claim / spawn seams (grouping-plan refresh → ``store_plan`` → ``select_batch``
+→ ``plan_to_batch``, ``claim_batch`` / ``unclaim_batch`` / ``label_needs_human``)
+but with:
 
 - a FAKE ``gh`` (:class:`FakeGh`) — every GitHub call is scripted, no network;
-- a canned rank (:func:`fake_rank`) — the real Haiku model is NEVER called;
+- a canned grouping pass (all-singletons via ``parse_group_plan("")``) — the
+  real Sonnet model is NEVER called; the REAL plan store (``backlog_groups``)
+  carries the plan between refresh and selection;
 - a fake ``create_session`` that writes a DB row — no real PTY / SDK session.
 
 Acceptance criterion: the full path (select→claim→spawn, in-flight cap,
@@ -127,6 +130,7 @@ class Harness:
             needs_human=self._needs_human,
             session_ended=self._session_ended,
             reconcile=self._reconcile,
+            refresh_groups=self._refresh_groups,
         )
         self.released: list[str] = []
         self.needs_humaned: list[str] = []
@@ -134,12 +138,20 @@ class Harness:
     async def _read_config(self):
         return "auto", self.config
 
+    async def _refresh_groups(self, config) -> int:
+        # Canned grouping: all-singletons in issue-number order (what
+        # parse_group_plan degrades to) written through the REAL plan store.
+        # The real Sonnet model is never called; the grouping logic itself is
+        # covered by test_backlog_grouping.
+        from server.automations.backlog_grouping import parse_group_plan, store_plan
+        cands = backlog_github.query_candidates(config, gh_run=self.gh)
+        groups = parse_group_plan("", cands, int(config.get("max_issues_per_pr") or 1))
+        await store_plan(groups, cands)
+        return len(groups)
+
     async def _select_batch(self, config):
-        # Canned rank: preserve candidate order (lowest number first). The real
-        # Haiku model is never called.
-        def _rank(cs, _cfg):
-            return [c["ref"] for c in sorted(cs, key=lambda c: c["number"])]
-        return await select_batch(config, gh_run=self.gh, rank=_rank)
+        # REAL plan-based selection: live candidates ∩ the stored group plan.
+        return await select_batch(config, gh_run=self.gh)
 
     async def _claim(self, batch) -> bool:
         return await asyncio.to_thread(backlog_github.claim_batch, batch, gh_run=self.gh)

@@ -4,9 +4,10 @@ import { api, ApiRequestError } from './client'
 import {
   fetchAutomations, fetchAutomationEvents, fetchSpawnedSessions, patchAutomation,
   fetchAutomationActionable, postAutomationTrigger,
-  fetchConsolidation, postConsolidate,
+  fetchConsolidation, postConsolidate, fetchBacklogGroups,
   type Automation, type AutomationEvent, type AutomationPatch,
   type ActionableItem, type TriggerResult, type ConsolidationView,
+  type BacklogGroupsView,
 } from './automations'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
@@ -45,6 +46,7 @@ export const QK = {
     ['pipeline-insights', repo, window] as const,
   automationActionable: (id: string) => ['automation-actionable', id] as const,
   consolidation: ['automation-consolidation'] as const,
+  backlogGroups: ['backlog-groups'] as const,
   daemonHealth: ['daemon-health'] as const,
   libraryPlugins: ['library', 'plugins'] as const,
   libraryPlugin: (id: string) => ['library', 'plugin', id] as const,
@@ -753,6 +755,16 @@ export function useConsolidation(enabled = true) {
   return useQuery<ConsolidationView>({
     queryKey: QK.consolidation,
     queryFn: fetchConsolidation,
+    enabled,
+    staleTime: 10_000,
+  })
+}
+
+/** The backlog grouping optimizer's current plan (read-only visibility). */
+export function useBacklogGroups(enabled = true) {
+  return useQuery<BacklogGroupsView>({
+    queryKey: QK.backlogGroups,
+    queryFn: fetchBacklogGroups,
     enabled,
     staleTime: 10_000,
   })
