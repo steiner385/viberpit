@@ -674,24 +674,28 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   function handleCollapseHighlighted() { if (highlightedGroupKey) collapseGroup(highlightedGroupKey) }
   function handleToggleHighlighted() { if (highlightedGroupKey) toggleCollapse(highlightedGroupKey) }
 
-  function handleDispatch({ initialPrompt, repo, account, model, attachmentIds }: { initialPrompt: string; repo: string | null; account: string | null; model: string | null; attachmentIds: string[] }) {
+  function handleDispatch({ initialPrompt, repo, account, model, attachmentIds }: { initialPrompt: string; repo: string | null; account: string | null; model: string | null; attachmentIds: string[] }): Promise<void> {
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
-    createSession.mutate(
-      {
-        initialPrompt,
-        repo: repo ?? undefined,
-        branch: repoInfo?.defaultBranch ?? undefined,
-        account: account ?? undefined,
-        model: model ?? undefined,
-        attachmentIds: attachmentIds.length ? attachmentIds : undefined,
-      },
-      {
-        onSuccess: (session) => {
-          if (repo) setLastRepo(repo)
-          if (onOpenSession) onOpenSession(session.id, initialPrompt)
+    return new Promise((resolve, reject) => {
+      createSession.mutate(
+        {
+          initialPrompt,
+          repo: repo ?? undefined,
+          branch: repoInfo?.defaultBranch ?? undefined,
+          account: account ?? undefined,
+          model: model ?? undefined,
+          attachmentIds: attachmentIds.length ? attachmentIds : undefined,
         },
-      },
-    )
+        {
+          onSuccess: (session) => {
+            if (repo) setLastRepo(repo)
+            if (onOpenSession) onOpenSession(session.id, initialPrompt)
+            resolve()
+          },
+          onError: (err) => reject(err),
+        },
+      )
+    })
   }
 
   function handleReview(id: string) {

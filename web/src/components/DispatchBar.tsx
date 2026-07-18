@@ -28,7 +28,7 @@ export interface DispatchBarProps {
     account: string | null
     model: string | null
     attachmentIds: string[]
-  }) => void
+  }) => Promise<void>
   /** ↑/↓ at a line boundary (or empty prompt). */
   onNavigate: (dir: 'up' | 'down') => void
   /** Enter on an EMPTY prompt, or →. */
@@ -112,26 +112,29 @@ export function DispatchBar({
     if (files.length) { e.preventDefault(); void att.addFiles(files) }
   }
 
-  function dispatchNow() {
+  async function dispatchNow() {
     const trimmed = text.trim()
     const refs = att.refs()
     if (!trimmed && refs.length === 0) {
       onOpenHighlighted()
       return
     }
-    onDispatch({
-      initialPrompt: trimmed,
-      repo: repo || null,
-      account: account || null,
-      // "default" ⇒ omit so the backend leaves the account's model as-is.
-      model: model && model !== 'default' ? model : null,
-      attachmentIds: refs,
-    })
-    setText('')
-    att.clear()
-    // Reset textarea height
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
+    try {
+      await onDispatch({
+        initialPrompt: trimmed,
+        repo: repo || null,
+        account: account || null,
+        // "default" ⇒ omit so the backend leaves the account's model as-is.
+        model: model && model !== 'default' ? model : null,
+        attachmentIds: refs,
+      })
+      setText('')
+      att.clear()
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto'
+      }
+    } catch {
+      // creation failed — leave the text so the user can retry or edit
     }
   }
 
