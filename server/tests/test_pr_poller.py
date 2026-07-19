@@ -255,3 +255,44 @@ async def test_on_cycle_exception_is_swallowed():
 
     p.set_on_cycle(aboom)
     await p._fire_on_cycle()  # must not raise
+
+
+def test_default_query_supplements_evicted_envs(monkeypatch):
+    """Per-branch default query re-fetches classified envs evicted from the
+    shared deployments window — same truncation fix as the population poller,
+    merged into EVERY alias of the affected repo (a repo appears once per
+    tracked branch)."""
+    import json as _json
+    from server.github import pr_poller as PP
+
+    def _dep(env, *, status="SUCCESS"):
+        return {"latestEnvironment": env, "commitOid": "c",
+                "latestStatus": {"state": status},
+                "commit": {"committedDate": "2026-07-18T20:00:00Z"}}
+
+    def _node():
+        return {
+            "pullRequests": {"nodes": []},
+            "deployments": {"nodes": [_dep("kindash / qa")]},
+            "environments": {"nodes": [{"name": "kindash / qa"},
+                                       {"name": "kindash / production"}]},
+        }
+
+    main = {"data": {"r0": _node(), "r1": _node()}}
+    supp = {"data": {"r0": {"e0": {"nodes": [_dep("kindash / production")]}}}}
+    calls = []
+
+    def fake_run(args, token=None, input=None):
+        calls.append(input)
+        out = _json.dumps(main if len(calls) == 1 else supp)
+        class R: returncode = 0; stdout = out; stderr = ""
+        return R()
+
+    monkeypatch.setattr(PP.gitrepos, "_run_gh", fake_run)
+    pairs = [("cairnea/KinDash", "br-a"), ("cairnea/KinDash", "br-b")]
+    resp = PP._default_query(pairs)
+    assert len(calls) == 2
+    for alias in ("r0", "r1"):
+        envs = [d["latestEnvironment"]
+                for d in resp["data"][alias]["deployments"]["nodes"]]
+        assert "kindash / production" in envs
