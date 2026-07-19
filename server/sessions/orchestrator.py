@@ -2743,7 +2743,10 @@ class SessionOrchestrator:
         target re-arms and retries next poll).
         """
         target = f"{repo}#{info.number}"
-        if kind == "out_of_date":
+        if kind in ("out_of_date", "stuck_enqueue"):
+            # stuck_enqueue: armed PR silently dropped from the merge queue (e.g.
+            # ci-gate suite-shadowing). update-branch produces a new head → fresh CI
+            # run → GitHub re-evaluates queue eligibility and re-enqueues.
             argv = ["api", "-X", "PUT", f"repos/{repo}/pulls/{info.number}/update-branch"]
             try:
                 proc = self._gh_run(argv)

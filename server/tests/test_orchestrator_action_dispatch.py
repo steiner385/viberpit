@@ -17,7 +17,7 @@ def _orch():
 async def test_dispatch_registers_pr_doctor_and_backlog():
     orch = _orch()
     assert orch._action_providers["pr-doctor"].valid_kinds == frozenset(
-        {"failing_ci", "merge_conflict", "out_of_date"})
+        {"failing_ci", "merge_conflict", "out_of_date", "stuck_enqueue"})
     assert orch._action_providers["backlog-runner"].valid_kinds == frozenset({"implement"})
     # cicd-doctor is the third registered provider (#465).
     assert orch._action_providers["cicd-doctor"].valid_kinds == frozenset({"file_issue"})

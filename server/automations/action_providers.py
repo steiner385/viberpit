@@ -16,6 +16,7 @@ _PR_KIND_LABEL = {
     "failing_ci": "Fix CI",
     "merge_conflict": "Resolve conflicts",
     "out_of_date": "Update branch",
+    "stuck_enqueue": "Re-enqueue",
 }
 _PR_RISKY = {"merge_conflict"}
 
