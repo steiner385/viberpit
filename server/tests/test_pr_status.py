@@ -445,3 +445,94 @@ def test_pull_request_info_eta_defaults_for_old_payload():
     d = {"number": 1, "url": "u", "state": "open", "checks": "none"}
     info = PullRequestInfo.from_dict(d)
     assert info.eta_seconds is None and info.eta_percent is None and info.eta_overdue is False
+
+
+# --- Per-environment deployment supplement (deployments window truncation) ---
+# On a 3-deploys-per-merge repo the shared deployments(first:30) window only
+# covers ~10 merges, so a low-churn env's (e.g. prod's) newest SUCCESS deploy is
+# evicted by qa churn and every merged PR reverts to not-deployed. The fix:
+# list the repo's environments, detect classified envs with no SUCCESS inside
+# the window, and re-fetch those envs via environment-filtered queries that
+# qa churn can't evict.
+
+from server.github.pr_status import (
+    build_env_deployments_query, merge_env_deployments, missing_active_envs,
+)
+
+
+def _repo_node(deploy_nodes, env_names, pr_nodes=()):
+    return {
+        "pullRequests": {"nodes": list(pr_nodes)},
+        "deployments": {"nodes": deploy_nodes},
+        "environments": {"nodes": [{"name": n} for n in env_names]},
+    }
+
+
+def test_population_query_lists_environments():
+    q = build_population_query("o/r", "2026-07-01")
+    assert "environments(first: 100)" in q
+
+
+def test_pr_query_lists_environments():
+    q = build_pr_query([("o/r", "br")])
+    assert "environments(first: 100)" in q
+
+
+def test_missing_active_envs_detects_evicted_env():
+    # qa churn filled the window; production has no entry at all in it. The
+    # unclassified preview env must NOT be supplemented (bounded fan-out).
+    node = _repo_node(
+        [_deploy("2026-07-18T21:00:00Z", env="kindash / qa")],
+        ["kindash / qa", "kindash / production", "pr-123-preview"],
+    )
+    assert missing_active_envs(node) == ["kindash / production"]
+
+
+def test_missing_active_envs_empty_when_all_present():
+    node = _repo_node(
+        [_deploy("2026-07-18T21:00:00Z", env="qa"),
+         _deploy("2026-07-18T20:00:00Z", env="production")],
+        ["qa", "production"],
+    )
+    assert missing_active_envs(node) == []
+
+
+def test_missing_active_envs_failed_latest_counts_as_missing():
+    # The window holds only a FAILURE for prod — the newest SUCCESS may lie
+    # outside the window, so prod still needs the per-env re-fetch.
+    node = _repo_node(
+        [_deploy("2026-07-18T21:00:00Z", env="production", status="FAILURE")],
+        ["production"],
+    )
+    assert missing_active_envs(node) == ["production"]
+
+
+def test_build_env_deployments_query_aliases_repo_and_envs():
+    q = build_env_deployments_query(
+        [("cairnea/KinDash", ["kindash / production", "kindash / qa"])]
+    )
+    assert 'r0: repository(owner: "cairnea", name: "KinDash")' in q
+    assert 'e0: deployments(environments: ["kindash / production"]' in q
+    assert 'e1: deployments(environments: ["kindash / qa"]' in q
+    assert "latestEnvironment" in q
+
+
+def test_build_env_deployments_query_empty_is_blank():
+    assert build_env_deployments_query([]) == ""
+
+
+def test_merge_env_deployments_restores_prod_liveness():
+    # End-to-end: main window shows only qa; the supplement carries prod's
+    # newest SUCCESS → a merged PR older than that deploy counts as deployed.
+    repo_node = _repo_node(
+        [_deploy("2026-07-18T21:00:00Z", env="kindash / qa")],
+        ["kindash / qa", "kindash / production"],
+    )
+    response = {"data": {
+        "repo": repo_node,
+        "merged": {"nodes": [_merged_pr(7, merged_at="2026-07-18T10:00:00Z")]},
+    }}
+    env_node = {"e0": {"nodes": [_deploy("2026-07-18T20:30:00Z", env="kindash / production")]}}
+    merge_env_deployments(repo_node, env_node)
+    (pr,) = parse_population_response(response, "o/r")
+    assert pr.deployed is True

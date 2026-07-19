@@ -16,7 +16,14 @@ from typing import Awaitable, Callable, Union
 
 from ccswitch import gitrepos
 
-from .pr_status import PullRequestInfo, build_pr_query, parse_pr_response
+from .pr_status import (
+    PullRequestInfo,
+    build_env_deployments_query,
+    build_pr_query,
+    merge_env_deployments,
+    missing_active_envs,
+    parse_pr_response,
+)
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +38,49 @@ def _default_query(pairs: list[tuple[str, str]]) -> dict:
     proc = gitrepos._run_gh(["api", "graphql", "-F", "query=@-"], input=query)
     if proc.returncode != 0:
         raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql failed")
-    return json.loads(proc.stdout or "{}")
+    response = json.loads(proc.stdout or "{}")
+    _supplement_env_deployments(response, pairs)
+    return response
+
+
+def _supplement_env_deployments(response: dict, pairs: list[tuple[str, str]]) -> None:
+    """Environment-filtered re-fetch for classified envs whose newest SUCCESS
+    deploy was evicted from the shared first:30 deployments window by churn in
+    other envs (same truncation the population poller supplements). A repo
+    appears once per tracked branch; the supplement is fetched once per repo
+    and merged into every alias node. Best-effort: on failure the response
+    keeps the plain-window behavior."""
+    data = response.get("data") or {}
+    alias_idxs_by_repo: dict[str, list[int]] = {}
+    for i, (repo, _branch) in enumerate(pairs):
+        alias_idxs_by_repo.setdefault(repo, []).append(i)
+    targets = []
+    for repo, idxs in alias_idxs_by_repo.items():
+        missing = missing_active_envs(data.get(f"r{idxs[0]}") or {})
+        if missing:
+            targets.append((repo, missing))
+    if not targets:
+        return
+    query = build_env_deployments_query(targets)
+    try:
+        proc = gitrepos._run_gh(["api", "graphql", "-F", "query=@-"], input=query)
+        if proc.returncode != 0:
+            raise gitrepos.GhError(
+                proc.stderr.strip() or "gh api graphql (env deployments) failed"
+            )
+        env_data = (json.loads(proc.stdout or "{}").get("data")) or {}
+    except Exception:
+        log.warning(
+            "pr_poller.env_supplement_failed targets=%s",
+            [t[0] for t in targets], exc_info=True,
+        )
+        return
+    for i, (repo, _missing) in enumerate(targets):
+        env_node = env_data.get(f"r{i}") or {}
+        for j in alias_idxs_by_repo[repo]:
+            node = data.get(f"r{j}")
+            if node:
+                merge_env_deployments(node, env_node)
 
 
 class PrStatusPoller:

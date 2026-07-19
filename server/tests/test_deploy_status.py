@@ -8,6 +8,7 @@ SimpleNamespace stands in for a MergedPr ORM row — no DB needed (pure function
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -132,6 +133,12 @@ def test_null_sha_preserved_in_entry_and_inflight():
 # (follows test_group_history.py::test_sim_ctx_reads_real_store_rows)           #
 # --------------------------------------------------------------------------- #
 
+# Relative anchor: always within the 7-day tracked_merged retention window.
+_RECENT_MERGE = (datetime.now(timezone.utc) - timedelta(days=2)).strftime(
+    "%Y-%m-%dT%H:%M:%SZ"
+)
+
+
 @pytest.fixture()
 def _clean_deploy_tables():
     async def wipe():
@@ -184,7 +191,7 @@ def test_build_state_glue_frame_carries_deploy_and_timeline(_clean_deploy_tables
                 enabled=True,
             ))
         await upsert_merged_pr(
-            "o/r", 7, merged_at="2026-07-12T00:00:00Z",
+            "o/r", 7, merged_at=_RECENT_MERGE,
             merge_commit_sha="deadbeef", qa_live_at="2026-07-12T01:00:00Z",
         )
         env_cache = {"o/r": [{"name": "qa", "liveSha": "deadbeef", "reachable": True}]}

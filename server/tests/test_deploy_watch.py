@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +28,12 @@ def _clean_tables():
             await db.execute(delete(RepoDeployConfig))
             await db.execute(delete(MergedPr))
     asyncio.run(wipe())
+
+
+# Relative anchor: always within the 7-day tracked_merged retention window.
+_RECENT_MERGE = (datetime.now(timezone.utc) - timedelta(days=2)).strftime(
+    "%Y-%m-%dT%H:%M:%SZ"
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -271,7 +278,7 @@ def test_poll_marks_qa_live_on_ancestor_yes():
         await _seed_config("o/r", [
             {"name": "qa", "healthUrl": "http://qa/h", "auto": True}
         ])
-        await _seed_merged("o/r", 7, merged_at="2026-07-12T00:00:00Z", sha="prsha")
+        await _seed_merged("o/r", 7, merged_at=_RECENT_MERGE, sha="prsha")
         gets = _http_map({"http://qa/h": _resp(200, json.dumps({"commitSha": "livesha"}))})
         w = DeployWatcher(http_get=gets, gh_run=_gh_status("ahead"))
         await w.poll_once()
@@ -289,7 +296,7 @@ def test_poll_marks_prod_live_for_prod_env():
         await _seed_config("o/r", [
             {"name": "prod", "healthUrl": "http://p/h", "auto": True}
         ])
-        await _seed_merged("o/r", 8, merged_at="2026-07-12T00:00:00Z", sha="prsha")
+        await _seed_merged("o/r", 8, merged_at=_RECENT_MERGE, sha="prsha")
         gets = _http_map({"http://p/h": _resp(200, json.dumps({"commitSha": "livesha"}))})
         w = DeployWatcher(http_get=gets, gh_run=_gh_status("identical"))
         await w.poll_once()
@@ -307,7 +314,7 @@ def test_poll_no_mark_when_not_ancestor():
         await _seed_config("o/r", [
             {"name": "qa", "healthUrl": "http://qa/h", "auto": True}
         ])
-        await _seed_merged("o/r", 9, merged_at="2026-07-12T00:00:00Z", sha="prsha")
+        await _seed_merged("o/r", 9, merged_at=_RECENT_MERGE, sha="prsha")
         gets = _http_map({"http://qa/h": _resp(200, json.dumps({"commitSha": "livesha"}))})
         w = DeployWatcher(http_get=gets, gh_run=_gh_status("diverged"))
         await w.poll_once()
@@ -326,7 +333,7 @@ def test_poll_skips_pr_with_column_already_set():
             {"name": "qa", "healthUrl": "http://qa/h", "auto": True}
         ])
         await timeline.upsert_merged_pr(
-            "o/r", 10, merged_at="2026-07-12T00:00:00Z",
+            "o/r", 10, merged_at=_RECENT_MERGE,
             merge_commit_sha="prsha", qa_live_at="2026-07-11T00:00:00Z",
         )
         gets = _http_map({"http://qa/h": _resp(200, json.dumps({"commitSha": "livesha"}))})
@@ -346,7 +353,7 @@ def test_poll_skips_pr_without_merge_sha():
         await _seed_config("o/r", [
             {"name": "qa", "healthUrl": "http://qa/h", "auto": True}
         ])
-        await _seed_merged("o/r", 11, merged_at="2026-07-12T00:00:00Z", sha=None)
+        await _seed_merged("o/r", 11, merged_at=_RECENT_MERGE, sha=None)
         gets = _http_map({"http://qa/h": _resp(200, json.dumps({"commitSha": "livesha"}))})
         calls = []
 
@@ -365,7 +372,7 @@ def test_poll_skips_ancestry_when_livesha_none():
         await _seed_config("o/r", [
             {"name": "qa", "healthUrl": "http://qa/h", "auto": True}
         ])
-        await _seed_merged("o/r", 12, merged_at="2026-07-12T00:00:00Z", sha="prsha")
+        await _seed_merged("o/r", 12, merged_at=_RECENT_MERGE, sha="prsha")
         gets = _http_map({"http://qa/h": _resp(503, "down")})
         calls = []
 

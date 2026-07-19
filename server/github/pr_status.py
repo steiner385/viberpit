@@ -231,6 +231,18 @@ def _alias(i: int) -> str:
     return f"r{i}"
 
 
+# Shared deployment-node selection so the main-window and per-env supplement
+# queries can never drift in which fields feed _active_deploy_dates.
+_DEPLOY_NODE_FIELDS = (
+    "latestEnvironment commitOid latestStatus { state } commit { committedDate }"
+)
+
+# Per-env supplement depth: an environments:-filtered window only holds that
+# env's deploys, so this just needs to skip past a run of failed/in-progress
+# deploys to reach the newest SUCCESS.
+_ENV_DEPLOYMENTS_FIRST = 10
+
+
 # Shared PR-node selection so build_pr_query (per-branch) and the population
 # query (per-repo) can never drift in which fields they fetch.
 _PR_NODE_FIELDS = (
@@ -267,8 +279,9 @@ def build_pr_query(pairs: list[tuple[str, str]]) -> str:
             f"    nodes {{ {_PR_NODE_FIELDS} }}\n"
             f"  }}\n"
             f"  deployments(orderBy: {{field: CREATED_AT, direction: DESC}}, first: 30) {{\n"
-            f"    nodes {{ latestEnvironment commitOid latestStatus {{ state }} commit {{ committedDate }} }}\n"
+            f"    nodes {{ {_DEPLOY_NODE_FIELDS} }}\n"
             f"  }}\n"
+            f"  environments(first: 100) {{ nodes {{ name }} }}\n"
             f"}}"
         )
     return "query {\n" + "\n".join(blocks) + "\n}"
@@ -280,9 +293,11 @@ def build_population_query(repo: str, merged_since: str) -> str:
     ``merged_since`` (ISO date).
 
     Strings are JSON-encoded so a repo/owner/name can't break the literal.
-    NOTE: deployments are capped at first:30 across ALL environments — on a very
+    NOTE: deployments are capped at first:30 across ALL environments — on a
     busy repo, one env's active deploy can be pushed out of the window by churn
-    in another (an accepted Option-A bound; full env enumeration is deferred).
+    in another (KinDash creates 3 deployments per merge, so the window covers
+    ~10 merges). The ``environments`` listing lets the caller detect evicted
+    envs and re-fetch them via ``build_env_deployments_query``.
     """
     owner, _, name = repo.partition("/")
     merged_q = f"repo:{repo} is:pr is:merged merged:>={merged_since}"
@@ -290,8 +305,9 @@ def build_population_query(repo: str, merged_since: str) -> str:
         "query {\n"
         f"  repo: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
         f"    deployments(orderBy: {{field: CREATED_AT, direction: DESC}}, first: 30) {{\n"
-        f"      nodes {{ latestEnvironment commitOid latestStatus {{ state }} commit {{ committedDate }} }}\n"
+        f"      nodes {{ {_DEPLOY_NODE_FIELDS} }}\n"
         f"    }}\n"
+        f"    environments(first: 100) {{ nodes {{ name }} }}\n"
         f"    pullRequests(states: OPEN, first: 100, "
         f"orderBy: {{field: UPDATED_AT, direction: DESC}}) {{\n"
         f"      nodes {{ {_PR_NODE_FIELDS} }}\n"
@@ -528,6 +544,76 @@ def _active_deploy_dates(node: dict) -> dict[str, str]:
         if committed:
             out[env] = committed
     return out
+
+
+def missing_active_envs(repo_node: dict) -> list[str]:
+    """Classified envs listed on the repo but with no SUCCESS deployment inside
+    the fetched window — candidates for the per-env supplement query.
+
+    Only ``classify_env``-recognized envs qualify, so ephemeral preview envs
+    can never fan the supplement query out unboundedly. An env whose newest
+    in-window entries are all non-SUCCESS is missing too: its newest SUCCESS
+    may lie beyond the window.
+    """
+    active = _active_deploy_dates(repo_node)
+    env_nodes = ((repo_node.get("environments") or {}).get("nodes")) or []
+    out: list[str] = []
+    for n in env_nodes:
+        name = (n or {}).get("name")
+        if isinstance(name, str) and classify_env(name) is not None and name not in active:
+            out.append(name)
+    return out
+
+
+def build_env_deployments_query(targets: list[tuple[str, list[str]]]) -> str:
+    """One GraphQL doc re-fetching specific envs' deployments per repo.
+
+    Each env gets its own ``environments:``-filtered block, so churn in other
+    envs can't evict its newest SUCCESS deploy (the first:30 shared-window
+    truncation this supplements). Aliases mirror the input indexes —
+    ``r{i}`` per target repo, ``e{j}`` per env — and strings are JSON-encoded
+    so names can't break the literal. Returns "" when nothing needs fetching.
+    """
+    blocks = []
+    for i, (repo, envs) in enumerate(targets):
+        if not envs:
+            continue
+        owner, _, name = repo.partition("/")
+        env_blocks = "\n".join(
+            f"  e{j}: deployments(environments: [{json.dumps(env)}], "
+            f"orderBy: {{field: CREATED_AT, direction: DESC}}, "
+            f"first: {_ENV_DEPLOYMENTS_FIRST}) {{\n"
+            f"    nodes {{ {_DEPLOY_NODE_FIELDS} }}\n"
+            f"  }}"
+            for j, env in enumerate(envs)
+        )
+        blocks.append(
+            f"{_alias(i)}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
+            f"{env_blocks}\n"
+            f"}}"
+        )
+    if not blocks:
+        return ""
+    return "query {\n" + "\n".join(blocks) + "\n}"
+
+
+def merge_env_deployments(repo_node: dict, env_repo_node: dict) -> None:
+    """Append a supplement response's per-env nodes onto the repo node's
+    deployments list (in place), so ``_active_deploy_dates`` sees them.
+
+    Safe to append after the main-window nodes: the dates map records the first
+    SUCCESS per env, the main window holds none for supplemented envs (that is
+    what made them missing), and each env's block is newest-first internally.
+    """
+    deployments = repo_node.get("deployments")
+    if not isinstance(deployments, dict):
+        deployments = repo_node["deployments"] = {}
+    nodes = deployments.get("nodes")
+    if not isinstance(nodes, list):
+        nodes = deployments["nodes"] = []
+    for key, block in (env_repo_node or {}).items():
+        if key.startswith("e"):
+            nodes.extend(((block or {}).get("nodes")) or [])
 
 
 def _is_deployed_envs(pr: dict, state: str, active_dates: dict[str, str]) -> tuple[str, ...]:

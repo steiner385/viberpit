@@ -23,8 +23,11 @@ from server.github import app_auth
 from .merge_queue import build_merge_queue_query, parse_merge_queue_response
 from .pr_status import (
     PullRequestInfo,
+    build_env_deployments_query,
     build_eta_checks_query,
     build_population_query,
+    merge_env_deployments,
+    missing_active_envs,
     parse_eta_checks_response,
     parse_merge_group_response,
     parse_population_response,
@@ -44,7 +47,36 @@ def _default_query(repo: str, retention_days: int) -> dict:
     proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"], token=token)
     if proc.returncode != 0:
         raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql failed")
-    return json.loads(proc.stdout or "{}")
+    response = json.loads(proc.stdout or "{}")
+    _supplement_env_deployments(response, repo, token)
+    return response
+
+
+def _supplement_env_deployments(response: dict, repo: str, token: str | None) -> None:
+    """Environment-filtered re-fetch for classified envs whose newest SUCCESS
+    deploy was evicted from the shared first:30 window by churn in other envs
+    (a 3-deploys-per-merge repo covers only ~10 merges per window, so a
+    low-churn prod env vanishes and every merged PR reverts to awaiting-prod).
+    Best-effort: on failure the response keeps the plain-window behavior."""
+    repo_node = ((response.get("data") or {}).get("repo")) or {}
+    missing = missing_active_envs(repo_node)
+    if not missing:
+        return
+    query = build_env_deployments_query([(repo, missing)])
+    try:
+        proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"], token=token)
+        if proc.returncode != 0:
+            raise gitrepos.GhError(
+                proc.stderr.strip() or "gh api graphql (env deployments) failed"
+            )
+        env_data = (json.loads(proc.stdout or "{}").get("data")) or {}
+    except Exception:
+        log.warning(
+            "pr_population.env_supplement_failed repo=%s envs=%s",
+            repo, missing, exc_info=True,
+        )
+        return
+    merge_env_deployments(repo_node, env_data.get("r0") or {})
 
 
 def _default_eta_query(prs: list[tuple[str, int]]) -> dict:
