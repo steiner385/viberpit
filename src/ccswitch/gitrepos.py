@@ -16,9 +16,12 @@ than a child branch off whatever the clone happened to check out).
 
 gh auth gotcha
 --------------
-A stale ``GITHUB_TOKEN`` env var shadows the keyring login that ``gh`` would
-otherwise use.  EVERY ``gh`` subprocess therefore runs with ``GITHUB_TOKEN``
-stripped from the environment (see :func:`_gh_env`).
+A stale ``GITHUB_TOKEN``/``GH_TOKEN`` env var shadows the account ``gh`` would
+otherwise use, and the daemon shares one global gh config with every session — a
+KinDash bot login into that config hijacks the active identity and makes the
+user's own private repos vanish (``NOT_FOUND``).  EVERY ``gh`` subprocess therefore
+runs with those tokens stripped and, when ``CCSWITCH_GH_CONFIG_DIR`` is set, pinned
+to a dedicated config dir authed only as the ccswitch identity (see :func:`_gh_env`).
 """
 from __future__ import annotations
 
@@ -63,15 +66,38 @@ def clone_path(repo_root: str, name_with_owner: str) -> Path:
 
 
 def _gh_env() -> dict[str, str]:
-    """Environment for gh subprocesses with the shadowing GITHUB_TOKEN removed."""
-    return {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"}
+    """Environment for gh subprocesses, isolated from shared/mutable gh auth state.
+
+    The daemon and every managed session run as the same OS user and share one global
+    gh config (``~/.config/gh/hosts.yml``). A KinDash session that logs the
+    ``kindash-claude-sessions[bot]`` App installation into that config — or exports a
+    bot ``GITHUB_TOKEN``/``GH_TOKEN`` — would otherwise hijack the active gh identity,
+    making every gh call for the user's own private repos (e.g. ``steiner385/*``) fail
+    with ``NOT_FOUND``. Two defenses:
+
+    * Strip both ``GITHUB_TOKEN`` and ``GH_TOKEN`` — either env var overrides the
+      pinned account (a per-owner App token is re-set explicitly by :func:`_run_gh`).
+    * When ``CCSWITCH_GH_CONFIG_DIR`` is set, point gh at a dedicated config dir authed
+      only as the ccswitch identity, so mutations to the default ``~/.config/gh`` can
+      never leak in.
+    """
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("GITHUB_TOKEN", "GH_TOKEN")
+    }
+    config_dir = os.environ.get("CCSWITCH_GH_CONFIG_DIR")
+    if config_dir:
+        env["GH_CONFIG_DIR"] = os.path.expanduser(config_dir)
+    return env
 
 
 def _run_gh(
     args: list[str], token: str | None = None, *, input: str | None = None
 ) -> subprocess.CompletedProcess[str]:
-    """Run a ``gh`` command. ``GITHUB_TOKEN`` is always stripped; when ``token`` is
-    given (a GitHub App installation token), ``GH_TOKEN`` is set so gh uses it.
+    """Run a ``gh`` command. Ambient ``GITHUB_TOKEN``/``GH_TOKEN`` are always stripped
+    and the config dir is pinned (see :func:`_gh_env`); when ``token`` is given (a
+    GitHub App installation token), ``GH_TOKEN`` is re-set so gh uses that owner's token.
 
     ``input`` is written to the child's stdin. Use it (with ``gh api ... -F
     field=@-``) to pass a large value that would otherwise overflow the per-argument
