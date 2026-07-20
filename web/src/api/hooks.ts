@@ -169,6 +169,8 @@ export interface AppSettings {
   // Cap on retained archived sessions; null = unlimited. On PUT, send 0 to clear to
   // unlimited (the backend treats <=0 as null) — never send null.
   maxArchivedSessions: number | null
+  // Archive home path; null = use server default. On PUT, send "" to clear to default.
+  archiveHome: string | null
 }
 
 export function useSettings() {

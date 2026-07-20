@@ -726,6 +726,7 @@ class SessionOrchestrator:
                 raise ValueError(f"cwd does not exist: {cwd}")
 
         session_id = str(uuid.uuid4())
+        repo_root = await self._effective_repo_root()
 
         # Per-session isolation: EVERY repo session runs in its OWN git worktree, never
         # the shared clone or the user's real tree. With a branch, the worktree checks it
@@ -738,7 +739,7 @@ class SessionOrchestrator:
         if cwd is not None and worktrees.is_git_repo(cwd):
             try:
                 worktree_info = await asyncio.to_thread(
-                    worktrees.create_worktree, cwd, branch, session_id, self._repo_root
+                    worktrees.create_worktree, cwd, branch, session_id, repo_root
                 )
             except worktrees.WorktreeError as exc:
                 raise BranchSwitchError(str(exc)) from exc
@@ -753,7 +754,7 @@ class SessionOrchestrator:
         # checkout.  This is the safety guarantee stated in the New Session dialog:
         # "your real checkouts are never touched."
         if cwd is None:
-            scratch_dir = Path(worktrees.worktrees_base(self._repo_root)).parent / "scratch" / session_id
+            scratch_dir = Path(worktrees.worktrees_base(repo_root)).parent / "scratch" / session_id
             scratch_dir.mkdir(parents=True, exist_ok=True)
             cwd = str(scratch_dir)
 
@@ -1491,7 +1492,6 @@ class SessionOrchestrator:
         emits ``spawned`` with ``detail.issues``). Returns the SessionRecord."""
         from server.automations.backlog_prompt import build_implement_prompt
         from server.automations.model_pick import resolve_model
-        from server.config import get_settings
         url = f"https://github.com/{batch.repo}.git"
         try:
             default_branch = await asyncio.to_thread(
@@ -1500,7 +1500,7 @@ class SessionOrchestrator:
         except Exception:
             default_branch = "master"
         cwd = await asyncio.to_thread(
-            gitrepos.ensure_clone, get_settings().repo_root, batch.repo, url)
+            gitrepos.ensure_clone, await self._effective_repo_root(), batch.repo, url)
         _mode, config = await self._backlog_read_config()
         model, model_source = await resolve_model(config, "\n".join(
             f"{ref}  {batch.titles.get(ref) or '(no title)'}" for ref in batch.issues))
@@ -2516,11 +2516,10 @@ class SessionOrchestrator:
         # repo, so without it the spawn falls to an empty scratch dir with
         # branch=None and the seeded `gh pr checkout` can't work. The user's real
         # ~/GitHub checkouts are never touched.
-        from server.config import get_settings
         url = f"https://github.com/{repo}.git"
         try:
             cwd = await asyncio.to_thread(
-                gitrepos.ensure_clone, get_settings().repo_root, repo, url
+                gitrepos.ensure_clone, await self._effective_repo_root(), repo, url
             )
         except (gitrepos.CloneError, gitrepos.GhError) as exc:
             # Clone failed → error + notify, attempt NOT consumed (the target
@@ -2679,7 +2678,6 @@ class SessionOrchestrator:
         status to. Always releases the in-flight guard so a failure never wedges
         the PR set against retries."""
         from server.sessions.pr_fix import build_consolidation_prompt
-        from server.config import get_settings
 
         try:
             try:
@@ -2692,7 +2690,7 @@ class SessionOrchestrator:
             url = f"https://github.com/{repo}.git"
             try:
                 cwd = await asyncio.to_thread(
-                    gitrepos.ensure_clone, get_settings().repo_root, repo, url)
+                    gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
             except (gitrepos.CloneError, gitrepos.GhError) as exc:
                 await self._pr_doctor_ctx.emit(
                     "error", f"clone failed for {target}: {exc}",
@@ -5344,8 +5342,6 @@ class SessionOrchestrator:
         ``context`` snapshots the decision features for AUTO archives, so a later manual
         unarchive can tell an auto-archive was reversed and record a learning heuristic.
         """
-        from ccswitch.paths import archive_dir
-
         # Teardown the virtual X11 display — mirrors close_session.
         if self._x11 is not None:
             try:
@@ -5368,7 +5364,7 @@ class SessionOrchestrator:
         self._worktrees.pop(session_id, None)
 
         # Move the cwd into the archive directory.
-        dest = archive_dir() / session_id
+        dest = (await self._effective_archive_home()) / session_id
         cwd_path: Path | None = Path(record.cwd) if (record and record.cwd) else None
 
         # Resolve the shared clone BEFORE the move, while the worktree is still a
@@ -5438,6 +5434,51 @@ class SessionOrchestrator:
             await self._enforce_archive_limit()
         except Exception:
             log.exception("archive_limit: enforcement after archive failed id=%s", session_id)
+
+    async def _effective_repo_root(self) -> str:
+        """DB AppSettings.repo_root → env/default fallback.
+
+        Reads the runtime-settable repo root from the settings singleton so that
+        changes made via the settings UI take effect without a server restart.
+        """
+        from sqlalchemy import select as sa_select
+
+        from server.db.models import AppSettings
+        try:
+            async with db_session() as db:
+                val = (await db.execute(
+                    sa_select(AppSettings.repo_root)
+                    .where(AppSettings.id == "singleton")
+                )).scalar_one_or_none()
+        except Exception:
+            log.debug("settings: repo_root read failed", exc_info=True)
+            return self._repo_root if hasattr(self, "_repo_root") else os.path.expanduser("~/GitHub")
+        return val or (self._repo_root if hasattr(self, "_repo_root") else os.path.expanduser("~/GitHub"))
+
+    async def _effective_archive_home(self) -> "Path":
+        """DB AppSettings.archive_home → CCSWITCH_ARCHIVE_HOME env → default fallback.
+
+        Reads the runtime-settable archive directory from the settings singleton.
+        Falls back to the env-var/default path from archive_dir() if not set in DB.
+        """
+        from sqlalchemy import select as sa_select
+
+        from ccswitch.paths import archive_dir
+        from server.db.models import AppSettings
+        try:
+            async with db_session() as db:
+                val = (await db.execute(
+                    sa_select(AppSettings.archive_home)
+                    .where(AppSettings.id == "singleton")
+                )).scalar_one_or_none()
+        except Exception:
+            log.debug("settings: archive_home read failed", exc_info=True)
+            return archive_dir()
+        if val:
+            p = Path(val)
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        return archive_dir()
 
     async def _read_max_archived_sessions(self) -> int | None:
         """Read ``max_archived_sessions`` from the app-settings singleton.
@@ -5553,7 +5594,6 @@ class SessionOrchestrator:
         Returns the restored SessionRecord, or None if not found / not archived.
         Adds the record to _records so it reappears in list_sessions() without restart.
         """
-        from ccswitch.paths import archive_dir
         from sqlalchemy import select as sa_select
 
         async with db_session() as db:
@@ -5565,7 +5605,7 @@ class SessionOrchestrator:
         if row is None:
             return None
 
-        archive_path = archive_dir() / session_id
+        archive_path = (await self._effective_archive_home()) / session_id
         original_cwd = Path(row.cwd)
 
         def _restore() -> None:

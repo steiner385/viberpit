@@ -277,6 +277,10 @@ class AppSettings(Base):
     # oldest are permanently purged (on archive + a periodic sweep). NULL = unlimited
     # (the default). Nullable so init_db backfills it without a migration.
     max_archived_sessions: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # Override directory for archived session working directories.
+    # None = use CCSWITCH_ARCHIVE_HOME env var or $CCSWITCH_HOME/archive.
+    # Nullable so init_db backfills it without a migration.
+    archive_home: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class NotificationChannel(Base):

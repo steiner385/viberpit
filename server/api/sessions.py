@@ -364,11 +364,16 @@ async def create_session(
     # clone + worktree activity lives under <repo_root>/.ccswitch/.
     cwd: str | None = None
     if body.repo:
-        settings = get_settings()
+        from sqlalchemy import select as sa_select
+        from server.db.models import AppSettings as _AppSettings
+        _rr = (await db.execute(
+            sa_select(_AppSettings.repo_root).where(_AppSettings.id == "singleton")
+        )).scalar_one_or_none()
+        _repo_root = _rr or get_settings().repo_root
         url = f"https://github.com/{body.repo}.git"
         try:
             cwd = await asyncio.to_thread(
-                gitrepos.ensure_clone, settings.repo_root, body.repo, url
+                gitrepos.ensure_clone, _repo_root, body.repo, url
             )
         except (gitrepos.CloneError, gitrepos.GhError) as exc:
             return JSONResponse(
