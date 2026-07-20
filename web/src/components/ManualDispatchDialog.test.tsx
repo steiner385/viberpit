@@ -4,14 +4,16 @@ import { ManualDispatchDialog } from './ManualDispatchDialog'
 
 const mutate = vi.fn()
 
-const candidates = [
+const allCandidates = [
   { ref: 'o/r#7', number: 7, title: 'Fix seven', repo: 'o/r', body: '', url: '' },
   { ref: 'o/r#8', number: 8, title: 'Fix eight', repo: 'o/r', body: '', url: '' },
   { ref: 'a/b#1', number: 1, title: 'Alpha task', repo: 'a/b', body: '', url: '' },
 ]
 
+let mockCandidates = [...allCandidates]
+
 vi.mock('@/api/hooks', () => ({
-  useBacklogCandidates: () => ({ data: { candidates }, isLoading: false }),
+  useBacklogCandidates: () => ({ data: { candidates: mockCandidates }, isLoading: false }),
   useDispatchBacklogGroup: () => ({ mutateAsync: mutate, isPending: false }),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
@@ -23,6 +25,7 @@ describe('ManualDispatchDialog', () => {
   const onClose = vi.fn()
 
   beforeEach(() => {
+    mockCandidates = [...allCandidates]
     mutate.mockReset()
     onClose.mockReset()
     mutate.mockResolvedValue({ status: 'spawned', session_id: 's-1', session_name: 'backlog o/r#7' })
@@ -72,12 +75,8 @@ describe('ManualDispatchDialog', () => {
   })
 
   it('shows empty state when no candidates', () => {
-    vi.doMock('@/api/hooks', () => ({
-      useBacklogCandidates: () => ({ data: { candidates: [] }, isLoading: false }),
-      useDispatchBacklogGroup: () => ({ mutateAsync: mutate, isPending: false }),
-      useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-      useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
-      useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-    }))
+    mockCandidates = []
+    render(<ManualDispatchDialog open onClose={onClose} />)
+    expect(screen.getByText(/no eligible issues/i)).toBeInTheDocument()
   })
 })

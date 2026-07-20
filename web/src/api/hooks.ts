@@ -792,6 +792,7 @@ export function useDispatchBacklogGroup() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.backlogGroups })
       qc.invalidateQueries({ queryKey: QK.automationSessions('backlog-runner') })
+      qc.invalidateQueries({ queryKey: QK.backlogCandidates })
     },
   })
 }

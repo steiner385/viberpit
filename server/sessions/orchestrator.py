@@ -1596,6 +1596,8 @@ class SessionOrchestrator:
         title. Returns ``{"status": ..., "session_id": ..., "session_name": ...}``."""
         from server.automations.backlog_github import query_candidates
         from server.automations.backlog_selection import Batch
+        if not refs:
+            return {"status": "no_refs", "session_id": None, "session_name": None}
         primary = refs[0]
         _mode, config = await self._backlog_read_config()
         candidates = await asyncio.to_thread(
