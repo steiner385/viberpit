@@ -135,7 +135,9 @@ def test_rest_call_returns_503_when_daemon_down(dead_socket_edge):
     # GET /api/sessions → facade.list_sessions() → DaemonUnavailable → 503.
     resp = dead_socket_edge.get("/api/sessions", headers=_IDENT)
     assert resp.status_code == 503, resp.text
-    assert resp.json()["detail"] == "session daemon unavailable"
+    body = resp.json()
+    assert body["code"] == "daemon_unavailable"
+    assert "restarting" in body["detail"]
 
 
 import json as _json
