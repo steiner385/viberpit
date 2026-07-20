@@ -385,6 +385,16 @@ class RemoteOrchestrator:
         return await self._client.call("automation_consolidate", repo=repo, numbers=numbers,
                                        timeout=AUTOMATION_RPC_TIMEOUT)
 
+    async def backlog_candidates(self) -> "list[dict]":
+        """Current eligible issue candidates for manual dispatch, via the daemon."""
+        r = await self._client.call("backlog_candidates")
+        return r if isinstance(r, list) else []
+
+    async def backlog_runner_dispatch(self, refs: "list[str]") -> dict:
+        """Manually claim + spawn a batch for *refs*, via the daemon."""
+        return await self._client.call("backlog_runner_dispatch", refs=refs,
+                                       timeout=AUTOMATION_RPC_TIMEOUT)
+
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)
         return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None

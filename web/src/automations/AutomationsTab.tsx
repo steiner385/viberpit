@@ -8,6 +8,7 @@ import {
 import type { Automation, ActionSpec } from '@/api/automations'
 import { ConsolidatePanel } from '@/components/ConsolidatePanel'
 import { BacklogGroupsPanel } from '@/components/BacklogGroupsPanel'
+import { ManualDispatchDialog } from '@/components/ManualDispatchDialog'
 
 const LEVEL_DOT: Record<string, string> = {
   idle: 'bg-gray-400', active: 'bg-blue-500', warn: 'bg-amber-500', error: 'bg-red-500',
@@ -168,6 +169,7 @@ function AutomationLiveCard({ automation: a, onOpenSession, onReviewSession }: {
   onReviewSession?: (id: string) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [customDispatch, setCustomDispatch] = useState(false)
   const events = useAutomationEvents(a.id, open)
 
   return (
@@ -222,7 +224,25 @@ function AutomationLiveCard({ automation: a, onOpenSession, onReviewSession }: {
           </section>
           <AutomationActions automationId={a.id} enabled={open} />
           {a.id === 'pr-doctor' && <ConsolidatePanel enabled={open} onOpenSession={onOpenSession} />}
-          {a.id === 'backlog-runner' && <BacklogGroupsPanel enabled={open} />}
+          {a.id === 'backlog-runner' && (
+            <>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setCustomDispatch(true)}
+                  className="rounded border border-border px-2 py-0.5 text-xs hover:bg-muted"
+                >
+                  Custom dispatch…
+                </button>
+              </div>
+              <BacklogGroupsPanel enabled={open} onOpenSession={onOpenSession} />
+              <ManualDispatchDialog
+                open={customDispatch}
+                onClose={() => setCustomDispatch(false)}
+                onOpenSession={onOpenSession}
+              />
+            </>
+          )}
           <SpawnedSessionsSection id={a.id} enabled={open} onOpenSession={onOpenSession} onReviewSession={onReviewSession} />
         </div>
       )}

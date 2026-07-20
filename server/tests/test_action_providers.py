@@ -77,10 +77,15 @@ class _FakeBacklogOrch:
     def __init__(self, status="spawned"):
         self._status = status
         self.implement_calls = []
+        self.dispatch_calls: list[list[str]] = []
 
     async def backlog_runner_implement_core(self, primary):
         self.implement_calls.append(primary)
         return self._status
+
+    async def backlog_runner_dispatch(self, refs):
+        self.dispatch_calls.append(refs)
+        return {"status": self._status, "session_id": "s-1", "session_name": "backlog"}
 
     async def backlog_candidates(self):
         return [{"ref": "cairnea/KinDash#42", "repo": "cairnea/KinDash",

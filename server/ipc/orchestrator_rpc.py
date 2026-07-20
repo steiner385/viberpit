@@ -274,6 +274,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "request_pr_fix",
         "automation_statuses", "automation_trigger",
         "consolidation_candidates", "automation_consolidate",
+        "backlog_candidates", "backlog_runner_dispatch",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
     ]
 

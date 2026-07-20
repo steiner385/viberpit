@@ -96,3 +96,6 @@ class InProcessOrchestratorAdapter:
     # --- automation consolidation methods ---
     async def consolidation_candidates(self, *a, **k): return await _maybe_await(self._orch.consolidation_candidates(*a, **k))
     async def automation_consolidate(self, *a, **k): return await _maybe_await(self._orch.automation_consolidate(*a, **k))
+    # --- backlog runner manual dispatch ---
+    async def backlog_candidates(self, *a, **k): return await _maybe_await(self._orch.backlog_candidates(*a, **k))
+    async def backlog_runner_dispatch(self, *a, **k): return await _maybe_await(self._orch.backlog_runner_dispatch(*a, **k))

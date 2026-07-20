@@ -38,6 +38,10 @@ class ConsolidateBody(BaseModel):
     numbers: list[int]
 
 
+class DispatchBody(BaseModel):
+    refs: list[str]
+
+
 async def _row(db, automation_id: str) -> AutomationRow:
     row = (await db.execute(
         select(AutomationRow).where(AutomationRow.id == automation_id))).scalar_one_or_none()
@@ -244,3 +248,24 @@ async def pr_doctor_consolidate(body: ConsolidateBody, request: Request,
     _automation_or_404("pr-doctor")
     orch = request.app.state.sessions
     return await orch.automation_consolidate(body.repo, body.numbers)
+
+
+@router.get("/backlog-runner/candidates")
+async def backlog_runner_candidates(request: Request,
+                                    _identity: str = Depends(current_identity)) -> dict:
+    """Current eligible (unclaimed, open, label-gated) issues for manual dispatch."""
+    _automation_or_404("backlog-runner")
+    orch = request.app.state.sessions
+    candidates = await orch.backlog_candidates()
+    return {"candidates": candidates}
+
+
+@router.post("/backlog-runner/dispatch")
+async def backlog_runner_dispatch(body: DispatchBody, request: Request,
+                                  _identity: str = Depends(current_identity)) -> dict:
+    """Immediately claim + spawn a session for the given issue refs."""
+    _automation_or_404("backlog-runner")
+    if not body.refs:
+        raise HTTPException(status_code=400, detail="refs must be non-empty")
+    orch = request.app.state.sessions
+    return await orch.backlog_runner_dispatch(body.refs)

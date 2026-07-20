@@ -5,9 +5,10 @@ import {
   fetchAutomations, fetchAutomationEvents, fetchSpawnedSessions, patchAutomation,
   fetchAutomationActionable, postAutomationTrigger,
   fetchConsolidation, postConsolidate, fetchBacklogGroups,
+  fetchBacklogCandidates, postDispatchGroup,
   type Automation, type AutomationEvent, type AutomationPatch,
   type ActionableItem, type TriggerResult, type ConsolidationView,
-  type BacklogGroupsView,
+  type BacklogGroupsView, type BacklogCandidatesView, type DispatchGroupResponse,
 } from './automations'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
@@ -47,6 +48,7 @@ export const QK = {
   automationActionable: (id: string) => ['automation-actionable', id] as const,
   consolidation: ['automation-consolidation'] as const,
   backlogGroups: ['backlog-groups'] as const,
+  backlogCandidates: ['backlog-candidates'] as const,
   daemonHealth: ['daemon-health'] as const,
   libraryPlugins: ['library', 'plugins'] as const,
   libraryPlugin: (id: string) => ['library', 'plugin', id] as const,
@@ -769,6 +771,29 @@ export function useBacklogGroups(enabled = true) {
     queryFn: fetchBacklogGroups,
     enabled,
     staleTime: 10_000,
+  })
+}
+
+/** Current eligible issues for manual dispatch. Only fetches when enabled. */
+export function useBacklogCandidates(enabled = true) {
+  return useQuery<BacklogCandidatesView>({
+    queryKey: QK.backlogCandidates,
+    queryFn: fetchBacklogCandidates,
+    enabled,
+    staleTime: 30_000,
+  })
+}
+
+/** Mutation: immediately claim + spawn a session for the given refs. */
+export function useDispatchBacklogGroup() {
+  const qc = useQueryClient()
+  return useMutation<DispatchGroupResponse, ApiRequestError, string[]>({
+    mutationFn: (refs) => postDispatchGroup(refs),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.backlogGroups })
+      qc.invalidateQueries({ queryKey: QK.automationSessions('backlog-runner') })
+      qc.invalidateQueries({ queryKey: QK.backlogCandidates })
+    },
   })
 }
 
