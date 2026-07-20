@@ -5452,8 +5452,8 @@ class SessionOrchestrator:
                 )).scalar_one_or_none()
         except Exception:
             log.debug("settings: repo_root read failed", exc_info=True)
-            return self._repo_root
-        return val or self._repo_root
+            return self._repo_root if hasattr(self, "_repo_root") else os.path.expanduser("~/GitHub")
+        return val or (self._repo_root if hasattr(self, "_repo_root") else os.path.expanduser("~/GitHub"))
 
     async def _effective_archive_home(self) -> "Path":
         """DB AppSettings.archive_home → CCSWITCH_ARCHIVE_HOME env → default fallback.
