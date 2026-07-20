@@ -22,6 +22,7 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
   const [permissionMode, setPermissionMode] = useState(settings?.defaultPermissionMode ?? 'interactive')
   const [thinkingCollapsed, setThinkingCollapsed] = useState(settings?.thinkingCollapsed ?? false)
   const [repoRoot, setRepoRoot] = useState(settings?.repoRoot ?? '')
+  const [archiveHome, setArchiveHome] = useState(settings?.archiveHome ?? '')
   const [toolDetail, setToolDetail] = useState<AppSettings['defaultToolDetail']>(settings?.defaultToolDetail ?? 'auto')
   // Empty string = unlimited (sent to the backend as 0, which it maps to null).
   const [maxArchived, setMaxArchived] = useState(
@@ -37,6 +38,8 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
       defaultToolDetail: toolDetail,
       // Blank / non-positive → 0 = "clear to unlimited". Backend clamps the ceiling.
       maxArchivedSessions: Number.isFinite(parsed) && parsed > 0 ? parsed : 0,
+      // Send raw string: "" means "clear to server default", path means "use this path".
+      archiveHome: archiveHome,
     }, { onSuccess: () => toast('Settings saved') })
   }
 
@@ -139,6 +142,28 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
             placeholder="/home/user/repos"
             className={inputClass}
           />
+        </div>
+
+        {/* Archive home */}
+        <div className="space-y-1">
+          <label
+            htmlFor="settings-archive-home"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            Archive storage path <span className="text-gray-400">(optional)</span>
+          </label>
+          <input
+            id="settings-archive-home"
+            type="text"
+            value={archiveHome}
+            onChange={(e) => setArchiveHome(e.target.value)}
+            placeholder="/mnt/slow-drive/ccswitch-archives"
+            className={inputClass}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Where archived session files are stored. Blank uses the server default.
+            Existing archives are moved when this changes.
+          </p>
         </div>
 
         {/* Archived sessions */}
