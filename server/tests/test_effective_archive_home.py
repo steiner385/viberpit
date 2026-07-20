@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -37,7 +36,6 @@ def test_effective_archive_home_uses_db_value(tmp_path):
     async def _run():
         from server.db import init_db, db_session
         from server.db.models import AppSettings
-        from sqlalchemy import select as sa_select
 
         await init_db()
         async with db_session() as db:
