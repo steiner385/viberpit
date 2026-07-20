@@ -15,9 +15,13 @@ def temp_env():
         shared.mkdir(parents=True)
         (shared / "settings.json").write_text("{}")
         (shared / "projects").mkdir()
-        old = {k: os.environ.get(k) for k in ("CCSWITCH_HOME", "CLAUDE_CONFIG_DIR", "CCSWITCH_CLAUDE_BIN")}
+        old = {k: os.environ.get(k) for k in (
+            "CCSWITCH_HOME", "CLAUDE_CONFIG_DIR", "CCSWITCH_CLAUDE_BIN",
+            "CCSWITCH_ARCHIVE_HOME",
+        )}
         os.environ["CCSWITCH_HOME"] = str(home)
         os.environ["CLAUDE_CONFIG_DIR"] = str(shared)
+        os.environ.pop("CCSWITCH_ARCHIVE_HOME", None)
         try:
             yield d
         finally:

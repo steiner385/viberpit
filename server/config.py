@@ -69,6 +69,10 @@ try:
             alias="CCSWITCH_LOG_DIR",
         )
         client_log_level: str = Field(default="warn", alias="CCSWITCH_CLIENT_LOG_LEVEL")
+        # Override the directory used for archived session working directories.
+        # Defaults to $CCSWITCH_HOME/archive. Set to a path on a larger/slower
+        # drive to keep live session data and archives on separate filesystems.
+        archive_home: str | None = Field(default=None, alias="CCSWITCH_ARCHIVE_HOME")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -186,6 +190,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         client_log_level: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_CLIENT_LOG_LEVEL", "warn")
+        )
+        archive_home: str | None = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ARCHIVE_HOME")
         )
 
         @property

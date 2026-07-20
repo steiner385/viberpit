@@ -95,8 +95,14 @@ def reauth_tmp_dir() -> Path:
 
 
 def archive_dir() -> Path:
-    """Directory where archived session working directories are stored."""
-    d = root() / "archive"
+    """Directory where archived session working directories are stored.
+
+    Override with CCSWITCH_ARCHIVE_HOME to store archives on a separate
+    filesystem (e.g. a larger/slower drive) from live session data.
+    Defaults to $CCSWITCH_HOME/archive.
+    """
+    env = os.environ.get("CCSWITCH_ARCHIVE_HOME")
+    d = Path(env) if env else root() / "archive"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
