@@ -1587,6 +1587,59 @@ class SessionOrchestrator:
         _mode, config = await self._backlog_read_config()
         return await asyncio.to_thread(query_candidates, config, gh_run=self._gh_run)
 
+    async def backlog_runner_dispatch(self, refs: list[str]) -> dict:
+        """Manual dispatch: claim + spawn a batch for *refs*.
+
+        *refs[0]* is the primary; all refs are bundled into one PR. Does NOT
+        require refs to be in the current candidate set — picker state may lag
+        by seconds and blocking an explicit user request is worse than a missing
+        title. Returns ``{"status": ..., "session_id": ..., "session_name": ...}``."""
+        from server.automations.backlog_github import query_candidates
+        from server.automations.backlog_selection import Batch
+        primary = refs[0]
+        _mode, config = await self._backlog_read_config()
+        candidates = await asyncio.to_thread(
+            query_candidates, config, gh_run=self._gh_run)
+        by_ref = {c["ref"]: c for c in candidates}
+        repo = by_ref.get(primary, {}).get("repo") or primary.split("#")[0]
+        titles = {r: by_ref[r]["title"]
+                  for r in refs if r in by_ref and by_ref[r].get("title")}
+        batch = Batch(primary=primary, issues=list(refs), repo=repo, titles=titles)
+        st = await self._backlog_ctx.get_target_state(primary)
+        already_claimed = bool(st.get("issues"))
+        if not already_claimed:
+            await self._backlog_ctx.set_target_state(primary, {
+                "repo": batch.repo,
+                "attempts": st.get("attempts", 0),
+                "issues": batch.issues,
+                "claimed": True,
+            })
+            if not await self._backlog_claim(batch):
+                await self._backlog_ctx.delete_target_state(primary)
+                return {"status": "claim_failed", "session_id": None,
+                        "session_name": None}
+            await self._backlog_ctx.emit("info", f"manual dispatch {primary}",
+                                         kind="claimed", target=primary,
+                                         detail={"issues": batch.issues})
+        account = await self._backlog_healthy_account()
+        if account is None:
+            return {"status": "no_account", "session_id": None,
+                    "session_name": None}
+        rec = await self._backlog_spawn(batch, account)
+        await self._backlog_ctx.set_target_state(primary, {
+            "session_id": getattr(rec, "id", None),
+            "repo": batch.repo,
+            "branch": getattr(rec, "branch", None),
+            "attempts": st.get("attempts", 0),
+            "issues": batch.issues,
+            "claimed": True,
+        })
+        return {
+            "status": "spawned",
+            "session_id": getattr(rec, "id", None),
+            "session_name": getattr(rec, "name", None),
+        }
+
     async def _backlog_tick_loop(self, interval: float) -> None:
         """Periodic driver for the backlog-runner control loop. Runs a tick every
         *interval* seconds while the automation is enabled; a disabled row makes
