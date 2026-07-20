@@ -412,7 +412,13 @@ def create_app(
     # in-process (never raised there).
     @app.exception_handler(DaemonUnavailable)
     async def _daemon_unavailable_handler(_request, _exc):  # noqa: ANN001
-        return JSONResponse(status_code=503, content={"detail": "session daemon unavailable"})
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "System is restarting — session creation will be available shortly",
+                "code": "daemon_unavailable",
+            },
+        )
 
     @app.exception_handler(DaemonError)
     async def _daemon_error_handler(_request, _exc):  # noqa: ANN001
