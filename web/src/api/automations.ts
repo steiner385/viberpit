@@ -173,3 +173,30 @@ export interface BacklogGroupsView {
 export function fetchBacklogGroups(): Promise<BacklogGroupsView> {
   return api.get<BacklogGroupsView>('/automations/backlog-runner/groups')
 }
+
+export interface BacklogCandidate {
+  ref: string
+  title: string
+  repo: string
+  number: number
+  body: string
+  url: string
+}
+
+export interface BacklogCandidatesView {
+  candidates: BacklogCandidate[]
+}
+
+export interface DispatchGroupResponse {
+  status: 'spawned' | 'claim_failed' | 'no_account' | string
+  session_id: string | null
+  session_name: string | null
+}
+
+export function fetchBacklogCandidates(): Promise<BacklogCandidatesView> {
+  return api.get<BacklogCandidatesView>('/automations/backlog-runner/candidates')
+}
+
+export function postDispatchGroup(refs: string[]): Promise<DispatchGroupResponse> {
+  return api.post<DispatchGroupResponse>('/automations/backlog-runner/dispatch', { refs })
+}
