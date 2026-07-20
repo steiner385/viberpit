@@ -200,3 +200,69 @@ def test_put_max_archived_clamps_to_ceiling():
 # NOTE: prAutofixMode is no longer an /api/settings field. The pr-doctor mode
 # moved onto the automation registry row (Automation id="pr-doctor", column
 # `mode`); see test_pr_autofix_migration.py. No parallel state in AppSettings.
+
+# ---------------------------------------------------------------------------
+# archiveHome
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_archive_home_defaults_none():
+    """GET /api/settings returns archiveHome null by default (server default path)."""
+    with _client() as client:
+        resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    assert resp.json()["archiveHome"] is None
+
+
+def test_put_archive_home_round_trips():
+    """PUT {archiveHome: '/custom/path'} then GET → '/custom/path'."""
+    with _client() as client:
+        put_resp = client.put(
+            "/api/settings",
+            json={"archiveHome": "/custom/archive/path"},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["archiveHome"] == "/custom/archive/path"
+
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.json()["archiveHome"] == "/custom/archive/path"
+
+
+def test_put_archive_home_empty_string_clears_to_null():
+    """PUT {archiveHome: ''} clears back to null (server default)."""
+    with _client() as client:
+        client.put(
+            "/api/settings",
+            json={"archiveHome": "/custom/archive/path"},
+            headers=IDENTITY_HEADERS,
+        )
+        put_resp = client.put(
+            "/api/settings",
+            json={"archiveHome": ""},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["archiveHome"] is None
+
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.json()["archiveHome"] is None
+
+
+def test_put_archive_home_unchanged_when_omitted():
+    """Omitting archiveHome from PUT body leaves the stored value intact."""
+    with _client() as client:
+        client.put(
+            "/api/settings",
+            json={"archiveHome": "/stored/path"},
+            headers=IDENTITY_HEADERS,
+        )
+        # PUT something else, no archiveHome key
+        client.put(
+            "/api/settings",
+            json={"thinkingCollapsed": False},
+            headers=IDENTITY_HEADERS,
+        )
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.json()["archiveHome"] == "/stored/path"
