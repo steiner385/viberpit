@@ -617,6 +617,34 @@ def test_unarchive_raises_insufficient_storage_when_move_skipped(tmp_path):
         asyncio.run(run())
 
 
+def test_unarchive_error_message_names_real_mountpoint(tmp_path):
+    """The out-of-space message reports the actual filesystem (mount point) of the
+    restore target, not Path.anchor — which is always '/' and misleads on hosts
+    whose data lives on a separate mount (e.g. /mnt/ssk-ssd)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    original_cwd = tmp_path / "oom_cwd"
+
+    async def run():
+        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+            archive_path = tmp_path / "archive" / "s_oom"
+            archive_path.mkdir(parents=True)
+            (archive_path / "data.txt").write_text("data")
+            await init_db(db_url=db_url)
+            await _seed([
+                dict(id="s_oom", name="OOM", account_name="acc1",
+                     claude_session_id=None, status="archived",
+                     cwd=str(original_cwd)),
+            ])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            with patch("server.sessions.orchestrator.move_into_archive", return_value="skipped:nospace"), \
+                 patch("server.sessions.orchestrator.mountpoint", return_value=Path("/mnt/ssk-ssd")):
+                return await orch.unarchive("s_oom")
+
+    # The real mount point appears; the misleading bare "(/)" does not.
+    with pytest.raises(InsufficientStorageError, match=r"\(/mnt/ssk-ssd\)"):
+        asyncio.run(run())
+
+
 def test_move_into_archive_skips_when_inodes_low(tmp_path):
     """move_into_archive returns skipped:nospace when destination is low on inodes."""
     from server.sessions.archive_move import move_into_archive

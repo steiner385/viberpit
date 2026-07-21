@@ -14,7 +14,22 @@ from pathlib import Path
 
 import pytest
 
-from server.sessions.archive_move import move_into_archive
+from server.sessions.archive_move import mountpoint, move_into_archive
+
+
+def test_mountpoint_resolves_to_filesystem_boundary(tmp_path):
+    """mountpoint() returns a real mount point that is an ancestor of the target,
+    even when the target path doesn't exist yet (a restore target may not)."""
+    target = tmp_path / "a" / "b" / "c"  # deliberately does not exist
+    mp = mountpoint(target)
+    assert os.path.ismount(mp)  # it IS an actual filesystem boundary
+    # …and an ancestor of the target's nearest-existing realpath
+    assert os.path.commonpath([str(mp), os.path.realpath(tmp_path)]) == str(mp)
+
+
+def test_mountpoint_of_nonexistent_absolute_path_is_root():
+    """A path with no existing ancestor but root walks up to '/', not a crash."""
+    assert str(mountpoint(Path("/nonexistent/deep/path"))) == "/"
 
 
 def _make_tree(base: Path) -> Path:
