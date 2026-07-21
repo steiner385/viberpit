@@ -343,3 +343,38 @@ class TestUsageForSetupTokenFallback(unittest.TestCase):
                 u = accounts.usage_for("alpha")
             self.assertIsNone(u)
             self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
+
+
+class TestRemoveAccount(unittest.TestCase):
+    def test_remove_account_drops_ledger_entry(self):
+        """A removed account must not linger in the ledger: the health watchdog
+        alerts on ledger status, so residue (e.g. needs-reauth) alerts forever
+        for an account that no longer exists (2026-07-21 primary/secondary)."""
+        with temp_env():
+            from ccswitch import accounts, ledger, paths
+            _seed_account("doomed")
+            paths.account_cfg_dir("doomed").mkdir(parents=True)
+            with ledger.locked_ledger() as led:
+                led["accounts"]["doomed"] = {"status": "needs-reauth"}
+
+            accounts.remove_account("doomed")
+
+            self.assertFalse(paths.slot_path("doomed").exists())
+            self.assertFalse(paths.account_cfg_dir("doomed").exists())
+            with ledger.locked_ledger() as led:
+                self.assertNotIn("doomed", led["accounts"])
+
+    def test_remove_account_preserves_other_ledger_entries(self):
+        with temp_env():
+            from ccswitch import accounts, ledger
+            _seed_account("doomed")
+            _seed_account("kept")
+            with ledger.locked_ledger() as led:
+                led["accounts"]["doomed"] = {"status": "needs-reauth"}
+                led["accounts"]["kept"] = {"status": "ok"}
+
+            accounts.remove_account("doomed")
+
+            with ledger.locked_ledger() as led:
+                self.assertNotIn("doomed", led["accounts"])
+                self.assertEqual(led["accounts"]["kept"], {"status": "ok"})

@@ -463,6 +463,11 @@ def remove_account(name: str) -> None:
     ct = paths.copilot_token_dir(name)
     if ct.exists():
         shutil.rmtree(ct)
+    # Drop the ledger entry too: the health watchdog alerts on ledger status,
+    # so a removed account left behind at e.g. needs-reauth alerts forever
+    # (2026-07-21: long-deleted primary/secondary paged reauth all day).
+    with ledger.locked_ledger() as led:
+        led["accounts"].pop(name, None)
 
 
 def list_accounts() -> list[dict]:
