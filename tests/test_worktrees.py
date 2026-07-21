@@ -347,5 +347,113 @@ class AuthoredBranchesTests(unittest.TestCase):
         self.assertFalse(worktrees.is_remote_ref("main"))
 
 
+class DiskHeadroomTests(unittest.TestCase):
+    """Tests for check_disk_headroom preflight and DiskSpaceError."""
+
+    class _FakeStatvfs:
+        """Shape-compatible with os.statvfs_result for the fields we read."""
+        def __init__(self, *, frsize=4096, bavail=10_000_000, files=1_000_000, favail=500_000):
+            self.f_frsize = frsize
+            self.f_bavail = bavail
+            self.f_files = files
+            self.f_favail = favail
+
+    def test_headroom_ok_no_raise(self) -> None:
+        """Default headroom (2 GiB bytes, 100k inodes) with plenty available."""
+        original_statvfs = os.statvfs
+        try:
+            os.statvfs = lambda p: self._FakeStatvfs()
+            worktrees.check_disk_headroom("/tmp")  # ~40 GB / 500k inodes free — fine
+        finally:
+            os.statvfs = original_statvfs
+
+    def test_headroom_low_bytes_raises(self) -> None:
+        """Insufficient bytes → DiskSpaceError."""
+        original_statvfs = os.statvfs
+        try:
+            os.statvfs = lambda p: self._FakeStatvfs(bavail=100)  # ~400 KB free
+            with self.assertRaises(worktrees.DiskSpaceError) as ctx:
+                worktrees.check_disk_headroom("/tmp")
+            self.assertIn("insufficient disk headroom", str(ctx.exception))
+        finally:
+            os.statvfs = original_statvfs
+
+    def test_headroom_low_inodes_raises(self) -> None:
+        """Insufficient inodes → DiskSpaceError."""
+        original_statvfs = os.statvfs
+        try:
+            os.statvfs = lambda p: self._FakeStatvfs(favail=500)
+            with self.assertRaises(worktrees.DiskSpaceError) as ctx:
+                worktrees.check_disk_headroom("/tmp")
+            self.assertIn("inode", str(ctx.exception))
+        finally:
+            os.statvfs = original_statvfs
+
+    def test_headroom_inode_check_skipped_when_fs_reports_none(self) -> None:
+        """btrfs-style: f_files == 0 means no inode accounting — must not raise."""
+        original_statvfs = os.statvfs
+        try:
+            os.statvfs = lambda p: self._FakeStatvfs(files=0, favail=0)
+            worktrees.check_disk_headroom("/tmp")
+        finally:
+            os.statvfs = original_statvfs
+
+    def test_headroom_env_overrides(self) -> None:
+        """CCSWITCH_MIN_FREE_BYTES env var overrides default threshold."""
+        original_statvfs = os.statvfs
+        original_env = os.environ.copy()
+        try:
+            os.statvfs = lambda p: self._FakeStatvfs(bavail=10_000_000)
+            os.environ["CCSWITCH_MIN_FREE_BYTES"] = str(10_000_000 * 4096 + 1)
+            with self.assertRaises(worktrees.DiskSpaceError):
+                worktrees.check_disk_headroom("/tmp")
+        finally:
+            os.statvfs = original_statvfs
+            os.environ.clear()
+            os.environ.update(original_env)
+
+    def test_disk_space_error_is_worktree_error(self) -> None:
+        """DiskSpaceError is a WorktreeError so existing catch-sites work."""
+        self.assertTrue(issubclass(worktrees.DiskSpaceError, worktrees.WorktreeError))
+        self.assertIn("insufficient disk headroom", worktrees.DISK_EXHAUSTION_MARKERS)
+
+    def test_create_worktree_preflights_before_git(self) -> None:
+        """When headroom is too low, create_worktree raises DiskSpaceError WITHOUT
+        running any git subprocess (fail-fast: no churn on a full disk)."""
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            tmp_path = Path(tmp.name)
+            # Create a real repo for rev-parse to work on
+            subprocess.run(["git", "init", "-q", str(tmp_path / "repo")], check=True)
+
+            original_statvfs = os.statvfs
+            calls: list[list[str]] = []
+
+            def _no_git(args):
+                calls.append(args)
+                raise AssertionError(f"git must not run when disk is exhausted: {args}")
+
+            # rev-parse runs BEFORE the preflight (cheap, read-only) — allow only that.
+            real_run = worktrees._run
+
+            def _guarded(args):
+                if "rev-parse" in args:
+                    return real_run(args)
+                return _no_git(args)
+
+            try:
+                os.statvfs = lambda p: self._FakeStatvfs(favail=10)
+                worktrees._run = _guarded
+                with self.assertRaises(worktrees.DiskSpaceError):
+                    worktrees.create_worktree(
+                        str(tmp_path / "repo"), None, "sess1234", str(tmp_path / "root")
+                    )
+            finally:
+                os.statvfs = original_statvfs
+                worktrees._run = real_run
+        finally:
+            tmp.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()
