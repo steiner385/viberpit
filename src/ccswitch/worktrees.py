@@ -34,6 +34,59 @@ class WorktreeError(Exception):
     """Raised when a worktree could not be created."""
 
 
+class DiskSpaceError(WorktreeError):
+    """Raised when the worktree filesystem lacks byte or inode headroom.
+
+    Subclasses WorktreeError so existing catch-sites keep working; the
+    distinct type (and the stable message marker) lets callers detect
+    disk exhaustion and stop retrying instead of churning.
+    """
+
+
+# Single source of truth for "this failure is disk exhaustion" detection.
+# The git ENOSPC string appears in captured stderr of a failed checkout;
+# the headroom string is ours. server/automations/backlog_runner.py imports
+# this to trip its spawn circuit breaker.
+DISK_EXHAUSTION_MARKERS: tuple[str, ...] = (
+    "No space left on device",
+    "insufficient disk headroom",
+)
+
+# Floors for the preflight. A KinDash-sized checkout is ~1.5 GB / ~19k inodes;
+# defaults leave room for one checkout plus concurrent session writes.
+_MIN_FREE_BYTES_DEFAULT = 2 * 1024**3      # 2 GiB
+_MIN_FREE_INODES_DEFAULT = 100_000
+
+
+def check_disk_headroom(
+    path: str | os.PathLike[str],
+    min_free_bytes: int | None = None,
+    min_free_inodes: int | None = None,
+) -> None:
+    """Raise DiskSpaceError if the filesystem at `path` is near exhaustion.
+
+    Checks BOTH bytes and inodes: the 2026-07-21 incident was inode
+    exhaustion with 24 GB of bytes free, invisible to byte-only checks.
+    Filesystems without inode accounting (f_files == 0, e.g. btrfs) skip
+    the inode check. Overridable via CCSWITCH_MIN_FREE_BYTES /
+    CCSWITCH_MIN_FREE_INODES.
+    """
+    if min_free_bytes is None:
+        min_free_bytes = int(os.environ.get("CCSWITCH_MIN_FREE_BYTES", _MIN_FREE_BYTES_DEFAULT))
+    if min_free_inodes is None:
+        min_free_inodes = int(os.environ.get("CCSWITCH_MIN_FREE_INODES", _MIN_FREE_INODES_DEFAULT))
+    st = os.statvfs(path)
+    free_bytes = st.f_frsize * st.f_bavail
+    if free_bytes < min_free_bytes:
+        raise DiskSpaceError(
+            f"insufficient disk headroom at {os.fspath(path)}: "
+            f"{free_bytes} bytes free < {min_free_bytes} required")
+    if st.f_files > 0 and st.f_favail < min_free_inodes:
+        raise DiskSpaceError(
+            f"insufficient disk headroom at {os.fspath(path)}: "
+            f"{st.f_favail} inodes free < {min_free_inodes} required")
+
+
 @dataclass
 class WorktreeInfo:
     path: str             # the worktree directory — use this as the session cwd
@@ -249,6 +302,13 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
 
     dest = worktrees_base(repo_root) / repo_name / _short(session_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
+
+    # Fail fast on a near-full filesystem BEFORE any git churn: a doomed
+    # checkout writes thousands of files, fails ENOSPC, and the write+delete
+    # cycle's page cache pins the daemon cgroup at MemoryHigh (2026-07-21
+    # restart-loop incident). DiskSpaceError's marker string lets the backlog
+    # runner stop retrying instead of looping.
+    check_disk_headroom(dest.parent)
 
     # Clear ONLY a stale record at our own `dest` (a prior crash that reused this
     # short-session id) so the path can be reused. NOT a repo-global prune: that
