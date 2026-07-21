@@ -42,7 +42,7 @@ from server.db import db_session
 from server.db.models import INACTIVE_SESSION_STATUSES, Session as DbSession
 from server.sessions import adopt as _adopt
 from server.sessions import deploy_snapshot as _deploy_snapshot
-from server.sessions.archive_move import move_into_archive
+from server.sessions.archive_move import mountpoint, move_into_archive
 from server.sessions import attachments as _attachments
 from server.sessions import dispatch
 from server.sessions import events as ev
@@ -5686,7 +5686,7 @@ class SessionOrchestrator:
         if move_result == "skipped:nospace":
             raise InsufficientStorageError(
                 f"Not enough disk space to restore session — the target filesystem "
-                f"({original_cwd.anchor}) is low on inodes or bytes"
+                f"({mountpoint(original_cwd)}) is low on inodes or bytes"
             )
 
         # Capture the archive provenance BEFORE we clear it, so we can tell whether this

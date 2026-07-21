@@ -37,6 +37,23 @@ FREE_SPACE_MARGIN_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
 FREE_INODE_MARGIN: int = 50_000
 
 
+def mountpoint(path: Path) -> Path:
+    """Mount point of the filesystem containing *path*.
+
+    Walks to the nearest existing ancestor first (a restore target may not exist
+    yet), then up to the filesystem boundary. Used to name the *actual* full disk
+    in out-of-space errors — ``Path.anchor`` is always ``/`` and misleads on hosts
+    whose session data lives on a separate mount (e.g. ``/mnt/ssk-ssd``).
+    """
+    p = path
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    p = Path(os.path.realpath(p))
+    while not os.path.ismount(p) and p != p.parent:
+        p = p.parent
+    return p
+
+
 def _prune_regenerable(src: Path, prune: tuple[str, ...]) -> None:
     """Delete *prune*-named dirs anywhere under *src* (best-effort)."""
     for root, dirs, _files in os.walk(src):
