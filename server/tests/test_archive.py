@@ -24,9 +24,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+import errno
+import pytest
+
 from server.db import init_db, db_session
 from server.db.models import Session as DbSession
-from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.orchestrator import SessionOrchestrator, InsufficientStorageError
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 
@@ -582,3 +585,56 @@ def test_resolve_transcript_path_without_credential_slot(tmp_path):
 
     path, expected = asyncio.run(run())
     assert path == expected
+
+
+# ---------------------------------------------------------------------------
+# inode-exhaustion guard
+# ---------------------------------------------------------------------------
+
+
+def test_unarchive_raises_insufficient_storage_when_move_skipped(tmp_path):
+    """unarchive() raises InsufficientStorageError when move_into_archive returns skipped:nospace."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    original_cwd = tmp_path / "oom_cwd"
+
+    async def run():
+        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+            archive_path = tmp_path / "archive" / "s_oom"
+            archive_path.mkdir(parents=True)
+            (archive_path / "data.txt").write_text("data")
+
+            await init_db(db_url=db_url)
+            await _seed([
+                dict(id="s_oom", name="OOM", account_name="acc1",
+                     claude_session_id=None, status="archived",
+                     cwd=str(original_cwd)),
+            ])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            with patch("server.sessions.orchestrator.move_into_archive", return_value="skipped:nospace"):
+                return await orch.unarchive("s_oom")
+
+    with pytest.raises(InsufficientStorageError):
+        asyncio.run(run())
+
+
+def test_move_into_archive_skips_when_inodes_low(tmp_path):
+    """move_into_archive returns skipped:nospace when destination is low on inodes."""
+    from server.sessions.archive_move import move_into_archive
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "f.txt").write_text("hi")
+    dest = tmp_path / "dest"
+
+    # Fake statvfs: claim f_favail=1 (below FREE_INODE_MARGIN).
+    # Also fake rename to raise EXDEV so we reach the cross-device copy path.
+    fake_sv = MagicMock()
+    fake_sv.f_favail = 1
+
+    with patch("server.sessions.archive_move.os.rename", side_effect=OSError(errno.EXDEV, "cross")), \
+         patch("server.sessions.archive_move.os.statvfs", return_value=fake_sv), \
+         patch("server.sessions.archive_move.shutil.disk_usage", return_value=MagicMock(free=10 * 1024 ** 3)):
+        result = move_into_archive(src, dest, margin=0)
+
+    assert result == "skipped:nospace"
+    assert not dest.exists()  # no partial copy left behind

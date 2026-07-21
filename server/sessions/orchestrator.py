@@ -139,6 +139,10 @@ class BranchSwitchError(Exception):
     """Raised when a git branch checkout fails."""
 
 
+class InsufficientStorageError(Exception):
+    """Raised when unarchiving cannot proceed due to inode or byte exhaustion."""
+
+
 # Session-window utilisation ceiling that triggers rotation (100 = hard ceiling per spec)
 _ROTATION_CEILING: float = 100.0
 
@@ -5663,12 +5667,12 @@ class SessionOrchestrator:
         archive_path = (await self._effective_archive_home()) / session_id
         original_cwd = Path(row.cwd)
 
-        def _restore() -> None:
+        def _restore() -> str:
             if archive_path.exists():
                 original_cwd.parent.mkdir(parents=True, exist_ok=True)
                 # Same cross-device safety as archiving, but keep the whole tree
                 # (prune=()): unarchiving restores the worktree, it does not shed deps.
-                move_into_archive(archive_path, original_cwd, prune=())
+                return move_into_archive(archive_path, original_cwd, prune=())
             else:
                 # Archive folder missing — recreate an empty cwd so SDK can start.
                 original_cwd.mkdir(parents=True, exist_ok=True)
@@ -5676,8 +5680,14 @@ class SessionOrchestrator:
                     "session.unarchive id=%s archive folder missing, recreating empty cwd",
                     session_id,
                 )
+                return "created_empty"
 
-        await asyncio.to_thread(_restore)
+        move_result = await asyncio.to_thread(_restore)
+        if move_result == "skipped:nospace":
+            raise InsufficientStorageError(
+                f"Not enough disk space to restore session — the target filesystem "
+                f"({original_cwd.anchor}) is low on inodes or bytes"
+            )
 
         # Capture the archive provenance BEFORE we clear it, so we can tell whether this
         # unarchive is REVERSING an automated archive (→ a learning heuristic).

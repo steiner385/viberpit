@@ -31,6 +31,11 @@ PRUNE_DIRS: tuple[str, ...] = ("node_modules", ".venv")
 # is allowed to start, so archiving can never drive a disk to 0.
 FREE_SPACE_MARGIN_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
 
+# Minimum available inodes on the destination filesystem before a cross-device
+# copy is allowed. shutil.disk_usage() only checks bytes; inode exhaustion
+# produces the same ENOSPC errno but silently slips past the byte guard.
+FREE_INODE_MARGIN: int = 50_000
+
 
 def _prune_regenerable(src: Path, prune: tuple[str, ...]) -> None:
     """Delete *prune*-named dirs anywhere under *src* (best-effort)."""
@@ -92,6 +97,12 @@ def move_into_archive(
     free = shutil.disk_usage(dest.parent).free
     if free < need + margin:
         return "skipped:nospace"
+
+    try:
+        if os.statvfs(dest.parent).f_favail < FREE_INODE_MARGIN:
+            return "skipped:nospace"
+    except OSError:
+        pass  # can't probe — proceed and let copytree raise naturally
 
     try:
         shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*prune), symlinks=True)

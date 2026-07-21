@@ -29,7 +29,8 @@ from server.sessions.search import transcript_text, parse_terms, session_matches
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import db_session, get_db
-from server.sessions.orchestrator import BranchSwitchError
+from server.sessions.orchestrator import BranchSwitchError, InsufficientStorageError
+from server.ipc.client import DaemonError
 from server.sessions.selection import AllAccountsBusy
 from server.time_iso import iso_utc
 
@@ -751,7 +752,20 @@ async def unarchive_session(
 ) -> dict:
     """Restore an archived session to idle. Returns 404 if not found or not archived."""
     orch = _get_orchestrator(request)
-    record = await orch.unarchive(session_id)
+    try:
+        record = await orch.unarchive(session_id)
+    except InsufficientStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+            detail={"code": "insufficient_storage", "message": str(exc)},
+        )
+    except DaemonError as exc:
+        if exc.err_type == "InsufficientStorageError":
+            raise HTTPException(
+                status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+                detail={"code": "insufficient_storage", "message": exc.message},
+            )
+        raise
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
