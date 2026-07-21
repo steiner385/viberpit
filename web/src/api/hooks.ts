@@ -481,9 +481,12 @@ export function useUnarchiveSession() {
       qc.setQueryData<ArchivedSession[]>(QK.archived, (cur) => (cur ?? []).filter((x) => x.id !== id))
       return { prev, removed }
     },
-    onError: (_e, _id, ctx) => {
+    onError: (e, _id, ctx) => {
       if (ctx?.prev) qc.setQueryData(QK.archived, ctx.prev)
-      toast.error(`Couldn't restore ${ctx?.removed?.name ?? 'session'}`)
+      const serverMsg = e instanceof ApiRequestError && e.status === 507
+        ? (e.body.detail as { message?: string } | null)?.message
+        : undefined
+      toast.error(serverMsg ?? `Couldn't restore ${ctx?.removed?.name ?? 'session'}`)
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.sessions })
