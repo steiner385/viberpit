@@ -15,7 +15,10 @@ export function DaemonRestartBanner() {
       role="status"
       aria-live="polite"
       className={cn(
-        'fixed inset-x-0 top-0 z-50 flex items-center justify-center gap-3',
+        // pointer-events-none: this is a non-interactive status notice. Without it the
+        // fixed top-0 bar overlays the session top bar and captures clicks meant for the
+        // controls beneath it (e.g. "Back to session list" — #620 broke dashboard e2e T044).
+        'pointer-events-none fixed inset-x-0 top-0 z-50 flex items-center justify-center gap-3',
         'border-b border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/90 px-4 py-2',
       )}
     >
