@@ -6,6 +6,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
+from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
 from server.github.pr_status import PullRequestInfo
 
 from .backlog_github import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, GhRun, query_candidates
@@ -18,6 +19,14 @@ from .context import AutomationContext
 log = logging.getLogger(__name__)
 
 _DAY_SECONDS = 24 * 3600
+
+# Spawn-failure damping (2026-07-21 incident: ENOSPC spawn retries every tick
+# churned gigabytes of checkout page cache into the daemon cgroup's MemoryHigh
+# throttle, wedging the control socket into a watchdog restart loop).
+SPAWN_BACKOFF_BASE_S = 300.0        # first per-target retry delay; doubles per failure
+SPAWN_BACKOFF_CAP_S = 3600.0        # per-target backoff ceiling
+SPAWN_CIRCUIT_THRESHOLD = 3         # consecutive failures (any cause) that open the breaker
+SPAWN_CIRCUIT_COOLDOWN_S = 1800.0   # breaker-open duration before a half-open probe
 
 
 # --------------------------------------------------------------------------- #
@@ -267,6 +276,9 @@ class BacklogRunnerLoop:
         self._lock = asyncio.Lock()
         self._spawns_today: list[float] = []        # spawn timestamps within the rolling day
         self._circuit_open_emitted = False          # debounce the circuit_open event
+        self._spawn_backoff: dict[str, tuple[int, float]] = {}  # target → (fails, retry_at)
+        self._spawn_circuit_until: float | None = None  # breaker open until this clock time
+        self._consec_spawn_failures = 0             # resets on any successful spawn
         self._no_account_emitted = False            # debounce the skipped_no_account event
 
     async def tick(self) -> None:
@@ -466,6 +478,10 @@ class BacklogRunnerLoop:
                 kind="groups_refreshed", detail={"groups": n})
 
     async def _refill(self, mode: str, config: dict) -> None:
+        if self._spawn_circuit_until is not None:
+            if self._clock() < self._spawn_circuit_until:
+                return                      # breaker open — no spawn attempts at all
+            self._spawn_circuit_until = None    # cooldown over → half-open probe
         in_flight = await self._count_in_flight()
         free = config["max_concurrent"] - in_flight
         for _ in range(max(0, free)):
@@ -491,6 +507,12 @@ class BacklogRunnerLoop:
                 # falls back to choosing issues itself).
                 self._group_nudge = True
                 return
+            fails_retry = self._spawn_backoff.get(batch.primary)
+            if fails_retry is not None and self._clock() < fails_retry[1]:
+                # The selected target is cooling down after a failed spawn.
+                # break, not continue: _select_batch would hand us the same
+                # highest-priority batch again and spin this for-loop.
+                break
             st = await self._ctx.get_target_state(batch.primary)
             if st.get("gave_up"):
                 continue
@@ -540,18 +562,42 @@ class BacklogRunnerLoop:
                                  detail={"issues": batch.issues})
             try:
                 rec = await self._spawn(batch, account)
-            except Exception:
+            except Exception as exc:
                 # Spawn/clone failed → RELEASE the claim (remove in-progress only,
                 # NO needs-human) and do NOT consume an attempt or a daily-cap slot
                 # (the batch re-enters the pool for a later tick). A claimed batch
-                # must never leak on failure.
+                # must never leak on failure — but it must also not be retried
+                # every tick: back off per target, and open the global breaker on
+                # disk exhaustion (retrying ENOSPC is guaranteed-futile churn) or
+                # repeated consecutive failures.
                 log.warning("backlog_runner.spawn_failed target=%s", batch.primary,
                             exc_info=True)
+                fails = self._spawn_backoff.get(batch.primary, (0, 0.0))[0] + 1
+                delay = min(SPAWN_BACKOFF_BASE_S * (2 ** (fails - 1)), SPAWN_BACKOFF_CAP_S)
+                self._spawn_backoff[batch.primary] = (fails, self._clock() + delay)
+                self._consec_spawn_failures += 1
+                msg = str(exc)
+                disk = any(m in msg for m in DISK_EXHAUSTION_MARKERS)
+                if disk or self._consec_spawn_failures >= SPAWN_CIRCUIT_THRESHOLD:
+                    self._spawn_circuit_until = self._clock() + SPAWN_CIRCUIT_COOLDOWN_S
+                    reason = ("disk exhaustion" if disk else
+                              f"{self._consec_spawn_failures} consecutive spawn failures")
+                    await self._ctx.emit(
+                        "warn",
+                        f"spawn circuit open ({reason}) — pausing spawns "
+                        f"{int(SPAWN_CIRCUIT_COOLDOWN_S // 60)}m: {msg.splitlines()[0][:200]}",
+                        kind="spawn_circuit_open")
                 await self._release(batch.primary)
-                await self._ctx.emit("info", f"released {batch.primary} (spawn failed)",
-                                     kind="unclaimed", target=batch.primary)
+                await self._ctx.emit(
+                    "info",
+                    f"released {batch.primary} (spawn failed; retry in {int(delay)}s)",
+                    kind="unclaimed", target=batch.primary)
                 await self._ctx.delete_target_state(batch.primary)
+                if self._spawn_circuit_until is not None:
+                    break
                 continue
+            self._spawn_backoff.pop(batch.primary, None)
+            self._consec_spawn_failures = 0
             self._spawns_today.append(self._clock())
             # NB: ``attempts`` is charged when a session ENDS without a mergeable
             # PR (see ``_sweep_one``), never at spawn time — a successful handoff

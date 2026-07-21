@@ -53,7 +53,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
                candidates=None, healthy="a", in_flight_counter=None,
                pr_status=None, pr_doctor_active=True, claim_result=True,
                candidate_count=None, heal_orphans_result=None,
-               refresh_groups=None):
+               refresh_groups=None, spawn=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .claims /
@@ -93,10 +93,12 @@ def build_loop(*, mode="auto", config=None, clock=None,
             rec.claims.append(batch)
         return claim_result
 
-    async def spawn(batch, account):
+    async def _default_spawn(batch, account):
         rec.spawns.append((batch, account))
         rec.in_flight += 1
         return object()
+
+    spawn = spawn or _default_spawn
 
     async def count_in_flight():
         if in_flight_counter is not None:
@@ -906,5 +908,192 @@ def test_group_refresh_skipped_when_mode_off(tmp_path):
                                     refresh_groups=refresh)
         await loop.tick()
         assert calls == []              # a disabled runner never groups
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# Spawn-failure backoff + disk-exhaustion circuit breaker (2026-07-21)         #
+# --------------------------------------------------------------------------- #
+
+def test_spawn_failure_backs_off_target(tmp_path):
+    """A failed spawn is NOT retried on the next tick; the target is retried
+    only after the 300s base backoff elapses."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'bo.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clock = FakeClock()
+        attempts: list[float] = []
+
+        async def failing_spawn(b, account):
+            attempts.append(clock())
+            raise RuntimeError("git worktree add --detach failed: boom")
+
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("r#1"), batch("r#1"), batch("r#1")],
+            spawn=failing_spawn, clock=clock,
+        )
+        await loop.tick()
+        assert len(attempts) == 1
+        clock.advance(120)              # < 300s base backoff
+        await loop.tick()
+        assert len(attempts) == 1       # still cooling down — no retry churn
+        clock.advance(300)              # past the window
+        await loop.tick()
+        assert len(attempts) == 2       # retried once eligible
+
+    asyncio.run(run())
+
+
+def test_spawn_backoff_doubles_per_consecutive_failure(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'bo2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clock = FakeClock()
+        attempts: list[float] = []
+
+        async def failing_spawn(b, account):
+            attempts.append(clock())
+            raise RuntimeError("boom")
+
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("r#1")] * 5,
+            spawn=failing_spawn, clock=clock,
+        )
+        await loop.tick()                       # fail #1 → wait 300s
+        clock.advance(301)
+        await loop.tick()                       # fail #2 → wait 600s
+        clock.advance(301)
+        await loop.tick()                       # 301s < 600s: no attempt
+        assert len(attempts) == 2
+        clock.advance(300)
+        await loop.tick()                       # 601s elapsed → attempt #3
+        assert len(attempts) == 3
+
+    asyncio.run(run())
+
+
+def test_spawn_success_clears_backoff(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'bo3.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clock = FakeClock()
+        calls = {"n": 0}
+
+        async def flaky_spawn(b, account):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            return object()
+
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("r#1")] * 3,
+            spawn=flaky_spawn, clock=clock,
+        )
+        await loop.tick()                       # fails → backoff recorded
+        assert loop._spawn_backoff
+        clock.advance(301)
+        await loop.tick()                       # succeeds
+        assert loop._spawn_backoff == {}        # success wipes the slate
+
+    asyncio.run(run())
+
+
+def test_enospc_spawn_failure_trips_circuit_immediately(tmp_path):
+    """A disk-exhaustion error opens the global spawn circuit on the FIRST
+    failure — other targets are NOT attempted while it is open."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'cb.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clock = FakeClock()
+        attempts: list[str] = []
+
+        async def enospc_spawn(b, account):
+            attempts.append(b.primary)
+            raise RuntimeError(
+                "git worktree add --detach failed: error: unable to create "
+                "file x: No space left on device")
+
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=2),
+            candidates=[batch("r#1"), batch("r#2"), batch("r#3")],
+            spawn=enospc_spawn, clock=clock,
+        )
+        await loop.tick()
+        assert attempts == ["r#1"]              # circuit opened mid-tick
+        clock.advance(60)
+        await loop.tick()
+        assert attempts == ["r#1"]              # open — no new targets tried
+        opened = await ctx.list_events(kind="spawn_circuit_open")
+        assert len(opened) == 1                 # alert emitted exactly once
+        clock.advance(1800)
+        await loop.tick()
+        assert len(attempts) == 2               # cooldown over — probe allowed
+
+    asyncio.run(run())
+
+
+def test_three_consecutive_failures_trip_circuit(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'cb2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clock = FakeClock()
+        attempts: list[str] = []
+
+        async def failing_spawn(b, account):
+            attempts.append(b.primary)
+            raise RuntimeError("boom")          # no disk marker
+
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=3),
+            candidates=[batch("r#1"), batch("r#2"), batch("r#3"), batch("r#4")],
+            spawn=failing_spawn, clock=clock,
+        )
+        await loop.tick()                       # three distinct targets fail
+        assert attempts == ["r#1", "r#2", "r#3"]
+        clock.advance(60)
+        await loop.tick()
+        assert attempts == ["r#1", "r#2", "r#3"]  # circuit open — no attempts
+
+    asyncio.run(run())
+
+
+def test_spawn_success_resets_consecutive_failures(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'cb3.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clock = FakeClock()
+        calls = {"n": 0}
+
+        async def alternating_spawn(b, account):
+            calls["n"] += 1
+            if calls["n"] % 2:
+                raise RuntimeError("boom")
+            return object()
+
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch(f"r#{i}") for i in range(1, 10)],
+            spawn=alternating_spawn, clock=clock,
+        )
+        for _ in range(6):                      # fail, ok, fail, ok, fail, ok
+            await loop.tick()
+            clock.advance(3700)                 # clear per-target backoffs
+        assert loop._spawn_circuit_until is None  # never 3 consecutive fails
 
     asyncio.run(run())
