@@ -5,6 +5,7 @@ import { SessionView } from './components/session/SessionView'
 import { SubSessionView } from './components/session/SubSessionView'
 import { ReviewView } from './components/ReviewView'
 import { GlobalUpdateBanner } from './components/GlobalUpdateBanner'
+import { DaemonRestartBanner } from './components/DaemonRestartBanner'
 import { BrandMark } from './components/BrandMark'
 import { useMediaQuery } from './lib/useMediaQuery'
 import { DeployControllerProvider } from './lib/deployController'
@@ -140,6 +141,7 @@ function App() {
   return (
     <DeployControllerProvider>
       <GlobalUpdateBanner />
+      <DaemonRestartBanner />
       {isWide ? (
         <DesktopShell />
       ) : (

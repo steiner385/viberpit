@@ -21,6 +21,7 @@ export function extractMutationErrorMessage(error: unknown): string {
       const msg = (detail as Record<string, unknown>).message
       if (typeof msg === 'string' && msg.trim() !== '') return msg
     }
+    if (typeof detail === 'string' && detail.trim() !== '') return detail
     const top = error.body?.message
     if (typeof top === 'string' && top.trim() !== '') return top
   }
