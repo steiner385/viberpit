@@ -17,6 +17,28 @@ def _default_gh_api(path: str) -> str:
     return r.stdout
 
 
+def _required_contexts(gh_api: Callable[[str], str], branch: str = "master") -> set[str]:
+    """Required status-check contexts protecting ``branch`` (the deploy gate = merge gate).
+
+    Empty set if branch protection is unreadable — the API needs admin scope, so a
+    non-admin token degrades to "count every check" (the historical, fail-safe behavior:
+    a non-required failure can only *block*, never spuriously pass). Deploy always targets
+    origin/master (see ``git.py``), so this reads master's protection directly rather than
+    resolving a default branch.
+
+    Mirrors the required-contexts read in ``server.github.actions_api.repo_ci_meta`` (the
+    CI/CD-doctor path); that one takes an explicit repo slug via a different gh seam, so
+    deploy keeps this thin reader on its own injectable ``gh_api`` seam. Same endpoint,
+    same meaning of "required".
+    """
+    try:
+        data = json.loads(gh_api(
+            f"repos/{{owner}}/{{repo}}/branches/{branch}/protection/required_status_checks"))
+    except Exception:
+        return set()
+    return set(data.get("contexts") or [])
+
+
 def ci_verdict(sha: str, gh_api: Callable[[str], str] | None = None) -> str:
     gh_api = gh_api or _default_gh_api
     try:
@@ -24,6 +46,15 @@ def ci_verdict(sha: str, gh_api: Callable[[str], str] | None = None) -> str:
     except Exception:
         return "unavailable"
     runs = body.get("check_runs") or []
+    required = _required_contexts(gh_api)
+    if required:
+        # Only the checks that gate a MERGE gate a DEPLOY. Without this, a non-required or
+        # flaky check (e.g. e2e) that never blocks a merge still wedges every self-deploy
+        # (#620). A required context with no run yet is "pending", not "green".
+        present = {r.get("name") for r in runs}
+        if not required <= present:
+            return "pending"
+        runs = [r for r in runs if r.get("name") in required]
     if not runs:
         return "pending"
     if any(r.get("status") != "completed" for r in runs):
