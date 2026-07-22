@@ -201,7 +201,7 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
             htmlFor="settings-max-active"
             className="block text-sm font-medium text-gray-700 dark:text-gray-300"
           >
-            Max active sessions <span className="text-gray-400">(blank = unlimited)</span>
+            Max active sessions <span className="text-gray-400">(blank = default (5))</span>
           </label>
           <input
             id="settings-max-active"

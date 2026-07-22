@@ -825,6 +825,15 @@ class SessionOrchestrator:
                     break
                 sid, params = entry.session_id, dict(entry.params)
                 await sq.remove(sid)
+                # Re-verify the DB row is still 'queued' before spawning.  A
+                # concurrent close/archive (or crash-window orphan) may have already
+                # changed the status while the entry sat in the queue.  Skipping here
+                # heals those stale entries without double-starting the session.
+                in_mem = self._records.get(sid)
+                if in_mem is not None and in_mem.status != "queued":
+                    log.warning("session_queue.stale_entry id=%s status=%s — skipping",
+                                sid, in_mem.status)
+                    continue
                 # Remove the queued pre-record so it doesn't double-count while
                 # _spawn_session re-inserts it as an active record.
                 self._records.pop(sid, None)
@@ -1145,6 +1154,11 @@ class SessionOrchestrator:
                 pass  # Not a scratch dir — nothing to do
             except Exception:
                 log.exception("session.scratch_cleanup_failed id=%s", session_id)
+
+        # Remove from the session queue BEFORE persisting ended status so the
+        # drain triggered below cannot resurrect a just-closed queued session.
+        from server.sessions import session_queue as sq
+        await sq.remove(session_id)
 
         async with db_session() as db:
             from sqlalchemy import update as sa_update
@@ -4237,6 +4251,12 @@ class SessionOrchestrator:
         if rec is None:
             return None
 
+        # Refuse to start a driver for a queued session — it has no account/cwd
+        # yet and starting it would bypass the active-session cap.  Callers
+        # (WS attach, prompt endpoint, fix-PR) all handle None gracefully.
+        if rec.status == "queued":
+            return None
+
         # Serialise the check-build-register section so that two concurrent WS
         # attaches to the same detached session cannot both pass the "no driver"
         # gate, each build+start a driver, and both register — which would attach
@@ -5096,6 +5116,11 @@ class SessionOrchestrator:
                         continue
                     if record.status in INACTIVE_SESSION_STATUSES:
                         continue
+                    # Queued sessions have no driver yet (intentionally) and will be
+                    # started by _maybe_start_queued when a slot frees — skip them so
+                    # the rotation monitor cannot bypass the cap.
+                    if record.status == "queued":
+                        continue
                     if record.id not in self._drivers:
                         # Driver died separately from any turn (e.g. proxy crash while
                         # session was idle).  Restart on a new account so the session
@@ -5690,6 +5715,11 @@ class SessionOrchestrator:
             except Exception:
                 log.debug("session.archive_worktree_deregister_failed id=%s",
                           session_id, exc_info=True)
+
+        # Remove from the session queue BEFORE persisting archived status so the
+        # drain triggered below cannot resurrect a just-archived queued session.
+        from server.sessions import session_queue as sq
+        await sq.remove(session_id)
 
         # Mark archived in DB.
         async with db_session() as db:

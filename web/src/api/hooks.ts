@@ -173,7 +173,7 @@ export interface AppSettings {
   maxArchivedSessions: number | null
   // Archive home path; null = use server default. On PUT, send "" to clear to default.
   archiveHome: string | null
-  // Maximum concurrent active sessions; sessions beyond this are queued. null = unlimited.
+  // Maximum concurrent active sessions; sessions beyond this are queued. null = server default (5).
   maxActiveSessions: number | null
 }
 
