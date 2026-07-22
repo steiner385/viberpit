@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from server.auth.middleware import current_identity
 from server.db import get_db
-from server.db.models import AppSettings
+from server.db.models import AppSettings, DEFAULT_MAX_ACTIVE_SESSIONS
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +85,16 @@ async def _migrate_archive_home(db, old_home: str | None, new_home: str | None) 
                  len(archived_ids), old_dir, new_dir)
 
 
+def _cap_raised(old_cap: int | None, new_cap: int) -> bool:
+    """Check if cap_raised: compare against effective defaults.
+
+    NULL max_active_sessions means DEFAULT_MAX_ACTIVE_SESSIONS (5), so setting
+    a first explicit value only counts as a raise when it exceeds the default.
+    """
+    effective_old = old_cap if old_cap is not None else DEFAULT_MAX_ACTIVE_SESSIONS
+    return new_cap > effective_old
+
+
 async def _get_or_create(db) -> AppSettings:
     row = (await db.execute(select(AppSettings).where(AppSettings.id == "singleton"))).scalar_one_or_none()
     if row is None:
@@ -144,7 +154,7 @@ async def put_settings_row(
         row.max_active_sessions = new_cap
         # When the cap increases (or was previously unlimited and is now set),
         # fire a drain so newly-available slots are filled from the queue.
-        cap_raised = old_cap is None or new_cap > old_cap
+        cap_raised = _cap_raised(old_cap, new_cap)
         if cap_raised:
             try:
                 orch = request.app.state.sessions

@@ -307,3 +307,44 @@ def test_put_max_active_zero_clamps_to_one():
         )
         assert put_resp.status_code == 200
         assert put_resp.json()["maxActiveSessions"] == 1
+
+
+def test_cap_raised_helper():
+    """Unit test _cap_raised: compares against effective default cap."""
+    from server.api.settings import _cap_raised
+
+    # (None, 3) → False: setting to default should not raise
+    assert _cap_raised(None, 3) is False
+
+    # (None, 7) → True: setting above default should raise
+    assert _cap_raised(None, 7) is True
+
+    # (5, 6) → True: increasing cap raises
+    assert _cap_raised(5, 6) is True
+
+    # (5, 5) → False: same cap does not raise
+    assert _cap_raised(5, 5) is False
+
+    # (None, 5) → False: setting to default should not raise
+    assert _cap_raised(None, 5) is False
+
+
+def test_put_max_active_null_to_default_no_raise():
+    """PUT {maxActiveSessions: 3} from NULL should NOT trigger drain (equals default)."""
+    with _client() as client:
+        # First call: maxActiveSessions is NULL (default 5)
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.json()["maxActiveSessions"] is None
+
+        # PUT to 3 (below default of 5): should NOT raise, no drain needed
+        put_resp = client.put(
+            "/api/settings",
+            json={"maxActiveSessions": 3},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["maxActiveSessions"] == 3
+
+        # Verify the value persisted
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.json()["maxActiveSessions"] == 3
