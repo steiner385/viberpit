@@ -32,7 +32,7 @@ async def remove(session_id: str) -> bool:
     async with db_session() as db:
         r = await db.execute(
             sa_delete(SessionQueue).where(SessionQueue.session_id == session_id))
-        return bool(r.rowcount)
+        return bool(getattr(r, "rowcount", 0))
 
 
 async def positions() -> dict[str, int]:

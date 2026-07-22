@@ -79,7 +79,7 @@ async def _make_orch(*, db_url: str, tmp_path, max_active_sessions: int) -> Sess
     )
     await orch.start()
 
-    orch._test_patches = [env_patch, compose_patch, trust_patch, select_patch]
+    orch._test_patches = [env_patch, compose_patch, trust_patch, select_patch]  # type: ignore[attr-defined]
     return orch
 
 

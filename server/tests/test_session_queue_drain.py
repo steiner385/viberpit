@@ -86,7 +86,7 @@ async def _make_orch(
     await orch.start()
 
     # Store patches on orch for cleanup
-    orch._test_patches = [env_patch, compose_patch, trust_patch, select_patch]
+    orch._test_patches = [env_patch, compose_patch, trust_patch, select_patch]  # type: ignore[attr-defined]
     return orch
 
 
