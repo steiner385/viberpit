@@ -492,6 +492,9 @@ class SessionOrchestrator:
         # each see no driver, each build+start one, and both register → two SDK
         # processes attached to the same Claude conversation (TOCTOU fix).
         self._ensure_lock: asyncio.Lock = asyncio.Lock()
+        # Serialises concurrent drain calls so two teardown paths (e.g. close + archive
+        # racing) cannot each pop the same queue head and double-start one session.
+        self._queue_drain_lock: asyncio.Lock = asyncio.Lock()
         # Graceful-drain state (deploy handshake). In-memory only; a restart clears it.
         self._draining: bool = False
         self._drain_started_at: float = 0.0
@@ -795,6 +798,80 @@ class SessionOrchestrator:
                  session_id, priority, origin)
         return rec
 
+    async def _maybe_start_queued(self) -> int:
+        """Start queued sessions while capacity allows. Serialised by a lock so
+        concurrent teardown paths can't double-start one entry. Returns count
+        started. Start failure → row leaves the queue, session goes
+        needs_attention, the NEXT entry gets its chance (one bad head must not
+        block the queue).
+
+        NEVER awaited inline inside a WS-attach coroutine — always scheduled via
+        asyncio.create_task so a client-disconnect cancellation cannot interrupt it.
+        """
+        from server.sessions import session_queue as sq
+        started = 0
+        async with self._queue_drain_lock:
+            # skip_capacity_check: set after a start failure so the NEXT entry
+            # gets its chance regardless of the (now inflated by needs_attention)
+            # active count. "One bad head must not block the queue."
+            skip_capacity_check = False
+            while True:
+                if not skip_capacity_check:
+                    if self._active_session_count() >= await self._max_active_sessions():
+                        break
+                skip_capacity_check = False
+                entry = await sq.next_entry()
+                if entry is None:
+                    break
+                sid, params = entry.session_id, dict(entry.params)
+                await sq.remove(sid)
+                # Remove the queued pre-record so it doesn't double-count while
+                # _spawn_session re-inserts it as an active record.
+                self._records.pop(sid, None)
+                try:
+                    await self._spawn_session(sid, preexisting_row=True, **params)
+                    started += 1
+                except Exception:
+                    log.warning("session_queue.start_failed id=%s", sid, exc_info=True)
+                    # Session must remain visible with needs_attention so the user
+                    # knows it failed. Re-seed a minimal in-memory record if _spawn_session
+                    # raised before creating one, then persist the status to the DB row
+                    # (which still exists as a 'queued' row — the UPDATE in _spawn_session
+                    # was not reached).
+                    if sid not in self._records:
+                        from datetime import datetime
+                        self._records[sid] = SessionRecord(
+                            id=sid,
+                            name=params.get("name", sid),
+                            account=params.get("account") or "",
+                            claude_session_id="",
+                            cols=params.get("cols", 220),
+                            rows=params.get("rows", 50),
+                            cwd=params.get("cwd") or "",
+                            repo=params.get("repo"),
+                            branch=None,
+                            status="needs_attention",
+                            name_is_auto=params.get("name_is_auto", True),
+                            updated_at=datetime.utcnow(),
+                            origin=params.get("origin"),
+                            origin_ref=params.get("origin_ref"),
+                            model=params.get("model"),
+                        )
+                    else:
+                        self._records[sid].status = "needs_attention"
+                    # Persist to DB — the row still exists (was 'queued'); update it.
+                    async with db_session() as db:
+                        from sqlalchemy import update as sa_update
+                        await db.execute(
+                            sa_update(DbSession)
+                            .where(DbSession.id == sid)
+                            .values(status="needs_attention")
+                        )
+                    # Give the next entry its chance even though needs_attention
+                    # inflates the active count.
+                    skip_capacity_check = True
+        return started
+
     async def _spawn_session(
         self,
         session_id: str,
@@ -1065,6 +1142,11 @@ class SessionOrchestrator:
             except Exception:  # pragma: no cover — scheduling must never break close
                 log.debug("backlog_runner.nudge_failed", exc_info=True)
 
+        # Drain the session queue: a closed session frees a slot so the next queued
+        # session can start. Tracked via _spawn so stop() can cancel it before it
+        # writes into a later test's DB.
+        self._spawn(self._maybe_start_queued(), name="queue-drain-on-close")
+
     async def rename_session(self, session_id: str, name: str) -> None:
         """Update the session name in the DB and in-memory record.
 
@@ -1169,6 +1251,12 @@ class SessionOrchestrator:
                 self._spawn(self._autopilot_loop.tick(), name="autopilot-nudge")
             except Exception:  # pragma: no cover — scheduling must never break status persist
                 log.debug("autopilot.nudge_failed", exc_info=True)
+        # When a session reaches a terminal/inactive status via its driver (self-exit,
+        # process death, etc.) without an explicit close_session / archive_session call,
+        # a queued session should still get the freed slot. Tracked via _spawn so stop()
+        # can cancel it; never awaited inline (WS-attach-reentrant).
+        if status in INACTIVE_SESSION_STATUSES:
+            self._spawn(self._maybe_start_queued(), name="queue-drain-on-status")
 
     def _maybe_autoarchive_completed(self, session_id: str, status: str, rec) -> None:
         """Schedule a completion auto-archive for a finished backlog-runner session.
@@ -3238,6 +3326,11 @@ class SessionOrchestrator:
                     )
         log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
                  added, len(backfilled), len(healed))
+        # After rebuilding in-memory records, drain the queue: a restarted daemon may
+        # have fewer active sessions than the cap (e.g. some were closed before restart),
+        # so queued sessions should fill those free slots immediately. Tracked via _spawn
+        # so stop() can cancel before it writes into a later test's DB.
+        self._spawn(self._maybe_start_queued(), name="queue-drain-on-rehydrate")
         return added
 
     async def rearm_background_tasks(self) -> int:
@@ -5597,6 +5690,10 @@ class SessionOrchestrator:
             await self._enforce_archive_limit()
         except Exception:
             log.exception("archive_limit: enforcement after archive failed id=%s", session_id)
+
+        # Drain the session queue: an archived session frees a slot so the next queued
+        # session can start. Tracked via _spawn — mirrors close_session.
+        self._spawn(self._maybe_start_queued(), name="queue-drain-on-archive")
 
     async def _effective_repo_root(self) -> str:
         """DB AppSettings.repo_root → env/default fallback.
