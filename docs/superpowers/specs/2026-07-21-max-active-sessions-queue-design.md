@@ -75,9 +75,11 @@ schema change.
   session leaving the active set (close, archive, driver exit), the cap being raised, and
   daemon start (queued rows survive restarts; rehydrate calls the drain after records
   rebuild).
-- **Start failure** (e.g. `DiskSpaceError`, dead account): remove the queue row, set the
-  session `needs_attention`, emit `session_queue_start_failed`, continue to the next
-  entry. Existing stuck-session machinery and the user handle retry.
+- **Start failure** (e.g. `DiskSpaceError`, dead account): remove the queue row, mark the
+  session `ended` (a failed-to-start session holds no process; a `needs_attention` corpse
+  would consume a cap slot forever and starve the queue), log the error, continue to the
+  next entry within the cap. Retry = start a new session; automations' existing
+  ended-without-PR sweeps release their claims.
 - **Cancel:** removing a queued entry deletes the queue row and marks the session
   `ended` (event `session_queue_cancelled`).
 - **Lowering the cap** never kills running sessions — it only gates new starts.
