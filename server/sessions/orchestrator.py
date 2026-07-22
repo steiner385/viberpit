@@ -484,6 +484,7 @@ class SessionOrchestrator:
         self._token_refresh_task: asyncio.Task | None = None
         self._sweep_task: asyncio.Task | None = None
         self._archive_limit_task: asyncio.Task | None = None
+        self._janitor_task: asyncio.Task | None = None
         self._pr_branch_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
@@ -613,6 +614,12 @@ class SessionOrchestrator:
         self._archive_limit_task = asyncio.create_task(
             self._archive_limit_loop(), name="archive-limit-sweep"
         )
+        # Orphan-worktree janitor: fires immediately on startup then every 24 h.
+        # Reclaims worktree dirs left behind by spawn crashes, failed archive moves,
+        # or SIGKILL mid-teardown — the three orphan sources from issue #591.
+        self._janitor_task = asyncio.create_task(
+            self._worktree_janitor_loop(interval=86400.0), name="worktree-janitor-loop"
+        )
 
     async def _refresh_idle_tokens_once(self) -> None:
         """Proactively refresh idle accounts' access tokens (best-effort).
@@ -665,7 +672,7 @@ class SessionOrchestrator:
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
                      "_token_refresh_task", "_backlog_task", "_autopilot_task",
                      "_cicd_task", "_archaudit_task", "_sweep_task",
-                     "_archive_limit_task", "_drain_timer"):
+                     "_archive_limit_task", "_janitor_task", "_drain_timer"):
             task = getattr(self, attr)
             if task is not None:
                 task.cancel()
@@ -5882,6 +5889,43 @@ class SessionOrchestrator:
                 await self._enforce_archive_limit()
             except Exception:
                 log.exception("archive_limit: periodic sweep failed")
+
+    async def _worktree_janitor_loop(self, interval: float) -> None:
+        """Fires immediately on startup then every ``interval`` seconds (default 24 h).
+
+        No leading sleep — the first pass reclaims orphans from the previous crash/
+        incident before any new sessions start. Uses ``asyncio.to_thread`` so blocking
+        git subprocesses don't stall the event loop.
+        """
+        while True:
+            if not self._shutting_down:
+                try:
+                    await asyncio.to_thread(self._janitor_sweep_once)
+                except Exception:
+                    log.exception("worktree-janitor: sweep failed")
+            await asyncio.sleep(interval)
+
+    def _janitor_sweep_once(self) -> None:
+        """Synchronous sweep — called inside ``asyncio.to_thread``."""
+        from ccswitch.worktrees_janitor import sweep_orphaned_worktrees
+
+        live_cwds: frozenset[str] = frozenset(
+            os.path.abspath(rec.cwd)
+            for rec in self._records.values()
+            if rec.cwd
+        ) | frozenset(
+            os.path.abspath(wt.path)
+            for wt in self._worktrees.values()
+            if wt.path
+        )
+        counts = sweep_orphaned_worktrees(self._repo_root, live_cwds)
+        log.info(
+            "worktree-janitor: scanned=%d removed=%d kept_live=%d "
+            "kept_young=%d kept_dirty=%d kept_unpushed=%d kept_error=%d",
+            counts["scanned"], counts["removed"], counts["kept_live"],
+            counts["kept_young"], counts["kept_dirty"],
+            counts["kept_unpushed"], counts["kept_error"],
+        )
 
     async def list_archived(self) -> list[dict]:
         """Return metadata dicts for all archived sessions (reads DB, not _records)."""
