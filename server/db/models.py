@@ -32,6 +32,15 @@ class Base(DeclarativeBase):
 # Single source of truth: import this instead of re-inlining the string set.
 INACTIVE_SESSION_STATUSES: frozenset[str] = frozenset({"ended", "archived"})
 
+# Statuses that do NOT consume an active-session slot. "queued" rows are real
+# sessions waiting for capacity — neither reviewable (inactive) nor running.
+# EVERY cap/slot count derives from this set; no inline status math elsewhere.
+NON_ACTIVE_SESSION_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"queued"}
+
+# Global cap on concurrently active sessions when AppSettings.max_active_sessions
+# is NULL. See docs/superpowers/specs/2026-07-21-max-active-sessions-queue-design.md.
+DEFAULT_MAX_ACTIVE_SESSIONS = 5
+
 
 class Session(Base):
     """An active (or ended) Claude session managed by ccswitch-web."""
@@ -281,6 +290,29 @@ class AppSettings(Base):
     # None = use CCSWITCH_ARCHIVE_HOME env var or $CCSWITCH_HOME/archive.
     # Nullable so init_db backfills it without a migration.
     archive_home: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Global cap on concurrently active sessions; overflow spawns queue.
+    # NULL = DEFAULT_MAX_ACTIVE_SESSIONS. Nullable so init_db backfills it
+    # without a migration.
+    max_active_sessions: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+
+
+class SessionQueue(Base):
+    """Ordering + deferred spawn parameters for status='queued' sessions.
+
+    One row per queued session; deleted when the session starts, is cancelled,
+    or fails to start. `params` holds the create_session kwargs that the
+    sessions row does not (cols, rows, attachment_ids, identity, requested
+    branch/cwd/account) — worktree and account rotation are decided at DEQUEUE.
+    """
+
+    __tablename__ = "session_queue"
+
+    session_id: Mapped[str] = mapped_column(
+        String, ForeignKey("sessions.id"), primary_key=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    enqueued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
 class NotificationChannel(Base):
