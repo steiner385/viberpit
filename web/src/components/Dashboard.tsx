@@ -4,6 +4,7 @@ import { Plus, Settings, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { SessionList } from './SessionList'
+import { QueuedSection } from './QueuedSection'
 import { AdoptPanel } from './AdoptPanel'
 import { AllLimitedBanner } from './AllLimitedBanner'
 import { UpdatePendingBanner } from './UpdatePendingBanner'
@@ -487,6 +488,9 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const sessionSearch = useSessionSearch()
   const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, navItems, collapsedKeys, toggleCollapse, expandGroup, collapseGroup } =
     useSessionOrdering(sessions, sessionSearch.matchedIds)
+  const queuedSessions = orderedSessions.filter(s => s.status === 'queued')
+    .sort((a, b) => (a.queuePosition ?? 0) - (b.queuePosition ?? 0))
+  const liveSessions = orderedSessions.filter(s => s.status !== 'queued')
   useNeedsYouTitle(sessions)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const { data: settingsData } = useSettings()
@@ -792,8 +796,9 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           {/* Scroll region: only the session list scrolls; the controls above
               and the DispatchBar below stay fixed within the viewport. */}
           <div className="flex-1 min-h-0 overflow-y-auto space-y-3">
+          <QueuedSection sessions={queuedSessions} onOpen={handleOpen} />
           <SessionList
-            sessions={orderedSessions}
+            sessions={liveSessions}
             groups={groups}
             accounts={accounts}
             isLoading={isLoading}

@@ -6,6 +6,8 @@ import { Dashboard } from '../Dashboard'
 import * as hooks from '@/api/hooks'
 
 vi.mock('@/api/hooks', () => ({
+  useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
+  useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
   useAllPrs: vi.fn(() => ({ data: [] })),
   useDaemonHealth: vi.fn(() => ({ data: { available: false } })),  // issue #434 indicator
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),

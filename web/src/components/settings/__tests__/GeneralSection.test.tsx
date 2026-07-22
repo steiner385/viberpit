@@ -111,4 +111,17 @@ describe('GeneralSection', () => {
       expect.anything(),
     )
   })
+
+  it('saves maxActiveSessions when a number is entered', async () => {
+    const mutate = vi.fn()
+    vi.mocked(hooks.useUpdateSettings).mockReturnValue({ ...NOOP_MUTATION, mutate } as unknown as ReturnType<typeof hooks.useUpdateSettings>)
+    const user = userEvent.setup()
+    render(<GeneralSection />, { wrapper })
+    await user.type(screen.getByLabelText(/max active sessions/i), '7')
+    await user.click(screen.getByRole('button', { name: /save/i }))
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ maxActiveSessions: 7 }),
+      expect.anything(),
+    )
+  })
 })

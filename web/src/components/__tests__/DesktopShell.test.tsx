@@ -34,6 +34,8 @@ vi.mock('@/ws/client', async (importOriginal) => {
 })
 
 vi.mock('@/api/hooks', () => ({
+  useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
+  useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
   useAllPrs: vi.fn(() => ({ data: [] })),
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useAccounts: vi.fn(), useSessions: vi.fn(), useCreateSession: vi.fn(),

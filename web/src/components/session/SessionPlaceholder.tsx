@@ -22,19 +22,24 @@ interface Props {
   replaying: boolean
   /** True when an error frame has populated the error banner above. */
   hasError: boolean
+  /** When true, the session is queued and waiting for an active slot. */
+  queued?: boolean
+  /** Position in the max-active-sessions queue (1 = next to run); shown when known. */
+  queuePosition?: number | null
   /** Re-attach the session. When provided, a hard-timeout "stuck" state offers a
    *  Retry button so a load that never completes is recoverable without a full
    *  page refresh. */
   onRetry?: () => void
 }
 
-type Phase = 'connecting' | 'loading' | 'error' | 'empty'
+type Phase = 'connecting' | 'loading' | 'queued' | 'error' | 'empty'
 
 /** Resolve which placeholder to show. Connection problems outrank loading; a
  *  live error outranks the empty state. */
-function resolvePhase({ connectionState, replaying, hasError }: Props): Phase {
+function resolvePhase({ connectionState, replaying, hasError, queued }: Props): Phase {
   if (connectionState !== 'connected') return 'connecting'
   if (replaying) return 'loading'
+  if (queued) return 'queued'
   if (hasError) return 'error'
   return 'empty'
 }
@@ -48,6 +53,10 @@ const STUCK_AFTER_MS = 45_000
 export function SessionPlaceholder(props: Props) {
   const phase = resolvePhase(props)
   const isSpinner = phase === 'connecting' || phase === 'loading'
+  const queueLabel =
+    props.queuePosition != null
+      ? `Queued — position ${props.queuePosition}`
+      : 'Queued'
   const glyph = useBrailleSpinner()
 
   // Spinner-phase timers: a gentle "taking a while" hint, then a hard "stuck"
@@ -146,6 +155,15 @@ export function SessionPlaceholder(props: Props) {
               Taking longer than usual — the connection may be slow or stuck.
             </span>
           )}
+        </div>
+      )}
+
+      {phase === 'queued' && (
+        <div className="flex flex-col items-center gap-1 text-gray-500 dark:text-gray-400">
+          <p className="text-sm font-medium">{queueLabel}</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500">
+            Starts automatically when a slot frees.
+          </p>
         </div>
       )}
 

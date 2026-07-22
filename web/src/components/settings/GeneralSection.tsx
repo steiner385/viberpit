@@ -28,9 +28,13 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
   const [maxArchived, setMaxArchived] = useState(
     settings?.maxArchivedSessions != null ? String(settings.maxArchivedSessions) : '',
   )
+  const [maxActive, setMaxActive] = useState(
+    settings?.maxActiveSessions != null ? String(settings.maxActiveSessions) : '',
+  )
 
   function handleSave() {
     const parsed = Number.parseInt(maxArchived, 10)
+    const parsedActive = Number.parseInt(maxActive, 10)
     updateSettings.mutate({
       defaultPermissionMode: permissionMode,
       thinkingCollapsed,
@@ -40,6 +44,7 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
       maxArchivedSessions: Number.isFinite(parsed) && parsed > 0 ? parsed : 0,
       // Send raw string: "" means "clear to server default", path means "use this path".
       archiveHome: archiveHome,
+      maxActiveSessions: Number.isFinite(parsedActive) && parsedActive > 0 ? parsedActive : null,
     }, { onSuccess: () => toast('Settings saved') })
   }
 
@@ -187,6 +192,30 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
           />
           <p className="text-xs text-gray-500 dark:text-gray-400">
             When the archived count exceeds this, the oldest are permanently purged.
+          </p>
+        </div>
+
+        {/* Active sessions */}
+        <div className="space-y-1 border-t border-gray-200 dark:border-gray-700 pt-4">
+          <label
+            htmlFor="settings-max-active"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            Max active sessions <span className="text-gray-400">(blank = default (5))</span>
+          </label>
+          <input
+            id="settings-max-active"
+            type="number"
+            min={1}
+            step={1}
+            inputMode="numeric"
+            value={maxActive}
+            onChange={(e) => setMaxActive(e.target.value)}
+            placeholder="5 (default)"
+            className={inputClass}
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Sessions beyond this limit are queued and start automatically when a slot frees.
           </p>
         </div>
 
