@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Plus, Settings, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -486,11 +486,21 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const { data: accounts = [], isLoading: accountsLoading } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const sessionSearch = useSessionSearch()
-  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, navItems, collapsedKeys, toggleCollapse, expandGroup, collapseGroup } =
-    useSessionOrdering(sessions, sessionSearch.matchedIds)
-  const queuedSessions = orderedSessions.filter(s => s.status === 'queued')
-    .sort((a, b) => (a.queuePosition ?? 0) - (b.queuePosition ?? 0))
-  const liveSessions = orderedSessions.filter(s => s.status !== 'queued')
+  // Queued sessions are displayed separately by QueuedSection and must not
+  // enter useSessionOrdering — when groups are provided, SessionList renders
+  // groups directly and ignores the sessions prop, so filtering after the fact
+  // has no effect on what appears in the grouped list.
+  const queuedSessions = useMemo(
+    () => sessions.filter(s => s.status === 'queued')
+      .sort((a, b) => (a.queuePosition ?? 0) - (b.queuePosition ?? 0)),
+    [sessions],
+  )
+  const nonQueuedSessions = useMemo(
+    () => sessions.filter(s => s.status !== 'queued'),
+    [sessions],
+  )
+  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions: liveSessions, navItems, collapsedKeys, toggleCollapse, expandGroup, collapseGroup } =
+    useSessionOrdering(nonQueuedSessions, sessionSearch.matchedIds)
   useNeedsYouTitle(sessions)
   const { data: archivedSessions = [] } = useArchivedSessions()
   const { data: settingsData } = useSettings()
@@ -546,7 +556,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     setFocusNonce((n) => n + 1) // pull focus back to the prompt
   }
   function handleJump(index: number) {
-    const s = orderedSessions[index]
+    const s = liveSessions[index]
     if (s) { highlightSession(s.id); handleOpen(s.id) }
   }
 
@@ -561,7 +571,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const { data: automationsData = [] } = useAutomations()
   const automationsActiveSessions = automationsData.reduce((n, a) => n + a.activeSessions, 0)
   const tabs = buildTabs({
-    sessions: orderedSessions.length,
+    sessions: sessions.length,
     pipeline: inFlightPrCount(prs),
     automations: automationsActiveSessions || undefined,
     archived: archivedSessions.length,
