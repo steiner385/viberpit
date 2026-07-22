@@ -91,8 +91,10 @@ schema change.
   `DELETE /api/sessions/{id}/queue` (cancel).
 - Every new orchestrator method the API calls gets a `RemoteOrchestrator` proxy + a
   registered RPC (breadth tests enforce this).
-- WS: queued sessions appear in the existing session stream; priority/position changes
-  emit stamped per-session frames (every server→client session frame carries sessionId).
+- Freshness: queued sessions ride the existing `GET /sessions` payload (5s poll); the
+  mutating client invalidates the sessions query immediately after a move/cancel, other
+  clients converge on the next poll. No per-session WS frames for queued sessions — they
+  have no driver and no WS connection (v1 simplification).
 - Settings: `maxActiveSessions` PATCHable through the existing app-settings endpoint; the
   daemon re-reads it and drains on increase.
 
