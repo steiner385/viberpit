@@ -79,6 +79,11 @@ class AutopilotPauseRequest(BaseModel):
     paused: bool
 
 
+class QueueMoveRequest(BaseModel):
+    op: str  # "up" | "down" | "top" | "position"
+    position: int | None = None
+
+
 class AdoptRequest(BaseModel):
     claudeSessionId: str
 
@@ -97,6 +102,7 @@ _UNSET = object()
 def _record_to_dict(
     record, repo: Any = _UNSET, suggestions: list[str] | None = None,
     prs: list | None = None, summary: str = "", defer_seconds: int | None = None,
+    queue_position: int | None = None,
 ) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict.
 
@@ -163,6 +169,7 @@ def _record_to_dict(
         "usageUnverified": getattr(record, "usage_unverified", False),
         "interruptedByRestart": getattr(record, "interrupted_by_restart", False),
         "summary": summary or "",
+        "queuePosition": queue_position,
     }
 
 
@@ -293,9 +300,19 @@ async def list_sessions(
         log.warning("list_sessions: summary fetch failed for %d session(s)",
                     sum(1 for s in _summaries_raw if isinstance(s, BaseException)))
     defer_seconds = await _autopilot_defer_seconds()
+    positions: dict[str, int] = {}
+    _positions_fn = getattr(orch, "session_queue_positions", None)
+    if _positions_fn is not None:
+        try:
+            _pos_res = _positions_fn()
+            if inspect.isawaitable(_pos_res):
+                _pos_res = await _pos_res
+            positions = _pos_res or {}
+        except Exception:
+            log.warning("list_sessions: session_queue_positions fetch failed", exc_info=True)
     return [
         _record_to_dict(r, repo=repo, suggestions=s, prs=pr_list, summary=summary,
-                        defer_seconds=defer_seconds)
+                        defer_seconds=defer_seconds, queue_position=positions.get(r.id))
         for r, repo, s, pr_list, summary in zip(records, repos, suggs, prs, summaries)
     ]
 
@@ -670,7 +687,17 @@ async def get_session(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
-    return _record_to_dict(record, repo=await _resolve_repo(record))
+    queue_position: int | None = None
+    _positions_fn = getattr(orch, "session_queue_positions", None)
+    if _positions_fn is not None:
+        try:
+            _pos_res = _positions_fn()
+            if inspect.isawaitable(_pos_res):
+                _pos_res = await _pos_res
+            queue_position = (_pos_res or {}).get(session_id)
+        except Exception:
+            log.warning("get_session: session_queue_positions fetch failed", exc_info=True)
+    return _record_to_dict(record, repo=await _resolve_repo(record), queue_position=queue_position)
 
 
 @router.patch("/{session_id}")
@@ -715,6 +742,52 @@ async def set_autopilot_paused(
     updated = await orch.get_session(session_id)
     final = updated or record
     return _record_to_dict(final, repo=await _resolve_repo(final))
+
+
+@router.post("/{session_id}/queue-move")
+async def queue_move_session(
+    session_id: str,
+    body: QueueMoveRequest,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Reorder a queued session. Returns 404 if the session is not queued or unknown."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    ok = await orch.session_queue_move(session_id, body.op, body.position)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_queued", "message": f"Session {session_id!r} is not in the queue"},
+        )
+    return {"ok": True}
+
+
+@router.delete("/{session_id}/queue", status_code=status.HTTP_204_NO_CONTENT)
+async def queue_cancel_session(
+    session_id: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+):
+    """Remove a queued session from the queue and mark it ended. Returns 404 if not queued."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    ok = await orch.session_queue_cancel(session_id)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_queued", "message": f"Session {session_id!r} is not in the queue"},
+        )
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)

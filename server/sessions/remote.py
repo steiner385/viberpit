@@ -479,6 +479,22 @@ class RemoteOrchestrator:
     async def set_autopilot_paused(self, session_id, paused):
         return await self._client.call("set_autopilot_paused", session_id=session_id, paused=paused)
 
+    async def session_queue_move(self, session_id: str, op: str, position: int | None = None) -> bool:
+        r = await self._client.call("session_queue_move", session_id=session_id, op=op, position=position)
+        return r
+
+    async def session_queue_cancel(self, session_id: str) -> bool:
+        r = await self._client.call("session_queue_cancel", session_id=session_id)
+        return r
+
+    async def session_queue_positions(self) -> dict[str, int]:
+        r = await self._client.call("session_queue_positions")
+        return r if isinstance(r, dict) else {}
+
+    async def maybe_start_queued(self) -> int:
+        r = await self._client.call("maybe_start_queued")
+        return r if isinstance(r, int) else 0
+
     async def interrupt(self, session_id):
         return await self._client.call("interrupt", session_id=session_id)
 

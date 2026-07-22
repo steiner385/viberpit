@@ -159,10 +159,7 @@ async def put_settings_row(
             try:
                 orch = request.app.state.sessions
                 if hasattr(orch, "maybe_start_queued"):
-                    # Remote proxy path — Task 6 will register this RPC.
                     asyncio.create_task(orch.maybe_start_queued())
-                elif hasattr(orch, "_maybe_start_queued"):
-                    asyncio.create_task(orch._maybe_start_queued())
             except AttributeError:
                 # Orchestrator not yet attached (e.g. during tests with minimal app).
                 log.debug("settings.put: orchestrator unavailable for queue drain")

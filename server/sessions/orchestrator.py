@@ -891,6 +891,10 @@ class SessionOrchestrator:
             rec.status = "ended"
         return True
 
+    async def maybe_start_queued(self) -> int:
+        """Public wrapper for _maybe_start_queued. RPC names must not start with '_'."""
+        return await self._maybe_start_queued()
+
     async def _spawn_session(
         self,
         session_id: str,

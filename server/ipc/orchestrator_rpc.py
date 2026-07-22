@@ -276,6 +276,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "consolidation_candidates", "automation_consolidate",
         "backlog_candidates", "backlog_runner_dispatch",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
+        "session_queue_move", "session_queue_cancel", "session_queue_positions", "maybe_start_queued",
     ]
 
     def _make_simple(method_name):
