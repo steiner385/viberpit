@@ -123,7 +123,13 @@ def test_close_drains_head_in_priority_order(tmp_path):
     asyncio.run(run())
 
 
-def test_start_failure_marks_needs_attention_and_continues(tmp_path):
+def test_start_failure_ends_session_and_continues(tmp_path):
+    """A failed-to-start session must be marked ended (not needs_attention).
+
+    ended ∈ NON_ACTIVE_SESSION_STATUSES, so it does not consume a cap slot and
+    the drain loop can start the next queued entry within the cap on the very
+    next iteration — no skip_capacity_check bypass required.
+    """
     async def run():
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'd2.db'}"
         orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
@@ -145,14 +151,21 @@ def test_start_failure_marks_needs_attention_and_continues(tmp_path):
             # Yield to the event loop so the background task runs first.
             await asyncio.sleep(0)
             started = await orch._maybe_start_queued()
-            # The background drain already processed bad (→ needs_attention) and ok
+            # The background drain already processed bad (→ ended) and ok
             # (→ started), so the explicit call finds an empty queue and returns 0.
-            # What matters: bad has needs_attention, ok started, queue is empty.
+            # What matters: bad is ended, ok started, queue is empty.
             assert started == 0                                  # background task did the work
-            assert orch._records[bad.id].status == "needs_attention"
-            assert orch._records[ok.id].status != "queued"      # ok started
+            assert orch._records[bad.id].status == "ended"       # failed start → ended, not needs_attention
+            assert orch._records[ok.id].status != "queued"       # ok started within the cap
             from server.sessions import session_queue as sq
-            assert (await sq.positions()) == {}                  # both rows gone
+            assert (await sq.positions()) == {}                  # both rows gone from queue
+            # Cap invariant: active count must never exceed max_active_sessions (1).
+            from server.db.models import NON_ACTIVE_SESSION_STATUSES
+            active = sum(
+                1 for r in orch._records.values()
+                if r.status not in NON_ACTIVE_SESSION_STATUSES
+            )
+            assert active <= 1, f"cap breached: {active} active sessions with max=1"
         finally:
             await _stop_orch(orch)
 

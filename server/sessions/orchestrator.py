@@ -801,9 +801,15 @@ class SessionOrchestrator:
     async def _maybe_start_queued(self) -> int:
         """Start queued sessions while capacity allows. Serialised by a lock so
         concurrent teardown paths can't double-start one entry. Returns count
-        started. Start failure → row leaves the queue, session goes
-        needs_attention, the NEXT entry gets its chance (one bad head must not
-        block the queue).
+        started.
+
+        Start failure → row leaves the queue, session is marked ``ended`` (not
+        ``needs_attention``).  Rationale: a failed-to-start session holds no
+        process; leaving it ``needs_attention`` would consume a cap slot forever
+        and starve the rest of the queue.  ``ended`` puts the session in
+        NON_ACTIVE_SESSION_STATUSES so the capacity gate re-opens for the next
+        iteration without any bypass.  Existing end-of-life machinery (UI ended
+        state, backlog-runner claim release) handles the rest.
 
         NEVER awaited inline inside a WS-attach coroutine — always scheduled via
         asyncio.create_task so a client-disconnect cancellation cannot interrupt it.
@@ -811,15 +817,9 @@ class SessionOrchestrator:
         from server.sessions import session_queue as sq
         started = 0
         async with self._queue_drain_lock:
-            # skip_capacity_check: set after a start failure so the NEXT entry
-            # gets its chance regardless of the (now inflated by needs_attention)
-            # active count. "One bad head must not block the queue."
-            skip_capacity_check = False
             while True:
-                if not skip_capacity_check:
-                    if self._active_session_count() >= await self._max_active_sessions():
-                        break
-                skip_capacity_check = False
+                if self._active_session_count() >= await self._max_active_sessions():
+                    break
                 entry = await sq.next_entry()
                 if entry is None:
                     break
@@ -833,11 +833,11 @@ class SessionOrchestrator:
                     started += 1
                 except Exception:
                     log.warning("session_queue.start_failed id=%s", sid, exc_info=True)
-                    # Session must remain visible with needs_attention so the user
-                    # knows it failed. Re-seed a minimal in-memory record if _spawn_session
-                    # raised before creating one, then persist the status to the DB row
-                    # (which still exists as a 'queued' row — the UPDATE in _spawn_session
-                    # was not reached).
+                    # Mark the session ended so it does not occupy a cap slot.
+                    # Re-seed a minimal in-memory record if _spawn_session raised
+                    # before creating one, then persist the status to the DB row
+                    # (which still exists as a 'queued' row — the UPDATE in
+                    # _spawn_session was not reached).
                     if sid not in self._records:
                         from datetime import datetime
                         self._records[sid] = SessionRecord(
@@ -850,7 +850,7 @@ class SessionOrchestrator:
                             cwd=params.get("cwd") or "",
                             repo=params.get("repo"),
                             branch=None,
-                            status="needs_attention",
+                            status="ended",
                             name_is_auto=params.get("name_is_auto", True),
                             updated_at=datetime.utcnow(),
                             origin=params.get("origin"),
@@ -858,18 +858,15 @@ class SessionOrchestrator:
                             model=params.get("model"),
                         )
                     else:
-                        self._records[sid].status = "needs_attention"
+                        self._records[sid].status = "ended"
                     # Persist to DB — the row still exists (was 'queued'); update it.
                     async with db_session() as db:
                         from sqlalchemy import update as sa_update
                         await db.execute(
                             sa_update(DbSession)
                             .where(DbSession.id == sid)
-                            .values(status="needs_attention")
+                            .values(status="ended")
                         )
-                    # Give the next entry its chance even though needs_attention
-                    # inflates the active count.
-                    skip_capacity_check = True
         return started
 
     async def _spawn_session(
