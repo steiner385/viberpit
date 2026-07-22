@@ -830,9 +830,12 @@ class SessionOrchestrator:
                 # changed the status while the entry sat in the queue.  Skipping here
                 # heals those stale entries without double-starting the session.
                 in_mem = self._records.get(sid)
-                if in_mem is not None and in_mem.status != "queued":
+                # A legitimately queued entry ALWAYS has an in-memory record
+                # (enqueue and rehydrate both seed one) — a missing record means
+                # a concurrent close/archive won the race; skip, never spawn.
+                if in_mem is None or in_mem.status != "queued":
                     log.warning("session_queue.stale_entry id=%s status=%s — skipping",
-                                sid, in_mem.status)
+                                sid, in_mem.status if in_mem is not None else "<gone>")
                     continue
                 # Remove the queued pre-record so it doesn't double-count while
                 # _spawn_session re-inserts it as an active record.

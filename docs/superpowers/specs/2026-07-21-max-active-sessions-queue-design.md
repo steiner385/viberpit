@@ -63,8 +63,8 @@ schema change.
 
 - **Enqueue:** `create_session` (the single spawn choke point) counts active sessions;
   at/over the cap it writes the Session row with `status="queued"` + a `session_queue` row
-  (priority = current max priority + 1, i.e. back of queue), emits a `session_queued`
-  event, and returns the record. No worktree, no account rotation, no driver.
+  (priority = current max priority + 1, i.e. back of queue), logs the enqueue (v1: journald
+  log lines, no dedicated event frames — the UI converges via poll), and returns the record. No worktree, no account rotation, no driver.
 - **Deferred decisions at dequeue:** worktree creation and account selection (when the
   caller didn't pin one) happen when the session *starts*, not when it enqueues — no stale
   checkouts, no disk held while waiting, usage-aware rotation stays current. (Automation
@@ -81,7 +81,7 @@ schema change.
   next entry within the cap. Retry = start a new session; automations' existing
   ended-without-PR sweeps release their claims.
 - **Cancel:** removing a queued entry deletes the queue row and marks the session
-  `ended` (event `session_queue_cancelled`).
+  `ended` (v1: logged, no dedicated event frame).
 - **Lowering the cap** never kills running sessions — it only gates new starts.
 
 ### API + daemon plumbing
