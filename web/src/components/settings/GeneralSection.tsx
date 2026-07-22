@@ -196,7 +196,7 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
         </div>
 
         {/* Active sessions */}
-        <div className="space-y-1">
+        <div className="space-y-1 border-t border-gray-200 dark:border-gray-700 pt-4">
           <label
             htmlFor="settings-max-active"
             className="block text-sm font-medium text-gray-700 dark:text-gray-300"
