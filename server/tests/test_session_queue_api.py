@@ -269,6 +269,23 @@ def test_queue_move_on_unknown_session_returns_404():
         os.unlink(tf.name)
 
 
+def test_queue_move_invalid_op_returns_422():
+    """POST queue-move with invalid op → 422 (FastAPI validation error)."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        rec = _make_record("q1", status="queued")
+        fake = _FakeOrch(records=[rec], positions={"q1": 1})
+        client = _build_client(fake, db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            resp = client.post(
+                "/api/sessions/q1/queue-move", json={"op": "sideways"}, headers=_H
+            )
+        assert resp.status_code == 422, resp.text
+    finally:
+        os.unlink(tf.name)
+
+
 # ---------------------------------------------------------------------------
 # Integration: DELETE /api/sessions/{id}/queue
 # ---------------------------------------------------------------------------

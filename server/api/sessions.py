@@ -80,7 +80,7 @@ class AutopilotPauseRequest(BaseModel):
 
 
 class QueueMoveRequest(BaseModel):
-    op: str  # "up" | "down" | "top" | "position"
+    op: Literal["up", "down", "top", "position"]
     position: int | None = None
 
 
