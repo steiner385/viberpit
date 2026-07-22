@@ -309,7 +309,9 @@ class SessionQueue(Base):
 
     session_id: Mapped[str] = mapped_column(
         String, ForeignKey("sessions.id"), primary_key=True)
-    priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    # default=0 exists only for the SQLite column-add reconcile path (schema
+    # coverage guard); enqueue() always assigns the real back-of-queue value.
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     enqueued_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
     params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
