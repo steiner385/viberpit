@@ -24,6 +24,7 @@ import { detachKeyYieldsToTextEntry } from '@/lib/detachKeyGuard'
 import { BrandMark } from './BrandMark'
 import { SessionGoalText } from './session/SessionGoalText'
 import { SessionList } from './SessionList'
+import { QueuedSection } from './QueuedSection'
 import { SessionListControls } from './SessionListControls'
 import { DispatchBar } from './DispatchBar'
 import { AllLimitedBanner } from './AllLimitedBanner'
@@ -134,6 +135,9 @@ export function DesktopShell() {
   const sessionSearch = useSessionSearch()
   const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, navItems, collapsedKeys, toggleCollapse, expandGroup, collapseGroup } =
     useSessionOrdering(sessions, sessionSearch.matchedIds)
+  const queuedSessions = orderedSessions.filter(s => s.status === 'queued')
+    .sort((a, b) => (a.queuePosition ?? 0) - (b.queuePosition ?? 0))
+  const liveSessions = orderedSessions.filter(s => s.status !== 'queued')
   const { data: archivedSessions = [] } = useArchivedSessions()
   const reposQuery = useGithubRepos()
   const { data: models = [] } = useModels()
@@ -407,8 +411,9 @@ export function DesktopShell() {
 
       {/* Scrollable session list */}
       <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 space-y-2">
+        <QueuedSection sessions={queuedSessions} onOpen={focusSession} />
         <SessionList
-          sessions={orderedSessions}
+          sessions={liveSessions}
           groups={groups}
           accounts={accounts}
           isLoading={sessionsLoading}

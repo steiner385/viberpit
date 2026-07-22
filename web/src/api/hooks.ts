@@ -173,6 +173,8 @@ export interface AppSettings {
   maxArchivedSessions: number | null
   // Archive home path; null = use server default. On PUT, send "" to clear to default.
   archiveHome: string | null
+  // Maximum concurrent active sessions; sessions beyond this are queued. null = unlimited.
+  maxActiveSessions: number | null
 }
 
 export function useSettings() {
@@ -254,6 +256,22 @@ export function useSetAutopilotPaused() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, { id: string; paused: boolean }>({
     mutationFn: ({ id, paused }) => api.post<Session>(`/sessions/${id}/autopilot`, { paused }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
+export function useQueueMove() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string; op: 'up' | 'down' | 'top' | 'position'; position?: number }>({
+    mutationFn: ({ id, op, position }) => api.post<Session>(`/sessions/${id}/queue-move`, { op, position }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
+export function useQueueCancel() {
+  const qc = useQueryClient()
+  return useMutation<void, ApiRequestError, { id: string }>({
+    mutationFn: ({ id }) => api.del<void>(`/sessions/${id}/queue`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
   })
 }

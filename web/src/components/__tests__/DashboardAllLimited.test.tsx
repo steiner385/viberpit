@@ -8,6 +8,8 @@ import { toast } from 'sonner'
 import type { Account, Session } from '@/api/types'
 
 vi.mock('@/api/hooks', () => ({
+  useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
+  useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
   useAllPrs: vi.fn(() => ({ data: [] })),
   useDaemonHealth: vi.fn(() => ({ data: { available: false } })),  // issue #434 indicator
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),

@@ -18,6 +18,8 @@ import * as hooks from '@/api/hooks'
 import type { ArchivedSession } from '@/api/types'
 
 vi.mock('@/api/hooks', () => ({
+  useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
+  useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
   useDaemonHealth: vi.fn(() => ({ data: { available: false } })),  // issue #434 indicator
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),

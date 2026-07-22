@@ -48,6 +48,7 @@ export type SessionStatus =
   | 'needs_attention'
   | 'limited'
   | 'ended'
+  | 'queued'
 
 /** A sub-agent (Task/Agent call) summary, nested under its session in the list. */
 export interface SubAgentSummary {
@@ -114,6 +115,8 @@ export interface Session {
   originRef?: string | null
   /** Client-only: true while an optimistic create placeholder awaits the server. Never sent by the server. */
   pending?: boolean
+  /** Position in the max-active-sessions queue (1 = next to run); null when not queued. */
+  queuePosition?: number | null
 }
 
 export interface ArchivedSession {
