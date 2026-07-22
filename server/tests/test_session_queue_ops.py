@@ -34,7 +34,6 @@ def _seed_account(name: str) -> None:
 
 async def _make_orch(*, db_url: str, tmp_path, max_active_sessions: int) -> SessionOrchestrator:
     """Build a minimal fake-SDK orchestrator with max_active_sessions set in AppSettings."""
-    from ccswitch.paths import shared_base as _shared_base
     store_home = tmp_path / "store"
     store_home.mkdir(exist_ok=True)
     shared = tmp_path / "dot-claude"

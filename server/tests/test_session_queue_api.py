@@ -8,9 +8,8 @@ from __future__ import annotations
 import os
 import tempfile
 import types
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from server.api.sessions import _record_to_dict

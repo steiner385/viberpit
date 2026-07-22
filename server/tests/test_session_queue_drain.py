@@ -38,7 +38,6 @@ async def _make_orch(
     reuse_db: bool = False,
 ) -> SessionOrchestrator:
     """Build a minimal fake-SDK orchestrator with max_active_sessions set in AppSettings."""
-    from ccswitch.paths import shared_base as _shared_base
     store_home = tmp_path / "store"
     store_home.mkdir(exist_ok=True)
     shared = tmp_path / "dot-claude"
@@ -93,7 +92,6 @@ async def _make_orch(
 
 async def _stop_orch(orch: SessionOrchestrator) -> None:
     await orch.stop()
-    from server.db import dispose_db
     await dispose_db()
     for p in getattr(orch, "_test_patches", []):
         try:
