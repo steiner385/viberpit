@@ -30,7 +30,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   const { data: models = [] } = useModels()
   const { data: accounts = [] } = useAccounts()
   const { data: sessions = [] } = useSessions()
-  const pinned = sessions.find((s) => s.id === rt.sessionId)?.accountPinned ?? false
+  const sessionRecord = sessions.find((s) => s.id === rt.sessionId)
+  const pinned = sessionRecord?.accountPinned ?? false
 
   // Whether the x11/browser feature is available on this server.
   // Starts as false (unknown); set to true only when /api/x11/metrics returns
@@ -166,6 +167,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
                 connectionState={rt.connectionState}
                 replaying={rt.state.replaying}
                 hasError={rt.state.error !== null}
+                queued={sessionRecord?.status === 'queued'}
+                queuePosition={sessionRecord?.queuePosition}
                 onRetry={rt.reattach}
               />
             ) : (
