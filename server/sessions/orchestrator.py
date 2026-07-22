@@ -869,6 +869,28 @@ class SessionOrchestrator:
                         )
         return started
 
+    async def session_queue_move(self, session_id: str, op: str,
+                                 position: int | None = None) -> bool:
+        """Reorder a queued session. Returns True on success, False if not found."""
+        from server.sessions import session_queue as sq
+        return await sq.move(session_id, op, position)
+
+    async def session_queue_positions(self) -> dict[str, int]:
+        """Return {session_id: 1-based-position} for all queued sessions."""
+        from server.sessions import session_queue as sq
+        return await sq.positions()
+
+    async def session_queue_cancel(self, session_id: str) -> bool:
+        """Remove a session from the queue and mark it ended. Returns True on success."""
+        from server.sessions import session_queue as sq
+        if not await sq.remove(session_id):
+            return False
+        await self._persist_status(session_id, "ended")
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.status = "ended"
+        return True
+
     async def _spawn_session(
         self,
         session_id: str,

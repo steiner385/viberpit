@@ -266,3 +266,44 @@ def test_put_archive_home_unchanged_when_omitted():
         )
         get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
         assert get_resp.json()["archiveHome"] == "/stored/path"
+
+
+# ---------------------------------------------------------------------------
+# maxActiveSessions
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_max_active_defaults_none():
+    """GET /api/settings returns maxActiveSessions null by default (UI shows placeholder)."""
+    with _client() as client:
+        resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    assert resp.json()["maxActiveSessions"] is None
+
+
+def test_put_max_active_round_trips():
+    """PUT {maxActiveSessions: 3} then GET → 3."""
+    with _client() as client:
+        put_resp = client.put(
+            "/api/settings",
+            json={"maxActiveSessions": 3},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["maxActiveSessions"] == 3
+
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.json()["maxActiveSessions"] == 3
+
+
+def test_put_max_active_zero_clamps_to_one():
+    """PUT {maxActiveSessions: 0} stores 1 (clamped to minimum)."""
+    with _client() as client:
+        put_resp = client.put(
+            "/api/settings",
+            json={"maxActiveSessions": 0},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["maxActiveSessions"] == 1

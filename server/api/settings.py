@@ -6,7 +6,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -34,6 +34,9 @@ class SettingsBody(BaseModel):
     maxArchivedSessions: int | None = None
     # Archive home path. None → unchanged; "" → clear to default; path → set.
     archiveHome: str | None = None
+    # Max concurrently active sessions. Omitted (None) → unchanged; >=1 → that cap;
+    # <=0 → clamped to 1 (minimum). UI shows "5 (default)" as placeholder when null.
+    maxActiveSessions: int | None = None
 
 
 async def _migrate_archive_home(db, old_home: str | None, new_home: str | None) -> None:
@@ -99,6 +102,7 @@ def _to_dict(s: AppSettings) -> dict:
         "defaultToolDetail": s.default_tool_detail or "auto",
         "maxArchivedSessions": s.max_archived_sessions,
         "archiveHome": s.archive_home,
+        "maxActiveSessions": s.max_active_sessions,
     }
 
 
@@ -108,7 +112,12 @@ async def get_settings_row(_identity: str = Depends(current_identity), db=Depend
 
 
 @router.put("")
-async def put_settings_row(body: SettingsBody, _identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
+async def put_settings_row(
+    request: Request,
+    body: SettingsBody,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
     row = await _get_or_create(db)
     if body.defaultPermissionMode is not None and body.defaultPermissionMode in _VALID_MODES:
         row.default_permission_mode = body.defaultPermissionMode
@@ -129,5 +138,23 @@ async def put_settings_row(body: SettingsBody, _identity: str = Depends(current_
         if new_home != row.archive_home:
             await _migrate_archive_home(db, row.archive_home, new_home)
         row.archive_home = new_home
+    if body.maxActiveSessions is not None:
+        old_cap = row.max_active_sessions
+        new_cap = max(1, body.maxActiveSessions)
+        row.max_active_sessions = new_cap
+        # When the cap increases (or was previously unlimited and is now set),
+        # fire a drain so newly-available slots are filled from the queue.
+        cap_raised = old_cap is None or new_cap > old_cap
+        if cap_raised:
+            try:
+                orch = request.app.state.sessions
+                if hasattr(orch, "maybe_start_queued"):
+                    # Remote proxy path — Task 6 will register this RPC.
+                    asyncio.create_task(orch.maybe_start_queued())
+                elif hasattr(orch, "_maybe_start_queued"):
+                    asyncio.create_task(orch._maybe_start_queued())
+            except AttributeError:
+                # Orchestrator not yet attached (e.g. during tests with minimal app).
+                log.debug("settings.put: orchestrator unavailable for queue drain")
     await db.flush()
     return _to_dict(row)
