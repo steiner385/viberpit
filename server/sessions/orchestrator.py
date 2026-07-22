@@ -39,7 +39,7 @@ from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
 from server.audit import record_audit
 from server.db import db_session
-from server.db.models import INACTIVE_SESSION_STATUSES, Session as DbSession
+from server.db.models import INACTIVE_SESSION_STATUSES, NON_ACTIVE_SESSION_STATUSES, Session as DbSession
 from server.sessions import adopt as _adopt
 from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions.archive_move import mountpoint, move_into_archive
@@ -730,6 +730,99 @@ class SessionOrchestrator:
                 raise ValueError(f"cwd does not exist: {cwd}")
 
         session_id = str(uuid.uuid4())
+
+        # Global active-session cap: at/over the cap the session is created as a
+        # queued row (real session, no worktree/account/driver yet) and started
+        # later by _maybe_start_queued in (priority, enqueued_at) order. Applies
+        # to EVERY origin — automations included (their claims simply wait).
+        if self._active_session_count() >= await self._max_active_sessions():
+            return await self._enqueue_session(
+                session_id, name=name, account=account,
+                initial_prompt=initial_prompt, cols=cols, rows=rows, cwd=cwd,
+                branch=branch, repo=repo, identity=identity,
+                permission_mode=permission_mode, attachment_ids=attachment_ids,
+                name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
+                model=model)
+        return await self._spawn_session(
+            session_id, name=name, account=account, initial_prompt=initial_prompt,
+            cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
+            identity=identity, permission_mode=permission_mode,
+            attachment_ids=attachment_ids, name_is_auto=name_is_auto,
+            origin=origin, origin_ref=origin_ref, model=model)
+
+    def _active_session_count(self) -> int:
+        return sum(1 for r in self._records.values()
+                   if r.status not in NON_ACTIVE_SESSION_STATUSES)
+
+    async def _max_active_sessions(self) -> int:
+        from sqlalchemy import select as sa_select
+        from server.db.models import DEFAULT_MAX_ACTIVE_SESSIONS, AppSettings
+        async with db_session() as db:
+            s = (await db.execute(sa_select(AppSettings))).scalar_one_or_none()
+        val = getattr(s, "max_active_sessions", None) if s else None
+        return max(1, val if val is not None else DEFAULT_MAX_ACTIVE_SESSIONS)
+
+    async def _enqueue_session(self, session_id: str, *, name, account,
+                               initial_prompt, cols, rows, cwd, branch, repo,
+                               identity, permission_mode, attachment_ids,
+                               name_is_auto, origin, origin_ref, model) -> SessionRecord:
+        from datetime import datetime
+        from server.sessions import session_queue as sq
+        async with db_session() as db:
+            db.add(DbSession(
+                id=session_id, name=name, account_name=account or "",
+                claude_session_id=None, status="queued", pid=None,
+                cwd=cwd or "", repo=repo, branch=None,
+                permission_mode=permission_mode, name_is_auto=name_is_auto,
+                origin=origin, origin_ref=origin_ref, model=model,
+                initial_prompt=initial_prompt))
+        priority = await sq.enqueue(session_id, {
+            "name": name, "account": account, "initial_prompt": initial_prompt,
+            "cols": cols, "rows": rows, "cwd": cwd, "branch": branch,
+            "repo": repo, "identity": identity,
+            "permission_mode": permission_mode,
+            "attachment_ids": attachment_ids, "name_is_auto": name_is_auto,
+            "origin": origin, "origin_ref": origin_ref, "model": model,
+        })
+        rec = SessionRecord(
+            id=session_id, name=name, account=account or "", claude_session_id="",
+            cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
+            status="queued", name_is_auto=name_is_auto,
+            updated_at=datetime.utcnow(), origin=origin, origin_ref=origin_ref,
+            model=model)
+        self._records[session_id] = rec
+        log.info("session.queued id=%s priority=%d origin=%s",
+                 session_id, priority, origin)
+        return rec
+
+    async def _spawn_session(
+        self,
+        session_id: str,
+        *,
+        name: str,
+        account: str | None,
+        initial_prompt: str | None,
+        cols: int,
+        rows: int,
+        cwd: str | None,
+        branch: str | None,
+        repo: str | None,
+        identity: str,
+        permission_mode: str,
+        attachment_ids: list[str] | None,
+        name_is_auto: bool,
+        origin: str | None,
+        origin_ref: str | None,
+        model: str | None,
+        preexisting_row: bool = False,
+    ) -> SessionRecord:
+        """Start a SessionDriver, persist/update a DB row, return a SessionRecord.
+
+        When preexisting_row=True the session already has a DB row (status='queued')
+        from _enqueue_session; this method UPDATEs that row (status→'idle',
+        account_name, cwd, branch, model) instead of INSERT-ing a new one.
+        Task 4 (_maybe_start_queued) calls this path.
+        """
         repo_root = await self._effective_repo_root()
 
         # Per-session isolation: EVERY repo session runs in its OWN git worktree, never
@@ -855,26 +948,37 @@ class SessionOrchestrator:
         if attachment_ids and origin is None:
             self._pending_initial_attachment_ids[session_id] = list(attachment_ids)
 
-        # Persist DB row
-        async with db_session() as db:
-            row = DbSession(
-                id=session_id,
-                name=name,
-                account_name=account,
-                claude_session_id=None,
-                status="idle",
-                pid=None,
-                cwd=cwd,
-                repo=repo,
-                branch=branch_name,
-                permission_mode=permission_mode,
-                name_is_auto=name_is_auto,
-                origin=origin,
-                origin_ref=origin_ref,
-                model=model,
-                initial_prompt=initial_prompt,
-            )
-            db.add(row)
+        if preexisting_row:
+            # UPDATE the existing queued row → idle with resolved account/cwd/branch/model
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await db.execute(
+                    sa_update(DbSession)
+                    .where(DbSession.id == session_id)
+                    .values(status="idle", account_name=account,
+                            cwd=cwd, branch=branch_name, model=model)
+                )
+        else:
+            # Persist DB row (fresh session, not previously queued)
+            async with db_session() as db:
+                row = DbSession(
+                    id=session_id,
+                    name=name,
+                    account_name=account,
+                    claude_session_id=None,
+                    status="idle",
+                    pid=None,
+                    cwd=cwd,
+                    repo=repo,
+                    branch=branch_name,
+                    permission_mode=permission_mode,
+                    name_is_auto=name_is_auto,
+                    origin=origin,
+                    origin_ref=origin_ref,
+                    model=model,
+                    initial_prompt=initial_prompt,
+                )
+                db.add(row)
 
         # Patch the model on the pre-seeded record (resolved by driver.set_model above).
         _pre_record.model = model
