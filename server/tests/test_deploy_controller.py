@@ -50,6 +50,40 @@ async def test_up_to_date_is_noop():
 
 
 @pytest.mark.asyncio
+async def test_up_to_date_still_rebuilds_frontend():
+    """No new commits still rebuilds web/dist: a manual restart can advance the checkout
+    outside this controller and leave the built frontend baked with an older BUILD_SHA than
+    the running backend, showing a permanent 'new version available' banner. Rebuilding on
+    every deploy keeps served assets in lockstep with the running sha."""
+    g = FakeGit("same", "same", [])
+    s, _ = make_steps()
+    built: list[str] = []
+    s.build_frontend = lambda repo, run=None: built.append(repo)
+    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s)
+    st = await c.deploy_once()
+    assert st.running is False and st.error is None
+    assert built == ["/r"]
+
+
+@pytest.mark.asyncio
+async def test_up_to_date_rebuild_failure_is_warning_not_error():
+    """A frontend rebuild failure on a no-op deploy must not fail the deploy; it degrades to
+    a warning so the controller still reports success and stale dist is merely not healed."""
+    g = FakeGit("same", "same", [])
+    s, _ = make_steps()
+    def boom(repo, run=None):
+        from server.deploy.types import DeployError
+        raise DeployError("update", "frontend build failed: npm exploded")
+    s.build_frontend = boom
+    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s)
+    st = await c.deploy_once()
+    assert st.error is None
+    assert any("frontend" in w for w in st.warnings)
+
+
+@pytest.mark.asyncio
 async def test_red_ci_refuses_before_any_change():
     g = FakeGit("a", "b", [])
     s, calls = make_steps(ci="red")
