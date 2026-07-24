@@ -792,93 +792,103 @@ git commit -m "feat(autopilot): gate PR-intent classifier on the no-PR branch; p
 
 ---
 
-### Task 8: Broaden auto-archive to resolved autopilot sessions
+### Task 8: Archive-audit provenance for resolved sessions (race-free)
+
+> **REVISED during implementation.** The original Task 8 broadened
+> `_maybe_autoarchive_completed` to non-backlog sessions. Investigation found that
+> is both **redundant and racy**: the autopilot loop (`autopilot.py:136-162`) already
+> archives goal-met governed sessions in **auto mode** via the `_autopilot_archive`
+> seam, honoring the manual-unarchive opt-out (`ctx.no_auto_archive`). Task 7 already
+> makes a `pr_resolution` session read as goal-met (`met_bar` → met=True → decider
+> `complete`), so a resolved, autopilot-driven session **is already archived by the
+> loop** — that IS "any autopilot-driven session, archived at the right time."
+> `orchestrator.py:2125` deliberately keeps `_maybe_autoarchive_completed` scoped to
+> backlog-runner so the two archive paths never race over the same session; broadening
+> it would reintroduce exactly that race. So Task 8 does NOT touch
+> `_maybe_autoarchive_completed`. Its remaining, real value is **audit provenance**:
+> when the loop archives a resolved session, the archive context should say *why*
+> (resolved no-PR), so the 6-hour archive audit and any human review can see it.
 
 **Files:**
-- Modify: `server/sessions/orchestrator.py` (`_maybe_autoarchive_completed`, lines 1308-1330; `_auto_archive_completed`, lines 1332-1363)
-- Test: the auto-archive test module (find via `grep -rln "_maybe_autoarchive_completed\|autoarchive" server/tests`)
+- Modify: `server/sessions/orchestrator.py` (`_autopilot_archive`, the `context` dict at lines ~2465-2469 — the loop's archive seam)
+- Test: `server/tests/test_autopilot_orchestrator_seams.py` (extend)
 
 **Interfaces:**
-- Consumes: `SessionRecord.pr_resolution` (Task 1); `autopilot_paused` (existing).
-- Produces: auto-archive fires for any non-paused autopilot-governed session that is `complete` OR carries a `pr_resolution`, honoring `auto_archive_opt_out_reason` and the `_auto_archiving` guard.
+- Consumes: `SessionRecord.pr_resolution` (Task 1).
+- Produces: `_autopilot_archive`'s snapshot `context["reason"]` reflects the PR resolution
+  (`"resolved no PR (<token>)"`) when the archived session carries one; unchanged
+  (`"autopilot: goal met"`) otherwise. `context["pr_resolution"]` carries the raw token.
 
-- [ ] **Step 1: Write the failing tests**
-
-```python
-def test_autoarchive_fires_for_resolved_non_backlog_session(orch):
-    rec = orch._add_record(origin=None, status="complete")  # human/pr-doctor origin
-    rec.pr_resolution = "not-needed"
-    orch._maybe_autoarchive_completed(rec.id, "complete", rec)
-    assert rec.id in orch._auto_archiving
-
-
-def test_autoarchive_skips_paused_session(orch):
-    rec = orch._add_record(origin=None, status="complete")
-    rec.pr_resolution = "cancelled"
-    rec.autopilot_paused = True
-    orch._maybe_autoarchive_completed(rec.id, "complete", rec)
-    assert rec.id not in orch._auto_archiving
-
-
-def test_autoarchive_respects_opt_out(orch):
-    rec = orch._add_record(origin="backlog-runner", status="complete")
-    rec.auto_archive_opt_out_reason = "manual-unarchive"
-    orch._maybe_autoarchive_completed(rec.id, "complete", rec)
-    assert rec.id not in orch._auto_archiving
-```
-
-Adapt `orch` / `_add_record` to the module's real orchestrator fixture + record-insertion helper (read the existing autoarchive test for the pattern).
-
-- [ ] **Step 2: Run to verify they fail**
-
-Run: `python -m pytest server/tests/<autoarchive-test> -k autoarchive -v`
-Expected: FAIL (resolved non-backlog session not archived under the current backlog-only gate)
-
-- [ ] **Step 3: Broaden the gate** (`_maybe_autoarchive_completed`, replace lines 1319-1325)
+- [ ] **Step 1: Write the failing test** (`server/tests/test_autopilot_orchestrator_seams.py`, using the `_bare_orch()` harness)
 
 ```python
-        rec_resolution = getattr(rec, "pr_resolution", None) if rec is not None else None
-        # Terminal when the agent signalled `complete`, OR when the session durably
-        # resolved it will not open a PR (marker/high-confidence classifier).
-        if status != "complete" and not rec_resolution:
-            return
-        if rec is None:
-            return
-        # Eligible sessions: backlog-runner runs (short-lived, must free their slot) OR
-        # any autopilot-governed session that is not pinned to manual. A human-owned
-        # session the autopilot is not steering is still left alone.
-        origin = getattr(rec, "origin", None)
-        autopilot_driven = origin == "backlog-runner" or not getattr(rec, "autopilot_paused", False)
-        if getattr(rec, "autopilot_paused", False):
-            return
-        if not autopilot_driven:
-            return
-        # A human unarchived this run → honor the sticky opt-out and never re-archive it.
-        if getattr(rec, "auto_archive_opt_out_reason", None):
-            return
-        if session_id in self._auto_archiving:
-            return
+@pytest.mark.asyncio
+async def test_autopilot_archive_context_records_resolution(tmp_path):
+    orch = _bare_orch()
+    orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+                                         cols=80, rows=24, cwd=str(tmp_path), repo="o/r")}
+    orch._records["s1"].pr_resolution = "cancelled"
+    captured = {}
+    async def _spy(session_id, *, archived_by="user", context=None):
+        captured["by"] = archived_by
+        captured["context"] = context
+    orch.archive_session = _spy
+    ok = await orch._autopilot_archive("s1")
+    assert ok is True
+    assert captured["by"] == "autopilot"
+    assert "cancelled" in captured["context"]["reason"]
+    assert captured["context"]["pr_resolution"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_autopilot_archive_context_default_reason_when_unresolved(tmp_path):
+    orch = _bare_orch()
+    orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+                                         cols=80, rows=24, cwd=str(tmp_path), repo="o/r")}
+    captured = {}
+    async def _spy(session_id, *, archived_by="user", context=None):
+        captured["context"] = context
+    orch.archive_session = _spy
+    await orch._autopilot_archive("s1")
+    assert captured["context"]["reason"] == "autopilot: goal met"
+    assert captured["context"].get("pr_resolution") is None
 ```
 
-Note: read `_maybe_autoarchive_completed`'s docstring/context to decide whether "any non-paused session" is too broad for genuinely human-created interactive sessions that were never governed. If the orchestrator exposes a "is this session autopilot-governed" predicate (grep `autopilot` in orchestrator for a governed-set/enabled check — e.g. the loop's eligible-session list at ~line 2118-2132), prefer gating `autopilot_driven` on THAT rather than merely "not paused", to match the approved scope ("any autopilot-driven session"). Adjust the tests accordingly.
+Read the top of `test_autopilot_orchestrator_seams.py` and match the real `_bare_orch()`
+signature + `SessionRecord(...)` required fields (adjust the constructor if needed). The
+`_autopilot_archive` seam calls `self._autopilot_pr_facts(rec)`; a bare orch must have
+whatever that needs — if it raises, give the rec an empty `authored_branches`/no PR so
+`_autopilot_pr_facts` returns `PrFacts(has_repo=True, prs=())`, or stub
+`orch._autopilot_pr_facts = lambda rec: PrFacts(has_repo=bool(rec.repo), prs=())`.
 
-- [ ] **Step 4: Record the resolution reason in the archive context** (`_auto_archive_completed`, in the `context` dict ~line 1343)
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `PYTHONPATH=.:src CCSWITCH_DEV=1 python3 -m pytest server/tests/test_autopilot_orchestrator_seams.py -k archive_context -v`
+Expected: FAIL — reason is `"autopilot: goal met"` regardless of resolution; no `pr_resolution` key
+
+- [ ] **Step 3: Record the resolution in the archive context** (`_autopilot_archive`, the `context` dict at ~lines 2465-2469)
 
 ```python
-                "reason": (f"pr-resolution: {rec.pr_resolution}" if getattr(rec, "pr_resolution", None)
-                           else "backlog-runner: run complete"),
+            resolution = getattr(rec, "pr_resolution", None)
+            context = {
+                "repo": rec.repo, "goal": goal_text, "goal_source": goal_source,
+                "pr_state": pr.to_prompt() if pr is not None else None,
+                "pr_resolution": resolution,
+                "reason": (f"resolved no PR ({resolution})" if resolution
+                           else "autopilot: goal met"),
+            }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 4: Run tests to verify they pass**
 
-Run: `python -m pytest server/tests/<autoarchive-test> -v`
+Run: `PYTHONPATH=.:src CCSWITCH_DEV=1 python3 -m pytest server/tests/test_autopilot_orchestrator_seams.py -k archive_context -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add server/sessions/orchestrator.py server/tests/<autoarchive-test>
-git commit -m "feat(autopilot): auto-archive resolved (no-PR) autopilot sessions, not just backlog-runner"
+git add server/sessions/orchestrator.py server/tests/test_autopilot_orchestrator_seams.py
+git commit -m "feat(autopilot): record PR-resolution provenance in the autopilot archive context"
 ```
 
 ---
