@@ -2462,10 +2462,13 @@ class SessionOrchestrator:
             from server.sessions.goals import effective_goal
             goal_text, goal_source = effective_goal(rec)
             pr = self._autopilot_pr_facts(rec)
+            resolution = getattr(rec, "pr_resolution", None)
             context = {
                 "repo": rec.repo, "goal": goal_text, "goal_source": goal_source,
                 "pr_state": pr.to_prompt() if pr is not None else None,
-                "reason": "autopilot: goal met",
+                "pr_resolution": resolution,
+                "reason": (f"resolved no PR ({resolution})" if resolution
+                           else "autopilot: goal met"),
             }
         await self.archive_session(session_id, archived_by="autopilot", context=context)
         return True
