@@ -72,6 +72,16 @@ class DeployController:
             remote = await asyncio.to_thread(self._git.remote_sha, self.repo)
             self.status.target_sha = remote
             if local == remote:
+                # No new commits, but the built web/dist can still be stale relative to the
+                # checkout: a manual restart can advance HEAD outside this controller and never
+                # rebuild the frontend, leaving served assets baked with an older BUILD_SHA than
+                # the running backend -> a permanent "new version available" banner that survives
+                # reload. Rebuild on every deploy so served assets stay in lockstep with the
+                # running sha. Best-effort: a build failure here must not fail a no-op deploy.
+                try:
+                    await asyncio.to_thread(self._steps.build_frontend, self.repo)
+                except DeployError as e:
+                    self.status.warnings.append(f"frontend rebuild failed: {e}")
                 for p in Phase:
                     self._set(p, PhaseState.DONE)
                 return self.status
