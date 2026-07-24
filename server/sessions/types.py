@@ -54,6 +54,12 @@ class SessionRecord:
     # Sticky auto-archive opt-out reason. None = eligible for auto-archive; "manual-unarchive"
     # = a human unarchived this session, so it is never auto-archived again (see orchestrator).
     auto_archive_opt_out_reason: str | None = None
+    # Durable record that a session resolved it will NOT open a PR — either it finished
+    # without one ("not-needed") or cancelled the PR work ("cancelled"). None = unresolved.
+    # Reason token may carry ": detail" for audit. Source distinguishes the deterministic
+    # marker from the probabilistic classifier. None until explicitly set.
+    pr_resolution: str | None = None
+    pr_resolution_source: str | None = None
     # Wall-clock time the user last steered this session (prompt/answer/permission/typing ping).
     # Drives autopilot human-deference + the cooldown badge. In-memory/process-local ONLY: NOT in
     # to_dict/from_dict, NOT a DB column — a 120s window is meaningless across a restart.
@@ -123,6 +129,8 @@ class SessionRecord:
             "inferredGoal": self.inferred_goal,
             "autopilotPaused": self.autopilot_paused,
             "autoArchiveOptOut": self.auto_archive_opt_out_reason,
+            "prResolution": self.pr_resolution,
+            "prResolutionSource": self.pr_resolution_source,
             "usageUnverified": self.usage_unverified,
             "interruptedByRestart": self.interrupted_by_restart,
             "authoredBranches": list(self.authored_branches),
@@ -157,6 +165,8 @@ class SessionRecord:
             inferred_goal=d.get("inferredGoal"),
             autopilot_paused=bool(d.get("autopilotPaused", False)),
             auto_archive_opt_out_reason=d.get("autoArchiveOptOut"),
+            pr_resolution=d.get("prResolution"),
+            pr_resolution_source=d.get("prResolutionSource"),
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),
             authored_branches=list(d.get("authoredBranches") or []),

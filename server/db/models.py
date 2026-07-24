@@ -117,6 +117,12 @@ class Session(Base):
     # autopilot help continues). Nullable so init_db backfills without a migration.
     auto_archive_opt_out_reason: Mapped[str | None] = mapped_column(
         String, nullable=True, default=None)
+    # Durable record that a session resolved it will NOT open a PR — either it
+    # finished without one ("not-needed") or cancelled the PR work ("cancelled").
+    # None = unresolved (default). Reason token may carry ": detail" for audit.
+    # Source distinguishes the deterministic marker from the probabilistic classifier.
+    pr_resolution: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    pr_resolution_source: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Provenance of the LAST archive: "user" | "autopilot" | "backlog-runner". Lets
     # unarchive detect that an AUTO archive was just reversed (→ a learning heuristic).
     # Cleared on unarchive. Nullable so init_db backfills without a migration.
