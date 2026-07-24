@@ -23,6 +23,12 @@ try:
         master_key: str | None = Field(default=None, alias="CCSWITCH_MASTER_KEY")
         session_secret: str | None = Field(default=None, alias="CCSWITCH_SESSION_SECRET")
         tailnet_allowlist: str = Field(default="", alias="CCSWITCH_TAILNET_ALLOWLIST")
+        # Opt-in LAN-open mode: admit clients that present NO Tailscale identity as a
+        # synthetic guest instead of 401'ing them. Defaults OFF so the deployed,
+        # Tailscale-fronted posture stays locked down — only flip it on a trusted,
+        # isolated network where the LAN itself is the trust boundary (issue: dobby.local).
+        allow_unauthenticated: bool = Field(
+            default=False, alias="CCSWITCH_ALLOW_UNAUTHENTICATED")
         github_app_id: int | None = Field(default=None, alias="CCSWITCH_GITHUB_APP_ID")
         github_app_installation_id: int | None = Field(
             default=None, alias="CCSWITCH_GITHUB_APP_INSTALLATION_ID")
@@ -109,6 +115,10 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         tailnet_allowlist: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_TAILNET_ALLOWLIST", "")
+        )
+        allow_unauthenticated: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get(
+                "CCSWITCH_ALLOW_UNAUTHENTICATED", "false").lower() in ("1", "true", "yes", "on")
         )
         github_app_id: int | None = dataclasses.field(
             default_factory=lambda: (

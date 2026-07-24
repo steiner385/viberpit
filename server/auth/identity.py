@@ -15,6 +15,11 @@ from starlette.websockets import WebSocket
 
 from server.config import get_settings
 
+# Synthetic identity handed to unidentified clients when LAN-open mode is enabled
+# (CCSWITCH_ALLOW_UNAUTHENTICATED). Recognisable in logs/session authorship as a
+# non-Tailscale, deliberately-unauthenticated caller.
+OPEN_LAN_IDENTITY = "lan@local"
+
 
 def verify_identity(request: Request | WebSocket) -> str | None:
     """Return the verified identity string, or None if unverifiable/denied.
@@ -32,9 +37,14 @@ def verify_identity(request: Request | WebSocket) -> str | None:
         identity = _whois_identity(request)
 
     if not identity:
+        # No Tailscale identity. In LAN-open mode (opt-in, off by default) admit the
+        # caller as an unauthenticated guest rather than denying. The allowlist below
+        # is intentionally NOT applied to the guest — this branch IS the "no auth" path.
+        if get_settings().allow_unauthenticated:
+            return OPEN_LAN_IDENTITY
         return None
 
-    # Allowlist check
+    # Allowlist check (real, presented identities only — unaffected by LAN-open mode)
     settings = get_settings()
     allowlist = settings.tailnet_allowlist_items
     if allowlist and identity not in allowlist:
