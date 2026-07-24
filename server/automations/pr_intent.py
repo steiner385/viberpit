@@ -74,10 +74,10 @@ def _parse(raw: str) -> PrIntentVerdict:
 
 async def classify_pr_intent(transcript_tail: list[dict], goal: str, *,
                              _query_fn=None, _config_dir=None, _cwd=None) -> PrIntentVerdict:
-    query_fn = _query_fn or _default_sdk_query_fn()
-    config_dir = _config_dir if _config_dir is not None else os.environ.get("CLAUDE_CONFIG_DIR", "")
-    cwd = _cwd or os.getcwd()
     try:
+        query_fn = _query_fn or _default_sdk_query_fn()
+        config_dir = _config_dir if _config_dir is not None else os.environ.get("CLAUDE_CONFIG_DIR", "")
+        cwd = _cwd or os.getcwd()
         options = None
         if _query_fn is None:
             from claude_agent_sdk import ClaudeAgentOptions
@@ -94,6 +94,6 @@ async def classify_pr_intent(transcript_tail: list[dict], goal: str, *,
                     if isinstance(t, str):
                         parts.append(t)
         return _parse("".join(parts).strip())
-    except Exception as exc:  # pragma: no cover - model down / bad options
+    except Exception as exc:
         log.warning("pr_intent.classify failed: %s", exc)
         return _UNRESOLVED

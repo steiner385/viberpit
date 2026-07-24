@@ -41,3 +41,13 @@ async def test_unparseable_reply_returns_unresolved():
     q = _fake_query("I think maybe not sure")
     v = await classify_pr_intent([], "fix ci", _query_fn=q)
     assert v.resolved is False
+
+
+@pytest.mark.asyncio
+async def test_sdk_import_failure_degrades(monkeypatch):
+    import server.automations.pr_intent as pi
+    def boom():
+        raise ImportError("no sdk")
+    monkeypatch.setattr(pi, "_default_sdk_query_fn", boom)
+    v = await pi.classify_pr_intent([], "goal")
+    assert v == pi.PrIntentVerdict(False, "", "low")
