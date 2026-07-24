@@ -379,3 +379,54 @@ def test_turn_model_wire_shape():
     e = ev.TurnModel("t1", "claude-opus-4-8", parent_tool_use_id="p1")
     assert e.to_wire() == {"type": "turnModel", "turnId": "t1",
                            "model": "claude-opus-4-8", "parentToolUseId": "p1"}
+
+
+# ---- pr_resolution tests ----
+from server.sessions.completion import NO_PR_MARKER
+
+
+def test_no_pr_marker_alone_sets_pr_resolution_not_needed():
+    """Marker without cancel phrasing → 'not-needed'."""
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.stream_text(f"All done, no PR needed.\n{NO_PR_MARKER}", uuid="t1"),
+            f.assistant(TextBlock(text=f"All done, no PR needed.\n{NO_PR_MARKER}"),
+                        uuid="t1", model="claude-opus-4-8"),
+            f.result(session_id="s", uuid="t1")]
+    end = _turn_end(_drive(msgs))
+    assert end.outcome == "complete"
+    assert end.pr_resolution == "not-needed"
+
+
+def test_no_pr_marker_with_cancel_phrasing_sets_pr_resolution_cancelled():
+    """Marker with cancel phrasing → 'cancelled'."""
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.stream_text(f"Decided not to open a PR; cancelling.\n{NO_PR_MARKER}", uuid="t1"),
+            f.assistant(TextBlock(text=f"Decided not to open a PR; cancelling.\n{NO_PR_MARKER}"),
+                        uuid="t1", model="claude-opus-4-8"),
+            f.result(session_id="s", uuid="t1")]
+    end = _turn_end(_drive(msgs))
+    assert end.outcome == "complete"
+    assert end.pr_resolution == "cancelled"
+
+
+def test_no_marker_leaves_pr_resolution_none():
+    """Without any no-pr marker, pr_resolution stays None."""
+    msgs = [f.sys_init("s"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text="opened PR #12"), uuid="t1"),
+            f.result(session_id="s", uuid="t1")]
+    end = _turn_end(_drive(msgs))
+    assert end.pr_resolution is None
+
+
+def test_no_pr_marker_in_wire_form():
+    """pr_resolution is included in the wire form as 'prResolution'."""
+    e = ev.TurnEnd("t1", outcome="complete", pr_resolution="not-needed")
+    wire = e.to_wire()
+    assert wire["prResolution"] == "not-needed"
+
+
+def test_no_pr_marker_wire_form_none_when_absent():
+    """prResolution is None in wire form when no marker was present."""
+    e = ev.TurnEnd("t1", outcome="success")
+    wire = e.to_wire()
+    assert wire["prResolution"] is None

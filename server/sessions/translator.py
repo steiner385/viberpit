@@ -4,7 +4,7 @@ from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, User
                               ResultMessage, ToolUseBlock, ToolResultBlock, TextBlock,
                               RateLimitEvent)
 from . import events as ev
-from .completion import COMPLETION_MARKER
+from .completion import COMPLETION_MARKER, resolution_from_text
 
 
 def _usage_dict(u):
@@ -146,9 +146,10 @@ class Translator:
         if isinstance(msg, ResultMessage):
             self.session_id = msg.session_id or self.session_id
             tid = self._turn_ids.get(None) or "turn"
+            pr_resolution = resolution_from_text(self._turn_text)
             if msg.subtype != "success" or bool(getattr(msg, "is_error", False)):
                 outcome = "failed"
-            elif COMPLETION_MARKER in self._turn_text:
+            elif COMPLETION_MARKER in self._turn_text or pr_resolution is not None:
                 outcome = "complete"
             else:
                 outcome = "success"
@@ -165,7 +166,7 @@ class Translator:
                 out.append(err)
             out.append(ev.TurnEnd(tid, _usage_dict(msg.usage),
                                   getattr(msg, "total_cost_usd", None), getattr(msg, "uuid", None),
-                                  outcome=outcome))
+                                  outcome=outcome, pr_resolution=pr_resolution))
             return out
 
         return []
