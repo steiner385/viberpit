@@ -58,6 +58,10 @@ class DecisionContext:
     # recently archived + outcomes) from fleet_context.build_fleet_view. Advisory
     # input to the LLM decider ONLY — no guardrail reads it. None = nothing to report.
     fleet_context: dict | None = None
+    # Durable 'session resolved it will not open a PR' token (marker or high-confidence
+    # classifier). When set and no real PR exists, met_bar treats the goal as met, so
+    # post_validate stops downgrading `complete` to an open-a-PR nudge. None = unresolved.
+    pr_resolution: str | None = None
 
 
 @dataclass
@@ -184,7 +188,7 @@ def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Dec
         # The non-code/research case has met=True, so research/Q&A sessions still complete.
         from .completion_bar import met_bar
         verdict = met_bar(ctx.effective_goal, ctx.goal_source, ctx.pr_facts,
-                          getattr(ctx, "pr_resolution", None))
+                          ctx.pr_resolution)
         if not verdict.met:
             return Decision(action="nudge", prompt=verdict.remedy or
                             "Open a PR and arm auto-merge before finishing.",

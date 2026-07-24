@@ -2176,16 +2176,21 @@ class SessionOrchestrator:
         from datetime import datetime as _dtmod
         _last = getattr(rec, "last_user_interaction_at", None)
         _secs_since_human = (_dtmod.utcnow() - _last).total_seconds() if _last is not None else None
+        pr_facts = self._autopilot_pr_facts(rec)
+        transcript_tail = await self._autopilot_transcript_tail(session_id)
+        pr_resolution = await self._autopilot_resolve_pr_intent(
+            rec, goal_text, goal_source, pr_facts, transcript_tail)
         return DecisionContext(
             session_id=session_id, status=rec.status, account=rec.account, repo=rec.repo,
             branch=getattr(rec, "branch", None), effective_goal=goal_text,
             goal_source=goal_source, stuck=stuck,
-            transcript_tail=await self._autopilot_transcript_tail(session_id), ledger={},
-            pr_facts=self._autopilot_pr_facts(rec),
+            transcript_tail=transcript_tail, ledger={},
+            pr_facts=pr_facts,
             no_auto_archive=bool(getattr(rec, "auto_archive_opt_out_reason", None)),
             reversal_hint=await self._autopilot_reversal_hint(rec.repo),
             seconds_since_human=_secs_since_human,
-            fleet_context=await self._autopilot_fleet_context(session_id))
+            fleet_context=await self._autopilot_fleet_context(session_id),
+            pr_resolution=pr_resolution)
 
     async def _autopilot_reversal_hint(self, repo: str | None) -> str | None:
         """Summarize recent manual reversals of auto-archives into a compact caution the
@@ -2305,6 +2310,36 @@ class SessionOrchestrator:
                     auto_merge_enabled=info.auto_merge_enabled,
                     in_merge_queue=info.in_merge_queue, url=info.url)
         return PrFacts(has_repo=bool(rec.repo), prs=tuple(seen.values()))
+
+    async def _autopilot_resolve_pr_intent(self, rec, goal_text, goal_source,
+                                           pr_facts, transcript_tail) -> "str | None":
+        """Durable PR-resolution for a governed session. Returns the record's stored
+        value if set; else, ONLY on the 'code goal but no PR' met_bar branch, runs the
+        gated Haiku classifier and persists a high-confidence 'resolved' verdict.
+        Any classifier failure returns None (autopilot falls back to its normal nudge)."""
+        existing = getattr(rec, "pr_resolution", None)
+        if existing:
+            return existing
+        from server.automations.completion_bar import met_bar
+        verdict = met_bar(goal_text, goal_source, pr_facts)
+        # Only the low-confidence 'code goal but no PR opened' branch produces the buggy
+        # nudge; that is the ONLY place intent can change the outcome.
+        if verdict.met or verdict.confidence != "low":
+            return None
+        from server.automations.pr_intent import classify_pr_intent
+        intent = await classify_pr_intent(transcript_tail, goal_text)
+        if not (intent.resolved and intent.confidence == "high"):
+            return None
+        rec.pr_resolution = intent.reason
+        rec.pr_resolution_source = "classifier"
+        try:
+            from sqlalchemy import update as sa_update
+            async with db_session() as db:
+                await db.execute(sa_update(DbSession).where(DbSession.id == rec.id).values(
+                    pr_resolution=intent.reason, pr_resolution_source="classifier"))
+        except Exception:  # pragma: no cover — a persist failure must not stall the tick
+            log.debug("autopilot.pr_intent_persist_failed id=%s", rec.id, exc_info=True)
+        return intent.reason
 
     async def _autopilot_transcript_tail(self, session_id: str,
                                          *, turns: int = 6, max_entries: int = 12,
