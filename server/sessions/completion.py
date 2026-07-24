@@ -5,6 +5,7 @@ knows how to signal completion) and scanned for by the Translator (so the
 dashboard can show 'Complete'). Keeping both in one module prevents drift.
 """
 from __future__ import annotations
+import re
 
 COMPLETION_MARKER = "<!-- ccswitch:complete -->"
 
@@ -14,3 +15,30 @@ COMPLETION_INSTRUCTION = (
     "when the work is genuinely complete — never for an interim step, and never "
     "while you are still working or waiting on something."
 )
+
+NO_PR_MARKER = "<!-- ccswitch:no-pr -->"
+
+NO_PR_INSTRUCTION = (
+    "If the work is genuinely finished but NO pull request is appropriate — either "
+    "the task needed no code change, or you have deliberately decided to cancel / not "
+    f"open a PR — end your final message with `{NO_PR_MARKER}` on its own line "
+    "(optionally preceded by a short reason). Use this INSTEAD of "
+    f"`{COMPLETION_MARKER}` when finishing without a PR; never emit it while a PR is "
+    "still expected or you are still working."
+)
+
+_CANCEL_RE = re.compile(
+    r"\b(cancel(?:led|ling)?|abandon(?:ed|ing)?|drop(?:ped|ping)?|"
+    r"revert(?:ed|ing)?|won'?t\s+open|not\s+opening|no\s+longer)\b",
+    re.IGNORECASE,
+)
+
+
+def resolution_from_text(text: str) -> str | None:
+    """Classify a final-turn text carrying NO_PR_MARKER into a resolution token.
+
+    Returns None when the marker is absent. When present, 'cancelled' if the text
+    reads as an explicit cancellation/abandonment, else 'not-needed'."""
+    if text is None or NO_PR_MARKER not in text:
+        return None
+    return "cancelled" if _CANCEL_RE.search(text) else "not-needed"
