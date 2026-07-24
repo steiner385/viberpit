@@ -1246,11 +1246,18 @@ class SessionOrchestrator:
         # "0s ago". Naive UTC to match the DB DateTime columns.
         from datetime import datetime
         turn_at = datetime.utcnow() if status in ACTIVITY_STATUSES else None
+        driver = self._drivers.get(session_id)
+        resolution = driver.last_pr_resolution if driver is not None else None
         if rec is not None:
             rec.status = status
             rec.updated_at = datetime.utcnow()   # row-write token; bumps on EVERY persist (see rev_at)
             if turn_at is not None:
                 rec.last_turn_at = turn_at
+            # Capture the pr_resolution token from the driver when a turn completes,
+            # but never clobber a pre-existing value (e.g. from a classifier).
+            if status == "complete" and resolution and rec.pr_resolution is None:
+                rec.pr_resolution = resolution
+                rec.pr_resolution_source = "marker"
             # The session is doing something again → the "interrupted by daemon restart,
             # re-send to resume" hint (issue #434) is resolved. Clear it on any non-idle
             # status so the card stops nagging once the user re-sends.
@@ -1261,6 +1268,13 @@ class SessionOrchestrator:
             values: dict = {"status": status}
             if turn_at is not None:
                 values["last_turn_at"] = turn_at
+            # Write pr_resolution to DB when the in-memory record was just set above;
+            # rec.pr_resolution == resolution guards idempotency (won't overwrite a
+            # pre-existing classifier value that differs from the marker resolution).
+            if (status == "complete" and resolution and rec is not None
+                    and rec.pr_resolution == resolution):
+                values["pr_resolution"] = resolution
+                values["pr_resolution_source"] = "marker"
             # Fold the in-memory slash-command catalog (cached during attach by
             # command_catalog(), which must not write from the cancellable attach path)
             # into this driver-loop write so it reaches the DB row for cross-restart
@@ -3295,6 +3309,8 @@ class SessionOrchestrator:
             context_used_tokens=getattr(row, "context_used_tokens", None),
             context_max_tokens=getattr(row, "context_max_tokens", None),
             command_catalog=getattr(row, "command_catalog", None),
+            pr_resolution=getattr(row, "pr_resolution", None),
+            pr_resolution_source=getattr(row, "pr_resolution_source", None),
         )
         fields.update(overrides)
         return SessionRecord(**fields)
