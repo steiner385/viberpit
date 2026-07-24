@@ -87,6 +87,50 @@ async def test_non_allowlisted_identity_returns_401(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Open-LAN mode (CCSWITCH_ALLOW_UNAUTHENTICATED) — opt-in, fail-closed by default
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_identity_admitted_when_open_lan_enabled(monkeypatch):
+    """With CCSWITCH_ALLOW_UNAUTHENTICATED=1, a request with no Tailscale identity
+    is admitted (as the synthetic LAN guest) instead of 401'd."""
+    monkeypatch.setenv("CCSWITCH_ALLOW_UNAUTHENTICATED", "1")
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/health")
+    assert response.status_code == 200
+    monkeypatch.delenv("CCSWITCH_ALLOW_UNAUTHENTICATED", raising=False)
+
+
+@pytest.mark.asyncio
+async def test_open_lan_default_off_still_401(monkeypatch):
+    """The flag is fail-closed: unset (the default) keeps the missing-identity 401."""
+    monkeypatch.delenv("CCSWITCH_ALLOW_UNAUTHENTICATED", raising=False)
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/health")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_open_lan_does_not_bypass_allowlist_for_real_identity(monkeypatch):
+    """Open-LAN mode only admits *unidentified* clients as guests; a real presented
+    identity is still subject to the allowlist (prod stays protected)."""
+    monkeypatch.setenv("CCSWITCH_ALLOW_UNAUTHENTICATED", "1")
+    monkeypatch.setenv("CCSWITCH_TAILNET_ALLOWLIST", "alice@example.com")
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/api/health",
+            headers={"Tailscale-User-Login": "eve@evil.com"},
+        )
+    assert response.status_code == 401
+    monkeypatch.delenv("CCSWITCH_ALLOW_UNAUTHENTICATED", raising=False)
+    monkeypatch.delenv("CCSWITCH_TAILNET_ALLOWLIST", raising=False)
+
+
+# ---------------------------------------------------------------------------
 # WebSocket test
 # ---------------------------------------------------------------------------
 
