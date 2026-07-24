@@ -175,17 +175,13 @@ def test_no_deference_when_human_never_touched():
 
 # --- Part 2: pr_resolution bypasses the no-PR nudge ---
 
-def _facts_no_pr():
-    return PrFacts(has_repo=True, prs=())
-
-
 def test_complete_not_downgraded_when_pr_resolution_set():
     """Code goal + no PR, but pr_resolution is set → NOT nudged to open a PR."""
     ctx = _ctx(status="complete", stuck={"kind": "complete"},
                repo="owner/repo",
                effective_goal="fix ci",
                goal_source="explicit",
-               pr_facts=_facts_no_pr(),
+               pr_facts=_no_pr_code_facts(),
                pr_resolution="not-needed")
     out = post_validate(Decision(action="complete"), ctx, CONFIG)
     assert out.action == "complete"  # resolved → NOT nudged to open a PR
@@ -197,6 +193,6 @@ def test_complete_downgraded_without_resolution():
                repo="owner/repo",
                effective_goal="fix ci",
                goal_source="explicit",
-               pr_facts=_facts_no_pr())
+               pr_facts=_no_pr_code_facts())
     out = post_validate(Decision(action="complete"), ctx, CONFIG)
     assert out.action == "nudge"  # unchanged legacy behavior

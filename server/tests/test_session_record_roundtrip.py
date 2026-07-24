@@ -1,9 +1,11 @@
 """Round-trip tests for SessionRecord.to_dict / from_dict serialization."""
+from typing import Any
+
 from server.sessions.types import SessionRecord
 
 
 def _make_record(**kwargs) -> SessionRecord:
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         id="s1",
         name="n",
         account="a",

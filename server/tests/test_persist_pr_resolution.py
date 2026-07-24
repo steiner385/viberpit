@@ -3,13 +3,11 @@ from __future__ import annotations
 import asyncio
 import types
 
-import pytest
 from sqlalchemy import select as sa_select
 
 from server.db import db_session, init_db
 from server.db.models import Session as DbSession
 from server.sessions.orchestrator import SessionOrchestrator
-from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 

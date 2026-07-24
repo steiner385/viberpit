@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from server.automations.autopilot_policy import Decision
 
 
@@ -386,8 +388,6 @@ def test_recent_archived_window_and_outcome(tmp_path):
 
 
 # --- archive-context provenance ---------------------------------------------------
-
-import pytest
 
 
 @pytest.mark.asyncio

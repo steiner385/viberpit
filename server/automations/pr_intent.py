@@ -67,7 +67,7 @@ def _parse(raw: str) -> PrIntentVerdict:
         return _UNRESOLVED
     if not bool(obj.get("resolved")):
         return _UNRESOLVED
-    reason = obj.get("reason") if obj.get("reason") in ("cancelled", "not-needed") else "not-needed"
+    reason = "cancelled" if obj.get("reason") == "cancelled" else "not-needed"
     confidence = "high" if obj.get("confidence") == "high" else "low"
     return PrIntentVerdict(True, reason, confidence)
 
