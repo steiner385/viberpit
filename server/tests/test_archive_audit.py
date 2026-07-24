@@ -400,3 +400,37 @@ def test_queued_open_pr_classifies_legit_not_premature():
     ))
     assert out[0]["bucket"] == "legit", f"expected legit, got {out[0]['bucket']}: {out[0]['reason']}"
     assert unarchived == [], "queued PR should NOT trigger unarchive"
+
+
+# ---------------------------------------------------------------------------
+# pr_resolution threading tests
+# ---------------------------------------------------------------------------
+
+def _row_with_resolution(id, goal, pr_resolution, repo="o/r", branch="feat/x",
+                         authored=("feat/x",)):
+    """Row dict with pr_resolution field (as _archived_row_to_dict will produce)."""
+    return {"id": id, "repo": repo, "branch": branch,
+            "authored_branches": list(authored), "goal": goal, "goal_source": "explicit",
+            "initial_prompt": None, "pr_resolution": pr_resolution}
+
+
+def test_resolved_no_pr_row_buckets_as_legit():
+    """An archived row with pr_resolution set and no real PR → legit (not premature/ambiguous)."""
+    unarchived = []
+    row = _row_with_resolution("s1", "fix ci", pr_resolution="not-needed")
+    out = asyncio.run(aa.run_audit([row], _gh_returning(None), unarchived.append))
+    assert out[0]["bucket"] == "legit", (
+        f"expected legit, got {out[0]['bucket']}: {out[0]['reason']}"
+    )
+    assert unarchived == []
+
+
+def test_resolved_no_pr_real_pr_wins():
+    """pr_resolution is ignored when a real open-unarmed PR exists — row stays premature."""
+    unarchived = []
+    row = _row_with_resolution("s1", "fix ci", pr_resolution="not-needed")
+    out = asyncio.run(
+        aa.run_audit([row], _gh_returning(_pr(state="OPEN", auto_merge=False)), unarchived.append)
+    )
+    assert out[0]["bucket"] == "premature"
+    assert unarchived == ["s1"]

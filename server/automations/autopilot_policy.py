@@ -183,7 +183,8 @@ def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Dec
         #   - code goal + repo + no PR at all (confidence=low) → nudge toward opening one
         # The non-code/research case has met=True, so research/Q&A sessions still complete.
         from .completion_bar import met_bar
-        verdict = met_bar(ctx.effective_goal, ctx.goal_source, ctx.pr_facts)
+        verdict = met_bar(ctx.effective_goal, ctx.goal_source, ctx.pr_facts,
+                          getattr(ctx, "pr_resolution", None))
         if not verdict.met:
             return Decision(action="nudge", prompt=verdict.remedy or
                             "Open a PR and arm auto-merge before finishing.",
