@@ -2178,6 +2178,8 @@ class SessionOrchestrator:
         _secs_since_human = (_dtmod.utcnow() - _last).total_seconds() if _last is not None else None
         pr_facts = self._autopilot_pr_facts(rec)
         transcript_tail = await self._autopilot_transcript_tail(session_id)
+        # Context assembly (including this resolution) runs BEFORE pre_decide, so
+        # human-deference / budget / loop-detection skips do not suppress it.
         pr_resolution = await self._autopilot_resolve_pr_intent(
             rec, goal_text, goal_source, pr_facts, transcript_tail)
         return DecisionContext(
@@ -2320,6 +2322,13 @@ class SessionOrchestrator:
         existing = getattr(rec, "pr_resolution", None)
         if existing:
             return existing
+        # Only classify a session that has self-declared done (emitted the completion
+        # marker → status "complete"). For any still-active status the low-confidence
+        # "no PR yet" met_bar verdict is just a healthy in-progress session, so running
+        # the Haiku classifier every tick there would burn quota + add latency for no
+        # outcome change. This is the one decision point where PR-intent matters.
+        if getattr(rec, "status", None) != "complete":
+            return None
         from server.automations.completion_bar import met_bar
         verdict = met_bar(goal_text, goal_source, pr_facts)
         # Only the low-confidence 'code goal but no PR opened' branch produces the buggy

@@ -682,6 +682,8 @@ class SessionDriver:
                         self._last_turn_outcome = e.outcome
                         self._last_turn_id = e.turn_id
                         if e.pr_resolution is not None:
+                            # Intentionally sticky: set-only; first-write-wins is enforced
+                            # downstream by the rec.pr_resolution is None guard in _persist_status.
                             self._last_pr_resolution = e.pr_resolution
                     elif isinstance(e, ev.ErrorEvent):
                         failure = await self._maybe_signal_recovery(

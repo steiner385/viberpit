@@ -177,3 +177,38 @@ def test_classifier_unresolved_returns_none(monkeypatch):
     result = asyncio.run(run())
     assert result is None
     assert rec.pr_resolution is None
+
+
+# ---------------------------------------------------------------------------
+# (f) Non-complete status: classifier must NOT fire (per-tick cost gate)
+# ---------------------------------------------------------------------------
+
+def test_classifier_not_invoked_for_non_complete_status(monkeypatch):
+    """Regression: when rec.status is a non-complete actionable status (e.g. 'done'),
+    the classifier must NOT be invoked even on the no-PR code-goal branch. This guards
+    against the per-tick model-call waste discovered in the final review."""
+    from server.sessions.types import SessionRecord
+
+    invocations = []
+
+    async def fake_classify(tail, goal, **kw):
+        invocations.append(goal)
+        from server.automations.pr_intent import PrIntentVerdict
+        return PrIntentVerdict(resolved=True, reason="cancelled", confidence="high")
+
+    monkeypatch.setattr("server.automations.pr_intent.classify_pr_intent", fake_classify)
+
+    orch = _bare_orch()
+    # Build a record with a non-complete status — still has a repo, no PR, no stored resolution
+    rec = SessionRecord(id="s2", name="n", account="a", claude_session_id="",
+                        cols=80, rows=24, cwd="/tmp", status="done")
+    rec.pr_resolution = None
+    rec.pr_resolution_source = None
+
+    async def run():
+        return await orch._autopilot_resolve_pr_intent(
+            rec, "fix ci", "explicit", _no_pr_facts(), [{"role": "user", "text": "progress"}])
+
+    result = asyncio.run(run())
+    assert result is None, "should return None for non-complete session"
+    assert invocations == [], "classifier must NOT be called for non-complete status"
