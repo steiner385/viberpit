@@ -1,6 +1,5 @@
 """Driver captures pr_resolution from TurnEnd and exposes it via last_pr_resolution."""
 from __future__ import annotations
-import asyncio
 
 import pytest
 from claude_agent_sdk import TextBlock
