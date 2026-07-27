@@ -5,10 +5,11 @@ def _facts(prs=(), has_repo=True):
     return PrFacts(has_repo=has_repo, prs=tuple(prs))
 
 
-def _pr(number=1, state="open", is_draft=False, auto_merge=False, in_merge_queue=False):
+def _pr(number=1, state="open", is_draft=False, auto_merge=False, in_merge_queue=False,
+        checks="none"):
     return PrFact(number=number, state=state, is_draft=is_draft,
                   auto_merge_enabled=auto_merge, in_merge_queue=in_merge_queue,
-                  url=f"http://x/{number}")
+                  url=f"http://x/{number}", checks=checks)
 
 
 def test_merged_pr_is_met_high():
@@ -116,3 +117,43 @@ def test_pr_resolution_ignored_when_merged():
 def test_no_resolution_unchanged():
     v = met_bar("fix ci", "explicit", _facts([], has_repo=True))
     assert v.met is False and v.reason == "code goal but no PR opened"
+
+
+# --- armed-but-red-CI tests (issue #635) ---
+
+def test_armed_pr_with_failing_ci_is_not_met_high():
+    """Regression #635: an armed PR whose required CI is red cannot merge, so the
+    goal is NOT met — the session must stay alive to fix the failing checks."""
+    v = met_bar("fix ci", "explicit",
+                _facts([_pr(state="open", auto_merge=True, checks="failing")]))
+    assert not v.met and v.confidence == "high" and v.remedy
+
+
+def test_queued_pr_with_failing_ci_is_not_met_high():
+    """Merge-queue enrollment does not rescue a red PR — a failing rollup still
+    blocks the merge."""
+    v = met_bar("fix ci", "explicit",
+                _facts([_pr(state="open", in_merge_queue=True, checks="failing")]))
+    assert not v.met and v.confidence == "high" and v.remedy
+
+
+def test_armed_pr_with_pending_ci_is_still_met_high():
+    """A PR with CI still running is legitimately armed — auto-merge will land it
+    once checks pass, so 'pending' must NOT flip the verdict."""
+    v = met_bar("fix ci", "explicit",
+                _facts([_pr(state="open", auto_merge=True, checks="pending")]))
+    assert v.met and v.confidence == "high"
+
+
+def test_armed_pr_with_passing_ci_is_met_high():
+    v = met_bar("fix ci", "explicit",
+                _facts([_pr(state="open", auto_merge=True, checks="passing")]))
+    assert v.met and v.confidence == "high"
+
+
+def test_merged_pr_ignores_stale_failing_checks():
+    """Merged wins over checks: a merged PR is done even if a stale rollup reads
+    'failing' (merge precedence is evaluated before the armed CI gate)."""
+    v = met_bar("fix ci", "explicit",
+                _facts([_pr(state="merged", checks="failing")]))
+    assert v.met and v.confidence == "high"

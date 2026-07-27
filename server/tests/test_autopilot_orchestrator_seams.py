@@ -377,7 +377,7 @@ def test_recent_archived_window_and_outcome(tmp_path):
         orch = _bare_orch()
         orch.pr_for = lambda repo, br: SimpleNamespace(
             number=591, state="merged", is_draft=False, auto_merge_enabled=False,
-            in_merge_queue=False, url="u") if br == "feat/p" else None
+            in_merge_queue=False, checks="passing", url="u") if br == "feat/p" else None
 
         rows = await orch._autopilot_recent_archived()
         assert [r.name for r in rows] == ["shipped parser fix"]

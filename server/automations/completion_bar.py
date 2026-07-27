@@ -25,6 +25,7 @@ class PrFact:
     auto_merge_enabled: bool
     url: str
     in_merge_queue: bool = False   # mergeQueueEntry != null
+    checks: str = "none"           # rollup: 'passing' | 'failing' | 'pending' | 'none'
 
     @property
     def is_armed(self) -> bool:
@@ -34,6 +35,13 @@ class PrFact:
             and not self.is_draft
             and (self.auto_merge_enabled or self.in_merge_queue)
         )
+
+    @property
+    def ci_is_red(self) -> bool:
+        """True when the check rollup is FAILURE/ERROR — a required check is red, so
+        an armed merge is blocked. 'pending' is NOT red: auto-merge will still land
+        the PR once running checks pass, so it must not flip the goal-met verdict."""
+        return self.checks == "failing"
 
 
 @dataclass(frozen=True)
@@ -60,7 +68,8 @@ class PrFacts:
             "has_repo": self.has_repo,
             "prs": [{"number": p.number, "state": p.state, "is_draft": p.is_draft,
                      "auto_merge_enabled": p.auto_merge_enabled,
-                     "in_merge_queue": p.in_merge_queue} for p in self.prs],
+                     "in_merge_queue": p.in_merge_queue, "checks": p.checks}
+                    for p in self.prs],
         }
 
 
@@ -88,6 +97,15 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
         return BarVerdict(True, f"code landed (PR #{merged.number} merged)", None, "high")
     armed = facts.armed_pr
     if armed is not None:
+        # Issue #635: auto-merge being armed is not terminal success — a red required
+        # check blocks the merge from ever executing, so the goal is not met until CI
+        # goes green. Treat as in-progress (not-met/high) so the session stays alive.
+        if armed.ci_is_red:
+            return BarVerdict(
+                False, f"PR #{armed.number} is armed but a required check is failing — "
+                "auto-merge is blocked",
+                f"fix the failing CI on PR #{armed.number}; auto-merge will land it once "
+                "checks pass", "high")
         return BarVerdict(True, f"PR #{armed.number} open with auto-merge armed", None, "high")
     unarmed = facts.open_unarmed_pr
     if unarmed is not None:
