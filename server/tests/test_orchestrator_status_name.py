@@ -32,7 +32,7 @@ def _attach_stub_driver(orch, sid):
     queue, mirroring the real driver's broadcast emit path (orchestrator calls
     driver.emit(...) for out-of-band events like a rename Title)."""
     q: asyncio.Queue = asyncio.Queue()
-    drv = types.SimpleNamespace(_events=q, emit=q.put_nowait)
+    drv = types.SimpleNamespace(_events=q, emit=q.put_nowait, last_pr_resolution=None)
     orch._drivers[sid] = drv
     return drv
 

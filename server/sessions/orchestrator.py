@@ -1246,11 +1246,20 @@ class SessionOrchestrator:
         # "0s ago". Naive UTC to match the DB DateTime columns.
         from datetime import datetime
         turn_at = datetime.utcnow() if status in ACTIVITY_STATUSES else None
+        driver = self._drivers.get(session_id)
+        # getattr (not attribute access): a driver may be absent, or a test/partial
+        # driver stub without last_pr_resolution — neither should break status persist.
+        resolution = getattr(driver, "last_pr_resolution", None)
         if rec is not None:
             rec.status = status
             rec.updated_at = datetime.utcnow()   # row-write token; bumps on EVERY persist (see rev_at)
             if turn_at is not None:
                 rec.last_turn_at = turn_at
+            # Capture the pr_resolution token from the driver when a turn completes,
+            # but never clobber a pre-existing value (e.g. from a classifier).
+            if status == "complete" and resolution and rec.pr_resolution is None:
+                rec.pr_resolution = resolution
+                rec.pr_resolution_source = "marker"
             # The session is doing something again → the "interrupted by daemon restart,
             # re-send to resume" hint (issue #434) is resolved. Clear it on any non-idle
             # status so the card stops nagging once the user re-sends.
@@ -1261,6 +1270,13 @@ class SessionOrchestrator:
             values: dict = {"status": status}
             if turn_at is not None:
                 values["last_turn_at"] = turn_at
+            # Write pr_resolution to DB when the in-memory record was just set above;
+            # rec.pr_resolution == resolution guards idempotency (won't overwrite a
+            # pre-existing classifier value that differs from the marker resolution).
+            if (status == "complete" and resolution and rec is not None
+                    and rec.pr_resolution == resolution):
+                values["pr_resolution"] = resolution
+                values["pr_resolution_source"] = "marker"
             # Fold the in-memory slash-command catalog (cached during attach by
             # command_catalog(), which must not write from the cancellable attach path)
             # into this driver-loop write so it reaches the DB row for cross-restart
@@ -2162,16 +2178,23 @@ class SessionOrchestrator:
         from datetime import datetime as _dtmod
         _last = getattr(rec, "last_user_interaction_at", None)
         _secs_since_human = (_dtmod.utcnow() - _last).total_seconds() if _last is not None else None
+        pr_facts = self._autopilot_pr_facts(rec)
+        transcript_tail = await self._autopilot_transcript_tail(session_id)
+        # Context assembly (including this resolution) runs BEFORE pre_decide, so
+        # human-deference / budget / loop-detection skips do not suppress it.
+        pr_resolution = await self._autopilot_resolve_pr_intent(
+            rec, goal_text, goal_source, pr_facts, transcript_tail)
         return DecisionContext(
             session_id=session_id, status=rec.status, account=rec.account, repo=rec.repo,
             branch=getattr(rec, "branch", None), effective_goal=goal_text,
             goal_source=goal_source, stuck=stuck,
-            transcript_tail=await self._autopilot_transcript_tail(session_id), ledger={},
-            pr_facts=self._autopilot_pr_facts(rec),
+            transcript_tail=transcript_tail, ledger={},
+            pr_facts=pr_facts,
             no_auto_archive=bool(getattr(rec, "auto_archive_opt_out_reason", None)),
             reversal_hint=await self._autopilot_reversal_hint(rec.repo),
             seconds_since_human=_secs_since_human,
-            fleet_context=await self._autopilot_fleet_context(session_id))
+            fleet_context=await self._autopilot_fleet_context(session_id),
+            pr_resolution=pr_resolution)
 
     async def _autopilot_reversal_hint(self, repo: str | None) -> str | None:
         """Summarize recent manual reversals of auto-archives into a compact caution the
@@ -2291,6 +2314,43 @@ class SessionOrchestrator:
                     auto_merge_enabled=info.auto_merge_enabled,
                     in_merge_queue=info.in_merge_queue, url=info.url)
         return PrFacts(has_repo=bool(rec.repo), prs=tuple(seen.values()))
+
+    async def _autopilot_resolve_pr_intent(self, rec, goal_text, goal_source,
+                                           pr_facts, transcript_tail) -> "str | None":
+        """Durable PR-resolution for a governed session. Returns the record's stored
+        value if set; else, ONLY on the 'code goal but no PR' met_bar branch, runs the
+        gated Haiku classifier and persists a high-confidence 'resolved' verdict.
+        Any classifier failure returns None (autopilot falls back to its normal nudge)."""
+        existing = getattr(rec, "pr_resolution", None)
+        if existing:
+            return existing
+        # Only classify a session that has self-declared done (emitted the completion
+        # marker → status "complete"). For any still-active status the low-confidence
+        # "no PR yet" met_bar verdict is just a healthy in-progress session, so running
+        # the Haiku classifier every tick there would burn quota + add latency for no
+        # outcome change. This is the one decision point where PR-intent matters.
+        if getattr(rec, "status", None) != "complete":
+            return None
+        from server.automations.completion_bar import met_bar
+        verdict = met_bar(goal_text, goal_source, pr_facts)
+        # Only the low-confidence 'code goal but no PR opened' branch produces the buggy
+        # nudge; that is the ONLY place intent can change the outcome.
+        if verdict.met or verdict.confidence != "low":
+            return None
+        from server.automations.pr_intent import classify_pr_intent
+        intent = await classify_pr_intent(transcript_tail, goal_text)
+        if not (intent.resolved and intent.confidence == "high"):
+            return None
+        rec.pr_resolution = intent.reason
+        rec.pr_resolution_source = "classifier"
+        try:
+            from sqlalchemy import update as sa_update
+            async with db_session() as db:
+                await db.execute(sa_update(DbSession).where(DbSession.id == rec.id).values(
+                    pr_resolution=intent.reason, pr_resolution_source="classifier"))
+        except Exception:  # pragma: no cover — a persist failure must not stall the tick
+            log.debug("autopilot.pr_intent_persist_failed id=%s", rec.id, exc_info=True)
+        return intent.reason
 
     async def _autopilot_transcript_tail(self, session_id: str,
                                          *, turns: int = 6, max_entries: int = 12,
@@ -2413,10 +2473,13 @@ class SessionOrchestrator:
             from server.sessions.goals import effective_goal
             goal_text, goal_source = effective_goal(rec)
             pr = self._autopilot_pr_facts(rec)
+            resolution = getattr(rec, "pr_resolution", None)
             context = {
                 "repo": rec.repo, "goal": goal_text, "goal_source": goal_source,
                 "pr_state": pr.to_prompt() if pr is not None else None,
-                "reason": "autopilot: goal met",
+                "pr_resolution": resolution,
+                "reason": (f"resolved no PR ({resolution})" if resolution
+                           else "autopilot: goal met"),
             }
         await self.archive_session(session_id, archived_by="autopilot", context=context)
         return True
@@ -3295,6 +3358,8 @@ class SessionOrchestrator:
             context_used_tokens=getattr(row, "context_used_tokens", None),
             context_max_tokens=getattr(row, "context_max_tokens", None),
             command_catalog=getattr(row, "command_catalog", None),
+            pr_resolution=getattr(row, "pr_resolution", None),
+            pr_resolution_source=getattr(row, "pr_resolution_source", None),
         )
         fields.update(overrides)
         return SessionRecord(**fields)

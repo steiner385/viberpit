@@ -169,6 +169,7 @@ class SessionDriver:
         self._condensing: bool = False
         self._turns_completed: int = 0
         self._last_turn_outcome: str = "success"
+        self._last_pr_resolution: str | None = None
         self._suggester = suggester
         self._suggest_task: asyncio.Task | None = None
         self._last_user_text: str = ""
@@ -680,6 +681,10 @@ class SessionDriver:
                     elif isinstance(e, ev.TurnEnd):
                         self._last_turn_outcome = e.outcome
                         self._last_turn_id = e.turn_id
+                        if e.pr_resolution is not None:
+                            # Intentionally sticky: set-only; first-write-wins is enforced
+                            # downstream by the rec.pr_resolution is None guard in _persist_status.
+                            self._last_pr_resolution = e.pr_resolution
                     elif isinstance(e, ev.ErrorEvent):
                         failure = await self._maybe_signal_recovery(
                             e.code, e.raw_message or e.message)
@@ -792,6 +797,12 @@ class SessionDriver:
     def turn_started_at(self) -> float | None:
         """Epoch seconds of the in-progress turn's start, or None when idle."""
         return self._turn_started_at
+
+    @property
+    def last_pr_resolution(self) -> str | None:
+        """Resolution token from the most recent ``<!-- ccswitch:no-pr -->`` marker,
+        or ``None`` if no completed turn has carried one yet."""
+        return self._last_pr_resolution
 
     def open_stream(self) -> DriverStream:
         """Open an attach stream ATOMICALLY — no await anywhere in this method,
