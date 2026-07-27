@@ -1350,12 +1350,35 @@ class SessionOrchestrator:
         A failure clears the guard so a later ``complete`` emit can retry.
 
         Snapshots decision-time evidence (goal, repo, PR state) so the retro archive
-        audit can evaluate whether the archive was premature. Mirrors ``_autopilot_archive``."""
+        audit can evaluate whether the archive was premature. Mirrors ``_autopilot_archive``.
+
+        Completion gate: if the session's task instructions include an explicit arming
+        step (``--squash --auto``) and the PR is not yet armed, nudge the session to
+        finish that step instead of archiving prematurely."""
         rec = self._records.get(session_id)
         if rec is not None:
             from server.sessions.goals import effective_goal
+            from server.automations.completion_bar import met_bar, _has_explicit_arm_step
             goal_text, goal_source = effective_goal(rec)
             pr = self._autopilot_pr_facts(rec)
+            initial_prompt = getattr(rec, "initial_prompt", None)
+            # Completion gate: when the task instructions include an explicit arming step
+            # (`--squash --auto`), the session is not done until the PR is armed. Check
+            # met_bar only when this signal is present — without it, archive immediately
+            # on `complete` (the existing behaviour for sessions without a strict workflow).
+            if initial_prompt and _has_explicit_arm_step(initial_prompt):
+                verdict = met_bar(goal_text, goal_source, pr, instructions=initial_prompt)
+                if not verdict.met:
+                    log.info("backlog_runner.autoarchive_deferred sid=%s reason=%s",
+                             session_id, verdict.reason)
+                    self._auto_archiving.discard(session_id)
+                    nudge = (verdict.remedy
+                             or "Arm auto-merge before finishing: `gh pr merge --squash --auto`")
+                    try:
+                        await self.send_prompt(session_id, nudge)
+                    except Exception:
+                        log.warning("backlog_runner.nudge_failed sid=%s", session_id, exc_info=True)
+                    return
             context = {
                 "repo": rec.repo, "goal": goal_text, "goal_source": goal_source,
                 "pr_state": pr.to_prompt() if pr is not None else None,
@@ -2194,7 +2217,8 @@ class SessionOrchestrator:
             reversal_hint=await self._autopilot_reversal_hint(rec.repo),
             seconds_since_human=_secs_since_human,
             fleet_context=await self._autopilot_fleet_context(session_id),
-            pr_resolution=pr_resolution)
+            pr_resolution=pr_resolution,
+            instructions=getattr(rec, "initial_prompt", None))
 
     async def _autopilot_reversal_hint(self, repo: str | None) -> str | None:
         """Summarize recent manual reversals of auto-archives into a compact caution the

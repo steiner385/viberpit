@@ -1,4 +1,4 @@
-from server.automations.completion_bar import PrFact, PrFacts, met_bar
+from server.automations.completion_bar import PrFact, PrFacts, _has_explicit_arm_step, met_bar
 
 
 def _facts(prs=(), has_repo=True):
@@ -157,3 +157,65 @@ def test_merged_pr_ignores_stale_failing_checks():
     v = met_bar("fix ci", "explicit",
                 _facts([_pr(state="merged", checks="failing")]))
     assert v.met and v.confidence == "high"
+
+
+# ---------------------------------------------------------------------------
+# explicit arm-step (--squash --auto) in instructions tests
+# ---------------------------------------------------------------------------
+
+_ARM_PROMPT = "5. Arm auto-merge: `gh pr merge <#> --squash --auto`."
+
+
+def test_has_explicit_arm_step_detects_squash_auto():
+    assert _has_explicit_arm_step(_ARM_PROMPT) is True
+
+
+def test_has_explicit_arm_step_false_without_pattern():
+    assert _has_explicit_arm_step("Implement the issue and open a PR.") is False
+
+
+def test_has_explicit_arm_step_empty():
+    assert _has_explicit_arm_step("") is False
+
+
+def test_instructions_with_arm_step_blocks_research_escape_no_pr():
+    """A goal that looks like research but whose instructions demand --squash --auto
+    must NOT be treated as met when no PR is armed — the arm step wins."""
+    v = met_bar("review the consolidation approach", "inferred",
+                _facts([], has_repo=True), instructions=_ARM_PROMPT)
+    assert not v.met and v.confidence == "high"
+
+
+def test_instructions_with_arm_step_blocks_no_repo_escape():
+    """Even with has_repo=False, explicit arm step blocks the 'no PR expected' escape."""
+    v = met_bar("anything", "initial_prompt",
+                _facts([], has_repo=False), instructions=_ARM_PROMPT)
+    assert not v.met and v.confidence == "high"
+
+
+def test_instructions_arm_step_does_not_block_when_armed():
+    """An armed PR satisfies the bar even when instructions have --squash --auto."""
+    v = met_bar("review approach", "inferred",
+                _facts([_pr(auto_merge=True)]), instructions=_ARM_PROMPT)
+    assert v.met and v.confidence == "high"
+
+
+def test_instructions_arm_step_does_not_block_when_merged():
+    """A merged PR satisfies the bar even when instructions have --squash --auto."""
+    v = met_bar("review approach", "inferred",
+                _facts([_pr(state="merged")]), instructions=_ARM_PROMPT)
+    assert v.met and v.confidence == "high"
+
+
+def test_instructions_arm_step_open_unarmed_still_not_met():
+    """Open-unarmed PR stays not-met with or without arm-step instructions."""
+    v = met_bar("fix ci", "explicit",
+                _facts([_pr(state="open", auto_merge=False)]), instructions=_ARM_PROMPT)
+    assert not v.met and v.confidence == "high"
+
+
+def test_instructions_none_preserves_existing_research_escape():
+    """Without instructions, a research goal with no PR is still met (unchanged behaviour)."""
+    v = met_bar("review the consolidation approach", "inferred",
+                _facts([], has_repo=True))
+    assert v.met and v.confidence == "low"

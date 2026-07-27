@@ -212,10 +212,11 @@ def build_pr_facts(
 
 
 def classify(goal: str, goal_source: str, facts: PrFacts,
-             pr_resolution: str | None = None) -> tuple[str, BarVerdict]:
+             pr_resolution: str | None = None, *,
+             instructions: str | None = None) -> tuple[str, BarVerdict]:
     """Bucket via met_bar: met→legit; not-met+open-unarmed→premature;
     not-met+closed-target+code-goal→review; not-met+low→ambiguous."""
-    v = met_bar(goal, goal_source, facts, pr_resolution)
+    v = met_bar(goal, goal_source, facts, pr_resolution, instructions=instructions)
     if v.met:
         return "legit", v
     if v.confidence == "high":
@@ -261,7 +262,8 @@ async def run_audit(
                             "goal": row.get("goal", ""), "action": "none"})
             continue
         bucket, verdict = classify(row.get("goal", ""), row.get("goal_source", ""), facts,
-                                    row.get("pr_resolution"))
+                                    row.get("pr_resolution"),
+                                    instructions=row.get("initial_prompt"))
         action = "none"
         if bucket == "premature" and not dry_run:
             try:
