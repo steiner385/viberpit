@@ -159,15 +159,23 @@ def _pr_fact_from_gh(d: dict) -> PrFact:
 
     A queued PR (mergeQueueEntry != null) is treated as armed — in_merge_queue
     flows into PrFact.is_armed so the retro audit matches the live autopilot gate.
+
+    The check rollup (commit.statusCheckRollup.state) flows into PrFact.checks via the
+    same _classify_checks SoT the live poller uses, so the audit gates an armed-but-red
+    PR identically to the live path (issue #635).
     """
+    from server.github.pr_status import _classify_checks
     state = str(d.get("state", "")).lower()
     is_draft = bool(d.get("isDraft", False))
     if state == "open" and is_draft:
         state = "draft"
+    nodes = ((d.get("commits") or {}).get("nodes")) or []
+    rollup = (nodes[0].get("commit") or {}).get("statusCheckRollup") if nodes else None
     return PrFact(number=int(d.get("number", 0)), state=state, is_draft=is_draft,
                   auto_merge_enabled=d.get("autoMergeRequest") is not None,
                   in_merge_queue=d.get("mergeQueueEntry") is not None,
-                  url=str(d.get("url", "")))
+                  url=str(d.get("url", "")),
+                  checks=_classify_checks(rollup.get("state") if rollup else None))
 
 
 def build_pr_facts(
@@ -291,7 +299,8 @@ def _real_gh(repo: str, branch: str) -> list[dict]:
         "query($o:String!,$n:String!,$br:String!){"
         "repository(owner:$o,name:$n){pullRequests(headRefName:$br,first:20,"
         "states:[OPEN,CLOSED,MERGED]){nodes{"
-        "number url state isDraft autoMergeRequest{enabledAt} mergeQueueEntry{state}}}}}"
+        "number url state isDraft autoMergeRequest{enabledAt} mergeQueueEntry{state} "
+        "commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}"
     )
     try:
         r = subprocess.run(
@@ -325,7 +334,8 @@ def _real_gh_num(repo: str, number: int) -> "dict | None":
     query = (
         "query($o:String!,$n:String!,$num:Int!){"
         "repository(owner:$o,name:$n){pullRequest(number:$num){"
-        "number url state isDraft autoMergeRequest{enabledAt} mergeQueueEntry{state}}}}"
+        "number url state isDraft autoMergeRequest{enabledAt} mergeQueueEntry{state} "
+        "commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}"
     )
     try:
         r = subprocess.run(

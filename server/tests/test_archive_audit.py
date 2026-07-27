@@ -376,6 +376,36 @@ def test_pr_fact_from_gh_in_merge_queue_false_when_entry_absent():
     assert fact2.in_merge_queue is False
 
 
+def test_pr_fact_from_gh_maps_failing_rollup_to_checks():
+    """Issue #635: a FAILURE rollup flows into PrFact.checks so the retro audit gates
+    an armed-but-red PR the same way the live path does."""
+    d = {"number": 1, "state": "OPEN", "isDraft": False,
+         "autoMergeRequest": {"enabledAt": "t"}, "mergeQueueEntry": None,
+         "url": "http://x/1",
+         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]}}
+    fact = aa._pr_fact_from_gh(d)
+    assert fact.checks == "failing" and fact.ci_is_red
+
+
+def test_pr_fact_from_gh_checks_none_when_rollup_absent():
+    """No commits/rollup in the GraphQL node → checks defaults to 'none' (not red)."""
+    d = {"number": 1, "state": "OPEN", "isDraft": False,
+         "autoMergeRequest": None, "mergeQueueEntry": None, "url": "http://x/1"}
+    fact = aa._pr_fact_from_gh(d)
+    assert fact.checks == "none" and not fact.ci_is_red
+
+
+def test_armed_but_red_pr_not_classified_legit():
+    """An armed PR with a failing rollup must NOT bucket as 'legit' — it is not met."""
+    d = {"number": 7, "state": "OPEN", "isDraft": False,
+         "autoMergeRequest": {"enabledAt": "t"}, "mergeQueueEntry": None,
+         "url": "http://x/7",
+         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]}}
+    facts = aa.PrFacts(has_repo=True, prs=(aa._pr_fact_from_gh(d),))
+    bucket, verdict = aa.classify("fix ci", "explicit", facts)
+    assert bucket != "legit" and not verdict.met
+
+
 def test_queued_open_pr_classifies_legit_not_premature():
     """Regression guard: OPEN PR with mergeQueueEntry but no autoMergeRequest
     → armed via queue → session is legit, NOT premature, NOT unarchived.

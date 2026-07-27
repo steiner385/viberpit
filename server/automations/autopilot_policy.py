@@ -182,8 +182,9 @@ def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Dec
         # Deterministic backstop the untrusted decider cannot override: an open PR
         # that is not armed AND a code goal that opened zero PRs are both definitionally
         # NOT the finished state. Downgrade to a nudge in both cases.
-        # `not verdict.met` covers exactly two cases (per completion_bar.met_bar):
+        # `not verdict.met` covers exactly three cases (per completion_bar.met_bar):
         #   - open-unarmed PR (confidence=high) → nudge toward arming it
+        #   - armed PR with a red required check (confidence=high) → nudge toward fixing CI (#635)
         #   - code goal + repo + no PR at all (confidence=low) → nudge toward opening one
         # The non-code/research case has met=True, so research/Q&A sessions still complete.
         from .completion_bar import met_bar
