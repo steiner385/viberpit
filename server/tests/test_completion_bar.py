@@ -90,3 +90,29 @@ def test_draft_queued_pr_is_not_armed():
     pr = _pr(state="draft", is_draft=True, auto_merge=False, in_merge_queue=True)
     facts = _facts([pr])
     assert facts.armed_pr is None
+
+
+# ---------------------------------------------------------------------------
+# pr_resolution precedence tests
+# ---------------------------------------------------------------------------
+
+def test_pr_resolution_short_circuits_no_pr_branch():
+    v = met_bar("fix ci", "explicit", _facts([], has_repo=True), pr_resolution="not-needed")
+    assert v.met is True and v.confidence == "high"
+
+
+def test_pr_resolution_ignored_when_open_unarmed_pr_exists():
+    facts = _facts([_pr(state="open", auto_merge=False)])
+    v = met_bar("fix ci", "explicit", facts, pr_resolution="cancelled")
+    assert v.met is False  # real PR facts win — still nudge to arm it
+
+
+def test_pr_resolution_ignored_when_merged():
+    facts = _facts([_pr(state="merged")])
+    v = met_bar("fix ci", "explicit", facts, pr_resolution="cancelled")
+    assert v.met is True and "merged" in v.reason
+
+
+def test_no_resolution_unchanged():
+    v = met_bar("fix ci", "explicit", _facts([], has_repo=True))
+    assert v.met is False and v.reason == "code goal but no PR opened"

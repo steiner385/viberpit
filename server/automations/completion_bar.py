@@ -77,9 +77,12 @@ def _is_code_goal(goal: str) -> bool:
     return not _RESEARCH_RE.search(goal or "")
 
 
-def met_bar(goal: str, goal_source: str, facts: PrFacts) -> BarVerdict:
-    """Is the session's goal genuinely met? Precedence: merged > armed > open-unarmed
-    > no-PR. Only high-confidence verdicts are safe to auto-act on."""
+def met_bar(goal: str, goal_source: str, facts: PrFacts,
+            pr_resolution: str | None = None) -> BarVerdict:
+    """Is the session's goal genuinely met? Precedence: merged > armed >
+    open-unarmed > pr_resolution(no-PR) > no-PR-nudge. Only high-confidence
+    verdicts are safe to auto-act on. A real PR fact always overrides a
+    pr_resolution (a stale 'no PR' claim never masks an actual PR)."""
     merged = facts.merged_pr
     if merged is not None:
         return BarVerdict(True, f"code landed (PR #{merged.number} merged)", None, "high")
@@ -92,6 +95,9 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts) -> BarVerdict:
             False, f"PR #{unarmed.number} is open but not armed",
             f"ready the PR and arm auto-merge: `gh pr ready {unarmed.number}` then "
             f"`gh pr merge {unarmed.number} --squash --auto`", "high")
+    if pr_resolution:
+        return BarVerdict(True, f"session resolved no PR needed ({pr_resolution})",
+                          None, "high")
     if facts.has_repo and _is_code_goal(goal):
         return BarVerdict(False, "code goal but no PR opened",
                           "open a PR and arm auto-merge before finishing", "low")

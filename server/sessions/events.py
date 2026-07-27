@@ -48,9 +48,11 @@ class SessionMeta:
 class TurnEnd:
     turn_id: str; usage: dict | None = None; cost_usd: float | None = None
     src_uuid: str | None = None; parent_tool_use_id: str | None = None; outcome: str = "success"
+    pr_resolution: str | None = None
     def to_wire(self): return {"type": "turnEnd", "turnId": self.turn_id, "usage": self.usage,
                                "costUsd": self.cost_usd, "srcUuid": self.src_uuid,
-                               "parentToolUseId": self.parent_tool_use_id, "outcome": self.outcome}
+                               "parentToolUseId": self.parent_tool_use_id, "outcome": self.outcome,
+                               "prResolution": self.pr_resolution}
 
 @dataclass
 class TextDelta:

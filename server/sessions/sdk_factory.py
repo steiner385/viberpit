@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 import os
 
-from .completion import COMPLETION_INSTRUCTION
+from .completion import COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION
+
+
+def _build_append_string() -> str:
+    return COMPLETION_INSTRUCTION + "\n\n" + NO_PR_INSTRUCTION
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)
@@ -35,7 +39,7 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
         system_prompt={
             "type": "preset",
             "preset": "claude_code",
-            "append": COMPLETION_INSTRUCTION,
+            "append": _build_append_string(),
         },
     )
     return ClaudeSDKClient(options=opts)

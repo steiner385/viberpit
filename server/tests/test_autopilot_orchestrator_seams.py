@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from server.automations.autopilot_policy import Decision
 
 
@@ -383,3 +385,57 @@ def test_recent_archived_window_and_outcome(tmp_path):
         assert rows[0].goal == "fix the parser"
         assert 2.5 <= rows[0].hours_ago <= 3.5
     asyncio.run(run())
+
+
+# --- archive-context provenance ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_autopilot_archive_context_records_resolution(tmp_path):
+    """A session with pr_resolution set → archive context reason names the resolution
+    and the pr_resolution key carries the raw token."""
+    from server.sessions.types import SessionRecord
+    from server.automations.completion_bar import PrFacts
+
+    orch = _bare_orch()
+    orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+                                         cols=80, rows=24, cwd=str(tmp_path), repo="o/r")}
+    orch._records["s1"].pr_resolution = "cancelled"
+    # Stub _autopilot_pr_facts so the bare orch doesn't need pr_for / _session_pr_branches.
+    orch._autopilot_pr_facts = lambda rec: PrFacts(has_repo=bool(rec.repo), prs=())
+
+    captured: dict = {}
+
+    async def _spy(session_id, *, archived_by="user", context=None):
+        captured["by"] = archived_by
+        captured["context"] = context
+
+    orch.archive_session = _spy
+    ok = await orch._autopilot_archive("s1")
+    assert ok is True
+    assert captured["by"] == "autopilot"
+    assert "cancelled" in captured["context"]["reason"]
+    assert captured["context"]["pr_resolution"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_autopilot_archive_context_default_reason_when_unresolved(tmp_path):
+    """A session without pr_resolution → context reason is the plain 'autopilot: goal met'
+    and pr_resolution is None."""
+    from server.sessions.types import SessionRecord
+    from server.automations.completion_bar import PrFacts
+
+    orch = _bare_orch()
+    orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+                                         cols=80, rows=24, cwd=str(tmp_path), repo="o/r")}
+    orch._autopilot_pr_facts = lambda rec: PrFacts(has_repo=bool(rec.repo), prs=())
+
+    captured: dict = {}
+
+    async def _spy(session_id, *, archived_by="user", context=None):
+        captured["context"] = context
+
+    orch.archive_session = _spy
+    await orch._autopilot_archive("s1")
+    assert captured["context"]["reason"] == "autopilot: goal met"
+    assert captured["context"].get("pr_resolution") is None

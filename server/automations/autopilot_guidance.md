@@ -60,6 +60,10 @@ Fleet entries are context ONLY. Act on THIS session alone — never instruct it 
 sibling's branch or PR, and never `complete` this session because a *sibling* met its goal:
 this session's own completion bar (`pr_facts`) still applies.
 
+- If the session has clearly decided NOT to open a PR (finished without one, or
+  cancelled the PR work), respect that decision — do NOT nudge it to open a PR;
+  confirm completion instead.
+
 ## `reversal_hint` (learned from past mistakes — weigh it before `complete`)
 When present, this string reports sessions you auto-archived that a human then manually
 unarchived — i.e. your prior `complete` calls were wrong in this context. Treat it as a

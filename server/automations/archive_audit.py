@@ -203,10 +203,11 @@ def build_pr_facts(
     return PrFacts(has_repo=bool(repo), prs=tuple(seen.values()))
 
 
-def classify(goal: str, goal_source: str, facts: PrFacts) -> tuple[str, BarVerdict]:
+def classify(goal: str, goal_source: str, facts: PrFacts,
+             pr_resolution: str | None = None) -> tuple[str, BarVerdict]:
     """Bucket via met_bar: met→legit; not-met+open-unarmed→premature;
     not-met+closed-target+code-goal→review; not-met+low→ambiguous."""
-    v = met_bar(goal, goal_source, facts)
+    v = met_bar(goal, goal_source, facts, pr_resolution)
     if v.met:
         return "legit", v
     if v.confidence == "high":
@@ -251,7 +252,8 @@ async def run_audit(
             results.append({"id": sid, "bucket": "ambiguous", "reason": f"gh error: {exc}",
                             "goal": row.get("goal", ""), "action": "none"})
             continue
-        bucket, verdict = classify(row.get("goal", ""), row.get("goal_source", ""), facts)
+        bucket, verdict = classify(row.get("goal", ""), row.get("goal_source", ""), facts,
+                                    row.get("pr_resolution"))
         action = "none"
         if bucket == "premature" and not dry_run:
             try:
@@ -357,7 +359,8 @@ def _archived_row_to_dict(row) -> dict:
     return {"id": row.id, "repo": row.repo, "branch": row.branch,
             "authored_branches": list(row.authored_branches or []),
             "goal": goal, "goal_source": source,
-            "initial_prompt": row.initial_prompt}
+            "initial_prompt": row.initial_prompt,
+            "pr_resolution": getattr(row, "pr_resolution", None)}
 
 
 async def load_archived_rows(session_factory) -> list[dict]:
