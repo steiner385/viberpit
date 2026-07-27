@@ -1247,7 +1247,9 @@ class SessionOrchestrator:
         from datetime import datetime
         turn_at = datetime.utcnow() if status in ACTIVITY_STATUSES else None
         driver = self._drivers.get(session_id)
-        resolution = driver.last_pr_resolution if driver is not None else None
+        # getattr (not attribute access): a driver may be absent, or a test/partial
+        # driver stub without last_pr_resolution — neither should break status persist.
+        resolution = getattr(driver, "last_pr_resolution", None)
         if rec is not None:
             rec.status = status
             rec.updated_at = datetime.utcnow()   # row-write token; bumps on EVERY persist (see rev_at)
