@@ -26,6 +26,17 @@ GhRun = Callable[..., "object"]
 IN_PROGRESS_LABEL = "in-progress"
 NEEDS_HUMAN_LABEL = "needs-human"
 
+# Issues the runner must never treat as implementable work (#637). A backlog
+# session writes code and opens a PR — but bot/app accounts open automated
+# meta-tickets (Renovate's "Dependency Dashboard", Dependabot bumps) that have
+# nothing to implement, so a spawned session just burns a slot. GitHub suffixes
+# EVERY bot/app account login with ``[bot]`` (``renovate[bot]``,
+# ``dependabot[bot]``, ``github-actions[bot]``, …), so the suffix is the
+# canonical, future-proof author signal. Labels and title are defense-in-depth
+# for the rare human-authored (or login-less) mirror of the same meta-ticket.
+SKIP_ISSUE_LABELS = frozenset({"dependencies", "renovate"})
+SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
+
 # How long an escalated (``needs-human``) issue must sit untouched before the
 # runner reconsiders it. Escalation itself bumps the issue's ``updatedAt``, so
 # every give-up re-arms the cooldown — a permanently-failing issue is retried at
@@ -49,8 +60,33 @@ def _split_ref(ref: str) -> tuple[str, str]:
 # --------------------------------------------------------------------------- #
 
 # ``body`` feeds the grouping optimizer's relatedness analysis (titles alone
-# were what produced over-bundling); it is excerpted before prompting.
-_ISSUE_NODES = "nodes { ... on Issue { number title body url repository { nameWithOwner } } }"
+# were what produced over-bundling); it is excerpted before prompting. ``author``
+# and ``labels`` drive the unimplementable-issue filter (:func:`_is_unimplementable`,
+# #637) — the shared fragment fetches them for every issue query at no extra cost.
+_ISSUE_NODES = (
+    "nodes { ... on Issue { number title body url author { login } "
+    "labels(first: 20) { nodes { name } } repository { nameWithOwner } } }"
+)
+
+
+def _is_unimplementable(node: dict) -> bool:
+    """True when *node* is an automated meta-issue no backlog session can act on.
+
+    Skipped when ANY holds (#637): the author is a bot/app account (login ends in
+    ``[bot]``), the issue carries a dependency-bot label
+    (:data:`SKIP_ISSUE_LABELS`), or its title is a canonical bot meta-ticket
+    (:data:`SKIP_ISSUE_TITLES`, e.g. Renovate's "Dependency Dashboard"). A node
+    with none of these signals (including one missing the author field entirely)
+    is kept — absence of a bot marker means treat it as human work.
+    """
+    login = ((node.get("author") or {}).get("login") or "").strip()
+    if login.endswith("[bot]"):
+        return True
+    labels = {((lbl or {}).get("name") or "").strip().lower()
+              for lbl in (((node.get("labels") or {}).get("nodes")) or [])}
+    if labels & SKIP_ISSUE_LABELS:
+        return True
+    return (node.get("title") or "").strip().lower() in SKIP_ISSUE_TITLES
 
 
 def _common_quals(repos: list[str], eligible_label: str) -> list[str]:
@@ -162,6 +198,10 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
             continue
         ref = f"{repo}#{number}"
         if ref in seen:  # label edited between the two searches — keep first
+            continue
+        if _is_unimplementable(node):  # bot/meta issue — never spawn a session (#637)
+            log.info("backlog_github.skip_unimplementable ref=%s title=%r author=%s",
+                     ref, node.get("title"), ((node.get("author") or {}).get("login")))
             continue
         seen.add(ref)
         out.append({

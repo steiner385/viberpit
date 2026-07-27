@@ -208,6 +208,70 @@ def test_query_candidates_dedupes_ref_across_pools():
 
 
 # --------------------------------------------------------------------------- #
+# bot / meta-issue filtering (#637)                                            #
+# --------------------------------------------------------------------------- #
+
+def test_query_candidates_query_fetches_author_and_labels():
+    """The candidate query must request ``author { login }`` and issue labels so
+    the parse loop can filter out unimplementable bot/meta issues (#637)."""
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout([]))})
+    query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
+    query = next(a for a in fake.calls[0] if a.startswith("query="))
+    assert "author" in query and "login" in query
+    assert "labels" in query
+
+
+def test_query_candidates_skips_bot_authored_issues():
+    """Issues opened by a bot/app account (login ends in ``[bot]``) are automated
+    meta-tickets a Claude session cannot implement — Renovate's Dependency
+    Dashboard is the motivating case (#637). Filter them out."""
+    nodes = [
+        {"number": 7, "title": "Fix login", "url": "https://github.com/o/r/issues/7",
+         "author": {"login": "alice"}, "repository": {"nameWithOwner": "o/r"}},
+        {"number": 8, "title": "Dependency Dashboard",
+         "url": "https://github.com/o/r/issues/8",
+         "author": {"login": "renovate[bot]"}, "repository": {"nameWithOwner": "o/r"}},
+        {"number": 9, "title": "Bump deps", "url": "https://github.com/o/r/issues/9",
+         "author": {"login": "dependabot[bot]"}, "repository": {"nameWithOwner": "o/r"}},
+    ]
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
+    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
+    assert [c["ref"] for c in out] == ["o/r#7"]
+
+
+def test_query_candidates_skips_dependency_labels_and_dashboard_title():
+    """Defense in depth: even a human-authored issue is skipped when it carries a
+    dependency-bot label or the canonical ``Dependency Dashboard`` title (#637)."""
+    nodes = [
+        {"number": 1, "title": "Real feature", "url": "https://github.com/o/r/issues/1",
+         "author": {"login": "alice"}, "labels": {"nodes": [{"name": "enhancement"}]},
+         "repository": {"nameWithOwner": "o/r"}},
+        {"number": 2, "title": "Update lockfile", "url": "https://github.com/o/r/issues/2",
+         "author": {"login": "alice"}, "labels": {"nodes": [{"name": "dependencies"}]},
+         "repository": {"nameWithOwner": "o/r"}},
+        {"number": 3, "title": "Renovate config", "url": "https://github.com/o/r/issues/3",
+         "author": {"login": "alice"}, "labels": {"nodes": [{"name": "Renovate"}]},
+         "repository": {"nameWithOwner": "o/r"}},
+        {"number": 4, "title": "  Dependency Dashboard  ",
+         "url": "https://github.com/o/r/issues/4",
+         "author": {"login": "alice"}, "repository": {"nameWithOwner": "o/r"}},
+    ]
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
+    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": ""}, gh_run=fake)
+    assert [c["ref"] for c in out] == ["o/r#1"]
+
+
+def test_query_candidates_keeps_human_issues_without_author_field():
+    """A node missing the author field (older cache / partial payload) must NOT be
+    dropped — absence of a bot signal means keep it."""
+    nodes = [{"number": 5, "title": "Fix bug", "url": "https://github.com/o/r/issues/5",
+              "repository": {"nameWithOwner": "o/r"}}]
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
+    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
+    assert [c["ref"] for c in out] == ["o/r#5"]
+
+
+# --------------------------------------------------------------------------- #
 # claim_batch                                                                  #
 # --------------------------------------------------------------------------- #
 
