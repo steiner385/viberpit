@@ -16,6 +16,20 @@ _RESEARCH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Detects an explicit auto-merge arming step in task instructions.  When a session's
+# initial prompt contains `gh pr merge … --squash --auto` the task has a mandatory
+# arming step — treat the bar as requiring an armed PR regardless of goal wording.
+_SQUASH_AUTO_RE = re.compile(
+    r"gh\s+pr\s+merge\b[^`\n]*--squash[^`\n]*--auto"
+    r"|--squash[^`\n]*--auto",
+    re.IGNORECASE,
+)
+
+
+def _has_explicit_arm_step(text: str) -> bool:
+    """True when *text* contains an explicit `gh pr merge --squash --auto` step."""
+    return bool(_SQUASH_AUTO_RE.search(text or ""))
+
 
 @dataclass(frozen=True)
 class PrFact:
@@ -87,11 +101,18 @@ def _is_code_goal(goal: str) -> bool:
 
 
 def met_bar(goal: str, goal_source: str, facts: PrFacts,
-            pr_resolution: str | None = None) -> BarVerdict:
+            pr_resolution: str | None = None, *,
+            instructions: str | None = None) -> BarVerdict:
     """Is the session's goal genuinely met? Precedence: merged > armed >
-    open-unarmed > pr_resolution(no-PR) > no-PR-nudge. Only high-confidence
-    verdicts are safe to auto-act on. A real PR fact always overrides a
-    pr_resolution (a stale 'no PR' claim never masks an actual PR)."""
+    open-unarmed > pr_resolution(no-PR) > instructions-arm-required > no-PR-nudge.
+    Only high-confidence verdicts are safe to auto-act on. A real PR fact always
+    overrides a pr_resolution (a stale 'no PR' claim never masks an actual PR).
+
+    ``instructions`` is the session's initial prompt (or equivalent task text).
+    When it contains an explicit ``--squash --auto`` arming step, the bar
+    requires an armed or merged PR regardless of how the goal text is worded —
+    overriding the non-code/research escape hatch that would otherwise return
+    ``met=True`` with no PR in the cache."""
     merged = facts.merged_pr
     if merged is not None:
         return BarVerdict(True, f"code landed (PR #{merged.number} merged)", None, "high")
@@ -116,6 +137,14 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
     if pr_resolution:
         return BarVerdict(True, f"session resolved no PR needed ({pr_resolution})",
                           None, "high")
+    # When the task instructions include an explicit arming step (`--squash --auto`),
+    # the session is not done until that step completes — even when no PR is visible
+    # in the poller cache yet (race) or the goal text looks like research work.
+    if instructions and _has_explicit_arm_step(instructions):
+        return BarVerdict(
+            False, "task instructions require auto-merge but no armed PR found",
+            "open a PR (if needed) then arm auto-merge: `gh pr merge --squash --auto`",
+            "high")
     if facts.has_repo and _is_code_goal(goal):
         return BarVerdict(False, "code goal but no PR opened",
                           "open a PR and arm auto-merge before finishing", "low")

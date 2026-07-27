@@ -62,6 +62,10 @@ class DecisionContext:
     # classifier). When set and no real PR exists, met_bar treats the goal as met, so
     # post_validate stops downgrading `complete` to an open-a-PR nudge. None = unresolved.
     pr_resolution: str | None = None
+    # The session's initial prompt (or equivalent task specification). Forwarded to
+    # met_bar so an explicit `--squash --auto` arming step in the instructions raises the
+    # completion bar to require an armed PR even when the goal text reads as non-code work.
+    instructions: str | None = None
 
 
 @dataclass
@@ -189,7 +193,7 @@ def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Dec
         # The non-code/research case has met=True, so research/Q&A sessions still complete.
         from .completion_bar import met_bar
         verdict = met_bar(ctx.effective_goal, ctx.goal_source, ctx.pr_facts,
-                          ctx.pr_resolution)
+                          ctx.pr_resolution, instructions=ctx.instructions)
         if not verdict.met:
             return Decision(action="nudge", prompt=verdict.remedy or
                             "Open a PR and arm auto-merge before finishing.",

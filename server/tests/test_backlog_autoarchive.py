@@ -160,6 +160,139 @@ def test_completed_backlog_archive_context_includes_pr_state_with_pr():
     asyncio.run(run())
 
 
+# ---------------------------------------------------------------------------
+# Completion gate: open-unarmed PR with --squash --auto in instructions must
+# trigger a nudge instead of an immediate archive (issue #636).
+# ---------------------------------------------------------------------------
+
+_BACKLOG_PROMPT = (
+    "Implement the following GitHub issue(s) in repository `o/r` "
+    "and land them in a single pull request:\n\n"
+    "- o/r#1  (close with `Fixes #1` in the PR body)\n\n"
+    "Requirements — follow the repository's completion workflow exactly:\n"
+    "5. Arm auto-merge: `gh pr merge <#> --squash --auto`.\n"
+)
+
+
+def _orch_with_send_prompt(records, pr_info=None):
+    """Like _orch_with_pr but also captures send_prompt calls."""
+    import server.sessions.orchestrator as orch_mod
+    from server.automations.context import AutomationContext
+    orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
+    orch._records = records
+    orch._auto_archiving = set()
+    orch._backlog_ctx = AutomationContext("backlog-runner")
+
+    archived_calls: list[dict] = []
+    nudged: list[str] = []
+
+    async def _spy_archive(session_id, *, archived_by="user", context=None):
+        archived_calls.append({"session_id": session_id, "archived_by": archived_by,
+                                "context": context})
+
+    async def _spy_send_prompt(session_id, prompt):
+        nudged.append(prompt)
+        return "sent"
+
+    orch.archive_session = _spy_archive  # type: ignore[method-assign]
+    orch.send_prompt = _spy_send_prompt  # type: ignore[method-assign]
+    orch.pr_for = lambda repo, branch: pr_info  # type: ignore[method-assign]
+    return orch, archived_calls, nudged
+
+
+def _unarmed_pr():
+    import types
+    return types.SimpleNamespace(
+        number=99, state="open", is_draft=False, auto_merge_enabled=False,
+        in_merge_queue=False, checks="passing", url="https://github.com/o/r/pull/99")
+
+
+def _armed_pr():
+    import types
+    return types.SimpleNamespace(
+        number=99, state="open", is_draft=False, auto_merge_enabled=True,
+        in_merge_queue=False, checks="passing", url="https://github.com/o/r/pull/99")
+
+
+def test_open_unarmed_pr_with_arm_step_in_instructions_defers_archive():
+    """A backlog session that emits `complete` but has an open-unarmed PR and
+    instructions with `--squash --auto` must be nudged, NOT archived (issue #636)."""
+    async def run():
+        rec = _rec("s1")
+        rec.initial_prompt = _BACKLOG_PROMPT
+        orch, archived, nudged = _orch_with_send_prompt({"s1": rec}, pr_info=_unarmed_pr())
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert archived == [], "must NOT archive — PR is open-unarmed"
+        assert nudged, "must send a nudge to arm auto-merge"
+        assert "squash" in nudged[0].lower() or "auto" in nudged[0].lower() or "arm" in nudged[0].lower()
+
+    asyncio.run(run())
+
+
+def test_armed_pr_with_arm_step_in_instructions_archives_normally():
+    """An armed PR satisfies the gate even with --squash --auto in instructions."""
+    async def run():
+        rec = _rec("s1")
+        rec.initial_prompt = _BACKLOG_PROMPT
+        orch, archived, nudged = _orch_with_send_prompt({"s1": rec}, pr_info=_armed_pr())
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(archived) == 1 and archived[0]["session_id"] == "s1"
+        assert nudged == []
+
+    asyncio.run(run())
+
+
+def test_no_pr_with_arm_step_in_instructions_defers_archive():
+    """No PR in cache + --squash --auto in instructions → defer (not archive)."""
+    async def run():
+        rec = _rec("s1")
+        rec.initial_prompt = _BACKLOG_PROMPT
+        orch, archived, nudged = _orch_with_send_prompt({"s1": rec}, pr_info=None)
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert archived == [], "no armed PR found → must not archive"
+        assert nudged
+
+    asyncio.run(run())
+
+
+def test_open_unarmed_pr_without_arm_step_archives_immediately():
+    """Without --squash --auto in instructions, the existing behaviour is preserved:
+    a completed backlog-runner session archives immediately, even if its PR happens
+    to be open-unarmed. The gate only fires when the task explicitly demanded arming."""
+    async def run():
+        rec = _rec("s1")
+        # No initial_prompt — so no --squash --auto signal → gate skipped
+        orch, archived, nudged = _orch_with_send_prompt({"s1": rec}, pr_info=_unarmed_pr())
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(archived) == 1 and archived[0]["session_id"] == "s1"
+        assert nudged == []
+
+    asyncio.run(run())
+
+
+def test_deferred_archive_clears_guard_for_retry():
+    """After a deferred archive (nudge sent), the _auto_archiving guard is cleared
+    so a subsequent `complete` emit can trigger a fresh archive attempt."""
+    async def run():
+        rec = _rec("s1")
+        rec.initial_prompt = _BACKLOG_PROMPT
+        orch, archived, nudged = _orch_with_send_prompt({"s1": rec}, pr_info=_unarmed_pr())
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert "s1" not in orch._auto_archiving, "guard must be cleared after deferral"
+
+    asyncio.run(run())
+
+
 def test_session_ended_treats_archived_as_terminal(tmp_path):
     """The sweep's session-ended probe must see an auto-archived session as ended
     (INACTIVE_SESSION_STATUSES), so its give-up / attempt bookkeeping fires."""
