@@ -30,7 +30,7 @@ from server.audit import record_audit
 from server.config import get_settings
 from server.db import db_session, get_db
 from server.sessions.orchestrator import BranchSwitchError, InsufficientStorageError
-from server.ipc.client import DaemonError
+from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.selection import AllAccountsBusy
 from server.time_iso import iso_utc
 
@@ -201,6 +201,18 @@ async def _resolve_repo(record) -> str | None:
     if not cwd:
         return record.repo
     return await asyncio.to_thread(gitrepos.repo_at_path, cwd)
+
+
+async def _session_is_archived(orch, session_id: str) -> bool:
+    """Whether ``session_id`` currently appears in the archived list.
+
+    Used to reconcile a lost/timed-out archive RPC: if the daemon completed the
+    archive but its response was lost, the session shows up here. A daemon that is
+    genuinely unreachable re-raises ``DaemonUnavailable`` (surfacing the real 503)
+    rather than being mistaken for "not archived".
+    """
+    archived = await orch.list_archived()
+    return any(a.get("id") == session_id for a in archived)
 
 
 async def _resolve_prs(orch, record):
@@ -805,7 +817,15 @@ async def close_session(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
-    await orch.archive_session(session_id)
+    try:
+        await orch.archive_session(session_id)
+    except DaemonUnavailable:
+        # The daemon may have completed the archive but lost/timed out its response
+        # (it was briefly wedged or restarting). Reconcile against real state rather
+        # than surface a spurious 503 for an op that actually took effect: if the
+        # session now appears in the archived list, the archive succeeded.
+        if not await _session_is_archived(orch, session_id):
+            raise
 
     # Audit: session.archive
     await record_audit(
@@ -839,6 +859,13 @@ async def unarchive_session(
                 detail={"code": "insufficient_storage", "message": exc.message},
             )
         raise
+    except DaemonUnavailable:
+        # As with archive: the daemon may have restored the session but lost/timed out
+        # its response. Reconcile — if the session is live again, the unarchive took
+        # effect; return it instead of a spurious 503.
+        record = await orch.get_session(session_id)
+        if record is None:
+            raise
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
