@@ -22,6 +22,8 @@ export interface OrderingHandle<G extends string, S extends string, T> {
   setSortBy: (s: S) => void
   groups: SessionGroup<T>[]
   orderedSessions: T[]
+  /** Full display order ignoring collapse + search — see nextSessionAfterClose. */
+  allOrderedSessions: T[]
   navItems: NavItem<T>[]
   collapsedKeys: Set<string>
   toggleCollapse: (key: string) => void
@@ -91,10 +93,17 @@ export function useItemOrdering<G extends string, S extends string, T>(
     () => groups.filter((g) => !collapsedKeys.has(g.key)).flatMap((g) => g.sessions),
     [groups, collapsedKeys],
   )
+  // Same order the user sees, but with collapse and search ignored — the advance
+  // target after archiving an open session must exist even when that session is
+  // hidden from the visible list (collapsed group / active search).
+  const allOrderedSessions = useMemo(
+    () => orderItems(items, groupBy, sortBy, config).flatMap((g) => g.sessions),
+    [items, groupBy, sortBy, config],
+  )
   const navItems = useMemo(() => buildNavItems(groups, collapsedKeys), [groups, collapsedKeys])
 
   return {
-    groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, navItems,
+    groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, allOrderedSessions, navItems,
     collapsedKeys, toggleCollapse, expandGroup, collapseGroup,
   }
 }

@@ -11,10 +11,12 @@ function renderWithClient(ui: React.ReactElement) {
   return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
 }
 
-const SESSIONS: Session[] = [
+const DEFAULT_SESSIONS: Session[] = [
   { id: 'sess-1', name: 'First', accountName: 'alice', status: 'idle', createdAt: '2026-06-19T10:00:00Z', updatedAt: '2026-06-19T10:00:00Z' },
   { id: 'sess-2', name: 'Second', accountName: 'alice', status: 'idle', createdAt: '2026-06-19T10:00:00Z', updatedAt: '2026-06-19T10:00:00Z' },
 ]
+// Reassigned per-test (the mocked useSessions reads it at render time).
+let SESSIONS: Session[] = DEFAULT_SESSIONS
 
 // closeSession fires onSuccess synchronously so the host's onDone runs in-test.
 // permanentDeleteSession also fires onSuccess synchronously for the delete-path test.
@@ -50,6 +52,7 @@ vi.mock('../session/CommandResultOverlay', () => ({ CommandResultOverlay: () => 
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear() // default 'live' ordering: groupBy none, sortBy status
+  SESSIONS = DEFAULT_SESSIONS
 })
 
 describe('DesktopShell — advance on archive', () => {
@@ -102,6 +105,29 @@ describe('DesktopShell — advance on archive', () => {
     await user.click(screen.getByRole('button', { name: /delete permanently/i }))
 
     // sess-2 is now the selected row.
+    expect(document.getElementById('row-sess-2')).toHaveAttribute('data-selected', 'true')
+  })
+
+  it("advances via the full ordering when the open session's group is collapsed", async () => {
+    // Group by status: sess-1 (idle → "Done" tier) and sess-2 (in_progress →
+    // "Working" tier) land in different groups.
+    localStorage.setItem('ccswitch.sessionOrder', JSON.stringify({ groupBy: 'status', sortBy: 'status' }))
+    SESSIONS = [
+      { id: 'sess-1', name: 'First', accountName: 'alice', status: 'idle', createdAt: '2026-06-19T10:00:00Z', updatedAt: '2026-06-19T10:00:00Z' },
+      { id: 'sess-2', name: 'Second', accountName: 'alice', status: 'in_progress', createdAt: '2026-06-19T10:00:00Z', updatedAt: '2026-06-19T10:00:00Z' },
+    ]
+    const user = userEvent.setup()
+    renderWithClient(<DesktopShell />)
+
+    // Open sess-1, then collapse its "Done" group — its row leaves the visible
+    // list while the session stays open in the detail pane.
+    await user.click(screen.getByRole('button', { name: /open session first/i }))
+    await user.click(screen.getByRole('button', { name: /done/i }))
+    expect(document.getElementById('row-sess-1')).toBeNull()
+
+    // Archiving from the detail header must still advance to sess-2, even though
+    // the archived session is no longer in the visible ordering.
+    await user.click(screen.getByRole('button', { name: /archive session open/i }))
     expect(document.getElementById('row-sess-2')).toHaveAttribute('data-selected', 'true')
   })
 })

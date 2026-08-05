@@ -274,9 +274,36 @@ describe('App mobile session advance', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(api.del).mockResolvedValue(undefined)
+    localStorage.clear()
   })
 
   it('mobile: archiving the open session advances to the neighbor route', async () => {
+    const user = userEvent.setup()
+    const seen: string[] = []
+    function LocationSpy() {
+      const loc = useLocation()
+      seen.push(loc.pathname)
+      return null
+    }
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={['/session/sess-1']}>
+          <App />
+          <LocationSpy />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(screen.getByRole('button', { name: /archive session/i })).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /archive session/i }))
+    await waitFor(() => expect(seen).toContain('/session/sess-2'))
+  })
+
+  it("mobile: archiving advances even when the open session's group is collapsed", async () => {
+    // Both mock sessions are idle → the 'your-turn' ("Done") status group. With
+    // that group collapsed, the open session is absent from the VISIBLE ordering
+    // — the advance must fall back to the full ordering, not bail to /sessions.
+    localStorage.setItem('ccswitch.sessionOrder', JSON.stringify({ groupBy: 'status', sortBy: 'status' }))
+    localStorage.setItem('ccswitch.groupCollapse', JSON.stringify(['your-turn']))
     const user = userEvent.setup()
     const seen: string[] = []
     function LocationSpy() {
