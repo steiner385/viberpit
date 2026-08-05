@@ -169,8 +169,12 @@ Release = Callable[[str], Awaitable[None]]
 NeedsHuman = Callable[[str], Awaitable[None]]
 # MERGED path: the work landed but the PR may not have carried a closing
 # keyword — comment + close every issue in the batch so it can't stay open
-# (and label-excluded) forever.
-CloseOut = Callable[[str, "PullRequestInfo"], Awaitable[None]]
+# (and label-excluded) forever. Returns the close-out outcome: "closed" (≥1
+# issue verifiably linked to the PR — proceed), "unlinked" (the PR references
+# NO batch issue: a shared-clone misattribution, #642 — ignore + denylist it),
+# or "retry" (linkage unverifiable — try again next sweep). ``None`` (legacy
+# stubs) reads as "closed".
+CloseOut = Callable[[str, "PullRequestInfo"], Awaitable["str | None"]]
 SessionEnded = Callable[[str], Awaitable[bool]]
 # Reconciliation seam: given the durably-claimed refs and the live origin_refs
 # (non-terminal runner sessions), release any dangling claim to the pool.
@@ -636,12 +640,41 @@ class BacklogRunnerLoop:
         repo = target.split("#", 1)[0]
         info = await self._pr_status_for(target)
 
+        # A PR that already failed close-out linkage verification (#642): the
+        # branch→PR association is a shared-clone misattribution, so the PR is
+        # NOT this batch's — treat it as "no PR at all" for every decision
+        # below (close-out, give-up, handoff).
+        if info is not None and info.number in (st.get("unlinked_prs") or []):
+            info = None
+
         # PR merged → the work landed; close out the batch's issues (the PR may
         # not have carried a `Fixes #N`, leaving them open and label-excluded
-        # forever), then free the slot and drop the guard row.
+        # forever), then free the slot and drop the guard row. The close-out
+        # verifies PR↔issue linkage and FAILS CLOSED (#642).
         if info is not None and info.state == "merged":
+            outcome = "closed"
             if self._close_out is not None:
-                await self._close_out(target, info)
+                outcome = await self._close_out(target, info) or "closed"
+            if outcome == "retry":
+                return  # linkage unverifiable this sweep — try again next tick
+            if outcome == "unlinked":
+                # Verified misattribution: purge the poisoned branch snapshot
+                # and denylist the PR number, or the stale association would
+                # re-trigger this bogus close-out on every sweep and re-claim
+                # (the #642 30-second re-close loop). The row survives — the
+                # batch is not done.
+                new_st = {k: v for k, v in st.items() if k != "branch"}
+                bad = list(new_st.get("unlinked_prs") or [])
+                if info.number not in bad:
+                    bad.append(info.number)
+                new_st["unlinked_prs"] = bad
+                await self._ctx.set_target_state(target, new_st)
+                await self._ctx.emit(
+                    "warn",
+                    f"{target}: merged PR #{info.number} has no linkage to the "
+                    f"batch — ignored (misattributed branch)",
+                    kind="unlinked_pr", target=target)
+                return
             await self._ctx.emit("info", f"{target} merged", kind="merged", target=target)
             await self._ctx.delete_target_state(target)
             return

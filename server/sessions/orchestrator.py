@@ -1697,14 +1697,18 @@ class SessionOrchestrator:
         await asyncio.to_thread(
             backlog_github.label_needs_human, batch, gh_run=self._gh_run)
 
-    async def _backlog_close_out(self, target: str, info) -> None:
+    async def _backlog_close_out(self, target: str, info) -> str:
         """MERGED path: close every issue in the batch with a comment linking
         the merged PR — the PR body may have lacked ``Fixes #N``, and an issue
         left open under ``in-progress``/``needs-human`` is excluded from the
-        candidate pools forever. Best-effort, off the event loop."""
+        candidate pools forever. Fails CLOSED on PR↔issue linkage (#642): the
+        returned outcome (``"closed"`` / ``"unlinked"`` / ``"retry"``) tells the
+        sweep whether the PR really was the batch's implementation, so a
+        shared-clone branch misattribution can never close unrelated issues.
+        Best-effort, off the event loop."""
         from server.automations import backlog_github
         batch = await self._backlog_batch_for(target)
-        await asyncio.to_thread(
+        return await asyncio.to_thread(
             backlog_github.close_batch_issues, batch, info, gh_run=self._gh_run)
 
     async def _backlog_reconcile(self, claimed_refs: list[str],

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
 
@@ -222,22 +223,13 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
 # Cross-reference PR lookup                                                    #
 # --------------------------------------------------------------------------- #
 
-def find_referencing_pr(ref: str, *, gh_run: GhRun = gitrepos._run_gh):
-    """The best same-repo PR cross-referencing issue *ref*, or ``None``.
+def _issue_crossref_pr_nodes(ref: str, *, gh_run: GhRun) -> list[dict] | None:
+    """Same-repo PR source nodes from *ref*'s CROSS_REFERENCED_EVENT timeline.
 
-    The runner's sessions don't reliably record their branch (shared-clone
-    reflog discovery misses worktree-created branches) and don't reliably put
-    ``Fixes #N`` in the PR body — so when the cached-branch lookup misses, this
-    asks GitHub directly which PRs mention the issue (a PR titled ``… (#N)``
-    creates the cross-reference even without a closing keyword).
-
-    Preference: MERGED beats OPEN (the work landed); a later reference beats an
-    earlier one. CLOSED-unmerged and cross-repo references are ignored — a
-    drive-by mention from a closed PR must never read as "PR closed unmerged →
-    give up". Any gh failure or unparseable payload returns ``None``.
+    Returns ``None`` when the lookup failed (gh error / unparseable payload) —
+    callers must treat that as *unknown*, never as "no references". Cross-repo
+    references are dropped here so every consumer shares the same-repo scoping.
     """
-    from server.github.pr_status import PullRequestInfo
-
     repo, number = _split_ref(ref)
     owner, _, name = repo.partition("/")
     if not owner or not name or not number.isdigit():
@@ -269,11 +261,36 @@ def find_referencing_pr(ref: str, *, gh_run: GhRun = gitrepos._run_gh):
         return None
     nodes = ((((payload.get("data") or {}).get("repository") or {})
               .get("issue") or {}).get("timelineItems") or {}).get("nodes") or []
-    merged_pr = open_pr = None
+    out: list[dict] = []
     for node in nodes:
         src = (node or {}).get("source") or {}
         if ((src.get("repository") or {}).get("nameWithOwner")) != repo:
             continue
+        out.append(src)
+    return out
+
+
+def find_referencing_pr(ref: str, *, gh_run: GhRun = gitrepos._run_gh):
+    """The best same-repo PR cross-referencing issue *ref*, or ``None``.
+
+    The runner's sessions don't reliably record their branch (shared-clone
+    reflog discovery misses worktree-created branches) and don't reliably put
+    ``Fixes #N`` in the PR body — so when the cached-branch lookup misses, this
+    asks GitHub directly which PRs mention the issue (a PR titled ``… (#N)``
+    creates the cross-reference even without a closing keyword).
+
+    Preference: MERGED beats OPEN (the work landed); a later reference beats an
+    earlier one. CLOSED-unmerged and cross-repo references are ignored — a
+    drive-by mention from a closed PR must never read as "PR closed unmerged →
+    give up". Any gh failure or unparseable payload returns ``None``.
+    """
+    from server.github.pr_status import PullRequestInfo
+
+    srcs = _issue_crossref_pr_nodes(ref, gh_run=gh_run)
+    if not srcs:
+        return None
+    merged_pr = open_pr = None
+    for src in srcs:
         state = src.get("state")
         if state == "MERGED":
             merged_pr = src        # last reference wins within a priority tier
@@ -395,6 +412,93 @@ def label_needs_human(batch, *, gh_run: GhRun = gitrepos._run_gh) -> None:
             log.warning("backlog_github.needs_human_error ref=%s", ref, exc_info=True)
 
 
+# --------------------------------------------------------------------------- #
+# PR↔issue linkage verification (fail closed, #642)                            #
+# --------------------------------------------------------------------------- #
+
+def _pr_linkage(repo: str, pr_number: int, *, gh_run: GhRun) -> dict | None:
+    """PR-side linkage evidence for ``repo`` PR ``pr_number``.
+
+    Returns ``{"closing": set[int], "text": str}`` — the same-repo issue numbers
+    the PR's ``closingIssuesReferences`` will auto-close, plus the searchable
+    text (body + commit messages). ``None`` when the lookup failed: *unknown*,
+    never "no linkage".
+    """
+    owner, _, name = repo.partition("/")
+    if not owner or not name or not pr_number:
+        return None
+    query = (
+        "query {\n"
+        f"  repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
+        f"    pullRequest(number: {int(pr_number)}) {{\n"
+        "      body\n"
+        "      closingIssuesReferences(first: 50) {\n"
+        "        nodes { number repository { nameWithOwner } }\n"
+        "      }\n"
+        "      commits(first: 100) { nodes { commit { message } } }\n"
+        "    }\n"
+        "  }\n"
+        "}"
+    )
+    proc = gh_run(["api", "graphql", "-f", f"query={query}"])
+    if getattr(proc, "returncode", 1) != 0:
+        log.warning("backlog_github.pr_linkage_failed repo=%s pr=%s err=%s",
+                    repo, pr_number, (getattr(proc, "stderr", "") or "").strip())
+        return None
+    try:
+        payload = json.loads(getattr(proc, "stdout", "") or "{}")
+    except json.JSONDecodeError:
+        log.warning("backlog_github.pr_linkage_unparseable repo=%s pr=%s", repo, pr_number)
+        return None
+    pr = ((payload.get("data") or {}).get("repository") or {}).get("pullRequest")
+    if not pr:
+        return None
+    closing = {
+        node.get("number")
+        for node in (((pr.get("closingIssuesReferences") or {}).get("nodes")) or [])
+        if node and ((node.get("repository") or {}).get("nameWithOwner")) == repo
+    }
+    texts = [pr.get("body") or ""]
+    for node in (((pr.get("commits") or {}).get("nodes")) or []):
+        texts.append(((node or {}).get("commit") or {}).get("message") or "")
+    return {"closing": closing, "text": "\n".join(texts)}
+
+
+def _text_references_issue(text: str, repo: str, number: int) -> bool:
+    """True when *text* carries a ``#N`` token (not part of a longer number,
+    e.g. ``#89`` is not ``#8``) or a same-repo ``…/issues/N`` URL."""
+    if re.search(rf"(?<![\w#])#{number}(?!\d)", text):
+        return True
+    return re.search(rf"{re.escape(repo)}/issues/{number}(?!\d)", text) is not None
+
+
+def _pr_issue_linked(ref: str, pr_number: int, linkage: dict | None, *,
+                     gh_run: GhRun) -> bool | None:
+    """Whether merged PR ``pr_number`` verifiably references issue *ref*.
+
+    - ``True`` — linked: the PR's ``closingIssuesReferences`` names the issue,
+      its body/commits reference it, or the issue's own cross-reference
+      timeline names the PR.
+    - ``False`` — verified unlinked: the issue's timeline was fetched and does
+      NOT contain the PR. Any PR-side mention of an issue creates a
+      CROSS_REFERENCED_EVENT on that issue, so timeline absence is decisive.
+    - ``None`` — unverifiable (lookups failed): fail closed, decide nothing.
+    """
+    repo, number_s = _split_ref(ref)
+    if not number_s.isdigit():
+        return None
+    number = int(number_s)
+    if linkage is not None:
+        if number in linkage["closing"]:
+            return True
+        if _text_references_issue(linkage["text"], repo, number):
+            return True
+    srcs = _issue_crossref_pr_nodes(ref, gh_run=gh_run)
+    if srcs is None:
+        return None
+    return True if any(src.get("number") == pr_number for src in srcs) else False
+
+
 def _close_issue(ref: str, comment: str, *, gh_run: GhRun) -> bool:
     """Close one issue with a linking comment. Best-effort; returns success."""
     repo, number = _split_ref(ref)
@@ -410,20 +514,63 @@ def _close_issue(ref: str, comment: str, *, gh_run: GhRun) -> bool:
         return False
 
 
-def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> None:
-    """Close every issue in ``batch`` after its PR merged, with a linking comment.
+def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
+    """Close the batch's issues after its PR merged — FAIL CLOSED on linkage.
 
     The implement prompt asks for ``Fixes #N`` in the PR body, but sessions
     don't reliably comply — and an issue a merged PR fixed must not stay open
     wearing ``in-progress``/``needs-human`` (it would be excluded from the
-    candidate pools forever). Best-effort: an individual failure is logged and
-    the rest of the batch is still closed.
+    candidate pools forever). But the branch→PR association that got us here
+    can be WRONG: shared-clone branch discovery can attribute another session's
+    merged PR to this batch (#642 — a dep-bump PR closed an unrelated epic
+    twice). So each issue is closed only with verified linkage to this PR
+    (:func:`_pr_issue_linked`); one PR-side lookup covers the batch, plus one
+    timeline lookup per issue the PR side didn't resolve.
+
+    Returns the close-out outcome for the sweep:
+
+    - ``"closed"``   — the PR is the batch's (≥1 issue verifiably linked).
+      Linked issues are closed with a linking comment (best-effort: an
+      individual failure is logged and the rest still close). Verified-unlinked
+      issues are left OPEN and returned to the pool (comment + unclaim).
+    - ``"unlinked"`` — every issue is verified-unlinked: a misattributed PR.
+      Nothing is closed or relabeled; the caller must ignore/denylist the PR.
+    - ``"retry"``    — linkage unverifiable (lookups failed) for at least one
+      issue and none verified linked: decide nothing, retry next sweep.
     """
-    pr_link = getattr(info, "url", "") or f"PR #{getattr(info, 'number', '?')}"
+    pr_number = int(getattr(info, "number", 0) or 0)
+    repo = getattr(batch, "repo", "") or (
+        batch.issues[0].split("#", 1)[0] if batch.issues else "")
+    linkage = _pr_linkage(repo, pr_number, gh_run=gh_run)
+    verdicts = {ref: _pr_issue_linked(ref, pr_number, linkage, gh_run=gh_run)
+                for ref in batch.issues}
+    linked = [ref for ref, v in verdicts.items() if v is True]
+    unlinked = [ref for ref, v in verdicts.items() if v is False]
+    if not linked:
+        if unlinked and len(unlinked) == len(verdicts):
+            log.warning("backlog_github.close_batch_unlinked pr=%s refs=%s",
+                        pr_number, list(verdicts))
+            return "unlinked"
+        log.warning("backlog_github.close_batch_unverified pr=%s refs=%s",
+                    pr_number, list(verdicts))
+        return "retry"
+    pr_link = getattr(info, "url", "") or f"PR #{pr_number}"
     comment = (f"Implemented by {pr_link} (merged) — "
                f"closed by ccswitch Backlog Runner.")
-    for ref in batch.issues:
+    for ref in linked:
         _close_issue(ref, comment, gh_run=gh_run)
+    # The PR is the batch's, but it never referenced these issues — closing
+    # them would be exactly the #642 bug. Leave them open and unclaim so they
+    # re-enter the candidate pool. (Unverifiable refs stay claimed untouched;
+    # the orphan heal resolves them once GitHub answers again.)
+    for ref in unlinked:
+        _issue_comment(
+            ref,
+            f"Batch PR {pr_link} merged without referencing this issue — "
+            f"returned to the backlog pool (left open) by ccswitch Backlog Runner.",
+            gh_run=gh_run)
+        _issue_edit(ref, remove=IN_PROGRESS_LABEL, gh_run=gh_run)
+    return "closed"
 
 
 # --------------------------------------------------------------------------- #
