@@ -495,25 +495,173 @@ def test_find_referencing_pr_ignores_closed_only_and_failures():
 
 
 # --------------------------------------------------------------------------- #
-# close_batch_issues                                                           #
+# close_batch_issues — fail-closed linkage verification (#642)                #
 # --------------------------------------------------------------------------- #
 
-def test_close_batch_issues_closes_each_with_a_linking_comment():
-    from server.automations.backlog_github import close_batch_issues
+def _linkage_stdout(closing=(), body="", messages=(), repo="o/r") -> str:
+    """A PR-linkage GraphQL response: closingIssuesReferences + body + commits."""
+    return json.dumps({"data": {"repository": {"pullRequest": {
+        "body": body,
+        "closingIssuesReferences": {"nodes": [
+            {"number": n, "repository": {"nameWithOwner": repo}} for n in closing]},
+        "commits": {"nodes": [{"commit": {"message": m}} for m in messages]},
+    }}}})
+
+
+class RoutedGh:
+    """Routes graphql calls by query shape: the PR-side linkage query names
+    ``pullRequest(``, the per-issue timeline query names ``issue(number: N)``.
+    Non-graphql calls succeed (label edits, closes, comments)."""
+
+    def __init__(self, pr_proc, timeline_procs=None):
+        self.calls: list[list[str]] = []
+        self._pr = pr_proc
+        self._timelines = dict(timeline_procs or {})  # issue number -> proc
+
+    def __call__(self, args, token=None):
+        self.calls.append(list(args))
+        if args[:2] == ["api", "graphql"]:
+            q = args[-1]
+            if "pullRequest(" in q:
+                return self._pr
+            for num, proc in self._timelines.items():
+                if f"issue(number: {num})" in q:
+                    return proc
+            return _proc(stdout=_crossref_stdout([]))
+        return _proc()
+
+
+def _merged_info(number=42):
     from server.github.pr_status import PullRequestInfo
-    fake = FakeGh()
-    b = Batch(primary="o/r#8", issues=["o/r#8", "o/r#9"], repo="o/r")
-    info = PullRequestInfo(number=42, url="https://github.com/o/r/pull/42",
+    return PullRequestInfo(number=number, url=f"https://github.com/o/r/pull/{number}",
                            state="merged", checks="none", title="t", merged=True)
 
-    close_batch_issues(b, info, gh_run=fake)
 
-    closes = [c for c in fake.calls if c[:2] == ["issue", "close"]]
+def _batch89() -> Batch:
+    return Batch(primary="o/r#8", issues=["o/r#8", "o/r#9"], repo="o/r")
+
+
+def test_close_batch_issues_closes_each_with_a_linking_comment():
+    """Issues the PR's closingIssuesReferences names are closed with the link."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = RoutedGh(_proc(stdout=_linkage_stdout(closing=[8, 9])))
+
+    outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"
+    closes = [c for c in gh.calls if c[:2] == ["issue", "close"]]
     assert {c[2] for c in closes} == {"8", "9"}
     for c in closes:
         assert "--repo" in c and c[c.index("--repo") + 1] == "o/r"
         comment = c[c.index("--comment") + 1]
         assert "https://github.com/o/r/pull/42" in comment
+
+
+def test_close_batch_issues_body_and_commit_references_count_as_linkage():
+    """A `#N` reference in the PR body or a commit message is linkage."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = RoutedGh(_proc(stdout=_linkage_stdout(
+        body="Fixes #8 by rewiring the sweep.", messages=["tidy up (refs #9)"])))
+
+    outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"
+    closes = [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    assert {c[2] for c in closes} == {"8", "9"}
+
+
+def test_close_batch_issues_prefix_number_is_not_a_reference():
+    """`#89` must not read as a reference to issue 8 (nor `#8` match in `x#89`)."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = RoutedGh(_proc(stdout=_linkage_stdout(body="see #89 and PR#800")),
+                  timeline_procs={8: _proc(stdout=_crossref_stdout([])),
+                                  9: _proc(stdout=_crossref_stdout([]))})
+
+    outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
+
+    assert outcome == "unlinked"
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+
+
+def test_close_batch_issues_timeline_crossref_counts_as_linkage():
+    """No PR-side evidence, but the issue's own timeline cross-references the
+    PR — the weakest sufficient signal (what find_referencing_pr keys on)."""
+    from server.automations.backlog_github import close_batch_issues
+    pr_node = {"number": 42, "url": "https://github.com/o/r/pull/42", "title": "t",
+               "state": "MERGED", "isDraft": False, "headRefName": "b",
+               "autoMergeRequest": None}
+    gh = RoutedGh(_proc(stdout=_linkage_stdout()),
+                  timeline_procs={8: _proc(stdout=_crossref_stdout([pr_node])),
+                                  9: _proc(stdout=_crossref_stdout([pr_node]))})
+
+    outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"
+    closes = [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    assert {c[2] for c in closes} == {"8", "9"}
+
+
+def test_close_batch_issues_unlinked_pr_closes_nothing():
+    """The #642 incident: a misattributed dep-bump PR (zero linkage to any
+    batch issue) must close NOTHING and touch no labels — fail closed."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = RoutedGh(_proc(stdout=_linkage_stdout(body="chore: bump brace-expansion")),
+                  timeline_procs={8: _proc(stdout=_crossref_stdout([])),
+                                  9: _proc(stdout=_crossref_stdout([]))})
+
+    outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
+
+    assert outcome == "unlinked"
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    assert not [c for c in gh.calls if c[:2] == ["issue", "edit"]]
+    assert not [c for c in gh.calls if c[:2] == ["issue", "comment"]]
+
+
+def test_close_batch_issues_partial_linkage_closes_linked_and_unclaims_rest():
+    """PR references one batch issue but not the other: close the linked one,
+    return the verified-unlinked one to the pool OPEN (unclaim + comment)."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = RoutedGh(_proc(stdout=_linkage_stdout(closing=[8])),
+                  timeline_procs={9: _proc(stdout=_crossref_stdout([]))})
+
+    outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"
+    closes = [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    assert [c[2] for c in closes] == ["8"]
+    unclaims = [c for c in gh.calls
+                if c[:2] == ["issue", "edit"] and "--remove-label" in c]
+    assert [c[2] for c in unclaims] == ["9"]
+    comments = [c for c in gh.calls if c[:2] == ["issue", "comment"]]
+    assert [c[2] for c in comments] == ["9"]
+
+
+def test_close_batch_issues_unverifiable_reports_retry_and_closes_nothing():
+    """Every linkage lookup failed → unknown, not "unlinked": close nothing,
+    denylist nothing, let the next sweep retry."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = RoutedGh(_proc(returncode=1, stderr="boom"),
+                  timeline_procs={8: _proc(returncode=1, stderr="boom"),
+                                  9: _proc(returncode=1, stderr="boom")})
+
+    outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
+
+    assert outcome == "retry"
+    assert not [c for c in gh.calls if c[0] == "issue"]
+
+
+def test_close_batch_issues_mixed_unlinked_and_unverifiable_retries():
+    """One issue verified-unlinked, the other unverifiable → don't denylist the
+    PR on partial knowledge; retry next sweep."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = RoutedGh(_proc(stdout=_linkage_stdout()),
+                  timeline_procs={8: _proc(stdout=_crossref_stdout([])),
+                                  9: _proc(returncode=1, stderr="boom")})
+
+    outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
+
+    assert outcome == "retry"
+    assert not [c for c in gh.calls if c[0] == "issue"]
 
 
 # --------------------------------------------------------------------------- #

@@ -53,7 +53,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
                candidates=None, healthy="a", in_flight_counter=None,
                pr_status=None, pr_doctor_active=True, claim_result=True,
                candidate_count=None, heal_orphans_result=None,
-               refresh_groups=None, spawn=None):
+               refresh_groups=None, spawn=None, close_out_result=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .claims /
@@ -125,6 +125,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
 
     async def close_out(target, info):
         rec.close_outs.append((target, info))
+        return close_out_result
 
     async def count_candidates():
         return candidate_count if candidate_count is not None else 0
@@ -446,6 +447,70 @@ def test_merged_pr_closes_out_issues_then_frees_slot(tmp_path):
 
         assert rec.close_outs == [("r#1", merged)]
         assert await ctx.list_target_states() == {}
+
+    asyncio.run(run())
+
+
+def test_merged_pr_that_fails_linkage_is_denylisted_not_closed(tmp_path):
+    """#642 incident: a merged PR with no linkage to any batch issue (shared-clone
+    branch misattribution) must NOT close the batch or free the slot. The runner
+    purges the poisoned branch snapshot and denylists the PR number so a
+    re-claim / next sweep cannot re-trigger the bogus close."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ul1.db'}"
+
+    async def run():
+        from server.github.pr_status import PullRequestInfo
+        await init_db(db_url=db_url)
+        await _seed_row()
+        merged = PullRequestInfo(number=42, url="", state="merged",
+                                 checks="none", title="", merged=True)
+        loop, rec, ctx = build_loop(pr_status={"r#1": merged},
+                                    close_out_result="unlinked")
+        await ctx.set_target_state(
+            "r#1", {"session_id": "s1", "branch": "stale-branch",
+                    "issues": ["r#1", "r#2"], "claimed": True})
+
+        await loop.tick()
+
+        assert [t for t, _ in rec.close_outs] == ["r#1"]
+        st = await ctx.get_target_state("r#1")
+        assert st, "state row must survive — the batch is NOT done"
+        assert "branch" not in st, "poisoned branch snapshot must be purged"
+        assert st.get("unlinked_prs") == [42]
+        assert rec.needs_humans == []
+
+        # Next sweep: the denylisted PR reads as "no PR" — close-out must not
+        # re-fire (this is the 00:21:30Z→00:22:00Z re-close loop).
+        await loop.tick()
+        assert len(rec.close_outs) == 1
+        assert (await ctx.get_target_state("r#1")), "row still survives"
+
+    asyncio.run(run())
+
+
+def test_close_out_retry_keeps_row_for_next_sweep(tmp_path):
+    """An unverifiable linkage check (gh down) is retried: row untouched, no
+    delete, no denylist — the next sweep runs close-out again."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ul2.db'}"
+
+    async def run():
+        from server.github.pr_status import PullRequestInfo
+        await init_db(db_url=db_url)
+        await _seed_row()
+        merged = PullRequestInfo(number=42, url="", state="merged",
+                                 checks="none", title="", merged=True)
+        loop, rec, ctx = build_loop(pr_status={"r#1": merged},
+                                    close_out_result="retry")
+        state = {"session_id": "s1", "branch": "b1",
+                 "issues": ["r#1", "r#2"], "claimed": True}
+        await ctx.set_target_state("r#1", state)
+
+        await loop.tick()
+        assert [t for t, _ in rec.close_outs] == ["r#1"]
+        assert await ctx.get_target_state("r#1") == state, "row untouched"
+
+        await loop.tick()
+        assert [t for t, _ in rec.close_outs] == ["r#1", "r#1"], "retried"
 
     asyncio.run(run())
 
