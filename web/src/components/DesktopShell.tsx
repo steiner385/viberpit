@@ -17,7 +17,7 @@
  * via SessionRuntimeProvider keyed by the focused id.
  */
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { Plus, Settings, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { detachKeyYieldsToTextEntry } from '@/lib/detachKeyGuard'
@@ -70,7 +70,7 @@ import { toast } from 'sonner'
 import { useSessionOrdering } from '@/session/useSessionOrdering'
 import { useSessionSearch } from '@/session/useSessionSearch'
 import { useListNavigation } from '@/session/useListNavigation'
-import { nextVisibleSessionId } from '@/session/nextAfterArchive'
+import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 
 type TabId = 'sessions' | 'archived' | 'pipeline' | 'automations' | 'insights' | 'settings'
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
@@ -133,7 +133,7 @@ export function DesktopShell() {
   const { data: accounts = [] } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const sessionSearch = useSessionSearch()
-  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, navItems, collapsedKeys, toggleCollapse, expandGroup, collapseGroup } =
+  const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, allOrderedSessions, navItems, collapsedKeys, toggleCollapse, expandGroup, collapseGroup } =
     useSessionOrdering(sessions, sessionSearch.matchedIds)
   const queuedSessions = orderedSessions.filter(s => s.status === 'queued')
     .sort((a, b) => (a.queuePosition ?? 0) - (b.queuePosition ?? 0))
@@ -166,6 +166,18 @@ export function DesktopShell() {
   // Bumped to return focus to the DispatchBar after detaching from a session.
   const [dispatchFocusNonce, setDispatchFocusNonce] = useState(0)
 
+  // The sidebar list's scroll position, carried across selection changes. The
+  // whole shell subtree remounts whenever the focused session changes (the
+  // SessionRuntimeProvider below is keyed by session id), which resets the
+  // recreated scroll container to 0 — the list visibly jumped on every click.
+  // DesktopShell itself stays mounted, so the ref survives; the stable callback
+  // ref restores the position when the container remounts (before paint, so the
+  // SessionCard scrollIntoView effect then sees the row already in view).
+  const listScrollTop = useRef(0)
+  const restoreListScroll = useCallback((el: HTMLDivElement | null) => {
+    if (el) el.scrollTop = listScrollTop.current
+  }, [])
+
   // List-focus mode
   const [listMode, setListMode] = useState(false)
 
@@ -181,12 +193,17 @@ export function DesktopShell() {
   }, [])
 
   // Map a session that just left the live list to the next detail target: the
-  // neighbor that takes its place, else the New Session slot. orderedSessions is
-  // read at call time (pre-archive, since callers run synchronously on click).
+  // neighbor that takes its place, else the New Session slot. The visible list
+  // can't always answer — the open session may sit in a collapsed group or be
+  // search-filtered out — so fall back to the full ordering.
   const advanceFrom = useCallback((removedId: string): Target => {
-    const next = nextVisibleSessionId(orderedSessions.map((s) => s.id), removedId)
+    const next = nextSessionAfterClose(
+      orderedSessions.map((s) => s.id),
+      allOrderedSessions.map((s) => s.id),
+      removedId,
+    )
     return next ? { type: 'session', id: next } : { type: 'new' }
-  }, [orderedSessions])
+  }, [orderedSessions, allOrderedSessions])
 
   function focusNew() {
     setTab('sessions')
@@ -410,7 +427,12 @@ export function DesktopShell() {
       </div>
 
       {/* Scrollable session list */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 space-y-2">
+      <div
+        data-testid="session-list-scroll"
+        ref={restoreListScroll}
+        onScroll={(e) => { listScrollTop.current = e.currentTarget.scrollTop }}
+        className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 space-y-2"
+      >
         <QueuedSection sessions={queuedSessions} onOpen={focusSession} />
         <SessionList
           sessions={liveSessions}

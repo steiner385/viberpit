@@ -12,7 +12,7 @@ import { DeployControllerProvider } from './lib/deployController'
 import { DeployOverlay } from './components/DeployOverlay'
 import { useSessions, useArchivedSessions } from './api/hooks'
 import { useSessionOrdering } from './session/useSessionOrdering'
-import { nextVisibleSessionId } from './session/nextAfterArchive'
+import { nextSessionAfterClose } from './session/nextAfterArchive'
 
 // Routing is the source of truth for which view is shown:
 //   /sessions | /pipeline | /automations | /archived | /insights | /settings
@@ -80,7 +80,7 @@ function SessionRoute() {
   const { data: archived = [] } = useArchivedSessions()
   // Persisted sort/group order (no search filter — the search box isn't reachable
   // from inside a full-screen session). Same order the list showed.
-  const { orderedSessions } = useSessionOrdering(sessions)
+  const { orderedSessions, allOrderedSessions } = useSessionOrdering(sessions)
   // Carried via navigation state when a session is opened straight from create,
   // so the user's prompt shows immediately (seeded into the transcript). Absent
   // on a normal open / refresh / deep-link, in which case nothing is seeded.
@@ -94,7 +94,13 @@ function SessionRoute() {
     return <Navigate to={`/review/${sessionId}`} replace />
   }
   const handleDone = () => {
-    const next = nextVisibleSessionId(orderedSessions.map((s) => s.id), sessionId)
+    // Fall back to the full ordering: the open session may be hidden from the
+    // visible list (its group collapsed) and must still advance to a neighbor.
+    const next = nextSessionAfterClose(
+      orderedSessions.map((s) => s.id),
+      allOrderedSessions.map((s) => s.id),
+      sessionId,
+    )
     navigate(next ? `/session/${next}` : '/sessions')
   }
   return (

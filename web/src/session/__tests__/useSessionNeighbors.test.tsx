@@ -65,4 +65,17 @@ describe('useSessionNeighbors', () => {
     })
     expect(result.current).toEqual({ prevId: null, nextId: null, index: -1, total: 2 })
   })
+
+  it("falls back to the full ordering when the session's group is collapsed", () => {
+    // Group by status: 'a' (idle → your-turn tier) sits in a collapsed group, so
+    // it is absent from the VISIBLE ordering — the chevrons must still navigate,
+    // walking the full ordering instead of disappearing.
+    window.localStorage.setItem('ccswitch.sessionOrder', JSON.stringify({ groupBy: 'status', sortBy: 'status' }))
+    window.localStorage.setItem('ccswitch.groupCollapse', JSON.stringify(['your-turn']))
+    const { result } = renderHook(() => useSessionNeighbors('a'), {
+      wrapper: wrapperWith([mk('a'), mk('b', { status: 'in_progress' })]),
+    })
+    expect(result.current.prevId).toBe('b')
+    expect(result.current.nextId).toBe('b')
+  })
 })
