@@ -139,6 +139,32 @@ class BranchSwitchError(Exception):
     """Raised when a git branch checkout fails."""
 
 
+def _classify_start_failure(exc: BaseException) -> str:
+    """Classify a _spawn_session failure for the queue drain loop.
+
+    Returns one of:
+      - "permanent": bad branch / worktree creation failed — retry cannot heal it.
+      - "auth":      start-time 401 (dead/expired creds) — self-heals on re-auth.
+      - "quota":     start-time 429 — self-heals when the window resets.
+      - "all_busy":  no eligible account right now (quarantine/limits).
+      - "transient": anything else — recoverable but bounded by the attempt cap.
+
+    Reuses the live-turn failure taxonomy (server.sessions.failure.classify)
+    for the 401/429 text inference so start-time and in-turn failures agree.
+    """
+    if isinstance(exc, (BranchSwitchError, worktrees.WorktreeError)):
+        return "permanent"
+    if isinstance(exc, AllAccountsBusy):
+        return "all_busy"
+    from server.sessions.failure import classify as _classify_turn
+    kind = _classify_turn(None, str(exc)).kind
+    if kind == "auth_401":
+        return "auth"
+    if kind == "rate_limit":
+        return "quota"
+    return "transient"
+
+
 class InsufficientStorageError(Exception):
     """Raised when unarchiving cannot proceed due to inode or byte exhaustion."""
 

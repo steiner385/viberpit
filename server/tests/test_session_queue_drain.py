@@ -220,3 +220,23 @@ def test_queued_status_not_touched_by_midturn_normalization(tmp_path):
             await _stop_orch(orch2)
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Failure classification (pure) — recoverable queue-start failures
+# ---------------------------------------------------------------------------
+
+def test_classify_start_failure():
+    from ccswitch import worktrees
+    from server.sessions.orchestrator import BranchSwitchError, _classify_start_failure
+    from server.sessions.selection import AllAccountsBusy
+
+    assert _classify_start_failure(BranchSwitchError("branch busy")) == "permanent"
+    assert _classify_start_failure(worktrees.WorktreeError("git worktree add failed")) == "permanent"
+    assert _classify_start_failure(AllAccountsBusy("no account has headroom")) == "all_busy"
+    assert _classify_start_failure(
+        RuntimeError("API error: 401 invalid authentication credentials")) == "auth"
+    assert _classify_start_failure(RuntimeError("rate limit exceeded (429)")) == "quota"
+    # Anything unrecognised defaults to a capped transient, never permanent.
+    assert _classify_start_failure(RuntimeError("boom")) == "transient"
+    assert _classify_start_failure(OSError("No space left on device")) == "transient"
