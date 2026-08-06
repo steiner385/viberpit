@@ -87,6 +87,13 @@ _TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — th
 # but no longer retried — retrying a worktree-deleted / repo-gone session is futile.
 RESUME_RECOVERY_MAX_ATTEMPTS = 3
 
+# A queued session whose start keeps failing for an UNCLASSIFIED transient reason
+# is re-enqueued at most this many times before it is finally marked ended.
+# Account-gated failures (auth/quota/all-busy) are never capped — they self-heal
+# on re-auth and wait as ordinary queued sessions. In-memory: a daemon restart
+# resets the count (a restart is a fresh chance).
+MAX_QUEUE_START_ATTEMPTS = 5
+
 # How long autopilot defers a session after its turn-restart dance began (a model
 # swap's interrupt → set_model → replay, or _reassign's cross-driver equivalent).
 # The interrupt flips the session through an actionable status, which fires the
@@ -268,6 +275,10 @@ class SessionOrchestrator:
         # in-memory by design — a fresh deploy rebuilds it; a crash loses it exactly
         # as the deploy controller loses its own frozen 'failed' list.
         self._resume_recovery: dict[str, int] = {}
+        # Per-session count of failed queue-start attempts for UNCLASSIFIED
+        # transient failures (auth/quota/all-busy failures are never counted).
+        # Capped by MAX_QUEUE_START_ATTEMPTS; cleared on success or terminal.
+        self._queue_start_attempts: dict[str, int] = {}
         # Detached-session next-prompt suggestions: session_id -> (transcript mtime, items).
         # Generated from the on-disk transcript without resuming the driver (see
         # latest_suggestions / _generate_detached_suggestions). Cached even when empty so
@@ -878,41 +889,118 @@ class SessionOrchestrator:
                     started += 1
                 except Exception:
                     log.warning("session_queue.start_failed id=%s", sid, exc_info=True)
-                    # Mark the session ended so it does not occupy a cap slot.
-                    # Re-seed a minimal in-memory record if _spawn_session raised
-                    # before creating one, then persist the status to the DB row
-                    # (which still exists as a 'queued' row — the UPDATE in
-                    # _spawn_session was not reached).
-                    if sid not in self._records:
-                        from datetime import datetime
-                        self._records[sid] = SessionRecord(
-                            id=sid,
-                            name=params.get("name", sid),
-                            account=params.get("account") or "",
-                            claude_session_id="",
-                            cols=params.get("cols", 220),
-                            rows=params.get("rows", 50),
-                            cwd=params.get("cwd") or "",
-                            repo=params.get("repo"),
-                            branch=None,
-                            status="ended",
-                            name_is_auto=params.get("name_is_auto", True),
-                            updated_at=datetime.utcnow(),
-                            origin=params.get("origin"),
-                            origin_ref=params.get("origin_ref"),
-                            model=params.get("model"),
-                        )
-                    else:
-                        self._records[sid].status = "ended"
-                    # Persist to DB — the row still exists (was 'queued'); update it.
-                    async with db_session() as db:
-                        from sqlalchemy import update as sa_update
-                        await db.execute(
-                            sa_update(DbSession)
-                            .where(DbSession.id == sid)
-                            .values(status="ended")
-                        )
+                    await self._end_failed_start(sid, params)
         return started
+
+    async def _end_failed_start(self, sid: str, params: dict) -> None:
+        """Terminal path for a failed queue start: mark the session ended.
+
+        Re-seeds a minimal in-memory record if _spawn_session raised before
+        creating one, then persists 'ended' to the DB row (which still exists
+        as a 'queued' row — the UPDATE in _spawn_session was not reached).
+        ended ∈ NON_ACTIVE_SESSION_STATUSES, so no cap slot is held.
+        """
+        if sid not in self._records:
+            from datetime import datetime
+            self._records[sid] = SessionRecord(
+                id=sid,
+                name=params.get("name", sid),
+                account=params.get("account") or "",
+                claude_session_id="",
+                cols=params.get("cols", 220),
+                rows=params.get("rows", 50),
+                cwd=params.get("cwd") or "",
+                repo=params.get("repo"),
+                branch=None,
+                status="ended",
+                name_is_auto=params.get("name_is_auto", True),
+                updated_at=datetime.utcnow(),
+                origin=params.get("origin"),
+                origin_ref=params.get("origin_ref"),
+                model=params.get("model"),
+            )
+        else:
+            self._records[sid].status = "ended"
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession)
+                .where(DbSession.id == sid)
+                .values(status="ended")
+            )
+        self._queue_start_attempts.pop(sid, None)
+
+    async def _reenqueue_failed_start(self, sid: str, params: dict,
+                                      record: SessionRecord) -> None:
+        """Recoverable path for a failed queue start: clean up and stay queued.
+
+        Tears down every partial resource _spawn_session may have created before
+        it raised (worktree, X11 display, a driver registered late in the spawn),
+        restores the in-memory record as 'queued', resets the DB row, and re-adds
+        the entry at the queue TAIL so a repeatedly-failing head cannot starve
+        the rest of the queue. Also repairs the pre-existing worktree/display
+        leak of the old unconditional-ended path.
+        """
+        from server.sessions import session_queue as sq
+        # Defensive: a failure after driver registration (e.g. the DB UPDATE)
+        # would otherwise leak a live driver.
+        driver = self._drivers.pop(sid, None)
+        if driver is not None:
+            with contextlib.suppress(Exception):
+                await driver.aclose()
+        self._pending_initial_prompt.pop(sid, None)
+        self._pending_initial_attachment_ids.pop(sid, None)
+        if self._x11 is not None:
+            try:
+                await self._x11.stop_display(sid)
+            except Exception:
+                log.exception("session_queue.reenqueue_display_cleanup_failed id=%s", sid)
+        wt = self._worktrees.pop(sid, None)
+        if wt is not None:
+            try:
+                await asyncio.to_thread(worktrees.remove_worktree, wt.path)
+            except Exception:
+                log.exception("session_queue.reenqueue_worktree_cleanup_failed id=%s path=%s",
+                              sid, wt.path)
+        record.status = "queued"
+        self._records[sid] = record
+        # The row normally still reads 'queued' (the UPDATE in _spawn_session was
+        # not reached) — reset defensively in case the failure came later. Direct
+        # UPDATE, not _persist_status: no status actually changed from the UI's
+        # point of view, and _persist_status's broadcast/push side effects are
+        # unwanted here.
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == sid)
+                .values(status="queued")
+            )
+        await sq.enqueue(sid, params)
+        log.info("session_queue.reenqueued id=%s", sid)
+
+    def _account_needs_reauth(self, account: str) -> bool:
+        """Best-effort ledger check; an unreadable ledger never blocks the queue."""
+        try:
+            from ccswitch import ledger
+            with ledger.locked_ledger() as led:
+                return ledger.get_status(led, account) == "needs-reauth"
+        except Exception:
+            return False
+
+    def _queue_entry_blocked(self, params: dict) -> bool:
+        """True when a queued entry's pinned account is known-unstartable.
+
+        Cheap pre-spawn gate: skipping here avoids creating (and then tearing
+        down) a worktree for a start we already know will fail. Auto-pick
+        entries (no pinned account) are never gated — select_account excludes
+        quarantined accounts itself and raises AllAccountsBusy.
+        """
+        account = params.get("account")
+        if not account:
+            return False
+        if account in self._recovery.quarantined(now=self._clock()):
+            return True
+        return self._account_needs_reauth(account)
 
     async def session_queue_move(self, session_id: str, op: str,
                                  position: int | None = None) -> bool:
@@ -930,6 +1018,7 @@ class SessionOrchestrator:
         from server.sessions import session_queue as sq
         if not await sq.remove(session_id):
             return False
+        self._queue_start_attempts.pop(session_id, None)
         await self._persist_status(session_id, "ended")
         rec = self._records.get(session_id)
         if rec is not None:
@@ -1063,10 +1152,13 @@ class SessionOrchestrator:
         )
         try:
             await driver.start()
-        except Exception:
+        except Exception as exc:
             # driver.start() failed — remove the pre-seeded record so the session
-            # does not appear as a ghost idle card in list_sessions.
+            # does not appear as a ghost idle card in list_sessions. Stash the
+            # resolved account on the exception so the queue drain loop can
+            # quarantine it even for auto-picked (account=None) sessions.
             self._records.pop(session_id, None)
+            setattr(exc, "_ccswitch_account", account)
             raise
         # Apply the chosen model before the first prompt runs (initial prompt is
         # deferred until a client attaches, so this always lands on turn one). The
@@ -1152,6 +1244,7 @@ class SessionOrchestrator:
         self._last_prompt.pop(session_id, None)
         self._turn_restart_at.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
+        self._queue_start_attempts.pop(session_id, None)
         if driver is not None:
             await driver.aclose()
         record = self._records.pop(session_id, None)

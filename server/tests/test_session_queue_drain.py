@@ -240,3 +240,84 @@ def test_classify_start_failure():
     # Anything unrecognised defaults to a capped transient, never permanent.
     assert _classify_start_failure(RuntimeError("boom")) == "transient"
     assert _classify_start_failure(OSError("No space left on device")) == "transient"
+
+
+def _enqueue_direct(orch, sid: str, *, account=None):
+    """Insert a queued session deterministically (no cap interaction, no bg drain)."""
+    from server.sessions.orchestrator import SYSTEM_IDENTITY
+    return orch._enqueue_session(
+        sid, name=sid, account=account, initial_prompt=None, cols=80, rows=24,
+        cwd=None, branch=None, repo=None, identity=SYSTEM_IDENTITY,
+        permission_mode="interactive", attachment_ids=None, name_is_auto=True,
+        origin=None, origin_ref=None, model=None)
+
+
+def test_reenqueue_failed_start_cleans_up_and_requeues(tmp_path):
+    """_reenqueue_failed_start tears down worktree + X11 leftovers, restores the
+    queued record, resets the DB row, and re-adds the entry at the queue tail."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'r1.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            from ccswitch import worktrees
+            from server.sessions import session_queue as sq
+            rec = await _enqueue_direct(orch, "sid-re", account="alpha")
+            params = dict((await sq.next_entry()).params)
+            # Simulate the drain loop's state at failure time: entry removed,
+            # record popped, a partial worktree left behind by _spawn_session.
+            await sq.remove("sid-re")
+            orch._records.pop("sid-re")
+            wt_dir = tmp_path / "leftover-wt"
+            wt_dir.mkdir()
+            orch._worktrees["sid-re"] = worktrees.WorktreeInfo(
+                path=str(wt_dir), branch=None, is_child=False, repo=str(tmp_path))
+            removed: list[str] = []
+            with patch("ccswitch.worktrees.remove_worktree",
+                       side_effect=lambda p: removed.append(p) or True):
+                await orch._reenqueue_failed_start("sid-re", params, rec)
+            assert removed == [str(wt_dir)]                      # worktree torn down
+            assert "sid-re" not in orch._worktrees               # in-memory entry gone
+            assert orch._records["sid-re"].status == "queued"    # record restored
+            assert "sid-re" in (await sq.positions())            # back in the queue
+            # DB row is (still) queued.
+            from sqlalchemy import select as sa_select
+            from server.db import db_session
+            from server.db.models import Session as DbSession
+            async with db_session() as db:
+                row = (await db.execute(
+                    sa_select(DbSession).where(DbSession.id == "sid-re"))).scalar_one()
+                assert row.status == "queued"
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_queue_entry_blocked_gates_on_quarantine_and_reauth(tmp_path):
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'r2.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            # No pinned account → never gated (select_account handles eligibility).
+            assert orch._queue_entry_blocked({"account": None}) is False
+            assert orch._queue_entry_blocked({}) is False
+            # Healthy pinned account → not gated.
+            assert orch._queue_entry_blocked({"account": "alpha"}) is False
+            # Quarantined pinned account → gated; expiry lifts the gate.
+            orch._recovery.quarantine("alpha", until=orch._clock() + 60)
+            assert orch._queue_entry_blocked({"account": "alpha"}) is True
+            # lapse (quarantine() uses max() so can't lower an existing future entry)
+            orch._recovery._quarantine["alpha"] = orch._clock() - 1
+            assert orch._queue_entry_blocked({"account": "alpha"}) is False
+            # needs-reauth in the ledger → gated (survives quarantine expiry).
+            from ccswitch import ledger
+            with ledger.locked_ledger() as led:
+                ledger.set_status(led, "alpha", "needs-reauth")
+            assert orch._queue_entry_blocked({"account": "alpha"}) is True
+            with ledger.locked_ledger() as led:
+                ledger.set_status(led, "alpha", "ok")
+            assert orch._queue_entry_blocked({"account": "alpha"}) is False
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
