@@ -847,13 +847,23 @@ class SessionOrchestrator:
         concurrent teardown paths can't double-start one entry. Returns count
         started.
 
-        Start failure → row leaves the queue, session is marked ``ended`` (not
-        ``needs_attention``).  Rationale: a failed-to-start session holds no
-        process; leaving it ``needs_attention`` would consume a cap slot forever
-        and starve the rest of the queue.  ``ended`` puts the session in
-        NON_ACTIVE_SESSION_STATUSES so the capacity gate re-opens for the next
-        iteration without any bypass.  Existing end-of-life machinery (UI ended
-        state, backlog-runner claim release) handles the rest.
+        Start-failure policy (docs/superpowers/specs/
+        2026-07-22-recoverable-queue-start-failures-design.md):
+
+        - PERMANENT (bad branch / worktree) → ``ended``. A failed-to-start
+          session holds no process; leaving it queued would retry a failure
+          that cannot self-heal, and any active-ish status would consume a cap
+          slot forever and starve the queue.
+        - RECOVERABLE (auth 401 / quota 429 / no eligible account / transient)
+          → cleaned up and RE-ENQUEUED at the tail, still ``queued``. Auth and
+          quota failures quarantine the account (and 401s flag needs-reauth)
+          so subsequent drains skip the entry cheaply until it can succeed.
+          Unclassified transients are bounded by MAX_QUEUE_START_ATTEMPTS.
+
+        A per-pass ``attempted`` set is passed to ``sq.next_entry(exclude=…)``
+        so one pass never retries an entry it already attempted (a re-enqueued
+        sole entry would otherwise tight-loop) and gated entries are skipped
+        in place without losing their queue position.
 
         NEVER awaited inline inside a WS-attach coroutine — always scheduled via
         asyncio.create_task so a client-disconnect cancellation cannot interrupt it.
@@ -861,13 +871,21 @@ class SessionOrchestrator:
         from server.sessions import session_queue as sq
         started = 0
         async with self._queue_drain_lock:
+            attempted: set[str] = set()
             while True:
                 if self._active_session_count() >= await self._max_active_sessions():
                     break
-                entry = await sq.next_entry()
+                entry = await sq.next_entry(exclude=attempted)
                 if entry is None:
                     break
                 sid, params = entry.session_id, dict(entry.params)
+                attempted.add(sid)
+                if self._queue_entry_blocked(params):
+                    # Known-unstartable pinned account: leave the entry queued in
+                    # place (no worktree churn); next_entry(exclude=) advances.
+                    log.info("session_queue.start_gated id=%s account=%s",
+                             sid, params.get("account"))
+                    continue
                 await sq.remove(sid)
                 # Re-verify the DB row is still 'queued' before spawning.  A
                 # concurrent close/archive (or crash-window orphan) may have already
@@ -887,9 +905,33 @@ class SessionOrchestrator:
                 try:
                     await self._spawn_session(sid, preexisting_row=True, **params)
                     started += 1
-                except Exception:
-                    log.warning("session_queue.start_failed id=%s", sid, exc_info=True)
-                    await self._end_failed_start(sid, params)
+                    self._queue_start_attempts.pop(sid, None)
+                except Exception as exc:
+                    kind = _classify_start_failure(exc)
+                    account = getattr(exc, "_ccswitch_account", None) or params.get("account")
+                    log.warning("session_queue.start_failed id=%s kind=%s account=%s",
+                                sid, kind, account, exc_info=True)
+                    if kind == "permanent":
+                        await self._end_failed_start(sid, params)
+                    elif kind in ("auth", "quota"):
+                        # Quarantine so the FIRST failure trips the pre-spawn gate
+                        # and later drains skip without churn until re-auth/reset.
+                        if account:
+                            now = self._clock()
+                            cooldown = QUARANTINE_401 if kind == "auth" else QUARANTINE_429
+                            self._recovery.quarantine(account, until=now + cooldown)
+                            if kind == "auth":
+                                self._mark_needs_reauth(account)
+                        await self._reenqueue_failed_start(sid, params, in_mem)
+                    elif kind == "all_busy":
+                        await self._reenqueue_failed_start(sid, params, in_mem)
+                    else:  # unclassified transient — recoverable but capped
+                        n = self._queue_start_attempts.get(sid, 0) + 1
+                        if n >= MAX_QUEUE_START_ATTEMPTS:
+                            await self._end_failed_start(sid, params)
+                        else:
+                            self._queue_start_attempts[sid] = n
+                            await self._reenqueue_failed_start(sid, params, in_mem)
         return started
 
     async def _end_failed_start(self, sid: str, params: dict) -> None:

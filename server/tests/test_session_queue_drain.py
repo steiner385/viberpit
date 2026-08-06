@@ -122,7 +122,8 @@ def test_close_drains_head_in_priority_order(tmp_path):
 
 
 def test_start_failure_ends_session_and_continues(tmp_path):
-    """A failed-to-start session must be marked ended (not needs_attention).
+    """A PERMANENTLY failed-to-start session must be marked ended (not needs_attention).
+    Recoverable failures re-enqueue instead — covered by the tests below.
 
     ended ∈ NON_ACTIVE_SESSION_STATUSES, so it does not consume a cap slot and
     the drain loop can start the next queued entry within the cap on the very
@@ -137,10 +138,11 @@ def test_start_failure_ends_session_and_continues(tmp_path):
             ok = await orch.create_session("ok")
             # Sabotage the head's start (monkeypatch _spawn_session to raise once
             # for bad.id — e.g. wrap the real method).
+            from server.sessions.orchestrator import BranchSwitchError
             real = orch._spawn_session
             async def flaky(session_id, **kw):
                 if session_id == bad.id:
-                    raise RuntimeError("insufficient disk headroom at /x")
+                    raise BranchSwitchError("branch checked out elsewhere")
                 return await real(session_id, **kw)
             orch._spawn_session = flaky
             await orch.close_session(a.id)
@@ -317,6 +319,165 @@ def test_queue_entry_blocked_gates_on_quarantine_and_reauth(tmp_path):
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, "alpha", "ok")
             assert orch._queue_entry_blocked({"account": "alpha"}) is False
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_auth_failure_reenqueues_quarantines_and_marks_reauth(tmp_path):
+    """Start-time 401 → session stays queued (re-added to the queue), the
+    resolved account is quarantined + needs-reauth, and the same drain pass
+    does not tight-loop (spawn attempted exactly once)."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'a1.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            from server.sessions import session_queue as sq
+            await _enqueue_direct(orch, "sid-auth", account="alpha")
+            calls: list[str] = []
+            async def fail_auth(session_id, **kw):
+                calls.append(session_id)
+                exc = RuntimeError("API error: 401 invalid authentication credentials")
+                setattr(exc, "_ccswitch_account", "alpha")
+                raise exc
+            orch._spawn_session = fail_auth
+            started = await orch._maybe_start_queued()
+            assert started == 0
+            assert calls == ["sid-auth"]                          # same-pass guard: one attempt
+            assert orch._records["sid-auth"].status == "queued"   # NOT ended
+            assert "sid-auth" in (await sq.positions())           # back in the queue
+            assert "alpha" in orch._recovery.quarantined(now=orch._clock())
+            from ccswitch import ledger
+            with ledger.locked_ledger() as led:
+                assert ledger.get_status(led, "alpha") == "needs-reauth"
+            assert orch._queue_start_attempts == {}               # auth is never capped
+            # Next drain: the quarantine gate skips it without calling spawn.
+            started = await orch._maybe_start_queued()
+            assert started == 0 and calls == ["sid-auth"]
+            assert orch._records["sid-auth"].status == "queued"
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_gated_head_does_not_starve_next_entry(tmp_path):
+    """A quarantined-account head is skipped IN PLACE (stays queued, keeps its
+    position) while the next eligible entry starts into the free slot."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'a2.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            from server.sessions import session_queue as sq
+            _seed_account("beta")
+            await _enqueue_direct(orch, "sid-gated", account="alpha")   # head
+            await _enqueue_direct(orch, "sid-ok", account="beta")       # next
+            orch._recovery.quarantine("alpha", until=orch._clock() + 60)
+            started = await orch._maybe_start_queued()
+            assert started == 1
+            assert orch._records["sid-ok"].status != "queued"       # started
+            assert orch._records["sid-gated"].status == "queued"    # skipped, kept
+            assert (await sq.positions()) == {"sid-gated": 1}
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_quarantine_expiry_self_heals(tmp_path):
+    """Once the quarantine lapses (re-auth path clears it), the next drain
+    starts the formerly-gated session normally."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'a3.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            await _enqueue_direct(orch, "sid-heal", account="alpha")
+            orch._recovery.quarantine("alpha", until=orch._clock() + 60)
+            assert await orch._maybe_start_queued() == 0
+            assert orch._records["sid-heal"].status == "queued"
+            # lapse (quarantine() is max()/extend-only)
+            orch._recovery._quarantine["alpha"] = orch._clock() - 1
+            assert await orch._maybe_start_queued() == 1
+            assert orch._records["sid-heal"].status != "queued"
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_all_accounts_busy_reenqueues_uncapped(tmp_path):
+    """AllAccountsBusy (auto-pick, nothing eligible) → re-enqueue, no attempt
+    counter (waits indefinitely like an ordinary queued session)."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'a4.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            from server.sessions import session_queue as sq
+            from server.sessions.selection import AllAccountsBusy
+            await _enqueue_direct(orch, "sid-busy", account=None)
+            async def fail_busy(session_id, **kw):
+                raise AllAccountsBusy("no account has headroom")
+            orch._spawn_session = fail_busy
+            for _ in range(3):   # repeated drains never cap it out
+                assert await orch._maybe_start_queued() == 0
+            assert orch._records["sid-busy"].status == "queued"
+            assert "sid-busy" in (await sq.positions())
+            assert orch._queue_start_attempts == {}
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_transient_failure_capped_then_ended(tmp_path):
+    """An unclassified transient failure re-enqueues up to
+    MAX_QUEUE_START_ATTEMPTS drains, then finally ends; counter is cleared."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'a5.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            from server.sessions.orchestrator import MAX_QUEUE_START_ATTEMPTS
+            from server.sessions import session_queue as sq
+            await _enqueue_direct(orch, "sid-flaky", account="alpha")
+            async def fail_transient(session_id, **kw):
+                raise RuntimeError("boom")
+            orch._spawn_session = fail_transient
+            for i in range(MAX_QUEUE_START_ATTEMPTS - 1):
+                assert await orch._maybe_start_queued() == 0
+                assert orch._records["sid-flaky"].status == "queued", f"attempt {i + 1}"
+                assert orch._queue_start_attempts["sid-flaky"] == i + 1
+            assert await orch._maybe_start_queued() == 0          # final attempt
+            assert orch._records["sid-flaky"].status == "ended"   # cap reached
+            assert orch._queue_start_attempts == {}               # counter cleared
+            assert "sid-flaky" not in (await sq.positions())
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_transient_success_clears_attempt_counter(tmp_path):
+    """A successful start after transient failures resets the counter."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'a6.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            await _enqueue_direct(orch, "sid-lucky", account="alpha")
+            real = orch._spawn_session
+            state = {"fail": 2}
+            async def flaky(session_id, **kw):
+                if state["fail"] > 0:
+                    state["fail"] -= 1
+                    raise RuntimeError("boom")
+                return await real(session_id, **kw)
+            orch._spawn_session = flaky
+            assert await orch._maybe_start_queued() == 0
+            assert await orch._maybe_start_queued() == 0
+            assert orch._queue_start_attempts["sid-lucky"] == 2
+            assert await orch._maybe_start_queued() == 1          # third time lucky
+            assert orch._records["sid-lucky"].status != "queued"
+            assert orch._queue_start_attempts == {}
         finally:
             await _stop_orch(orch)
 
