@@ -45,3 +45,25 @@ def test_app_settings_max_active_nullable(tmp_path):
             assert s.max_active_sessions is None  # NULL → default 5 applies
 
     asyncio.run(run())
+
+
+def test_next_entry_exclude_advances_past_head(tmp_path):
+    """next_entry(exclude=...) skips excluded ids and returns the next in order;
+    excluding everything returns None. This powers the drain loop's same-pass
+    guard AND its account-gated skip (leave head queued, try the next entry)."""
+    from server.db import init_db
+    from server.sessions import session_queue as sq
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'x.db'}")
+        await sq.enqueue("s1", {"name": "one"})
+        await sq.enqueue("s2", {"name": "two"})
+        head = await sq.next_entry()
+        assert head is not None and head.session_id == "s1"
+        nxt = await sq.next_entry(exclude={"s1"})
+        assert nxt is not None and nxt.session_id == "s2"
+        assert await sq.next_entry(exclude={"s1", "s2"}) is None
+        # Default (no exclusion) is unchanged.
+        assert (await sq.next_entry()).session_id == "s1"
+
+    asyncio.run(run())

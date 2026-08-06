@@ -6,6 +6,8 @@ No orchestrator imports: the orchestrator calls this module, never vice versa.
 """
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from sqlalchemy import delete as sa_delete, select
 
 from server.db import db_session
@@ -22,10 +24,19 @@ async def enqueue(session_id: str, params: dict) -> int:
         return priority
 
 
-async def next_entry() -> SessionQueue | None:
+async def next_entry(exclude: Collection[str] = ()) -> SessionQueue | None:
+    """Highest-priority entry not in ``exclude`` (or None).
+
+    ``exclude`` lets the drain loop advance past entries it has already
+    attempted this pass (same-pass guard) or is deliberately skipping
+    (account-gated), without removing them from the queue.
+    """
     async with db_session() as db:
+        stmt = select(SessionQueue)
+        if exclude:
+            stmt = stmt.where(SessionQueue.session_id.not_in(list(exclude)))
         return (await db.execute(
-            select(SessionQueue).order_by(*_ORDER).limit(1))).scalar_one_or_none()
+            stmt.order_by(*_ORDER).limit(1))).scalar_one_or_none()
 
 
 async def remove(session_id: str) -> bool:
