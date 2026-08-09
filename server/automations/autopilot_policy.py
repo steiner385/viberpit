@@ -133,6 +133,62 @@ def fingerprint(ctx: DecisionContext) -> str:
     return f"advance|{ctx.effective_goal}"
 
 
+# --- Contextual-nudge policy constants (spec: contextual-nudges design) ---------
+NUDGE_DEDUPE_WINDOW_S = 6 * 3600.0
+NUDGE_DEDUPE_THRESHOLD = 0.85
+RECENT_NUDGES_CAP = 5
+FACTS_REFRESH_MIN_INTERVAL_S = 600.0
+
+_PR_NUM_RE = re.compile(r"\bPR\s*#(\d+)", re.IGNORECASE)
+
+
+def claimed_pr_numbers(transcript_tail: list[dict]) -> set[int]:
+    """PR numbers the transcript tail claims exist (e.g. 'PR #123 is armed')."""
+    nums: set[int] = set()
+    for entry in transcript_tail or []:
+        for m in _PR_NUM_RE.finditer(entry.get("text", "") or ""):
+            nums.add(int(m.group(1)))
+    return nums
+
+
+def facts_contradicted(ctx: DecisionContext) -> bool:
+    """True when the cached pr_facts look stale enough to verify before directing:
+    the session claims a PR the cache doesn't know, or it self-declared complete,
+    while the cache shows no armed/merged PR. No facts / no repo -> nothing to
+    verify (never triggers a refresh)."""
+    facts = ctx.pr_facts
+    if facts is None or not facts.has_repo:
+        return False
+    if facts.merged_pr is not None or facts.armed_pr is not None:
+        return False
+    known = {p.number for p in facts.prs}
+    if claimed_pr_numbers(ctx.transcript_tail) - known:
+        return True
+    return ctx.status == "complete"
+
+
+def _token_set(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9#_./-]+", (text or "").lower()))
+
+
+def near_duplicate(text: str, recent: list[dict], now: float, *,
+                   window_s: float = NUDGE_DEDUPE_WINDOW_S,
+                   threshold: float = NUDGE_DEDUPE_THRESHOLD) -> bool:
+    """Deterministic anti-repetition: token-set (Jaccard) similarity of a composed
+    nudge against nudges sent in the window. Keyed on what autopilot SAID — immune
+    to the goal-text drift that resets `fingerprint` (spec §4)."""
+    a = _token_set(text)
+    if not a:
+        return False
+    for entry in recent or []:
+        if now - float(entry.get("ts", 0.0)) > window_s:
+            continue
+        b = _token_set(entry.get("text", ""))
+        if b and len(a & b) / len(a | b) >= threshold:
+            return True
+    return False
+
+
 def _hourly_count(ledger: dict, now: float) -> int:
     return sum(1 for t in ledger.get("hour_actions", []) if t > now - _HOUR)
 

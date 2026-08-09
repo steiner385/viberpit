@@ -227,3 +227,62 @@ def test_complete_downgraded_without_resolution():
                pr_facts=_no_pr_code_facts())
     out = post_validate(Decision(action="complete"), ctx, CONFIG)
     assert out.action == "nudge"  # unchanged legacy behavior
+
+
+# --- contradiction + dedupe helpers (spec §2, §4) ---
+from server.automations.autopilot_policy import (
+    claimed_pr_numbers, facts_contradicted, near_duplicate,
+)
+
+
+def no_prs():
+    """PrFacts with has_repo=True and zero PRs — the 'code goal, nothing opened' case."""
+    return PrFacts(has_repo=True, prs=())
+
+
+def armed_pr():
+    """PrFacts with a single open, armed PR."""
+    return PrFacts(has_repo=True, prs=(PrFact(1, "open", False, True, "u"),))
+
+
+def test_claimed_pr_numbers_scans_tail_text():
+    tail = [{"role": "assistant", "text": "PR #13393 is armed, see also PR#12"},
+            {"role": "tool", "text": "gh pr view 99"}]
+    assert claimed_pr_numbers(tail) == {13393, 12}
+
+
+def test_facts_contradicted_when_tail_claims_unknown_pr():
+    ctx = _ctx_with_facts(no_prs())          # has_repo=True, prs=()
+    ctx.transcript_tail = [{"role": "assistant", "text": "PR #42 is armed"}]
+    assert facts_contradicted(ctx) is True
+
+
+def test_facts_contradicted_on_complete_status_without_armed_pr():
+    ctx = _ctx_with_facts(no_prs())
+    ctx.status = "complete"
+    assert facts_contradicted(ctx) is True
+
+
+def test_facts_not_contradicted_when_armed_pr_present():
+    ctx = _ctx_with_facts(armed_pr())
+    ctx.status = "complete"
+    assert facts_contradicted(ctx) is False
+
+
+def test_facts_not_contradicted_without_facts_or_repo():
+    ctx = _ctx(status="complete")            # pr_facts is None
+    assert facts_contradicted(ctx) is False
+
+
+def test_near_duplicate_boundary():
+    recent = [{"ts": 1000.0, "text": "fix the failing test in test_ws.py then arm the PR"}]
+    same = "fix the failing test in test_ws.py then arm the PR"
+    assert near_duplicate(same, recent, now=2000.0) is True
+    fresh = "PR #99 conflicts with master; rebase onto origin/master and resolve server/app.py"
+    assert near_duplicate(fresh, recent, now=2000.0) is False
+
+
+def test_near_duplicate_outside_window_is_fresh():
+    recent = [{"ts": 0.0, "text": "open a PR and arm auto-merge"}]
+    assert near_duplicate("open a PR and arm auto-merge", recent,
+                          now=7 * 3600.0) is False
