@@ -66,6 +66,8 @@ class DecisionContext:
     # met_bar so an explicit `--squash --auto` arming step in the instructions raises the
     # completion bar to require an armed PR even when the goal text reads as non-code work.
     instructions: str | None = None
+    # Set by the loop after an on-demand refresh: pr_facts is GitHub-fresh.
+    facts_verified: bool = False
 
 
 @dataclass
@@ -74,6 +76,12 @@ class Decision:
     answer_index: int | None = None
     prompt: str | None = None
     reason: str = ""
+    # Composition metadata (spec §1): a gate downgrade carries the bar verdict as
+    # structured context; the nudge text is ALWAYS written by the composer.
+    needs_composition: bool = False
+    downgraded_from: str | None = None
+    verdict_reason: str | None = None
+    verdict_remedy: str | None = None
 
 
 def _flatten_input(tool_input: dict) -> str:
@@ -127,6 +135,62 @@ def fingerprint(ctx: DecisionContext) -> str:
     return f"advance|{ctx.effective_goal}"
 
 
+# --- Contextual-nudge policy constants (spec: contextual-nudges design) ---------
+NUDGE_DEDUPE_WINDOW_S = 6 * 3600.0
+NUDGE_DEDUPE_THRESHOLD = 0.85
+RECENT_NUDGES_CAP = 5
+FACTS_REFRESH_MIN_INTERVAL_S = 600.0
+
+_PR_NUM_RE = re.compile(r"\bPR\s*#(\d+)", re.IGNORECASE)
+
+
+def claimed_pr_numbers(transcript_tail: list[dict]) -> set[int]:
+    """PR numbers the transcript tail claims exist (e.g. 'PR #123 is armed')."""
+    nums: set[int] = set()
+    for entry in transcript_tail or []:
+        for m in _PR_NUM_RE.finditer(entry.get("text", "") or ""):
+            nums.add(int(m.group(1)))
+    return nums
+
+
+def facts_contradicted(ctx: DecisionContext) -> bool:
+    """True when the cached pr_facts look stale enough to verify before directing:
+    the session claims a PR the cache doesn't know, or it self-declared complete,
+    while the cache shows no armed/merged PR. No facts / no repo -> nothing to
+    verify (never triggers a refresh)."""
+    facts = ctx.pr_facts
+    if facts is None or not facts.has_repo:
+        return False
+    if facts.merged_pr is not None or facts.armed_pr is not None:
+        return False
+    known = {p.number for p in facts.prs}
+    if claimed_pr_numbers(ctx.transcript_tail) - known:
+        return True
+    return ctx.status == "complete"
+
+
+def _token_set(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9#_./-]+", (text or "").lower()))
+
+
+def near_duplicate(text: str, recent: list[dict], now: float, *,
+                   window_s: float = NUDGE_DEDUPE_WINDOW_S,
+                   threshold: float = NUDGE_DEDUPE_THRESHOLD) -> bool:
+    """Deterministic anti-repetition: token-set (Jaccard) similarity of a composed
+    nudge against nudges sent in the window. Keyed on what autopilot SAID — immune
+    to the goal-text drift that resets `fingerprint` (spec §4)."""
+    a = _token_set(text)
+    if not a:
+        return False
+    for entry in recent or []:
+        if now - float(entry.get("ts", 0.0)) > window_s:
+            continue
+        b = _token_set(entry.get("text", ""))
+        if b and len(a & b) / len(a | b) >= threshold:
+            return True
+    return False
+
+
 def _hourly_count(ledger: dict, now: float) -> int:
     return sum(1 for t in ledger.get("hour_actions", []) if t > now - _HOUR)
 
@@ -167,7 +231,8 @@ def pre_decide(ctx: DecisionContext, config: dict, now: float) -> Decision | Non
 
 def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Decision:
     """Second net: the untrusted decider may never upgrade a rule-denied tool to
-    approve, index a non-existent option, or emit an empty nudge."""
+    approve or index a non-existent option. Empty-nudge enforcement was removed:
+    the loop escalates on composer failure instead (Task 6)."""
     stuck = ctx.stuck or {}
     if decision.action == "approve":
         if not config.get("allow_tool_approvals", True):
@@ -180,22 +245,23 @@ def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Dec
         opts = stuck.get("options") or []
         if decision.answer_index is None or not (0 <= decision.answer_index < len(opts)):
             return Decision(action="escalate", reason="answer_index out of range")
-    if decision.action == "nudge" and not (decision.prompt or "").strip():
-        return Decision(action="escalate", reason="empty nudge prompt")
     if decision.action == "complete" and ctx.pr_facts is not None:
         # Deterministic backstop the untrusted decider cannot override: an open PR
         # that is not armed AND a code goal that opened zero PRs are both definitionally
-        # NOT the finished state. Downgrade to a nudge in both cases.
+        # NOT the finished state. Downgrade to a composition-marked nudge in both cases.
         # `not verdict.met` covers exactly three cases (per completion_bar.met_bar):
         #   - open-unarmed PR (confidence=high) → nudge toward arming it
         #   - armed PR with a red required check (confidence=high) → nudge toward fixing CI (#635)
         #   - code goal + repo + no PR at all (confidence=low) → nudge toward opening one
         # The non-code/research case has met=True, so research/Q&A sessions still complete.
+        # prompt=None: the gate NEVER fabricates nudge text — it marks the decision for
+        # composition (the composer writes the actual message from verdict_reason/remedy).
         from .completion_bar import met_bar
         verdict = met_bar(ctx.effective_goal, ctx.goal_source, ctx.pr_facts,
                           ctx.pr_resolution, instructions=ctx.instructions)
         if not verdict.met:
-            return Decision(action="nudge", prompt=verdict.remedy or
-                            "Open a PR and arm auto-merge before finishing.",
+            return Decision(action="nudge", prompt=None, needs_composition=True,
+                            downgraded_from="complete",
+                            verdict_reason=verdict.reason, verdict_remedy=verdict.remedy,
                             reason=f"completion-gate: {verdict.reason}")
     return decision

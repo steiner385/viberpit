@@ -23,16 +23,18 @@ Bias to **escalate** whenever unsure. Safety beats progress.
 - If a plan proposes refactoring far beyond the goal, prefer the narrower option or escalate.
 
 ## Nudges (for `done`/`idle` that isn't truly finished)
-- Drive toward: tests+lint green → commit → push → PR ready → auto-merge armed.
-- Then judge the goal met.
+- Choose `nudge` when the session needs direction to keep advancing. Put a ONE-LINE
+  intent in `prompt` (e.g. "fix the failing CI check", "rebase onto master") — a
+  separate composer with richer context writes the actual message; do NOT write the
+  full instruction text yourself.
+- Judge the goal met only per the Completion rules below.
 
 ## Completion (uses `pr_facts` — verified PR state, do NOT infer from prose)
 `pr_facts` gives you the session's real PRs: `{has_repo, prs:[{number, state, is_draft, auto_merge_enabled}]}`.
 - An **armed** PR = `state:"open"`, `is_draft:false`, `auto_merge_enabled:true`. A **merged** PR means code landed.
 - `complete` ONLY when `pr_facts` shows an armed or merged PR, OR the goal is clearly
   non-code (research / diagnosis / Q&A) and `has_repo` work isn't expected.
-- Code-oriented session (`has_repo:true`) with no armed PR → `nudge` toward tests+lint
-  green → commit → push → `gh pr ready` → `gh pr merge --squash --auto`. NEVER `complete`.
+- Code-oriented session (`has_repo:true`) with no armed PR → `nudge` with intent "finish and ship" (the composer details the step). NEVER `complete`.
 - An open-but-un-armed PR is already force-nudged upstream; if you still see one, `nudge` to arm it.
 
 ## `complete` status (the session emitted its own completion marker)
