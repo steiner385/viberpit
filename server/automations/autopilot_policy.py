@@ -74,6 +74,12 @@ class Decision:
     answer_index: int | None = None
     prompt: str | None = None
     reason: str = ""
+    # Composition metadata (spec §1): a gate downgrade carries the bar verdict as
+    # structured context; the nudge text is ALWAYS written by the composer.
+    needs_composition: bool = False
+    downgraded_from: str | None = None
+    verdict_reason: str | None = None
+    verdict_remedy: str | None = None
 
 
 def _flatten_input(tool_input: dict) -> str:
@@ -167,7 +173,8 @@ def pre_decide(ctx: DecisionContext, config: dict, now: float) -> Decision | Non
 
 def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Decision:
     """Second net: the untrusted decider may never upgrade a rule-denied tool to
-    approve, index a non-existent option, or emit an empty nudge."""
+    approve or index a non-existent option. Empty-nudge enforcement was removed:
+    the loop escalates on composer failure instead (Task 6)."""
     stuck = ctx.stuck or {}
     if decision.action == "approve":
         if not config.get("allow_tool_approvals", True):
@@ -180,22 +187,23 @@ def post_validate(decision: Decision, ctx: DecisionContext, config: dict) -> Dec
         opts = stuck.get("options") or []
         if decision.answer_index is None or not (0 <= decision.answer_index < len(opts)):
             return Decision(action="escalate", reason="answer_index out of range")
-    if decision.action == "nudge" and not (decision.prompt or "").strip():
-        return Decision(action="escalate", reason="empty nudge prompt")
     if decision.action == "complete" and ctx.pr_facts is not None:
         # Deterministic backstop the untrusted decider cannot override: an open PR
         # that is not armed AND a code goal that opened zero PRs are both definitionally
-        # NOT the finished state. Downgrade to a nudge in both cases.
+        # NOT the finished state. Downgrade to a composition-marked nudge in both cases.
         # `not verdict.met` covers exactly three cases (per completion_bar.met_bar):
         #   - open-unarmed PR (confidence=high) → nudge toward arming it
         #   - armed PR with a red required check (confidence=high) → nudge toward fixing CI (#635)
         #   - code goal + repo + no PR at all (confidence=low) → nudge toward opening one
         # The non-code/research case has met=True, so research/Q&A sessions still complete.
+        # prompt=None: the gate NEVER fabricates nudge text — it marks the decision for
+        # composition (the composer writes the actual message from verdict_reason/remedy).
         from .completion_bar import met_bar
         verdict = met_bar(ctx.effective_goal, ctx.goal_source, ctx.pr_facts,
                           ctx.pr_resolution, instructions=ctx.instructions)
         if not verdict.met:
-            return Decision(action="nudge", prompt=verdict.remedy or
-                            "Open a PR and arm auto-merge before finishing.",
+            return Decision(action="nudge", prompt=None, needs_composition=True,
+                            downgraded_from="complete",
+                            verdict_reason=verdict.reason, verdict_remedy=verdict.remedy,
                             reason=f"completion-gate: {verdict.reason}")
     return decision

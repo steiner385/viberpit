@@ -73,9 +73,40 @@ def test_post_validate_rejects_out_of_range_answer():
     assert out.action == "escalate"
 
 
-def test_post_validate_rejects_empty_nudge():
-    out = post_validate(Decision(action="nudge", prompt="  "), _ctx(status="done"), CONFIG)
-    assert out.action == "escalate"
+def _ctx_with_facts(pr_facts):
+    """Build a DecisionContext wired up with the given PrFacts for gate-downgrade tests."""
+    return _ctx(status="complete", stuck={"kind": "complete"}, pr_facts=pr_facts)
+
+
+def open_unarmed_pr():
+    """PrFacts with a single open, unarmed PR — the canonical gate-trigger fixture."""
+    return PrFacts(has_repo=True, prs=(PrFact(1, "open", False, False, "u"),))
+
+
+def test_post_validate_gate_nudge_carries_no_canned_text():
+    # A gate downgrade must NEVER fabricate nudge text — it marks the decision
+    # for composition and carries the bar verdict as structured context.
+    ctx = _ctx_with_facts(open_unarmed_pr())
+    d = post_validate(Decision(action="complete", reason="agent said done"), ctx, CONFIG)
+    assert d.action == "nudge"
+    assert d.prompt is None
+    assert d.needs_composition is True
+    assert d.downgraded_from == "complete"
+    assert d.verdict_reason and "not armed" in d.verdict_reason
+    assert d.verdict_remedy and "gh pr ready" in d.verdict_remedy
+
+
+def test_post_validate_passes_gate_nudge_through_unmarked():
+    # A decider-authored nudge is not a downgrade: no composition marker forced here
+    # (the loop composes all nudges anyway); its prompt survives as the intent hint.
+    d = post_validate(Decision(action="nudge", prompt="fix CI"), _ctx(status="done"), CONFIG)
+    assert d.action == "nudge" and d.prompt == "fix CI" and d.downgraded_from is None
+
+
+def test_post_validate_empty_nudge_no_longer_escalates_here():
+    # The empty-nudge rule moved to the loop (composer failure -> escalate there).
+    d = post_validate(Decision(action="nudge", prompt="  "), _ctx(status="done"), CONFIG)
+    assert d.action == "nudge"
 
 
 from server.automations.completion_bar import PrFact, PrFacts
@@ -92,7 +123,7 @@ def _unarmed_facts():
 def test_complete_with_unarmed_pr_is_downgraded_to_nudge():
     ctx = _ctx(status="complete", stuck={"kind": "complete"}, pr_facts=_unarmed_facts())
     d = post_validate(Decision(action="complete", reason="agent said done"), ctx, CONFIG)
-    assert d.action == "nudge" and d.prompt
+    assert d.action == "nudge" and d.prompt is None and d.needs_composition and d.verdict_remedy
 
 
 def test_complete_with_armed_pr_survives():
@@ -128,7 +159,7 @@ def test_complete_code_goal_no_pr_is_downgraded_to_nudge():
                pr_facts=_no_pr_code_facts())
     d = post_validate(Decision(action="complete", reason="agent said done"), ctx, CONFIG)
     assert d.action == "nudge"
-    assert d.prompt
+    assert d.prompt is None and d.needs_composition and d.verdict_remedy
     assert d.reason and "completion-gate" in d.reason
 
 
@@ -147,7 +178,7 @@ def test_complete_unarmed_pr_regression_guard():
     """Regression guard: open-unarmed PR still gets nudged (pre-existing behavior)."""
     ctx = _ctx(status="complete", stuck={"kind": "complete"}, pr_facts=_unarmed_facts())
     d = post_validate(Decision(action="complete", reason="agent said done"), ctx, CONFIG)
-    assert d.action == "nudge" and d.prompt
+    assert d.action == "nudge" and d.prompt is None and d.needs_composition and d.verdict_remedy
 
 
 # --- Human deference rule ---
