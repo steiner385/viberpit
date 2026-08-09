@@ -149,7 +149,7 @@ class AutopilotLoop:
             # (the user's standing decision outranks the goal-met signal). Surface the
             # met goal once, then stop; autopilot keeps helping it in every other way.
             if ctx.no_auto_archive:
-                return await self._decline_archive(sid, ledger, ctx, decision)
+                return await self._decline_archive(sid, ctx.ledger if ctx.ledger is not None else ledger, ctx, decision)
             # The goal is met — this session is finished. In auto mode archive it
             # (reversible; unarchive exists) via the archive seam — NEVER via apply,
             # which stays reserved for validated in-session actions. In propose mode
@@ -297,22 +297,31 @@ class AutopilotLoop:
             return Decision(action="escalate", reason="nudge needs composition — no composer")
         text = await self._compose(ctx, decision)
         if not (text or "").strip():
+            await self._record_futile(sid, ctx.ledger or {}, ctx)
             return Decision(action="escalate",
                             reason=f"composer declined/failed ({decision.reason})")
         assert text is not None  # narrowed: the empty/None check above would have returned
         if near_duplicate(text, (ctx.ledger or {}).get("recent_nudges", []), now):
-            await self._record_suppressed(sid, ctx.ledger or {}, ctx)
+            await self._record_futile(sid, ctx.ledger or {}, ctx)
             return Decision(action="suppressed", reason="near-duplicate nudge suppressed")
         return Decision(action="nudge", prompt=text, reason=decision.reason,
                         downgraded_from=decision.downgraded_from)
 
-    async def _record_suppressed(self, sid: str, ledger: dict, ctx: DecisionContext) -> None:
-        """A suppressed near-duplicate counts toward loop escalation UNCONDITIONALLY —
-        repetition here is keyed on what autopilot said, immune to the goal-text
-        drift that resets `fingerprint` (spec §4)."""
+    async def _record_futile(self, sid: str, ledger: dict, ctx: DecisionContext) -> None:
+        """A futile nudge attempt — either a near-duplicate or a composer decline/failure —
+        counts toward loop escalation UNCONDITIONALLY so pre_decide's loop detection
+        (repeat_count >= loop_repeat_limit) short-circuits the full pipeline (gate AND
+        composer) after ~3 futile attempts.  For near-duplicates: repetition is keyed on
+        what autopilot said, immune to the goal-text drift that resets `fingerprint`
+        (spec §4).  For composer declines: prevents unbounded uncharged Sonnet calls on
+        a persistently-declining session.
+
+        ctx.ledger is updated in place so any subsequent write in the same tick (e.g.
+        _escalate) inherits the incremented repeat_count and does not overwrite it."""
         new = dict(ledger)
         new.update(last_fingerprint=fingerprint(ctx),
                    repeat_count=ledger.get("repeat_count", 0) + 1)
+        ctx.ledger = new
         await self._ctx.set_target_state(sid, new)
 
     async def _escalate(self, sid: str, ledger: dict, ctx: DecisionContext,

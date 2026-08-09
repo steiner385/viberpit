@@ -528,3 +528,93 @@ async def test_apply_false_preserves_last_facts_refresh():
     # Fix: _record_fingerprint(sid, ctx.ledger, ...) preserves it.
     assert "last_facts_refresh" in ctx.states.get("s1", {}), (
         "last_facts_refresh must survive the apply-False write-back")
+
+
+# ---------------------------------------------------------------------------
+# Final-review fix regressions
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_composer_decline_increments_repeat_count_and_short_circuits():
+    """C1 regression: when compose() returns None, the escalate path must record a
+    fingerprint repeat exactly like a suppressed nudge, so pre_decide's loop detection
+    (repeat_count >= loop_repeat_limit) stops calling the composer after ~3 declines.
+    Before the fix, repeat_count never climbed on this path → ~4,300 uncharged Sonnet
+    calls/day per persistently-declining session."""
+    ctx = FakeCtx()
+    compose_calls: list[str] = []
+
+    async def compose(dc, decision):
+        compose_calls.append(dc.session_id)
+        return None   # always declines
+
+    async def get_context(sid):
+        # Return context carrying the PERSISTED ledger so repeat_count accumulates
+        st = await ctx.get_target_state(sid)
+        dc = _dc(sid)
+        dc.ledger = st
+        return dc
+
+    loop_repeat_limit = 3
+    loop = _loop(ctx, decision=Decision(action="nudge", prompt="hint"), compose=compose)
+    loop._get_context = get_context
+
+    # Tick loop_repeat_limit + 1 times; the extra tick verifies the composer stops
+    for _ in range(loop_repeat_limit + 1):
+        await loop.tick()
+
+    # repeat_count must have climbed to at least loop_repeat_limit
+    st = ctx.states.get("s1", {})
+    assert st.get("repeat_count", 0) >= loop_repeat_limit, (
+        f"repeat_count={st.get('repeat_count')} must be >= loop_repeat_limit={loop_repeat_limit}")
+
+    # After the limit is tripped, pre_decide short-circuits — compose is NOT called again.
+    # Composer was called at most loop_repeat_limit times (limit ticks before trip) not more.
+    assert compose_calls.count("s1") <= loop_repeat_limit, (
+        f"compose called {compose_calls.count('s1')} times; must stop after loop_repeat_limit")
+
+
+@pytest.mark.asyncio
+async def test_decline_archive_preserves_last_facts_refresh():
+    """I1 regression: no_auto_archive + goal-met where _verify_nudge_facts just stamped
+    last_facts_refresh into ctx.ledger.  _decline_archive must use ctx.ledger (not the
+    raw pre-verify snapshot) so last_facts_refresh survives the write-back."""
+    ctx = FakeCtx()
+    archived: list = []
+
+    # refresh_facts returns armed facts → downgraded decision becomes 'complete'
+    async def refresh_facts(sid: str):
+        return _armed_facts()
+
+    async def archive(sid: str):
+        archived.append(sid)
+        return True
+
+    async def get_context(sid):
+        # _repo_ctx: status="complete", has_repo, no armed PR → facts_contradicted=True
+        # no_auto_archive=True → _decline_archive path
+        st = await ctx.get_target_state(sid)
+        dc = _repo_ctx(sid, status="complete")
+        dc.no_auto_archive = True
+        # The downgraded_from="complete" nudge triggers _verify_nudge_facts which stamps
+        # last_facts_refresh.  Carry any persisted ledger so rate-limit doesn't block.
+        dc.ledger = {**dc.ledger, **st}
+        return dc
+
+    # Decider produces a downgraded nudge (post_validate downgrades complete→nudge when
+    # the PR bar isn't met); but refresh_facts returns armed facts → restores complete.
+    # With no_auto_archive=True, the loop calls _decline_archive.
+    loop = _loop(ctx,
+                 decision=Decision(action="nudge", prompt="hint", downgraded_from="complete"),
+                 refresh_facts=refresh_facts)
+    loop._get_context = get_context
+    loop._archive = archive
+    await loop.tick()
+
+    # _verify_nudge_facts must have stamped last_facts_refresh
+    st = ctx.states.get("s1", {})
+    assert "last_facts_refresh" in st, (
+        "last_facts_refresh must survive the _decline_archive write-back")
+    # The decline-archive emit must have happened (proposal to the user)
+    assert any(kind == "proposed" for _, _, kind in ctx.emits), (
+        "expected a 'proposed' emit from _decline_archive")
