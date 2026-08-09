@@ -2,6 +2,7 @@
 import pytest
 from server.automations.autopilot import AutopilotLoop
 from server.automations.autopilot_policy import DecisionContext, Decision
+from server.automations.completion_bar import PrFact, PrFacts
 
 
 class FakeCtx:
@@ -34,8 +35,27 @@ def _dc(sid="s1", *, no_auto_archive=False):
                            transcript_tail=[], ledger={}, no_auto_archive=no_auto_archive)
 
 
+def _armed_facts():
+    return PrFacts(has_repo=True, prs=(PrFact(
+        number=7, state="open", is_draft=False, auto_merge_enabled=True,
+        url="u", checks="passing"),))
+
+
+def _repo_ctx(sid="s1", status="complete", facts=None, tail=None, ledger=None):
+    dc = _dc(sid)
+    dc.status = status
+    dc.repo = "o/r"
+    dc.stuck = {"kind": status}
+    dc.pr_facts = facts if facts is not None else PrFacts(has_repo=True, prs=())
+    dc.transcript_tail = tail or []
+    if ledger is not None:
+        dc.ledger = ledger
+    return dc
+
+
 def _loop(ctx, *, mode="auto", governed=("s1",), decision=Decision(action="approve", reason="ok"),
-          applied=None, config=None, no_auto_archive=False):
+          applied=None, config=None, no_auto_archive=False,
+          compose=None, refresh_facts=None):
     cfg = config or {"allow_tool_approvals": True, "max_actions_per_session_per_hour": 12,
                      "max_actions_per_day": 300, "recovery_max_attempts": 2,
                      "loop_repeat_limit": 3, "human_defer_seconds": 120,
@@ -60,7 +80,7 @@ def _loop(ctx, *, mode="auto", governed=("s1",), decision=Decision(action="appro
 
     loop = AutopilotLoop(ctx, read_config=read_config, list_governed=list_governed,
                          get_context=get_context, apply=apply, decide_fn=decide_fn,
-                         clock=lambda: 1000.0)
+                         clock=lambda: 1000.0, compose=compose, refresh_facts=refresh_facts)
     loop._applied = applied
     return loop
 
@@ -315,3 +335,117 @@ async def test_applied_action_clears_escalated_flag():
     loop = _loop(ctx, decision=Decision(action="approve", reason="safe"))
     await loop.tick()
     assert ctx.states["s1"].get("escalated") is False
+
+
+# ---------------------------------------------------------------------------
+# Task 6: verify → compose → dedupe → remember pipeline tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stale_complete_verifies_and_archives():
+    """Spec test 1: stale-facts complete + fresh-facts armed PR -> archive, no nudge."""
+    ctx = FakeCtx()
+    archived = []
+
+    async def refresh_facts(sid):
+        return _armed_facts()
+
+    async def archive(sid):
+        archived.append(sid)
+        return True
+
+    async def get_context(sid):
+        return _repo_ctx(sid, tail=[{"role": "assistant", "text": "PR #7 is armed"}])
+
+    loop = _loop(ctx, decision=Decision(action="complete", reason="marker"),
+                 refresh_facts=refresh_facts)
+    loop._get_context = get_context
+    loop._archive = archive
+    await loop.tick()
+    assert archived == ["s1"]
+    assert loop._applied == []          # no nudge was ever sent
+
+
+@pytest.mark.asyncio
+async def test_composed_nudge_is_sent_and_remembered():
+    ctx = FakeCtx()
+
+    async def compose(dc, decision):
+        return "Fix the 2 failing tests in test_ws.py."
+
+    loop = _loop(ctx, decision=Decision(action="nudge", prompt="fix tests"),
+                 compose=compose)
+    await loop.tick()
+    assert loop._applied == [("s1", "nudge")]
+    nudges = ctx.states["s1"]["recent_nudges"]
+    assert nudges[-1]["text"] == "Fix the 2 failing tests in test_ws.py."
+
+
+@pytest.mark.asyncio
+async def test_near_duplicate_composition_is_suppressed_and_counts():
+    """Spec test 2: near-identical composed nudge -> suppressed, repeat climbs."""
+    ctx = FakeCtx()
+    text = "Fix the 2 failing tests in test_ws.py."
+
+    async def compose(dc, decision):
+        return text
+
+    async def get_context(sid):
+        return _repo_ctx(sid, status="done",
+                         ledger={"recent_nudges": [{"ts": 999.0, "text": text}]})
+
+    loop = _loop(ctx, decision=Decision(action="nudge", prompt="fix tests"),
+                 compose=compose)
+    loop._get_context = get_context
+    await loop.tick()
+    assert loop._applied == []                            # send suppressed
+    assert ctx.states["s1"]["repeat_count"] >= 1          # counted toward escalation
+
+
+@pytest.mark.asyncio
+async def test_composer_failure_escalates_never_sends_template():
+    """Spec test 3: composer failure -> escalation, not a canned send."""
+    ctx = FakeCtx()
+
+    async def compose(dc, decision):
+        return None
+
+    loop = _loop(ctx, decision=Decision(action="nudge", prompt="hint"), compose=compose)
+    await loop.tick()
+    assert loop._applied == []
+    assert any(kind == "escalated" for _, _, kind in ctx.emits)
+
+
+@pytest.mark.asyncio
+async def test_refresh_is_rate_limited_per_session():
+    ctx = FakeCtx()
+    calls = []
+
+    async def refresh_facts(sid):
+        calls.append(sid)
+        return None
+
+    async def get_context(sid):
+        st = await ctx.get_target_state(sid)
+        return _repo_ctx(sid, ledger=st)
+
+    async def compose(dc, decision):
+        return f"unique direction {len(calls)} referencing file_{len(calls)}.py"
+
+    loop = _loop(ctx, decision=Decision(action="nudge", prompt="hint"),
+                 compose=compose, refresh_facts=refresh_facts)
+    loop._get_context = get_context
+    await loop.tick()
+    await loop.tick()                                     # same clock -> within 600s
+    assert calls == ["s1"]                                # second tick skipped refresh
+
+
+@pytest.mark.asyncio
+async def test_no_composer_and_no_prompt_escalates():
+    ctx = FakeCtx()
+    d = Decision(action="nudge", prompt=None, needs_composition=True,
+                 downgraded_from="complete")
+    loop = _loop(ctx, decision=d)                         # compose=None (legacy)
+    await loop.tick()
+    assert loop._applied == []
+    assert any(kind == "escalated" for _, _, kind in ctx.emits)
