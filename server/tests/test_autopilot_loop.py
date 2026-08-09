@@ -449,3 +449,82 @@ async def test_no_composer_and_no_prompt_escalates():
     await loop.tick()
     assert loop._applied == []
     assert any(kind == "escalated" for _, _, kind in ctx.emits)
+
+
+# ---------------------------------------------------------------------------
+# Task 6 fix: ledger-clobber regression tests
+# (composer-failure escalate + apply-False paths must preserve last_facts_refresh)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_composer_failure_preserves_last_facts_refresh():
+    """Regression: composer-failure escalate was passing raw `ledger` (pre-verify
+    snapshot) to _escalate, evicting `last_facts_refresh` that _verify_nudge_facts
+    had just written into ctx.ledger and persisted.  After the fix, the stored state
+    must still carry `last_facts_refresh` so the next tick skips the refresh."""
+    ctx = FakeCtx()
+    refresh_calls: list[str] = []
+
+    async def refresh_facts(sid: str):
+        refresh_calls.append(sid)
+        return None   # refresh fires but returns no new facts; nudge decision survives
+
+    async def compose(dc, decision):
+        return None   # composer fails → escalation path
+
+    async def get_context(sid):
+        # status="complete" + has_repo + no armed PR → facts_contradicted=True
+        return _repo_ctx(sid, status="complete")
+
+    loop = _loop(ctx,
+                 decision=Decision(action="nudge", prompt="hint",
+                                   downgraded_from="complete"),
+                 refresh_facts=refresh_facts, compose=compose)
+    loop._get_context = get_context
+    await loop.tick()
+
+    # refresh_facts was called → _verify_nudge_facts stamped last_facts_refresh
+    assert refresh_calls == ["s1"], "expected exactly one refresh on first tick"
+    # Bug: _escalate(sid, ledger, ...) would clobber ctx.ledger's last_facts_refresh.
+    # Fix: _escalate(sid, ctx.ledger, ...) preserves it.
+    assert "last_facts_refresh" in ctx.states.get("s1", {}), (
+        "last_facts_refresh must survive the escalation write-back")
+
+
+@pytest.mark.asyncio
+async def test_apply_false_preserves_last_facts_refresh():
+    """Regression: when apply() returns False, _record_fingerprint was using the raw
+    `ledger` snapshot (pre-verify), evicting `last_facts_refresh`.  After the fix,
+    the stored state must still carry `last_facts_refresh`."""
+    ctx = FakeCtx()
+    refresh_calls: list[str] = []
+
+    async def refresh_facts(sid: str):
+        refresh_calls.append(sid)
+        return None   # refresh fires; nudge decision survives
+
+    async def compose(dc, decision):
+        return "Do the thing with file.py to fix the tests."
+
+    async def get_context(sid):
+        return _repo_ctx(sid, status="complete")
+
+    applied: list = []
+    loop = _loop(ctx,
+                 decision=Decision(action="nudge", prompt="hint",
+                                   downgraded_from="complete"),
+                 applied=applied, refresh_facts=refresh_facts, compose=compose)
+    loop._get_context = get_context
+
+    async def apply_returns_false(sid, d, actx=None):
+        applied.append((sid, d.action))
+        return False  # nudge never lands
+
+    loop._apply = apply_returns_false
+    await loop.tick()
+
+    assert refresh_calls == ["s1"], "expected exactly one refresh on first tick"
+    # Bug: _record_fingerprint(sid, ledger, ...) clobbered ctx.ledger's last_facts_refresh.
+    # Fix: _record_fingerprint(sid, ctx.ledger, ...) preserves it.
+    assert "last_facts_refresh" in ctx.states.get("s1", {}), (
+        "last_facts_refresh must survive the apply-False write-back")

@@ -186,7 +186,7 @@ class AutopilotLoop:
             if decision.action == "suppressed":
                 return False, False
             if decision.action == "escalate":
-                await self._escalate(sid, ledger, ctx, decision)
+                await self._escalate(sid, ctx.ledger if ctx.ledger is not None else ledger, ctx, decision)
                 return False, True
 
         # Pass the DECIDE-TIME context to apply so it resolves exactly the
@@ -204,7 +204,7 @@ class AutopilotLoop:
             # The action did not mutate (e.g. a nudge that never landed). Still
             # accumulate the stuck-state fingerprint so loop detection can escalate
             # a session that would otherwise be nudged forever without progress.
-            await self._record_fingerprint(sid, ledger, ctx)
+            await self._record_fingerprint(sid, ctx.ledger if ctx.ledger is not None else ledger, ctx)
         return acted, False
 
     async def _decline_archive(self, sid: str, ledger: dict, ctx: DecisionContext,
