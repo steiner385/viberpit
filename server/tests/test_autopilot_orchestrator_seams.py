@@ -10,7 +10,18 @@ import asyncio
 
 import pytest
 
-from server.automations.autopilot_policy import Decision
+from server.automations.autopilot_policy import Decision, DecisionContext
+
+
+def make_decision_context(**kw):
+    """Build a minimal DecisionContext; callers override only the fields they care about."""
+    base = dict(
+        session_id="s1", status="waiting_input", account="acct-a", repo="o/r",
+        branch="feat/x", effective_goal="ship it", goal_source="explicit",
+        stuck={}, transcript_tail=[], ledger={},
+    )
+    base.update(kw)
+    return DecisionContext(**base)
 
 
 def _bare_orch():
@@ -416,6 +427,122 @@ async def test_autopilot_archive_context_records_resolution(tmp_path):
     assert captured["by"] == "autopilot"
     assert "cancelled" in captured["context"]["reason"]
     assert captured["context"]["pr_resolution"] == "cancelled"
+
+
+# --- PR-facts refresh + compose wrapper seams ------------------------------------
+
+
+class _FakePoller:
+    """Minimal PrStatusPoller stand-in: configurable cooldown, stubbed refresh."""
+
+    def __init__(self):
+        self._cooldown_until = 0.0
+        self._clock = __import__("time").monotonic
+        self.refreshed = []
+
+    @property
+    def in_cooldown(self) -> bool:
+        return self._clock() < self._cooldown_until
+
+    async def refresh_once(self, pairs):
+        self.refreshed.extend(pairs)
+        return True
+
+    def cached(self, repo, branch):
+        return None
+
+
+class _FakePopulation:
+    """Minimal population poller: returns an injected list per repo."""
+
+    def __init__(self, prs_by_repo=None):
+        self._prs = prs_by_repo or {}
+
+    def cached(self, repo):
+        return tuple(self._prs.get(repo, []))
+
+
+def _make_orch_with_session(repo="o/r", branch="feat/x"):
+    """Build a bare orchestrator wired with a session record and fake pollers."""
+    from server.sessions.types import SessionRecord
+    orch = _bare_orch()
+    orch._records = {"s1": SessionRecord(
+        id="s1", name="n", account="acct-a", claude_session_id="",
+        cols=80, rows=24, cwd="/tmp", status="in_progress",
+        repo=repo, branch=branch,
+    )}
+    orch._pr_poller = _FakePoller()
+    orch._pr_population = _FakePopulation()
+    # refresh_authored_branches does DB I/O in production; stub it out.
+    async def _noop_refresh():
+        pass
+    orch.refresh_authored_branches = _noop_refresh
+    return orch
+
+
+@pytest.fixture
+def orch():
+    return _make_orch_with_session()
+
+
+@pytest.mark.asyncio
+async def test_refresh_pr_facts_returns_none_without_repo(orch):
+    """No repo → None immediately (nothing to query)."""
+    orch._records["s1"].repo = None
+    assert await orch._autopilot_refresh_pr_facts("s1") is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_pr_facts_skips_in_cooldown(orch):
+    """Poller in backoff cooldown → caller gets None; don't pile on."""
+    orch._pr_poller._cooldown_until = orch._pr_poller._clock() + 999
+    assert await orch._autopilot_refresh_pr_facts("s1") is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_pr_facts_merges_population_cache(orch):
+    """Per-branch cache empty but population cache has a PR on the same branch —
+    the linkage-gap PR must land in the returned facts.prs (spec §2)."""
+    from server.github.pr_status import PullRequestInfo
+    pop_pr = PullRequestInfo(
+        number=42, url="https://github.com/o/r/pull/42",
+        state="open", checks="passing", title="feat",
+        is_draft=False, auto_merge_enabled=True, in_merge_queue=False,
+        head_ref="feat/x",
+    )
+    orch._pr_population = _FakePopulation({"o/r": [pop_pr]})
+    # pr_for returns None (per-branch cache misses) — population must fill the gap.
+    orch.pr_for = lambda repo, branch: None
+    facts = await orch._autopilot_refresh_pr_facts("s1")
+    assert facts is not None
+    numbers = [p.number for p in facts.prs]
+    assert 42 in numbers, f"population-cache PR #42 missing from facts.prs={numbers}"
+
+
+@pytest.mark.asyncio
+async def test_compose_wrapper_passes_rich_tail_and_history(orch, monkeypatch):
+    """_autopilot_compose calls compose_nudge with intent_hint, recent_nudges, and
+    verdict fields from the Decision; returns whatever compose_nudge returns."""
+    captured = {}
+
+    async def fake_compose(ctx, **kw):
+        captured.update(kw)
+        return "do the thing"
+
+    monkeypatch.setattr("server.automations.nudge_composer.compose_nudge", fake_compose)
+    # Stub the rich tail so no transcript I/O runs.
+    async def _fake_tail(sid, **kw):
+        return [{"role": "assistant", "text": "work done"}]
+    orch._autopilot_transcript_tail = _fake_tail
+
+    ctx = make_decision_context(ledger={"recent_nudges": [{"ts": 1.0, "text": "old"}]})
+    d = Decision(action="nudge", prompt="hint", downgraded_from="complete",
+                 verdict_reason="r", verdict_remedy="m", needs_composition=True)
+    out = await orch._autopilot_compose(ctx, d)
+    assert out == "do the thing"
+    assert captured["intent_hint"] == "hint"
+    assert captured["recent_nudges"] == ["old"]
+    assert captured["verdict_reason"] == "r"
 
 
 @pytest.mark.asyncio

@@ -66,6 +66,8 @@ class DecisionContext:
     # met_bar so an explicit `--squash --auto` arming step in the instructions raises the
     # completion bar to require an armed PR even when the goal text reads as non-code work.
     instructions: str | None = None
+    # Set by the loop after an on-demand refresh: pr_facts is GitHub-fresh.
+    facts_verified: bool = False
 
 
 @dataclass

@@ -2383,7 +2383,8 @@ class SessionOrchestrator:
 
     async def _autopilot_transcript_tail(self, session_id: str,
                                          *, turns: int = 6, max_entries: int = 12,
-                                         max_chars: int = 400) -> list[dict]:
+                                         max_chars: int = 400,
+                                         tool_chars: int = 160) -> list[dict]:
         """Compact tail of the session transcript for the autopilot decider.
 
         An empty tail starves the decider into 'not enough information' escalations
@@ -2413,9 +2414,9 @@ class SessionOrchestrator:
                     tail.append({"role": "assistant", "text": e.text[:max_chars]})
             elif isinstance(e, ToolCall):
                 try:
-                    arg_head = _json.dumps(e.input, default=str)[:160]
+                    arg_head = _json.dumps(e.input, default=str)[:tool_chars]
                 except Exception:
-                    arg_head = str(e.input)[:160]
+                    arg_head = str(e.input)[:tool_chars]
                 tail.append({"role": "tool", "text": f"{e.name} {arg_head}"})
         return tail[-max_entries:]
 
@@ -2488,6 +2489,61 @@ class SessionOrchestrator:
         except Exception:  # pragma: no cover — fall back to the process env config dir
             cfg_dir = None
         return await decide(ctx, _config_dir=cfg_dir)
+
+    async def _autopilot_refresh_pr_facts(self, session_id: str):
+        """On-demand PR ground-truth refresh for verify-before-directing (spec §2).
+        Refreshes branch linkage + this session's poller pairs, then rebuilds facts,
+        merging population-cache PRs the per-branch cache missed. Returns None on
+        no-repo, poller cooldown, or failure — the caller composes against stale
+        facts and says so. Rate limiting lives in the loop (ledger clock)."""
+        from server.automations.completion_bar import PrFact, PrFacts
+        rec = self._records.get(session_id)
+        if rec is None or not rec.repo:
+            return None
+        poller = getattr(self, "_pr_poller", None)
+        if poller is None or poller.in_cooldown:
+            return None
+        try:
+            await self.refresh_authored_branches()
+            pairs = [(rec.repo, br) for br in self._session_pr_branches(rec)]
+            await poller.refresh_once(pairs)
+        except Exception:
+            log.warning("autopilot.refresh_pr_facts failed sid=%s", session_id, exc_info=True)
+            return None
+        facts = self._autopilot_pr_facts(rec)
+        known = {p.number for p in facts.prs}
+        extra = []
+        for br in self._session_pr_branches(rec):
+            info = self._pr_population_pr(rec.repo, br)
+            if info is not None and info.number not in known:
+                known.add(info.number)
+                extra.append(PrFact(
+                    number=info.number, state=info.state, is_draft=info.is_draft,
+                    auto_merge_enabled=info.auto_merge_enabled,
+                    in_merge_queue=info.in_merge_queue, url=info.url,
+                    checks=info.checks))
+        if extra:
+            facts = PrFacts(has_repo=facts.has_repo, prs=facts.prs + tuple(extra))
+        return facts
+
+    async def _autopilot_compose(self, ctx, decision):
+        """Compose the actual nudge text (spec §3): rich transcript window + the
+        gate's intent hint + bar verdict + prior-nudge history. None -> escalate."""
+        from server.automations import nudge_composer
+        rich_tail = await self._autopilot_transcript_tail(
+            ctx.session_id, turns=20, max_entries=40, max_chars=1500, tool_chars=400)
+        try:
+            cfg_dir = str(compose(ctx.account))
+        except Exception:  # pragma: no cover — fall back to process env
+            cfg_dir = None
+        recent = [str(e.get("text", "")) for e in (ctx.ledger or {}).get("recent_nudges", [])]
+        return await nudge_composer.compose_nudge(
+            ctx, intent_hint=decision.prompt,
+            verdict_reason=decision.verdict_reason,
+            verdict_remedy=decision.verdict_remedy,
+            recent_nudges=recent, rich_tail=rich_tail,
+            facts_verified=getattr(ctx, "facts_verified", False),
+            _config_dir=cfg_dir)
 
     async def _autopilot_archive(self, session_id: str) -> bool:
         """Archive a goal-met session (the loop's terminal-rest seam). Reversible —

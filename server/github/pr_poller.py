@@ -153,6 +153,12 @@ class PrStatusPoller:
         """
         self._on_cycle = fn
 
+    @property
+    def in_cooldown(self) -> bool:
+        """True while refresh failures have this poller backing off — on-demand
+        callers (autopilot verify-before-directing) must not pile on."""
+        return self._clock() < self._cooldown_until
+
     def cached(self, repo: str | None, branch: str | None) -> PullRequestInfo | None:
         if not repo or not branch:
             return None
