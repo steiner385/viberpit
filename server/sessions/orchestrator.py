@@ -417,6 +417,8 @@ class SessionOrchestrator:
             decide_fn=self._autopilot_decide,
             clock=time.monotonic,
             archive=self._autopilot_archive,
+            compose=self._autopilot_compose,
+            refresh_facts=self._autopilot_refresh_pr_facts,
         )
         self._autopilot_task: asyncio.Task | None = None
         # Per-tick fleet snapshot cache: (built_at, (active, archived)). One snapshot

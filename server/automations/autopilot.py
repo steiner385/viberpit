@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, cast
 
 from .autopilot_policy import (
     Decision, DecisionContext, fingerprint, post_validate, pre_decide,
@@ -270,9 +270,11 @@ class AutopilotLoop:
         new["last_facts_refresh"] = now
         await self._ctx.set_target_state(sid, new)
         ctx.ledger = new
-        fresh = await self._refresh_facts(sid)
-        if fresh is None:
+        fresh_obj = await self._refresh_facts(sid)
+        if fresh_obj is None:
             return decision          # cooldown/failure: compose against stale facts
+        from .completion_bar import PrFacts
+        fresh = cast(PrFacts, fresh_obj)
         ctx.pr_facts = fresh
         ctx.facts_verified = True
         if decision.downgraded_from == "complete":
@@ -297,6 +299,7 @@ class AutopilotLoop:
         if not (text or "").strip():
             return Decision(action="escalate",
                             reason=f"composer declined/failed ({decision.reason})")
+        assert text is not None  # narrowed: the empty/None check above would have returned
         if near_duplicate(text, (ctx.ledger or {}).get("recent_nudges", []), now):
             await self._record_suppressed(sid, ctx.ledger or {}, ctx)
             return Decision(action="suppressed", reason="near-duplicate nudge suppressed")
