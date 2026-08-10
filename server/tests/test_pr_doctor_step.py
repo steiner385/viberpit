@@ -901,7 +901,6 @@ async def test_behind_pr_in_merge_queue_is_no_op(monkeypatch, tmp_path):
     GitHub rejects update-branch with 422 for queued PRs. classify() now returns
     None (no action) so the step exits without calling _gh_run.
     """
-    import types
     await _init_pr_doctor_db(tmp_path)
     await _set_mode(monkeypatch, "auto")
 
