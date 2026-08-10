@@ -5,6 +5,7 @@ import { maybeConvertHeic } from './heicConvert'
 export const ALLOWED = [
   'image/png', 'image/jpeg', 'image/gif', 'image/webp',
   'application/pdf', 'text/plain', 'text/csv', 'application/json',
+  'application/zip',
 ]
 export const MAX_BYTES = 10 * 1024 * 1024
 export const MAX_IMAGES = 5

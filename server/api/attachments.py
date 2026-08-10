@@ -76,7 +76,7 @@ async def upload_attachment(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": {"code": "bad_type",
                                "message": "unsupported file type "
-                               "(supported: png/jpeg/webp/gif, pdf, txt/csv/json)"}},
+                               "(supported: png/jpeg/webp/gif, pdf, txt/csv/json, zip)"}},
         )
     # Type-confusion defense for binary formats: declared must match the sniff.
     # Skipped for text types since we already resolved via declared.

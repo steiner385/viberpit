@@ -17,6 +17,7 @@ PNG = base64.b64decode(
 GIF = b"GIF89a" + b"\x00" * 20
 PDF = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF"
 TEXT = b"hello, world\n"
+ZIP = b"PK\x03\x04" + b"\x00" * 26  # minimal local file header (no entries)
 
 
 def _client(tmp_path, monkeypatch):
@@ -87,6 +88,20 @@ def test_upload_text_plain_201(tmp_path, monkeypatch):
         assert body["mediaType"] == "text/plain"
         g = client.get(body["url"], headers=IDENT)
         assert g.status_code == 200 and g.content == TEXT
+
+
+def test_upload_zip_201(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        r = client.post("/api/attachments", headers=IDENT,
+                        files={"file": ("archive.zip", ZIP, "application/zip")})
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["mediaType"] == "application/zip"
+        assert body["byteSize"] == len(ZIP)
+        g = client.get(body["url"], headers=IDENT)
+        assert g.status_code == 200 and g.content == ZIP
+        assert g.headers["content-type"].startswith("application/zip")
 
 
 def test_upload_bad_type_400(tmp_path, monkeypatch):

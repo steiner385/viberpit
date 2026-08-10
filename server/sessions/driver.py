@@ -603,6 +603,9 @@ class SessionDriver:
                     data = base64.b64encode(raw).decode("ascii")
                     content.append({"type": "document", "source": {
                         "type": "base64", "media_type": "application/pdf", "data": data}})
+                elif mime == "application/zip":
+                    content.append({"type": "text", "text":
+                        f"[Attached: {im.get('name', 'file.zip')} (zip archive, {len(raw)} bytes)]"})
                 else:  # text/plain, text/csv, application/json
                     content.append({"type": "text", "text": raw.decode("utf-8", errors="replace")})
             message = {"type": "user",

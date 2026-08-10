@@ -30,6 +30,7 @@ _EXT = {
     "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif",
     "application/pdf": "pdf",
     "text/plain": "txt", "text/csv": "csv", "application/json": "json",
+    "application/zip": "zip",
 }
 
 # Types with no reliable magic bytes — accepted solely on declared Content-Type.
@@ -53,6 +54,8 @@ def sniff_media_type(head: bytes) -> str | None:
         return "image/webp"
     if head.startswith(b"%PDF-"):
         return "application/pdf"
+    if head.startswith(b"PK\x03\x04"):
+        return "application/zip"
     return None
 
 
