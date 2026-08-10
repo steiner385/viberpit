@@ -888,3 +888,91 @@ async def test_pr_doctor_actionable_lists_real_recovery_modes(monkeypatch, tmp_p
     assert by_id["o/r#7"]["actions"][0]["kind"] == "failing_ci"
     assert by_id["o/r#9"]["actions"][0]["kind"] == "out_of_date"
     assert by_id["o/r#7"]["url"] and by_id["o/r#7"]["title"]
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for: queued PRs, no-new-commits 422, transient spawn error
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_behind_pr_in_merge_queue_is_no_op(monkeypatch, tmp_path):
+    """A BEHIND PR that is already in the merge queue must NOT trigger update-branch.
+
+    GitHub rejects update-branch with 422 for queued PRs. classify() now returns
+    None (no action) so the step exits without calling _gh_run.
+    """
+    import types
+    await _init_pr_doctor_db(tmp_path)
+    await _set_mode(monkeypatch, "auto")
+
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Automation
+    async with db_session() as db:
+        await db.execute(
+            sa_update(Automation)
+            .where(Automation.id == "pr-doctor")
+            .values(config={"auto_update_out_of_date": True})
+        )
+
+    # BEHIND but already in_merge_queue → classify() should return None
+    pr = PullRequestInfo(
+        number=7, url="https://x/pull/7", state="open", checks="passing",
+        title="t", head_sha="sha1", is_draft=False, mergeable="MERGEABLE",
+        merge_state_status="BEHIND", in_merge_queue=True,
+    )
+    orch = _build_orch(pr, has_driver=True)
+    orch._pr_poller = _StubPoller(pr)  # type: ignore[assignment]
+
+    gh_calls: list = []
+    orch._gh_run = lambda args: gh_calls.append(args)  # type: ignore[assignment]
+
+    took = await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"])
+    assert took is False        # no action taken
+    assert gh_calls == []       # gh never called
+
+
+@pytest.mark.asyncio
+async def test_update_branch_no_new_commits_consumes_attempt(monkeypatch, tmp_path):
+    """gh update-branch 422 'no new commits' is treated as a done state.
+
+    The branch was already current; returning True (success) lets record_attempt
+    fire so already_acted prevents infinite retries on the same head SHA.
+    """
+    import types
+    await _init_pr_doctor_db(tmp_path)
+    await _set_mode(monkeypatch, "auto")
+
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Automation
+    async with db_session() as db:
+        await db.execute(
+            sa_update(Automation)
+            .where(Automation.id == "pr-doctor")
+            .values(config={"auto_update_out_of_date": True})
+        )
+
+    pr = _pr(merge_state_status="BEHIND", checks="passing")
+    orch = _build_orch(pr, has_driver=True)
+
+    def fake_gh_no_new(args):
+        return types.SimpleNamespace(
+            returncode=1,
+            stdout='{"message":"There are no new commits on the base branch."}',
+            stderr="",
+        )
+
+    orch._gh_run = fake_gh_no_new  # type: ignore[assignment]
+
+    took = await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"])
+    assert took is True   # treated as done, not a failure
+
+    # Attempt was consumed — already_acted will block next poll on same SHA
+    st = await orch._pr_doctor_ctx.get_target_state("o/r#7")
+    assert st.get("mechanical_attempts", 0) == 1
+
+    # Event emitted as updated_branch (not mechanical_failed)
+    events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+    assert any(e["kind"] == "updated_branch" for e in events)
+    assert not any(e["kind"] == "mechanical_failed" for e in events)

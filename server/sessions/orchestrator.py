@@ -2997,13 +2997,19 @@ class SessionOrchestrator:
                 detail={"model": model, "model_source": model_source}
                 if model is not None else None,
             )
-        except AllAccountsBusy:
-            # Every account is at/above the usage ceiling → defer, not fail. Attempt
-            # NOT consumed; surfaced to the user as a warn, not a silent no-op.
+        except AllAccountsBusy as exc:
+            # Distinguish genuine ceiling (all accounts exhausted) from a transient
+            # reservation or reauth block so the caller and UI give accurate feedback.
+            if exc.kind == "at_ceiling":
+                await self._pr_doctor_ctx.emit(
+                    "warn", f"spawn deferred for {target}: all accounts at/above usage ceiling",
+                    kind="spawn_failed", target=target)
+                return "ceiling", None
+            # no_usable_accounts: reserved or needs-reauth — retry soon, not a ceiling.
             await self._pr_doctor_ctx.emit(
-                "warn", f"spawn deferred for {target}: all accounts at/above usage ceiling",
+                "warn", f"spawn deferred for {target}: no usable account available",
                 kind="spawn_failed", target=target)
-            return "ceiling", None
+            return "transient", None
         except Exception as exc:
             # Spawn failed → error + notify, attempt NOT consumed.
             await self._pr_doctor_ctx.emit(
@@ -3201,9 +3207,19 @@ class SessionOrchestrator:
                         "info", f"update-branch succeeded for {target}",
                         kind="updated_branch", target=target)
                     return True
+                # 422 "no new commits": the base hasn't advanced since the poller
+                # snapshot — the PR is effectively up to date. Treat as done (consume
+                # the attempt) so already_acted fires and we stop retrying this head.
+                body = getattr(proc, "stdout", "") or getattr(proc, "stderr", "") or ""
+                if proc.returncode != 0 and "no new commits" in body.lower():
+                    await self._pr_doctor_ctx.emit(
+                        "info", f"update-branch no-op (already current) for {target}",
+                        kind="updated_branch", target=target)
+                    return True
                 await self._pr_doctor_ctx.emit(
                     "warn", f"update-branch failed (rc={proc.returncode}) for {target}",
-                    kind="mechanical_failed", target=target)
+                    kind="mechanical_failed", target=target,
+                    detail={"body": body[:300]})
                 return False
             except Exception as exc:  # noqa: BLE001
                 await self._pr_doctor_ctx.emit(

@@ -403,17 +403,30 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
         reserved = {n for n in names if ledger.reservation_active(led, n, now_ts)}
         unhealthy = frozenset(n for n in names if ledger.get_status(led, n) == "needs-reauth")
         reserves = ledger.weekly_reserves(led)
+        def _pick(excl, rsv):
+            return select_picked(usages, rsv, cfg, now, excl, load or {},
+                                 unhealthy, optimistic_fallback=True, reserves=reserves)
         try:
-            picked = select_picked(usages, reserved, cfg, now, exclude, load or {},
-                                   unhealthy, optimistic_fallback=True, reserves=reserves)
-        except AllAccountsBusy:
-            if not exclude:
+            picked = _pick(exclude, reserved)
+        except AllAccountsBusy as _first_exc:
+            if not exclude and not reserved:
                 raise
-            # Every non-quarantined account is at ceiling. Fall back to quarantined
-            # accounts that still have headroom: one rate-limited session should not
-            # block all new spawns when the other accounts are exhausted.
-            picked = select_picked(usages, reserved, cfg, now, frozenset(), load or {},
-                                   unhealthy, optimistic_fallback=True, reserves=reserves)
+            # Tiered fallback: progressively relax constraints so a single at-ceiling
+            # account or a stale reservation can't starve all new sessions.
+            #   1. Remove quarantine exclusion (rate-limited account might have reset).
+            #   2. Remove soft reservation (prevents concurrent double-picks, not meant
+            #      to block sequential spawns when only one account has headroom).
+            _picked = None
+            for excl, rsv in [(frozenset(), reserved), (exclude, frozenset()),
+                              (frozenset(), frozenset())]:
+                try:
+                    _picked = _pick(excl, rsv)
+                    break
+                except AllAccountsBusy:
+                    pass
+            if _picked is None:
+                raise _first_exc
+            picked = _picked
         if reserve:
             ledger.reserve(led, picked.name, now_ts + cfg.reservation_ttl_sec)
     return picked
