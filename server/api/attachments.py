@@ -1,4 +1,4 @@
-"""Image attachment upload + serve endpoints (single canonical surface).
+"""File attachment upload + serve endpoints (single canonical surface).
 
 POST /api/attachments      → streaming upload, hard byte cap, magic-byte sniff,
                              declared-vs-sniffed reconciliation, sha256 dedup,
@@ -21,6 +21,7 @@ from server.db import get_db
 from server.db.models import Attachment
 from server.sessions.attachments import (
     MAX_BYTES,
+    _DECLARED_ONLY,
     sniff_media_type,
     storage_path,
 )
@@ -38,11 +39,13 @@ async def upload_attachment(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ):
-    """Accept a multipart image upload; stage it as a DB-backed, deduped attachment.
+    """Accept a multipart file upload; stage it as a DB-backed, deduped attachment.
 
     - Streams into memory with a hard byte cap (413 if exceeded).
-    - Sniffs the real type from magic bytes; 400 if unsupported.
-    - Rejects (400) when the declared Content-Type disagrees with the sniffed type.
+    - Sniffs the real type from magic bytes for binary formats; 400 if unsupported.
+    - For text-family types (text/plain, text/csv, application/json) the declared
+      Content-Type is trusted (no reliable magic bytes exist for these).
+    - Rejects (400) when a sniffed binary type disagrees with the declared type.
     - Dedups by sha256: identical bytes reuse the existing row + on-disk file.
     """
     declared = (file.content_type or "").split(";")[0].strip().lower()
@@ -61,18 +64,23 @@ async def upload_attachment(
             return JSONResponse(
                 status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 content={"error": {"code": "too_large",
-                                   "message": f"image exceeds {MAX_BYTES} bytes"}},
+                                   "message": f"file exceeds {MAX_BYTES} bytes"}},
             )
     if media_type is None:
         media_type = sniff_media_type(bytes(buf[:12]))
+    # For text-family types there are no magic bytes — fall back to declared type.
+    if media_type is None and declared in _DECLARED_ONLY:
+        media_type = declared
     if media_type is None:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": {"code": "bad_type",
-                               "message": "file is not a supported image (png/jpeg/webp/gif)"}},
+                               "message": "unsupported file type "
+                               "(supported: png/jpeg/webp/gif, pdf, txt/csv/json)"}},
         )
-    # Type-confusion defense: a declared type, when present, must match the sniff.
-    if declared and declared != media_type:
+    # Type-confusion defense for binary formats: declared must match the sniff.
+    # Skipped for text types since we already resolved via declared.
+    if declared and declared != media_type and media_type not in _DECLARED_ONLY:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": {"code": "type_mismatch",
@@ -104,7 +112,7 @@ async def upload_attachment(
 
     row = Attachment(
         session_id=None, media_type=media_type,
-        filename=(file.filename or "image")[:255],
+        filename=(file.filename or "file")[:255],
         byte_size=len(data), sha256=sha, uploaded_by=identity,
     )
     db.add(row)

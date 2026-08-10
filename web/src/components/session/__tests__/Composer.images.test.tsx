@@ -16,11 +16,11 @@ function paste(el: Element, file: File) {
 }
 
 describe('Composer image paste', () => {
-  it('file input uses image/* so mobile shows the camera option, and is not camera-only', () => {
+  it('file input accepts images plus pdf/txt/csv/json, is not camera-only', () => {
     const { container } = render(<Composer status={{ state: 'idle', count: 0 }}
       onPrompt={() => {}} onInterrupt={() => {}} />)
     const input = container.querySelector('input[type=file]') as HTMLInputElement
-    expect(input.getAttribute('accept')).toBe('image/*')
+    expect(input.getAttribute('accept')).toBe('image/*,application/pdf,text/plain,text/csv,application/json')
     expect(input.hasAttribute('capture')).toBe(false)
     expect(input.multiple).toBe(true)
   })
@@ -46,6 +46,19 @@ describe('Composer image paste', () => {
     await waitFor(() => screen.getByTestId('attachment-chips'))
     fireEvent.click(screen.getByLabelText('Send message'))
     await waitFor(() => expect(onPrompt).toHaveBeenCalledWith('', ['att-1']))
+  })
+
+  it('pasting a pdf adds a chip and includes its id in the sent prompt', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({ ok: true, json: async () => ({ id: 'att-pdf', mediaType: 'application/pdf', filename: 'doc.pdf', byteSize: 50, url: '/api/attachments/att-pdf' }) })))
+    const onPrompt = vi.fn()
+    render(<Composer status={{ state: 'idle', count: 0 }}
+      onPrompt={onPrompt} onInterrupt={() => {}} />)
+    const ta = screen.getByLabelText('Message')
+    paste(ta, new File([new Uint8Array(50)], 'doc.pdf', { type: 'application/pdf' }))
+    await waitFor(() => screen.getByTestId('attachment-chips'))
+    fireEvent.click(screen.getByLabelText('Send message'))
+    await waitFor(() => expect(onPrompt).toHaveBeenCalledWith('', ['att-pdf']))
   })
 
   it('empty send (no text, no images) does not fire onPrompt', async () => {
