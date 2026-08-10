@@ -168,6 +168,30 @@ class TestAccounts(unittest.TestCase):
                 # beta now reserved → excluded on the next pick, alpha wins
                 self.assertEqual(accounts.pick_account(accounts.load_config()), "alpha")
 
+    def test_pick_account_falls_back_to_reserved_when_only_option(self):
+        """When the only non-ceiling account is reserved, it is used as last resort.
+
+        120s reservation TTL is a concurrent-pick dedup guard, not a hard cap on
+        sequential spawns. When only one account has headroom, a second call must
+        succeed by ignoring the reservation rather than raising AllAccountsBusy.
+        """
+        with temp_env():
+            from ccswitch import accounts, ledger
+            _seed_account("solo")
+            _seed_account("maxed")
+            def fake_usage(name):
+                if name == "solo":
+                    return usage(session=22.0)  # healthy
+                return usage(session=100.0)     # at ceiling
+            with mock.patch.object(accounts, "usage_for", side_effect=fake_usage):
+                # First pick reserves "solo" for 120s
+                first = accounts.pick_account(accounts.load_config())
+                self.assertEqual(first, "solo")
+                # Second pick: "solo" is reserved, "maxed" is at ceiling.
+                # The fallback must relax the reservation and pick "solo" anyway.
+                second = accounts.pick_account(accounts.load_config())
+                self.assertEqual(second, "solo")
+
     def test_pick_account_forwards_load_to_selector(self):
         with temp_env():
             from ccswitch import accounts

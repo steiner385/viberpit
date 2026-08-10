@@ -52,6 +52,10 @@ def classify(info: PullRequestInfo) -> str | None:
     if info.mergeable == "CONFLICTING" or info.merge_state_status == "DIRTY":
         return "merge_conflict"
     if info.merge_state_status == "BEHIND":
+        # A PR in the merge queue cannot have its branch updated — GitHub rejects
+        # update-branch with 422. Leave it alone; the queue will handle the merge.
+        if info.in_merge_queue:
+            return None
         return "out_of_date"
     # failing_ci only for a *required* failure: UNSTABLE = a non-required check is
     # red on a mergeable branch → not actionable. (merge_state_status is the
