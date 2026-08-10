@@ -16,11 +16,11 @@ function paste(el: Element, file: File) {
 }
 
 describe('Composer image paste', () => {
-  it('file input accepts images plus pdf/txt/csv/json, is not camera-only', () => {
+  it('file input accepts images plus pdf/txt/csv/json/zip, is not camera-only', () => {
     const { container } = render(<Composer status={{ state: 'idle', count: 0 }}
       onPrompt={() => {}} onInterrupt={() => {}} />)
     const input = container.querySelector('input[type=file]') as HTMLInputElement
-    expect(input.getAttribute('accept')).toBe('image/*,application/pdf,text/plain,text/csv,application/json')
+    expect(input.getAttribute('accept')).toBe('image/*,application/pdf,text/plain,text/csv,application/json,application/zip,.zip')
     expect(input.hasAttribute('capture')).toBe(false)
     expect(input.multiple).toBe(true)
   })

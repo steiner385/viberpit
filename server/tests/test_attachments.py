@@ -50,6 +50,10 @@ def test_sniff_pdf():
     assert A.sniff_media_type(b"%PDF-1.4\nrest") == "application/pdf"
 
 
+def test_sniff_zip():
+    assert A.sniff_media_type(b"PK\x03\x04" + b"\x00" * 20) == "application/zip"
+
+
 def test_sniff_rejects_non_image():
     assert A.sniff_media_type(b"not an image at all") is None
 

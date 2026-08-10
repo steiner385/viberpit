@@ -350,7 +350,7 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
         <input
           ref={fileRef}
           type="file"
-          accept="image/*,application/pdf,text/plain,text/csv,application/json"
+          accept="image/*,application/pdf,text/plain,text/csv,application/json,application/zip,.zip"
           multiple
           className="hidden"
           onChange={(e) => { if (e.target.files) void att.addFiles(e.target.files); e.target.value = '' }}
