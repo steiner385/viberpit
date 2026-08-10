@@ -18,6 +18,8 @@ from .questions import QuestionRegistry
 from .status import StatusSignals, derive_status
 from .transcript_repair import repair_resumed_transcript
 
+_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
 log = logging.getLogger(__name__)
 
 # DIAGNOSTIC (temporary): gate the per-emit status trace. Off by default — set
@@ -555,7 +557,7 @@ class SessionDriver:
         # C3 — auto-title from the first prompt (first line, max 50 chars).
         if not self._titled:
             self._titled = True
-            first_line = text.splitlines()[0] if text else (text or "image")
+            first_line = text.splitlines()[0] if text else (text or "attachment")
             self._emit(ev.Title(title=first_line[:50], source="prompt"))
         await self._start_turn(text, images)
 
@@ -591,9 +593,18 @@ class SessionDriver:
                 content.append({"type": "text", "text": text})
             for im in images:
                 with open(im["path"], "rb") as fh:
-                    data = base64.b64encode(fh.read()).decode("ascii")
-                content.append({"type": "image", "source": {
-                    "type": "base64", "media_type": im["mime"], "data": data}})
+                    raw = fh.read()
+                mime = im["mime"]
+                if mime in _IMAGE_MIMES:
+                    data = base64.b64encode(raw).decode("ascii")
+                    content.append({"type": "image", "source": {
+                        "type": "base64", "media_type": mime, "data": data}})
+                elif mime == "application/pdf":
+                    data = base64.b64encode(raw).decode("ascii")
+                    content.append({"type": "document", "source": {
+                        "type": "base64", "media_type": "application/pdf", "data": data}})
+                else:  # text/plain, text/csv, application/json
+                    content.append({"type": "text", "text": raw.decode("utf-8", errors="replace")})
             message = {"type": "user",
                        "message": {"role": "user", "content": content},
                        "parent_tool_use_id": None, "session_id": "default"}

@@ -1,4 +1,4 @@
-"""Image attachments — pure helpers plus async DB/file lifecycle.
+"""File attachments — pure helpers plus async DB/file lifecycle.
 
 Canonical implementation unifying the two prior parallel ones:
 
@@ -21,20 +21,27 @@ from sqlalchemy import select
 from ccswitch import paths
 from server.db.models import Attachment
 
-# Per-message limits (confirmed product decision): 10 MB / 5 images per message.
+# Per-message limits (confirmed product decision): 10 MB / 5 attachments per message.
 MAX_BYTES = 10 * 1024 * 1024
 MAX_PER_MESSAGE = 5
 
-# Supported image types → on-disk extension. Used both for sniffing acceptance
-# and for the content-addressed filename suffix.
-_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}
+# Supported types → on-disk extension.
+_EXT = {
+    "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif",
+    "application/pdf": "pdf",
+    "text/plain": "txt", "text/csv": "csv", "application/json": "json",
+}
+
+# Types with no reliable magic bytes — accepted solely on declared Content-Type.
+_DECLARED_ONLY = frozenset({"text/plain", "text/csv", "application/json"})
 
 
 def sniff_media_type(head: bytes) -> str | None:
-    """Detect image type from leading magic bytes. Returns a media type or None.
+    """Detect type from leading magic bytes. Returns a media type or None.
 
     Never trusts the declared/Content-Type — the API layer additionally rejects an
     upload whose declared type disagrees with what we sniff (type-confusion defense).
+    Text-family types have no magic bytes; they use _DECLARED_ONLY instead.
     """
     if head.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
@@ -44,6 +51,8 @@ def sniff_media_type(head: bytes) -> str | None:
         return "image/gif"
     if len(head) >= 12 and head[0:4] == b"RIFF" and head[8:12] == b"WEBP":
         return "image/webp"
+    if head.startswith(b"%PDF-"):
+        return "application/pdf"
     return None
 
 

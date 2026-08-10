@@ -46,6 +46,10 @@ def test_sniff_webp():
     assert A.sniff_media_type(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "image/webp"
 
 
+def test_sniff_pdf():
+    assert A.sniff_media_type(b"%PDF-1.4\nrest") == "application/pdf"
+
+
 def test_sniff_rejects_non_image():
     assert A.sniff_media_type(b"not an image at all") is None
 

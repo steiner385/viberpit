@@ -2,7 +2,10 @@
 import { useCallback, useState } from 'react'
 import { maybeConvertHeic } from './heicConvert'
 
-export const ALLOWED = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+export const ALLOWED = [
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
+  'application/pdf', 'text/plain', 'text/csv', 'application/json',
+]
 export const MAX_BYTES = 10 * 1024 * 1024
 export const MAX_IMAGES = 5
 
@@ -47,7 +50,7 @@ export function useImageAttachments(initial?: Attachment[]) {
       if (file.size > MAX_BYTES) {
         setAttachments((a) => [...a, {
           key: _nextKey(), mime: file.type, name: file.name,
-          previewUrl: '', error: 'Image too large (max 10 MB)' }])
+          previewUrl: '', error: 'File too large (max 10 MB)' }])
         accepted++
         continue
       }

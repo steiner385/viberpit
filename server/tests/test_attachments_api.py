@@ -15,6 +15,8 @@ PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
     "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 GIF = b"GIF89a" + b"\x00" * 20
+PDF = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF"
+TEXT = b"hello, world\n"
 
 
 def _client(tmp_path, monkeypatch):
@@ -59,6 +61,32 @@ def test_upload_oversize_413(tmp_path, monkeypatch):
                         files={"file": ("big.png", big, "image/png")})
         assert r.status_code == 413
         assert r.json()["error"]["code"] == "too_large"
+
+
+def test_upload_pdf_201(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        r = client.post("/api/attachments", headers=IDENT,
+                        files={"file": ("doc.pdf", PDF, "application/pdf")})
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["mediaType"] == "application/pdf"
+        assert body["byteSize"] == len(PDF)
+        g = client.get(body["url"], headers=IDENT)
+        assert g.status_code == 200 and g.content == PDF
+        assert g.headers["content-type"].startswith("application/pdf")
+
+
+def test_upload_text_plain_201(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        r = client.post("/api/attachments", headers=IDENT,
+                        files={"file": ("notes.txt", TEXT, "text/plain")})
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["mediaType"] == "text/plain"
+        g = client.get(body["url"], headers=IDENT)
+        assert g.status_code == 200 and g.content == TEXT
 
 
 def test_upload_bad_type_400(tmp_path, monkeypatch):
