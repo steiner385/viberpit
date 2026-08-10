@@ -40,8 +40,8 @@ describe('useImageAttachments', () => {
 
   it('rejects an unsupported type', async () => {
     const { result } = renderHook(() => useImageAttachments())
-    const pdf = new File([new Uint8Array(10)], 'x.pdf', { type: 'application/pdf' })
-    await act(async () => { await result.current.addFiles([pdf]) })
+    const video = new File([new Uint8Array(10)], 'x.mp4', { type: 'video/mp4' })
+    await act(async () => { await result.current.addFiles([video]) })
     expect(result.current.attachments[0].error).toMatch(/unsupported/i)
     // error chips render no thumbnail, so they hold no object URL
     expect(result.current.attachments[0].previewUrl).toBe('')
