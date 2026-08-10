@@ -19,7 +19,7 @@ EnvironmentFile=/etc/ccswitch/ccswitch.env
 # server/app.py (session close, X11 sweep, DB dispose — see app.py's shutdown
 # comment block) NEVER runs, and systemd SIGKILLs at TimeoutStopSec on every deploy
 # (transcript audit V4).
-ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/uvicorn server.app:app --host 100.102.11.121 --port 8787 --timeout-graceful-shutdown 10
+ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/uvicorn server.app:app --host 127.0.0.1 --port 8787 --timeout-graceful-shutdown 10
 Restart=on-failure
 RestartSec=3
 # Chromium is slow to exit; cap host resources on the 19GB box

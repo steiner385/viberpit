@@ -38,6 +38,26 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ccswitch.service
 ```
 
+## HTTPS via `tailscale serve` (required once per host)
+
+The edge server binds to `127.0.0.1:8787` (loopback). To expose it over HTTPS on the
+Tailscale network — required for browser secure-context APIs such as microphone access —
+run this once on the host:
+
+```bash
+tailscale serve https / http://127.0.0.1:8787
+```
+
+This registers a persistent `tailscale serve` rule that survives reboots. After running it,
+access ccswitch at `https://<hostname>.<tailnet-name>.ts.net` instead of the raw IP.
+Tailscale provisions and auto-rotates the TLS certificate; no cert management is needed.
+
+To verify the rule is active:
+
+```bash
+tailscale serve status
+```
+
 ## Operate
 
 ```bash
