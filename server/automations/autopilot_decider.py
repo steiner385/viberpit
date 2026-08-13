@@ -7,6 +7,8 @@ import logging
 import os
 from pathlib import Path
 
+from server.sessions.helper_call import run_helper_call
+
 from .autopilot_policy import Decision, DecisionContext
 
 log = logging.getLogger(__name__)
@@ -93,15 +95,27 @@ async def decide(ctx: DecisionContext, *, _query_fn=None, _config_dir=None, _cwd
                 model="haiku", system_prompt=_GUIDANCE, cwd=cwd,
                 env={**os.environ, "CLAUDE_CONFIG_DIR": config_dir},
                 allowed_tools=[], setting_sources=[])
-        parts: list[str] = []
-        async for msg in query_fn(prompt=_build_prompt(ctx), options=options):
-            content = getattr(msg, "content", None)
-            if isinstance(content, list):
-                for block in content:
-                    t = getattr(block, "text", None)
-                    if isinstance(t, str):
-                        parts.append(t)
-        return _parse("".join(parts).strip())
-    except Exception as exc:  # model down / parse error / bad options
+    except Exception as exc:  # bad/unimportable options
         log.warning("autopilot.decide failed: %s", exc)
         return Decision(action="escalate", reason=f"decider-failed:{type(exc).__name__}")
+
+    outcome = await run_helper_call(
+        lambda: query_fn(prompt=_build_prompt(ctx), options=options),
+        subsystem="autopilot.decide", account_key=config_dir)
+    if outcome.skipped:
+        # Account's decider lane is cooled-down (rate-limited/de-authed). Escalate
+        # to a human rather than fire a call certain to fail — the safe default.
+        return Decision(action="escalate", reason="decider-skipped:circuit-open")
+    if outcome.error is not None:  # model down / parse error
+        log.warning("autopilot.decide failed: %s", outcome.error)
+        return Decision(action="escalate",
+                        reason=f"decider-failed:{type(outcome.error).__name__}")
+    parts: list[str] = []
+    for msg in outcome.messages:
+        content = getattr(msg, "content", None)
+        if isinstance(content, list):
+            for block in content:
+                t = getattr(block, "text", None)
+                if isinstance(t, str):
+                    parts.append(t)
+    return _parse("".join(parts).strip())

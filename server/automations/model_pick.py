@@ -18,10 +18,10 @@ account default.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 
+from server.sessions.helper_call import run_helper_call
 from server.sessions.model_catalog import ALIASES
 
 log = logging.getLogger("ccswitch.automations")
@@ -109,23 +109,36 @@ async def assess_model(
             allowed_tools=[],
             setting_sources=[],
         )
-        text_parts: list[str] = []
-        async with asyncio.timeout(timeout):
-            async for msg in query_fn(prompt=body, options=options):
-                content = getattr(msg, "content", None)
-                if not isinstance(content, list):
-                    continue
-                for block in content:
-                    t = getattr(block, "text", None)
-                    if isinstance(t, str):
-                        text_parts.append(t)
-        raw = "".join(text_parts).strip()
-    except TimeoutError:
-        log.warning("assess_model: assessment exceeded %.0fs — falling back to default", timeout)
-        return None
     except Exception as exc:
         log.warning("assess_model: model call failed: %s", exc)
         return None
+
+    # retries=0: this assessment runs INLINE inside the bounded edge→daemon spawn
+    # RPC (#567/#568), so backoff retries would reintroduce the hang it guards
+    # against. Keep the single timeout-bounded attempt; the per-account breaker
+    # still skips calls against a cooled-down account.
+    outcome = await run_helper_call(
+        lambda: query_fn(prompt=body, options=options),
+        subsystem="assess_model", account_key=config_dir,
+        per_attempt_timeout=timeout, retries=0)
+    if outcome.skipped:
+        return None
+    if outcome.error is not None:
+        if outcome.failure_kind == "timeout":
+            log.warning("assess_model: assessment exceeded %.0fs — falling back to default", timeout)
+        else:
+            log.warning("assess_model: model call failed: %s", outcome.error)
+        return None
+    text_parts: list[str] = []
+    for msg in outcome.messages:
+        content = getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            t = getattr(block, "text", None)
+            if isinstance(t, str):
+                text_parts.append(t)
+    raw = "".join(text_parts).strip()
 
     pick = raw.strip().strip(".").lower()
     if pick in AUTO_MODEL_POOL:
