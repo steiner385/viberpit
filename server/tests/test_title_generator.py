@@ -4,6 +4,10 @@ from types import SimpleNamespace
 
 from server.sessions.title_generator import generate_title
 
+# generate_title now shares an in-memory per-account circuit breaker; the shared
+# conftest _reset_helper_call_breakers fixture clears it around every test so the
+# 401/429 cases here (which open the lane) don't leak into later tests.
+
 
 def _assistant(text: str):
     """A fake AssistantMessage: an object with a .content list of text blocks."""

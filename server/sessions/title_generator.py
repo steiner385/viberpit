@@ -13,6 +13,8 @@ import logging
 import os
 import re
 
+from .helper_call import run_helper_call
+
 log = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
@@ -111,32 +113,33 @@ async def generate_title(
             allowed_tools=[],
             setting_sources=[],
         )
-        messages = []
-        async for msg in query_fn(prompt=body, options=options):
-            messages.append(msg)
-    except Exception as exc:
+    except Exception as exc:  # unimportable/unbuildable SDK options — degrade
+        log.warning("generate_title options failed for config_dir=%s: %s", config_dir, exc)
+        return None
+
+    outcome = await run_helper_call(
+        lambda: query_fn(prompt=body, options=options),
+        subsystem="generate_title", account_key=config_dir)
+
+    if outcome.skipped:
+        # The account's title lane is cooled-down (rate-limited/de-authed); skip
+        # quietly rather than fire a call certain to fail.
+        return None
+    if outcome.error is not None:
         # When the Claude binary fails due to an HTTP API error (401 auth, 429
         # rate-limit, 5xx) it emits an AssistantMessage whose text IS the error
         # string (e.g. "Failed to authenticate. API Error: 401 Invalid…") before
-        # the ResultMessage. Detect this via ResultMessage.api_error_status and
-        # discard the collected text rather than persisting an error string as the
-        # session name. Only salvage text when the failure has no HTTP status — those
-        # are process exits whose partial assistant text may still be a useful title.
-        # Duck-typed (no SDK import): only ResultMessage carries api_error_status.
-        api_err = next(
-            (getattr(m, "api_error_status", None) for m in messages
-             if getattr(m, "api_error_status", None) is not None),
-            None,
-        )
-        if api_err is not None:
+        # the ResultMessage. api_error_status is set — discard the collected text
+        # rather than persisting an error string as the session name. Only salvage
+        # text when the failure has no HTTP status — those are process exits whose
+        # partial assistant text may still be a useful title.
+        if outcome.api_error_status is not None:
             log.warning("generate_title HTTP %s config_dir=%s: %s",
-                        api_err, config_dir, exc)
+                        outcome.api_error_status, config_dir, outcome.error)
             return None
-        # Non-HTTP process exit: salvage any partial title the assistant emitted
-        # before the error (e.g. tool permission denied, token limit).
-        salvaged = _sanitize(_extract_text(messages))
+        salvaged = _sanitize(_extract_text(outcome.messages))
         if salvaged is None:
-            log.warning("generate_title failed for config_dir=%s: %s", config_dir, exc)
+            log.warning("generate_title failed for config_dir=%s: %s", config_dir, outcome.error)
         return salvaged
 
-    return _sanitize(_extract_text(messages))
+    return _sanitize(_extract_text(outcome.messages))

@@ -9,6 +9,8 @@ import logging
 import os
 from dataclasses import dataclass
 
+from server.sessions.helper_call import run_helper_call
+
 log = logging.getLogger(__name__)
 
 _SYSTEM = (
@@ -85,15 +87,24 @@ async def classify_pr_intent(transcript_tail: list[dict], goal: str, *,
                 model="haiku", system_prompt=_SYSTEM, cwd=cwd,
                 env={**os.environ, "CLAUDE_CONFIG_DIR": config_dir},
                 allowed_tools=[], setting_sources=[])
-        parts: list[str] = []
-        async for msg in query_fn(prompt=_build_prompt(transcript_tail, goal), options=options):
-            content = getattr(msg, "content", None)
-            if isinstance(content, list):
-                for block in content:
-                    t = getattr(block, "text", None)
-                    if isinstance(t, str):
-                        parts.append(t)
-        return _parse("".join(parts).strip())
     except Exception as exc:
         log.warning("pr_intent.classify failed: %s", exc)
         return _UNRESOLVED
+
+    outcome = await run_helper_call(
+        lambda: query_fn(prompt=_build_prompt(transcript_tail, goal), options=options),
+        subsystem="pr_intent.classify", account_key=config_dir)
+    if outcome.skipped:
+        return _UNRESOLVED  # account lane cooled-down — fall back to the normal nudge
+    if outcome.error is not None:
+        log.warning("pr_intent.classify failed: %s", outcome.error)
+        return _UNRESOLVED
+    parts: list[str] = []
+    for msg in outcome.messages:
+        content = getattr(msg, "content", None)
+        if isinstance(content, list):
+            for block in content:
+                t = getattr(block, "text", None)
+                if isinstance(t, str):
+                    parts.append(t)
+    return _parse("".join(parts).strip())

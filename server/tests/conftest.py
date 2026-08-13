@@ -111,6 +111,18 @@ def _no_ambient_session_daemon(request, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _reset_helper_call_breakers():
+    # The background-helper backoff/circuit-breaker (server.sessions.helper_call)
+    # keeps process-global per-account state. Reset it around every test so a
+    # rate-limit/auth failure in one test can't leave a lane open and skip a
+    # later test's helper call, which would surface as an order-dependent flake.
+    from server.sessions import helper_call
+    helper_call.reset_breakers()
+    yield
+    helper_call.reset_breakers()
+
+
 # Enable asyncio mode for all tests in this package
 def pytest_configure(config):
     config.addinivalue_line(
