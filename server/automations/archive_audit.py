@@ -376,29 +376,40 @@ def _archived_row_to_dict(row) -> dict:
 
 
 async def load_archived_rows(session_factory) -> list[dict]:
-    """Load archived Session rows with the fields the audit needs (the list_archived
+    """Load auto-archived Session rows with the fields the audit needs (the list_archived
     seam omits repo/branch/authored_branches/goal, so read the model directly).
+    Only rows with an AUTO archived_by (AUTO_ARCHIVE_PROVENANCE) are returned — manual
+    ("user") and NULL-provenance archives are never auto-unarchive candidates.
     session_factory() is an async context manager yielding a DB session."""
     from sqlalchemy import select as sa_select
-    from server.db.models import Session as DbSession
+    from server.db.models import AUTO_ARCHIVE_PROVENANCE, Session as DbSession
     async with session_factory() as db:
         rows = (await db.execute(
-            sa_select(DbSession).where(DbSession.status == "archived"))).scalars().all()
+            sa_select(DbSession).where(
+                DbSession.status == "archived",
+                # Only sessions the SYSTEM auto-archived are auto-unarchive candidates;
+                # a manual ("user") archive is deliberate. `.in_` also excludes NULL.
+                DbSession.archived_by.in_(AUTO_ARCHIVE_PROVENANCE),
+            ))).scalars().all()
     return [_archived_row_to_dict(row) for row in rows]
 
 
 async def list_recent_archived_rows(session_factory, since: "datetime") -> list[dict]:
-    """Archived rows with archived_at >= since (the re-audit window). Same shape as
-    load_archived_rows. Rows with NULL archived_at (archived before the column existed,
-    or never timestamped) are excluded — they are not 'recent'."""
+    """Auto-archived rows with archived_at >= since (the re-audit window). Same shape and
+    provenance filter as load_archived_rows (only AUTO_ARCHIVE_PROVENANCE archived_by —
+    manual "user" archives are never auto-unarchived). Rows with NULL archived_at (archived
+    before the column existed, or never timestamped) are excluded — they are not 'recent'."""
     from sqlalchemy import select as sa_select
-    from server.db.models import Session as DbSession
+    from server.db.models import AUTO_ARCHIVE_PROVENANCE, Session as DbSession
     async with session_factory() as db:
         rows = (await db.execute(
             sa_select(DbSession).where(
                 DbSession.status == "archived",
                 DbSession.archived_at.isnot(None),
                 DbSession.archived_at >= since,
+                # Only sessions the SYSTEM auto-archived are auto-unarchive candidates;
+                # a manual ("user") archive is deliberate. `.in_` also excludes NULL.
+                DbSession.archived_by.in_(AUTO_ARCHIVE_PROVENANCE),
             ))).scalars().all()
     return [_archived_row_to_dict(row) for row in rows]
 

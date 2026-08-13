@@ -208,9 +208,12 @@ def test_list_recent_archived_rows_mixed_window():
 
 def test_list_recent_archived_rows_real_db_where_clause(tmp_path):
     """Real DB: the actual SQL WHERE (status='archived' AND archived_at not NULL AND
-    archived_at >= since) must do the filtering. The fake-factory tests above simulate
-    the filter in Python and so cannot catch a wrong query; this seeds a temp DB and
-    exercises the real select."""
+    archived_at >= since AND archived_by IN AUTO_ARCHIVE_PROVENANCE) must do the
+    filtering. The fake-factory tests above simulate the filter in Python and so cannot
+    catch a wrong query; this seeds a temp DB and exercises the real select. Every
+    candidate row carries an auto archived_by so it is excluded only by the dimension
+    under test (window/status); manual + NULL provenance exclusion is covered in
+    test_archive_audit.py."""
     from server.automations import archive_audit as aa
     from server.db import init_db, db_session
     from server.db.models import Session as DbSession
@@ -222,16 +225,17 @@ def test_list_recent_archived_rows_real_db_where_clause(tmp_path):
         async with db_session() as db:
             db.add_all([
                 DbSession(id="in", name="in", account_name="a", status="archived",
-                          cwd="/t", repo="o/r", branch="feat/in",
+                          cwd="/t", repo="o/r", branch="feat/in", archived_by="autopilot",
                           archived_at=datetime(2026, 6, 15)),
                 DbSession(id="old", name="old", account_name="a", status="archived",
-                          cwd="/t", repo="o/r", branch="feat/old",
+                          cwd="/t", repo="o/r", branch="feat/old", archived_by="autopilot",
                           archived_at=datetime(2026, 1, 1)),
                 DbSession(id="null", name="null", account_name="a", status="archived",
-                          cwd="/t", repo="o/r", branch="feat/null", archived_at=None),
+                          cwd="/t", repo="o/r", branch="feat/null", archived_by="autopilot",
+                          archived_at=None),
                 # in-window timestamp but NOT archived → excluded by the status filter
                 DbSession(id="live", name="live", account_name="a", status="idle",
-                          cwd="/t", repo="o/r", branch="feat/live",
+                          cwd="/t", repo="o/r", branch="feat/live", archived_by="autopilot",
                           archived_at=datetime(2026, 6, 20)),
             ])
         return await aa.list_recent_archived_rows(db_session, since)

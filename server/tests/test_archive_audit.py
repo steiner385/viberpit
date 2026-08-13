@@ -464,3 +464,63 @@ def test_resolved_no_pr_real_pr_wins():
     )
     assert out[0]["bucket"] == "premature"
     assert unarchived == ["s1"]
+
+
+# ---------------------------------------------------------------------------
+# Provenance gate: only SYSTEM auto-archives are auto-unarchive candidates.
+# A human's manual ("user") archive — and unknown (NULL) provenance — must never
+# be resurrected by the audit, however "premature" it looks. Exercised against a
+# real DB because the fix is a WHERE clause the loaders own (mocking execute would
+# bypass it). See 2026-08-13-manual-archive-exempt-from-auto-unarchive-design.md.
+# ---------------------------------------------------------------------------
+
+async def _seed_archived(tmp_path, dbname, rows):
+    """Init a temp-file DB and insert archived Session rows. `rows` is a list of
+    (id, archived_by) — each seeded premature-shaped (open goal, feat/x branch)."""
+    from datetime import datetime
+    from server.db import init_db, db_session
+    from server.db.models import Session as DbSession
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / dbname}")
+    async with db_session() as db:
+        for sid, archived_by in rows:
+            db.add(DbSession(id=sid, name="n", account_name="a",
+                             cwd=str(tmp_path / sid), status="archived",
+                             repo="o/r", branch="feat/x", inferred_goal="fix ci",
+                             archived_by=archived_by, archived_at=datetime.utcnow()))
+
+
+def test_manual_and_null_archives_are_not_auto_unarchive_candidates(tmp_path):
+    """list_recent_archived_rows / load_archived_rows return ONLY auto-provenance
+    rows, so a manually-archived (or NULL-provenance) session is never a candidate
+    the audit could unarchive — regardless of its PR state."""
+    async def run():
+        from datetime import datetime, timedelta
+        from server.db import db_session
+        await _seed_archived(tmp_path, "prov.db", [
+            ("s-user", "user"),               # manual → exempt
+            ("s-auto", "autopilot"),          # system → eligible
+            ("s-backlog", "backlog-runner"),  # system → eligible
+            ("s-null", None),                 # unknown provenance → exempt
+        ])
+        since = datetime.utcnow() - timedelta(days=1)
+        recent = await aa.list_recent_archived_rows(db_session, since)
+        allrows = await aa.load_archived_rows(db_session)
+        assert {r["id"] for r in recent} == {"s-auto", "s-backlog"}
+        assert {r["id"] for r in allrows} == {"s-auto", "s-backlog"}
+    asyncio.run(run())
+
+
+def test_autopilot_archive_still_unarchived_when_premature(tmp_path):
+    """The kept behavior: a system-archived, PR-less (premature) session still flows
+    through the loader and is unarchived by run_audit."""
+    async def run():
+        from server.db import db_session
+        await _seed_archived(tmp_path, "auto.db", [("s-auto", "autopilot")])
+        rows = await aa.load_archived_rows(db_session)
+        assert [r["id"] for r in rows] == ["s-auto"]
+        unarchived = []
+        out = await aa.run_audit(
+            rows, _gh_returning(_pr(state="OPEN", auto_merge=False)), unarchived.append)
+        assert out[0]["bucket"] == "premature"
+        assert unarchived == ["s-auto"]
+    asyncio.run(run())

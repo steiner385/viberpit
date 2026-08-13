@@ -37,6 +37,13 @@ INACTIVE_SESSION_STATUSES: frozenset[str] = frozenset({"ended", "archived"})
 # EVERY cap/slot count derives from this set; no inline status math elsewhere.
 NON_ACTIVE_SESSION_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"queued"}
 
+# Session.archived_by values written by an AUTOMATIC archive (vs a manual "user"
+# archive). Only these are eligible for auto-unarchive by the Archive Audit — a human's
+# manual archive is a deliberate decision the audit never second-guesses. NULL/unknown
+# provenance is excluded too (an `.in_(...)` predicate never matches NULL). Single source
+# of truth: import this instead of re-inlining the ("autopilot", "backlog-runner") set.
+AUTO_ARCHIVE_PROVENANCE: frozenset[str] = frozenset({"autopilot", "backlog-runner"})
+
 # Global cap on concurrently active sessions when AppSettings.max_active_sessions
 # is NULL. See docs/superpowers/specs/2026-07-21-max-active-sessions-queue-design.md.
 DEFAULT_MAX_ACTIVE_SESSIONS = 5

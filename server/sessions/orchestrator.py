@@ -39,7 +39,7 @@ from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
 from server.audit import record_audit
 from server.db import db_session
-from server.db.models import INACTIVE_SESSION_STATUSES, NON_ACTIVE_SESSION_STATUSES, Session as DbSession
+from server.db.models import AUTO_ARCHIVE_PROVENANCE, INACTIVE_SESSION_STATUSES, NON_ACTIVE_SESSION_STATUSES, Session as DbSession
 from server.sessions import adopt as _adopt
 from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions.archive_move import mountpoint, move_into_archive
@@ -6177,7 +6177,7 @@ class SessionOrchestrator:
         # Heuristic capture: an unarchive that reverses an AUTO archive is a signal the
         # auto-archive judgement was wrong. Record it (with the captured decision features)
         # so the decider can grow more cautious — see _autopilot_reversal_hint.
-        if prev_archived_by in ("autopilot", "backlog-runner"):
+        if prev_archived_by in AUTO_ARCHIVE_PROVENANCE:
             await self._record_archive_reversal(session_id, prev_archived_by, prev_context)
 
         record = self._record_from_row(
