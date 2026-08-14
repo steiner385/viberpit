@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from server.automations.completion_bar import PrFacts
     from server.github.merge_queue import QueueEntry
     from server.github.pr_status import PipelinePr
@@ -158,6 +160,11 @@ _STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
 # Periodic re-check of the archived-session cap, so a limit LOWERED via settings takes
 # effect even with no new archive event (the on-archive path covers the fresh-archive case).
 _ARCHIVE_LIMIT_SWEEP_INTERVAL: float = 300.0
+
+# Recurring-session dispatch (#603): how often the scheduler evaluates cron-
+# scheduled Automation rows. Sub-minute so a cron minute fires within a tick of
+# its due time; the persisted last_fired_at watermark makes the fire idempotent.
+_RECURRING_TICK_INTERVAL: float = 30.0
 
 
 class SessionOrchestrator:
@@ -621,6 +628,13 @@ class SessionOrchestrator:
         # or SIGKILL mid-teardown — the three orphan sources from issue #591.
         self._janitor_task = asyncio.create_task(
             self._worktree_janitor_loop(interval=86400.0), name="worktree-janitor-loop"
+        )
+        # Recurring-session scheduler: fire cron-scheduled Automation rows as their
+        # due time arrives (#603 dispatch). Alongside the loops above; the watermark
+        # column makes each firing idempotent across restarts.
+        self._recurring_task = asyncio.create_task(
+            self._recurring_tick_loop(interval=_RECURRING_TICK_INTERVAL),
+            name="recurring-session-scheduler",
         )
 
     async def _refresh_idle_tokens_once(self) -> None:
@@ -2068,6 +2082,122 @@ class SessionOrchestrator:
         active = [m for m in ArchiveAudit.modes if m != "off"]
         effective = (mode if mode in active else active[0]) if enabled else "off"
         return effective, config
+
+    # ------------------------------------------------------------------
+    # Recurring-session scheduler (#603 dispatch): fire cron-scheduled sessions
+    # ------------------------------------------------------------------
+
+    async def _recurring_tick_loop(self, interval: float) -> None:
+        """Fire cron-scheduled recurring sessions every *interval* seconds. Each
+        tick evaluates every recurring-session Automation row; a firing is gated by
+        the row's active-hours window and made idempotent by its persisted
+        last_fired_at watermark."""
+        while True:
+            await self._recurring_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _recurring_tick_once(self, now: datetime | None = None) -> None:
+        """One scheduler pass. For each enabled recurring-session row: honor the
+        active-hours gate (``should_tick``), then ``evaluate_fire`` to decide
+        whether a cron minute is due, spawn a de-duped session, and persist the
+        advanced watermark. Best-effort throughout — one bad row can't wedge the
+        loop, and the watermark is advanced only after a spawn is accepted so a
+        transient 'all accounts busy' retries on the next tick (within grace)."""
+        from datetime import datetime
+
+        from server.automations.schedule import ScheduleError, evaluate_fire, should_tick
+        now = now or datetime.now()
+        try:
+            rows = await self._recurring_rows()
+        except Exception:  # pragma: no cover — a load failure must never stall the loop
+            log.warning("recurring_scheduler.load_failed", exc_info=True)
+            return
+        for automation_id, schedule_raw, spec, last_fired in rows:
+            try:
+                if not should_tick(schedule_raw, now):
+                    continue  # outside the row's active-hours window
+                decision = evaluate_fire(schedule_raw, last_fired=last_fired, now=now)
+            except ScheduleError:
+                log.warning("recurring_scheduler.bad_schedule id=%s", automation_id)
+                continue
+            except Exception:  # pragma: no cover — defensive; one row can't wedge the rest
+                log.warning("recurring_scheduler.eval_failed id=%s", automation_id,
+                            exc_info=True)
+                continue
+            if not decision.spawn:
+                # A first-sight baseline still records its watermark (no session).
+                if decision.watermark is not None:
+                    await self._set_last_fired(automation_id, decision.watermark)
+                continue
+            spawned = await self._recurring_spawn(automation_id, spec, decision.fire_at)
+            if spawned and decision.watermark is not None:
+                await self._set_last_fired(automation_id, decision.watermark)
+
+    async def _recurring_rows(self) -> list[tuple[str, dict, dict, datetime | None]]:
+        """(id, schedule, spec, last_fired) for every enabled recurring-session
+        Automation row. A recurring-session row is one whose ``config`` carries a
+        ``recurringSession`` spawn spec AND whose ``schedule`` has a cron — the
+        marker is what keeps the continuous automations (which may also carry an
+        active-hours schedule) out of the dispatcher."""
+        from sqlalchemy import select
+        from server.db.models import Automation
+        async with db_session() as db:
+            rows = (await db.execute(select(Automation).where(
+                Automation.enabled.is_(True),
+                Automation.schedule.is_not(None)))).scalars().all()
+        out: list[tuple[str, dict, dict, datetime | None]] = []
+        for r in rows:
+            spec = (r.config or {}).get("recurringSession")
+            sched = r.schedule or {}
+            if isinstance(spec, dict) and isinstance(sched, dict) and sched.get("cron"):
+                out.append((r.id, sched, spec, r.last_fired_at))
+        return out
+
+    async def _set_last_fired(self, automation_id: str, when: datetime) -> None:
+        """Persist the dispatch watermark. Best-effort: a write failure is logged
+        but never propagated (the next tick simply re-evaluates)."""
+        from sqlalchemy import update as sa_update
+        from server.db.models import Automation
+        try:
+            async with db_session() as db:
+                await db.execute(sa_update(Automation)
+                                 .where(Automation.id == automation_id)
+                                 .values(last_fired_at=when))
+        except Exception:  # pragma: no cover — heartbeat-style best-effort write
+            log.warning("recurring_scheduler.watermark_failed id=%s", automation_id,
+                        exc_info=True)
+
+    async def _recurring_spawn(
+        self, automation_id: str, spec: dict, fire_at: datetime | None
+    ) -> bool:
+        """Spawn a de-duped session for a due cron firing. Returns True when a
+        session was created (or an equivalent one already existed) so the caller
+        advances the watermark; False when the firing should be retried next tick
+        (no account had headroom). ``origin_ref`` is the fire minute, so two ticks
+        landing in the same minute reuse the one session rather than double-spawn."""
+        from server.automations.context import AutomationContext
+        ref = fire_at.isoformat(timespec="minutes") if fire_at else "now"
+        name = spec.get("name") or f"scheduled {automation_id}"
+        ctx = AutomationContext(automation_id, create_session=self.create_session)
+        kwargs: dict = {"name": name, "initial_prompt": spec.get("prompt")}
+        for key in ("repo", "branch", "account", "model"):
+            if spec.get(key):
+                kwargs[key] = spec[key]
+        try:
+            await ctx.spawn_session(origin_ref=ref, dedupe_key=ref,
+                                    detail={"fireAt": ref, "scheduled": True}, **kwargs)
+            return True
+        except AllAccountsBusy:
+            # Transient: leave the watermark so the firing retries within grace.
+            await ctx.emit("info", f"scheduled run deferred — all accounts busy ({name})",
+                           kind="skipped", target=ref)
+            return False
+        except Exception:
+            log.warning("recurring_scheduler.spawn_failed id=%s", automation_id,
+                        exc_info=True)
+            await ctx.emit("error", f"scheduled run failed to spawn ({name})",
+                           kind="error", target=ref)
+            return True  # a hard error is not retriable; advance past it
 
     # ------------------------------------------------------------------
     # CI/CD Doctor action-provider seams (CicdDoctorActionProvider)
