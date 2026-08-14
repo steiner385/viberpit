@@ -389,6 +389,13 @@ class Automation(Base):
         JSON(none_as_null=True), nullable=True, default=None)
     # Heartbeat the automation bumps while alive; lets the UI flag a stalled loop.
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    # Watermark for cron-scheduled recurring-session dispatch (#603): the most
+    # recent cron minute already fired (or a baseline set on first sight). The
+    # scheduler only fires strictly-later minutes, so this persists the "already
+    # ran" guard across daemon restarts and prevents a double-fire. NULL until the
+    # scheduler first evaluates the row. Nullable so init_db backfills it on the
+    # dev SQLite DB without a migration.
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
 

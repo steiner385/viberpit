@@ -200,6 +200,68 @@ def parse_cron(expr: str) -> Cron:
     )
 
 
+# ---------------------------------------------------------------------------
+# Recurring-session dispatch (#603): decide when a cron fires a real session
+# ---------------------------------------------------------------------------
+
+# How late a cron firing may be caught up on recovery before it is dropped.
+# With a sub-minute dispatch tick this only matters across a daemon restart: a
+# run missed by less than the grace fires once when the daemon comes back; an
+# older one is skipped rather than replayed as a burst.
+DEFAULT_CATCHUP_GRACE = timedelta(minutes=30)
+
+
+@dataclass(frozen=True)
+class FireDecision:
+    """Outcome of :func:`evaluate_fire`. ``watermark`` is the value to persist to
+    ``Automation.last_fired_at`` (``None`` = leave the stored value unchanged)."""
+    spawn: bool
+    fire_at: datetime | None
+    watermark: datetime | None
+
+
+def evaluate_fire(
+    raw: dict | None, *, last_fired: datetime | None, now: datetime,
+    grace: timedelta = DEFAULT_CATCHUP_GRACE,
+) -> FireDecision:
+    """Whether a cron schedule should fire a session at ``now`` (#603 dispatch).
+
+    Pure + deterministic — the caller passes ``now`` and the persisted
+    ``last_fired`` watermark, so this is unit-testable with no clock or DB. The
+    rules, in order:
+
+    * No cron in the schedule → never fires. (An active-hours-only schedule gates
+      a *continuous* automation; it does not fire discrete sessions.)
+    * ``last_fired is None`` → establish a watermark at ``now`` WITHOUT firing, so
+      a freshly-created job never backfires cron minutes from before ccswitch knew
+      about it.
+    * Otherwise take the most recent cron minute in ``(last_fired, now]`` that is
+      no older than ``grace``:
+        * found → spawn and advance the watermark to that minute. A run missed
+          while the daemon was down fires exactly once on recovery; several missed
+          minutes coalesce to the latest (no replay burst).
+        * none → no fire, watermark unchanged. A run missed by more than ``grace``
+          is dropped.
+
+    Firing only strictly after ``last_fired`` (never equal) is what prevents a
+    double-fire when several ticks land inside the same cron minute, and — because
+    the watermark is persisted — across a daemon restart within that minute.
+    """
+    sched = raw if isinstance(raw, Schedule) else parse_schedule(raw)
+    if sched.cron is None:
+        return FireDecision(spawn=False, fire_at=None, watermark=None)
+    if last_fired is None:
+        return FireDecision(spawn=False, fire_at=None, watermark=now)
+    cron = parse_cron(sched.cron)
+    floor = max(last_fired, now - grace)
+    cursor = now.replace(second=0, microsecond=0)
+    while cursor > last_fired and cursor >= floor:
+        if cron.matches(cursor):
+            return FireDecision(spawn=True, fire_at=cursor, watermark=cursor)
+        cursor -= timedelta(minutes=1)
+    return FireDecision(spawn=False, fire_at=None, watermark=None)
+
+
 def next_runs(raw: dict | None, now: datetime, count: int = 3) -> list[datetime]:
     """Next ``count`` cron fire times strictly after ``now`` (minute resolution).
 

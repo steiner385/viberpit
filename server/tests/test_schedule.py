@@ -1,13 +1,14 @@
 """Tests for the pure automation schedule engine (#603)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
 from server.automations.schedule import (
     PRESETS,
     ScheduleError,
+    evaluate_fire,
     next_runs,
     parse_cron,
     parse_schedule,
@@ -107,3 +108,79 @@ def test_next_runs_empty_without_cron():
 def test_presets_are_valid_schedules():
     for raw in PRESETS.values():
         parse_schedule(raw)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# evaluate_fire — recurring-session dispatch decision (#603)
+# ---------------------------------------------------------------------------
+
+DAILY_8AM = {"cron": "0 8 * * *"}
+GRACE = timedelta(minutes=30)
+
+
+def test_evaluate_fire_no_cron_never_spawns():
+    d = evaluate_fire({"activeHours": {"start": "09:00", "end": "18:00"}},
+                      last_fired=None, now=WED_1030)
+    assert d.spawn is False
+    assert d.watermark is None  # active-hours-only schedules never fire a session
+
+
+def test_evaluate_fire_first_sight_establishes_watermark_without_firing():
+    # A brand-new job must not backfire cron minutes from before we knew about it;
+    # the first tick only records a baseline watermark.
+    d = evaluate_fire(DAILY_8AM, last_fired=None, now=WED_1030)
+    assert d.spawn is False
+    assert d.watermark == WED_1030
+
+
+def test_evaluate_fire_spawns_when_cron_minute_arrives():
+    last = datetime(2026, 7, 15, 7, 59)
+    now = datetime(2026, 7, 15, 8, 0, 12)  # ticked 12s into the 08:00 minute
+    d = evaluate_fire(DAILY_8AM, last_fired=last, now=now)
+    assert d.spawn is True
+    assert d.fire_at == datetime(2026, 7, 15, 8, 0)
+    assert d.watermark == datetime(2026, 7, 15, 8, 0)
+
+
+def test_evaluate_fire_no_double_fire_within_same_minute():
+    # Already fired 08:00 → a later tick in the same minute must not re-fire.
+    last = datetime(2026, 7, 15, 8, 0)
+    now = datetime(2026, 7, 15, 8, 0, 45)
+    d = evaluate_fire(DAILY_8AM, last_fired=last, now=now)
+    assert d.spawn is False
+    assert d.watermark is None
+
+
+def test_evaluate_fire_catches_up_one_missed_run_within_grace():
+    # Daemon was down; last fired yesterday 08:00, back up at 08:05 today.
+    last = datetime(2026, 7, 14, 8, 0)
+    now = datetime(2026, 7, 15, 8, 5)
+    d = evaluate_fire(DAILY_8AM, last_fired=last, now=now, grace=GRACE)
+    assert d.spawn is True
+    assert d.fire_at == datetime(2026, 7, 15, 8, 0)
+
+
+def test_evaluate_fire_drops_run_missed_beyond_grace():
+    # Same missed run, but recovery is 60 min late with a 30 min grace → dropped.
+    last = datetime(2026, 7, 14, 8, 0)
+    now = datetime(2026, 7, 15, 9, 0)
+    d = evaluate_fire(DAILY_8AM, last_fired=last, now=now, grace=GRACE)
+    assert d.spawn is False
+    assert d.watermark is None
+
+
+def test_evaluate_fire_coalesces_multiple_missed_to_latest():
+    # every-15m job blocked from 09:00; back at 09:40 → fire once for 09:30.
+    last = datetime(2026, 7, 15, 9, 0)
+    now = datetime(2026, 7, 15, 9, 40)
+    d = evaluate_fire({"cron": "*/15 * * * *"}, last_fired=last, now=now, grace=GRACE)
+    assert d.spawn is True
+    assert d.fire_at == datetime(2026, 7, 15, 9, 30)  # latest, not 09:15
+
+
+def test_evaluate_fire_not_due_between_cron_minutes():
+    last = datetime(2026, 7, 15, 8, 0)
+    now = datetime(2026, 7, 15, 12, 0)  # nothing between daily 08:00 runs
+    d = evaluate_fire(DAILY_8AM, last_fired=last, now=now, grace=GRACE)
+    assert d.spawn is False
+    assert d.watermark is None
