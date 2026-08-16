@@ -309,8 +309,11 @@ export function useCloseSession() {
       return { prev, removed }
     },
     onError: (_e, _id, ctx) => {
+      // Restore the optimistic removal so the UI doesn't show a gap.
+      // Toast is deferred to onSettled, which refetches to confirm real state —
+      // a 503/409 from the daemon often means the archive succeeded but the
+      // response was lost; toasting here would be a false failure.
       if (ctx?.prev) qc.setQueryData(QK.sessions, ctx.prev)
-      toast.error(`Couldn't archive ${ctx?.removed?.name ?? 'session'}`)
     },
     onSuccess: (_data, id, ctx) => {
       toast.success(`Archived ${ctx?.removed?.name ?? 'session'}`, {
@@ -326,9 +329,35 @@ export function useCloseSession() {
         },
       })
     },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: QK.sessions })
-      qc.invalidateQueries({ queryKey: QK.archived })
+    onSettled: async (_data, error, id, ctx) => {
+      if (!error) {
+        qc.invalidateQueries({ queryKey: QK.sessions })
+        qc.invalidateQueries({ queryKey: QK.archived })
+        return
+      }
+      // Force-refetch to discover whether the archive actually took effect
+      // despite the error response (e.g. daemon wedge that resolved mid-flight).
+      await qc.refetchQueries({ queryKey: QK.sessions })
+      await qc.refetchQueries({ queryKey: QK.archived })
+      const current = qc.getQueryData<Session[]>(QK.sessions)
+      const stillLive = current?.some((s) => s.id === id) ?? false
+      if (!stillLive) {
+        // Archive succeeded — daemon lost the response. Show success with undo.
+        toast.success(`Archived ${ctx?.removed?.name ?? 'session'}`, {
+          duration: 8000,
+          action: {
+            label: 'Undo',
+            onClick: () => {
+              void unarchiveRequest(id).then(() => {
+                qc.invalidateQueries({ queryKey: QK.sessions })
+                qc.invalidateQueries({ queryKey: QK.archived })
+              })
+            },
+          },
+        })
+      } else {
+        toast.error(`Couldn't archive ${ctx?.removed?.name ?? 'session'}`)
+      }
     },
   })
 }
