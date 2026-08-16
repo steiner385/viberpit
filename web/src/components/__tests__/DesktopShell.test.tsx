@@ -44,6 +44,7 @@ vi.mock('@/api/hooks', () => ({
   useGithubBranches: vi.fn(), useSettings: vi.fn(), useUpdateSettings: vi.fn(),
   useReauthAccount: vi.fn(), useReauthStatus: vi.fn(), useCancelReauth: vi.fn(),
   useArchivedSessions: vi.fn(), useUnarchiveSession: vi.fn(), usePermanentDeleteSession: vi.fn(),
+  useBulkArchiveSessions: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useModels: vi.fn(), useSendPrompt: vi.fn(), useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
   useFixPr: vi.fn(),
   usePendingDeploy: vi.fn(), useDeployStatus: vi.fn(), useStartDeploy: vi.fn(),
