@@ -570,6 +570,34 @@ export function useBulkUnarchiveSessions() {
   })
 }
 
+export function useBulkArchiveSessions() {
+  const qc = useQueryClient()
+  return useMutation<BatchResult, ApiRequestError, string[], { prev?: Session[] }>({
+    mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/archive', { ids }),
+    onMutate: async (ids) => {
+      await qc.cancelQueries({ queryKey: QK.sessions })
+      const prev = qc.getQueryData<Session[]>(QK.sessions)
+      const idSet = new Set(ids)
+      qc.setQueryData<Session[]>(QK.sessions, (cur) => (cur ?? []).filter((x) => !idSet.has(x.id)))
+      return { prev }
+    },
+    onError: (_e, _ids, ctx) => {
+      if (ctx?.prev) qc.setQueryData(QK.sessions, ctx.prev)
+      toast.error(`Couldn't archive sessions`)
+    },
+    onSuccess: (result) => {
+      const n = result.succeeded.length
+      const f = result.failed.length
+      if (f > 0) toast.error(`Archived ${n} · ${f} failed`)
+      else toast.success(`Archived ${n}`)
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: QK.sessions })
+      qc.invalidateQueries({ queryKey: QK.archived })
+    },
+  })
+}
+
 export interface BulkDeleteProgress {
   done: number
   total: number

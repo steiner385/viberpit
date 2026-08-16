@@ -685,6 +685,40 @@ async def batch_permanent_delete_sessions(
     return {"succeeded": succeeded, "failed": failed}
 
 
+@router.post("/batch/archive")
+async def batch_archive_sessions(
+    body: BatchSessionIdsRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Archive multiple live sessions. Best-effort: returns per-id succeeded/failed."""
+    orch = _get_orchestrator(request)
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
+        try:
+            await orch.archive_session(session_id)
+        except DaemonUnavailable:
+            # The daemon may have completed the archive but lost its response.
+            if not await _session_is_archived(orch, session_id):
+                log.warning("batch archive failed for %s: DaemonUnavailable", session_id)
+                failed.append({"id": session_id, "error": "daemon unavailable"})
+                continue
+        except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
+            log.warning("batch archive failed for %s: %s", session_id, exc)
+            failed.append({"id": session_id, "error": str(exc)})
+            continue
+        succeeded.append(session_id)
+        await record_audit(
+            db=db,
+            type="session.archive",
+            identity=identity,
+            detail={"session_id": session_id},
+        )
+    return {"succeeded": succeeded, "failed": failed}
+
+
 @router.get("/{session_id}")
 async def get_session(
     session_id: str,

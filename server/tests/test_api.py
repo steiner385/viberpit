@@ -931,3 +931,54 @@ def test_batch_permanent_delete_partial_failure():
             body = resp.json()
             assert body["succeeded"] == [a]
             assert body["failed"] == [{"id": "ghost", "error": "not found"}]
+
+
+def _create_session(client, name):
+    """Create a live session; return its id."""
+    r = client.post("/api/sessions", json={"name": name, "account": "account1"}, headers=IDENTITY_HEADERS)
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def test_batch_archive_all_success():
+    """POST /batch/archive moves every id to archived; active list empties, archived list fills."""
+    with temp_env() as d:
+        with _client_with_account(d) as client:
+            a = _create_session(client, "A")
+            b = _create_session(client, "B")
+            resp = client.post("/api/sessions/batch/archive", json={"ids": [a, b]}, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert set(body["succeeded"]) == {a, b}
+            assert body["failed"] == []
+            active_ids = [s["id"] for s in client.get("/api/sessions", headers=IDENTITY_HEADERS).json()]
+            assert a not in active_ids and b not in active_ids
+            archived_ids = [s["id"] for s in client.get("/api/sessions/archived", headers=IDENTITY_HEADERS).json()]
+            assert a in archived_ids and b in archived_ids
+
+
+def test_batch_archive_dedupes_ids():
+    """Duplicate ids in the request are archived only once."""
+    with temp_env() as d:
+        with _client_with_account(d) as client:
+            a = _create_session(client, "A")
+            resp = client.post("/api/sessions/batch/archive", json={"ids": [a, a]}, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["succeeded"] == [a]
+            assert body["failed"] == []
+
+
+def test_batch_archive_empty_ids_returns_422():
+    with temp_env() as d:
+        with _client_with_account(d) as client:
+            resp = client.post("/api/sessions/batch/archive", json={"ids": []}, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 422
+
+
+def test_batch_archive_oversized_ids_returns_422():
+    with temp_env() as d:
+        with _client_with_account(d) as client:
+            ids = [f"x{i}" for i in range(201)]
+            resp = client.post("/api/sessions/batch/archive", json={"ids": ids}, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 422
