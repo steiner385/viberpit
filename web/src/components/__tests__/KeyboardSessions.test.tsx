@@ -50,6 +50,7 @@ vi.mock('@/api/hooks', () => ({
   usePermanentDeleteSession: vi.fn(),
   useBulkUnarchiveSessions: vi.fn(),
   useBulkPermanentDeleteSessions: vi.fn(),
+  useBulkArchiveSessions: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSendPrompt: vi.fn(),
   usePendingDeploy: () => ({ data: { behind: false, commits: [], ci: 'green' } }),
   useDeployStatus: () => ({ data: { running: false, phases: {} } }),

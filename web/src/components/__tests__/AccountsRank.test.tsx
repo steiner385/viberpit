@@ -36,6 +36,7 @@ vi.mock('@/api/hooks', () => ({
   usePermanentDeleteSession: vi.fn(),
   useBulkUnarchiveSessions: vi.fn(),
   useBulkPermanentDeleteSessions: vi.fn(),
+  useBulkArchiveSessions: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSendPrompt: () => ({ mutate: vi.fn() }),
   useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
   useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
