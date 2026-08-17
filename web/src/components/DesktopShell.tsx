@@ -250,6 +250,51 @@ export function DesktopShell() {
     return () => window.removeEventListener('keydown', onKey)
   }, [tab, selection, detachToList])
 
+  // Fallback advance for the 503/409 error path: when the archive API returns
+  // an error, useCloseSession fires onError (not onSuccess), so the per-call
+  // { onSuccess: onDone } callback in SessionActions is never invoked. After
+  // onSettled confirms the session is gone, selection is stranded on an
+  // archived session that's no longer in the live list, causing the title to
+  // degrade to the raw session-id slice. Advance here as a safety net.
+  //
+  // selectionOrderRef holds the ordered IDs from the last render where the
+  // focused session was still live — the pre-removal snapshot that
+  // nextSessionAfterClose needs to locate the correct neighbor (by the time
+  // this effect fires, orderedSessions already excludes the removed session).
+  const selectionOrderRef = useRef({
+    visible: orderedSessions.map((s) => s.id),
+    all: allOrderedSessions.map((s) => s.id),
+  })
+  useEffect(() => {
+    if (selection.type !== 'session' || sessionsLoading) {
+      selectionOrderRef.current = {
+        visible: orderedSessions.map((s) => s.id),
+        all: allOrderedSessions.map((s) => s.id),
+      }
+      return
+    }
+    const stillLive = sessions.some((s) => s.id === selection.id)
+    if (stillLive) {
+      selectionOrderRef.current = {
+        visible: orderedSessions.map((s) => s.id),
+        all: allOrderedSessions.map((s) => s.id),
+      }
+      return
+    }
+    // Session left the live list without onDone firing — advance using the
+    // last known pre-removal ordering snapshot.
+    const next = nextSessionAfterClose(
+      selectionOrderRef.current.visible,
+      selectionOrderRef.current.all,
+      selection.id,
+    )
+    setSelection(next ? { type: 'session', id: next } : { type: 'new' })
+    selectionOrderRef.current = {
+      visible: orderedSessions.map((s) => s.id),
+      all: allOrderedSessions.map((s) => s.id),
+    }
+  }, [sessions, sessionsLoading, selection, orderedSessions, allOrderedSessions])
+
   const handleClose = useCallback((id: string) => {
     closeSession.mutate(id)
     setSelection((cur) => (cur.type === 'session' && cur.id === id ? advanceFrom(id) : cur))
