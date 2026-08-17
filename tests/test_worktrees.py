@@ -291,6 +291,49 @@ class WorktreeFreshFromOriginTests(unittest.TestCase):
         self.assertEqual(_rev(Path(info.path), "HEAD"), self.local_sha)
 
 
+class WorktreeConcurrencyTests(unittest.TestCase):
+    """Concurrent create_worktree against ONE clone must not race on git's
+    shared lockfiles. `worktree add -b <child> ... origin/<branch>` writes
+    upstream-tracking keys into the clone's `.git/config`, guarded by
+    `.git/config.lock`; git fails immediately (does NOT wait) when the lock is
+    held, so without per-clone serialization a burst of spawns loses all-but-one
+    to `could not lock config file .git/config: File exists` (pr-doctor
+    multi-trigger spawn_failed, 2026-08-17)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = self.root / "myrepo"
+        _make_repo_with_origin(self.repo, self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_concurrent_child_creations_all_succeed(self) -> None:
+        """N threads each creating a fresh child off origin/main must all get a
+        distinct worktree — none lost to a config.lock collision."""
+        import concurrent.futures
+
+        n = 8
+
+        def make(i: int) -> worktrees.WorktreeInfo:
+            # Distinct session id per call → distinct ccswitch/main-<short> child
+            # branch, but ALL write upstream config into the one shared clone.
+            return worktrees.create_worktree(
+                str(self.repo), "main", f"conc{i:04d}-{i:04d}", str(self.root))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n) as ex:
+            infos = list(ex.map(make, range(n)))
+
+        # Every call produced a usable child worktree on a unique path/branch.
+        self.assertEqual(len(infos), n)
+        self.assertTrue(all(info.is_child for info in infos))
+        self.assertEqual(len({info.path for info in infos}), n)
+        self.assertEqual(len({info.branch for info in infos}), n)
+        for info in infos:
+            self.assertTrue(os.path.isdir(info.path))
+
+
 class CurrentBranchTests(unittest.TestCase):
     """worktrees.current_branch — read the branch checked out at a path (PR-join backfill)."""
 
