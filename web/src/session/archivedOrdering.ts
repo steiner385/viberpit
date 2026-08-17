@@ -21,8 +21,10 @@ export const ARCHIVED_ORDERING: OrderingConfig<ArchivedSession> = {
       bucketOf: (s) => ({ key: s.account, label: s.account }),
     },
     repo: {
+      // Prefer the accurate repo field (GitHub nameWithOwner); fall back to the
+      // cwd-derived name only for legacy/scratch rows that never recorded it.
       bucketOf: (s) => {
-        const rl = formatRepoLabel(repoFromCwd(s.cwd))
+        const rl = formatRepoLabel(s.repo ?? repoFromCwd(s.cwd))
         return { key: rl.text, label: rl.text, order: rl.isScratch ? 1 : 0 }
       },
     },

@@ -6238,6 +6238,7 @@ class SessionOrchestrator:
                 "name": row.name,
                 "account": row.account_name,
                 "cwd": row.cwd,
+                "repo": row.repo,
                 "claudeSessionId": row.claude_session_id,
                 "permissionMode": row.permission_mode,
                 "createdAt": iso_utc(row.created_at),

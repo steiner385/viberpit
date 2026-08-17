@@ -124,6 +124,8 @@ export interface ArchivedSession {
   name: string
   account: string
   cwd: string
+  /** GitHub nameWithOwner (e.g. "cairnea/KinDash"); null for scratch/legacy rows. */
+  repo: string | null
   claudeSessionId: string | null
   permissionMode: string
   createdAt: string

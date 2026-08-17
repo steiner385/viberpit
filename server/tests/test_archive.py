@@ -206,7 +206,8 @@ def test_list_archived_returns_archived_rows(tmp_path):
         await init_db(db_url=db_url)
         await _seed([
             dict(id="arch1", name="Old project", account_name="acc2",
-                 claude_session_id="csid-abc", status="archived", cwd="/old/proj"),
+                 claude_session_id="csid-abc", status="archived", cwd="/old/proj",
+                 repo="cairnea/KinDash"),
             dict(id="active1", name="Live", account_name="acc2",
                  claude_session_id=None, status="idle", cwd="/live"),
         ])
@@ -221,6 +222,7 @@ def test_list_archived_returns_archived_rows(tmp_path):
     assert r["account"] == "acc2"
     assert r["claudeSessionId"] == "csid-abc"
     assert r["cwd"] == "/old/proj"
+    assert r["repo"] == "cairnea/KinDash"
     assert "createdAt" in r
     assert "archivedAt" in r
 

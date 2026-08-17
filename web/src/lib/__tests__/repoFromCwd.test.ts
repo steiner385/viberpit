@@ -6,6 +6,14 @@ describe('repoFromCwd', () => {
     expect(repoFromCwd('/home/u/GitHub/cc-account-switcher/.ccswitch/worktrees/cc-account-switcher/19bc'))
       .toBe('cc-account-switcher')
   })
+  it('takes the segment after worktrees/ for a shared .ccswitch dir', () => {
+    // Real layout: .ccswitch sits under a shared parent (GitHub), not under the repo.
+    expect(repoFromCwd('/home/tony/GitHub/.ccswitch/worktrees/KinDash/9be6e554')).toBe('KinDash')
+  })
+  it('uses the basename for a ccswitch clone path', () => {
+    // Clones live at .ccswitch/clones/<owner>/<repo>; the repo is the basename.
+    expect(repoFromCwd('/home/tony/GitHub/.ccswitch/clones/cairnea/KinDash')).toBe('KinDash')
+  })
   it('falls back to the basename for a plain repo dir', () => {
     expect(repoFromCwd('/home/u/GitHub/KinDash')).toBe('KinDash')
   })
