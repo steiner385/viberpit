@@ -6308,6 +6308,44 @@ class SessionOrchestrator:
             for row in rows
         ]
 
+    @staticmethod
+    def _compose_unarchive_seed(
+        prev_archived_by: str | None,
+        prev_context: dict | None,
+        archived_at: "datetime | None",
+        goal: str | None,
+    ) -> str | None:
+        """Compose the prompt that greets a restored session, or None to seed nothing.
+
+        Only AUTOMATED archives (autopilot / backlog-runner) get a seed: a manual
+        unarchive of one is direct evidence the auto-archive judgement was premature,
+        and those are the only archives carrying an ``archive_context`` snapshot to
+        draw the reason/goal from. A user who unarchives their OWN archive needs no
+        "this was erroneous" narrative, so return None (also keeps the resume path a
+        no-op for the common manual case)."""
+        if prev_archived_by not in AUTO_ARCHIVE_PROVENANCE:
+            return None
+        ctx = prev_context or {}
+        who = {"autopilot": "autopilot",
+               "backlog-runner": "the backlog runner"}.get(prev_archived_by, prev_archived_by)
+        when = f" on {archived_at.date().isoformat()}" if archived_at is not None else ""
+        reason = (ctx.get("reason") or "").strip()
+        premise = (f', on the reasoning: "{reason}".' if reason
+                   else ", on the assumption its work was already complete.")
+        lines = [
+            f"This session was automatically archived{when} by {who}{premise}",
+            "It has now been manually restored, which means that judgement was very "
+            "likely premature or wrong.",
+            "Re-examine the ACTUAL current state — working tree, tests, any open PR, and "
+            "the transcript above — before doing anything, then continue the work.",
+        ]
+        if goal:
+            lines.append(f"The goal this session was pursuing: {goal}")
+        lines.append(
+            "If, after checking, you find the work genuinely IS complete, say so "
+            "explicitly and stop rather than redoing it.")
+        return "\n".join(lines)
+
     async def unarchive(self, session_id: str) -> "SessionRecord | None":
         """Move the archived cwd back and restore the session to idle.
 
@@ -6355,15 +6393,29 @@ class SessionOrchestrator:
         prev_archived_by = getattr(row, "archived_by", None)
         prev_context = getattr(row, "archive_context", None)
 
+        # Seed the restored session with the "why you're back" context (AUTO archives
+        # only — see _compose_unarchive_seed). Prefer the goal snapshotted at archive
+        # time (what it was archived FOR), then the live goal fields.
+        seed_goal = ((prev_context or {}).get("goal")
+                     or getattr(row, "active_goal", None)
+                     or getattr(row, "inferred_goal", None))
+        seed = self._compose_unarchive_seed(
+            prev_archived_by, prev_context, getattr(row, "archived_at", None), seed_goal)
+
         async with db_session() as db:
             from sqlalchemy import update as sa_update
-            await db.execute(
-                sa_update(DbSession)
-                .where(DbSession.id == session_id)
+            values: dict = dict(
                 # Restore to idle AND pin the sticky opt-out: a manually-unarchived
                 # session is never auto-archived again. Clear the now-consumed provenance.
-                .values(status="idle", auto_archive_opt_out_reason="manual-unarchive",
-                        archived_by=None, archive_context=None)
+                status="idle", auto_archive_opt_out_reason="manual-unarchive",
+                archived_by=None, archive_context=None)
+            # Persist the seed so it survives a daemon restart between now and the next
+            # attach (the in-memory _pending_initial_prompt below covers the no-restart
+            # common case; the column is the durable copy + feeds completion judgement).
+            if seed is not None:
+                values["initial_prompt"] = seed
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(**values)
             )
 
         # Heuristic capture: an unarchive that reverses an AUTO archive is a signal the
@@ -6375,6 +6427,12 @@ class SessionOrchestrator:
         record = self._record_from_row(
             row, status="idle", auto_archive_opt_out_reason="manual-unarchive")
         self._records[session_id] = record
+        # Stage the seed for lazy delivery on the NEXT WS attach (same path as a new
+        # session's deferred initial prompt — ws.py pops + sends it once the client is
+        # watching, so its turn streams live rather than firing eagerly into a driver
+        # nobody is looking at). setdefault: never clobber a genuinely queued prompt.
+        if seed is not None:
+            self._pending_initial_prompt.setdefault(session_id, seed)
         log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)
         return record
 
