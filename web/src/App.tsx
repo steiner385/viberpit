@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useEffect, useRef } from 'react'
 import { Dashboard, type TabId } from './components/Dashboard'
 import { DesktopShell } from './components/DesktopShell'
 import { SessionView } from './components/session/SessionView'
@@ -76,23 +77,61 @@ function SessionRoute() {
   const { sessionId } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
-  const { data: sessions = [] } = useSessions()
+  const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const { data: archived = [] } = useArchivedSessions()
   // Persisted sort/group order (no search filter — the search box isn't reachable
   // from inside a full-screen session). Same order the list showed.
   const { orderedSessions, allOrderedSessions } = useSessionOrdering(sessions)
+
+  // Snapshot of the ordered IDs from the last render where the session was live.
+  // The navigate-on-archive effect reads this to find the correct neighbor even
+  // after orderedSessions has already dropped the session (reading refs in
+  // effects is fine; we use a ref rather than state to avoid scheduling an
+  // extra re-render on every session-list change).
+  const lastOrderRef = useRef({
+    visible: orderedSessions.map((s) => s.id),
+    all: allOrderedSessions.map((s) => s.id),
+  })
+  useEffect(() => {
+    if (sessionsLoading || !sessionId) return
+    if (sessions.some((s) => s.id === sessionId)) {
+      lastOrderRef.current = {
+        visible: orderedSessions.map((s) => s.id),
+        all: allOrderedSessions.map((s) => s.id),
+      }
+    }
+  }, [sessions, sessionsLoading, sessionId, orderedSessions, allOrderedSessions])
+
+  // Navigate away when the session appears in the archived list. Uses
+  // lastOrderRef to distinguish two cases:
+  //   • Was live (ref contains sessionId): the 503/409 error path — onSettled
+  //     confirmed the archive after onError, so onDone was never called. Advance
+  //     to the next live session using the pre-removal ordering snapshot.
+  //   • Was never live (ref is empty for this id): stale bookmark — the URL was
+  //     opened for an already-archived session (e.g. from an automation log link).
+  //     Redirect to the read-only /review view instead.
+  useEffect(() => {
+    if (!sessionId || !archived.some((s) => s.id === sessionId)) return
+    const wasLive =
+      lastOrderRef.current.visible.includes(sessionId) ||
+      lastOrderRef.current.all.includes(sessionId)
+    if (!wasLive) {
+      navigate(`/review/${sessionId}`, { replace: true })
+      return
+    }
+    const next = nextSessionAfterClose(
+      lastOrderRef.current.visible,
+      lastOrderRef.current.all,
+      sessionId,
+    )
+    navigate(next ? `/session/${next}` : '/sessions', { replace: true })
+  }, [archived, sessionId, navigate])
+
   // Carried via navigation state when a session is opened straight from create,
   // so the user's prompt shows immediately (seeded into the transcript). Absent
   // on a normal open / refresh / deep-link, in which case nothing is seeded.
   const initialPrompt = (location.state as { initialPrompt?: string } | null)?.initialPrompt
   if (!sessionId) return <Navigate to="/sessions" replace />
-  // An archived session has no live driver, so the live-attach route dead-ends on
-  // SESSION_NOT_FOUND. Redirect to the read-only review view (where the Archived
-  // tab already sends archived sessions). Safety net for links that carry no status
-  // — e.g. automation activity-log entries and stale bookmarks.
-  if (archived.some((s) => s.id === sessionId)) {
-    return <Navigate to={`/review/${sessionId}`} replace />
-  }
   const handleDone = () => {
     // Fall back to the full ordering: the open session may be hidden from the
     // visible list (its group collapsed) and must still advance to a neighbor.
