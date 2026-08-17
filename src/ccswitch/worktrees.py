@@ -24,10 +24,33 @@ import logging
 import os
 import re
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# Per-clone serialization. Every worktree creation for one shared clone mutates
+# that clone's `.git` (fetch writes refs; `worktree add -b` writes upstream
+# tracking into the shared `.git/config`). Git guards `.git/config` with a
+# `.git/config.lock` file and FAILS IMMEDIATELY — it does not wait — when the
+# lock is held, so a burst of concurrent creations against one clone loses
+# all-but-one to "could not lock config file .git/config: File exists" (the
+# pr-doctor multi-trigger spawn_failure). Serializing on the clone's toplevel
+# path lets different repos stay parallel while same-clone creations queue.
+# Keyed by repo_top (absolute clone toplevel). threading.Lock (not asyncio):
+# create_worktree runs in asyncio.to_thread worker threads.
+_CLONE_LOCKS: dict[str, threading.Lock] = {}
+_CLONE_LOCKS_GUARD = threading.Lock()
+
+
+def _clone_lock(repo_top: str) -> threading.Lock:
+    """Return the process-wide lock serializing git-mutating work for *repo_top*."""
+    with _CLONE_LOCKS_GUARD:
+        lock = _CLONE_LOCKS.get(repo_top)
+        if lock is None:
+            lock = _CLONE_LOCKS[repo_top] = threading.Lock()
+        return lock
 
 
 class WorktreeError(Exception):
@@ -303,80 +326,87 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
     dest = worktrees_base(repo_root) / repo_name / _short(session_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    # Fail fast on a near-full filesystem BEFORE any git churn: a doomed
-    # checkout writes thousands of files, fails ENOSPC, and the write+delete
-    # cycle's page cache pins the daemon cgroup at MemoryHigh (2026-07-21
-    # restart-loop incident). DiskSpaceError's marker string lets the backlog
-    # runner stop retrying instead of looping.
-    check_disk_headroom(dest.parent)
+    # Serialize the git-mutating work per shared clone: fetch writes refs and
+    # `worktree add -b` writes upstream tracking into the clone's `.git/config`,
+    # and git fails immediately (never waits) if another process holds
+    # `.git/config.lock`. Without this, concurrent creations against ONE clone
+    # lose all-but-one to "could not lock config file .git/config: File exists".
+    # Different clones use different locks, so unrelated repos stay parallel.
+    with _clone_lock(repo_top):
+        # Fail fast on a near-full filesystem BEFORE any git churn: a doomed
+        # checkout writes thousands of files, fails ENOSPC, and the write+delete
+        # cycle's page cache pins the daemon cgroup at MemoryHigh (2026-07-21
+        # restart-loop incident). DiskSpaceError's marker string lets the backlog
+        # runner stop retrying instead of looping.
+        check_disk_headroom(dest.parent)
 
-    # Clear ONLY a stale record at our own `dest` (a prior crash that reused this
-    # short-session id) so the path can be reused. NOT a repo-global prune: that
-    # reaped a sibling session's live worktree (issue #177).
-    clear_stale_registration(repo_top, dest)
+        # Clear ONLY a stale record at our own `dest` (a prior crash that reused this
+        # short-session id) so the path can be reused. NOT a repo-global prune: that
+        # reaped a sibling session's live worktree (issue #177).
+        clear_stale_registration(repo_top, dest)
 
-    # Fetch-first (best-effort): a session should start from the true remote tip,
-    # so when origin is configured we fetch and (below) base on remote refs. But a
-    # fetch failure (offline, no non-interactive credentials, unreachable origin)
-    # must NOT block the session — we warn and fall back to the local ref. A repo
-    # with NO origin has nothing to refresh and uses the local ref directly.
-    # `use_remote` is true only when we have origin AND the fetch actually succeeded.
-    has_origin = _has_origin(repo_top)
-    use_remote = has_origin and _try_fetch_origin(repo_top)
+        # Fetch-first (best-effort): a session should start from the true remote tip,
+        # so when origin is configured we fetch and (below) base on remote refs. But a
+        # fetch failure (offline, no non-interactive credentials, unreachable origin)
+        # must NOT block the session — we warn and fall back to the local ref. A repo
+        # with NO origin has nothing to refresh and uses the local ref directly.
+        # `use_remote` is true only when we have origin AND the fetch actually succeeded.
+        has_origin = _has_origin(repo_top)
+        use_remote = has_origin and _try_fetch_origin(repo_top)
 
-    # 0) No branch selected → detached worktree. When we fetched origin, detach at
-    # the remote default tip (origin/HEAD); otherwise (no origin, fetch failed, or
-    # origin/HEAD unresolvable) off the local current HEAD.
-    if branch is None:
-        base = _remote_default_ref(repo_top) if use_remote else None
-        if base is not None:
-            rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach",
-                       str(dest), "--", base])
-        else:
-            rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach", str(dest)])
-        if rd.returncode == 0:
-            _lock_worktree(repo_top, dest)
-            log.info("worktree.create_detached repo=%s path=%s", repo_name, dest)
-            return WorktreeInfo(str(dest), None, is_child=False, repo=repo_top)
-        raise WorktreeError(f"git worktree add --detach failed: {rd.stderr.strip()}")
+        # 0) No branch selected → detached worktree. When we fetched origin, detach at
+        # the remote default tip (origin/HEAD); otherwise (no origin, fetch failed, or
+        # origin/HEAD unresolvable) off the local current HEAD.
+        if branch is None:
+            base = _remote_default_ref(repo_top) if use_remote else None
+            if base is not None:
+                rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach",
+                           str(dest), "--", base])
+            else:
+                rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach", str(dest)])
+            if rd.returncode == 0:
+                _lock_worktree(repo_top, dest)
+                log.info("worktree.create_detached repo=%s path=%s", repo_name, dest)
+                return WorktreeInfo(str(dest), None, is_child=False, repo=repo_top)
+            raise WorktreeError(f"git worktree add --detach failed: {rd.stderr.strip()}")
 
-    # 1) Remote-backed branch → isolated per-session child branch based at the
-    # remote tip origin/<branch>. This is the normal path (not just a fallback):
-    # a fresh, writable, isolated branch without moving the user's local <branch>.
-    if use_remote and _branch_on_origin(repo_top, branch):
-        child = f"ccswitch/{branch}-{_short(session_id)}"
-        r = _run(["git", "-C", repo_top, "worktree", "add", "-b", child,
-                  str(dest), "--", f"origin/{branch}"])
+        # 1) Remote-backed branch → isolated per-session child branch based at the
+        # remote tip origin/<branch>. This is the normal path (not just a fallback):
+        # a fresh, writable, isolated branch without moving the user's local <branch>.
+        if use_remote and _branch_on_origin(repo_top, branch):
+            child = f"ccswitch/{branch}-{_short(session_id)}"
+            r = _run(["git", "-C", repo_top, "worktree", "add", "-b", child,
+                      str(dest), "--", f"origin/{branch}"])
+            if r.returncode == 0:
+                _lock_worktree(repo_top, dest)
+                log.info("worktree.create_child repo=%s base=origin/%s child=%s path=%s",
+                         repo_name, branch, child, dest)
+                return WorktreeInfo(str(dest), child, is_child=True, repo=repo_top)
+            raise WorktreeError(
+                f"git worktree add failed for origin/{branch}: {r.stderr.strip()}")
+
+        # 2) Local-only branch (or no origin) → check out the local branch directly;
+        # '--' separates options from the commit-ish so a crafted branch name cannot
+        # be parsed as a git option (belt-and-suspenders with the '-' prefix guard above).
+        r = _run(["git", "-C", repo_top, "worktree", "add", str(dest), "--", branch])
         if r.returncode == 0:
             _lock_worktree(repo_top, dest)
-            log.info("worktree.create_child repo=%s base=origin/%s child=%s path=%s",
+            log.info("worktree.create repo=%s branch=%s path=%s", repo_name, branch, dest)
+            return WorktreeInfo(str(dest), branch, is_child=False, repo=repo_top)
+
+        # 3) Branch is busy (checked out elsewhere) — make a session child branch off it.
+        child = f"ccswitch/{branch}-{_short(session_id)}"
+        r2 = _run(["git", "-C", repo_top, "worktree", "add", "-b", child, str(dest), "--", branch])
+        if r2.returncode == 0:
+            _lock_worktree(repo_top, dest)
+            log.info("worktree.create_child repo=%s base=%s child=%s path=%s",
                      repo_name, branch, child, dest)
             return WorktreeInfo(str(dest), child, is_child=True, repo=repo_top)
+
         raise WorktreeError(
-            f"git worktree add failed for origin/{branch}: {r.stderr.strip()}")
-
-    # 2) Local-only branch (or no origin) → check out the local branch directly;
-    # '--' separates options from the commit-ish so a crafted branch name cannot
-    # be parsed as a git option (belt-and-suspenders with the '-' prefix guard above).
-    r = _run(["git", "-C", repo_top, "worktree", "add", str(dest), "--", branch])
-    if r.returncode == 0:
-        _lock_worktree(repo_top, dest)
-        log.info("worktree.create repo=%s branch=%s path=%s", repo_name, branch, dest)
-        return WorktreeInfo(str(dest), branch, is_child=False, repo=repo_top)
-
-    # 3) Branch is busy (checked out elsewhere) — make a session child branch off it.
-    child = f"ccswitch/{branch}-{_short(session_id)}"
-    r2 = _run(["git", "-C", repo_top, "worktree", "add", "-b", child, str(dest), "--", branch])
-    if r2.returncode == 0:
-        _lock_worktree(repo_top, dest)
-        log.info("worktree.create_child repo=%s base=%s child=%s path=%s",
-                 repo_name, branch, child, dest)
-        return WorktreeInfo(str(dest), child, is_child=True, repo=repo_top)
-
-    raise WorktreeError(
-        f"git worktree add failed for {branch!r}: "
-        f"{r.stderr.strip()} / {r2.stderr.strip()}"
-    )
+            f"git worktree add failed for {branch!r}: "
+            f"{r.stderr.strip()} / {r2.stderr.strip()}"
+        )
 
 
 def remove_worktree(worktree_path: str) -> bool:
