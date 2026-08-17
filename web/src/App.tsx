@@ -102,15 +102,23 @@ function SessionRoute() {
     }
   }, [sessions, sessionsLoading, sessionId, orderedSessions, allOrderedSessions])
 
-  // Navigate away when the session appears in the archived list. This covers:
-  //   • The 503/409 error path — onSettled confirms the archive after onError
-  //     fires, so onDone was never called and the route is still mounted.
-  //   • Stale bookmarks — /session/:id was opened directly for an already-
-  //     archived session; falls back to /sessions (archived tab reachable there).
-  // Reading lastOrderRef.current here is intentional: refs are safe to read in
-  // effects and hold the pre-removal snapshot needed to locate the neighbor.
+  // Navigate away when the session appears in the archived list. Uses
+  // lastOrderRef to distinguish two cases:
+  //   • Was live (ref contains sessionId): the 503/409 error path — onSettled
+  //     confirmed the archive after onError, so onDone was never called. Advance
+  //     to the next live session using the pre-removal ordering snapshot.
+  //   • Was never live (ref is empty for this id): stale bookmark — the URL was
+  //     opened for an already-archived session (e.g. from an automation log link).
+  //     Redirect to the read-only /review view instead.
   useEffect(() => {
     if (!sessionId || !archived.some((s) => s.id === sessionId)) return
+    const wasLive =
+      lastOrderRef.current.visible.includes(sessionId) ||
+      lastOrderRef.current.all.includes(sessionId)
+    if (!wasLive) {
+      navigate(`/review/${sessionId}`, { replace: true })
+      return
+    }
     const next = nextSessionAfterClose(
       lastOrderRef.current.visible,
       lastOrderRef.current.all,
