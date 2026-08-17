@@ -4,7 +4,7 @@ import { ARCHIVED_ORDERING } from '../archivedOrdering'
 import type { ArchivedSession } from '@/api/types'
 
 const a = (over: Partial<ArchivedSession>): ArchivedSession => ({
-  id: 'x', name: 'x', account: 'tony', cwd: '/home/u/GitHub/KinDash',
+  id: 'x', name: 'x', account: 'tony', cwd: '/home/u/GitHub/KinDash', repo: null,
   claudeSessionId: null, permissionMode: 'default',
   createdAt: '2026-06-01T00:00:00Z', archivedAt: '2026-06-10T00:00:00Z', ...over,
 })
@@ -33,5 +33,20 @@ describe('ARCHIVED_ORDERING', () => {
     ]
     const g = orderItems(rows, 'repo', 'name', ARCHIVED_ORDERING)
     expect(g.map((x) => x.label)).toEqual(['KinDash', 'Scratch'])
+  })
+
+  it('prefers the accurate repo field over the cwd-derived name', () => {
+    // Worktree cwd would derive "KinDash", but the repo field carries owner/name.
+    const rows = [
+      a({ id: 'r', repo: 'cairnea/KinDash', cwd: '/home/tony/GitHub/.ccswitch/worktrees/KinDash/9be6e554' }),
+    ]
+    const g = orderItems(rows, 'repo', 'name', ARCHIVED_ORDERING)
+    expect(g.map((x) => x.label)).toEqual(['cairnea/KinDash'])
+  })
+
+  it('falls back to the cwd-derived repo when repo is null', () => {
+    const rows = [a({ id: 'n', repo: null, cwd: '/home/tony/GitHub/.ccswitch/worktrees/KinDash/9be6e554' })]
+    const g = orderItems(rows, 'repo', 'name', ARCHIVED_ORDERING)
+    expect(g.map((x) => x.label)).toEqual(['KinDash'])
   })
 })
