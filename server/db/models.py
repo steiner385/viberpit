@@ -42,7 +42,7 @@ NON_ACTIVE_SESSION_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"queu
 # manual archive is a deliberate decision the audit never second-guesses. NULL/unknown
 # provenance is excluded too (an `.in_(...)` predicate never matches NULL). Single source
 # of truth: import this instead of re-inlining the ("autopilot", "backlog-runner") set.
-AUTO_ARCHIVE_PROVENANCE: frozenset[str] = frozenset({"autopilot", "backlog-runner"})
+AUTO_ARCHIVE_PROVENANCE: frozenset[str] = frozenset({"autopilot", "backlog-runner", "completion"})
 
 # Global cap on concurrently active sessions when AppSettings.max_active_sessions
 # is NULL. See docs/superpowers/specs/2026-07-21-max-active-sessions-queue-design.md.

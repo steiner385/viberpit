@@ -86,9 +86,14 @@ def test_waiting_question_advances_activity(tmp_path):
 def test_resuming_work_does_not_rewind_or_reset_activity(tmp_path):
     """After a turn responds, starting the next turn (in_progress) must leave the
     'active … ago' clock pinned to that response — not reset it to now."""
+    # Use "needs_attention" (a finished-turn ACTIVITY_STATUS) rather than "complete":
+    # a `complete` status now universally schedules an auto-archive task, which fires on
+    # the next `await` below and evicts "s1" from `_records` — orthogonal to the activity
+    # clock this test pins. "needs_attention" advances last_turn_at with no archive side
+    # effect (and, like "complete", no auto-name transcript read that "done" would trigger).
     async def run():
         orch = await _build_orch(tmp_path)
-        await orch._persist_status("s1", "complete")
+        await orch._persist_status("s1", "needs_attention")
         landed = orch.record("s1").last_turn_at
         await orch._persist_status("s1", "in_progress")
         return landed, orch.record("s1").last_turn_at
