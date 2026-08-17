@@ -83,11 +83,11 @@ def test_apply_noops_for_terminal_actions(tmp_path):
     asyncio.run(run())
 
 
-def test_list_governed_includes_complete_but_not_backlog_runner(tmp_path):
-    """A `complete`-status session is governed so the decider can archive a goal-met
-    session — EXCEPT a backlog-runner one, which the dedicated auto-archive path owns
-    (`_maybe_autoarchive_completed`). Governing both would double-archive the same
-    session from two racing paths."""
+def test_list_governed_excludes_all_complete(tmp_path):
+    """Every `complete`-status session (any origin) is owned by the deterministic
+    completion auto-archive path (`_maybe_autoarchive_completed`), so autopilot must NOT
+    govern it — governing both would race two archivers on the same session. Autopilot
+    still governs goal-met INFERENCE for sessions that never emitted the marker (`done`)."""
     async def run():
         from server.sessions.types import SessionRecord
         await _init_db(tmp_path)
@@ -104,9 +104,9 @@ def test_list_governed_includes_complete_but_not_backlog_runner(tmp_path):
             "working": _rec("working", "in_progress"),
         }
         governed = set(await orch._autopilot_list_governed())
-        assert "human_complete" in governed        # decider judges it → archives if goal met
-        assert "done" in governed                  # unchanged behaviour
-        assert "backlog_complete" not in governed  # owned by the backlog auto-archive path
+        assert "human_complete" not in governed    # owned by the completion auto-archive path
+        assert "backlog_complete" not in governed  # owned by the completion auto-archive path
+        assert "done" in governed                  # goal-met inference (no marker) — unchanged
         assert "working" not in governed           # in_progress is never actionable
     asyncio.run(run())
 

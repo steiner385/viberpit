@@ -89,6 +89,13 @@ _TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — th
 # but no longer retried — retrying a worktree-deleted / repo-gone session is futile.
 RESUME_RECOVERY_MAX_ATTEMPTS = 3
 
+# Max consecutive completion nudges a single session may receive when it self-declares
+# `complete` but the completion bar keeps judging it not-ready (e.g. an open-unarmed PR).
+# Each nudge opens a fresh turn; without a cap, an agent that re-signals completion
+# without arming its PR would loop forever. After the cap the deterministic archiver
+# gives up and leaves the session for a human (the retro audit / autopilot may still act).
+COMPLETE_NUDGE_CAP: int = 3
+
 # How long autopilot defers a session after its turn-restart dance began (a model
 # swap's interrupt → set_model → replay, or _reassign's cross-driver equivalent).
 # The interrupt flips the session through an actionable status, which fires the
@@ -359,9 +366,12 @@ class SessionOrchestrator:
         # Session-ids currently in a push-worthy state (AUT-02 debounce): push fires once
         # on entry; cleared when the session transitions out so re-entry fires again.
         self._pushed: set[str] = set()
-        # Backlog-runner session-ids we've scheduled a completion auto-archive for,
+        # Session-ids (any origin) we've scheduled a completion auto-archive for,
         # so repeated ``complete`` status emits schedule the archive exactly once.
         self._auto_archiving: set[str] = set()
+        # Per-session count of consecutive not-ready completion nudges (bounded by
+        # COMPLETE_NUDGE_CAP); cleared when the session finally archives.
+        self._complete_nudge_counts: dict[str, int] = {}
         # (repo, branch) pairs whose PR is currently in a failing-CI state (M2b.2 debounce):
         # push fires once on entry into failing; cleared on recovery so a re-break re-fires.
         self._pushed_pr: set[tuple[str, str]] = set()
@@ -1338,84 +1348,133 @@ class SessionOrchestrator:
             self._spawn(self._maybe_start_queued(), name="queue-drain-on-status")
 
     def _maybe_autoarchive_completed(self, session_id: str, status: str, rec) -> None:
-        """Schedule a completion auto-archive for a finished backlog-runner session.
+        """Schedule a completion auto-archive for ANY session that self-declares done.
 
-        When the agent signals it's done, ``derive_status`` yields ``complete``
-        (distinct from a plain ``done`` turn). A spawned session otherwise never
-        reaches a terminal DB state, so its driver/worktree would linger and its
-        slot stay occupied. Archiving frees all of that; the sweep then reclaims
-        the slot. Scheduled (not awaited) because archive stops THIS driver while
-        we're inside its ``on_status`` callback; idempotent via ``_auto_archiving``.
-        Scoped to backlog-runner (pr-doctor fix sessions are short and re-spawn on
-        demand, so they don't need this)."""
+        When the agent emits the completion marker, ``derive_status`` yields ``complete``
+        (distinct from a plain ``done`` turn). Every session — human, backlog-runner,
+        pr-doctor, … — that reaches ``complete`` is auto-archived once the completion bar
+        confirms the goal is genuinely met: a single universal rule, independent of the
+        autopilot mode. A ``complete`` session is not terminal, so without this its
+        driver/worktree linger and its slot stays occupied forever. Scheduled (not
+        awaited) because archive stops THIS driver from inside its ``on_status`` callback;
+        idempotent via ``_auto_archiving``. The manual-unarchive opt-out is sticky and
+        always wins over the completion signal."""
         if status != "complete":
             return
-        if rec is None or getattr(rec, "origin", None) != "backlog-runner":
+        if rec is None:
             return
-        # A human unarchived this run → honor the sticky opt-out and never re-archive it.
+        # A human unarchived this session → honor the sticky opt-out and never re-archive it.
         if getattr(rec, "auto_archive_opt_out_reason", None):
             return
         if session_id in self._auto_archiving:
             return
         self._auto_archiving.add(session_id)
         asyncio.create_task(self._auto_archive_completed(session_id),
-                            name="backlog-autoarchive")
+                            name="completion-autoarchive")
+
+    def _complete_nudge_over_cap(self, session_id: str) -> bool:
+        """Count one not-ready completion nudge for *session_id* and report whether it has
+        now exceeded ``COMPLETE_NUDGE_CAP`` (so the caller should give up instead of
+        nudging again). Lazily creates the counter map so bare/`__new__` test orchs work."""
+        counts = getattr(self, "_complete_nudge_counts", None)
+        if counts is None:
+            counts = self._complete_nudge_counts = {}
+        counts[session_id] = counts.get(session_id, 0) + 1
+        return counts[session_id] > COMPLETE_NUDGE_CAP
 
     async def _auto_archive_completed(self, session_id: str) -> None:
-        """Archive a completed backlog-runner session + log it to the activity feed.
-        A failure clears the guard so a later ``complete`` emit can retry.
+        """Archive a completed session (any origin) once the completion bar confirms the
+        goal is met; otherwise nudge it toward the remaining work. A failure clears the
+        guard so a later ``complete`` emit can retry.
 
-        Snapshots decision-time evidence (goal, repo, PR state) so the retro archive
-        audit can evaluate whether the archive was premature. Mirrors ``_autopilot_archive``.
-
-        Completion gate: if the session's task instructions include an explicit arming
-        step (``--squash --auto``) and the PR is not yet armed, nudge the session to
-        finish that step instead of archiving prematurely."""
+        Readiness gate (the universal rule): run ``met_bar`` for every completed session.
+        When it is NOT met — an open-unarmed PR, an armed PR blocked by red CI, or a code
+        goal that opened no PR — the session is not done. First *verify before directing*:
+        refresh the PR facts once (the cache may lag a just-armed PR) and, for the
+        low-confidence "code goal but no PR" case, consult the PR-intent classifier before
+        acting. If still not met, nudge with the remedy (which opens a fresh turn, so the
+        session leaves ``complete``), bounded by ``COMPLETE_NUDGE_CAP``. When met, archive:
+        stop the driver, release the worktree, snapshot decision-time evidence (goal, repo,
+        PR state) for the retro archive audit, and let the sweep reclaim the slot."""
         rec = self._records.get(session_id)
+        origin = getattr(rec, "origin", None) if rec is not None else None
         if rec is not None:
             from server.sessions.goals import effective_goal
-            from server.automations.completion_bar import met_bar, _has_explicit_arm_step
+            from server.automations.completion_bar import met_bar
             goal_text, goal_source = effective_goal(rec)
             pr = self._autopilot_pr_facts(rec)
             initial_prompt = getattr(rec, "initial_prompt", None)
-            # Completion gate: when the task instructions include an explicit arming step
-            # (`--squash --auto`), the session is not done until the PR is armed. Check
-            # met_bar only when this signal is present — without it, archive immediately
-            # on `complete` (the existing behaviour for sessions without a strict workflow).
-            if initial_prompt and _has_explicit_arm_step(initial_prompt):
-                verdict = met_bar(goal_text, goal_source, pr, instructions=initial_prompt)
-                if not verdict.met:
-                    log.info("backlog_runner.autoarchive_deferred sid=%s reason=%s",
-                             session_id, verdict.reason)
-                    self._auto_archiving.discard(session_id)
-                    nudge = (verdict.remedy
-                             or "Arm auto-merge before finishing: `gh pr merge --squash --auto`")
+            resolution = getattr(rec, "pr_resolution", None)
+            verdict = met_bar(goal_text, goal_source, pr, resolution,
+                              instructions=initial_prompt)
+            if not verdict.met:
+                # Verify-before-directing: the cached PR facts may lag a just-armed PR.
+                # Refresh once (a no-op without a poller), then re-judge.
+                refreshed = await self._autopilot_refresh_pr_facts(session_id)
+                if refreshed is not None:
+                    pr = refreshed
+                    verdict = met_bar(goal_text, goal_source, pr, resolution,
+                                      instructions=initial_prompt)
+                # Salvage the low-confidence "code goal but no PR" case: a research/Q&A
+                # session that legitimately opens no PR shouldn't be nudged to open one.
+                if not verdict.met and verdict.confidence == "low":
                     try:
-                        await self.send_prompt(session_id, nudge)
-                    except Exception:
-                        log.warning("backlog_runner.nudge_failed sid=%s", session_id, exc_info=True)
+                        tail = await self._autopilot_transcript_tail(session_id)
+                        resolution = await self._autopilot_resolve_pr_intent(
+                            rec, goal_text, goal_source, pr, tail)
+                        if resolution:
+                            verdict = met_bar(goal_text, goal_source, pr, resolution,
+                                              instructions=initial_prompt)
+                    except Exception:  # pragma: no cover — salvage is best-effort
+                        log.debug("completion.intent_salvage_failed sid=%s",
+                                  session_id, exc_info=True)
+            if not verdict.met:
+                # Not the finished state — nudge toward the remaining work. Clearing the
+                # guard first lets a later `complete` retry; the nudge opens a fresh turn,
+                # moving the session out of `complete`. Cap prevents an endless loop.
+                self._auto_archiving.discard(session_id)
+                if self._complete_nudge_over_cap(session_id):
+                    log.info("completion.autoarchive_giveup sid=%s reason=%s",
+                             session_id, verdict.reason)
                     return
+                log.info("completion.autoarchive_deferred sid=%s reason=%s",
+                         session_id, verdict.reason)
+                nudge = (verdict.remedy
+                         or "Finish the remaining work before signalling completion.")
+                try:
+                    await self.send_prompt(session_id, nudge)
+                except Exception:
+                    log.warning("completion.nudge_failed sid=%s", session_id, exc_info=True)
+                return
             context = {
                 "repo": rec.repo, "goal": goal_text, "goal_source": goal_source,
                 "pr_state": pr.to_prompt() if pr is not None else None,
-                "reason": "backlog-runner: run complete",
+                "reason": f"{origin or 'session'}: completion marker — goal met",
             }
         else:
             context = {
                 "repo": None,
                 "goal": None,
-                "goal_source": "backlog-runner",
-                "reason": "backlog-runner: run complete",
+                "goal_source": "completion",
+                "reason": "completion marker — goal met",
             }
+        # Provenance: keep backlog-runner's existing tag; everything else is 'completion'.
+        # Both are in AUTO_ARCHIVE_PROVENANCE, so the retro audit + reversal-learning
+        # cover completion archives too.
+        archived_by = "backlog-runner" if origin == "backlog-runner" else "completion"
         try:
-            await self.archive_session(session_id, archived_by="backlog-runner", context=context)
+            await self.archive_session(session_id, archived_by=archived_by, context=context)
         except Exception:
-            log.warning("backlog_runner.autoarchive_failed id=%s", session_id, exc_info=True)
+            log.warning("completion.autoarchive_failed id=%s", session_id, exc_info=True)
             self._auto_archiving.discard(session_id)
             return
-        await self._backlog_ctx.emit(
-            "info", f"archived completed run {session_id}",
-            kind="archived", session_id=session_id)
+        counts = getattr(self, "_complete_nudge_counts", None)
+        if counts is not None:
+            counts.pop(session_id, None)
+        if origin == "backlog-runner":
+            await self._backlog_ctx.emit(
+                "info", f"archived completed run {session_id}",
+                kind="archived", session_id=session_id)
 
     async def _persist_context_usage(self, session_id: str, used_tokens: int, max_tokens: int) -> None:
         """Driver ``on_context_usage`` callback: persist the exact context-window occupancy.
@@ -2293,11 +2352,13 @@ class SessionOrchestrator:
                 continue
             if self._turn_restart_in_flight(sid):
                 continue
-            # A completed backlog-runner session is owned by the dedicated auto-archive
-            # path (`_maybe_autoarchive_completed`); governing it here too would let two
-            # paths race to archive the same session. Autopilot owns every OTHER
-            # completed session (human-created, pr-doctor, etc.).
-            if rec.status == "complete" and getattr(rec, "origin", None) == "backlog-runner":
+            # Every `complete` session (marker emitted) is owned by the deterministic
+            # completion auto-archive path (`_maybe_autoarchive_completed`), which applies
+            # the readiness gate and archives or nudges independent of the autopilot mode.
+            # Governing it here too would let two paths race to archive the same session.
+            # Autopilot still governs goal-met inference for sessions that never emitted
+            # the marker (`done`/`idle`) plus every stuck-awaiting-input status.
+            if rec.status == "complete":
                 continue
             if getattr(rec, "autopilot_paused", False):
                 continue

@@ -5,8 +5,9 @@ kept its live driver/worktree and (with target-state counting) held its slot
 until the sweep freed it. When the agent signals completion — the derived status
 becomes ``complete`` (see status.derive_status) — the orchestrator should archive
 the session: stop the driver, release the worktree, and let the sweep reclaim the
-slot. Only backlog-runner sessions, only on ``complete`` (not a plain ``done``
-turn), and only once.
+slot. Completion archiving is a universal rule (all origins — see
+test_completion_autoarchive.py); this file focuses on the backlog-runner specifics:
+only on ``complete`` (not a plain ``done`` turn), and only once.
 """
 from __future__ import annotations
 
@@ -42,6 +43,7 @@ def _orch(records):
 def test_completed_backlog_session_is_archived():
     async def run():
         orch, archived = _orch({"s1": _rec("s1")})
+        orch.pr_for = lambda repo, branch: _armed_pr()  # met bar (armed PR) → archive
         orch._maybe_autoarchive_completed("s1", "complete", orch._records["s1"])
         await asyncio.sleep(0)  # let the scheduled task run
         await asyncio.sleep(0)
@@ -60,14 +62,9 @@ def test_plain_done_turn_is_not_archived():
     asyncio.run(run())
 
 
-def test_human_session_is_not_archived():
-    async def run():
-        orch, archived = _orch({"s1": _rec("s1", origin=None)})
-        orch._maybe_autoarchive_completed("s1", "complete", orch._records["s1"])
-        await asyncio.sleep(0)
-        assert archived == []  # human-created sessions are never auto-archived
-
-    asyncio.run(run())
+# Note: human-origin completion behaviour (archive when the bar is met, nudge when it
+# isn't) is covered comprehensively in test_completion_autoarchive.py — completion
+# archiving is now a universal rule, no longer scoped to backlog-runner.
 
 
 def test_manually_unarchived_backlog_session_is_not_re_archived():
@@ -87,6 +84,7 @@ def test_manually_unarchived_backlog_session_is_not_re_archived():
 def test_double_complete_archives_once():
     async def run():
         orch, archived = _orch({"s1": _rec("s1")})
+        orch.pr_for = lambda repo, branch: _armed_pr()  # met bar → archive
         orch._maybe_autoarchive_completed("s1", "complete", orch._records["s1"])
         orch._maybe_autoarchive_completed("s1", "complete", orch._records["s1"])
         await asyncio.sleep(0)
@@ -119,9 +117,13 @@ def _orch_with_pr(records, pr_info=None):
 
 
 def test_completed_backlog_archive_context_includes_pr_state_no_pr():
-    """When no PR exists, archive_context has pr_state with has_repo=True, prs=[]."""
+    """When no PR exists, archive_context has pr_state with has_repo=True, prs=[].
+
+    Uses a non-code (research) goal so the universal readiness gate is met with no PR —
+    a code goal with no PR would nudge instead of archive (see test_completion_autoarchive)."""
     async def run():
         rec = _rec("s1")
+        rec.active_goal = "investigate and summarize the failure"  # non-code → met, no PR
         # rec.repo = "o/r", rec.branch = "feat/x"
         orch, calls = _orch_with_pr({"s1": rec}, pr_info=None)
         orch._maybe_autoarchive_completed("s1", "complete", rec)
@@ -261,19 +263,20 @@ def test_no_pr_with_arm_step_in_instructions_defers_archive():
     asyncio.run(run())
 
 
-def test_open_unarmed_pr_without_arm_step_archives_immediately():
-    """Without --squash --auto in instructions, the existing behaviour is preserved:
-    a completed backlog-runner session archives immediately, even if its PR happens
-    to be open-unarmed. The gate only fires when the task explicitly demanded arming."""
+def test_open_unarmed_pr_without_arm_step_now_defers():
+    """The readiness gate is now UNIVERSAL: even without `--squash --auto` in the
+    instructions, a completed session with an open-unarmed PR is nudged to arm it, not
+    archived. (Previously the gate only fired when the task explicitly demanded arming;
+    that carve-out was the inconsistency this change removes.)"""
     async def run():
         rec = _rec("s1")
-        # No initial_prompt — so no --squash --auto signal → gate skipped
+        # No initial_prompt — the gate still applies from the open-unarmed PR fact alone.
         orch, archived, nudged = _orch_with_send_prompt({"s1": rec}, pr_info=_unarmed_pr())
         orch._maybe_autoarchive_completed("s1", "complete", rec)
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        assert len(archived) == 1 and archived[0]["session_id"] == "s1"
-        assert nudged == []
+        assert archived == [], "open-unarmed PR is not the finished state"
+        assert nudged, "must nudge toward arming the PR"
 
     asyncio.run(run())
 
