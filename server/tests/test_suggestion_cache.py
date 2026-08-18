@@ -11,6 +11,7 @@ async def _run_caches():
         _suggester=types.SimpleNamespace(generate=AsyncMock(return_value=["Run the tests", "Commit it"])),
         cwd="/x", config_dir="/c", session_id="s1",
         _emit=lambda e: None, _last_suggestions=[], _last_turn_id="",
+        _last_suggest_sig=None,
     )
     await SessionDriver._run_suggestions(fake, "User: hi\n\nAssistant: done", "t1")
     return fake._last_suggestions
