@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Awaitable, Callable
 
 from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
@@ -22,11 +23,45 @@ _DAY_SECONDS = 24 * 3600
 
 # Spawn-failure damping (2026-07-21 incident: ENOSPC spawn retries every tick
 # churned gigabytes of checkout page cache into the daemon cgroup's MemoryHigh
-# throttle, wedging the control socket into a watchdog restart loop).
-SPAWN_BACKOFF_BASE_S = 300.0        # first per-target retry delay; doubles per failure
-SPAWN_BACKOFF_CAP_S = 3600.0        # per-target backoff ceiling
+# throttle, wedging the control socket into a watchdog restart loop). Per-target
+# cooldown ramps gently — a first failure is often a transient blip (a momentary
+# worktree collision, a slot that frees a tick later), so the first retry is
+# quick and the delay only stretches for a target that keeps failing (#666).
+SPAWN_BACKOFF_SCHEDULE_S = (60.0, 300.0)    # cooldown after the 1st, 2nd consecutive failure
+SPAWN_BACKOFF_MAX_DEFAULT_S = 900.0         # 3rd+ failure cooldown (CCSWITCH_BACKLOG_MAX_BACKOFF_S)
 SPAWN_CIRCUIT_THRESHOLD = 3         # consecutive failures (any cause) that open the breaker
 SPAWN_CIRCUIT_COOLDOWN_S = 1800.0   # breaker-open duration before a half-open probe
+# Grouping-optimizer damping: after a failed plan refresh, retry after a SHORT
+# fixed cooldown rather than a full grouping interval, so a transient model /
+# connectivity blip recovers the plan within minutes — the underlying
+# ``propose_groups`` call has its own per-account helper-layer circuit breaker,
+# so a short cadence can't cause runaway model spend during a sustained outage.
+GROUP_REFRESH_BACKOFF_S = 120.0
+
+
+def _max_spawn_backoff_s() -> float:
+    """The 3rd+-consecutive-failure per-target cooldown ceiling, overridable via
+    ``CCSWITCH_BACKLOG_MAX_BACKOFF_S`` (seconds). A non-positive or unparseable
+    value falls back to the default."""
+    raw = os.environ.get("CCSWITCH_BACKLOG_MAX_BACKOFF_S")
+    if raw:
+        try:
+            val = float(raw)
+        except ValueError:
+            return SPAWN_BACKOFF_MAX_DEFAULT_S
+        if val > 0:
+            return val
+    return SPAWN_BACKOFF_MAX_DEFAULT_S
+
+
+def _spawn_backoff_delay(consecutive_failures: int) -> float:
+    """Per-target cooldown for the Nth consecutive spawn failure: 60s, 300s,
+    then the (configurable) max for the 3rd and beyond. Every tier is clamped by
+    the max so a low ``CCSWITCH_BACKLOG_MAX_BACKOFF_S`` still caps the ramp."""
+    cap = _max_spawn_backoff_s()
+    if 1 <= consecutive_failures <= len(SPAWN_BACKOFF_SCHEDULE_S):
+        return min(SPAWN_BACKOFF_SCHEDULE_S[consecutive_failures - 1], cap)
+    return cap
 
 
 # --------------------------------------------------------------------------- #
@@ -287,7 +322,7 @@ class BacklogRunnerLoop:
         self._last_orphan_sweep: float | None = None    # monotonic; throttles the heal pass
         self._last_group_refresh: float | None = None   # monotonic; throttles the optimizer
         self._group_nudge = False                       # refill starved → refresh next tick
-        self._group_refresh_backoff = False             # failed → ignore nudges one interval
+        self._group_refresh_retry_at: float | None = None  # failed → gate nudges until this clock time
         self._group_refresh_failed_emitted = False      # debounce the failure event
         self._last_groups_emitted: int | None = None    # debounce the refreshed event
         self._lock = asyncio.Lock()
@@ -499,23 +534,27 @@ class BacklogRunnerLoop:
         behind (``select_batch`` found no live plan group).
 
         The window stamp is taken (and the nudge cleared) UP FRONT so a failing
-        refresh waits a full interval instead of hammering the model every tick
-        — the seam raises on failure rather than storing an empty plan over a
-        real backlog. The refreshed event is emitted only when the group count
-        CHANGES, so an idle empty backlog doesn't flood the activity feed."""
+        refresh backs off a SHORT fixed cooldown instead of hammering the model
+        every tick — the seam raises on failure rather than storing an empty
+        plan over a real backlog. A 2-minute failure cooldown (rather than a
+        full grouping interval) lets a transient model / connectivity blip
+        recover the plan quickly while still never retrying per-tick (#666). The
+        refreshed event is emitted only when the group count CHANGES, so an idle
+        empty backlog doesn't flood the activity feed."""
         if self._refresh_groups is None:
             return
         now = self._clock()
         interval = max(1, int(config.get("grouping_interval_minutes") or 30)) * 60.0
         elapsed = (self._last_group_refresh is None
                    or now - self._last_group_refresh >= interval)
-        if elapsed:
-            # A full interval has passed — any failure backoff is over.
-            self._group_refresh_backoff = False
-        # The nudge is ignored while backing off from a failure: a starved
-        # refill re-nudges EVERY tick, and without this gate a persistently
-        # broken model would be re-called once per tick instead of per interval.
-        if not (elapsed or (self._group_nudge and not self._group_refresh_backoff)):
+        # The nudge is ignored while backing off from a failure: a starved refill
+        # re-nudges EVERY tick, and without this gate a persistently broken model
+        # would be re-called once per tick. The backoff is a short cooldown, not a
+        # full interval, so recovery is fast — a scheduled (elapsed) refresh always
+        # runs regardless, clearing the gate below on success.
+        backing_off = (self._group_refresh_retry_at is not None
+                       and now < self._group_refresh_retry_at)
+        if not (elapsed or (self._group_nudge and not backing_off)):
             return
         self._last_group_refresh = now
         self._group_nudge = False
@@ -523,13 +562,14 @@ class BacklogRunnerLoop:
             n = await self._refresh_groups(config)
         except Exception:
             log.warning("backlog_runner.group_refresh_failed", exc_info=True)
-            self._group_refresh_backoff = True
+            self._group_refresh_retry_at = now + GROUP_REFRESH_BACKOFF_S
             if not self._group_refresh_failed_emitted:
                 self._group_refresh_failed_emitted = True
                 await self._ctx.emit(
-                    "warn", "group plan refresh failed — retrying next interval",
+                    "warn", "group plan refresh failed — retrying shortly",
                     kind="groups_refresh_failed")
             return
+        self._group_refresh_retry_at = None
         self._group_refresh_failed_emitted = False
         if n != self._last_groups_emitted:
             self._last_groups_emitted = n
@@ -633,7 +673,7 @@ class BacklogRunnerLoop:
                 log.warning("backlog_runner.spawn_failed target=%s", batch.primary,
                             exc_info=True)
                 fails = self._spawn_backoff.get(batch.primary, (0, 0.0))[0] + 1
-                delay = min(SPAWN_BACKOFF_BASE_S * (2 ** (fails - 1)), SPAWN_BACKOFF_CAP_S)
+                delay = _spawn_backoff_delay(fails)
                 self._spawn_backoff[batch.primary] = (fails, self._clock() + delay)
                 self._consec_spawn_failures += 1
                 msg = str(exc)
