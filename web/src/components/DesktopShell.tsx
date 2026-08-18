@@ -17,7 +17,7 @@
  * via SessionRuntimeProvider keyed by the focused id.
  */
 
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Plus, Settings, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { detachKeyYieldsToTextEntry } from '@/lib/detachKeyGuard'
@@ -133,11 +133,23 @@ export function DesktopShell() {
   const { data: accounts = [] } = useAccounts()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const sessionSearch = useSessionSearch()
+  // Queued sessions are displayed separately by QueuedSection and must not
+  // enter useSessionOrdering — when groups are provided, SessionList renders
+  // groups directly and ignores the sessions prop, so filtering after the fact
+  // leaves queued cards in the grouped "Done" list (their 'queued' status has no
+  // tier mapping and falls through to the your-turn/"Done" bucket).
+  const queuedSessions = useMemo(
+    () => sessions.filter(s => s.status === 'queued')
+      .sort((a, b) => (a.queuePosition ?? 0) - (b.queuePosition ?? 0)),
+    [sessions],
+  )
+  const nonQueuedSessions = useMemo(
+    () => sessions.filter(s => s.status !== 'queued'),
+    [sessions],
+  )
   const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions, allOrderedSessions, navItems, collapsedKeys, toggleCollapse, expandGroup, collapseGroup } =
-    useSessionOrdering(sessions, sessionSearch.matchedIds)
-  const queuedSessions = orderedSessions.filter(s => s.status === 'queued')
-    .sort((a, b) => (a.queuePosition ?? 0) - (b.queuePosition ?? 0))
-  const liveSessions = orderedSessions.filter(s => s.status !== 'queued')
+    useSessionOrdering(nonQueuedSessions, sessionSearch.matchedIds)
+  const liveSessions = orderedSessions
   const { data: archivedSessions = [] } = useArchivedSessions()
   const reposQuery = useGithubRepos()
   const { data: models = [] } = useModels()
