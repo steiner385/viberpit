@@ -20,10 +20,12 @@ class _FakeOrch:
     (invalid kind → structured 'invalid_kind' status, as the real orchestrator does)."""
 
     def __init__(self, *, actionable=None,
-                 result=None, kinds=frozenset({"failing_ci", "merge_conflict", "out_of_date"})):
+                 result=None, kinds=frozenset({"failing_ci", "merge_conflict", "out_of_date"}),
+                 jobs=None):
         self._actionable = actionable or []
         self._result = result or {"status": "sent", "level": "ok", "message": "Sent fix prompt to live session"}
         self._kinds = kinds
+        self._jobs = jobs or {}
         self.trigger_calls = []
 
     async def automation_actionable(self, automation_id):
@@ -34,6 +36,9 @@ class _FakeOrch:
             return {"status": "invalid_kind", "level": "error", "message": f"invalid kind {kind!r}"}
         self.trigger_calls.append((item_id, kind))
         return self._result
+
+    async def pr_doctor_job(self, job_id):
+        return self._jobs.get(job_id)
 
 
 @contextmanager
@@ -80,6 +85,22 @@ def test_fix_routes_to_trigger_for_actionable_pr():
                    json={"item_id": "owner/repo#43", "kind": "failing_ci"}, headers=H)
     assert r.status_code == 200
     assert orch.trigger_calls == [("owner/repo#43", "failing_ci")]
+
+
+def test_job_status_returns_job(): # issue #668
+    job = {"job_id": "prd-abc", "target": "o/r#7", "kind": "failing_ci",
+           "status": "running", "phase": "cloning", "session_id": None,
+           "error_phase": None, "message": "", "level": "ok"}
+    with _client(_FakeOrch(jobs={"prd-abc": job})) as c:
+        r = c.get("/api/automations/pr-doctor/jobs/prd-abc", headers=H)
+    assert r.status_code == 200
+    assert r.json() == job
+
+
+def test_job_status_unknown_is_404():
+    with _client(_FakeOrch()) as c:
+        r = c.get("/api/automations/pr-doctor/jobs/prd-missing", headers=H)
+    assert r.status_code == 404
 
 
 def test_actionable_returns_classified_prs():

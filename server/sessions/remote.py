@@ -378,6 +378,12 @@ class RemoteOrchestrator:
                                        item_id=item_id, kind=kind,
                                        timeout=AUTOMATION_RPC_TIMEOUT)
 
+    async def pr_doctor_job(self, job_id: str) -> dict | None:
+        """Current state of an async pr-doctor trigger job, via the daemon (issue
+        #668). A quick read — the default RPC timeout is fine (unlike the trigger,
+        which needed AUTOMATION_RPC_TIMEOUT while it blocked on clone+spawn)."""
+        return await self._client.call("pr_doctor_job", job_id=job_id)
+
     async def consolidation_candidates(self, repo: str | None = None) -> dict:
         """Open PRs + suggested consolidation clusters, via the daemon."""
         return await self._client.call("consolidation_candidates", repo=repo)

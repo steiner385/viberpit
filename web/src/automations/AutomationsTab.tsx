@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import {
   useAutomations, useAutomationEvents, useAutomationSessions,
   useAutomationActionable, useAutomationTrigger,
 } from '@/api/hooks'
-import type { Automation, ActionSpec } from '@/api/automations'
+import { fetchPrDoctorJob, type Automation, type ActionSpec } from '@/api/automations'
 import { ConsolidatePanel } from '@/components/ConsolidatePanel'
 import { BacklogGroupsPanel } from '@/components/BacklogGroupsPanel'
 import { ManualDispatchDialog } from '@/components/ManualDispatchDialog'
@@ -68,14 +68,50 @@ function outcomeToast(r: { level: string; message: string }) {
   else toast.error(r.message)
 }
 
+// Async job phases → button label (issue #668). Shown while the background
+// clone→assess→spawn pipeline runs so the user sees which phase is slow.
+const PHASE_LABEL: Record<string, string> = {
+  queued: 'Queued…', cloning: 'Cloning…', assessing: 'Assessing…', spawning: 'Spawning…',
+}
+const JOB_TERMINAL = new Set(['ready', 'error', 'deferred'])
+const JOB_POLL_MS = 750
+
+type Outcome = { level: string; message: string }
+
+// Poll an async trigger job (issue #668) until it settles, reporting each phase
+// to `onPhase`. Returns the final outcome, or a feed fallback if the job
+// vanished (evicted / daemon restart → 404). `alive` lets the caller abandon the
+// loop when the button unmounts.
+async function pollJob(
+  jobId: string, onPhase: (phase: string) => void, alive: () => boolean,
+): Promise<Outcome> {
+  while (alive()) {
+    let job
+    try {
+      job = await fetchPrDoctorJob(jobId)
+    } catch {
+      return { level: 'warn', message: 'Lost track of the job — check the activity feed.' }
+    }
+    onPhase(job.phase)
+    if (JOB_TERMINAL.has(job.status)) return { level: job.level, message: job.message }
+    await new Promise((res) => setTimeout(res, JOB_POLL_MS))
+  }
+  return { level: 'warn', message: 'Cancelled' }
+}
+
 function ActionButton(
   { item, action, automationId }:
   { item: { id: string }; action: ActionSpec; automationId: string },
 ) {
   const trigger = useAutomationTrigger(automationId)
   const [armed, setArmed] = useState(false)
-  const [outcome, setOutcome] = useState<{ level: string; message: string } | null>(null)
-  const busy = trigger.isPending
+  const [outcome, setOutcome] = useState<Outcome | null>(null)
+  // Non-null phase while an async trigger (issue #668) is in flight.
+  const [phase, setPhase] = useState<string | null>(null)
+  // Flipped false on unmount so an in-flight poll loop abandons quietly.
+  const alive = useRef(true)
+  useEffect(() => () => { alive.current = false }, [])
+  const busy = trigger.isPending || phase !== null
 
   useEffect(() => {
     if (!outcome) return
@@ -94,6 +130,17 @@ function ActionButton(
   async function fire() {
     setArmed(false)
     const r = await trigger.mutateAsync({ item_id: item.id, kind: action.kind })
+    // Async path (issue #668): poll the job for live phases, then settle. The
+    // trigger RPC now returns in milliseconds instead of blocking 12–41 s.
+    if (r.job_id && r.status === 'queued') {
+      setPhase(r.phase ?? 'queued')
+      const final = await pollJob(r.job_id, setPhase, () => alive.current)
+      if (!alive.current) return
+      setPhase(null)
+      setOutcome(final)
+      outcomeToast(final)
+      return
+    }
     setOutcome({ level: r.level, message: r.message })
     outcomeToast(r)
   }
@@ -103,6 +150,8 @@ function ActionButton(
     void fire()
   }
 
+  // While a job runs, show its live phase; otherwise the generic pending label.
+  const workingLabel = phase ? (PHASE_LABEL[phase] ?? 'Working…') : 'Working…'
   const base = 'rounded border px-2 py-1 text-xs font-semibold disabled:opacity-50'
   const btnTone = action.style === 'risky'
     ? 'border-red-300 text-red-700 hover:bg-red-600 hover:text-white hover:border-red-600'
@@ -110,7 +159,7 @@ function ActionButton(
   return (
     <span className="inline-flex items-center gap-2">
       <button type="button" disabled={busy} onClick={onClick} className={`${base} ${btnTone}`}>
-        {busy ? 'Working…' : armed ? `Confirm ${action.label}?` : action.label}
+        {busy ? workingLabel : armed ? `Confirm ${action.label}?` : action.label}
       </button>
       {armed && !busy && (
         <button

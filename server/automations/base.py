@@ -65,9 +65,19 @@ class TriggerResult:
     status: str          # machine-readable (e.g. "spawned", "ceiling", "failed")
     level: str           # "ok" | "warn" | "error"
     message: str         # human-readable
+    # Async triggers (issue #668) answer "queued" immediately and carry a job id
+    # the UI polls for live phase progress. Omitted from the payload when unset so
+    # synchronous results are byte-for-byte unchanged.
+    job_id: str | None = None
+    phase: str | None = None
 
     def to_dict(self) -> dict:
-        return {"status": self.status, "level": self.level, "message": self.message}
+        d = {"status": self.status, "level": self.level, "message": self.message}
+        if self.job_id is not None:
+            d["job_id"] = self.job_id
+        if self.phase is not None:
+            d["phase"] = self.phase
+        return d
 
 
 def _type_ok(field_type: str, value: Any) -> bool:
