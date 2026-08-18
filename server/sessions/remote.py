@@ -349,6 +349,15 @@ class RemoteOrchestrator:
         r = await self._client.call("deploy_status")
         return r.get("status") or {}
 
+    async def git_credential_alerts(self) -> dict:
+        """Stale git-credential alerts (#670) via the daemon — the process that
+        runs ``ensure_clone`` and owns the registry."""
+        return await self._client.call("git_credential_alerts")
+
+    async def dismiss_git_credential_alert(self, repo: str) -> dict:
+        """Clear one repo's stale-credential alert (#670) via the daemon."""
+        return await self._client.call("dismiss_git_credential_alert", repo=repo)
+
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
         """Inject the branch-aware fix prompt for PR #pr_number via the daemon.
 

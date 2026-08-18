@@ -265,6 +265,7 @@ def plan_to_batch(
     plan: list[dict],
     candidates: list[dict],
     repo_load: "dict[str, int] | None" = None,
+    paused_repos: "set[str] | None" = None,
 ) -> "tuple[Batch | None, int | None]":
     """Pure: pop the highest-priority still-live group off *plan* as a Batch.
 
@@ -274,14 +275,20 @@ def plan_to_batch(
     groups by ascending active-run count (per-repo fairness, mirroring the
     old selection path) while preserving plan priority within a repo.
 
+    ``paused_repos`` (repos with stale git credentials, issue #670) are skipped
+    entirely: branching a worktree off their stale ``origin`` would implement
+    against ancient code, so the runner waits on those repos while still
+    servicing every other repo's backlog.
+
     Returns ``(batch, group_id)`` or ``(None, None)`` when no plan group has
     a live ref — the runner then WAITS for the grouper rather than choosing.
     """
     by_ref = {c["ref"]: c for c in candidates}
+    paused = paused_repos or set()
     live: list[tuple[dict, list[str]]] = []
     for g in plan:
         refs = [r for r in g.get("refs") or [] if r in by_ref]
-        if refs:
+        if refs and by_ref[refs[0]]["repo"] not in paused:
             live.append((g, refs))
     if not live:
         return None, None

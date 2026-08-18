@@ -75,3 +75,27 @@ async def list_github_branches(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except gitrepos.GhError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/credential-alerts")
+async def list_credential_alerts(
+    request: Request, _identity: str = Depends(current_identity)
+) -> dict:
+    """Repos whose clone can't fetch due to stale git credentials (issue #670).
+
+    Sourced from the daemon (where ``ensure_clone`` runs and owns the registry),
+    so it is correct in remote mode too. The banner polls this; an empty
+    ``alerts`` list means every clone is fetching cleanly (the alert auto-cleared
+    on a successful fetch)."""
+    return await request.app.state.sessions.git_credential_alerts()
+
+
+@router.delete("/credential-alerts")
+async def dismiss_credential_alert(
+    request: Request,
+    repo: str = Query(..., description="nameWithOwner, e.g. owner/name"),
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Dismiss one repo's stale-credential alert. Advisory — if the credential
+    is still broken, the next failed fetch re-raises it."""
+    return await request.app.state.sessions.dismiss_git_credential_alert(repo)
