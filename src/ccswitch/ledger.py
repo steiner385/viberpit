@@ -191,6 +191,20 @@ def get_account_defaults(led: dict, name: str) -> dict:
     }
 
 
+def set_account_enabled(led: dict, name: str, enabled: bool) -> None:
+    """Enable/disable an account. Disabled accounts are never selected (blocked
+    everywhere: new sessions, auto-rotation, and manual pick) but are kept intact
+    so the toggle is reversible — distinct from ``remove_account``."""
+    _acct(led, name)["enabled"] = bool(enabled)
+
+
+def is_account_enabled(led: dict, name: str) -> bool:
+    """True unless the account is explicitly disabled. A missing ``enabled`` key
+    means enabled: existing ledgers predate the field and must not silently
+    disable every account after an upgrade."""
+    return led["accounts"].get(name, {}).get("enabled", True) is not False
+
+
 def reserve(led: dict, name: str, until_ts: float) -> None:
     _acct(led, name)["reservationUntil"] = until_ts
 

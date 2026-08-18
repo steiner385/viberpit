@@ -85,6 +85,7 @@ class InProcessOrchestratorAdapter:
     async def resume_recovery_status(self, *a, **k): return await _maybe_await(self._orch.resume_recovery_status(*a, **k))
     async def automation_actionable(self, *a, **k): return await _maybe_await(self._orch.automation_actionable(*a, **k))
     async def automation_trigger(self, *a, **k): return await _maybe_await(self._orch.automation_trigger(*a, **k))
+    async def pr_doctor_job(self, *a, **k): return await _maybe_await(self._orch.pr_doctor_job(*a, **k))
     async def copilot_add_start(self, *a, **k): return await _maybe_await(self._orch.copilot_add_start(*a, **k))
     async def copilot_add_status(self, *a, **k): return await _maybe_await(self._orch.copilot_add_status(*a, **k))
     async def copilot_add_cancel(self, *a, **k): return await _maybe_await(self._orch.copilot_add_cancel(*a, **k))
@@ -97,6 +98,9 @@ class InProcessOrchestratorAdapter:
     async def deploy_config_list(self, *a, **k): return await _maybe_await(self._orch.deploy_config_list(*a, **k))
     async def deploy_config_put(self, *a, **k): return await _maybe_await(self._orch.deploy_config_put(*a, **k))
     async def deploy_status(self, *a, **k): return await _maybe_await(self._orch.deploy_status(*a, **k))
+    # --- git credential-refresh alerts (#670) ---
+    async def git_credential_alerts(self, *a, **k): return await _maybe_await(self._orch.git_credential_alerts(*a, **k))
+    async def dismiss_git_credential_alert(self, *a, **k): return await _maybe_await(self._orch.dismiss_git_credential_alert(*a, **k))
     # --- automation consolidation methods ---
     async def consolidation_candidates(self, *a, **k): return await _maybe_await(self._orch.consolidation_candidates(*a, **k))
     async def automation_consolidate(self, *a, **k): return await _maybe_await(self._orch.automation_consolidate(*a, **k))

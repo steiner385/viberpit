@@ -40,7 +40,7 @@ vi.mock('@/api/hooks', () => ({
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useAccounts: vi.fn(), useSessions: vi.fn(), useCreateSession: vi.fn(),
   useRenameSession: vi.fn(), useCloseSession: vi.fn(), useRefreshAccount: vi.fn(),
-  useUpdateAccount: vi.fn(), useDeleteAccount: vi.fn(), useGithubRepos: vi.fn(),
+  useUpdateAccount: vi.fn(), useDeleteAccount: vi.fn(), useSetAccountEnabled: vi.fn(), useGithubRepos: vi.fn(),
   useGithubBranches: vi.fn(), useSettings: vi.fn(), useUpdateSettings: vi.fn(),
   useReauthAccount: vi.fn(), useReauthStatus: vi.fn(), useCancelReauth: vi.fn(),
   useArchivedSessions: vi.fn(), useUnarchiveSession: vi.fn(), usePermanentDeleteSession: vi.fn(),
@@ -84,7 +84,7 @@ function setup() {
   vi.mocked(hooks.useAccounts).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useAccounts>)
   vi.mocked(hooks.useSessions).mockReturnValue({ data: [mk()], isLoading: false } as ReturnType<typeof hooks.useSessions>)
   vi.mocked(hooks.useModels).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useModels>)
-  for (const h of ['useCreateSession','useRenameSession','useCloseSession','useRefreshAccount','useUpdateAccount','useDeleteAccount','useUpdateSettings','useReauthAccount','useCancelReauth','useUnarchiveSession','usePermanentDeleteSession','useSendPrompt','useFixPr','useStartDeploy'] as const) {
+  for (const h of ['useCreateSession','useRenameSession','useCloseSession','useRefreshAccount','useUpdateAccount','useDeleteAccount','useSetAccountEnabled','useUpdateSettings','useReauthAccount','useCancelReauth','useUnarchiveSession','usePermanentDeleteSession','useSendPrompt','useFixPr','useStartDeploy'] as const) {
     vi.mocked(hooks[h]).mockReturnValue(NOOP as never)
   }
   // DeployPanel (mounted in DesktopShell) reads these; default to "up to date" so it renders null.
@@ -306,6 +306,32 @@ describe('DesktopShell', () => {
     await user.click(prompt)
     await user.keyboard('{ArrowDown}')
     expect(prompt.getAttribute('aria-activedescendant')).toMatch(/^(row-s|group-header-)/)
+  })
+
+  it('keeps queued sessions out of the grouped list — only QueuedSection shows them', async () => {
+    // Regression: queued sessions were fed into useSessionOrdering, and since
+    // 'queued' has no status-tier mapping it fell through to the your-turn/"Done"
+    // bucket — so a queued session rendered as a full clickable card under "Done"
+    // AND in the QueuedSection above. Filtering queued out *before* ordering fixes
+    // it (SessionList renders `groups` directly and ignores the flat prop).
+    const user = userEvent.setup()
+    vi.mocked(hooks.useSessions).mockReturnValue({
+      data: [
+        mk({ id: 'q1', name: 'Queued One', status: 'queued', queuePosition: 1 }),
+        mk({ id: 's2', name: 'Live Two', status: 'idle' }),
+      ],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useSessions>)
+    render(<DesktopShell />, { wrapper })
+    await user.selectOptions(screen.getByLabelText('Group by'), 'status')
+
+    // The queued session appears only in the QueuedSection…
+    expect(screen.getByText('Queued (1)')).toBeInTheDocument()
+    // …never as a clickable SessionCard in the grouped "Done" list.
+    expect(screen.queryByLabelText(/open session queued one/i)).not.toBeInTheDocument()
+    // The live idle session still renders under its "Done" group as before.
+    expect(screen.getByLabelText(/open session live two/i)).toBeInTheDocument()
+    expect(screen.getByText('Done')).toBeInTheDocument()
   })
 
   it('shows a subtle toast when a session is created optimistically', async () => {

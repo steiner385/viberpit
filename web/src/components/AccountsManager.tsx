@@ -8,7 +8,7 @@
 import * as React from 'react'
 import { useState, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Pencil, Check, X, Trash2, Plus, KeyRound } from 'lucide-react'
+import { RefreshCw, Pencil, Check, X, Trash2, Plus, KeyRound, Power } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { UsageBadge, StatusPill } from './UsageBadge'
@@ -18,6 +18,7 @@ import {
   useRefreshAccount,
   useUpdateAccount,
   useDeleteAccount,
+  useSetAccountEnabled,
   useReauthAccount,
   useReauthStatus,
   useCancelReauth,
@@ -234,6 +235,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   const reauthAccount = useReauthAccount()
   const cancelReauth = useCancelReauth()
   const submitCode = useSubmitReauthCode()
+  const setEnabled = useSetAccountEnabled()
+
+  // Absent `enabled` (older payloads) means enabled — only an explicit false disables.
+  const isDisabled = account.enabled === false
 
   // Poll status while reauth is running (enabled when started and not optimistically idled)
   const reauthStatusQuery = useReauthStatus(account.name, reauthStarted && !reauthOptimisticIdle)
@@ -384,7 +389,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
           </div>
         ) : (
           <div className="flex-1 min-w-0 flex items-center gap-2">
-            <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+            <span className={cn(
+              'text-sm font-medium text-gray-900 dark:text-gray-100 truncate',
+              isDisabled && 'opacity-50 line-through',
+            )}>
               {displayLabel}
             </span>
             {account.provider === 'copilot' && <CopilotChip />}
@@ -393,6 +401,13 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
         {!editing && (
           <div className="flex items-center gap-3 flex-shrink-0">
             <StatusPill status={account.status} />
+            {isDisabled && (
+              <span
+                className="rounded px-1.5 py-0.5 text-xs font-medium bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+              >
+                Disabled
+              </span>
+            )}
             <SessionsBadge counts={account.liveSessions} />
             <RankBadge rank={account.rank} reason={account.rankReason} />
             {account.weeklyReservePct != null && account.usage != null &&
@@ -463,6 +478,24 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
                 Cancel
               </button>
             )}
+            <button
+              type="button"
+              className={cn(
+                'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+                isDisabled ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400',
+                'hover:bg-gray-100 dark:hover:bg-gray-700',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                'disabled:opacity-40',
+              )}
+              aria-label={`${isDisabled ? 'Enable' : 'Disable'} account ${account.name}`}
+              title={isDisabled
+                ? 'Re-enable this account for selection'
+                : 'Pause this account — kept intact but never selected until re-enabled'}
+              disabled={setEnabled.isPending}
+              onClick={() => setEnabled.mutate({ name: account.name, enabled: isDisabled })}
+            >
+              <Power size={14} aria-hidden="true" />
+            </button>
             <button
               type="button"
               className={cn(

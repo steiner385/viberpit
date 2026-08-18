@@ -90,9 +90,12 @@ class PrDoctorActionProvider:
         if kind == "out_of_date":
             ok = await self._orch._pr_doctor_mechanical(repo, info, kind)
             return _pr_result("updated" if ok else "failed")
+        # failing_ci / merge_conflict → the clone→assess→spawn pipeline is 12–41 s,
+        # too long to block the edge→daemon RPC (issue #668). Hand it to a
+        # background job and answer immediately with the id the UI polls.
         rec = self._orch._pr_doctor_owning_rec(repo, branch)
-        status, _sid = await self._orch._pr_doctor_session_fix(repo, branch, info, kind, rec)
-        return _pr_result(status)
+        job_id = await self._orch._pr_doctor_trigger_async(repo, branch, info, kind, rec)
+        return _pr_queued_result(job_id)
 
     async def consolidate(self, repo: str, numbers: list[int]) -> TriggerResult:
         status, _sid = await self._orch._pr_doctor_consolidate(repo, numbers)
@@ -102,6 +105,14 @@ class PrDoctorActionProvider:
 def _pr_result(status: str) -> TriggerResult:
     level, message = _PR_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
     return TriggerResult(status=status, level=level, message=message)
+
+
+def _pr_queued_result(job_id: str) -> TriggerResult:
+    """The immediate answer for an async session-fix (issue #668): the job is
+    queued; the UI polls ``pr_doctor_job`` for the live phase and final outcome."""
+    return TriggerResult(status="queued", level="ok",
+                         message="Queued — cloning, assessing, then spawning…",
+                         job_id=job_id, phase="queued")
 
 
 # Only the statuses the synchronous fast path can answer: the clone/model/spawn

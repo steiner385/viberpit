@@ -56,7 +56,7 @@ def test_stage_result_open_ci():
                          eta_low_seconds=200, eta_high_seconds=500))
     assert s == {"stage": "ci", "substate": None, "percent": 40,
                  "etaSeconds": 300, "etaRangeSeconds": [200, 500],
-                 "overdue": False}
+                 "overdue": False, "etaStale": False, "etaUpdatedAt": None}
 
 
 def test_stage_result_parked_substates():

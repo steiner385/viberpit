@@ -25,6 +25,7 @@ def test_record_to_dict_includes_prs_when_given():
         "head_ref": "",
         "eta_seconds": None, "eta_percent": None, "eta_overdue": False,
         "eta_low_seconds": None, "eta_high_seconds": None,
+        "eta_stale": False, "eta_updated_at": "",
         "mergeable": "UNKNOWN", "merge_state_status": "", "auto_merge_enabled": False,
         "in_merge_queue": False, "touches_workflows": False,
     }]

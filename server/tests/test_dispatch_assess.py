@@ -9,6 +9,7 @@ their results. Both are best-effort; the endpoint is tested here via:
 """
 from __future__ import annotations
 
+import contextlib
 import os
 from unittest.mock import AsyncMock, patch
 
@@ -172,3 +173,84 @@ def test_assess_no_identity_401():
                 json={"prompt": "Fix something"},
             )
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# _pick_helper_config_dir unit tests
+# ---------------------------------------------------------------------------
+
+
+def _fake_locked_ledger(status_map: dict):
+    """Return a context-manager factory that yields a fake ledger dict."""
+    led = {"accounts": {name: {"status": s} for name, s in status_map.items()}}
+
+    @contextlib.contextmanager
+    def _cm():
+        yield led
+
+    return _cm
+
+
+def test_pick_helper_config_dir_returns_first_ok_anthropic():
+    """First live Anthropic account → its config_dir string is returned."""
+    from server.api.dispatch import _pick_helper_config_dir
+
+    with (
+        patch("ccswitch.accounts.all_accounts", return_value=[("alice", "anthropic")]),
+        patch(
+            "ccswitch.ledger.locked_ledger",
+            new=_fake_locked_ledger({"alice": "ok"}),
+        ),
+        patch("ccswitch.paths.account_cfg_dir", return_value=type("P", (), {"__str__": lambda self: "/fake/cfg/alice"})()),
+    ):
+        result = _pick_helper_config_dir()
+
+    assert result == "/fake/cfg/alice"
+
+
+def test_pick_helper_config_dir_skips_needs_reauth():
+    """Accounts marked needs-reauth are skipped; returns None when none remain."""
+    from server.api.dispatch import _pick_helper_config_dir
+
+    with (
+        patch(
+            "ccswitch.accounts.all_accounts",
+            return_value=[("alice", "anthropic"), ("bob", "anthropic")],
+        ),
+        patch(
+            "ccswitch.ledger.locked_ledger",
+            new=_fake_locked_ledger({"alice": "needs-reauth", "bob": "needs-reauth"}),
+        ),
+    ):
+        result = _pick_helper_config_dir()
+
+    assert result is None
+
+
+def test_pick_helper_config_dir_skips_copilot():
+    """Copilot accounts are not eligible; returns None when only copilot exists."""
+    from server.api.dispatch import _pick_helper_config_dir
+
+    with (
+        patch(
+            "ccswitch.accounts.all_accounts",
+            return_value=[("copilot-acct", "copilot")],
+        ),
+        patch(
+            "ccswitch.ledger.locked_ledger",
+            new=_fake_locked_ledger({}),
+        ),
+    ):
+        result = _pick_helper_config_dir()
+
+    assert result is None
+
+
+def test_pick_helper_config_dir_fail_open_on_exception():
+    """Any exception in the helper (e.g. import failure) returns None gracefully."""
+    from server.api.dispatch import _pick_helper_config_dir
+
+    with patch("ccswitch.accounts.all_accounts", side_effect=RuntimeError("boom")):
+        result = _pick_helper_config_dir()
+
+    assert result is None

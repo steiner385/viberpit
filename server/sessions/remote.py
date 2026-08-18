@@ -349,6 +349,15 @@ class RemoteOrchestrator:
         r = await self._client.call("deploy_status")
         return r.get("status") or {}
 
+    async def git_credential_alerts(self) -> dict:
+        """Stale git-credential alerts (#670) via the daemon — the process that
+        runs ``ensure_clone`` and owns the registry."""
+        return await self._client.call("git_credential_alerts")
+
+    async def dismiss_git_credential_alert(self, repo: str) -> dict:
+        """Clear one repo's stale-credential alert (#670) via the daemon."""
+        return await self._client.call("dismiss_git_credential_alert", repo=repo)
+
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
         """Inject the branch-aware fix prompt for PR #pr_number via the daemon.
 
@@ -377,6 +386,12 @@ class RemoteOrchestrator:
         return await self._client.call("automation_trigger", automation_id=automation_id,
                                        item_id=item_id, kind=kind,
                                        timeout=AUTOMATION_RPC_TIMEOUT)
+
+    async def pr_doctor_job(self, job_id: str) -> dict | None:
+        """Current state of an async pr-doctor trigger job, via the daemon (issue
+        #668). A quick read — the default RPC timeout is fine (unlike the trigger,
+        which needed AUTOMATION_RPC_TIMEOUT while it blocked on clone+spawn)."""
+        return await self._client.call("pr_doctor_job", job_id=job_id)
 
     async def consolidation_candidates(self, repo: str | None = None) -> dict:
         """Open PRs + suggested consolidation clusters, via the daemon."""

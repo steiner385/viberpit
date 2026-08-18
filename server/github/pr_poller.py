@@ -16,6 +16,7 @@ from typing import Awaitable, Callable, Union
 
 from ccswitch import gitrepos
 
+from .api_budget import PriorityGate
 from .pr_status import (
     PullRequestInfo,
     build_env_deployments_query,
@@ -95,10 +96,15 @@ class PrStatusPoller:
         backoff_base: float | None = None,
         backoff_cap: float = 900.0,
         chunk_size: int = 40,
+        api_gate: PriorityGate | None = None,
     ) -> None:
         self._poll_interval = poll_interval
         self._query_fn = query_fn if query_fn is not None else _default_query
         self._chunk_size = max(1, chunk_size)
+        # Shared API-budget gate (issue #671). PR-status refresh is the HIGH
+        # priority tier; when set, its network calls mark the gate busy so the
+        # best-effort ETA enrichment yields. None = no gating (unit tests).
+        self._api_gate = api_gate
         self._jitter_frac = jitter_frac
         self._rng = rng
         self._clock = clock
@@ -164,6 +170,15 @@ class PrStatusPoller:
             return None
         return self._cache.get((repo, branch))
 
+    async def _run_query(self, chunk: list[tuple[str, str]]) -> dict:
+        """Run one query chunk, marking the shared API gate busy for its
+        duration so best-effort ETA fetches yield to this refresh (issue #671).
+        The blocking gh call is offloaded to a thread either way."""
+        if self._api_gate is None:
+            return await asyncio.to_thread(self._query_fn, chunk)
+        async with self._api_gate.high_priority():
+            return await asyncio.to_thread(self._query_fn, chunk)
+
     async def refresh_once(self, pairs: list[tuple[str, str]]) -> bool:
         if not pairs:
             return True
@@ -180,7 +195,7 @@ class PrStatusPoller:
         for start in range(0, len(pairs), self._chunk_size):
             chunk = pairs[start:start + self._chunk_size]
             try:
-                response = await asyncio.to_thread(self._query_fn, chunk)
+                response = await self._run_query(chunk)
                 fresh.update(parse_pr_response(response, chunk))
                 ok_pairs.extend(chunk)
             except Exception:

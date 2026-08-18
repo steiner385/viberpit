@@ -95,6 +95,25 @@ export interface TriggerResult {
   status: string
   level: 'ok' | 'warn' | 'error'
   message: string
+  /** Async triggers (issue #668) answer status "queued" with a job id the UI
+   *  polls for live phase progress. Absent on synchronous results. */
+  job_id?: string
+  phase?: string
+}
+
+/** Live state of an async pr-doctor trigger job (issue #668). Phases advance
+ *  cloning → assessing → spawning → ready; on failure `errorPhase` names the
+ *  stage that failed. Statuses: queued | running | ready | error | deferred. */
+export interface PrDoctorJob {
+  job_id: string
+  target: string
+  kind: string
+  status: string
+  phase: string
+  session_id: string | null
+  error_phase: string | null
+  message: string
+  level: 'ok' | 'warn' | 'error'
 }
 
 export function fetchAutomationActionable(id: string): Promise<ActionableItem[]> {
@@ -105,6 +124,10 @@ export function postAutomationTrigger(
   id: string, body: { item_id: string; kind: string },
 ): Promise<TriggerResult> {
   return api.post<TriggerResult>(`/automations/${id}/trigger`, body)
+}
+
+export function fetchPrDoctorJob(jobId: string): Promise<PrDoctorJob> {
+  return api.get<PrDoctorJob>(`/automations/pr-doctor/jobs/${jobId}`)
 }
 
 // --- PR-doctor consolidation -------------------------------------------------

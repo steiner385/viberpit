@@ -33,6 +33,9 @@ export interface Account {
   rank: number | null
   rankReason: string | null
   accountDefaults?: AccountDefaults | null
+  // Absent (older payloads) is treated as enabled. A disabled account is kept
+  // intact but blocked everywhere in selection until re-enabled.
+  enabled?: boolean
 }
 
 export type SessionStatus =

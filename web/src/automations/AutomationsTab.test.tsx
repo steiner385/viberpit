@@ -3,12 +3,28 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { AutomationsTab } from './AutomationsTab'
 import * as hooks from '@/api/hooks'
-import type { Automation } from '@/api/automations'
+import type { Automation, PrDoctorJob } from '@/api/automations'
+import { fetchPrDoctorJob } from '@/api/automations'
 import { toast } from 'sonner'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
 }))
+
+// Async trigger job polling (issue #668): stub the job endpoint, keep the rest real.
+vi.mock('@/api/automations', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/automations')>()
+  return { ...actual, fetchPrDoctorJob: vi.fn() }
+})
+const mockFetchJob = vi.mocked(fetchPrDoctorJob)
+
+function job(over: Partial<PrDoctorJob>): PrDoctorJob {
+  return {
+    job_id: 'prd-x', target: 'owner/repo#43', kind: 'failing_ci',
+    status: 'running', phase: 'cloning', session_id: null,
+    error_phase: null, message: '', level: 'ok', ...over,
+  }
+}
 
 const PR_DOCTOR: Automation = {
   id: 'pr-doctor', name: 'PR Doctor', description: 'watches CI',
@@ -243,6 +259,42 @@ describe('AutomationsTab', () => {
       } finally {
         vi.useRealTimers()
       }
+    })
+
+    it('async trigger (#668): shows the live phase then settles from the job', async () => {
+      let calls = 0
+      mockFetchJob.mockImplementation(async () => {
+        calls += 1
+        return calls === 1
+          ? job({ status: 'running', phase: 'cloning' })
+          : job({ status: 'ready', phase: 'ready', session_id: 'sess-9',
+                  level: 'ok', message: 'Spawned fix session' })
+      })
+      const mutateAsync = vi.fn().mockResolvedValue(
+        { status: 'queued', level: 'ok', message: 'Queued…', job_id: 'prd-x', phase: 'queued' })
+      mockBasicHooks(); mockActions(mutateAsync)
+      expand()
+      fireEvent.click(screen.getByRole('button', { name: 'Fix CI' }))
+      // The button shows the live phase while the background pipeline runs…
+      await screen.findByRole('button', { name: 'Cloning…' })
+      expect(mockFetchJob).toHaveBeenCalledWith('prd-x')
+      // …and settles to the job's terminal outcome + toast (no premature toast).
+      await screen.findByText('Spawned fix session')
+      expect(toast.success).toHaveBeenCalledWith('Spawned fix session')
+    })
+
+    it('async trigger (#668): surfaces a failed phase from the job', async () => {
+      mockFetchJob.mockResolvedValue(
+        job({ status: 'error', phase: 'cloning', error_phase: 'cloning',
+              level: 'error', message: 'Clone failed — see the automation feed' }))
+      const mutateAsync = vi.fn().mockResolvedValue(
+        { status: 'queued', level: 'ok', message: 'Queued…', job_id: 'prd-x', phase: 'queued' })
+      mockBasicHooks(); mockActions(mutateAsync)
+      expand()
+      fireEvent.click(screen.getByRole('button', { name: 'Fix CI' }))
+      await screen.findByText('Clone failed — see the automation feed')
+      expect(toast.error).toHaveBeenCalledWith('Clone failed — see the automation feed')
+      expect(toast.success).not.toHaveBeenCalled()
     })
 
     it('shows empty state when there are no actionable items', () => {

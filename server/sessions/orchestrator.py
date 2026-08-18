@@ -334,7 +334,12 @@ class SessionOrchestrator:
             usage_fn=_poller_usage_fn,
         )
         from server.github.pr_poller import PrStatusPoller
-        self._pr_poller: PrStatusPoller = PrStatusPoller()
+        from server.github.api_budget import PriorityGate
+        # One gate shared by both GitHub pollers so the best-effort ETA fetch in
+        # pr_population yields to the user-facing PR-status refresh under a
+        # shared rate-limit budget (issue #671).
+        self._api_gate = PriorityGate()
+        self._pr_poller: PrStatusPoller = PrStatusPoller(api_gate=self._api_gate)
         self._pr_poller.set_pairs_provider(self._pr_pairs)
         self._pr_poller.set_on_change(self._on_pr_change)
         # Per-poll-cycle SWEEP: after every refresh the sweep re-classifies the
@@ -354,6 +359,7 @@ class SessionOrchestrator:
         self._pr_population: PrPopulationPoller = PrPopulationPoller(
             merge_queue_query_fn=_default_merge_queue_query,
             merge_queue_sink=_merge_queue_sink,
+            api_gate=self._api_gate,
         )
         self._pr_population.set_repos_provider(self._pr_repos)
         from server.pipeline.deploy_watch import DeployWatcher
@@ -402,6 +408,12 @@ class SessionOrchestrator:
         # refs are held so in-flight tasks aren't GC'd.
         self._consolidation_inflight: set[str] = set()
         self._consolidation_tasks: set[asyncio.Task] = set()
+        # Async manual pr-doctor triggers (issue #668): the slow clone→assess→
+        # spawn pipeline runs in a background task that advances a job here; the
+        # trigger RPC returns the job id immediately and the UI polls its phase.
+        from server.automations.pr_doctor_jobs import JobStore
+        self._pr_doctor_jobs = JobStore()
+        self._pr_doctor_job_tasks: set[asyncio.Task] = set()
         # Injectable seam for the pr-doctor Mechanical (update-branch) executor:
         # a swappable ``gh`` runner so tests can record argv without touching the
         # network. Defaults to the real ``gh`` shell-out.
@@ -432,6 +444,7 @@ class SessionOrchestrator:
             close_out=self._backlog_close_out,
             heal_orphans=self._backlog_heal_orphans,
             refresh_groups=self._backlog_refresh_groups,
+            credential_alerts=self._backlog_credential_alerts,
         )
         self._backlog_task: asyncio.Task | None = None
         # Autopilot control loop: advances every governed session through its stuck
@@ -1706,7 +1719,19 @@ class SessionOrchestrator:
         nudges the optimizer) when no plan group is live."""
         from server.automations.backlog_runner import select_batch
         repo_load = await self._backlog_repo_load()
-        return await select_batch(config, gh_run=self._gh_run, repo_load=repo_load)
+        # Repos whose clone can't fetch (stale git credentials, #670) are paused:
+        # branching a worktree off their stale ref would implement against
+        # ancient code. Auto-resumes when a later fetch clears the registry.
+        paused = {a["repo"] for a in gitrepos.stale_credential_repos()}
+        return await select_batch(config, gh_run=self._gh_run, repo_load=repo_load,
+                                  paused_repos=paused)
+
+    def _backlog_credential_alerts(self) -> list[dict]:
+        """Stale-credential seam for the loop's dashboard notification (#670).
+
+        Returns the current auth-failed-fetch repos straight from the
+        (daemon-process) gitrepos registry that ``ensure_clone`` populates."""
+        return gitrepos.stale_credential_repos()
 
     async def _backlog_refresh_groups(self, config: dict) -> int:
         """The grouping-optimizer seam: recompute + persist the group plan.
@@ -3119,7 +3144,8 @@ class SessionOrchestrator:
         return took_action
 
     async def _pr_doctor_session_fix(
-        self, repo: str, branch: str, info: PullRequestInfo, kind: str, rec
+        self, repo: str, branch: str, info: PullRequestInfo, kind: str, rec,
+        on_phase: "Callable[[str], None] | None" = None,
     ) -> tuple[str, str | None]:
         """Inject-or-spawn a session-driven PR fix — the shared session executor.
 
@@ -3135,7 +3161,12 @@ class SessionOrchestrator:
         ``"sent"`` | ``"spawned"`` (real injection) | ``"transient"`` |
         ``"clone_failed"`` | ``"spawn_failed"``. Does NOT touch per-target engine
         state — the caller records the attempt on a real injection.
+
+        ``on_phase(phase)`` — optional progress hook the async manual trigger
+        (issue #668) uses to advance its job through ``cloning`` → ``assessing``
+        → ``spawning``. Defaults to a no-op so the auto sweep path is unchanged.
         """
+        phase = on_phase or (lambda _p: None)
         target = f"{repo}#{info.number}"
         # Select the branch-aware first prompt by failure kind. Single source of
         # truth for both the live-driver inject and the fresh-spawn seed.
@@ -3146,6 +3177,9 @@ class SessionOrchestrator:
 
         live_rec = rec if (rec is not None and rec.id in self._drivers) else None
         if live_rec is not None:
+            # LIVE driver → near-instant injection, no clone/assess. Report the
+            # spawning phase so a polling job still sees forward motion.
+            phase("spawning")
             # LIVE driver → inject the kind-appropriate prompt via the same
             # send-prompt path request_pr_fix uses. For failing_ci we keep calling
             # request_pr_fix to preserve the old auto behaviour exactly (it
@@ -3176,6 +3210,7 @@ class SessionOrchestrator:
         # branch=None and the seeded `gh pr checkout` can't work. The user's real
         # ~/GitHub checkouts are never touched.
         url = f"https://github.com/{repo}.git"
+        phase("cloning")
         try:
             cwd = await asyncio.to_thread(
                 gitrepos.ensure_clone, await self._effective_repo_root(), repo, url
@@ -3188,12 +3223,14 @@ class SessionOrchestrator:
                 kind="spawn_failed", target=target)
             return "clone_failed", None
         from server.automations.model_pick import resolve_model
+        phase("assessing")
         failing = ", ".join(
             d.name for d in info.checks_detail if d.conclusion == "failure")
         model, model_source = await resolve_model(
             await self._pr_doctor_config(),
             f"{kind} fix for PR {target}: {info.title}"
             + (f"\nfailing checks: {failing}" if failing else ""))
+        phase("spawning")
         try:
             rec2 = await self._pr_doctor_ctx.spawn_session(
                 origin_ref=target,
@@ -3233,6 +3270,50 @@ class SessionOrchestrator:
             "info", f"auto-fix spawned for {target}",
             kind="attempted", target=target, session_id=sid)
         return "spawned", sid
+
+    async def _pr_doctor_trigger_async(
+        self, repo: str, branch: str, info: PullRequestInfo, kind: str, rec
+    ) -> str:
+        """Kick off a manual session-fix in the background; return its job id now.
+
+        The clone→assess→spawn tail runs 12–41 s — far too long to hold the
+        edge→daemon RPC open (issue #668). We create a job, schedule the tail as
+        a background task that advances the job through its phases, and answer
+        immediately with the id so the UI can poll ``pr_doctor_job``."""
+        target = f"{repo}#{info.number}"
+        job = self._pr_doctor_jobs.create(target=target, kind=kind)
+        task = asyncio.create_task(
+            self._pr_doctor_job_run(job, repo, branch, info, kind, rec),
+            name=f"pr-doctor-job:{job.job_id}")
+        self._pr_doctor_job_tasks.add(task)
+        task.add_done_callback(self._pr_doctor_job_tasks.discard)
+        return job.job_id
+
+    async def _pr_doctor_job_run(self, job, repo: str, branch: str,
+                                 info: PullRequestInfo, kind: str, rec) -> None:
+        """Background tail of an async manual trigger: run the shared session
+        executor, advancing ``job`` through its phases, then settle it. Reuses
+        ``_pr_doctor_session_fix`` verbatim (single source of truth for the fix
+        pipeline + its feed events) — only the job bookkeeping is new."""
+        from server.automations.action_providers import _PR_STATUS_MAP
+        from server.automations.pr_doctor_jobs import finalize
+        try:
+            status, sid = await self._pr_doctor_session_fix(
+                repo, branch, info, kind, rec,
+                on_phase=lambda p: self._pr_doctor_jobs.advance(job, p))
+        except Exception:  # noqa: BLE001 — a bug in the tail must still settle the job.
+            log.exception("pr_doctor.job_failed job=%s target=%s", job.job_id, job.target)
+            finalize(job, "spawn_failed", level="error",
+                     message="Action failed — see the automation feed")
+            return
+        level, message = _PR_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
+        finalize(job, status, level=level, message=message, session_id=sid)
+
+    def pr_doctor_job(self, job_id: str) -> dict | None:
+        """Current state of an async manual-trigger job, or None if unknown
+        (never created, or evicted / lost to a daemon restart). JSON-safe."""
+        job = self._pr_doctor_jobs.get(job_id)
+        return job.to_dict() if job is not None else None
 
     async def consolidation_candidates(self, repo: str | None = None) -> dict:
         """Open, non-draft PRs per repo (from the population cache, within
@@ -4139,6 +4220,22 @@ class SessionOrchestrator:
     def deploy_status(self) -> dict:
         """Raw per-repo env health cache from the watcher (Task 6 payload)."""
         return self._deploy_watcher.status()
+
+    def git_credential_alerts(self) -> dict:
+        """Repos whose clone can't fetch due to stale git credentials (#670).
+
+        Reads the daemon-process ``gitrepos`` registry that ``ensure_clone``
+        populates on an auth-class fetch failure, so the edge can surface a
+        "git credential refresh needed" banner. Auto-clears once a fetch
+        succeeds (the registry drops the entry)."""
+        return {"alerts": gitrepos.stale_credential_repos()}
+
+    def dismiss_git_credential_alert(self, repo: str) -> dict:
+        """Clear one repo's stale-credential alert (#670).
+
+        A dismissal is advisory: if the credential is still broken, the next
+        failed fetch re-adds the entry. Returns whether an entry was present."""
+        return {"cleared": gitrepos.clear_stale_credentials(repo)}
 
     def check_insights(self, repo: str, window: str, now=None) -> dict:
         """Per-repo Check Health: slowest + flakiest checks, duration regressions,

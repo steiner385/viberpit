@@ -74,6 +74,7 @@ async def select_batch(
     query: Callable[..., list[dict]] = query_candidates,
     gh_run: "GhRun | None" = None,
     repo_load: "dict[str, int] | None" = None,
+    paused_repos: "set[str] | None" = None,
     load_plan: Callable[[], Awaitable[list[dict]]] = load_plan,
     mark_consumed: Callable[[int], Awaitable[None]] = mark_consumed,
 ) -> "Batch | None":
@@ -100,6 +101,10 @@ async def select_batch(
         are stable-reordered toward the repo with the FEWEST active runs
         (per-repo fairness) so a big backlog in one repo can't monopolise every
         slot; plan priority is preserved within a repo.
+    paused_repos:
+        Repos to skip this selection (stale git credentials, issue #670) — their
+        clone can only fetch a stale ref, so branching a worktree off it would
+        implement against ancient code. Other repos are still serviced.
     load_plan / mark_consumed:
         Injectable plan-store seams (default: the ``backlog_groups`` table).
         Tests pass canned functions so no DB or model is ever touched here.
@@ -116,7 +121,7 @@ async def select_batch(
         return None
 
     plan = await load_plan()
-    batch, group_id = plan_to_batch(plan, candidates, repo_load)
+    batch, group_id = plan_to_batch(plan, candidates, repo_load, paused_repos)
     if batch is not None and group_id is not None:
         try:
             await mark_consumed(group_id)
@@ -223,6 +228,11 @@ HealOrphans = Callable[[dict, "set[str]"], Awaitable["list[tuple[str, str]]"]]
 # failure (rather than storing an empty plan over a real backlog) so the loop
 # backs off a full grouping interval instead of hammering the model every tick.
 RefreshGroups = Callable[[dict], Awaitable[int]]
+# Stale-credential seam (issue #670): the current list of repos whose last git
+# fetch failed with an auth-class error (each dict: repo/since/error/settingsUrl).
+# The loop uses it to notify the dashboard; selection pauses those repos
+# separately via ``select_batch(paused_repos=...)``.
+CredentialAlerts = Callable[[], "list[dict]"]
 
 # The heal pass costs a gh search plus up to `limit` cross-ref lookups, so it
 # runs at most once per interval — orphans are a slow leak, not a hot path.
@@ -287,6 +297,7 @@ class BacklogRunnerLoop:
         close_out: CloseOut | None = None,
         heal_orphans: HealOrphans | None = None,
         refresh_groups: RefreshGroups | None = None,
+        credential_alerts: CredentialAlerts | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
@@ -306,6 +317,8 @@ class BacklogRunnerLoop:
         self._close_out = close_out                 # (target, info) -> close merged batch issues
         self._heal_orphans = heal_orphans               # GitHub-truth orphan healing
         self._refresh_groups = refresh_groups           # grouping optimizer (plan writer)
+        self._credential_alerts = credential_alerts     # -> [{repo,since,error,settingsUrl}]
+        self._cred_alerted: set[str] = set()            # repos with a live credential alert
         self._last_orphan_sweep: float | None = None    # monotonic; throttles the heal pass
         self._last_group_refresh: float | None = None   # monotonic; throttles the optimizer
         self._group_nudge = False                       # refill starved → refresh next tick
@@ -331,6 +344,9 @@ class BacklogRunnerLoop:
 
     async def _refill_and_sweep(self) -> None:
         mode, config = await self._read_config()
+        # Surface stale-credential alerts every tick, before refill — a paused
+        # repo must both notify the dashboard and be excluded from selection.
+        await self._check_credentials()
         if mode != "off":
             # The grouping optimizer runs BEFORE refill so a cold start (or a
             # just-consumed plan) can produce groups and spawn in the same tick.
@@ -358,6 +374,46 @@ class BacklogRunnerLoop:
         # Stash live counts on the ctx so ``BacklogRunner.status(ctx)`` renders
         # "N implementing, M eligible, K needs-human" instead of always "idle".
         await self._stash_counts(config)
+
+    async def _check_credentials(self) -> None:
+        """Surface stale-credential alerts (issue #670) to the dashboard.
+
+        Reads the current set of repos whose last git fetch failed with an
+        auth-class error and emits a dashboard event the FIRST time each repo
+        goes stale, and a "restored" event once it clears — both debounced via
+        ``_cred_alerted`` so a persistent failure doesn't flood the activity feed
+        every tick. The error-level emit also routes through the notification
+        rules (see :meth:`AutomationContext.emit`), so a configured push/webhook
+        fires too. Selection pausing is handled separately
+        (``select_batch(paused_repos=...)``); this method only notifies.
+        Best-effort: an alert-read or emit failure must never stall a tick."""
+        if self._credential_alerts is None:
+            return
+        try:
+            alerts = self._credential_alerts() or []
+        except Exception:  # pragma: no cover — an alert read must not stall the tick
+            log.warning("backlog_runner.credential_read_failed", exc_info=True)
+            return
+        by_repo = {a["repo"]: a for a in alerts if a.get("repo")}
+        current = set(by_repo)
+        # Newly stale → error event (once per repo until it clears).
+        for repo in sorted(current - self._cred_alerted):
+            self._cred_alerted.add(repo)
+            url = by_repo[repo].get("settingsUrl")
+            await self._ctx.emit(
+                "error",
+                f"Git credential refresh needed for {repo} — backlog paused for "
+                f"this repo until a fetch succeeds",
+                kind="credential_refresh_needed", target=repo,
+                detail={"repo": repo, "settingsUrl": url,
+                        "error": by_repo[repo].get("error")})
+        # Recovered → restored event + drop the debounce so a future failure re-alerts.
+        for repo in sorted(self._cred_alerted - current):
+            self._cred_alerted.discard(repo)
+            await self._ctx.emit(
+                "info",
+                f"Git credentials for {repo} working again — backlog resumed",
+                kind="credential_restored", target=repo, detail={"repo": repo})
 
     async def _stash_counts(self, config: dict) -> None:
         """Cache the current in-flight / eligible / needs-human counts on the ctx

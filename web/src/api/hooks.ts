@@ -385,6 +385,16 @@ export function useUpdateAccount() {
   })
 }
 
+export function useSetAccountEnabled() {
+  const qc = useQueryClient()
+  return useMutation<Account, ApiRequestError, { name: string; enabled: boolean }>({
+    mutationFn: ({ name, enabled }) =>
+      api.patch<Account>(`/accounts/${encodeURIComponent(name)}/enabled`, { enabled }),
+    // Refetch accounts so the dashboard + pickers reflect the new state at once.
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
+  })
+}
+
 type ReauthAccountInput = string | { name: string; mode?: 'login' | 'setup_token' }
 
 export function useReauthAccount() {
