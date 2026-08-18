@@ -66,7 +66,7 @@ def _validate_env_overrides(overrides: dict | None) -> None:
 # degrades to "unknown" (None) rather than blocking the dashboard or bubbling a
 # raw ReadTimeout into an unhandled 500 (the GET /api/accounts wedge, incident
 # 2026-07-02). Overridable for tests / tuning.
-USAGE_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_USAGE_FETCH_TIMEOUT", "8.0"))
+USAGE_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_USAGE_FETCH_TIMEOUT", "3.0"))
 
 
 async def _safe_usage(orch, name: str, timeout: float):
