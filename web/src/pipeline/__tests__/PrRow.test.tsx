@@ -37,6 +37,18 @@ describe('PrRow', () => {
     expect(active.querySelector('.node-eta')!.textContent).toBe('~4m');
   });
 
+  it('captions a stale ETA "(est.)" with a dating tooltip and dimmed class (issue #671)', () => {
+    const { container } = render(<PrRow pr={pr({
+      stage: { stage: 'ci', substate: null, percent: 72, etaSeconds: 240,
+        etaRangeSeconds: null, overdue: false,
+        etaStale: true, etaUpdatedAt: '2020-01-01T00:00:00Z' },
+    })} hasDeploy />);
+    const chip = container.querySelector('.eta.eta-stale')!;
+    expect(chip).not.toBeNull();
+    expect(chip.textContent).toBe('~4m left (est.)');
+    expect(chip.getAttribute('title')).toMatch(/estimate — ETA last updated/);
+  });
+
   it('has id="pr-{number}" on the row root (anchor target for the queue train)', () => {
     const { container } = render(<PrRow pr={pr({})} hasDeploy />);
     expect(container.querySelector('#pr-8962')).not.toBeNull();

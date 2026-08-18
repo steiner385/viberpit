@@ -102,7 +102,11 @@ def stage_result(pr: PullRequestInfo, timeline: dict | None = None) -> dict:
     )
     return {"stage": stage, "substate": substate, "percent": pr.eta_percent,
             "etaSeconds": pr.eta_seconds, "etaRangeSeconds": rng,
-            "overdue": pr.eta_overdue}
+            "overdue": pr.eta_overdue,
+            # Stale-while-revalidate caption (issue #671): a re-served last-good
+            # ETA (fresh fetch failed) so the UI can mark it an estimate.
+            "etaStale": pr.eta_stale,
+            "etaUpdatedAt": pr.eta_updated_at or None}
 
 
 # QueueEntry states that mean "in a building merge group" when a batch oid exists.
@@ -142,6 +146,10 @@ def pr_view(
         stage["etaSeconds"] = queue_progress["etaSeconds"] if queue_progress else None
         stage["etaRangeSeconds"] = None
         stage["overdue"] = False
+        # Queue ETA tracks the merge-group build, not the head-checks ETA the
+        # stale cache holds — don't carry a stale caption onto it (issue #671).
+        stage["etaStale"] = False
+        stage["etaUpdatedAt"] = None
     return {
         "repo": pr.repo, "number": pr.number, "title": pr.title, "url": pr.url,
         "stage": stage,

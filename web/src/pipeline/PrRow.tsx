@@ -4,7 +4,7 @@ import { useState, useMemo, memo, type MouseEvent, type KeyboardEvent } from 're
 import { Link } from 'react-router-dom';
 import { useApiBase } from './ApiBaseContext';
 import type { PrView } from './types';
-import { formatDur, formatEta, stageLabel } from './format';
+import { formatDur, formatEta, formatSince, stageLabel } from './format';
 import { MetroTrack } from './MetroTrack';
 import { CheckGantt } from './CheckGantt';
 import { Waterfall, waterfallSegments } from './Waterfall';
@@ -228,7 +228,18 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, expandable = true, onF
               ~{formatDur(sim.p50Secs)} / ~{formatDur(sim.p90Secs)} p90
             </span>
           ) : (
-            eta && <span className={`eta ${s.overdue ? 'overdue' : ''}`}>{eta}</span>
+            eta && (
+              /* stale-while-revalidate caption (issue #671): a re-served
+                 last-good ETA is dimmed and captioned "(est.)"; the tooltip
+                 dates it so a stale number never reads as fresh. */
+              <span
+                className={`eta ${s.overdue ? 'overdue' : ''} ${s.etaStale ? 'eta-stale' : ''}`}
+                title={s.etaStale && s.etaUpdatedAt
+                  ? `estimate — ETA last updated ${formatSince(s.etaUpdatedAt)}`
+                  : undefined}>
+                {eta}{s.etaStale ? ' (est.)' : ''}
+              </span>
+            )
           )}
           {/* ccswitch extension (spec §6): the authoring session label + optional
               Fix action. Kept OUT of the row's role="button" (nested-interactive

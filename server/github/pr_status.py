@@ -119,6 +119,12 @@ class PullRequestInfo:
     eta_overdue: bool = False
     eta_low_seconds: int | None = None
     eta_high_seconds: int | None = None
+    # Stale-while-revalidate (issue #671): when a fresh ETA fetch fails the
+    # population poller re-serves the last-good ETA with eta_stale=True and
+    # eta_updated_at set to when it was last computed (ISO-8601), so the UI can
+    # caption it "~3h (from 2h ago)" instead of showing a silent stale number.
+    eta_stale: bool = False
+    eta_updated_at: str = ""
     deployed_envs: tuple[str, ...] = ()
     check_groups: tuple[CheckGroup, ...] = ()
     mergeable: str = "UNKNOWN"          # MERGEABLE | CONFLICTING | UNKNOWN
@@ -153,6 +159,8 @@ class PullRequestInfo:
             "eta_overdue": self.eta_overdue,
             "eta_low_seconds": self.eta_low_seconds,
             "eta_high_seconds": self.eta_high_seconds,
+            "eta_stale": self.eta_stale,
+            "eta_updated_at": self.eta_updated_at,
             "deployed_envs": list(self.deployed_envs),
             "check_groups": [g.to_dict() for g in self.check_groups],
             "mergeable": self.mergeable,
@@ -188,6 +196,8 @@ class PullRequestInfo:
             eta_overdue=d.get("eta_overdue", False),
             eta_low_seconds=d.get("eta_low_seconds"),
             eta_high_seconds=d.get("eta_high_seconds"),
+            eta_stale=d.get("eta_stale", False),
+            eta_updated_at=d.get("eta_updated_at", ""),
             deployed_envs=tuple(d.get("deployed_envs", [])),
             check_groups=tuple(CheckGroup.from_dict(g) for g in d.get("check_groups", [])),
             mergeable=d.get("mergeable", "UNKNOWN"),
