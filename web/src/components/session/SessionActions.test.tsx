@@ -42,7 +42,7 @@ describe('SessionActions', () => {
 
     await user.click(screen.getByRole('button', { name: /archive session my session/i }))
 
-    expect(close.mutate).toHaveBeenCalledWith('s1', expect.anything())
+    expect(close.mutate).toHaveBeenCalledWith('s1')
     expect(onDone).toHaveBeenCalledTimes(1)
     expect(perm.mutate).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
