@@ -13,6 +13,7 @@ log dir degrades to stdout-only with a single warning.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import logging.handlers
@@ -40,6 +41,23 @@ def _coerce(value: Any) -> Any:
         return repr(value)
     except Exception:  # noqa: BLE001 — repr must never break logging
         return "<unrepr>"
+
+
+class _PoolCancelledFilter(logging.Filter):
+    """Suppress asyncio.CancelledError pool-reset records from sqlalchemy.pool.
+
+    During shutdown or request cancellation SQLAlchemy logs CancelledError at
+    ERROR level from pool checkin/reset. These are expected and not actionable;
+    suppressing them at the source logger keeps ERROR-band signal-to-noise high.
+    Returning False stops propagation before any handler sees the record.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR and record.exc_info:
+            exc_type = record.exc_info[0]
+            if exc_type is not None and issubclass(exc_type, asyncio.CancelledError):
+                return False
+        return True
 
 
 class ContextFilter(logging.Filter):
@@ -125,4 +143,7 @@ def configure_logging() -> None:
             root.warning("ccswitch: log dir %s unwritable (%s); stdout-only", log_dir, exc)
 
     install_redacting_filter()
+    # Suppress CancelledError pool-reset noise from sqlalchemy.pool (expected during
+    # shutdown/cancellation; ~400 per rotation at ERROR level — not actionable).
+    logging.getLogger("sqlalchemy.pool").addFilter(_PoolCancelledFilter())
     _configured = True
