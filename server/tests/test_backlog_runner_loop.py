@@ -908,8 +908,9 @@ def test_group_refresh_interval_elapsed_refreshes(tmp_path):
 
 def test_group_refresh_failure_backs_off_nudges_and_debounces_event(tmp_path):
     """A failing refresh must NOT be re-driven every tick by the starvation
-    nudge (that would hammer the model once per tick); it retries after a full
-    interval, and the warn event is emitted once, not per failure."""
+    nudge (that would hammer the model once per tick); it retries after a SHORT
+    fixed cooldown (~2 min, #666) rather than a full grouping interval, and the
+    warn event is emitted once, not per failure."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr4.db'}"
 
     async def run():
@@ -921,10 +922,11 @@ def test_group_refresh_failure_backs_off_nudges_and_debounces_event(tmp_path):
                                     refresh_groups=refresh)
         await loop.tick()               # cold start → refresh fails
         await loop.tick()               # nudged, but backing off → NO retry
-        await loop.tick()
+        clock.advance(60)
+        await loop.tick()               # 60s < 120s cooldown → still no retry
         assert len(calls) == 1
-        clock.advance(31 * 60)
-        await loop.tick()               # interval elapsed → retry (fails again)
+        clock.advance(70)               # 130s > 120s cooldown → nudge retries
+        await loop.tick()               # retry (fails again)
         assert len(calls) == 2
 
         from sqlalchemy import select
@@ -983,7 +985,7 @@ def test_group_refresh_skipped_when_mode_off(tmp_path):
 
 def test_spawn_failure_backs_off_target(tmp_path):
     """A failed spawn is NOT retried on the next tick; the target is retried
-    only after the 300s base backoff elapses."""
+    only after the 60s first-failure cooldown elapses (#666)."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'bo.db'}"
 
     async def run():
@@ -1003,17 +1005,22 @@ def test_spawn_failure_backs_off_target(tmp_path):
         )
         await loop.tick()
         assert len(attempts) == 1
-        clock.advance(120)              # < 300s base backoff
+        clock.advance(30)               # < 60s first-failure cooldown
         await loop.tick()
         assert len(attempts) == 1       # still cooling down — no retry churn
-        clock.advance(300)              # past the window
+        clock.advance(31)               # past the window
         await loop.tick()
         assert len(attempts) == 2       # retried once eligible
 
     asyncio.run(run())
 
 
-def test_spawn_backoff_doubles_per_consecutive_failure(tmp_path):
+def test_spawn_backoff_ramps_per_consecutive_failure(tmp_path):
+    """Per-target cooldown ramps 60s (1st failure) → 300s (2nd) as a target
+    keeps failing (#666). The 3rd consecutive failure trips the GLOBAL spawn
+    circuit (covered by ``test_three_consecutive_failures_trip_circuit``); the
+    per-target ramp beyond tier 2 is unit-tested in
+    ``test_spawn_backoff_delay_schedule`` to keep the two mechanisms decoupled."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'bo2.db'}"
 
     async def run():
@@ -1031,17 +1038,45 @@ def test_spawn_backoff_doubles_per_consecutive_failure(tmp_path):
             candidates=[batch("r#1")] * 5,
             spawn=failing_spawn, clock=clock,
         )
-        await loop.tick()                       # fail #1 → wait 300s
-        clock.advance(301)
-        await loop.tick()                       # fail #2 → wait 600s
-        clock.advance(301)
-        await loop.tick()                       # 301s < 600s: no attempt
+        await loop.tick()                       # fail #1 → wait 60s
+        assert len(attempts) == 1
+        clock.advance(61)
+        await loop.tick()                       # fail #2 → wait 300s
+        assert len(attempts) == 2
+        clock.advance(61)
+        await loop.tick()                       # 61s < 300s: no attempt
         assert len(attempts) == 2
         clock.advance(300)
-        await loop.tick()                       # 601s elapsed → attempt #3
+        await loop.tick()                       # 361s elapsed → attempt #3
         assert len(attempts) == 3
 
     asyncio.run(run())
+
+
+def test_spawn_backoff_delay_schedule(monkeypatch):
+    """The per-target cooldown schedule: 60s, 300s, then the (configurable) max
+    for the 3rd+ consecutive failure, every tier clamped by the max (#666)."""
+    from server.automations import backlog_runner as br
+
+    monkeypatch.delenv("CCSWITCH_BACKLOG_MAX_BACKOFF_S", raising=False)
+    assert br._spawn_backoff_delay(1) == 60.0
+    assert br._spawn_backoff_delay(2) == 300.0
+    assert br._spawn_backoff_delay(3) == 900.0     # default max
+    assert br._spawn_backoff_delay(4) == 900.0     # plateaus at the max
+    assert br._spawn_backoff_delay(10) == 900.0
+
+    # CCSWITCH_BACKLOG_MAX_BACKOFF_S overrides the 3rd+ tier and clamps earlier
+    # tiers that would exceed it.
+    monkeypatch.setenv("CCSWITCH_BACKLOG_MAX_BACKOFF_S", "120")
+    assert br._spawn_backoff_delay(1) == 60.0      # below the cap — unchanged
+    assert br._spawn_backoff_delay(2) == 120.0     # 300s tier clamped to the cap
+    assert br._spawn_backoff_delay(3) == 120.0
+
+    # A bogus / non-positive override falls back to the default, never 0.
+    monkeypatch.setenv("CCSWITCH_BACKLOG_MAX_BACKOFF_S", "not-a-number")
+    assert br._spawn_backoff_delay(3) == 900.0
+    monkeypatch.setenv("CCSWITCH_BACKLOG_MAX_BACKOFF_S", "0")
+    assert br._spawn_backoff_delay(3) == 900.0
 
 
 def test_spawn_success_clears_backoff(tmp_path):
@@ -1066,7 +1101,7 @@ def test_spawn_success_clears_backoff(tmp_path):
         )
         await loop.tick()                       # fails → backoff recorded
         assert loop._spawn_backoff
-        clock.advance(301)
+        clock.advance(61)
         await loop.tick()                       # succeeds
         assert loop._spawn_backoff == {}        # success wipes the slate
 
