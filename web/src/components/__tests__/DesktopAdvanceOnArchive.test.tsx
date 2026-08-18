@@ -165,14 +165,10 @@ describe('DesktopShell — advance on archive', () => {
     expect(document.getElementById('row-sess-2')).toHaveAttribute('data-selected', 'true')
   })
 
-  it('advances via fallback effect when archive API returns an error (onSuccess never fires)', async () => {
-    // Simulate the 503/409 error path: useCloseSession fires onError instead of
-    // onSuccess, so the per-call { onSuccess: onDone } callback in SessionActions
-    // is never invoked. The session later disappears from the live list when
-    // onSettled confirms the archive took effect. The fallback useEffect in
-    // DesktopShell should advance the selection to the neighbor.
-    _closeSessionCallsOnSuccess = false
-
+  it('archive navigates immediately; session leaving the list afterwards leaves selection stable', async () => {
+    // onDone() now fires before mutate — navigation is immediate and does not wait
+    // for the API result. When the session later disappears from the live list
+    // (onSettled refetch), the fallback useEffect must not double-advance.
     const user = userEvent.setup()
     renderWithClient(<DesktopShell />)
 
@@ -180,17 +176,15 @@ describe('DesktopShell — advance on archive', () => {
     await user.click(screen.getByRole('button', { name: /open session first/i }))
     expect(document.getElementById('row-sess-1')).toHaveAttribute('data-selected', 'true')
 
-    // Click archive — mutate fires but onSuccess is NOT called; selection stays put.
+    // Click archive — onDone() fires immediately, advancing selection to sess-2.
     await user.click(screen.getByRole('button', { name: /archive session open/i }))
-    expect(document.getElementById('row-sess-1')).toHaveAttribute('data-selected', 'true')
+    expect(document.getElementById('row-sess-2')).toHaveAttribute('data-selected', 'true')
 
     // Simulate onSettled confirming the archive: sess-1 leaves the live list.
+    // Selection must remain on sess-2 (no double-advance from the fallback effect).
     await act(async () => {
       pushSessions([DEFAULT_SESSIONS[1]])
     })
-
-    // The fallback useEffect should have advanced selection to sess-2 (the
-    // neighbor, computed from the pre-removal snapshot in selectionOrderRef).
     expect(document.getElementById('row-sess-2')).toHaveAttribute('data-selected', 'true')
   })
 })

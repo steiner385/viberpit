@@ -68,7 +68,8 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
   )
 
   function handleArchive() {
-    closeSession.mutate(sessionId, { onSuccess: onDone })
+    onDone()
+    closeSession.mutate(sessionId)
   }
 
   function handleDeleteConfirm() {
