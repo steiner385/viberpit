@@ -7,6 +7,7 @@ import { SubSessionView } from './components/session/SubSessionView'
 import { ReviewView } from './components/ReviewView'
 import { GlobalUpdateBanner } from './components/GlobalUpdateBanner'
 import { DaemonRestartBanner } from './components/DaemonRestartBanner'
+import { GitCredentialBanner } from './components/GitCredentialBanner'
 import { BrandMark } from './components/BrandMark'
 import { useMediaQuery } from './lib/useMediaQuery'
 import { DeployControllerProvider } from './lib/deployController'
@@ -187,6 +188,7 @@ function App() {
     <DeployControllerProvider>
       <GlobalUpdateBanner />
       <DaemonRestartBanner />
+      <GitCredentialBanner />
       {isWide ? (
         <DesktopShell />
       ) : (

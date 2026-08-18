@@ -438,6 +438,7 @@ class SessionOrchestrator:
             close_out=self._backlog_close_out,
             heal_orphans=self._backlog_heal_orphans,
             refresh_groups=self._backlog_refresh_groups,
+            credential_alerts=self._backlog_credential_alerts,
         )
         self._backlog_task: asyncio.Task | None = None
         # Autopilot control loop: advances every governed session through its stuck
@@ -1712,7 +1713,19 @@ class SessionOrchestrator:
         nudges the optimizer) when no plan group is live."""
         from server.automations.backlog_runner import select_batch
         repo_load = await self._backlog_repo_load()
-        return await select_batch(config, gh_run=self._gh_run, repo_load=repo_load)
+        # Repos whose clone can't fetch (stale git credentials, #670) are paused:
+        # branching a worktree off their stale ref would implement against
+        # ancient code. Auto-resumes when a later fetch clears the registry.
+        paused = {a["repo"] for a in gitrepos.stale_credential_repos()}
+        return await select_batch(config, gh_run=self._gh_run, repo_load=repo_load,
+                                  paused_repos=paused)
+
+    def _backlog_credential_alerts(self) -> list[dict]:
+        """Stale-credential seam for the loop's dashboard notification (#670).
+
+        Returns the current auth-failed-fetch repos straight from the
+        (daemon-process) gitrepos registry that ``ensure_clone`` populates."""
+        return gitrepos.stale_credential_repos()
 
     async def _backlog_refresh_groups(self, config: dict) -> int:
         """The grouping-optimizer seam: recompute + persist the group plan.
@@ -4201,6 +4214,22 @@ class SessionOrchestrator:
     def deploy_status(self) -> dict:
         """Raw per-repo env health cache from the watcher (Task 6 payload)."""
         return self._deploy_watcher.status()
+
+    def git_credential_alerts(self) -> dict:
+        """Repos whose clone can't fetch due to stale git credentials (#670).
+
+        Reads the daemon-process ``gitrepos`` registry that ``ensure_clone``
+        populates on an auth-class fetch failure, so the edge can surface a
+        "git credential refresh needed" banner. Auto-clears once a fetch
+        succeeds (the registry drops the entry)."""
+        return {"alerts": gitrepos.stale_credential_repos()}
+
+    def dismiss_git_credential_alert(self, repo: str) -> dict:
+        """Clear one repo's stale-credential alert (#670).
+
+        A dismissal is advisory: if the credential is still broken, the next
+        failed fetch re-adds the entry. Returns whether an entry was present."""
+        return {"cleared": gitrepos.clear_stale_credentials(repo)}
 
     def check_insights(self, repo: str, window: str, now=None) -> dict:
         """Per-repo Check Health: slowest + flakiest checks, duration regressions,
