@@ -334,7 +334,12 @@ class SessionOrchestrator:
             usage_fn=_poller_usage_fn,
         )
         from server.github.pr_poller import PrStatusPoller
-        self._pr_poller: PrStatusPoller = PrStatusPoller()
+        from server.github.api_budget import PriorityGate
+        # One gate shared by both GitHub pollers so the best-effort ETA fetch in
+        # pr_population yields to the user-facing PR-status refresh under a
+        # shared rate-limit budget (issue #671).
+        self._api_gate = PriorityGate()
+        self._pr_poller: PrStatusPoller = PrStatusPoller(api_gate=self._api_gate)
         self._pr_poller.set_pairs_provider(self._pr_pairs)
         self._pr_poller.set_on_change(self._on_pr_change)
         # Per-poll-cycle SWEEP: after every refresh the sweep re-classifies the
@@ -354,6 +359,7 @@ class SessionOrchestrator:
         self._pr_population: PrPopulationPoller = PrPopulationPoller(
             merge_queue_query_fn=_default_merge_queue_query,
             merge_queue_sink=_merge_queue_sink,
+            api_gate=self._api_gate,
         )
         self._pr_population.set_repos_provider(self._pr_repos)
         from server.pipeline.deploy_watch import DeployWatcher

@@ -100,6 +100,10 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 .eta { color: var(--muted); font-size: 12px; white-space: nowrap;
   font-variant-numeric: tabular-nums; text-align: right; }
 .eta.overdue { color: var(--fail); }
+/* stale-while-revalidate (issue #671): re-served last-good ETA — dimmed +
+   dotted underline so it reads as an estimate, not a fresh number. */
+.eta.eta-stale { opacity: 0.6; font-style: italic;
+  text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
 
 /* --- Metro-map track (V3) --- */
 .track { display: flex; align-items: flex-start; }

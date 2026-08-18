@@ -139,19 +139,28 @@ def test_merged_pr_does_not_get_eta(tmp_path):
 
 
 def test_eta_fetch_error_leaves_defaults(tmp_path):
-    """If the ETA checks fetch raises, defaults are preserved and no crash."""
+    """If the ETA checks fetch raises (and retry fails too) with no cached
+    last-good ETA, defaults are preserved and no crash."""
     store = _build_db(tmp_path / "ph.db")
+    calls = []
 
     def bad_eta_qfn(prs):
+        calls.append(1)
         raise RuntimeError("gh exploded")
+
+    async def _noop_sleep(_secs):  # avoid the real 5–30s jittered retry sleep
+        return None
 
     p = PrPopulationPoller(
         query_fn=lambda repo: _pop_resp(10),
         eta_query_fn=bad_eta_qfn,
         history_store=store,
         now_fn=lambda: NOW,
+        sleep_fn=_noop_sleep,
     )
     asyncio.run(p.refresh_once([REPO]))
+    # A single jittered retry means the fetch was attempted twice (issue #671).
+    assert len(calls) == 2
 
     prs = p.cached(REPO)
     assert len(prs) == 1

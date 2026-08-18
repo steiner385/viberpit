@@ -10,6 +10,11 @@ export interface StageResult {
   stage: StageId; substate: string | null;
   percent: number | null; etaSeconds: number | null;
   etaRangeSeconds: [number, number] | null; overdue: boolean;
+  /** Stale-while-revalidate (issue #671): true when etaSeconds is a re-served
+   *  last-good value (the fresh fetch failed). etaUpdatedAt is when that value
+   *  was computed (ISO-8601), letting the UI caption "~3h (from 2h ago)". */
+  etaStale?: boolean;
+  etaUpdatedAt?: string | null;
 }
 export interface CheckView {
   name: string; status: string; conclusion: string | null; isRequired: boolean;

@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable, Union
 from ccswitch import gitrepos
 
 from server.github import app_auth
+from .api_budget import PriorityGate
 from .merge_queue import build_merge_queue_query, parse_merge_queue_response
 from .pr_status import (
     PullRequestInfo,
@@ -34,6 +35,14 @@ from .pr_status import (
 )
 
 log = logging.getLogger(__name__)
+
+# ETA fields carried across a failed refresh for stale-while-revalidate (#671).
+# eta_stale is set separately (True on re-serve); eta_updated_at rides along so
+# the UI can render "~3h (from 2h ago)".
+_ETA_STALE_FIELDS = (
+    "eta_seconds", "eta_low_seconds", "eta_high_seconds",
+    "eta_percent", "eta_overdue", "eta_updated_at",
+)
 
 
 def _merged_since(retention_days: int) -> str:
@@ -162,6 +171,12 @@ class PrPopulationPoller:
         now_fn: Callable[[], datetime] | None = None,
         merge_queue_query_fn: Callable[[list[str]], dict] | None = None,
         merge_queue_sink: Callable[..., Awaitable[None]] | None = None,
+        # ETA resilience (issue #671) — all injectable for tests.
+        api_gate: PriorityGate | None = None,
+        eta_gate_timeout: float = 30.0,
+        eta_retry_min_s: float = 5.0,
+        eta_retry_max_s: float = 30.0,
+        sleep_fn: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         self._poll_interval = poll_interval
         self._retention_days = retention_days
@@ -186,6 +201,17 @@ class PrPopulationPoller:
         self._store_init_attempted = history_store is not None
         self._merge_queue_query_fn = merge_queue_query_fn
         self._merge_queue_sink = merge_queue_sink
+        # ETA resilience (issue #671): a shared API-budget gate the ETA fetch
+        # yields to (best-effort — bounded wait), a single jittered retry on
+        # failure, and a per-PR last-good ETA cache for stale-while-revalidate.
+        self._api_gate = api_gate
+        self._eta_gate_timeout = eta_gate_timeout
+        self._eta_retry_min_s = eta_retry_min_s
+        self._eta_retry_max_s = eta_retry_max_s
+        self._sleep_fn = sleep_fn or asyncio.sleep
+        # (repo, number) -> last successfully-computed ETA fields (incl.
+        # eta_updated_at). Pruned each cycle to the current open population.
+        self._eta_cache: dict[tuple[str, int], dict] = {}
         # --- PrTimeline capture state (SPEC §2) -------------------------------
         # Previous cycle's open-PR stage per (repo, number) — drives the
         # ci → ready|queue first-green transition detection.
@@ -244,6 +270,54 @@ class PrPopulationPoller:
         """
         return self._store()
 
+    async def _fetch_eta(self, open_keys: list[tuple[str, int]]) -> dict:
+        """Fetch ETA checks for ``open_keys``, yielding to higher-priority
+        PR-status refreshes and retrying once with jitter (issue #671).
+
+        The ETA fetch is best-effort background work sharing one GitHub-App
+        rate-limit budget with pr_poller, so before spending budget it waits
+        (bounded) for the shared gate to go idle. On a transient failure it
+        sleeps a 5–30 s jittered delay and retries once — most eta_fetch_failed
+        events cluster in a brief rate-limit window that a single retry clears.
+        The blocking gh call is offloaded to a thread each time.
+        """
+        async def _one() -> dict:
+            if self._api_gate is not None:
+                await self._api_gate.wait_until_idle(self._eta_gate_timeout)
+            return await asyncio.to_thread(self._eta_query_fn, open_keys)
+
+        try:
+            return await _one()
+        except Exception:
+            span = max(0.0, self._eta_retry_max_s - self._eta_retry_min_s)
+            delay = self._eta_retry_min_s + self._rng() * span
+            log.info("pr_population.eta_fetch_retry delay=%.1fs", delay)
+            await self._sleep_fn(delay)
+            return await _one()
+
+    def _apply_stale_eta(
+        self, prs_by_repo: dict[str, tuple[PullRequestInfo, ...]]
+    ) -> dict[str, tuple[PullRequestInfo, ...]]:
+        """Re-serve each open PR's last-good ETA marked ``eta_stale=True``.
+
+        Called when a fresh ETA fetch fails after retry: better a captioned
+        estimate than a blank tile. PRs with no cached ETA (never computed) are
+        returned untouched (no ETA to show).
+        """
+        result: dict[str, tuple[PullRequestInfo, ...]] = {}
+        for repo, prs in prs_by_repo.items():
+            enriched = []
+            for pr in prs:
+                cached = self._eta_cache.get((repo, pr.number))
+                if pr.state in ("open", "draft") and cached:
+                    pr = dataclasses.replace(
+                        pr, eta_stale=True,
+                        **{f: cached[f] for f in _ETA_STALE_FIELDS},
+                    )
+                enriched.append(pr)
+            result[repo] = tuple(enriched)
+        return result
+
     async def _enrich_with_eta(
         self, prs_by_repo: dict[str, tuple[PullRequestInfo, ...]]
     ) -> dict[str, tuple[PullRequestInfo, ...]]:
@@ -266,18 +340,27 @@ class PrPopulationPoller:
                     open_keys.append((repo, pr.number))
 
         if not open_keys:
+            self._eta_cache.clear()
             return prs_by_repo
 
+        # Drop cache entries for PRs no longer open (merged/closed/aged out) so
+        # the last-good ETA store stays bounded to the live population.
+        live = set(open_keys)
+        self._eta_cache = {k: v for k, v in self._eta_cache.items() if k in live}
+
         try:
-            # eta_query_fn is a blocking network call — run it in a thread.
-            response = await asyncio.to_thread(self._eta_query_fn, open_keys)
+            response = await self._fetch_eta(open_keys)
             checks_by_pr = parse_eta_checks_response(response, open_keys)
             merge_by_pr = parse_merge_group_response(response, open_keys)
         except Exception:
+            # Fresh fetch failed even after a jittered retry. Rather than blank
+            # the board, re-serve each open PR's last-good ETA marked stale
+            # (issue #671 — stale-while-revalidate).
             log.warning("pr_population.eta_fetch_failed", exc_info=True)
-            return prs_by_repo
+            return self._apply_stale_eta(prs_by_repo)
 
         now = self._now_fn()
+        now_iso = now.isoformat()
 
         # Record merge-group run durations + ejects (SPEC §1 — mergeEtaSim
         # substrate). Deduped by group_sha (the batch head-commit oid): several
@@ -328,6 +411,19 @@ class PrPopulationPoller:
                             fields["eta_high_seconds"] = eta_high
                             fields["eta_percent"] = eta_pct
                             fields["eta_overdue"] = eta_over
+                            # Fresh value — clear the stale flag and stamp the
+                            # compute time (issue #671).
+                            fields["eta_stale"] = False
+                            fields["eta_updated_at"] = now_iso
+                            if eta_s is not None:
+                                self._eta_cache[key] = {
+                                    "eta_seconds": eta_s,
+                                    "eta_low_seconds": eta_low,
+                                    "eta_high_seconds": eta_high,
+                                    "eta_percent": eta_pct,
+                                    "eta_overdue": eta_over,
+                                    "eta_updated_at": now_iso,
+                                }
                         pr = dataclasses.replace(pr, **fields)
                     except Exception:
                         log.debug(
