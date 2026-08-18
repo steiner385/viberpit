@@ -14,6 +14,7 @@ vi.mock('@/api/hooks', () => ({
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   QK: { accounts: ['accounts'] },
+  useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
 
 // Also mock ReauthBrowserPanel since it needs a VNC connection

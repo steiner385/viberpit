@@ -25,6 +25,7 @@ vi.mock('@/api/hooks', () => ({
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   QK: {},
+  useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
 
 import { useSessionRuntime } from '@/session/useSessionRuntime'

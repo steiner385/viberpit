@@ -32,6 +32,7 @@ vi.mock('@/api/hooks', () => ({
     accounts: ['accounts'],
     sessions: ['sessions'],
   },
+  useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
 
 vi.mock('../ReauthBrowserPanel', () => ({

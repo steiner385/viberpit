@@ -37,6 +37,7 @@ vi.mock('@/api/hooks', () => ({
     sessions: ['sessions'],
     sessionSearch: (q: string, scope: string) => ['session-search', q, scope],
   },
+  useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
 
 // useSessionSearch is called from within ArchivedManager; mock it at module level.

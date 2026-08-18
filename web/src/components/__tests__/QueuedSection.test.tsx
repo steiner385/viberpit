@@ -7,6 +7,7 @@ vi.mock('@/api/hooks', async (orig) => ({
   ...(await orig()),
   useQueueMove: () => ({ mutate: queueMove }),
   useQueueCancel: () => ({ mutate: queueCancel }),
+  useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
 
 import { QueuedSection } from '../QueuedSection'

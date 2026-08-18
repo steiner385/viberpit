@@ -66,6 +66,7 @@ vi.mock('@/api/hooks', () => ({
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessionsViewing: vi.fn(),
+  useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
 
 // ── sessionsViewing module (used by AutomationView) ──────────────────────────
