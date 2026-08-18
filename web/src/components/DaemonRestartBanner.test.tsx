@@ -2,24 +2,32 @@ import { render, screen } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { DaemonRestartBanner } from './DaemonRestartBanner'
 import * as health from '@/hooks/useDaemonHealth'
+import * as epochRestart from '@/hooks/useEpochRestart'
 
 afterEach(() => vi.restoreAllMocks())
 
-function mockDaemon(ok: boolean) {
+function mockDaemon(ok: boolean, recovering = false) {
   vi.spyOn(health, 'useDaemonHealth').mockReturnValue(ok)
+  vi.spyOn(epochRestart, 'useEpochRestart').mockReturnValue(recovering)
 }
 
 describe('DaemonRestartBanner', () => {
-  it('renders nothing while the daemon is healthy', () => {
-    mockDaemon(true)
+  it('renders nothing while the daemon is healthy and not recovering', () => {
+    mockDaemon(true, false)
     const { container } = render(<DaemonRestartBanner />)
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('shows the restart notice when the daemon is unreachable', () => {
-    mockDaemon(false)
+  it('shows the restart notice when the daemon is unreachable (health polling)', () => {
+    mockDaemon(false, false)
     render(<DaemonRestartBanner />)
-    expect(screen.getByRole('status')).toHaveTextContent(/system restarting/i)
+    expect(screen.getByRole('status')).toHaveTextContent(/back in a moment/i)
+  })
+
+  it('shows the restart notice immediately on epoch-change (close-1012) even before poll fires', () => {
+    mockDaemon(true, true)
+    render(<DaemonRestartBanner />)
+    expect(screen.getByRole('status')).toHaveTextContent(/back in a moment/i)
   })
 
   it('does not intercept pointer events on the UI beneath it', () => {
@@ -27,7 +35,7 @@ describe('DaemonRestartBanner', () => {
     // and captured the click meant for "Back to session list" (dashboard e2e T044 —
     // "…subtree intercepts pointer events"). A role="status" notice has no interactive
     // children, so it must let clicks pass through to the controls underneath.
-    mockDaemon(false)
+    mockDaemon(false, false)
     render(<DaemonRestartBanner />)
     expect(screen.getByRole('status')).toHaveClass('pointer-events-none')
   })

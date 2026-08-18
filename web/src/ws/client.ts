@@ -52,6 +52,9 @@ type EventMap = {
   commands:      (msg: WsCommandsMsg) => void
   commandResult: (msg: WsCommandResultMsg) => void
   updatePendingChange: (s: { active: boolean; count: number }) => void
+  // Fired when the server sends close code 1012 (daemon epoch change / planned restart).
+  // Consumers can show a recovery overlay immediately rather than waiting for a health poll.
+  epochRestart: () => void
 }
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting'
@@ -171,6 +174,9 @@ export class SessionSocket {
           stack: e.reason || undefined,
         })
       }
+      // 1012 = daemon epoch change (planned restart). Signal immediately so UI can show
+      // a recovery overlay without waiting for the next /healthz poll (which lags 10s).
+      if (e.code === 1012) this._emit('epochRestart')
       this._setConnectionState('disconnected')
       this._scheduleReconnect()
     }
