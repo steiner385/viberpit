@@ -371,3 +371,58 @@ def test_boot_gate_allows_non_loopback_with_dev_flag():
 
         # Should not raise (just warn)
         _run_async(_run())
+
+
+def test_security_warning_fires_at_most_once_per_process(tmp_path):
+    """SECURITY/0.0.0.0 warning fires exactly once even when _lifespan is entered twice.
+
+    Regression guard for issue #669: the module-level _security_warned flag must
+    suppress duplicate emissions that arise from hot-reload cycles or rapid watchdog
+    restarts re-entering _lifespan within the same Python process.
+    """
+    import logging
+    import server.app as _app_module
+    from server.app import _lifespan
+    from fastapi import FastAPI
+    from unittest.mock import patch as _patch
+
+    env = {
+        "CCSWITCH_HOST": "0.0.0.0",
+        "CCSWITCH_TAILNET_ALLOWLIST": "",
+        "CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp_path / 'warn_test.db'}",
+        "CCSWITCH_DEV": "1",
+    }
+
+    captured: list[str] = []
+
+    class _CapturingHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.getMessage())
+
+    handler = _CapturingHandler()
+    server_log = logging.getLogger("server")
+    server_log.addHandler(handler)
+    try:
+        # Reset the module flag so this test is independent of run order.
+        with patch.dict(os.environ, env), \
+             _patch.object(_app_module, "_security_warned", False):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.reauth import ReauthManager
+
+            async def _run_twice():
+                for _ in range(2):
+                    orch = SessionOrchestrator(poll_interval=9999.0)
+                    app = FastAPI(lifespan=_lifespan)
+                    app.state.orchestrator = orch
+                    app.state.reauth = ReauthManager()
+                    async with _lifespan(app):
+                        pass
+
+            _run_async(_run_twice())
+    finally:
+        server_log.removeHandler(handler)
+
+    security_lines = [m for m in captured if "SECURITY" in m and "EMPTY tailnet" in m]
+    assert len(security_lines) == 1, (
+        f"Expected exactly 1 SECURITY warning, got {len(security_lines)}: {security_lines}"
+    )
