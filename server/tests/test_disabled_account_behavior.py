@@ -8,14 +8,11 @@ Three contracts introduced alongside the enable/disable toggle:
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
-
-import pytest
+from unittest.mock import patch, MagicMock
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from tests.helpers import temp_env
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
