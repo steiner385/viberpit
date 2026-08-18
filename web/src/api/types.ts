@@ -461,6 +461,12 @@ export interface PromptTemplate {
   updatedAt: string | null
 }
 
+// Dispatch assess (#dispatch-auto-select)
+export interface AssessResponse {
+  model: string | null
+  refined_prompt: string | null
+}
+
 // Permission Profile (#600)
 export interface PermissionProfile {
   id: string

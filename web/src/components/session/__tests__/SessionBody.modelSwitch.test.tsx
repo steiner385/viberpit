@@ -14,6 +14,7 @@ vi.mock('@/api/hooks', () => ({
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
 
 const textBlock = (id: string): Block => ({

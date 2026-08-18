@@ -55,6 +55,7 @@ vi.mock('@/api/hooks', () => ({
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   QK: { accounts: ['accounts'], sessions: ['sessions'], archived: ['archived-sessions'], config: ['config'], githubRepos: ['github-repos'], githubBranches: (r?: string) => ['github-branches', r], settings: ['settings'] },
+  useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
 
 vi.mock('@/session/useSessionSearch', () => ({

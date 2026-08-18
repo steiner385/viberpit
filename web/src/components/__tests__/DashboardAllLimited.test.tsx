@@ -58,6 +58,7 @@ vi.mock('@/api/hooks', () => ({
     githubBranches: (repo?: string) => ['github-branches', repo],
     settings: ['settings'],
   },
+  useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
 
 vi.mock('@/session/useSessionSearch', () => ({

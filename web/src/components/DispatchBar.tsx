@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { GithubRepo } from '@/api/hooks'
+import { useAssessDispatch } from '@/api/hooks'
 import type { Account, ModelOption } from '@/api/types'
 import { getLastRepo, setLastRepo } from '@/lib/lastRepo'
 import { caretLineEdges } from '@/lib/caretLineEdges'
@@ -84,10 +86,13 @@ export function DispatchBar({
   const [model, setModel] = useState('default')
   // Mobile-only disclosure for the Account/Model selects; desktop always shows all three.
   const [showMore, setShowMore] = useState(false)
+  const [assessing, setAssessing] = useState(false)
+  const [refinedPrompt, setRefinedPrompt] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const att = useImageAttachments()
   const voice = useDictationField({ value: text, setValue: setText, textareaRef })
+  const { assess } = useAssessDispatch()
 
   // Auto-focus when autoFocusKey changes (or on mount)
   useEffect(() => {
@@ -112,6 +117,21 @@ export function DispatchBar({
     if (files.length) { e.preventDefault(); void att.addFiles(files) }
   }
 
+  async function handleAssess() {
+    setAssessing(true)
+    try {
+      const result = await assess(text.trim())
+      if (result) {
+        if (result.model && model === 'default') setModel(result.model)
+        setRefinedPrompt(result.refined_prompt)
+      }
+    } catch {
+      // fail-open: silently ignore errors
+    } finally {
+      setAssessing(false)
+    }
+  }
+
   async function dispatchNow() {
     const trimmed = text.trim()
     const refs = att.refs()
@@ -129,6 +149,7 @@ export function DispatchBar({
         attachmentIds: refs,
       })
       setText('')
+      setRefinedPrompt(null)
       att.clear()
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto'
@@ -392,6 +413,25 @@ export function DispatchBar({
           style={{ maxHeight: '192px' }}
         />
 
+        {text.trim().length > 0 && !isPending && (
+          <button
+            type="button"
+            aria-label="Assess and refine prompt"
+            onClick={handleAssess}
+            disabled={assessing}
+            className={cn(
+              'flex-shrink-0 rounded-md px-3 py-2 text-sm min-h-[44px]',
+              'border border-gray-300 dark:border-gray-600',
+              'text-gray-600 dark:text-gray-300',
+              'hover:bg-gray-100 dark:hover:bg-gray-800',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              'disabled:opacity-50 disabled:cursor-not-allowed',
+            )}
+          >
+            <Sparkles className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
+
         <MicButton
           supported={voice.supported}
           listening={voice.listening}
@@ -437,6 +477,52 @@ export function DispatchBar({
           Create
         </button>
       </div>
+
+      {refinedPrompt !== null && (
+        <div className={cn(
+          'flex items-start gap-2 rounded-md px-3 py-2 text-sm',
+          'bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800',
+          'text-gray-800 dark:text-gray-200',
+        )}>
+          <span className="flex-1 min-w-0 break-words">
+            <span aria-hidden="true">✨</span>{' '}
+            <span className="font-medium">Refined:</span>{' '}
+            {refinedPrompt}
+          </span>
+          <div className="flex flex-shrink-0 gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                setText(refinedPrompt)
+                setRefinedPrompt(null)
+                if (textareaRef.current) {
+                  textareaRef.current.style.height = 'auto'
+                }
+              }}
+              className={cn(
+                'rounded px-2 py-1 text-xs font-medium',
+                'bg-blue-600 text-white hover:bg-blue-700',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              )}
+            >
+              Accept
+            </button>
+            <button
+              type="button"
+              onClick={() => setRefinedPrompt(null)}
+              className={cn(
+                'rounded px-2 py-1 text-xs font-medium',
+                'border border-gray-300 dark:border-gray-600',
+                'text-gray-600 dark:text-gray-300',
+                'hover:bg-gray-100 dark:hover:bg-gray-800',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              )}
+            >
+              Discard
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
