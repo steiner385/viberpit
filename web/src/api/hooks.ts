@@ -16,7 +16,7 @@ import type {
   DaemonHealth, CopilotAddState,
   LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
   LibraryMcpServer, McpServerConfig, LibraryContent,
-  SessionPreset, PromptTemplate, PermissionProfile,
+  SessionPreset, PromptTemplate, PermissionProfile, AssessResponse,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import type { SessionEvent } from '@/session/events'
@@ -993,6 +993,20 @@ export function useDeleteMcpServer() {
     mutationFn: ({ name }) => api.del(`/library/mcp/${encodeURIComponent(name)}`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: QK.libraryMcp }),
   })
+}
+
+// ─── Dispatch assess (#dispatch-auto-select) ──────────────────────────────
+
+/** Plain async helper (not a query/mutation) — fire-and-forget from DispatchBar. */
+export function useAssessDispatch(): { assess: (prompt: string) => Promise<AssessResponse | null> } {
+  const assess = useCallback(async (prompt: string): Promise<AssessResponse | null> => {
+    try {
+      return await api.post<AssessResponse>('/dispatch/assess', { prompt })
+    } catch {
+      return null
+    }
+  }, [])
+  return { assess }
 }
 
 // ─── Presets (#597) ───────────────────────────────────────────────────────
