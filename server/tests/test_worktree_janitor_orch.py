@@ -40,7 +40,7 @@ class TestJanitorLoop:
                 captured["live_cwds"] = live_cwds
                 return {"scanned": 0, "removed": 0, "kept_live": 0,
                         "kept_young": 0, "kept_dirty": 0, "kept_unpushed": 0,
-                        "kept_error": 0}
+                        "kept_error": 0, "evicted_dirty": 0}
 
             with patch("server.sessions.orchestrator.sweep_orphaned_worktrees", mock_sweep,
                        create=True):
@@ -70,7 +70,7 @@ class TestJanitorLoop:
                 captured["live_cwds"] = live_cwds
                 return {"scanned": 0, "removed": 0, "kept_live": 0,
                         "kept_young": 0, "kept_dirty": 0, "kept_unpushed": 0,
-                        "kept_error": 0}
+                        "kept_error": 0, "evicted_dirty": 0}
 
             with patch("ccswitch.worktrees_janitor.sweep_orphaned_worktrees", mock_sweep):
                 orch._janitor_sweep_once()

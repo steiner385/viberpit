@@ -409,12 +409,16 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         )
 
 
-def remove_worktree(worktree_path: str) -> bool:
+def remove_worktree(worktree_path: str, force: bool = False) -> bool:
     """Remove a ccswitch worktree IFF it has no uncommitted changes.
 
     Returns True if removed, False if it was left in place (dirty — we never
     destroy uncommitted work). Also deletes the per-session ``ccswitch/*`` child
     branch when one was created, so the repo stays tidy.
+
+    ``force=True`` bypasses the dirty guard and uses ``git worktree remove
+    --force``.  Only the janitor's max-age eviction path should set this —
+    normal teardown must never discard uncommitted work.
     """
     wt = os.path.abspath(worktree_path)
     if not os.path.isdir(wt):
@@ -427,9 +431,10 @@ def remove_worktree(worktree_path: str) -> bool:
         return False
     repo_top = os.path.dirname(common.stdout.strip().rstrip("/"))
 
-    # Never blow away uncommitted work.
+    # Never blow away uncommitted work (unless the caller explicitly forces eviction).
     status = _run(["git", "-C", wt, "status", "--porcelain"])
-    if status.returncode == 0 and status.stdout.strip():
+    is_dirty = status.returncode == 0 and bool(status.stdout.strip())
+    if is_dirty and not force:
         log.info("worktree.keep_dirty path=%s", wt)
         return False
 
@@ -439,7 +444,11 @@ def remove_worktree(worktree_path: str) -> bool:
     # Session worktrees are locked on create (#177); `git worktree remove` refuses
     # a locked tree, so unlock first. Harmless no-op for an older unlocked worktree.
     _run(["git", "-C", repo_top, "worktree", "unlock", wt])
-    rm = _run(["git", "-C", repo_top, "worktree", "remove", wt])
+    rm_cmd = ["git", "-C", repo_top, "worktree", "remove"]
+    if is_dirty:
+        rm_cmd.append("--force")
+    rm_cmd.append(wt)
+    rm = _run(rm_cmd)
     if rm.returncode != 0:
         log.warning("worktree.remove_failed path=%s err=%s", wt, rm.stderr.strip())
         return False
@@ -449,5 +458,5 @@ def remove_worktree(worktree_path: str) -> bool:
     # sibling session's live worktree — #177).
     if branch.startswith("ccswitch/"):
         _run(["git", "-C", repo_top, "branch", "-D", branch])
-    log.info("worktree.remove path=%s branch=%s", wt, branch)
+    log.info("worktree.remove path=%s branch=%s force=%s", wt, branch, force)
     return True

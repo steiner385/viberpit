@@ -14,6 +14,11 @@ Safety invariants
 * Any subprocess failure or dir-level exception → treat conservatively → keep.
 * A repo with no remotes configured → ``_is_fully_pushed()`` returns False →
   keep (unverifiable).
+* Dirty worktrees whose backing session is no longer active are stash-evicted
+  after ``max_dirty_age`` seconds (default 7 days).  The stash SHA is logged
+  for recovery.  If stashing fails the worktree is still force-evicted
+  (``git worktree remove --force``) — 7 days without an active session means
+  the changes are abandoned.
 """
 from __future__ import annotations
 
@@ -25,6 +30,15 @@ from typing import Iterator
 from ccswitch.worktrees import remove_worktree
 
 log = logging.getLogger(__name__)
+
+# A dirty worktree older than this is eligible for stash-eviction when no
+# session owns it (not in live_cwds).  7 days is conservative enough that
+# a legitimately long-running session won't be caught.
+_MAX_DIRTY_AGE_DEFAULT: float = 7 * 86400.0
+
+# Operator alert thresholds for accumulated dirty worktrees.
+_DIRTY_WARN_THRESHOLD = 30
+_DIRTY_CRITICAL_THRESHOLD = 50
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -87,11 +101,38 @@ def _is_fully_pushed(wt: str) -> bool:
     return r.stdout.strip() == ""
 
 
+def _git_stash(wt: str) -> str | None:
+    """Stash all uncommitted changes (including untracked files) in *wt*.
+
+    Returns the stash-commit SHA on success, or ``None`` if stashing failed.
+    Injects a dummy git identity so the stash commit can be created even when
+    the worktree has no user.name / user.email configured.
+
+    The stash persists in the parent repo's object store after the worktree is
+    removed, so the SHA can be used to recover the changes with
+    ``git stash apply <sha>`` from the main repo.
+    """
+    r = _run([
+        "git", "-C", wt,
+        "-c", "user.email=ccswitch-janitor@local",
+        "-c", "user.name=ccswitch-janitor",
+        "stash", "push", "-u",
+        "-m", "ccswitch-janitor: max-age eviction",
+    ])
+    if r.returncode != 0:
+        return None
+    sha = _run(["git", "-C", wt, "rev-parse", "refs/stash"])
+    if sha.returncode != 0:
+        return None
+    return sha.stdout.strip()
+
+
 def sweep_orphaned_worktrees(
     repo_root: str,
     live_cwds: frozenset[str],
     now: float | None = None,
     min_age: float = 86400.0,
+    max_dirty_age: float = _MAX_DIRTY_AGE_DEFAULT,
 ) -> dict[str, int]:
     """Walk managed worktree dirs and remove those that are safe to reclaim.
 
@@ -102,9 +143,15 @@ def sweep_orphaned_worktrees(
     - All commits are pushed to a remote (or the remote branch is gone,
       i.e. the branch was squash-merged and deleted).
 
+    **Max-age dirty eviction**: a dirty worktree that is not in ``live_cwds``
+    and whose mtime exceeds ``max_dirty_age`` (default 7 days) is stashed and
+    then force-removed.  The stash SHA is logged for recovery.  If stashing
+    fails the worktree is still force-removed (changes are considered
+    abandoned after 7 days with no active session).
+
     Returns a count dict with keys:
       ``scanned``, ``removed``, ``kept_live``, ``kept_young``,
-      ``kept_dirty``, ``kept_unpushed``, ``kept_error``
+      ``kept_dirty``, ``kept_unpushed``, ``kept_error``, ``evicted_dirty``
     """
     import time as _time
 
@@ -119,6 +166,7 @@ def sweep_orphaned_worktrees(
         "kept_dirty": 0,
         "kept_unpushed": 0,
         "kept_error": 0,
+        "evicted_dirty": 0,
     }
 
     for wt_path in _candidate_worktree_dirs(repo_root):
@@ -139,8 +187,12 @@ def sweep_orphaned_worktrees(
                 continue
 
             if not _is_clean(wt):
-                log.info("worktree-janitor: keep_dirty path=%s", wt)
-                counts["kept_dirty"] += 1
+                age = now - mtime
+                if age >= max_dirty_age:
+                    _evict_dirty(wt, age, counts)
+                else:
+                    log.info("worktree-janitor: keep_dirty path=%s", wt)
+                    counts["kept_dirty"] += 1
                 continue
 
             if not _is_fully_pushed(wt):
@@ -157,4 +209,45 @@ def sweep_orphaned_worktrees(
             log.warning("worktree-janitor: error processing path=%s", wt, exc_info=True)
             counts["kept_error"] += 1
 
+    _emit_dirty_alerts(counts["kept_dirty"])
     return counts
+
+
+def _evict_dirty(wt: str, age_s: float, counts: dict[str, int]) -> None:
+    """Stash + force-remove a dirty worktree that has exceeded the max-age window."""
+    age_days = age_s / 86400.0
+    stash_sha = _git_stash(wt)
+    if stash_sha:
+        log.info(
+            "worktree-janitor: stashed max-age dirty path=%s stash=%s age_days=%.1f",
+            wt, stash_sha, age_days,
+        )
+    else:
+        log.warning(
+            "worktree-janitor: stash failed, discarding path=%s age_days=%.1f",
+            wt, age_days,
+        )
+
+    # After a successful stash the worktree is clean; after a failed stash we
+    # use force=True to discard changes (7+ days with no active session).
+    removed = remove_worktree(wt, force=(stash_sha is None))
+    if removed:
+        counts["evicted_dirty"] += 1
+        counts["removed"] += 1
+    else:
+        counts["kept_error"] += 1
+
+
+def _emit_dirty_alerts(kept_dirty: int) -> None:
+    if kept_dirty > _DIRTY_CRITICAL_THRESHOLD:
+        log.critical(
+            "worktree-janitor: kept_dirty=%d exceeds critical threshold %d — "
+            "inode exhaustion risk; review backlog-runner sessions",
+            kept_dirty, _DIRTY_CRITICAL_THRESHOLD,
+        )
+    elif kept_dirty > _DIRTY_WARN_THRESHOLD:
+        log.warning(
+            "worktree-janitor: kept_dirty=%d exceeds warning threshold %d — "
+            "dirty worktrees accumulating",
+            kept_dirty, _DIRTY_WARN_THRESHOLD,
+        )

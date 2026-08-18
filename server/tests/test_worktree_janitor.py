@@ -157,3 +157,98 @@ class TestSweepErrors:
                 counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
         assert counts["scanned"] == 2
         assert counts["kept_error"] == 1
+
+
+# 8 days — exceeds the default max_dirty_age of 7 days
+VERY_OLD = 8 * 86400.0
+
+
+class TestMaxAgeDirtyEviction:
+    """Dirty worktrees past max_dirty_age must be stash-evicted."""
+
+    def test_dirty_within_grace_kept(self, tmp_path):
+        """A dirty worktree younger than max_dirty_age stays as kept_dirty."""
+        _make_wt(tmp_path, "young-dirty", OLD, NOW)  # 25 h — within 7-day grace
+        responses = {"git -C": _cp(0, " M file.py")}
+        with patch("ccswitch.worktrees_janitor._run", side_effect=_fake_run(responses)):
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["kept_dirty"] == 1
+        assert counts["evicted_dirty"] == 0
+
+    def test_dirty_exceeds_grace_stash_succeeds_evicts(self, tmp_path):
+        """A dirty worktree past max_dirty_age is stashed and removed."""
+        wt = _make_wt(tmp_path, "old-dirty", VERY_OLD, NOW)
+        dirty_responses = {
+            "status --porcelain": _cp(0, " M file.py"),
+            "stash push": _cp(0, "Saved working directory"),
+            "rev-parse refs/stash": _cp(0, "abc123def456"),
+        }
+        with patch("ccswitch.worktrees_janitor._run", side_effect=_fake_run(dirty_responses)):
+            with patch("ccswitch.worktrees_janitor.remove_worktree", return_value=True) as mock_rm:
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["evicted_dirty"] == 1
+        assert counts["removed"] == 1
+        assert counts["kept_dirty"] == 0
+        # remove_worktree called WITHOUT force (stash cleaned the tree)
+        mock_rm.assert_called_once_with(str(wt.resolve()), force=False)
+
+    def test_dirty_exceeds_grace_stash_fails_force_evicts(self, tmp_path):
+        """If stash fails the worktree is still force-removed (discard path)."""
+        wt = _make_wt(tmp_path, "old-dirty-nostash", VERY_OLD, NOW)
+        dirty_responses = {
+            "status --porcelain": _cp(0, " M file.py"),
+            "stash push": _cp(1, "", "error: stash failed"),
+            "rev-parse refs/stash": _cp(1, "", ""),
+        }
+        with patch("ccswitch.worktrees_janitor._run", side_effect=_fake_run(dirty_responses)):
+            with patch("ccswitch.worktrees_janitor.remove_worktree", return_value=True) as mock_rm:
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["evicted_dirty"] == 1
+        assert counts["removed"] == 1
+        assert counts["kept_dirty"] == 0
+        # remove_worktree called WITH force=True because stash failed
+        mock_rm.assert_called_once_with(str(wt.resolve()), force=True)
+
+    def test_eviction_remove_failure_increments_kept_error(self, tmp_path):
+        """If remove_worktree fails after stash, increment kept_error not evicted_dirty."""
+        _make_wt(tmp_path, "old-dirty-rmfail", VERY_OLD, NOW)
+        dirty_responses = {
+            "status --porcelain": _cp(0, " M file.py"),
+            "stash push": _cp(0, "Saved working directory"),
+            "rev-parse refs/stash": _cp(0, "deadbeef"),
+        }
+        with patch("ccswitch.worktrees_janitor._run", side_effect=_fake_run(dirty_responses)):
+            with patch("ccswitch.worktrees_janitor.remove_worktree", return_value=False):
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["evicted_dirty"] == 0
+        assert counts["kept_error"] == 1
+
+
+class TestDirtyAlerts:
+    """kept_dirty count triggers WARN / CRITICAL log messages."""
+
+    def test_warn_threshold(self, tmp_path, caplog):
+        import logging
+        # Create 31 dirty worktrees within grace period → kept_dirty=31 → WARN
+        for i in range(31):
+            _make_wt(tmp_path, f"d{i}", OLD, NOW)
+        dirty = {"git -C": _cp(0, " M f.py")}
+        with patch("ccswitch.worktrees_janitor._run", side_effect=_fake_run(dirty)):
+            with caplog.at_level(logging.WARNING, logger="ccswitch.worktrees_janitor"):
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["kept_dirty"] == 31
+        assert any("kept_dirty" in r.message and "warning threshold" in r.message
+                   for r in caplog.records)
+
+    def test_critical_threshold(self, tmp_path, caplog):
+        import logging
+        # Create 51 dirty worktrees within grace period → kept_dirty=51 → CRITICAL
+        for i in range(51):
+            _make_wt(tmp_path, f"dc{i}", OLD, NOW)
+        dirty = {"git -C": _cp(0, " M f.py")}
+        with patch("ccswitch.worktrees_janitor._run", side_effect=_fake_run(dirty)):
+            with caplog.at_level(logging.CRITICAL, logger="ccswitch.worktrees_janitor"):
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["kept_dirty"] == 51
+        assert any("kept_dirty" in r.message and "critical threshold" in r.message
+                   for r in caplog.records)

@@ -6300,10 +6300,11 @@ class SessionOrchestrator:
         counts = sweep_orphaned_worktrees(self._repo_root, live_cwds)
         log.info(
             "worktree-janitor: scanned=%d removed=%d kept_live=%d "
-            "kept_young=%d kept_dirty=%d kept_unpushed=%d kept_error=%d",
+            "kept_young=%d kept_dirty=%d kept_unpushed=%d kept_error=%d evicted_dirty=%d",
             counts["scanned"], counts["removed"], counts["kept_live"],
             counts["kept_young"], counts["kept_dirty"],
             counts["kept_unpushed"], counts["kept_error"],
+            counts.get("evicted_dirty", 0),
         )
 
     async def list_archived(self) -> list[dict]:
