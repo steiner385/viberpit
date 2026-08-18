@@ -23,7 +23,9 @@ log = logging.getLogger(__name__)
 # Usage is served from the daemon's poller cache — a cheap read. Bound it tightly
 # so a wedged/slow daemon degrades one account to "unknown" fast instead of tying
 # up the edge for the 30s client default (incident 2026-07-02).
-USAGE_RPC_TIMEOUT = 5.0
+# Matches USAGE_FETCH_TIMEOUT in server/api/accounts.py — the outer asyncio.wait_for
+# fires first, but a matching httpx timeout ensures clean connection teardown.
+USAGE_RPC_TIMEOUT = 3.0
 
 # The opposite extreme: automation_consolidate / automation_trigger run the whole
 # clone→model-pick→spawn pipeline INLINE inside the daemon RPC and legitimately
