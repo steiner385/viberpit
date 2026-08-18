@@ -64,4 +64,28 @@ describe('SessionSocket close logging', () => {
     expect(spy).toHaveBeenCalledWith('ws error', expect.any(Object))
     sock.destroy()
   })
+
+  it('emits epochRestart event on close code 1012', async () => {
+    const { SessionSocket } = await import('@/ws/client')
+    const sock = new SessionSocket('ws://localhost/ws')
+    sock.connect()
+    const ws = (sock as unknown as { ws: WebSocket | null }).ws as WebSocket
+    const handler = vi.fn()
+    sock.on('epochRestart', handler)
+    ws.onclose?.({ code: 1012, reason: 'daemon epoch change' } as CloseEvent)
+    expect(handler).toHaveBeenCalledOnce()
+    sock.destroy()
+  })
+
+  it('does NOT emit epochRestart for other unexpected close codes', async () => {
+    const { SessionSocket } = await import('@/ws/client')
+    const sock = new SessionSocket('ws://localhost/ws')
+    sock.connect()
+    const ws = (sock as unknown as { ws: WebSocket | null }).ws as WebSocket
+    const handler = vi.fn()
+    sock.on('epochRestart', handler)
+    ws.onclose?.({ code: 1006, reason: '' } as CloseEvent)
+    expect(handler).not.toHaveBeenCalled()
+    sock.destroy()
+  })
 })
