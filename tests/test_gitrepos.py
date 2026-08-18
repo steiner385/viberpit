@@ -395,5 +395,123 @@ class GhListingTests(unittest.TestCase):
                 gitrepos.list_remote_branches("acme/widget")
 
 
+class StaleCredentialRegistryTests(unittest.TestCase):
+    """The auth-error classification + stale-credential registry (issue #670)."""
+
+    def setUp(self) -> None:
+        # The registry is process-global; isolate every test.
+        gitrepos._stale_credentials.clear()
+
+    def tearDown(self) -> None:
+        gitrepos._stale_credentials.clear()
+
+    def test_is_auth_error_matches_credential_failures(self) -> None:
+        for msg in (
+            "remote: Invalid username or token. Password authentication is not supported",
+            "fatal: Authentication failed for 'https://github.com/acme/widget.git/'",
+            "remote: HTTP 403 Forbidden",
+            "could not read Username for 'https://github.com': terminal prompts disabled",
+        ):
+            self.assertTrue(gitrepos.is_auth_error(msg), msg)
+
+    def test_is_auth_error_ignores_transient_failures(self) -> None:
+        for msg in (
+            "fatal: unable to access 'https://github.com/acme/widget.git/': "
+            "Could not resolve host: github.com",
+            "error: RPC failed; curl 28 Operation timed out",
+            "",
+            None,
+        ):
+            self.assertFalse(gitrepos.is_auth_error(msg), repr(msg))
+
+    def test_record_auth_failure_registers_repo(self) -> None:
+        gitrepos.record_fetch_result(
+            "acme/widget", ok=False,
+            stderr="remote: Invalid username or token. Password authentication is not supported")
+        self.assertTrue(gitrepos.has_stale_credentials("acme/widget"))
+        alerts = gitrepos.stale_credential_repos()
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["repo"], "acme/widget")
+        self.assertIn("Invalid username or token", alerts[0]["error"])
+        self.assertEqual(alerts[0]["settingsUrl"], gitrepos.token_settings_url())
+        self.assertIsInstance(alerts[0]["since"], float)
+
+    def test_record_transient_failure_does_not_register(self) -> None:
+        gitrepos.record_fetch_result(
+            "acme/widget", ok=False, stderr="Could not resolve host: github.com")
+        self.assertFalse(gitrepos.has_stale_credentials("acme/widget"))
+        self.assertEqual(gitrepos.stale_credential_repos(), [])
+
+    def test_success_auto_clears_prior_alert(self) -> None:
+        gitrepos.record_fetch_result(
+            "acme/widget", ok=False, stderr="Authentication failed")
+        self.assertTrue(gitrepos.has_stale_credentials("acme/widget"))
+        gitrepos.record_fetch_result("acme/widget", ok=True)
+        self.assertFalse(gitrepos.has_stale_credentials("acme/widget"))
+        self.assertEqual(gitrepos.stale_credential_repos(), [])
+
+    def test_repeated_failure_preserves_first_seen_timestamp(self) -> None:
+        gitrepos.record_fetch_result(
+            "acme/widget", ok=False, stderr="Authentication failed")
+        first = gitrepos.stale_credential_repos()[0]["since"]
+        gitrepos.record_fetch_result(
+            "acme/widget", ok=False, stderr="remote: HTTP 403 Forbidden")
+        second = gitrepos.stale_credential_repos()[0]
+        self.assertEqual(second["since"], first)
+        self.assertIn("403", second["error"])
+
+    def test_clear_stale_credentials(self) -> None:
+        gitrepos.record_fetch_result(
+            "acme/widget", ok=False, stderr="Authentication failed")
+        self.assertTrue(gitrepos.clear_stale_credentials("acme/widget"))
+        self.assertFalse(gitrepos.clear_stale_credentials("acme/widget"))
+        self.assertFalse(gitrepos.has_stale_credentials("acme/widget"))
+
+    def test_ensure_clone_auth_fetch_failure_flags_repo(self) -> None:
+        """A refresh fetch that fails auth flags the repo but still returns the
+        (stale) clone path — read-only callers keep working, new work pauses."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "GitHub"
+        remote = Path(tmp.name) / "remote.git"
+        root.mkdir()
+        _make_remote(remote)
+        # Create the clone once (succeeds, clears registry).
+        gitrepos.ensure_clone(str(root), "acme/widget", str(remote))
+        self.assertFalse(gitrepos.has_stale_credentials("acme/widget"))
+
+        # Now make the refresh fetch fail with an auth error.
+        real_run = gitrepos._run_git
+
+        def fake_run(args):
+            if "fetch" in args:
+                return subprocess.CompletedProcess(
+                    args, 1, stdout="",
+                    stderr="remote: Invalid username or token. "
+                           "Password authentication is not supported")
+            return real_run(args)
+
+        with mock.patch.object(gitrepos, "_run_git", side_effect=fake_run):
+            with self.assertLogs("ccswitch.gitrepos", level="ERROR") as cm:
+                dest = gitrepos.ensure_clone(str(root), "acme/widget", str(remote))
+        self.assertTrue(Path(dest, ".git").exists())
+        self.assertTrue(gitrepos.has_stale_credentials("acme/widget"))
+        self.assertTrue(any("credential refresh needed" in line for line in cm.output))
+
+    def test_ensure_clone_successful_refresh_clears_alert(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "GitHub"
+        remote = Path(tmp.name) / "remote.git"
+        root.mkdir()
+        _make_remote(remote)
+        gitrepos.ensure_clone(str(root), "acme/widget", str(remote))
+        # Pre-seed a stale alert, then a clean refresh fetch must clear it.
+        gitrepos.record_fetch_result(
+            "acme/widget", ok=False, stderr="Authentication failed")
+        gitrepos.ensure_clone(str(root), "acme/widget", str(remote))
+        self.assertFalse(gitrepos.has_stale_credentials("acme/widget"))
+
+
 if __name__ == "__main__":
     unittest.main()

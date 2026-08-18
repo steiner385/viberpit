@@ -29,6 +29,8 @@ import json
 import logging
 import os
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -40,6 +42,122 @@ class GhError(Exception):
 
 class CloneError(Exception):
     """Raised when a clone could not be created."""
+
+
+# ---------------------------------------------------------------------------
+# Stale-credential registry (issue #670)
+# ---------------------------------------------------------------------------
+#
+# A ``git fetch`` inside :func:`ensure_clone` is best-effort — on failure the
+# clone keeps operating off its stale ref. When that failure is an *auth-class*
+# error (a revoked/expired token, not a transient network blip), silently
+# proceeding is dangerous: a backlog-runner worktree branched off a stale
+# ``origin/master`` can be hundreds of commits behind, so the runner implements
+# against ancient code without anyone knowing.
+#
+# We keep a small, process-local registry of repos whose LAST fetch failed with
+# an auth-class error. A successful fetch clears the entry (the "auto-clear once
+# a fetch succeeds" contract). The registry drives two consumers: the
+# backlog-runner pauses worktree creation for a listed repo, and the dashboard
+# surfaces a "git credential refresh needed" notification. It lives in the
+# daemon process (where ``ensure_clone`` runs); the edge reads it via an
+# orchestrator RPC.
+
+# Substrings git/gh print when credentials are stale, revoked, or missing —
+# distinct from a transient network failure (offline, DNS, timeout), which is
+# NOT a credential problem and must not raise a "refresh your token" alert.
+_AUTH_ERROR_MARKERS = (
+    "invalid username or token",
+    "password authentication is not supported",
+    "authentication failed",
+    "could not read username",
+    "could not read password",
+    "terminal prompts disabled",
+    "http 403",
+    "403 forbidden",
+    "remote: forbidden",
+    "fatal: authentication",
+)
+
+_TOKEN_SETTINGS_URL = "https://github.com/settings/tokens"
+
+_cred_lock = threading.Lock()
+# name_with_owner -> {"since": float, "error": str}
+_stale_credentials: dict[str, dict] = {}
+
+
+def is_auth_error(stderr: str | None) -> bool:
+    """True if ``stderr`` looks like a git/gh *authentication* failure.
+
+    Matches the substrings GitHub emits for a revoked/expired token or a
+    prompt-disabled non-interactive fetch. Deliberately does NOT match generic
+    network failures — those are transient, not a credential problem."""
+    low = (stderr or "").lower()
+    return any(marker in low for marker in _AUTH_ERROR_MARKERS)
+
+
+def token_settings_url(name_with_owner: str = "") -> str:
+    """The GitHub page where the user refreshes the credential behind a fetch.
+
+    ``name_with_owner`` is accepted for a future per-owner deep-link but is
+    unused today — personal access tokens live at a single settings page."""
+    return _TOKEN_SETTINGS_URL
+
+
+def record_fetch_result(
+    name_with_owner: str, *, ok: bool, stderr: str = ""
+) -> None:
+    """Update the stale-credential registry from a fetch/clone outcome.
+
+    ``ok`` clears any prior alert for the repo (credentials work again). A
+    failure records/refreshes an alert ONLY when ``stderr`` is auth-class — a
+    transient (offline) failure leaves the registry untouched. The ``since``
+    timestamp is preserved across repeated auth failures so the notification
+    reflects when the problem first appeared, not the latest retry."""
+    with _cred_lock:
+        if ok:
+            _stale_credentials.pop(name_with_owner, None)
+            return
+        if not is_auth_error(stderr):
+            return
+        first_line = ""
+        if stderr and stderr.strip():
+            first_line = stderr.strip().splitlines()[0][:200]
+        existing = _stale_credentials.get(name_with_owner)
+        _stale_credentials[name_with_owner] = {
+            "since": existing["since"] if existing else time.time(),
+            "error": first_line,
+        }
+
+
+def has_stale_credentials(name_with_owner: str) -> bool:
+    """Whether ``name_with_owner``'s last fetch failed with an auth-class error."""
+    with _cred_lock:
+        return name_with_owner in _stale_credentials
+
+
+def stale_credential_repos() -> list[dict]:
+    """Snapshot of every repo currently flagged with stale credentials.
+
+    Each entry: ``{"repo", "since", "error", "settingsUrl"}`` — the wire shape
+    the dashboard banner and the backlog-runner notification both consume."""
+    with _cred_lock:
+        return [
+            {
+                "repo": repo,
+                "since": info["since"],
+                "error": info["error"],
+                "settingsUrl": token_settings_url(repo),
+            }
+            for repo, info in sorted(_stale_credentials.items())
+        ]
+
+
+def clear_stale_credentials(name_with_owner: str) -> bool:
+    """Drop a repo's alert (a successful fetch or an explicit reset). Returns
+    True if an entry was present."""
+    with _cred_lock:
+        return _stale_credentials.pop(name_with_owner, None) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +356,21 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
         # ensure_clone itself creates.
         fetch = _run_git(["-C", str(dest), "fetch", "--prune", "origin"])
         if fetch.returncode != 0:
-            log.warning("clone.fetch_failed path=%s err=%s", dest, fetch.stderr.strip())
+            if is_auth_error(fetch.stderr):
+                # Auth-class failure (revoked/expired token) — log at ERROR so it
+                # is operationally visible, flag the repo so the backlog runner
+                # pauses worktree creation, and let the dashboard surface a
+                # credential-refresh notification (issue #670). The clone still
+                # returns its stale ref for read-only callers; the registry is
+                # what stops new work from branching off it.
+                log.error(
+                    "clone.fetch_failed path=%s err=%s — git credential refresh "
+                    "needed for %s", dest, fetch.stderr.strip(), name_with_owner)
+            else:
+                log.warning("clone.fetch_failed path=%s err=%s", dest, fetch.stderr.strip())
+            record_fetch_result(name_with_owner, ok=False, stderr=fetch.stderr)
+        else:
+            record_fetch_result(name_with_owner, ok=True)
         return str(dest)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -263,6 +395,9 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
     if detach.returncode != 0:
         log.warning("clone.detach_failed path=%s err=%s", dest, detach.stderr.strip())
 
+    # A fresh clone succeeding proves the credentials work — clear any stale
+    # alert left by an earlier failed fetch of this repo.
+    record_fetch_result(name_with_owner, ok=True)
     log.info("clone.create repo=%s path=%s", name_with_owner, dest)
     return str(dest)
 

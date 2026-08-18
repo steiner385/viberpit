@@ -53,7 +53,8 @@ def build_loop(*, mode="auto", config=None, clock=None,
                candidates=None, healthy="a", in_flight_counter=None,
                pr_status=None, pr_doctor_active=True, claim_result=True,
                candidate_count=None, heal_orphans_result=None,
-               refresh_groups=None, spawn=None, close_out_result=None):
+               refresh_groups=None, spawn=None, close_out_result=None,
+               credential_alerts=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .claims /
@@ -152,6 +153,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
         count_candidates=count_candidates if candidate_count is not None else None,
         heal_orphans=heal_orphans if heal_orphans_result is not None else None,
         refresh_groups=refresh_groups,
+        credential_alerts=credential_alerts,
     )
     return loop, rec, ctx
 
@@ -1160,5 +1162,88 @@ def test_spawn_success_resets_consecutive_failures(tmp_path):
             await loop.tick()
             clock.advance(3700)                 # clear per-target backoffs
         assert loop._spawn_circuit_until is None  # never 3 consecutive fails
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# Credential-refresh notifications (issue #670)                               #
+# --------------------------------------------------------------------------- #
+
+def test_stale_credentials_emit_refresh_event(tmp_path):
+    """A repo with stale git credentials emits a dashboard event carrying the
+    token-settings link, once, and does not re-emit on a second tick."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'cred1.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        alerts = [{"repo": "acme/widget", "since": 1.0,
+                   "error": "Invalid username or token",
+                   "settingsUrl": "https://github.com/settings/tokens"}]
+        loop, _, ctx = build_loop(credential_alerts=lambda: list(alerts))
+
+        await loop.tick()
+        events = await ctx.list_events(kind="credential_refresh_needed")
+        assert len(events) == 1
+        assert events[0]["level"] == "error"
+        assert events[0]["target"] == "acme/widget"
+        # The link rides in detail so the dashboard can deep-link the fix.
+        from sqlalchemy import select
+        from server.db.models import AutomationEvent
+        async with db_session() as db:
+            row = (await db.execute(select(AutomationEvent).where(
+                AutomationEvent.kind == "credential_refresh_needed"))).scalars().one()
+        assert row.detail["settingsUrl"] == "https://github.com/settings/tokens"
+
+        # A second tick with the same alert must NOT re-emit (debounced).
+        await loop.tick()
+        assert len(await ctx.list_events(kind="credential_refresh_needed")) == 1
+
+    asyncio.run(run())
+
+
+def test_credentials_recovering_emits_restored_event(tmp_path):
+    """Once the stale alert clears (a fetch succeeded), the loop emits a
+    'restored' event and re-arms so a future failure alerts again."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'cred2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        alerts = [{"repo": "acme/widget", "since": 1.0, "error": "403",
+                   "settingsUrl": "https://github.com/settings/tokens"}]
+        loop, _, ctx = build_loop(credential_alerts=lambda: list(alerts))
+
+        await loop.tick()                       # goes stale
+        alerts.clear()                          # a fetch succeeded → registry cleared
+        await loop.tick()                       # recovers
+        restored = await ctx.list_events(kind="credential_restored")
+        assert len(restored) == 1
+        assert restored[0]["level"] == "info"
+        assert restored[0]["target"] == "acme/widget"
+
+        # Re-arm proven: a subsequent failure emits a fresh refresh event.
+        alerts.append({"repo": "acme/widget", "since": 2.0, "error": "403",
+                       "settingsUrl": "https://github.com/settings/tokens"})
+        await loop.tick()
+        assert len(await ctx.list_events(kind="credential_refresh_needed")) == 2
+
+    asyncio.run(run())
+
+
+def test_credential_check_runs_even_when_off(tmp_path):
+    """A credential problem must surface regardless of runner mode — the alert
+    is emitted even when the runner is off."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'cred3.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        alerts = [{"repo": "acme/widget", "since": 1.0, "error": "403",
+                   "settingsUrl": "https://github.com/settings/tokens"}]
+        loop, _, ctx = build_loop(mode="off", credential_alerts=lambda: list(alerts))
+        await loop.tick()
+        assert len(await ctx.list_events(kind="credential_refresh_needed")) == 1
 
     asyncio.run(run())
