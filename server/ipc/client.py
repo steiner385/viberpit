@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -11,6 +12,21 @@ from server.ipc import protocol as proto
 from server.ipc.paths import Endpoint, parse_endpoint
 
 log = logging.getLogger("server.ipc.client")
+
+# Base subscriber queue size. Scales up automatically with active stream count;
+# override with CCSWITCH_IPC_QUEUE_SIZE to tune without code changes.
+_BASE_Q_SIZE = int(os.environ.get("CCSWITCH_IPC_QUEUE_SIZE", "1024"))
+
+# Event types that must reach the browser to preserve session UX: a dropped
+# permissionRequest leaves the model permanently blocked waiting for a decision
+# it will never get; a dropped questionResolved lets the resolved card re-appear
+# on every mid-turn reattach. These never go through the droppable eviction path.
+_CTRL_EVENT_TYPES: frozenset[str] = frozenset({
+    "permissionRequest",
+    "permissionResolved",
+    "question",
+    "questionResolved",
+})
 
 
 def protocol_compatible(daemon_protocol: int) -> bool:
@@ -98,6 +114,10 @@ class DaemonClient:
         # per overflow burst so the consumer resyncs from disk. Keyed by identity;
         # popped when the subscriber is discarded (single loop, no locking).
         self._dropped: dict[asyncio.Queue, int] = {}
+        # queue -> list of control events stashed when the queue was full. Control events
+        # must never be evicted (see _CTRL_EVENT_TYPES). _iter re-injects them into the
+        # main queue as slots free so they are delivered in original arrival order.
+        self._ctrl_buf: dict[asyncio.Queue, list[dict]] = {}
         self._ready: dict[str, asyncio.Event] = {}        # stream -> subscribed-on-daemon
         self._desired: set[str] = set()                   # streams to (re)subscribe on connect
         self._last_seq: dict[str, int] = {}               # stream -> highest delivered seq
@@ -147,14 +167,21 @@ class DaemonClient:
         Prefer this public accessor over reaching into ``_epoch``."""
         return self._epoch
 
-    def _add_subscriber(self, stream: str, maxsize: int = 1000) -> asyncio.Queue:
+    def _add_subscriber(self, stream: str, maxsize: int = _BASE_Q_SIZE) -> asyncio.Queue:
         """Register a new local subscriber queue for *stream* and return it."""
         q: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self._subscribers.setdefault(stream, set()).add(q)
         self._dropped[q] = 0
+        self._ctrl_buf[q] = []
         return q
 
-    def subscribe(self, stream: str, since: int | None = None, maxsize: int = 1000):
+    def subscribe(self, stream: str, since: int | None = None, maxsize: int | None = None):
+        if maxsize is None:
+            # Auto-scale: one extra base-size bucket per four already-open streams so
+            # the queue keeps up under concurrent-session automation load without the
+            # caller having to know anything about session count.
+            n_active = len(self._subscribers)
+            maxsize = _BASE_Q_SIZE * max(1, n_active // 4)
         q = self._add_subscriber(stream, maxsize)
         self._ready.setdefault(stream, asyncio.Event())
         # The daemon-side subscription is per stream, not per local subscriber. Only the
@@ -228,7 +255,15 @@ class DaemonClient:
                     # daemon seq anchor. seq is untouched — a gap is not a real event.
                     self._dropped[q] = 0
                     yield {"type": proto.GAP, "stream": stream, "lost": lost, "oldest": None}
-                yield await q.get()
+                event = await q.get()
+                # A slot just freed. Re-inject any buffered control events so they
+                # enter the queue in their original arrival order, ahead of future
+                # transcript events, and are delivered without further delay.
+                ctrl_buf = self._ctrl_buf.get(q)
+                if ctrl_buf:
+                    while ctrl_buf and not q.full():
+                        q.put_nowait(ctrl_buf.pop(0))
+                yield event
         finally:
             # Drop just THIS subscriber's queue; other subscribers on the stream keep
             # receiving. (GeneratorExit/cancel of a consuming task lands here.)
@@ -236,6 +271,7 @@ class DaemonClient:
             if subs is not None:
                 subs.discard(q)
             self._dropped.pop(q, None)
+            self._ctrl_buf.pop(q, None)
 
     def _deliver(self, stream: str, event: dict, seq: int | None = None) -> None:
         if seq is not None:
@@ -250,16 +286,31 @@ class DaemonClient:
         event = _SeqDict(event, seq)
         for q in subs:
             if q.full():
-                try:
-                    q.get_nowait()  # drop oldest
-                except asyncio.QueueEmpty:
-                    pass
-                # Count the drop; _iter turns a non-zero count into one GAP for the
-                # consumer so the lost span is visible instead of silently vanishing.
-                self._dropped[q] = self._dropped.get(q, 0) + 1
-                log.warning("ipc: subscriber queue for %s full — dropped oldest (%d lost, GAP pending)",
-                            stream, self._dropped[q])
-            q.put_nowait(event)
+                if event.get("type") in _CTRL_EVENT_TYPES:
+                    # Control events must never be evicted: stash in a side buffer
+                    # that _iter re-injects as slots free, preserving arrival order.
+                    self._ctrl_buf.setdefault(q, []).append(event)
+                    log.warning(
+                        "ipc: subscriber queue for %s full — buffering control event %s "
+                        "(queue=%d, ctrl_buf=%d)",
+                        stream, event.get("type"), q.maxsize,
+                        len(self._ctrl_buf[q]),
+                    )
+                else:
+                    try:
+                        q.get_nowait()  # drop oldest transcript event
+                    except asyncio.QueueEmpty:
+                        pass
+                    # Count the drop; _iter turns a non-zero count into one GAP for
+                    # the consumer so the lost span is visible instead of vanishing.
+                    self._dropped[q] = self._dropped.get(q, 0) + 1
+                    log.warning(
+                        "ipc: subscriber queue for %s full — dropped oldest (%d lost, GAP pending)",
+                        stream, self._dropped[q],
+                    )
+                    q.put_nowait(event)
+            else:
+                q.put_nowait(event)
 
     async def _reader(self) -> None:
         backoff = 0.05
