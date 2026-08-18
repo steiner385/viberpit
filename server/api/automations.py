@@ -230,6 +230,21 @@ async def trigger_automation_action(automation_id: str, body: TriggerBody, reque
     return result
 
 
+@router.get("/pr-doctor/jobs/{job_id}")
+async def pr_doctor_job_status(job_id: str, request: Request,
+                               _identity: str = Depends(current_identity)) -> dict:
+    """Live phase of an async pr-doctor trigger (issue #668). The trigger returns
+    a job id immediately; the UI polls this to show cloning → assessing →
+    spawning → ready and, on failure, which phase failed. 404 once the job is
+    gone (evicted or lost to a daemon restart)."""
+    _automation_or_404("pr-doctor")
+    orch = request.app.state.sessions
+    job = await orch.pr_doctor_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
 @router.get("/pr-doctor/consolidation")
 async def pr_doctor_consolidation(request: Request,
                                   _identity: str = Depends(current_identity)) -> dict:

@@ -9,6 +9,8 @@ work. No network, no real session spawn.
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from server.github.pr_status import PullRequestInfo
 from server.sessions.types import SessionRecord
@@ -94,6 +96,7 @@ def _build_orch(pr, *, has_driver=True):
     from ccswitch import gitrepos
     from server.automations.context import AutomationContext
     from server.automations.action_providers import PrDoctorActionProvider
+    from server.automations.pr_doctor_jobs import JobStore
 
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
     orch._records = {"sess1": _make_record()}
@@ -104,6 +107,8 @@ def _build_orch(pr, *, has_driver=True):
     orch._drivers = {"sess1": object()} if has_driver else {}  # type: ignore[dict-item]
     orch._gh_run = gitrepos._run_gh  # replaced by a recorder per-test
     orch._action_providers = {"pr-doctor": PrDoctorActionProvider(orch)}
+    orch._pr_doctor_jobs = JobStore()
+    orch._pr_doctor_job_tasks: set[asyncio.Task] = set()
     return orch
 
 
@@ -802,8 +807,9 @@ async def test_pr_doctor_fix_out_of_date_runs_mechanical(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_pr_doctor_fix_failing_ci_injects_live_driver(monkeypatch, tmp_path):
-    """automation_trigger(failing_ci) with a live owning driver → the shared session
-    executor injects via request_pr_fix (send_prompt), result status is 'sent'."""
+    """automation_trigger(failing_ci) with a live owning driver → trigger returns
+    'queued' immediately; after the background task drains, the job settles 'ready'
+    and send_prompt was called with the fix text (live driver path)."""
     await _init_pr_doctor_db(tmp_path)
 
     pr = _pr(checks="failing", head_sha="sha1")
@@ -817,10 +823,18 @@ async def test_pr_doctor_fix_failing_ci_injects_live_driver(monkeypatch, tmp_pat
 
     orch.send_prompt = fake_send  # type: ignore[method-assign]
 
+    # automation_trigger now returns immediately with a job_id ("queued").
     result = await orch.automation_trigger("pr-doctor", "o/r#7", "failing_ci")
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
+    assert "job_id" in result
+
+    # Drain the background task, then check that send_prompt was called.
+    await asyncio.gather(*list(orch._pr_doctor_job_tasks))
     assert len(sent) == 1
     assert "gh pr checkout 7" in sent[0]
+    job = orch.pr_doctor_job(result["job_id"])
+    assert job is not None
+    assert job["status"] == "ready"
 
 
 @pytest.mark.asyncio

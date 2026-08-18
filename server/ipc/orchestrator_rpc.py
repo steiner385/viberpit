@@ -272,7 +272,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "live_session_load", "live_session_counts",
         "snapshot_deploy", "restore_deploy", "resume_recovery_status",
         "request_pr_fix",
-        "automation_statuses", "automation_trigger",
+        "automation_statuses", "automation_trigger", "pr_doctor_job",
         "consolidation_candidates", "automation_consolidate",
         "backlog_candidates", "backlog_runner_dispatch",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",

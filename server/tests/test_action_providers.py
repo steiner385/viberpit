@@ -23,9 +23,10 @@ class _FakePrOrch:
     def _pr_doctor_owning_rec(self, repo, branch):
         return None
 
-    async def _pr_doctor_session_fix(self, repo, branch, info, kind, rec):
+    async def _pr_doctor_trigger_async(self, repo, branch, info, kind, rec):
+        # Async path (issue #668): record the hand-off and hand back a job id.
         self.fix_calls.append((repo, branch, kind))
-        return "ceiling", None
+        return "prd-test01"
 
 
 def _pr(**kw):
@@ -57,13 +58,34 @@ async def test_pr_provider_merge_conflict_is_risky():
 
 
 @pytest.mark.asyncio
-async def test_pr_provider_trigger_maps_ceiling_to_warn():
+async def test_pr_provider_trigger_queues_async_job():
+    # issue #668: an actionable failing_ci PR hands off to the background job
+    # pipeline and answers immediately with a queued result carrying the job id.
     orch = _FakePrOrch(_pr())
     prov = PrDoctorActionProvider(orch)
     res = await prov.trigger("cairnea/KinDash#11006", "failing_ci")
-    assert (res.status, res.level) == ("ceiling", "warn")
-    assert "usage ceiling" in res.message
+    assert (res.status, res.level) == ("queued", "ok")
+    assert (res.job_id, res.phase) == ("prd-test01", "queued")
+    assert res.to_dict()["job_id"] == "prd-test01"
     assert orch.fix_calls == [("cairnea/KinDash", "rl", "failing_ci")]
+
+
+@pytest.mark.asyncio
+async def test_pr_provider_trigger_out_of_date_stays_synchronous():
+    # Mechanical update-branch is fast — it must NOT be routed through the async
+    # job path (no job id, real terminal status).
+    orch = _FakePrOrch(_pr())
+    orch._pr_doctor_mechanical = _mechanical_ok  # type: ignore[attr-defined]
+    prov = PrDoctorActionProvider(orch)
+    res = await prov.trigger("cairnea/KinDash#11006", "out_of_date")
+    assert (res.status, res.level) == ("updated", "ok")
+    assert res.job_id is None
+    assert "job_id" not in res.to_dict()
+    assert orch.fix_calls == []  # async path not taken
+
+
+async def _mechanical_ok(repo, info, kind):
+    return True
 
 
 @pytest.mark.asyncio

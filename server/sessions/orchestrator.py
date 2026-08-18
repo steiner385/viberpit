@@ -408,6 +408,12 @@ class SessionOrchestrator:
         # refs are held so in-flight tasks aren't GC'd.
         self._consolidation_inflight: set[str] = set()
         self._consolidation_tasks: set[asyncio.Task] = set()
+        # Async manual pr-doctor triggers (issue #668): the slow clone→assess→
+        # spawn pipeline runs in a background task that advances a job here; the
+        # trigger RPC returns the job id immediately and the UI polls its phase.
+        from server.automations.pr_doctor_jobs import JobStore
+        self._pr_doctor_jobs = JobStore()
+        self._pr_doctor_job_tasks: set[asyncio.Task] = set()
         # Injectable seam for the pr-doctor Mechanical (update-branch) executor:
         # a swappable ``gh`` runner so tests can record argv without touching the
         # network. Defaults to the real ``gh`` shell-out.
@@ -3138,7 +3144,8 @@ class SessionOrchestrator:
         return took_action
 
     async def _pr_doctor_session_fix(
-        self, repo: str, branch: str, info: PullRequestInfo, kind: str, rec
+        self, repo: str, branch: str, info: PullRequestInfo, kind: str, rec,
+        on_phase: "Callable[[str], None] | None" = None,
     ) -> tuple[str, str | None]:
         """Inject-or-spawn a session-driven PR fix — the shared session executor.
 
@@ -3154,7 +3161,12 @@ class SessionOrchestrator:
         ``"sent"`` | ``"spawned"`` (real injection) | ``"transient"`` |
         ``"clone_failed"`` | ``"spawn_failed"``. Does NOT touch per-target engine
         state — the caller records the attempt on a real injection.
+
+        ``on_phase(phase)`` — optional progress hook the async manual trigger
+        (issue #668) uses to advance its job through ``cloning`` → ``assessing``
+        → ``spawning``. Defaults to a no-op so the auto sweep path is unchanged.
         """
+        phase = on_phase or (lambda _p: None)
         target = f"{repo}#{info.number}"
         # Select the branch-aware first prompt by failure kind. Single source of
         # truth for both the live-driver inject and the fresh-spawn seed.
@@ -3165,6 +3177,9 @@ class SessionOrchestrator:
 
         live_rec = rec if (rec is not None and rec.id in self._drivers) else None
         if live_rec is not None:
+            # LIVE driver → near-instant injection, no clone/assess. Report the
+            # spawning phase so a polling job still sees forward motion.
+            phase("spawning")
             # LIVE driver → inject the kind-appropriate prompt via the same
             # send-prompt path request_pr_fix uses. For failing_ci we keep calling
             # request_pr_fix to preserve the old auto behaviour exactly (it
@@ -3195,6 +3210,7 @@ class SessionOrchestrator:
         # branch=None and the seeded `gh pr checkout` can't work. The user's real
         # ~/GitHub checkouts are never touched.
         url = f"https://github.com/{repo}.git"
+        phase("cloning")
         try:
             cwd = await asyncio.to_thread(
                 gitrepos.ensure_clone, await self._effective_repo_root(), repo, url
@@ -3207,12 +3223,14 @@ class SessionOrchestrator:
                 kind="spawn_failed", target=target)
             return "clone_failed", None
         from server.automations.model_pick import resolve_model
+        phase("assessing")
         failing = ", ".join(
             d.name for d in info.checks_detail if d.conclusion == "failure")
         model, model_source = await resolve_model(
             await self._pr_doctor_config(),
             f"{kind} fix for PR {target}: {info.title}"
             + (f"\nfailing checks: {failing}" if failing else ""))
+        phase("spawning")
         try:
             rec2 = await self._pr_doctor_ctx.spawn_session(
                 origin_ref=target,
@@ -3252,6 +3270,50 @@ class SessionOrchestrator:
             "info", f"auto-fix spawned for {target}",
             kind="attempted", target=target, session_id=sid)
         return "spawned", sid
+
+    async def _pr_doctor_trigger_async(
+        self, repo: str, branch: str, info: PullRequestInfo, kind: str, rec
+    ) -> str:
+        """Kick off a manual session-fix in the background; return its job id now.
+
+        The clone→assess→spawn tail runs 12–41 s — far too long to hold the
+        edge→daemon RPC open (issue #668). We create a job, schedule the tail as
+        a background task that advances the job through its phases, and answer
+        immediately with the id so the UI can poll ``pr_doctor_job``."""
+        target = f"{repo}#{info.number}"
+        job = self._pr_doctor_jobs.create(target=target, kind=kind)
+        task = asyncio.create_task(
+            self._pr_doctor_job_run(job, repo, branch, info, kind, rec),
+            name=f"pr-doctor-job:{job.job_id}")
+        self._pr_doctor_job_tasks.add(task)
+        task.add_done_callback(self._pr_doctor_job_tasks.discard)
+        return job.job_id
+
+    async def _pr_doctor_job_run(self, job, repo: str, branch: str,
+                                 info: PullRequestInfo, kind: str, rec) -> None:
+        """Background tail of an async manual trigger: run the shared session
+        executor, advancing ``job`` through its phases, then settle it. Reuses
+        ``_pr_doctor_session_fix`` verbatim (single source of truth for the fix
+        pipeline + its feed events) — only the job bookkeeping is new."""
+        from server.automations.action_providers import _PR_STATUS_MAP
+        from server.automations.pr_doctor_jobs import finalize
+        try:
+            status, sid = await self._pr_doctor_session_fix(
+                repo, branch, info, kind, rec,
+                on_phase=lambda p: self._pr_doctor_jobs.advance(job, p))
+        except Exception:  # noqa: BLE001 — a bug in the tail must still settle the job.
+            log.exception("pr_doctor.job_failed job=%s target=%s", job.job_id, job.target)
+            finalize(job, "spawn_failed", level="error",
+                     message="Action failed — see the automation feed")
+            return
+        level, message = _PR_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
+        finalize(job, status, level=level, message=message, session_id=sid)
+
+    def pr_doctor_job(self, job_id: str) -> dict | None:
+        """Current state of an async manual-trigger job, or None if unknown
+        (never created, or evicted / lost to a daemon restart). JSON-safe."""
+        job = self._pr_doctor_jobs.get(job_id)
+        return job.to_dict() if job is not None else None
 
     async def consolidation_candidates(self, repo: str | None = None) -> dict:
         """Open, non-draft PRs per repo (from the population cache, within
