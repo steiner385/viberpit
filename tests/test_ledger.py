@@ -82,3 +82,47 @@ def test_list_accounts_includes_weekly_reserve():
         accounts.set_weekly_reserve("a", None)
         [acct] = accounts.list_accounts()
         assert acct["weeklyReservePct"] is None
+
+
+# --- enabled / disabled (per-account) ---
+
+
+def test_account_enabled_defaults_true_when_absent():
+    """A ledger entry with no ``enabled`` key is treated as enabled (back-compat:
+    existing ledgers predate the field and must not silently disable accounts)."""
+    with temp_env():
+        from ccswitch import ledger
+        with ledger.locked_ledger() as led:
+            led["accounts"]["a"] = {}  # no "enabled" key
+            assert ledger.is_account_enabled(led, "a") is True
+            # An entirely unknown account is enabled by default too.
+            assert ledger.is_account_enabled(led, "ghost") is True
+
+
+def test_set_account_enabled_persists_and_reads_back():
+    with temp_env():
+        from ccswitch import ledger
+        with ledger.locked_ledger() as led:
+            ledger.set_account_enabled(led, "a", False)
+        with ledger.locked_ledger() as led:
+            assert ledger.is_account_enabled(led, "a") is False
+            assert led["accounts"]["a"]["enabled"] is False
+            ledger.set_account_enabled(led, "a", True)
+        with ledger.locked_ledger() as led:
+            assert ledger.is_account_enabled(led, "a") is True
+            assert led["accounts"]["a"]["enabled"] is True
+
+
+def test_list_accounts_includes_enabled():
+    with temp_env():
+        from ccswitch import paths, accounts
+        store = paths.store_dir()
+        store.mkdir(parents=True, exist_ok=True)
+        (store / "a.cred.json").write_text(
+            '{"accessToken":"t","refreshToken":"r","expiresAt":9999999999999}')
+        # Default (no field written yet) surfaces as enabled.
+        [acct] = accounts.list_accounts()
+        assert acct["enabled"] is True
+        accounts.set_account_enabled("a", False)
+        [acct] = accounts.list_accounts()
+        assert acct["enabled"] is False

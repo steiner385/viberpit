@@ -39,6 +39,7 @@ vi.mock('@/api/hooks', () => ({
   useRefreshAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useUpdateAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useDeleteAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSetAccountEnabled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useReauthAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useReauthStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelReauth: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

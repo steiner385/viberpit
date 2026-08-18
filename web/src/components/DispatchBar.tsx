@@ -357,7 +357,7 @@ export function DispatchBar({
             className={selectClass}
           >
             <option value="">Auto-select</option>
-            {accounts.map((a) => (
+            {accounts.filter((a) => a.enabled !== false).map((a) => (
               <option key={a.name} value={a.name}>{a.nickname || a.name}</option>
             ))}
           </select>

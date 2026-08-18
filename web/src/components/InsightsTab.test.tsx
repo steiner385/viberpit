@@ -16,6 +16,7 @@ vi.mock('@/api/hooks', () => ({
   useRefreshAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
   useUpdateAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
   useDeleteAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
+  useSetAccountEnabled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useGithubRepos: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
   useModels: vi.fn(() => ({ data: [] })),
   useGithubBranches: vi.fn(() => ({ data: { default: null, branches: [] }, isLoading: false })),

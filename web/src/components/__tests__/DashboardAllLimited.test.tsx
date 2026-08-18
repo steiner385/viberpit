@@ -27,6 +27,7 @@ vi.mock('@/api/hooks', () => ({
   useRefreshAccount: vi.fn(),
   useUpdateAccount: vi.fn(),
   useDeleteAccount: vi.fn(),
+  useSetAccountEnabled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useGithubRepos: vi.fn(),
   useGithubBranches: vi.fn(),
   useModels: vi.fn(() => ({ data: [{ id: 'default', label: 'Default' }, { id: 'opus', label: 'Opus' }, { id: 'fable', label: 'Fable' }] })),
