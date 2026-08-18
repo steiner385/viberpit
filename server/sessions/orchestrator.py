@@ -116,6 +116,20 @@ def is_push_worthy(status: str) -> bool:
     return status in PUSH_STATUSES
 
 
+def _log_bg_exception(task: asyncio.Task) -> None:
+    """Log any unhandled exception from a fire-and-forget background task.
+
+    asyncio silently discards task exceptions until GC; this surfaces them at
+    ERROR level immediately so the root cause is visible without waiting for the
+    ``Task exception was never retrieved`` GC-driven log line.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("background task %r raised unhandled exception", task.get_name(), exc_info=exc)
+
+
 # TTL for cached issue proposals (seconds).
 _ISSUE_TTL_S: float = 300.0
 
@@ -579,6 +593,7 @@ class SessionOrchestrator:
             tasks = self._bg_tasks = set()
         tasks.add(task)
         task.add_done_callback(tasks.discard)
+        task.add_done_callback(_log_bg_exception)
         return task
 
     async def start(self) -> None:
@@ -849,6 +864,11 @@ class SessionOrchestrator:
         """
         from server.sessions import session_queue as sq
         started = 0
+        # Guard: an instance created before this attribute was added (mid-session
+        # code update without a daemon restart) won't have it in __init__. Lazy-init
+        # here so the drain proceeds rather than raising AttributeError in a task.
+        if not hasattr(self, "_queue_drain_lock"):
+            self._queue_drain_lock = asyncio.Lock()
         async with self._queue_drain_lock:
             while True:
                 if self._active_session_count() >= await self._max_active_sessions():

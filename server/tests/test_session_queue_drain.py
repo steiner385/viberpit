@@ -220,3 +220,30 @@ def test_queued_status_not_touched_by_midturn_normalization(tmp_path):
             await _stop_orch(orch2)
 
     asyncio.run(run())
+
+
+def test_maybe_start_queued_tolerates_missing_lock_attribute(tmp_path):
+    """_maybe_start_queued must not raise AttributeError if _queue_drain_lock is absent.
+
+    Regression guard for issue #662: a live SessionOrchestrator created by an older
+    code path (mid-session code update without daemon restart) won't have
+    _queue_drain_lock set in __init__. Deleting the attribute here simulates that
+    scenario; the method must lazy-init the lock and complete without error.
+    """
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'd5.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=2)
+        try:
+            # Simulate the old-instance state by removing the attribute after init.
+            del orch._queue_drain_lock
+            assert not hasattr(orch, "_queue_drain_lock"), "precondition: attr must be gone"
+
+            # Must not raise — should lazy-init the lock and return 0 (empty queue).
+            result = await orch._maybe_start_queued()
+            assert result == 0
+            # The lock should have been lazily created.
+            assert hasattr(orch, "_queue_drain_lock")
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
