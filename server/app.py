@@ -113,6 +113,11 @@ def _daemon_compatible(endpoint, *, attempts: int = 5, interval: float = 0.5) ->
 _SHUTDOWN_CLOSE_TIMEOUT_S = 30.0
 _SHUTDOWN_SWEEP_TIMEOUT_S = 15.0
 
+# Gate the SECURITY/0.0.0.0 warning to at most once per process lifetime.
+# Hot-reload and rapid watchdog restarts can re-enter _lifespan many times within
+# the same Python interpreter, producing hundreds of identical log lines (issue #669).
+_security_warned = False
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -143,13 +148,16 @@ async def _lifespan(app: FastAPI):
                 "refusing to start: empty tailnet_allowlist on a non-loopback bind "
                 "(set CCSWITCH_DEV=1 to override, or set CCSWITCH_TAILNET_ALLOWLIST)."
             )
-        _logging.getLogger("server").warning(
-            "SECURITY: binding to %s with an EMPTY tailnet allowlist. The "
-            "Tailscale-User-Login header is trusted unconditionally — only safe "
-            "behind `tailscale serve` (which sets/strips it). Set "
-            "CCSWITCH_TAILNET_ALLOWLIST and/or bind 127.0.0.1.",
-            _s.host,
-        )
+        global _security_warned
+        if not _security_warned:
+            _security_warned = True
+            _logging.getLogger("server").warning(
+                "SECURITY: binding to %s with an EMPTY tailnet allowlist. The "
+                "Tailscale-User-Login header is trusted unconditionally — only safe "
+                "behind `tailscale serve` (which sets/strips it). Set "
+                "CCSWITCH_TAILNET_ALLOWLIST and/or bind 127.0.0.1.",
+                _s.host,
+            )
 
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
