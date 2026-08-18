@@ -693,6 +693,8 @@ class SessionOrchestrator:
             return
         for acct in accounts:
             name = acct["name"]
+            if not acct.get("enabled", True):
+                continue
             if acct.get("status") == "needs-reauth" or self.has_live_session(name):
                 continue
             try:
@@ -5556,11 +5558,34 @@ class SessionOrchestrator:
             log.warning("stall watchdog: interrupting wedged turn session=%s", sid)
             await driver.interrupt()
 
+    async def _check_disabled_account_sessions(self) -> None:
+        """Rotate any live sessions off accounts that have been disabled.
+
+        Called from the stall loop so disabled accounts shed their sessions
+        without requiring a daemon restart or manual rotation.
+        """
+        from ccswitch import ledger as _ledger
+        with _ledger.locked_ledger() as led:
+            disabled = {n for n, _ in ccswitch_accounts.all_accounts()
+                        if not _ledger.is_account_enabled(led, n)}
+        if not disabled:
+            return
+        for record in list(self._records.values()):
+            if record.account not in disabled:
+                continue
+            if record.status in INACTIVE_SESSION_STATUSES or record.status == "queued":
+                continue
+            log.info("disabled_account_sweep: rotating session=%s off disabled account=%s",
+                     record.id, record.account)
+            self._spawn(self._rotate_away(record, reason="account_disabled"),
+                        name=f"rotate-disabled-{record.id}")
+
     async def _stall_loop(self) -> None:
         while True:
             await asyncio.sleep(30)
             try:
                 await self._check_stalls(self._clock())
+                await self._check_disabled_account_sessions()
             except Exception:
                 log.exception("stall watchdog tick failed")
 
