@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 import re
 from typing import Any, Literal, TYPE_CHECKING
 
@@ -245,6 +246,46 @@ async def _resolve_summary(orch, record, viewing: bool) -> str:
     return res or ""
 
 
+# Per-session enrichment calls (suggestions, prs, summary) are daemon RPCs
+# with no inherent timeout — one wedged session holds up the whole response.
+# Gate each RPC individually so total /api/sessions latency stays bounded
+# even when the daemon is under memory pressure or mid-restart.
+ENRICH_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_ENRICH_FETCH_TIMEOUT", "3.0"))
+
+
+async def _enrich_one(orch, record, viewing: bool, timeout: float):
+    """Fetch all enrichment fields for one session, each gated by ``timeout``.
+
+    Runs repo resolution and the three daemon RPCs (suggestions, prs, summary)
+    concurrently via ``asyncio.gather``.  Any call that times out or raises
+    degrades to the safe empty value — it never propagates to the caller.
+    """
+    _raw = await asyncio.gather(
+        _resolve_repo(record),
+        asyncio.wait_for(orch.latest_suggestions(record.id), timeout),
+        asyncio.wait_for(_resolve_prs(orch, record), timeout),
+        asyncio.wait_for(_resolve_summary(orch, record, viewing), timeout),
+        return_exceptions=True,
+    )
+    # Access by index — asyncio.gather+return_exceptions=True gives list[Any],
+    # which avoids mypy overload-narrowing issues with tuple unpacking.
+    repo, sugg, pr_list, summary = _raw[0], _raw[1], _raw[2], _raw[3]
+    if isinstance(repo, BaseException):
+        log.warning("list_sessions: repo resolve failed for %s", record.id, exc_info=repo)
+    if isinstance(sugg, BaseException):
+        log.warning("list_sessions: suggestions timed out or failed for %s", record.id)
+    if isinstance(pr_list, BaseException):
+        log.warning("list_sessions: prs timed out or failed for %s", record.id)
+    if isinstance(summary, BaseException):
+        log.warning("list_sessions: summary timed out or failed for %s", record.id)
+    return (
+        repo if not isinstance(repo, BaseException) else getattr(record, "repo", None),
+        sugg if not isinstance(sugg, BaseException) else [],
+        pr_list if not isinstance(pr_list, BaseException) else [],
+        summary if not isinstance(summary, BaseException) else "",
+    )
+
+
 async def _autopilot_defer_seconds() -> int | None:
     """Human-deference window (seconds) for the cooldown badge, or None when autopilot is
     disabled/off (→ no badge). Reads the autopilot Automation row directly: the edge process owns
@@ -284,33 +325,14 @@ async def list_sessions(
     orch = _get_orchestrator(request)
     records = await orch.list_sessions()
     viewing = request.query_params.get("viewing") in ("1", "true", "yes")
-    # Read each session's repo (live, from its cwd), cached suggestions, PR list, and
-    # status summary in parallel.
-    repos = await asyncio.gather(*(_resolve_repo(r) for r in records))
-    # Auxiliary RPC calls degrade gracefully: a daemon blip (DaemonUnavailable /
-    # TransportError) returns an empty default for affected sessions rather than
-    # crashing the whole list with a 500.
-    _suggs_raw = await asyncio.gather(
-        *(orch.latest_suggestions(r.id) for r in records), return_exceptions=True
+    # Enrich all sessions concurrently — repo, suggestions, prs, and summary
+    # run in parallel within each session, and all sessions run in parallel.
+    # Each RPC is bounded by ENRICH_FETCH_TIMEOUT so one wedged daemon or slow
+    # session never holds up the entire response.
+    enriched = await asyncio.gather(
+        *(_enrich_one(orch, r, viewing, ENRICH_FETCH_TIMEOUT) for r in records)
     )
-    suggs = [s if not isinstance(s, BaseException) else [] for s in _suggs_raw]
-    if any(isinstance(s, BaseException) for s in _suggs_raw):
-        log.warning("list_sessions: suggestions fetch failed for %d session(s)",
-                    sum(1 for s in _suggs_raw if isinstance(s, BaseException)))
-    _prs_raw = await asyncio.gather(
-        *(_resolve_prs(orch, r) for r in records), return_exceptions=True
-    )
-    prs = [p if not isinstance(p, BaseException) else [] for p in _prs_raw]
-    if any(isinstance(p, BaseException) for p in _prs_raw):
-        log.warning("list_sessions: prs fetch failed for %d session(s)",
-                    sum(1 for p in _prs_raw if isinstance(p, BaseException)))
-    _summaries_raw = await asyncio.gather(
-        *(_resolve_summary(orch, r, viewing) for r in records), return_exceptions=True
-    )
-    summaries = [s if not isinstance(s, BaseException) else "" for s in _summaries_raw]
-    if any(isinstance(s, BaseException) for s in _summaries_raw):
-        log.warning("list_sessions: summary fetch failed for %d session(s)",
-                    sum(1 for s in _summaries_raw if isinstance(s, BaseException)))
+    repos, suggs, prs, summaries = zip(*enriched) if enriched else ((), (), (), ())
     defer_seconds = await _autopilot_defer_seconds()
     positions: dict[str, int] = {}
     _positions_fn = getattr(orch, "session_queue_positions", None)
