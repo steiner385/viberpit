@@ -154,6 +154,56 @@ def test_list_github_branches_gh_error_502(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# GET/DELETE /api/github/credential-alerts (issue #670)
+# ---------------------------------------------------------------------------
+
+
+def test_credential_alerts_lists_and_dismisses(tmp_path):
+    """The banner endpoint surfaces stale-credential repos from the registry,
+    and DELETE clears one."""
+    from ccswitch import gitrepos
+    gitrepos._stale_credentials.clear()
+    gitrepos.record_fetch_result(
+        "cairnea/KinDash", ok=False,
+        stderr="remote: Invalid username or token. "
+               "Password authentication is not supported")
+    try:
+        with temp_env():
+            with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+                _, client = _make_app_and_client()
+                with client:
+                    resp = client.get("/api/github/credential-alerts", headers=IDENTITY_HEADERS)
+                    assert resp.status_code == 200
+                    alerts = resp.json()["alerts"]
+                    assert [a["repo"] for a in alerts] == ["cairnea/KinDash"]
+                    assert alerts[0]["settingsUrl"] == gitrepos.token_settings_url()
+
+                    dresp = client.request(
+                        "DELETE", "/api/github/credential-alerts",
+                        params={"repo": "cairnea/KinDash"}, headers=IDENTITY_HEADERS)
+                    assert dresp.status_code == 200
+                    assert dresp.json()["cleared"] is True
+
+                    # After dismissal the list is empty.
+                    resp2 = client.get("/api/github/credential-alerts", headers=IDENTITY_HEADERS)
+                    assert resp2.json()["alerts"] == []
+    finally:
+        gitrepos._stale_credentials.clear()
+
+
+def test_credential_alerts_empty_when_clean(tmp_path):
+    from ccswitch import gitrepos
+    gitrepos._stale_credentials.clear()
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            _, client = _make_app_and_client()
+            with client:
+                resp = client.get("/api/github/credential-alerts", headers=IDENTITY_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json() == {"alerts": []}
+
+
+# ---------------------------------------------------------------------------
 # GET /api/config
 # ---------------------------------------------------------------------------
 
