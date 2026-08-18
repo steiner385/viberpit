@@ -29,6 +29,12 @@ class AuthFailure:
 
 _auth_failure_sink: Callable[[AuthFailure], None] | None = None
 
+# Process-local set of accounts whose refresh token returned HTTP 400 (dead grant).
+# Once an account lands here, usage_for() exits immediately without touching the
+# network — 400 means the token family is truly dead, not just expired.  Cleared
+# only by mark_reauthenticated() so the fast-skip is sticky until the user re-auths.
+_dead_accounts: set[str] = set()
+
 
 def set_auth_failure_sink(fn: "Callable[[AuthFailure], None] | None") -> None:
     """Register (or clear) the sink that receives an AuthFailure at each needs-reauth flip.
@@ -275,6 +281,9 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
     """
     if provider_of(name) == copilot.PROVIDER:
         return _copilot_usage_for(name)
+    if name in _dead_accounts:
+        log.debug("usage_for(%s): refresh token known-dead (400) — skipping without network I/O", name)
+        return None
     cfg = load_config()
     retry_kw = {"max_retries": cfg.retry_max_retries, "max_total_sec": cfg.retry_max_total_sec}
     now = datetime.now(timezone.utc)
@@ -328,6 +337,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         if fb is not _NO_SETUP_TOKEN:
             return fb  # type: ignore[return-value]
         log.warning("usage_for(%s): refresh token dead (%s) — marking needs-reauth", name, e)
+        _dead_accounts.add(name)
         emit_auth_failure(AuthFailure(
             account=name, status=getattr(e, "status", None), body=getattr(e, "body", None),
             path=path, token_expires_at=_slot_expires_at(name), attempts=1))
@@ -349,6 +359,11 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         _note_usage_fetch_failure(name)
         return None
     except oauth.AuthError:
+        # Usage endpoint returned 401 — try one refresh.  Distinguish between
+        # 400 from the refresh endpoint (dead grant → stop immediately) and a
+        # 401 that survives the refresh (creds genuinely rejected on usage).
+        _refresh_auth_err: oauth.AuthError | None = None
+        slot = blob  # fallback; overwritten below if the guard runs
         try:
             with _refresh_guard(name):
                 # Re-read under the guard: a sibling thread OR process may have just
@@ -361,17 +376,51 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
                 if slot.get("accessToken") == blob.get("accessToken"):
                     slot = oauth.refresh_access_token(slot["refreshToken"], slot, **retry_kw)
                     write_credentials(paths.slot_path(name), slot)
+        except oauth.AuthError as _re:
+            # 400 (or 401) from the token endpoint itself — the refresh grant is dead.
+            # Do NOT proceed to a usage fetch with the now-dead token.
+            _refresh_auth_err = _re
+        except (oauth.UsageError, oauth.TransientError) as e:
+            log.warning("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
+            _note_usage_fetch_failure(name)
+            return None
+
+        if _refresh_auth_err is not None:
+            # Refresh returned 400/401 — grant is dead; fast-skip future calls too.
+            fb = _setup_token_usage_fallback(name, now, retry_kw)
+            if fb is not _NO_SETUP_TOKEN:
+                return fb  # type: ignore[return-value]
+            log.warning(
+                "usage_for(%s): refresh token rejected with %s (%s) — marking needs-reauth",
+                name, getattr(_refresh_auth_err, "status", "?") or "?", _refresh_auth_err,
+            )
+            _dead_accounts.add(name)
+            emit_auth_failure(AuthFailure(
+                account=name,
+                status=getattr(_refresh_auth_err, "status", None),
+                body=getattr(_refresh_auth_err, "body", None),
+                path=path, token_expires_at=_slot_expires_at(name), attempts=2))
+            with ledger.locked_ledger() as led:
+                ledger.set_status(led, name, "needs-reauth")
+                ledger.note_usage_fetch_failure(led, name, time.time())
+            return None
+
+        try:
             u = oauth.fetch_usage(slot["accessToken"], **retry_kw)
         except (oauth.UsageError, oauth.TransientError) as e:
             log.warning("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
             _note_usage_fetch_failure(name)
             return None
         except oauth.AuthError as e:
-            # A live setup-token keeps the account usable — don't flip to needs-reauth.
+            # 401 survived a successful refresh — usage creds genuinely rejected.
             fb = _setup_token_usage_fallback(name, now, retry_kw)
             if fb is not _NO_SETUP_TOKEN:
                 return fb  # type: ignore[return-value]
             log.warning("usage_for(%s): 401 survived a fresh refresh (%s) — marking needs-reauth", name, e)
+            _dead_accounts.add(name)
+            emit_auth_failure(AuthFailure(
+                account=name, status=getattr(e, "status", None), body=getattr(e, "body", None),
+                path=path, token_expires_at=_slot_expires_at(name), attempts=2))
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, name, "needs-reauth")
                 ledger.note_usage_fetch_failure(led, name, time.time())
@@ -543,6 +592,7 @@ def mark_reauthenticated(name: str) -> None:
     synchronous: set ``ok`` and drop the cached usage so the very next fetch
     (which the UI triggers on success) is real and re-affirms the status.
     """
+    _dead_accounts.discard(name)
     with ledger.locked_ledger() as led:
         ledger.set_status(led, name, "ok")
         ledger.clear_cached_usage(led, name)
