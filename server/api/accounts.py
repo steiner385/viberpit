@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from ccswitch.accounts import (list_accounts, provider_of, remove_account,
-                               set_nickname, set_weekly_reserve)
+                               set_account_enabled, set_nickname, set_weekly_reserve)
 from ccswitch import paths
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.config import load_config
@@ -132,6 +132,7 @@ def _account_response(
     rank_reason: str | None = None,
     weekly_reserve_pct: float | None = None,
     account_defaults: dict | None = None,  # NEW
+    enabled: bool = True,
 ) -> dict[str, Any]:
     """Build the account wire format — never includes tokens."""
     return {
@@ -145,6 +146,7 @@ def _account_response(
         "rankReason": rank_reason,
         "weeklyReservePct": weekly_reserve_pct,
         "accountDefaults": account_defaults or {"defaultModel": None, "defaultPermissionMode": None, "envOverrides": None},
+        "enabled": enabled,
     }
 
 
@@ -226,6 +228,7 @@ async def get_accounts(
             rank_reason=reason,
             weekly_reserve_pct=acct.get("weeklyReservePct"),
             account_defaults=acct.get("accountDefaults"),
+            enabled=acct.get("enabled", True),
         ))
     return result
 
@@ -254,12 +257,14 @@ async def refresh_account(
     nickname = None
     weekly_reserve = None
     account_defaults = None
+    enabled = True
     for acct in accounts_info:
         if acct["name"] == name:
             status_str = acct.get("status", "unknown")
             nickname = acct.get("nickname")
             weekly_reserve = acct.get("weeklyReservePct")
             account_defaults = acct.get("accountDefaults")
+            enabled = acct.get("enabled", True)
             break
 
     counts = await orch.live_session_counts()
@@ -268,6 +273,7 @@ async def refresh_account(
         live_sessions=counts.get(name) or {"active": 0, "idle": 0},
         weekly_reserve_pct=weekly_reserve,
         account_defaults=account_defaults,
+        enabled=enabled,
     )
 
 
@@ -335,8 +341,49 @@ async def update_account(
                 name, acct.get("status", "unknown"), None, acct.get("nickname"),
                 weekly_reserve_pct=acct.get("weeklyReservePct"),
                 account_defaults=acct.get("accountDefaults"),
+                enabled=acct.get("enabled", True),
             )
     return _account_response(name, "unknown", None, None)
+
+
+class AccountEnabledBody(BaseModel):
+    enabled: bool
+
+
+@router.patch("/{name}/enabled")
+async def set_enabled(
+    name: str,
+    body: AccountEnabledBody,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Enable or disable an account without deleting it.
+
+    A disabled account is blocked everywhere — it is never auto-selected, never a
+    rotation target, and cannot be manually picked — but its credentials stay
+    intact so the toggle is fully reversible. Returns the updated account.
+    Returns 404 if the account name is invalid or its slot does not exist.
+    """
+    _check_name_and_slot(name)
+
+    set_account_enabled(name, body.enabled)
+
+    await record_audit(
+        db=db,
+        type="account.enabled" if body.enabled else "account.disabled",
+        identity=identity,
+        detail={"account": name, "enabled": body.enabled},
+    )
+
+    for acct in list_accounts():
+        if acct["name"] == name:
+            return _account_response(
+                name, acct.get("status", "unknown"), None, acct.get("nickname"),
+                weekly_reserve_pct=acct.get("weeklyReservePct"),
+                account_defaults=acct.get("accountDefaults"),
+                enabled=acct.get("enabled", True),
+            )
+    return _account_response(name, "unknown", None, None, enabled=body.enabled)
 
 
 # ---------------------------------------------------------------------------

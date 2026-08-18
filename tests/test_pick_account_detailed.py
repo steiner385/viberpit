@@ -60,6 +60,34 @@ def test_pick_account_detailed_reserve_true_still_reserves(monkeypatch):
     reserve.assert_called_once()
 
 
+def test_pick_account_detailed_skips_disabled(monkeypatch):
+    """A disabled account is never selected — blocked everywhere, in any tier."""
+    monkeypatch.setattr(accounts, "_account_names", lambda: ["a", "b"])
+    enabled = {"a": False, "b": True}
+    with patch.object(accounts, "usage_for", return_value=None) as usage_for, \
+         patch("ccswitch.ledger.is_account_enabled", side_effect=lambda led, n: enabled[n]), \
+         patch("ccswitch.ledger.get_status", return_value="ok"), \
+         patch("ccswitch.ledger.reservation_active", return_value=False), \
+         patch("ccswitch.ledger.reserve"):
+        picked = accounts.pick_account_detailed(Config())
+    assert picked.name == "b"
+    # A disabled account must not even be polled for usage (paused == left alone).
+    usage_for.assert_called_once_with("b")
+
+
+def test_pick_account_detailed_all_disabled_raises(monkeypatch):
+    from ccswitch.selector import AllAccountsBusy
+    import pytest
+    monkeypatch.setattr(accounts, "_account_names", lambda: ["a"])
+    with patch.object(accounts, "usage_for", return_value=None) as usage_for, \
+         patch("ccswitch.ledger.is_account_enabled", return_value=False), \
+         patch("ccswitch.ledger.reserve"):
+        with pytest.raises(AllAccountsBusy) as ei:
+            accounts.pick_account_detailed(Config())
+    assert ei.value.kind == "no_usable_accounts"
+    usage_for.assert_not_called()
+
+
 def test_pick_account_detailed_respects_weekly_reserve(monkeypatch):
     """An over-reserve account is demoted: the pick flips once a reserve is set."""
     from tests.helpers import usage

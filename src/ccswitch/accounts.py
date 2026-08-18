@@ -445,6 +445,10 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
     real spawns and interactive creates for the full reservation TTL.
     """
     names = _account_names()
+    # Drop disabled accounts up front: they are blocked everywhere (never selected
+    # in any fallback tier) and, being paused, must not be polled for usage either.
+    with ledger.locked_ledger() as led:
+        names = [n for n in names if ledger.is_account_enabled(led, n)]
     usages = {n: usage_for(n) for n in names}
     now = datetime.now(timezone.utc)
     now_ts = time.time()
@@ -545,6 +549,7 @@ def list_accounts() -> list[dict]:
                 "provider": provider_of(name),
                 "weeklyReservePct": ledger.get_weekly_reserve(led, name),
                 "accountDefaults": ledger.get_account_defaults(led, name),
+                "enabled": ledger.is_account_enabled(led, name),
             })
     return out
 
@@ -557,6 +562,12 @@ def set_nickname(name: str, nickname: str | None) -> None:
 def set_weekly_reserve(name: str, pct: float | None) -> None:
     with ledger.locked_ledger() as led:
         ledger.set_weekly_reserve(led, name, pct)
+
+
+def set_account_enabled(name: str, enabled: bool) -> None:
+    """Enable/disable an account without deleting it (reversible pause)."""
+    with ledger.locked_ledger() as led:
+        ledger.set_account_enabled(led, name, enabled)
 
 
 def set_account_defaults(
