@@ -23,6 +23,10 @@ def temp_env():
         os.environ["CLAUDE_CONFIG_DIR"] = str(shared)
         os.environ.pop("CCSWITCH_ARCHIVE_HOME", None)
         try:
+            # Clear module-level singletons that would otherwise leak between tests.
+            import sys
+            if "ccswitch.accounts" in sys.modules:
+                sys.modules["ccswitch.accounts"]._dead_accounts.clear()
             yield d
         finally:
             for k, v in old.items():

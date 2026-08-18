@@ -176,7 +176,7 @@ class TestAccounts(unittest.TestCase):
         succeed by ignoring the reservation rather than raising AllAccountsBusy.
         """
         with temp_env():
-            from ccswitch import accounts, ledger
+            from ccswitch import accounts
             _seed_account("solo")
             _seed_account("maxed")
             def fake_usage(name):
@@ -240,6 +240,93 @@ def test_usage_for_emits_auth_failure_on_dead_token(monkeypatch, tmp_path):
     f = captured[0]
     assert f.account == "primary" and f.status == 400 and f.path == "poller-idle"
     assert "invalid_grant" in f.body
+
+def test_usage_for_400_in_step2_emits_auth_failure(monkeypatch):
+    """When the ONE retry-refresh in Step 2 returns 400, emit_auth_failure must fire
+    so the frontend gets the reauth prompt without waiting for the next poller cycle."""
+    from ccswitch import accounts, oauth
+    from tests.helpers import temp_env
+    captured = []
+    accounts.set_auth_failure_sink(captured.append)
+    try:
+        with temp_env():
+            _seed_account("alpha")  # fresh token → Step 1 passes
+            with mock.patch.object(oauth, "fetch_usage", side_effect=oauth.AuthError("401")), \
+                 mock.patch.object(oauth, "refresh_access_token",
+                                   side_effect=oauth.AuthError("token refresh failed with 400",
+                                                               status=400, body='{"error":"invalid_grant"}')):
+                result = accounts.usage_for("alpha", path="poller-test")
+    finally:
+        accounts.set_auth_failure_sink(None)
+    assert result is None
+    assert len(captured) == 1
+    f = captured[0]
+    assert f.account == "alpha" and f.status == 400 and f.path == "poller-test" and f.attempts == 2
+    assert "invalid_grant" in f.body
+
+
+def test_usage_for_400_adds_to_dead_accounts(monkeypatch):
+    """After a 400 on the refresh token, the account lands in _dead_accounts so
+    subsequent calls in the same process skip the network immediately."""
+    from ccswitch import accounts, oauth
+    from tests.helpers import temp_env
+    with temp_env():
+        _seed_account("alpha")
+        accounts._dead_accounts.discard("alpha")
+        fetch_calls = []
+        def spy_fetch(*a, **kw):
+            fetch_calls.append(1)
+            raise oauth.AuthError("401")
+        with mock.patch.object(oauth, "fetch_usage", side_effect=spy_fetch), \
+             mock.patch.object(oauth, "refresh_access_token",
+                               side_effect=oauth.AuthError("token refresh failed with 400", status=400)):
+            accounts.usage_for("alpha")
+        # Second call: _dead_accounts membership must short-circuit before any network call.
+        with mock.patch.object(oauth, "fetch_usage", side_effect=AssertionError("must not fetch")):
+            result = accounts.usage_for("alpha")
+    assert result is None
+    accounts._dead_accounts.discard("alpha")  # cleanup
+
+
+def test_mark_reauthenticated_clears_dead_accounts():
+    """mark_reauthenticated() must evict the account from _dead_accounts so the
+    next usage_for call re-tries the network after a successful re-login."""
+    from ccswitch import accounts
+    from tests.helpers import temp_env
+    with temp_env():
+        _seed_account("alpha")
+        accounts._dead_accounts.add("alpha")
+        accounts.mark_reauthenticated("alpha")
+        assert "alpha" not in accounts._dead_accounts
+
+
+def test_usage_for_401_survives_refresh_emits_auth_failure(monkeypatch):
+    """When the refresh succeeds but the usage endpoint still returns 401, the
+    Step-2 handler must emit_auth_failure (it was missing before this fix)."""
+    from ccswitch import accounts, oauth
+    from tests.helpers import temp_env
+    captured = []
+    accounts.set_auth_failure_sink(captured.append)
+    new_blob = {"accessToken": "refreshed", "refreshToken": "r2",
+                "expiresAt": int(1e13), "subscriptionType": "max"}
+    try:
+        with temp_env():
+            _seed_account("alpha")
+            call_count = {"n": 0}
+            def fetch_side_effect(*a, **kw):
+                call_count["n"] += 1
+                raise oauth.AuthError("401")
+            with mock.patch.object(oauth, "fetch_usage", side_effect=fetch_side_effect), \
+                 mock.patch.object(oauth, "refresh_access_token", return_value=new_blob):
+                result = accounts.usage_for("alpha", path="poller-step2")
+    finally:
+        accounts.set_auth_failure_sink(None)
+    assert result is None
+    assert len(captured) == 1
+    f = captured[0]
+    assert f.account == "alpha" and f.path == "poller-step2" and f.attempts == 2
+    accounts._dead_accounts.discard("alpha")  # cleanup
+
 
 def test_set_sink_none_is_noop(monkeypatch):
     from ccswitch import accounts
