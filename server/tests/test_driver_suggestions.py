@@ -34,6 +34,7 @@ def test_emits_suggestions_after_idle():
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", suggester=sug)
         await d.start()
+        _viewer = d.open_stream()   # attached viewer: suggestions are gated on one
         await d.send_prompt("hi")
         got = []
         async def consume():
@@ -59,6 +60,7 @@ def test_empty_suggestions_emit_no_event():
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", suggester=sug)
         await d.start()
+        _viewer = d.open_stream()   # attached viewer: suggestions are gated on one
         await d.send_prompt("hi")
         got = []
         async def consume():
@@ -137,6 +139,7 @@ def test_seed_idle_suggestions_emits_once(caplog):
                           sdk_factory=_factory([]), registry=PermissionRegistry(),
                           identity="me", suggester=sug)
         await d.start()
+        _viewer = d.open_stream()   # attached viewer: suggestions are gated on one
         d.seed_idle_suggestions("do the thing", "earlier answer")
         got = []
         async def consume():
@@ -172,6 +175,78 @@ def test_seed_idle_suggestions_noop_without_context():
     task = asyncio.run(run())
     assert task is None
     assert sug.calls == 0
+
+
+def test_no_subscribers_skips_suggestions():
+    """Headless/automation sessions (no attached viewer) must not spend tokens
+    generating suggestions no human will read — the subscriber gate skips them."""
+    msgs = [f.stream_start(uuid="t1"), f.stream_text("done", uuid="t1"), f.result(uuid="t1")]
+    sug = _StubSuggester(["never generated"])
+
+    async def run():
+        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(),
+                          identity="me", suggester=sug)
+        await d.start()
+        await d.send_prompt("hi")   # no open_stream() → no subscriber
+        if d._pump is not None:
+            await d._pump            # let the turn settle (drain fires the gate)
+        await asyncio.sleep(0.05)
+        task = d._suggest_task
+        await d.aclose()
+        return task
+    task = asyncio.run(run())
+    assert task is None
+    assert sug.calls == 0
+
+
+def test_copilot_account_skips_suggestions(monkeypatch):
+    """Copilot sessions run a third-party model — Haiku suggestions routed through
+    the proxy are meaningless (mirrors the detached-path guard at orchestrator:4947)."""
+    monkeypatch.setattr("server.sessions.driver._provider_of",
+                        lambda name: "copilot")
+    msgs = [f.stream_start(uuid="t1"), f.stream_text("done", uuid="t1"), f.result(uuid="t1")]
+    sug = _StubSuggester(["never generated"])
+
+    async def run():
+        d = SessionDriver("s1", "copilot-acct", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(),
+                          identity="me", suggester=sug)
+        await d.start()
+        _viewer = d.open_stream()   # subscriber present → isolates the copilot gate
+        await d.send_prompt("hi")
+        if d._pump is not None:
+            await d._pump
+        await asyncio.sleep(0.05)
+        task = d._suggest_task
+        await d.aclose()
+        return task
+    task = asyncio.run(run())
+    assert task is None
+    assert sug.calls == 0
+
+
+def test_identical_context_dedupes_generation():
+    """Two turn-boundaries with byte-identical context must generate suggestions
+    once — the signature cache short-circuits the redundant LLM call."""
+    sug = _StubSuggester(["Run the tests"])
+
+    async def run():
+        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory([]), registry=PermissionRegistry(),
+                          identity="me", suggester=sug)
+        await d.start()
+        _viewer = d.open_stream()
+        await d._run_suggestions("User: hi\n\nAssistant: done", "t1")
+        await d._run_suggestions("User: hi\n\nAssistant: done", "t2")  # identical → deduped
+        after_dup = sug.calls
+        await d._run_suggestions("User: hi\n\nAssistant: CHANGED", "t3")  # new → regenerates
+        after_new = sug.calls
+        await d.aclose()
+        return after_dup, after_new
+    after_dup, after_new = asyncio.run(run())
+    assert after_dup == 1
+    assert after_new == 2
 
 
 def test_orchestrator_disabled_by_env(monkeypatch):

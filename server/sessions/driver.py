@@ -3,6 +3,7 @@ import asyncio
 import base64
 import dataclasses
 import functools
+import hashlib
 import logging
 import os
 import time
@@ -10,6 +11,8 @@ import uuid
 from typing import Callable
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from claude_agent_sdk._errors import CLIConnectionError
+from ccswitch import copilot as _copilot_mod
+from ccswitch.accounts import provider_of as _provider_of
 from . import events as ev
 from .failure import classify, TurnFailure
 from .translator import Translator
@@ -179,6 +182,9 @@ class SessionDriver:
         self._last_assistant_parts: list[str] = []
         self._last_turn_id: str = ""
         self._last_suggestions: list[str] = []
+        # Signature (sha1 of the last generated context) guarding _run_suggestions
+        # against regenerating byte-identical suggestions across turn boundaries.
+        self._last_suggest_sig: str | None = None
         self._idle_seeded: bool = False
 
     def _turn(self):
@@ -862,8 +868,20 @@ class SessionDriver:
             self._suggest_task.cancel()
 
     def _maybe_start_suggestions(self) -> None:
-        """Fire-and-forget suggestion generation once the session is idle. Best-effort."""
+        """Fire-and-forget suggestion generation once the session is idle. Best-effort.
+
+        Gated so no tokens are spent generating suggestions nobody will read:
+        - no attached viewer → skip (headless/automation sessions never render them);
+        - Copilot sessions → skip (third-party model; Haiku suggestions are meaningless,
+          mirroring the detached-path guard in orchestrator.latest_suggestions).
+        The on-demand sparkle (generate_suggestions_now) bypasses both — an explicit
+        human request always generates.
+        """
+        if not self._subscribers:
+            return
         if self._suggester is None:
+            return
+        if _provider_of(self.account) == _copilot_mod.PROVIDER:
             return
         sig = self._dash_signals()
         if sig.pending_permission or sig.pending_question:
@@ -875,7 +893,18 @@ class SessionDriver:
         self._suggest_task = asyncio.create_task(self._run_suggestions(context, self._last_turn_id))
 
     async def _run_suggestions(self, context: str, turn_id: str) -> None:
+        # Skip the LLM round-trip when the context is byte-identical to the last
+        # generation (e.g. a no-op turn, or a re-attach seeding the same tail): the
+        # suggestions would be identical, and _last_suggestions is already replayed to
+        # new subscribers by open_stream(). Mirrors the mtime-keyed cache the detached
+        # path uses in orchestrator.latest_suggestions.
+        sig = hashlib.sha1(context.encode("utf-8", "surrogatepass")).hexdigest()
+        if sig == self._last_suggest_sig:
+            return
         items = await self._suggester.generate(self.cwd, self.config_dir, context)
+        # Record the signature only once generation actually ran to completion (a
+        # cancelled task never reaches here), so a genuinely new context still refreshes.
+        self._last_suggest_sig = sig
         log.info("suggestions session=%s turn=%s n=%d", self.session_id, turn_id, len(items))
         if items:
             self._last_suggestions = items
