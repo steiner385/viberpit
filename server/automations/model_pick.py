@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import os
 
-from server.sessions.helper_call import run_helper_call
+from server.sessions.helper_call import pick_helper_config_dir, run_helper_call
 from server.sessions.model_catalog import ALIASES
 
 log = logging.getLogger("ccswitch.automations")
@@ -92,7 +92,7 @@ async def assess_model(
         f"No explanation, no punctuation, just the tier name."
     )
 
-    config_dir = _config_dir or os.environ.get("CLAUDE_CONFIG_DIR", "")
+    config_dir = _config_dir or pick_helper_config_dir() or os.environ.get("CLAUDE_CONFIG_DIR", "")
     cwd = _cwd or os.getcwd()
 
     try:

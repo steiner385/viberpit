@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 
-from server.sessions.helper_call import run_helper_call
+from server.sessions.helper_call import pick_helper_config_dir, run_helper_call
 
 log = logging.getLogger("ccswitch.dispatch")
 
@@ -53,7 +53,7 @@ async def refine_prompt(
         return None
 
     timeout = _timeout if _timeout is not None else REFINE_TIMEOUT_S
-    config_dir = _config_dir or os.environ.get("CLAUDE_CONFIG_DIR", "")
+    config_dir = _config_dir or pick_helper_config_dir() or os.environ.get("CLAUDE_CONFIG_DIR", "")
     cwd = _cwd or os.getcwd()
 
     try:
