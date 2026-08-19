@@ -5565,9 +5565,14 @@ class SessionOrchestrator:
         without requiring a daemon restart or manual rotation.
         """
         from ccswitch import ledger as _ledger
-        with _ledger.locked_ledger() as led:
-            disabled = {n for n, _ in ccswitch_accounts.all_accounts()
+
+        def _read_disabled() -> set[str]:
+            with _ledger.locked_ledger() as led:
+                return {n for n, _ in ccswitch_accounts.all_accounts()
                         if not _ledger.is_account_enabled(led, n)}
+
+        # locked_ledger() uses fcntl.flock(LOCK_EX) — must not block the event loop
+        disabled = await asyncio.to_thread(_read_disabled)
         if not disabled:
             return
         for record in list(self._records.values()):
