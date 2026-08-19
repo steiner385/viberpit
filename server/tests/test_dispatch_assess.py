@@ -195,7 +195,7 @@ def _fake_locked_ledger(status_map: dict, enabled_map: dict | None = None):
 
 def test_pick_helper_config_dir_returns_first_ok_anthropic():
     """First live Anthropic account → its config_dir string is returned."""
-    from server.api.dispatch import _pick_helper_config_dir
+    from server.sessions.helper_call import pick_helper_config_dir as _pick_helper_config_dir
 
     with (
         patch("ccswitch.accounts.all_accounts", return_value=[("alice", "anthropic")]),
@@ -212,7 +212,7 @@ def test_pick_helper_config_dir_returns_first_ok_anthropic():
 
 def test_pick_helper_config_dir_skips_needs_reauth():
     """Accounts marked needs-reauth are skipped; returns None when none remain."""
-    from server.api.dispatch import _pick_helper_config_dir
+    from server.sessions.helper_call import pick_helper_config_dir as _pick_helper_config_dir
 
     with (
         patch(
@@ -231,7 +231,7 @@ def test_pick_helper_config_dir_skips_needs_reauth():
 
 def test_pick_helper_config_dir_skips_copilot():
     """Copilot accounts are not eligible; returns None when only copilot exists."""
-    from server.api.dispatch import _pick_helper_config_dir
+    from server.sessions.helper_call import pick_helper_config_dir as _pick_helper_config_dir
 
     with (
         patch(
@@ -250,7 +250,7 @@ def test_pick_helper_config_dir_skips_copilot():
 
 def test_pick_helper_config_dir_skips_disabled():
     """Disabled accounts are skipped; first enabled account is returned instead."""
-    from server.api.dispatch import _pick_helper_config_dir
+    from server.sessions.helper_call import pick_helper_config_dir as _pick_helper_config_dir
 
     with (
         patch(
@@ -273,7 +273,7 @@ def test_pick_helper_config_dir_skips_disabled():
 
 def test_pick_helper_config_dir_fail_open_on_exception():
     """Any exception in the helper (e.g. import failure) returns None gracefully."""
-    from server.api.dispatch import _pick_helper_config_dir
+    from server.sessions.helper_call import pick_helper_config_dir as _pick_helper_config_dir
 
     with patch("ccswitch.accounts.all_accounts", side_effect=RuntimeError("boom")):
         result = _pick_helper_config_dir()

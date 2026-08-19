@@ -44,6 +44,32 @@ from . import failure
 
 log = logging.getLogger(__name__)
 
+
+def pick_helper_config_dir() -> str | None:
+    """Return the config_dir of the first live, enabled Anthropic account.
+
+    Used by stateless LLM helper calls (assess_model, refine_prompt, …) that
+    run in a server process with no per-account CLAUDE_CONFIG_DIR set.  Picks
+    the cheapest usable credential: enabled, not needs-reauth.  Fail-open:
+    returns None when no account is available so callers degrade safely.
+    """
+    try:
+        from ccswitch import accounts as _accts
+        from ccswitch import ledger as _ledger
+        from ccswitch import paths as _paths
+        with _ledger.locked_ledger() as led:
+            for name, provider in _accts.all_accounts():
+                if provider != "anthropic":
+                    continue
+                if not _ledger.is_account_enabled(led, name):
+                    continue
+                if _ledger.get_status(led, name) == "needs-reauth":
+                    continue
+                return str(_paths.account_cfg_dir(name))
+    except Exception:
+        pass
+    return None
+
 # Backoff budget: 3 retries at 1s/2s/4s. Mirrors ccswitch.config.retry_max_retries.
 _MAX_RETRIES = 3
 _BASE_DELAY_S = 1.0

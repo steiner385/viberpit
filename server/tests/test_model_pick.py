@@ -114,6 +114,18 @@ async def test_assess_without_query_fn_fails_open():
     assert await assess_model("anything") is None
 
 
+@pytest.mark.asyncio
+async def test_assess_uses_pick_helper_config_dir_when_no_config_dir_given():
+    """Daemon path: no _config_dir → assess_model calls pick_helper_config_dir."""
+    from unittest.mock import patch
+
+    patched_dir = "/fake/cfg/daemon-account"
+    with patch("server.automations.model_pick.pick_helper_config_dir", return_value=patched_dir) as mock_pick:
+        got = await assess_model("fix a bug", _query_fn=_fake_query("sonnet"), _cwd="/tmp")
+    mock_pick.assert_called_once()
+    assert got == "sonnet"
+
+
 # --------------------------------------------------------------------------- #
 # resolve_model                                                                #
 # --------------------------------------------------------------------------- #
