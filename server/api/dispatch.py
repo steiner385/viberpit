@@ -47,6 +47,8 @@ def _pick_helper_config_dir() -> str | None:
             for name, provider in _accts.all_accounts():
                 if provider != "anthropic":
                     continue
+                if not _ledger.is_account_enabled(led, name):
+                    continue
                 if _ledger.get_status(led, name) == "needs-reauth":
                     continue
                 return str(_paths.account_cfg_dir(name))

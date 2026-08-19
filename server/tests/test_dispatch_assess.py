@@ -180,9 +180,11 @@ def test_assess_no_identity_401():
 # ---------------------------------------------------------------------------
 
 
-def _fake_locked_ledger(status_map: dict):
+def _fake_locked_ledger(status_map: dict, enabled_map: dict | None = None):
     """Return a context-manager factory that yields a fake ledger dict."""
     led = {"accounts": {name: {"status": s} for name, s in status_map.items()}}
+    for name, enabled in (enabled_map or {}).items():
+        led["accounts"].setdefault(name, {})["enabled"] = enabled
 
     @contextlib.contextmanager
     def _cm():
@@ -244,6 +246,29 @@ def test_pick_helper_config_dir_skips_copilot():
         result = _pick_helper_config_dir()
 
     assert result is None
+
+
+def test_pick_helper_config_dir_skips_disabled():
+    """Disabled accounts are skipped; first enabled account is returned instead."""
+    from server.api.dispatch import _pick_helper_config_dir
+
+    with (
+        patch(
+            "ccswitch.accounts.all_accounts",
+            return_value=[("alice", "anthropic"), ("bob", "anthropic")],
+        ),
+        patch(
+            "ccswitch.ledger.locked_ledger",
+            new=_fake_locked_ledger(
+                {"alice": "ok", "bob": "ok"},
+                enabled_map={"alice": False},
+            ),
+        ),
+        patch("ccswitch.paths.account_cfg_dir", return_value=type("P", (), {"__str__": lambda self: "/fake/cfg/bob"})()),
+    ):
+        result = _pick_helper_config_dir()
+
+    assert result == "/fake/cfg/bob"
 
 
 def test_pick_helper_config_dir_fail_open_on_exception():
