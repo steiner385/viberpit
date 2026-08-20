@@ -527,6 +527,35 @@ class CiTestResult(Base):
     )
 
 
+class CiTestDaily(Base):
+    """Per-(repo, test, day) outcome counts, rolled up from CiTestResult.
+
+    Flaky-test detection needs the RATE at which a test fails, not each individual
+    passing row. Raw passed/skipped rows older than raw_retention_days are folded in
+    here and then dropped (CicdDoctorLoop._rollup_passed); failed rows stay raw for
+    retention_days because findings quote their message.
+
+    Every non-key column is NULLABLE — the SQLite reconcile rule (see
+    test_schema_reconcile_coverage): init_db can only backfill nullable columns.
+    """
+
+    __tablename__ = "ci_test_daily"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    test_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # 'YYYY-MM-DD' UTC. A string, not a Date: it is bucketed in Python so the value is
+    # identical on SQLite and Postgres (see the plan's portability constraint).
+    day: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    passed: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    failed: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    skipped: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("repo", "test_id", "day", name="uq_ci_test_daily"),
+    )
+
+
 class CiFinding(Base):
     """A persistent CI/CD Doctor finding: fingerprint-deduped, lifecycle
     open -> resolved. issue_number links the filed ci-doctor GitHub issue."""

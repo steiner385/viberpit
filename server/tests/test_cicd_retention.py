@@ -90,3 +90,17 @@ class _FakeCtx:
 
     async def set_target_state(self, key, value):
         return None
+
+
+@pytest.mark.asyncio
+async def test_ci_test_daily_table_exists():
+    """The rollup table is created by create_all and accepts a day-count row."""
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+    from server.db.models import CiTestDaily
+
+    async with db_session() as db:
+        db.add(CiTestDaily(repo="o/r", test_id="t1", day="2026-08-20",
+                           passed=5, failed=1, skipped=0))
+    async with db_session() as db:
+        row = (await db.execute(select(CiTestDaily))).scalars().one()
+    assert (row.passed, row.failed, row.skipped) == (5, 1, 0)
