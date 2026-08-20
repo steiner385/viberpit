@@ -177,3 +177,122 @@ def test_repeated_not_ready_completes_stop_nudging_after_cap():
         assert len(nudged) == COMPLETE_NUDGE_CAP, (
             f"nudges must be capped at {COMPLETE_NUDGE_CAP}, got {len(nudged)}")
     asyncio.run(run())
+
+
+# --------------------------------------------------------- open-question hold
+#
+# A completed session whose final hand-back still awaits the user (prose question
+# next to the marker, or a structured question/permission that raced the archive
+# task) must NOT archive: it flips back to waiting_question ("Answer needed") and
+# consumes no completion nudge. Prod 2026-08-19: two of the four most recent
+# completion archives ended "Want me to …?" + marker.
+
+def _orch_question(records, pr_info, *, awaits, monkeypatch):
+    """_orch plus the surfaces the open-question gate touches: a transcript, a
+    status-persist spy, and a deterministic classifier verdict (*awaits*)."""
+    orch, archived, nudged = _orch(records, pr_info)
+    orch._drivers = {}
+    orch.transcript_path = lambda sid: "/nonexistent/t.jsonl"  # type: ignore[method-assign]
+
+    statuses: list[tuple[str, str]] = []
+
+    async def _spy_persist(session_id, status):
+        statuses.append((session_id, status))
+
+    orch._persist_status = _spy_persist  # type: ignore[method-assign]
+
+    import server.sessions.open_question as oq_mod
+    import server.sessions.background_tasks as bg_mod
+
+    async def _stub_awaits(text, **kw):
+        return awaits
+
+    monkeypatch.setattr(oq_mod, "completion_awaits_user", _stub_awaits)
+    monkeypatch.setattr(bg_mod, "last_assistant_text",
+                        lambda path: "Want me to do X next?")
+    return orch, archived, nudged, statuses
+
+
+def test_complete_with_open_question_holds_as_waiting_question(monkeypatch):
+    """Armed PR (bar met, would archive) + open prose question → no archive, no
+    nudge; the session is handed back to the user as waiting_question."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged, statuses = _orch_question(
+            {"s1": rec}, _armed_pr(), awaits=True, monkeypatch=monkeypatch)
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert archived == [], "an open question must block the archive"
+        assert nudged == [], "a question hold is not a not-ready nudge"
+        assert statuses == [("s1", "waiting_question")]
+        assert "s1" not in orch._auto_archiving, "a later complete must be able to retry"
+    asyncio.run(run())
+
+
+def test_complete_without_question_archives(monkeypatch):
+    """Classifier says the final message is a clean completion → archive as before."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged, statuses = _orch_question(
+            {"s1": rec}, _armed_pr(), awaits=False, monkeypatch=monkeypatch)
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert [a["session_id"] for a in archived] == ["s1"]
+        assert statuses == []
+    asyncio.run(run())
+
+
+def test_structured_pending_question_holds_without_classifier(monkeypatch):
+    """A still-pending structured question/permission (race: registered after the
+    complete status persisted) holds the archive without any LLM call."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged, statuses = _orch_question(
+            {"s1": rec}, _armed_pr(), awaits=False, monkeypatch=monkeypatch)
+
+        from server.sessions.status import StatusSignals
+        driver = types.SimpleNamespace(_dash_signals=lambda: StatusSignals(
+            turn_active=False, pending_permission=False, pending_question=True,
+            pending_plan=False, turns_completed=1, last_turn_outcome="complete"))
+        orch._drivers = {"s1": driver}
+
+        import server.sessions.open_question as oq_mod
+
+        async def _boom(text, **kw):
+            raise AssertionError("classifier must not run when a structured "
+                                 "question is already pending")
+
+        monkeypatch.setattr(oq_mod, "completion_awaits_user", _boom)
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert archived == []
+        assert statuses == [("s1", "waiting_question")]
+    asyncio.run(run())
+
+
+def test_question_hold_does_not_consume_nudge_cap(monkeypatch):
+    """Repeated question holds never eat into COMPLETE_NUDGE_CAP — the cap bounds
+    not-ready nudges, and a held session did nothing wrong."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged, statuses = _orch_question(
+            {"s1": rec}, _armed_pr(), awaits=True, monkeypatch=monkeypatch)
+        for _ in range(3):
+            orch._maybe_autoarchive_completed("s1", "complete", rec)
+            await _drain()
+        assert not getattr(orch, "_complete_nudge_counts", None), (
+            "question holds must not increment the nudge counter")
+        assert archived == [] and nudged == []
+    asyncio.run(run())
+
+
+def test_bare_orchestrator_without_gate_surfaces_still_archives():
+    """A stub orchestrator missing _drivers/transcript surfaces (and any runtime
+    failure inside the gate) degrades to 'no question' — archive proceeds."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_armed_pr())
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
