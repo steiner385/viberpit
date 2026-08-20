@@ -13,8 +13,10 @@ from .base import AutomationStatus, ConfigField
 log = logging.getLogger(__name__)
 
 # Rows folded per tick. Bounds the transaction so a tick never rewrites millions of
-# rows at once; the backlog is drained by scripts/ccswitch-db-compact.py.
-_ROLLUP_BATCH = 20_000
+# rows at once; the backlog is drained by scripts/ccswitch-db-compact.py. The
+# delete uses id.in_([...]), one bound parameter per row — kept well under
+# SQLite's 32766-parameter ceiling (20_000 was only 1.6x away from it).
+_ROLLUP_BATCH = 10_000
 
 
 class CicdDoctor:
@@ -169,6 +171,22 @@ class CicdDoctorLoop:
                                  conclusion=j["conclusion"], duration_s=j["duration_s"],
                                  head_sha=r["head_sha"], head_branch=r["head_branch"],
                                  created_ts=r["created_ts"]))
+                # One <testcase> per ATTEMPT: a framework retry repeats the same
+                # (suite, test_id). Keep the LAST attempt — it is the outcome the
+                # run finished with — so ingestion is idempotent against
+                # uq_ci_test_result_run_suite_test. 430,779 rows (3.6% of the
+                # table) were duplicates before this.
+                #
+                # Keyed on (suite, test_id) and hoisted ABOVE the suite loop: if two
+                # artifacts in one run yield the SAME suite string, keying on
+                # test_id alone would let the second artifact's cases overwrite the
+                # dict entry-by-entry but still emit one row per artifact pass,
+                # producing two rows for the same (run_id, suite, test_id) and
+                # violating uq_ci_test_result_run_suite_test on flush. Accumulating
+                # across all suites first and emitting once keeps "last attempt
+                # wins per suite+test" while staying idempotent against the
+                # constraint even when a suite string repeats within one run.
+                last_attempt: dict[tuple[str | None, str], object] = {}
                 for suite, xml in await self._fetch_junit(repo, r["id"]):
                     try:
                         cases = parse_junit_xml(xml)
@@ -176,21 +194,15 @@ class CicdDoctorLoop:
                         log.warning("cicd_doctor.junit_malformed repo=%s run=%s",
                                     repo, r["id"])
                         continue
-                    # One <testcase> per ATTEMPT: a framework retry repeats the same
-                    # (suite, test_id). Keep the LAST attempt — it is the outcome the
-                    # run finished with — so ingestion is idempotent against
-                    # uq_ci_test_result_run_suite_test. 430,779 rows (3.6% of the
-                    # table) were duplicates before this.
-                    last_attempt: dict[str, object] = {}
                     for c in cases:
-                        last_attempt[c.test_id] = c
-                    for c in last_attempt.values():
-                        db.add(CiTestResult(repo=repo, run_id=r["id"], suite=suite,
-                                            test_id=c.test_id, outcome=c.outcome,
-                                            time_s=c.time_s, message=c.message,
-                                            head_sha=r["head_sha"],
-                                            head_branch=r["head_branch"],
-                                            created_ts=r["created_ts"]))
+                        last_attempt[(suite, c.test_id)] = (suite, c)
+                for suite, c in last_attempt.values():
+                    db.add(CiTestResult(repo=repo, run_id=r["id"], suite=suite,
+                                        test_id=c.test_id, outcome=c.outcome,
+                                        time_s=c.time_s, message=c.message,
+                                        head_sha=r["head_sha"],
+                                        head_branch=r["head_branch"],
+                                        created_ts=r["created_ts"]))
             await db.flush()
         await self._ctx.set_target_state(f"cursor:{repo}", {"last_created_ts": max_ts})
 
@@ -214,6 +226,17 @@ class CicdDoctorLoop:
         horizon_days = max(float(config.get("retention_days", 90)),
                            th.retire_days, th.min_window_days, th.demote_window_days)
         since_ts = now - horizon_days * 86400.0
+        # Flakiness is the % of head_shas showing BOTH a pass and a fail over the
+        # test_rows window. _rollup_passed folds/deletes raw passed rows older than
+        # raw_retention_days, so no sha older than that can ever show a pass again
+        # — while old fail-only shas remain. Querying test_rows over the full
+        # horizon_days window would therefore silently under-report flakiness (the
+        # denominator keeps old fail-only shas with no matching pass evidence).
+        # CiTestDaily can't fix this: it drops head_sha, the dimension flakiness is
+        # computed over. Clamp this query ALONE to the window where pass evidence
+        # still exists; job/run queries below keep the wider horizon_days window.
+        raw_retention_days = float(config.get("raw_retention_days", 7))
+        test_since_ts = now - raw_retention_days * 86400.0
         # Select column tuples, not whole ORM entities: the analyzers only read a
         # handful of columns and build detached value objects, so hydrating full
         # mapped instances (identity map, all columns) is pure overhead at 10^5+ rows.
@@ -225,7 +248,8 @@ class CicdDoctorLoop:
             test_rows = (await db.execute(
                 select(CiTestResult.test_id, CiTestResult.head_sha,
                        CiTestResult.outcome, CiTestResult.message)
-                .where(CiTestResult.repo == repo, CiTestResult.created_ts >= since_ts))).all()
+                .where(CiTestResult.repo == repo,
+                       CiTestResult.created_ts >= test_since_ts))).all()
             run_count = (await db.execute(
                 select(func.count()).select_from(CiRun)
                 .where(CiRun.repo == repo, CiRun.created_ts >= since_ts))).scalar_one()

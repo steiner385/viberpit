@@ -84,6 +84,43 @@ async def _junit_two_suites(xml1, xml2):
     return [("junit-vitest-server-1", xml1), ("junit-vitest-server-2", xml2)]
 
 
+@pytest.mark.asyncio
+async def test_same_suite_repeated_across_artifacts_not_wedged(monkeypatch):
+    """Two artifacts in one run yielding the SAME suite string, each with the
+    same test_id, must not raise IntegrityError on flush (uq_ci_test_result_run_
+    suite_test) and must store exactly one row for that (run, suite, test_id)."""
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+    from server.automations.cicd_doctor import CicdDoctorLoop
+
+    # Same suite name reported twice (e.g. two shards uploading under an
+    # identically-named JUnit artifact), same test_id in both.
+    xml1 = """<testsuites><testsuite name="junit-vitest-server">
+      <testcase classname="c" name="my_test" time="0.5"><failure>error</failure></testcase>
+    </testsuite></testsuites>"""
+
+    xml2 = """<testsuites><testsuite name="junit-vitest-server">
+      <testcase classname="c" name="my_test" time="0.6"/>
+    </testsuite></testsuites>"""
+
+    engine = CicdDoctorLoop.__new__(CicdDoctorLoop)
+    engine._fetch_runs = lambda repo, since: _runs()
+    engine._fetch_jobs = lambda repo, run_id: _none()
+    engine._fetch_junit = lambda repo, run_id: _junit_same_suite_twice(xml1, xml2)
+    engine._ctx = _FakeCtx()
+
+    await engine._ingest("owner/repo")  # must not raise
+
+    async with db_session() as db:
+        rows = (await db.execute(select(CiTestResult))).scalars().all()
+    assert len(rows) == 1, f"expected exactly one row, got {len(rows)}"
+    assert rows[0].suite == "junit-vitest-server"
+    assert rows[0].outcome == "passed"  # the LAST attempt across both artifacts won
+
+
+async def _junit_same_suite_twice(xml1, xml2):
+    return [("junit-vitest-server", xml1), ("junit-vitest-server", xml2)]
+
+
 class _FakeCtx:
     async def get_target_state(self, key):
         return {}

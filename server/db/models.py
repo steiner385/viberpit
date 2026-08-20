@@ -190,8 +190,10 @@ class AppSession(Base):
     __tablename__ = "app_sessions"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
-    # Verified Tailscale identity string (e.g. user@example.com)
-    identity: Mapped[str] = mapped_column(String, nullable=False)
+    # Verified Tailscale identity string (e.g. user@example.com). Indexed: the
+    # auth reuse query filters on identity and sorts by created_at on every
+    # authenticated request (see server/auth/middleware.py).
+    identity: Mapped[str] = mapped_column(String, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -521,6 +523,11 @@ class CiTestResult(Base):
     # primary guard, this catches concurrent-tick races. Created on the live DB by
     # scripts/ccswitch-db-compact.py (create_all does not add constraints to an
     # existing table).
+    #
+    # Migration-order warning: when the Postgres migration (sub-project 1b) adds
+    # this same unique constraint, it MUST run AFTER scripts/ccswitch-db-compact.py
+    # has deduped the table. Creating uq_ci_test_result_run_suite_test on the
+    # un-compacted table fails outright — ~430k existing duplicate rows violate it.
     __table_args__ = (
         UniqueConstraint("run_id", "suite", "test_id",
                          name="uq_ci_test_result_run_suite_test"),
@@ -548,6 +555,9 @@ class CiTestDaily(Base):
     # identical on SQLite and Postgres (see the plan's portability constraint).
     day: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     passed: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    # Reserved: no writer currently populates this. Failed rows are kept raw
+    # (never folded into CiTestDaily) for the full retention window because
+    # findings quote their message — see the class docstring.
     failed: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
     skipped: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
 

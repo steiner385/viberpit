@@ -49,6 +49,13 @@ def main() -> None:
                 "WHERE revoked_at IS NOT NULL OR expires_at < datetime('now')")
     con.commit()
 
+    # Index the identity lookup the auth reuse query runs on every authenticated
+    # request. Placed AFTER the expired-session delete above so it indexes the
+    # small remaining live set, not the full ~2.2M-row backlog.
+    con.execute("CREATE INDEX IF NOT EXISTS ix_app_sessions_identity_expires "
+                "ON app_sessions (identity, expires_at)")
+    con.commit()
+
     # Keep the highest id per (run_id, suite, test_id) — ingest appends, so the
     # highest id is the last attempt, matching Task 1's keep-last rule.
     con.execute("""
@@ -72,6 +79,11 @@ def main() -> None:
                 "ON ci_test_daily (repo, test_id, day)")
     con.commit()
 
+    # ON CONFLICT upsert: by the time this script runs, the app's own
+    # _rollup_passed may already have folded some of these same (repo, test_id,
+    # day) buckets (it fires on the first _prune tick after deploy). A plain
+    # INSERT would collide with uq_ci_test_daily and abort the script AFTER the
+    # app_sessions delete and the dedupe delete above have already committed.
     con.execute("""
         INSERT INTO ci_test_daily (repo, test_id, day, passed, failed, skipped)
         SELECT repo, test_id, strftime('%Y-%m-%d', created_ts, 'unixepoch'),
@@ -79,6 +91,9 @@ def main() -> None:
         FROM ci_test_result
         WHERE outcome NOT IN ('failed', 'error') AND created_ts < ?
         GROUP BY repo, test_id, strftime('%Y-%m-%d', created_ts, 'unixepoch')
+        ON CONFLICT(repo, test_id, day) DO UPDATE SET
+            passed = passed + excluded.passed,
+            skipped = skipped + excluded.skipped
     """, (horizon,))
     con.execute("DELETE FROM ci_test_result "
                 "WHERE outcome NOT IN ('failed', 'error') AND created_ts < ?", (horizon,))
