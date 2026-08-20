@@ -361,8 +361,11 @@ class CicdDoctorLoop:
 
     async def _rollup_passed(self, config: dict) -> None:
         """Fold raw passed/skipped rows older than raw_retention_days into
-        CiTestDaily day-counts, then delete them. Failed rows are never folded —
-        findings quote their message, so they stay raw until retention_days.
+        CiTestDaily day-counts, then delete them. Failed AND error rows are never
+        folded — findings quote their message, so they stay raw until
+        retention_days. ("error" is a distinct outcome from "failed" — see
+        junit.py's _OUTCOME_TAGS — but it is still a failure and must be excluded
+        the same way.)
 
         Day bucketing happens in PYTHON, not SQL: this must behave identically on
         SQLite today and Postgres after sub-project 1b.
@@ -380,7 +383,7 @@ class CicdDoctorLoop:
             rows = (await db.execute(
                 select(CiTestResult.id, CiTestResult.repo, CiTestResult.test_id,
                        CiTestResult.outcome, CiTestResult.created_ts)
-                .where(CiTestResult.outcome != "failed",
+                .where(CiTestResult.outcome.notin_(("failed", "error")),
                        CiTestResult.created_ts < horizon)
                 .limit(_ROLLUP_BATCH))).all()
             if not rows:

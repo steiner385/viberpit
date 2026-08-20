@@ -136,3 +136,34 @@ async def test_rollup_folds_passed_and_keeps_failed():
     assert [r.outcome for r in raw] == ["failed"], "failed rows must stay raw"
     assert len(daily) == 1 and daily[0].passed == 3
     assert daily[0].test_id == "t1"
+
+
+@pytest.mark.asyncio
+async def test_rollup_keeps_error_rows_raw_and_uncounted():
+    """'error' rows (distinct outcome from 'failed') must not be folded, deleted,
+    or counted into a daily bucket — they carry a message like failed rows."""
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+    from server.automations.cicd_doctor import CicdDoctorLoop
+    from server.db.models import CiTestDaily
+
+    now = 1_800_000_000.0
+    old = now - 10 * 86400.0          # older than the 7-day raw window
+    async with db_session() as db:
+        db.add(CiTestResult(repo="o/r", run_id=1, suite="s", test_id="t_err",
+                            outcome="error", message="boom", created_ts=old))
+        db.add(CiTestResult(repo="o/r", run_id=2, suite="s", test_id="t_pass",
+                            outcome="passed", created_ts=old))
+
+    engine = CicdDoctorLoop.__new__(CicdDoctorLoop)
+    engine._clock = lambda: now
+    await engine._rollup_passed({})
+
+    async with db_session() as db:
+        raw = (await db.execute(select(CiTestResult))).scalars().all()
+        daily = (await db.execute(select(CiTestDaily))).scalars().all()
+
+    assert [r.outcome for r in raw] == ["error"], "error rows must stay raw, not be deleted"
+    assert len(daily) == 1 and daily[0].test_id == "t_pass" and daily[0].passed == 1, (
+        "only the genuinely passed row may be counted; the error row must not "
+        "appear in any daily bucket"
+    )
