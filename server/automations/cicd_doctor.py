@@ -12,6 +12,10 @@ from .base import AutomationStatus, ConfigField
 
 log = logging.getLogger(__name__)
 
+# Rows folded per tick. Bounds the transaction so a tick never rewrites millions of
+# rows at once; the backlog is drained by scripts/ccswitch-db-compact.py.
+_ROLLUP_BATCH = 20_000
+
 
 class CicdDoctor:
     id = "cicd-doctor"
@@ -47,6 +51,11 @@ class CicdDoctor:
         ConfigField(key="retention_days", label="History retention (days)", type="int",
                     default=90,
                     help="CI run history older than this is pruned from the local database."),
+        ConfigField(key="raw_retention_days", label="Raw test-result window (days)",
+                    type="int", default=7,
+                    help="Keep individual passed/skipped test rows this long, then fold "
+                         "them into per-day counts. Failed rows are kept raw for the "
+                         "full retention window."),
     ]
 
     def status(self, ctx: Any) -> AutomationStatus:
@@ -350,6 +359,53 @@ class CicdDoctorLoop:
 
         return open_n, candidates
 
+    async def _rollup_passed(self, config: dict) -> None:
+        """Fold raw passed/skipped rows older than raw_retention_days into
+        CiTestDaily day-counts, then delete them. Failed rows are never folded —
+        findings quote their message, so they stay raw until retention_days.
+
+        Day bucketing happens in PYTHON, not SQL: this must behave identically on
+        SQLite today and Postgres after sub-project 1b.
+        """
+        from collections import Counter
+        from datetime import datetime, timezone
+
+        from sqlalchemy import delete, select
+        from server.db import db_session
+        from server.db.models import CiTestDaily, CiTestResult
+
+        raw_days = float(config.get("raw_retention_days", 7))
+        horizon = self._clock() - raw_days * 86400.0
+        async with db_session() as db:
+            rows = (await db.execute(
+                select(CiTestResult.id, CiTestResult.repo, CiTestResult.test_id,
+                       CiTestResult.outcome, CiTestResult.created_ts)
+                .where(CiTestResult.outcome != "failed",
+                       CiTestResult.created_ts < horizon)
+                .limit(_ROLLUP_BATCH))).all()
+            if not rows:
+                return
+            counts: Counter = Counter()
+            for _id, repo, test_id, outcome, ts in rows:
+                day = datetime.fromtimestamp(ts or 0.0, timezone.utc).strftime("%Y-%m-%d")
+                counts[(repo, test_id, day, outcome)] += 1
+            for (repo, test_id, day, outcome), n in counts.items():
+                bucket = (await db.execute(select(CiTestDaily).where(
+                    CiTestDaily.repo == repo,
+                    CiTestDaily.test_id == test_id,
+                    CiTestDaily.day == day))).scalar_one_or_none()
+                if bucket is None:
+                    bucket = CiTestDaily(repo=repo, test_id=test_id, day=day,
+                                         passed=0, failed=0, skipped=0)
+                    db.add(bucket)
+                    await db.flush()
+                if outcome == "skipped":
+                    bucket.skipped = (bucket.skipped or 0) + n
+                else:
+                    bucket.passed = (bucket.passed or 0) + n
+            await db.execute(delete(CiTestResult).where(
+                CiTestResult.id.in_([r[0] for r in rows])))
+
     async def _prune(self, config: dict) -> None:
         """Bounded tables: drop history rows older than retention_days, and prune
         long-resolved findings so ci_finding doesn't grow without bound (#448)."""
@@ -359,6 +415,10 @@ class CicdDoctorLoop:
         from server.db import db_session
         from server.db.models import CiFinding, CiJob, CiRun, CiTestResult
         from server.db.models import _utcnow
+
+        # Fold passed/skipped into day-counts BEFORE the age-based deletes, so a row
+        # is always counted before it can be dropped.
+        await self._rollup_passed(config)
 
         retention_days = float(config.get("retention_days", 90))
         horizon = self._clock() - retention_days * 86400.0

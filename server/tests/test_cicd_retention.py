@@ -104,3 +104,35 @@ async def test_ci_test_daily_table_exists():
     async with db_session() as db:
         row = (await db.execute(select(CiTestDaily))).scalars().one()
     assert (row.passed, row.failed, row.skipped) == (5, 1, 0)
+
+
+@pytest.mark.asyncio
+async def test_rollup_folds_passed_and_keeps_failed():
+    """Passed rows past the raw window become day-counts; failed rows stay raw."""
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+    from server.automations.cicd_doctor import CicdDoctorLoop
+    from server.db.models import CiTestDaily
+
+    now = 1_800_000_000.0
+    old = now - 10 * 86400.0          # older than the 7-day raw window
+    async with db_session() as db:
+        # Distinct run_id per row: uq_ci_test_result_run_suite_test forbids more
+        # than one (run_id, suite, test_id) row, so 3 passes for the same test
+        # come from 3 different CI runs, as they would in reality.
+        for run_id in (1, 2, 3):
+            db.add(CiTestResult(repo="o/r", run_id=run_id, suite="s", test_id="t1",
+                                outcome="passed", created_ts=old))
+        db.add(CiTestResult(repo="o/r", run_id=1, suite="s", test_id="t2",
+                            outcome="failed", message="boom", created_ts=old))
+
+    engine = CicdDoctorLoop.__new__(CicdDoctorLoop)
+    engine._clock = lambda: now
+    await engine._rollup_passed({})
+
+    async with db_session() as db:
+        raw = (await db.execute(select(CiTestResult))).scalars().all()
+        daily = (await db.execute(select(CiTestDaily))).scalars().all()
+
+    assert [r.outcome for r in raw] == ["failed"], "failed rows must stay raw"
+    assert len(daily) == 1 and daily[0].passed == 3
+    assert daily[0].test_id == "t1"
