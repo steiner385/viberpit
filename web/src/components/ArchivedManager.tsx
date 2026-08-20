@@ -285,8 +285,15 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
   // Search + ordering
   const search = useSessionSearch('archived')
   const ordering = useItemOrdering(archivedSessions, ARCHIVED_SPEC, search.matchedIds)
-  // visible = filtered + sorted + collapsed-aware
+  // visible = filtered + sorted + collapsed-aware (drives selection / shift-range:
+  // you can only select what you can see).
   const visible = ordering.orderedSessions
+  // Collapse-INDEPENDENT: are there any sessions after the search filter, ignoring
+  // which groups are collapsed? Render + empty-state decisions MUST key off this,
+  // never `visible` — collapsing every group empties `visible`, so gating the list
+  // on it also hides the headers, leaving no way to expand again (recoverable only
+  // by clearing localStorage). Mirrors SessionList's `groups.length` gate.
+  const hasFilteredSessions = ordering.groups.length > 0
 
   const [permDeleteTarget, setPermDeleteTarget] = useState<ArchivedSession | null>(null)
   const [unarchivingId, setUnarchivingId] = useState<string | null>(null)
@@ -560,7 +567,7 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
       )}
 
       {/* Empty state: search active but no matches */}
-      {archivedSessions.length > 0 && search.isFiltered && visible.length === 0 && (
+      {archivedSessions.length > 0 && search.isFiltered && !hasFilteredSessions && (
         <div className="py-6 text-center space-y-2">
           <p className="text-sm text-gray-500 dark:text-gray-400">
             No archived sessions match your search.
@@ -579,8 +586,10 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
         </div>
       )}
 
-      {/* List with grouping — only when there are visible sessions */}
-      {archivedSessions.length > 0 && visible.length > 0 && (
+      {/* List with grouping — render whenever any session survives the search
+          filter; collapsed groups stay in the list (as headers) so they can be
+          re-expanded, so this must NOT gate on the collapse-aware `visible`. */}
+      {archivedSessions.length > 0 && hasFilteredSessions && (
         <div className="space-y-2">
           {/* Select-all header row */}
           <div className="flex items-center gap-2 px-1">
