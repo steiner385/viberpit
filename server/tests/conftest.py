@@ -368,3 +368,39 @@ def mtls_certs(tmp_path) -> MTLSCerts:
         rogue_client_cert=str(d / "rogue_client.pem"),
         rogue_client_key=str(d / "rogue_client.key"),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Postgres-backed test harness (Task 1: server/postgres-migration)
+# --------------------------------------------------------------------------- #
+import pytest_asyncio
+
+
+@pytest.fixture(scope="session")
+def pg_url() -> str:
+    url = os.environ.get("CCSWITCH_TEST_PG_URL")
+    if not url:
+        pytest.skip("CCSWITCH_TEST_PG_URL not set")
+    return url
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def pg_engine(pg_url):
+    """A Postgres engine with the full schema, torn down after the session.
+
+    Session-scoped because create_all/drop_all over 26 tables is far too slow to
+    repeat per test. Tests that need isolation must clean up their own rows.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from server.db.models import Base
+
+    engine = create_async_engine(pg_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    try:
+        yield engine
+    finally:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        await engine.dispose()
