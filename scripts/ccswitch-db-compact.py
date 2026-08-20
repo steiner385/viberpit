@@ -40,7 +40,7 @@ def main() -> None:
         "FROM ci_test_result"))
     print("foldable test rows   :", count(
         "SELECT COUNT(*) FROM ci_test_result "
-        "WHERE outcome != 'failed' AND created_ts < ?", horizon))
+        "WHERE outcome NOT IN ('failed', 'error') AND created_ts < ?", horizon))
     if not args.apply:
         print("\ndry run — re-run with --apply")
         return
@@ -58,28 +58,30 @@ def main() -> None:
     """)
     con.commit()
 
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_ci_test_result_run_suite_test "
+                "ON ci_test_result (run_id, suite, test_id)")
+    con.commit()
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS ci_test_daily (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             repo VARCHAR, test_id VARCHAR, day VARCHAR,
             passed INTEGER, failed INTEGER, skipped INTEGER)
     """)
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_ci_test_daily "
+                "ON ci_test_daily (repo, test_id, day)")
+    con.commit()
+
     con.execute("""
         INSERT INTO ci_test_daily (repo, test_id, day, passed, failed, skipped)
         SELECT repo, test_id, strftime('%Y-%m-%d', created_ts, 'unixepoch'),
                SUM(outcome = 'passed'), 0, SUM(outcome = 'skipped')
         FROM ci_test_result
-        WHERE outcome != 'failed' AND created_ts < ?
+        WHERE outcome NOT IN ('failed', 'error') AND created_ts < ?
         GROUP BY repo, test_id, strftime('%Y-%m-%d', created_ts, 'unixepoch')
     """, (horizon,))
     con.execute("DELETE FROM ci_test_result "
-                "WHERE outcome != 'failed' AND created_ts < ?", (horizon,))
-    con.commit()
-
-    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_ci_test_result_run_suite_test "
-                "ON ci_test_result (run_id, suite, test_id)")
-    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_ci_test_daily "
-                "ON ci_test_daily (repo, test_id, day)")
+                "WHERE outcome NOT IN ('failed', 'error') AND created_ts < ?", (horizon,))
     con.commit()
 
     print("vacuuming (needs free space equal to the final DB size)…")
