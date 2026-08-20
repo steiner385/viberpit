@@ -129,7 +129,23 @@ zero-overhead and every existing single-host deployment is unaffected.
 Each needs its own design doc + implementation plan. Build in this order; each is independently
 valuable and independently shippable.
 
-### 1. Postgres migration
+### 1a. CI retention + app-session prune
+
+Discovered while planning the migration (measured 2026-08-20): the live DB is **7.8 GB** and
+growing ~1 GB/day. `ci_test_result` holds 11,845,027 rows — 11,567,799 of them written in the
+preceding 7 days — of which only **542 are `failed`**; 430,779 are true duplicates by
+`(run_id, suite, test_id)`. `app_sessions` holds 2,204,240 rows, **2,162,193 expired**, minted at
+~45,000/day because `_resolve_or_create_app_session` inserts a row for every cookie-less request.
+The existing `retention_days` default of 90 never bites, since almost nothing is that old.
+
+Migrating that into Postgres would be slow and would inherit the growth, so this lands first:
+dedupe JUnit ingestion, fold passed/skipped results into per-day counts (keeping failures raw),
+reuse live app sessions, and compact the existing backlog.
+
+**Plan:** `docs/superpowers/plans/2026-08-20-ci-retention-and-session-prune.md`
+**Ships:** a bounded database, ~90% smaller, with the growth stopped at source.
+
+### 1b. Postgres migration
 
 Replace SQLite with Postgres on dobby. Add `asyncpg`. Verify the generic `JSON` columns map cleanly
 (preserving `JSON(none_as_null=True)`, `server/db/models.py:80`, which exists so `None` persists as
@@ -139,6 +155,7 @@ and `_assert_no_schema_drift` correctly no-op on Postgres. One-shot data copy wi
 stopped, verified by per-table row counts before cutover, with the SQLite file retained for rollback.
 
 **Ships:** ccswitch on Postgres, single-host, no behavior change. **Unblocks:** everything else.
+**Depends on:** 1a — migrate a compacted DB, not 7.8 GB of prunable rows.
 
 ### 2. Rocky as a provisioned session host
 
