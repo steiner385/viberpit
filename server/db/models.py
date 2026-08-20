@@ -8,7 +8,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String,
+                        UniqueConstraint)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -476,7 +477,10 @@ class CiRun(Base):
 
     __tablename__ = "ci_run"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # GitHub run/job ids are int64 (e.g. 32407697884) — Integer (32-bit) only
+    # "worked" here because SQLite is dynamically typed; Postgres rejects
+    # any value above 2^31-1 with "integer out of range".
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     workflow_path: Mapped[str | None] = mapped_column(String, nullable=True)
     event: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -493,8 +497,8 @@ class CiJob(Base):
 
     __tablename__ = "ci_job"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)  # GitHub job id
-    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # GitHub job id
+    run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     conclusion: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -511,7 +515,7 @@ class CiTestResult(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     suite: Mapped[str | None] = mapped_column(String, nullable=True)
     test_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     outcome: Mapped[str | None] = mapped_column(String, nullable=True)  # passed/failed/error/skipped
