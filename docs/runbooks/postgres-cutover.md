@@ -17,7 +17,7 @@ that mutate in place under normal operation — `sessions.updated_at`, `ci_findi
 Consequence: you may run `--apply` before stopping services as a **throughput pre-warm** (it makes
 the authoritative run faster, since most rows are already present and skip on conflict), but that
 pre-warm run does **not** count as "the migration." The run that cutover depends on is the one that
-happens strictly after step 2 (stop services) below, and `--verify` must be run against that
+happens strictly after step 1 (stop services) below, and `--verify` must be run against that
 same post-stop state — not against an earlier pre-warm.
 
 ## Timing — budget for downtime
@@ -61,25 +61,56 @@ existing ones — but per the precondition above, it does **not** replace the au
 
 ## Cutover
 
-1. **Back up SQLite.**
-   ```bash
-   cp -a /home/tony/.claude-accounts/ccswitch.db /mnt/hdd-storage/ccswitch.db.pre-pg
-   ```
-   The migration script opens SQLite read-only and never modifies it, so this backup — and the
-   original file itself — remain the rollback path throughout.
-
-2. **Stop services — edge and deploy-controller BEFORE the daemon.** Stopping in this order means
+1. **Stop services — edge and deploy-controller BEFORE the daemon.** Stopping in this order means
    nothing can accept a new write while the daemon is still draining in-flight session state:
    ```bash
    sudo systemctl stop ccswitch.service ccswitch-deploy-controller.service
    sudo systemctl stop ccswitch-daemon.service
    ```
 
-3. **Confirm nothing is live:**
+2. **Confirm nothing is live:**
    ```bash
    systemctl is-active ccswitch.service ccswitch-deploy-controller.service ccswitch-daemon.service
    ```
    Expect `inactive` (or `failed`, never `active`) for all three before proceeding.
+
+3. **Back up SQLite — AFTER services are stopped, never before.**
+
+   The database is 9.48 GB in WAL mode with a multi-hundred-MB uncheckpointed `-wal` file. A plain
+   `cp` (or `VACUUM INTO`) taken while writers are still live only sees the base `.db` file — every
+   transaction still sitting in `-wal` is silently omitted, so the "backup" would be torn and would
+   not restore the state the app was actually in. Taking the backup after step 1/2 (services
+   confirmed stopped) is what makes it valid; do not reorder this back above the stop step to save
+   time.
+
+   First, checkpoint so nothing is left in the WAL:
+   ```bash
+   sqlite3 /home/tony/.claude-accounts/ccswitch.db "PRAGMA wal_checkpoint(TRUNCATE);"
+   ls -la /home/tony/.claude-accounts/ccswitch.db-wal
+   ```
+   Confirm the `-wal` file is now ~0 bytes before continuing — a non-trivial size means the
+   checkpoint did not fully drain and the next step would still be missing data. (This is also why
+   you cannot just open the live files `mode=ro` instead of backing up: a read-only open of a WAL
+   database with a hot WAL and a missing/unwritable `-shm` file cannot perform WAL recovery and will
+   fail to open at all.)
+
+   Then take the backup as a single consistent file, not a raw file copy:
+   ```bash
+   sqlite3 /home/tony/.claude-accounts/ccswitch.db "VACUUM INTO '/mnt/hdd-storage/ccswitch.db.pre-pg'"
+   ```
+   `VACUUM INTO` asks SQLite itself for a consistent snapshot in one file, so there is no `-wal`/
+   `-shm` to lose track of and no risk of copying the `.db` and `-wal` at slightly different
+   instants. (If you must fall back to `cp`, you MUST copy `.db`, `-wal`, and `-shm` together in one
+   pass — copying `.db` alone after a checkpoint is technically consistent, but copying it while any
+   of the three files could still change independently is not.)
+
+   Verify the backup is actually restorable before trusting it as the rollback path:
+   ```bash
+   sqlite3 /mnt/hdd-storage/ccswitch.db.pre-pg "PRAGMA integrity_check; SELECT COUNT(*) FROM sessions;"
+   ```
+   Expect `ok` from the integrity check and a sane, non-zero row count. The migration script opens
+   SQLite read-only and never modifies it, so this backup — and the original file itself — remain
+   the rollback path throughout.
 
 4. **Migrate — the authoritative run:**
    ```bash
@@ -125,9 +156,11 @@ existing ones — but per the precondition above, it does **not** replace the au
 Tick every box before switching `CCSWITCH_DB_URL`. If any item is unchecked or failed, **STOP and
 do not switch the URL** — roll back per the section below instead.
 
-- [ ] SQLite backup taken and confirmed present (`ls -la /mnt/hdd-storage/ccswitch.db.pre-pg`).
 - [ ] `ccswitch.service`, `ccswitch-deploy-controller.service`, `ccswitch-daemon.service` all
-      confirmed `inactive`/`failed` (step 3).
+      confirmed `inactive`/`failed` (step 2).
+- [ ] SQLite backup taken **after** services stopped, via checkpoint + `VACUUM INTO` (step 3), and
+      confirmed present and restorable (`ls -la /mnt/hdd-storage/ccswitch.db.pre-pg` and the
+      `PRAGMA integrity_check` / row-count check both passed).
 - [ ] Authoritative `--apply` (step 4) completed with no `BLOCKED` `SystemExit` and no unhandled
       exception.
 - [ ] `--verify` row counts (step 5) show `OK` for every table.
@@ -187,7 +220,7 @@ rollback is a config revert, not a data restore:
 3. Start services (daemon first, as in step 7).
 
 **Any writes that landed in Postgres after cutover are lost on rollback** — SQLite was frozen at
-the moment services stopped in step 2 of Cutover, and rollback simply repoints the app back at
+the moment services stopped in step 1 of Cutover, and rollback simply repoints the app back at
 that frozen file. Treat the period immediately after cutover (through the post-cutover
 verification above) as the decision window: the longer the app runs on Postgres before a rollback
 is called, the more real user data a rollback discards. Decide quickly.

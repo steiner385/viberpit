@@ -292,6 +292,7 @@ async def main() -> None:
             f"FROM \"{table.name}\"{where}")
         copied = 0
         table_nulled = 0
+        skipped_in_chunk = 0
         while True:
             chunk = cur.fetchmany(BATCH)
             if not chunk:
@@ -311,10 +312,20 @@ async def main() -> None:
                 # (see the cutover-precondition warning at the top of this file for
                 # what "safe" does NOT cover: it does not refresh rows that already
                 # existed in Postgres and have since changed in SQLite).
-                await c.execute(pg_insert(table).on_conflict_do_nothing(), payload)
-            copied += len(chunk)
+                result = await c.execute(pg_insert(table).on_conflict_do_nothing(), payload)
+            # rowcount is the actual INSERT count, not the attempted count -- an
+            # ON CONFLICT DO NOTHING skip must show up here, or "copied N/N" would
+            # lie about a row that was silently deduped rather than inserted.
+            # asyncpg's executemany path can report rowcount as -1 (unsupported);
+            # fall back to the attempted count only in that case, so a genuine
+            # skip is never masked by the fallback.
+            inserted = result.rowcount if result.rowcount is not None and result.rowcount >= 0 \
+                else len(chunk)
+            copied += inserted
+            skipped_in_chunk += len(chunk) - inserted
             print(f"    {table.name}: {copied}/{n}", end="\r", flush=True)
-        print(f"  {table.name:<28} copied {copied}/{n}        ")
+        skip_note = f" (skipped {skipped_in_chunk} existing via ON CONFLICT)" if skipped_in_chunk else ""
+        print(f"  {table.name:<28} copied {copied}/{n}{skip_note}        ")
         if table_nulled:
             print(f"    -> nulled {table_nulled} dangling FK value(s) in {table.name}")
             total_nulled += table_nulled
@@ -333,4 +344,9 @@ async def main() -> None:
         print("\ndry run — re-run with --apply")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    # Guarded so the module can be imported (e.g. by
+    # server/tests/test_pg_migration_helpers.py, which unit-tests
+    # _combine_where/_row_coercers directly) without side-effect-running the
+    # whole migration against argv.
+    asyncio.run(main())

@@ -378,9 +378,32 @@ import pytest_asyncio
 
 @pytest.fixture(scope="session")
 def pg_url() -> str:
+    """CCSWITCH_TEST_PG_URL, guarded against ever pointing at production.
+
+    pg_engine (below) unconditionally drop_all's this database. A cutover
+    operator's shell can plausibly hold BOTH the production $PG_URL and
+    CCSWITCH_TEST_PG_URL at once (see docs/runbooks/postgres-cutover.md) — one
+    wrong export and a stray test run would drop the production schema. This
+    contradicts the "Production isolation" guarantee at the top of this file,
+    so it is enforced the same way: fail fast, before any connection is made,
+    rather than trust the caller got the env right.
+
+    The only check that's actually safe here is a naming convention — refuse
+    to proceed unless the *database name* in the URL contains "test". This
+    does not require the database to exist or be reachable.
+    """
     url = os.environ.get("CCSWITCH_TEST_PG_URL")
     if not url:
         pytest.skip("CCSWITCH_TEST_PG_URL not set")
+    from urllib.parse import urlsplit
+    db_name = urlsplit(url).path.lstrip("/")
+    if "test" not in db_name.lower():
+        pytest.fail(
+            f"CCSWITCH_TEST_PG_URL targets database {db_name!r}, which does not "
+            f"contain 'test'. Refusing to run: pg_engine unconditionally "
+            f"drop_all's this database, and this fixture must never be pointed "
+            f"at a production database. Point CCSWITCH_TEST_PG_URL at a "
+            f"database whose name contains 'test' (e.g. 'ccswitch_test').")
     return url
 
 
