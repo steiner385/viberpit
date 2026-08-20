@@ -1430,9 +1430,31 @@ class SessionOrchestrator:
         acting. If still not met, nudge with the remedy (which opens a fresh turn, so the
         session leaves ``complete``), bounded by ``COMPLETE_NUDGE_CAP``. When met, archive:
         stop the driver, release the worktree, snapshot decision-time evidence (goal, repo,
-        PR state) for the retro archive audit, and let the sweep reclaim the slot."""
+        PR state) for the retro archive audit, and let the sweep reclaim the slot.
+
+        Before ANY of that, the open-question hold: a completed session whose final
+        hand-back still awaits the user — a prose question left in the marker message,
+        or a structured question/permission that raced this task — is not finished for
+        the user even when the bar is met. It flips back to ``waiting_question``
+        ("Answer needed") instead of archiving or nudging; the guard is cleared so the
+        answer's turn can complete cleanly later, and no completion nudge is consumed
+        (the cap bounds not-ready nudges — a held session did nothing wrong)."""
         rec = self._records.get(session_id)
         origin = getattr(rec, "origin", None) if rec is not None else None
+        try:
+            hold = await self._completion_open_question(session_id)
+        except Exception:
+            hold = False  # gate is best-effort: never let it block a legitimate archive
+            log.debug("completion.question_gate_failed sid=%s", session_id, exc_info=True)
+        if hold:
+            self._auto_archiving.discard(session_id)
+            log.info("completion.question_hold sid=%s", session_id)
+            try:
+                await self._persist_status(session_id, "waiting_question")
+            except Exception:
+                log.warning("completion.question_hold_persist_failed sid=%s",
+                            session_id, exc_info=True)
+            return
         if rec is not None:
             from server.sessions.goals import effective_goal
             from server.automations.completion_bar import met_bar
@@ -1510,6 +1532,36 @@ class SessionOrchestrator:
             await self._backlog_ctx.emit(
                 "info", f"archived completed run {session_id}",
                 kind="archived", session_id=session_id)
+
+    async def _completion_open_question(self, session_id: str) -> bool:
+        """True when a completed session's final hand-back still awaits the user.
+
+        Two sources, checked cheapest-first: (1) a structured question/permission/
+        plan still pending on the driver — free, and covers the register-after-persist
+        race; (2) a prose question in the last assistant message, judged by the gated
+        LLM classifier (heuristic degrade) AFTER stripping the completion markers —
+        the marker trails the message, so it masks a closing "?" from any tail check.
+        Raises only to the caller's best-effort catch (reads as 'no question')."""
+        driver = getattr(self, "_drivers", {}).get(session_id)
+        if driver is not None:
+            try:
+                sig = driver._dash_signals()
+                if sig.pending_question or sig.pending_permission or sig.pending_plan:
+                    return True
+            except Exception:
+                log.debug("completion.question_signals_failed sid=%s",
+                          session_id, exc_info=True)
+        tpath = self.transcript_path(session_id)
+        if not tpath:
+            return False
+        from .background_tasks import last_assistant_text
+        from .completion import strip_markers
+        from .open_question import completion_awaits_user
+        text = strip_markers(last_assistant_text(tpath))
+        if not text:
+            return False
+        rec = self._records.get(session_id)
+        return await completion_awaits_user(text, cwd=getattr(rec, "cwd", None))
 
     async def _persist_context_usage(self, session_id: str, used_tokens: int, max_tokens: int) -> None:
         """Driver ``on_context_usage`` callback: persist the exact context-window occupancy.
