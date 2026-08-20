@@ -244,6 +244,45 @@ describe('ArchivedManager — controls strip', () => {
   })
 })
 
+describe('ArchivedManager — collapse recoverability', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.localStorage.clear()
+    searchState = { query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }
+  })
+
+  // Group headers are the only buttons carrying aria-expanded.
+  const headers = () =>
+    screen.getAllByRole('button').filter((b) => b.hasAttribute('aria-expanded'))
+
+  it('keeps repo group headers visible after BOTH groups are collapsed', async () => {
+    const user = userEvent.setup()
+    setupMocks([
+      makeArchived({ id: '1', name: 'Alpha', cwd: '/home/GitHub/KinDash' }),
+      makeArchived({ id: '2', name: 'Beta', cwd: '/home/GitHub/infra', archivedAt: '2026-06-12T00:00:00Z' }),
+    ])
+    render(<ArchivedManager onReviewSession={() => {}} />, { wrapper })
+
+    await user.selectOptions(screen.getByLabelText('Group by'), 'repo')
+    expect(headers()).toHaveLength(2)
+
+    // Collapse every group, re-querying between clicks (nodes may re-render).
+    for (let open = headers().filter((h) => h.getAttribute('aria-expanded') === 'true');
+      open.length > 0;
+      open = headers().filter((h) => h.getAttribute('aria-expanded') === 'true')) {
+      await user.click(open[0])
+    }
+
+    // Regression: with every group collapsed the headers must remain so the user
+    // can expand again. Previously the whole grouped list was gated on the
+    // collapse-aware visible count, so it vanished — unrecoverable without
+    // clearing localStorage (ccswitch.groupCollapse.archived).
+    const after = headers()
+    expect(after).toHaveLength(2)
+    expect(after.every((h) => h.getAttribute('aria-expanded') === 'false')).toBe(true)
+  })
+})
+
 describe('ArchivedManager — shift-click range selection', () => {
   beforeEach(() => {
     vi.clearAllMocks()
