@@ -1,15 +1,29 @@
 #!/usr/bin/env python3
 """One-shot SQLite -> Postgres copy for ccswitch. Idempotent and resumable.
 
+*** CUTOVER PRECONDITION -- READ BEFORE RUNNING THE AUTHORITATIVE --apply ***
+`ON CONFLICT DO NOTHING` means this script only ever INSERTs; it never UPDATEs a
+row that already exists in Postgres. If ccswitch writers are still running, a row
+copied on an early --apply (e.g. `sessions.updated_at`, `ci_finding.last_seen_at`,
+`automation.last_fired_at`, `app_sessions.revoked_at`) will silently keep its OLD
+value forever, even though the live app has since mutated it in SQLite -- the
+re-run's INSERT for that row's PK is a no-op conflict, not a refresh. The
+AUTHORITATIVE run that Postgres cutover depends on MUST happen after ccswitch
+writers are stopped. Any --apply run before that point is only a throughput
+pre-warm (see below) -- its rows must be treated as potentially stale, not as
+a completed migration.
+
 Retention-scoped by design (spec sub-project 1b): ci_test_result carries ~11.1M rows,
 almost all of which the running _rollup_passed job folds into ci_test_daily within a
 week. Copying them would be slow and pointless, so we copy only what retention keeps:
-every failed/error row, plus passed/skipped rows inside the raw window.
+every failed/error row, plus passed/skipped rows inside the raw window, plus any row
+with a NULL outcome/created_ts (mirrors _rollup_passed's own delete predicate, which
+never deletes a NULL -- see _retention_where).
 
 The SQLite file is never modified. It remains the rollback and the archive.
 
 FK enforcement: SQLite never enforced foreign keys on this database, but Postgres
-does. A live audit found 299 automation_event rows whose session_id points at a
+does. A live audit found automation_event rows whose session_id points at a
 session that no longer exists -- the column is nullable and declared
 ondelete="SET NULL", so this is exactly the state that column was designed to hold;
 SQLite simply never enforced it. Before copying any table, this script walks every
@@ -27,9 +41,23 @@ rejects DateTime strings outright and silently double-encodes JSON strings (it
 re-serializes an already-serialized string). Both are normalized generically, per
 column, from each table's declared SQLAlchemy type before insert.
 
+Identity sequences: copying explicit PK values does NOT advance a Postgres
+SERIAL/IDENTITY sequence -- the sequence stays at its initial state while the table
+fills up around it, so the app's first INSERT without an explicit id (the normal
+case) raises `duplicate key value violates unique constraint`. After the copy loop,
+--apply advances every single-column integer-PK table's sequence to MAX(pk) via
+`setval`; --verify asserts `last_value >= MAX(pk)` for the same set of tables.
+Tables with a non-integer or composite PK have no such sequence and are skipped.
+
+Dry run intentionally still runs `create_all` against the target (additive-only DDL:
+CREATE TABLE/INDEX IF NOT EXISTS-equivalent semantics -- it never alters or drops
+anything). This is deliberate, not an oversight: --verify needs the target schema to
+exist even before the first --apply, so a plain dry run against a brand-new
+database reports real `pg=0` counts instead of erroring on missing tables.
+
   python scripts/ccswitch-sqlite-to-pg.py                 # dry run: report counts
-  python scripts/ccswitch-sqlite-to-pg.py --apply         # copy
-  python scripts/ccswitch-sqlite-to-pg.py --verify        # compare counts only
+  python scripts/ccswitch-sqlite-to-pg.py --apply         # copy (creates schema)
+  python scripts/ccswitch-sqlite-to-pg.py --verify        # compare counts + sequences
 """
 import argparse
 import asyncio
@@ -39,7 +67,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, func, select as sa_select
+from sqlalchemy import DateTime, func, select as sa_select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.types import JSON
@@ -56,8 +84,15 @@ def _retention_where(table: str, raw_days: float) -> str:
     if table != "ci_test_result":
         return ""
     horizon = time.time() - raw_days * 86400.0
-    # Mirrors _rollup_passed: failures are kept raw forever, the rest only in-window.
-    return (f" WHERE outcome IN ('failed','error') OR created_ts >= {horizon}")
+    # Mirrors _rollup_passed's delete predicate exactly: that job deletes rows
+    # WHERE outcome NOT IN ('failed','error') AND created_ts < horizon, and SQL's
+    # NULL semantics mean a NULL outcome/created_ts never satisfies that AND, so
+    # _rollup_passed never deletes a NULL row. Our keep-predicate must therefore
+    # also keep NULLs, or this script would drop rows the live retention job
+    # would not have dropped. (Live NULL count is 0 today -- this is a latent
+    # correctness fix, not something observed to have dropped a row yet.)
+    return (f" WHERE outcome IS NULL OR created_ts IS NULL "
+            f"OR outcome IN ('failed','error') OR created_ts >= {horizon}")
 
 
 def _combine_where(base_where: str, extra_sql: str) -> str:
@@ -114,6 +149,65 @@ def _row_coercers(table):
     return coercers
 
 
+def _single_pk_name(table):
+    """Return the column name of `table`'s PK iff it is a single column
+    (sequences only ever back a single-column PK); None for composite PKs."""
+    pk_cols = list(table.primary_key.columns)
+    if len(pk_cols) != 1:
+        return None
+    return pk_cols[0].name
+
+
+async def _advance_sequences(engine, have: set) -> None:
+    """After a copy, advance every single-column-PK table's identity sequence to
+    MAX(pk). Copying explicit PK values never moves the sequence itself, so
+    without this the app's first sequence-generated INSERT after cutover raises
+    `duplicate key value violates unique constraint` -- and keeps raising, since
+    the sequence never catches up on its own. pg_get_serial_sequence returns NULL
+    for PKs with no backing sequence (e.g. String/UUID PKs); those are skipped,
+    not errored."""
+    print("\nAdvancing identity sequences...")
+    for table in Base.metadata.sorted_tables:
+        if table.name not in have:
+            continue
+        pk = _single_pk_name(table)
+        if pk is None:
+            continue
+        async with engine.begin() as c:
+            seq = (await c.execute(
+                text("SELECT pg_get_serial_sequence(:t, :c)"),
+                {"t": table.name, "c": pk})).scalar_one()
+            if seq is None:
+                continue
+            newval = (await c.execute(text(
+                f'SELECT setval(:seq, COALESCE((SELECT MAX("{pk}") FROM "{table.name}"), 1))'),
+                {"seq": seq})).scalar_one()
+            print(f"  {table.name:<28} sequence {seq} -> {newval}")
+
+
+async def _verify_sequences(engine, have: set) -> None:
+    """--verify companion to _advance_sequences: assert last_value >= MAX(pk) for
+    every sequenced table, so a 'verified' cutover can't hide an unadvanced
+    sequence behind all-OK row counts."""
+    for table in Base.metadata.sorted_tables:
+        if table.name not in have:
+            continue
+        pk = _single_pk_name(table)
+        if pk is None:
+            continue
+        async with engine.connect() as c:
+            seq = (await c.execute(
+                text("SELECT pg_get_serial_sequence(:t, :c)"),
+                {"t": table.name, "c": pk})).scalar_one()
+            if seq is None:
+                continue
+            last_value = (await c.execute(text(f"SELECT last_value FROM {seq}"))).scalar_one()
+            max_pk = (await c.execute(sa_select(func.max(table.c[pk])))).scalar_one()
+            ok = max_pk is None or last_value >= max_pk
+            flag = "OK " if ok else "DIFF"
+            print(f"  {flag} {table.name + '.' + pk + ' seq':<28} last_value={last_value:<10} max_pk={max_pk}")
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pg-url", default=os.environ.get("CCSWITCH_DB_URL"))
@@ -123,6 +217,9 @@ async def main() -> None:
     args = ap.parse_args()
     if not args.pg_url:
         raise SystemExit("need --pg-url or CCSWITCH_DB_URL")
+    if args.apply and args.verify:
+        raise SystemExit("--apply and --verify are mutually exclusive -- run one at a time "
+                          "(apply, THEN verify, as two separate invocations)")
 
     src = sqlite3.connect(f"file:{SQLITE}?mode=ro", uri=True)  # READ-ONLY
     src.row_factory = sqlite3.Row
@@ -210,7 +307,10 @@ async def main() -> None:
                         row[col_name] = None
                         table_nulled += 1
             async with engine.begin() as c:
-                # ON CONFLICT DO NOTHING makes a re-run after a partial failure safe.
+                # ON CONFLICT DO NOTHING makes a re-run after a partial failure safe
+                # (see the cutover-precondition warning at the top of this file for
+                # what "safe" does NOT cover: it does not refresh rows that already
+                # existed in Postgres and have since changed in SQLite).
                 await c.execute(pg_insert(table).on_conflict_do_nothing(), payload)
             copied += len(chunk)
             print(f"    {table.name}: {copied}/{n}", end="\r", flush=True)
@@ -218,6 +318,12 @@ async def main() -> None:
         if table_nulled:
             print(f"    -> nulled {table_nulled} dangling FK value(s) in {table.name}")
             total_nulled += table_nulled
+
+    if args.apply:
+        await _advance_sequences(engine, have)
+    if args.verify:
+        print()
+        await _verify_sequences(engine, have)
 
     await engine.dispose()
     src.close()
