@@ -147,7 +147,7 @@ class CicdDoctorLoop:
         from sqlalchemy import select
         from server.db import db_session
         from server.db.models import CiJob, CiRun, CiTestResult
-        from .cicd.junit import parse_junit_xml
+        from .cicd.junit import JUnitCase, parse_junit_xml
 
         cursor = await self._ctx.get_target_state(f"cursor:{repo}")
         since = cursor.get("last_created_ts")
@@ -185,8 +185,10 @@ class CicdDoctorLoop:
                 # violating uq_ci_test_result_run_suite_test on flush. Accumulating
                 # across all suites first and emitting once keeps "last attempt
                 # wins per suite+test" while staying idempotent against the
-                # constraint even when a suite string repeats within one run.
-                last_attempt: dict[tuple[str | None, str], object] = {}
+                # constraint even when a suite string repeats within one run. The
+                # suite is already the key's first element, so the value only needs
+                # to hold the case; suite is recovered from the key when emitting.
+                last_attempt: dict[tuple[str, str], JUnitCase] = {}
                 for suite, xml in await self._fetch_junit(repo, r["id"]):
                     try:
                         cases = parse_junit_xml(xml)
@@ -195,9 +197,9 @@ class CicdDoctorLoop:
                                     repo, r["id"])
                         continue
                     for c in cases:
-                        last_attempt[(suite, c.test_id)] = (suite, c)
-                for suite, c in last_attempt.values():
-                    db.add(CiTestResult(repo=repo, run_id=r["id"], suite=suite,
+                        last_attempt[(suite, c.test_id)] = c
+                for (result_suite, _test_id), c in last_attempt.items():
+                    db.add(CiTestResult(repo=repo, run_id=r["id"], suite=result_suite,
                                         test_id=c.test_id, outcome=c.outcome,
                                         time_s=c.time_s, message=c.message,
                                         head_sha=r["head_sha"],
