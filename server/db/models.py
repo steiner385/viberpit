@@ -346,7 +346,11 @@ class NotificationChannel(Base):
     # Optional ntfy/Slack-style headers (e.g. {"Title": "...", "Priority": "high"}).
     headers: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    # timezone=True because these default to _utcnow(), which is AWARE. asyncpg rejects
+    # an aware datetime bound to `timestamp without time zone` — on SELECT comparisons as
+    # well as INSERT. The reverse (naive value into a tz-aware column) is accepted and
+    # treated as UTC, so widening is strictly safe: it removes failures and adds none.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class NotificationRule(Base):
@@ -369,7 +373,7 @@ class NotificationRule(Base):
     # When true this rule's delivery ignores quiet hours (critical bypass).
     critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class Automation(Base):
@@ -399,7 +403,7 @@ class Automation(Base):
     # dev SQLite DB without a migration.
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
 class AutomationEvent(Base):
@@ -410,7 +414,7 @@ class AutomationEvent(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     automation_id: Mapped[str] = mapped_column(
         String, ForeignKey("automation.id"), nullable=False, index=True)
-    ts: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, index=True)
     level: Mapped[str] = mapped_column(String, nullable=False, default="info")  # info/warn/error
     # Queryable event code: detected/attempted/recovered/escalated/gave_up/spawned/skipped_duplicate.
     kind: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
@@ -433,7 +437,7 @@ class AutomationTargetState(Base):
     target: Mapped[str] = mapped_column(String, primary_key=True)
     state: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
 class BacklogGroup(Base):
@@ -584,8 +588,10 @@ class CiFinding(Base):
     # open on GitHub — either an active finding, or a resolve whose close failed and
     # must be retried. Kept alongside issue_number so a recurrence can reopen it.
     issue_closed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
-    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=_utcnow)
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=_utcnow)
+    first_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=_utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=_utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
 

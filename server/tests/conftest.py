@@ -390,6 +390,11 @@ async def pg_engine(pg_url):
 
     Session-scoped because create_all/drop_all over 26 tables is far too slow to
     repeat per test. Tests that need isolation must clean up their own rows.
+
+    Session-scoped + loop_scope="session": any test consuming this fixture MUST
+    carry @pytest.mark.asyncio(loop_scope="session") on its own marker, or you'll
+    hit a confusing "Future attached to a different loop" error that looks like a
+    database problem but isn't (pytest-asyncio 1.4.0 strict mode).
     """
     from sqlalchemy.ext.asyncio import create_async_engine
     from server.db.models import Base

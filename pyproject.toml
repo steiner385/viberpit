@@ -21,6 +21,7 @@ server = [
     "uvicorn[standard]",
     "sqlalchemy[asyncio]",
     "aiosqlite",
+    "asyncpg",
     "alembic",
     "cryptography",
     "webauthn",
