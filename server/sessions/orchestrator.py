@@ -6791,6 +6791,22 @@ class SessionOrchestrator:
             log.warning("session.transcript_window id=%s replay failed", session_id, exc_info=True)
             return None
 
+    async def transcript_search_text(self, session_id: str) -> str:
+        """Return the searchable transcript text for a session (read-only review).
+
+        Resolves the path exactly like transcript_window/transcript_events (works for
+        both active and archived sessions via resolve_transcript_path's DB-glob
+        fallback) and extracts search-relevant text in-process. Returns "" when no
+        transcript is found — never raises for a missing/unreadable file (mirrors
+        search.transcript_text's own OSError handling).
+        """
+        from server.sessions.search import transcript_text
+
+        path = await self.resolve_transcript_path(session_id)
+        if not path:
+            return ""
+        return await asyncio.to_thread(transcript_text, path)
+
     def snapshot_deploy(self, *, path: str | None = None) -> dict:
         """SAVE step: record sessions with a live driver so a daemon-affecting restart
         can eagerly re-launch them (rehydrate alone is lazy + flattens 'working'→'idle')."""

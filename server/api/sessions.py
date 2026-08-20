@@ -26,7 +26,7 @@ from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
 from server.sessions import adopt as _adopt
-from server.sessions.search import transcript_text, parse_terms, session_matches
+from server.sessions.search import parse_terms, session_matches
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import db_session, get_db
@@ -579,28 +579,27 @@ async def list_archived_sessions(
     return await orch.list_archived()
 
 
-async def _search_ids(items, resolve, terms) -> list[str]:
-    """items: list[(id, name)]; resolve: async (id)->path|None. Returns matching ids.
+async def _search_ids(items, fetch_text, terms) -> list[str]:
+    """items: list[(id, name)]; fetch_text: async (id)->str (transcript text, "" if
+    none). Returns matching ids. Blank `terms` skips the fetches entirely.
 
-    The transcript file is read here in the edge process (see note below) for each
-    candidate; blank `terms` skips the reads entirely.
+    `fetch_text` resolves the transcript path AND reads it inside the orchestrator
+    (transcript_search_text — daemon RPC in remote mode, in-process call otherwise),
+    never in this edge process. Path strings resolved by the daemon are only valid
+    on the daemon's own host, so reading them here would silently return "" once the
+    daemon and edge are split across hosts — this is exactly that split.
     """
     async def _matches(sid: str, name: str) -> bool:
         text = ""
         if terms:
-            # One session whose transcript can't be resolved (dangling account
+            # One session whose transcript text can't be fetched (dangling account
             # name, daemon hiccup) degrades to name-only matching; it must not
             # fail the whole search — the UI silently drops a failed filter.
             try:
-                path = await resolve(sid)
+                text = await fetch_text(sid)
             except Exception:
-                log.warning("session.search transcript resolve failed id=%s", sid, exc_info=True)
-                path = None
-            if path:
-                # Read happens in the edge process (not the daemon). Safe because the
-                # daemon shares the host filesystem over a local Unix socket. If the
-                # daemon is ever split to another host, move this behind a daemon RPC.
-                text = await asyncio.to_thread(transcript_text, path)
+                log.warning("session.search transcript fetch failed id=%s", sid, exc_info=True)
+                text = ""
         return session_matches(terms, name, text)
 
     flags = await asyncio.gather(*(_matches(i, n) for i, n in items))
@@ -625,11 +624,11 @@ async def search_sessions(
     if scope == "archived":
         rows = await orch.list_archived()
         items = [(r["id"], r["name"]) for r in rows]
-        ids = await _search_ids(items, orch.resolve_transcript_path, terms)
+        ids = await _search_ids(items, orch.transcript_search_text, terms)
     else:
         records = await orch.list_sessions()
         items = [(r.id, r.name) for r in records]
-        ids = await _search_ids(items, orch.transcript_path, terms)
+        ids = await _search_ids(items, orch.transcript_search_text, terms)
     return {"ids": ids}
 
 

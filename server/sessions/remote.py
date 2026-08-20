@@ -596,20 +596,27 @@ class RemoteOrchestrator:
         return await self._client.call("resolve_transcript_path", session_id=session_id)
 
     async def transcript_window(self, session_id, *, before=None, limit=None):
-        """Resolve the transcript path via daemon, then replay locally.
+        """Windowed transcript replay via the daemon's transcript_window RPC.
 
-        Uses resolve_transcript_path (not transcript_path) so archived
-        sessions — absent from the daemon's in-memory driver state but resolvable
-        via its DB-glob fallback — still replay. limit=None → full transcript.
+        The daemon resolves the path AND replays it in-process, sharing the
+        response shape (events / earliestTurn / totalTurns) that the transcript_window
+        RPC handler builds — the edge never reads the transcript file itself, so this
+        is correct even when the daemon lives on a different host than the edge.
+        limit=None → full transcript. Returns None when no transcript is found.
         """
-        from server.sessions.replay import replay_window
-        path = await self.resolve_transcript_path(session_id)
-        if not path:
+        from server.sessions.replay import ReplayWindow
+        r = await self._client.call("transcript_window", session_id=session_id,
+                                    before=before, limit=limit)
+        if r is None:
             return None
-        try:
-            return await replay_window(path, before=before, limit=limit)
-        except Exception:
-            return None
+        return ReplayWindow(events=r["events"], earliest_turn=r["earliestTurn"],
+                            total_turns=r["totalTurns"])
+
+    async def transcript_search_text(self, session_id: str) -> str:
+        """Return transcript text for search matching, via the daemon RPC — the
+        edge never reads the transcript file itself (cross-host safe)."""
+        r = await self._client.call("transcript_search_text", session_id=session_id)
+        return r if isinstance(r, str) else ""
 
     async def usage(self, name):
         try:
