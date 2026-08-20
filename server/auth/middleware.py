@@ -168,6 +168,24 @@ async def _resolve_or_create_app_session(
             if existing:
                 return existing
 
+    # No usable cookie: reuse this identity's newest live session rather than
+    # inserting a row. Every cookie-less caller (API polls, WS upgrades) previously
+    # minted one — 45k rows/day for a single identity, 2.2M rows total.
+    # Scoped to `identity`, which the Tailscale middleware has already verified, so
+    # this only ever returns a row the same principal owns.
+    reusable = (await db.execute(
+        select(AppSession)
+        .where(
+            AppSession.identity == identity,
+            AppSession.revoked_at.is_(None),
+            AppSession.expires_at > now,
+        )
+        .order_by(AppSession.created_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    if reusable is not None:
+        return reusable
+
     # Create new
     new_session = AppSession(
         id=str(uuid.uuid4()),
