@@ -516,6 +516,16 @@ class CiTestResult(Base):
     head_branch: Mapped[str | None] = mapped_column(String, nullable=True)
     created_ts: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
 
+    # Backstop for the ingest-side dedupe above. NULLs compare as distinct in SQL, so
+    # rows with a NULL suite/test_id are NOT covered — ingest-side dedupe is the
+    # primary guard, this catches concurrent-tick races. Created on the live DB by
+    # scripts/ccswitch-db-compact.py (create_all does not add constraints to an
+    # existing table).
+    __table_args__ = (
+        UniqueConstraint("run_id", "suite", "test_id",
+                         name="uq_ci_test_result_run_suite_test"),
+    )
+
 
 class CiFinding(Base):
     """A persistent CI/CD Doctor finding: fingerprint-deduped, lifecycle

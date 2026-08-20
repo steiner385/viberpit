@@ -167,7 +167,15 @@ class CicdDoctorLoop:
                         log.warning("cicd_doctor.junit_malformed repo=%s run=%s",
                                     repo, r["id"])
                         continue
+                    # One <testcase> per ATTEMPT: a framework retry repeats the same
+                    # (suite, test_id). Keep the LAST attempt — it is the outcome the
+                    # run finished with — so ingestion is idempotent against
+                    # uq_ci_test_result_run_suite_test. 430,779 rows (3.6% of the
+                    # table) were duplicates before this.
+                    last_attempt: dict[str, object] = {}
                     for c in cases:
+                        last_attempt[c.test_id] = c
+                    for c in last_attempt.values():
                         db.add(CiTestResult(repo=repo, run_id=r["id"], suite=suite,
                                             test_id=c.test_id, outcome=c.outcome,
                                             time_s=c.time_s, message=c.message,
