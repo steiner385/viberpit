@@ -237,8 +237,11 @@ _ASK_PHRASES: tuple[str, ...] = (
 )
 
 
-def _text_awaits_user(text: str) -> bool:
-    """Heuristic: does this assistant prose hand a question/decision back to the user?"""
+def text_awaits_user(text: str) -> bool:
+    """Heuristic: does this assistant prose hand a question/decision back to the user?
+
+    Public: also the degrade path of ``open_question.completion_awaits_user`` when
+    the LLM helper lane is unavailable — one phrase list, no parallel copies."""
     t = text.rstrip()
     if not t:
         return False
@@ -248,7 +251,7 @@ def _text_awaits_user(text: str) -> bool:
     return any(p in tail for p in _ASK_PHRASES)
 
 
-def _last_assistant_text(jsonl_path: str) -> str:
+def last_assistant_text(jsonl_path: str) -> str:
     """Concatenated text of the most recent assistant message that produced any prose.
 
     Assistant entries that are pure tool_use (no ``text`` block) are skipped: they are
@@ -279,7 +282,7 @@ def last_turn_awaits_user(jsonl_path: str | None) -> bool:
     "Answer needed" instead of "Waiting…"."""
     if not jsonl_path:
         return False
-    return _text_awaits_user(_last_assistant_text(jsonl_path))
+    return text_awaits_user(last_assistant_text(jsonl_path))
 
 
 def build_rearm_prompt(tasks: list[OpenBgTask]) -> str:
