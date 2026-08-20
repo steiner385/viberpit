@@ -519,6 +519,29 @@ async def test_refresh_pr_facts_merges_population_cache(orch):
     assert 42 in numbers, f"population-cache PR #42 missing from facts.prs={numbers}"
 
 
+def test_pr_facts_falls_back_to_population_cache(orch):
+    """The cheap per-tick facts path (no I/O) — which feeds met_bar AND the fleet
+    snapshot every tick — must ALSO resolve a PR from the population cache when the
+    per-branch poller cache misses it. Otherwise a PR opened before context
+    compaction stays invisible (prs=[]): the transcript-gated refresh (the only
+    other path that consults the population cache) never fires once the 'PR #14160'
+    mention leaves the tail, so met_bar keeps re-firing a spurious 'open a PR' nudge.
+    Mirrors _autopilot_refresh_pr_facts's population merge on the no-I/O path."""
+    from server.github.pr_status import PullRequestInfo
+    pop_pr = PullRequestInfo(
+        number=14160, url="https://github.com/o/r/pull/14160",
+        state="open", checks="passing", title="feat",
+        is_draft=False, auto_merge_enabled=True, in_merge_queue=False,
+        head_ref="feat/x",
+    )
+    orch._pr_population = _FakePopulation({"o/r": [pop_pr]})
+    # Per-branch poller cache misses (cooldown / high-volume repo / not-yet-polled).
+    orch.pr_for = lambda repo, branch: None
+    facts = orch._autopilot_pr_facts(orch._records["s1"])
+    numbers = [p.number for p in facts.prs]
+    assert 14160 in numbers, f"population-cache PR #14160 missing from facts.prs={numbers}"
+
+
 @pytest.mark.asyncio
 async def test_compose_wrapper_passes_rich_tail_and_history(orch, monkeypatch):
     """_autopilot_compose calls compose_nudge with intent_hint, recent_nudges, and
