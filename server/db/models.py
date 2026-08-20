@@ -8,7 +8,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String,
+                        UniqueConstraint)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -268,11 +269,14 @@ class MergeQueueObservation(Base):
     # pr_number IS nullable in earnest: a NULL row is the empty-queue sentinel —
     # it pins an observation's captured_at while contributing no queue entry.
     repo: Mapped[str] = mapped_column(String, nullable=True, index=True)
-    captured_at: Mapped[int] = mapped_column(Integer, nullable=True, index=True)
+    # BigInteger: epoch seconds. The live max is already 83% of the int32
+    # ceiling (2038-01-19) — Integer would hard-fail inserts on Postgres well
+    # before then.
+    captured_at: Mapped[int] = mapped_column(BigInteger, nullable=True, index=True)
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     position: Mapped[int | None] = mapped_column(Integer, nullable=True)
     state: Mapped[str | None] = mapped_column(String, nullable=True)
-    enqueued_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enqueued_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     batch_head_oid: Mapped[str | None] = mapped_column(String, nullable=True)
     group_checks: Mapped[str | None] = mapped_column(String, nullable=True)
     checks_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -346,7 +350,11 @@ class NotificationChannel(Base):
     # Optional ntfy/Slack-style headers (e.g. {"Title": "...", "Priority": "high"}).
     headers: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    # timezone=True because these default to _utcnow(), which is AWARE. asyncpg rejects
+    # an aware datetime bound to `timestamp without time zone` — on SELECT comparisons as
+    # well as INSERT. The reverse (naive value into a tz-aware column) is accepted and
+    # treated as UTC, so widening is strictly safe: it removes failures and adds none.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class NotificationRule(Base):
@@ -369,7 +377,7 @@ class NotificationRule(Base):
     # When true this rule's delivery ignores quiet hours (critical bypass).
     critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class Automation(Base):
@@ -390,7 +398,13 @@ class Automation(Base):
     schedule: Mapped[dict | None] = mapped_column(
         JSON(none_as_null=True), nullable=True, default=None)
     # Heartbeat the automation bumps while alive; lets the UI flag a stalled loop.
-    last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    # timezone=True: _bump_automation_active() (orchestrator.py) writes
+    # datetime.now(timezone.utc), an AWARE value — a naive column silently fails
+    # on Postgres (asyncpg rejects tz-aware datetimes into a naive column), and
+    # that write sits inside a bare `except Exception: log.debug(...)`, so the
+    # heartbeat would just stop with no error surfaced.
+    last_active_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None)
     # Watermark for cron-scheduled recurring-session dispatch (#603): the most
     # recent cron minute already fired (or a baseline set on first sight). The
     # scheduler only fires strictly-later minutes, so this persists the "already
@@ -399,7 +413,7 @@ class Automation(Base):
     # dev SQLite DB without a migration.
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
 class AutomationEvent(Base):
@@ -410,7 +424,7 @@ class AutomationEvent(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     automation_id: Mapped[str] = mapped_column(
         String, ForeignKey("automation.id"), nullable=False, index=True)
-    ts: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, index=True)
     level: Mapped[str] = mapped_column(String, nullable=False, default="info")  # info/warn/error
     # Queryable event code: detected/attempted/recovered/escalated/gave_up/spawned/skipped_duplicate.
     kind: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
@@ -433,7 +447,7 @@ class AutomationTargetState(Base):
     target: Mapped[str] = mapped_column(String, primary_key=True)
     state: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
 class BacklogGroup(Base):
@@ -472,7 +486,10 @@ class CiRun(Base):
 
     __tablename__ = "ci_run"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # GitHub run/job ids are int64 (e.g. 32407697884) — Integer (32-bit) only
+    # "worked" here because SQLite is dynamically typed; Postgres rejects
+    # any value above 2^31-1 with "integer out of range".
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     workflow_path: Mapped[str | None] = mapped_column(String, nullable=True)
     event: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -489,8 +506,8 @@ class CiJob(Base):
 
     __tablename__ = "ci_job"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)  # GitHub job id
-    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # GitHub job id
+    run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     conclusion: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -507,7 +524,7 @@ class CiTestResult(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     suite: Mapped[str | None] = mapped_column(String, nullable=True)
     test_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     outcome: Mapped[str | None] = mapped_column(String, nullable=True)  # passed/failed/error/skipped
@@ -584,9 +601,17 @@ class CiFinding(Base):
     # open on GitHub — either an active finding, or a resolve whose close failed and
     # must be retried. Kept alongside issue_number so a recurrence can reopen it.
     issue_closed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
-    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=_utcnow)
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=_utcnow)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    first_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=_utcnow)
+    # timezone=True to match last_seen_at directly above: both are written with
+    # _utcnow() (AWARE) from cicd_doctor.py and resolved_at is also compared
+    # against an aware cutoff (`resolved_at < finding_cutoff`) during retention
+    # pruning. A naive column here silently breaks both the write and the
+    # comparison on Postgres — keep the two columns consistent.
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None)
 
 
 # ---------------------------------------------------------------------------

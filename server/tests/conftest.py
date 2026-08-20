@@ -368,3 +368,67 @@ def mtls_certs(tmp_path) -> MTLSCerts:
         rogue_client_cert=str(d / "rogue_client.pem"),
         rogue_client_key=str(d / "rogue_client.key"),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Postgres-backed test harness (Task 1: server/postgres-migration)
+# --------------------------------------------------------------------------- #
+import pytest_asyncio
+
+
+@pytest.fixture(scope="session")
+def pg_url() -> str:
+    """CCSWITCH_TEST_PG_URL, guarded against ever pointing at production.
+
+    pg_engine (below) unconditionally drop_all's this database. A cutover
+    operator's shell can plausibly hold BOTH the production $PG_URL and
+    CCSWITCH_TEST_PG_URL at once (see docs/runbooks/postgres-cutover.md) — one
+    wrong export and a stray test run would drop the production schema. This
+    contradicts the "Production isolation" guarantee at the top of this file,
+    so it is enforced the same way: fail fast, before any connection is made,
+    rather than trust the caller got the env right.
+
+    The only check that's actually safe here is a naming convention — refuse
+    to proceed unless the *database name* in the URL contains "test". This
+    does not require the database to exist or be reachable.
+    """
+    url = os.environ.get("CCSWITCH_TEST_PG_URL")
+    if not url:
+        pytest.skip("CCSWITCH_TEST_PG_URL not set")
+    from urllib.parse import urlsplit
+    db_name = urlsplit(url).path.lstrip("/")
+    if "test" not in db_name.lower():
+        pytest.fail(
+            f"CCSWITCH_TEST_PG_URL targets database {db_name!r}, which does not "
+            f"contain 'test'. Refusing to run: pg_engine unconditionally "
+            f"drop_all's this database, and this fixture must never be pointed "
+            f"at a production database. Point CCSWITCH_TEST_PG_URL at a "
+            f"database whose name contains 'test' (e.g. 'ccswitch_test').")
+    return url
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def pg_engine(pg_url):
+    """A Postgres engine with the full schema, torn down after the session.
+
+    Session-scoped because create_all/drop_all over 26 tables is far too slow to
+    repeat per test. Tests that need isolation must clean up their own rows.
+
+    Session-scoped + loop_scope="session": any test consuming this fixture MUST
+    carry @pytest.mark.asyncio(loop_scope="session") on its own marker, or you'll
+    hit a confusing "Future attached to a different loop" error that looks like a
+    database problem but isn't (pytest-asyncio 1.4.0 strict mode).
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from server.db.models import Base
+
+    engine = create_async_engine(pg_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    try:
+        yield engine
+    finally:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        await engine.dispose()
