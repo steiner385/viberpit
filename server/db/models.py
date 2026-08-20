@@ -190,8 +190,10 @@ class AppSession(Base):
     __tablename__ = "app_sessions"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
-    # Verified Tailscale identity string (e.g. user@example.com)
-    identity: Mapped[str] = mapped_column(String, nullable=False)
+    # Verified Tailscale identity string (e.g. user@example.com). Indexed: the
+    # auth reuse query filters on identity and sorts by created_at on every
+    # authenticated request (see server/auth/middleware.py).
+    identity: Mapped[str] = mapped_column(String, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -515,6 +517,53 @@ class CiTestResult(Base):
     head_sha: Mapped[str | None] = mapped_column(String, nullable=True)
     head_branch: Mapped[str | None] = mapped_column(String, nullable=True)
     created_ts: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
+
+    # Backstop for the ingest-side dedupe above. NULLs compare as distinct in SQL, so
+    # rows with a NULL suite/test_id are NOT covered — ingest-side dedupe is the
+    # primary guard, this catches concurrent-tick races. Created on the live DB by
+    # scripts/ccswitch-db-compact.py (create_all does not add constraints to an
+    # existing table).
+    #
+    # Migration-order warning: when the Postgres migration (sub-project 1b) adds
+    # this same unique constraint, it MUST run AFTER scripts/ccswitch-db-compact.py
+    # has deduped the table. Creating uq_ci_test_result_run_suite_test on the
+    # un-compacted table fails outright — ~430k existing duplicate rows violate it.
+    __table_args__ = (
+        UniqueConstraint("run_id", "suite", "test_id",
+                         name="uq_ci_test_result_run_suite_test"),
+    )
+
+
+class CiTestDaily(Base):
+    """Per-(repo, test, day) outcome counts, rolled up from CiTestResult.
+
+    Flaky-test detection needs the RATE at which a test fails, not each individual
+    passing row. Raw passed/skipped rows older than raw_retention_days are folded in
+    here and then dropped (CicdDoctorLoop._rollup_passed); failed rows stay raw for
+    retention_days because findings quote their message.
+
+    Every non-key column is NULLABLE — the SQLite reconcile rule (see
+    test_schema_reconcile_coverage): init_db can only backfill nullable columns.
+    """
+
+    __tablename__ = "ci_test_daily"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    test_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # 'YYYY-MM-DD' UTC. A string, not a Date: it is bucketed in Python so the value is
+    # identical on SQLite and Postgres (see the plan's portability constraint).
+    day: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    passed: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    # Reserved: no writer currently populates this. Failed rows are kept raw
+    # (never folded into CiTestDaily) for the full retention window because
+    # findings quote their message — see the class docstring.
+    failed: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    skipped: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("repo", "test_id", "day", name="uq_ci_test_daily"),
+    )
 
 
 class CiFinding(Base):

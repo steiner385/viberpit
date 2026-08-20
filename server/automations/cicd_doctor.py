@@ -12,6 +12,12 @@ from .base import AutomationStatus, ConfigField
 
 log = logging.getLogger(__name__)
 
+# Rows folded per tick. Bounds the transaction so a tick never rewrites millions of
+# rows at once; the backlog is drained by scripts/ccswitch-db-compact.py. The
+# delete uses id.in_([...]), one bound parameter per row — kept well under
+# SQLite's 32766-parameter ceiling (20_000 was only 1.6x away from it).
+_ROLLUP_BATCH = 10_000
+
 
 class CicdDoctor:
     id = "cicd-doctor"
@@ -47,6 +53,11 @@ class CicdDoctor:
         ConfigField(key="retention_days", label="History retention (days)", type="int",
                     default=90,
                     help="CI run history older than this is pruned from the local database."),
+        ConfigField(key="raw_retention_days", label="Raw test-result window (days)",
+                    type="int", default=7,
+                    help="Keep individual passed/skipped test rows this long, then fold "
+                         "them into per-day counts. Failed rows are kept raw for the "
+                         "full retention window."),
     ]
 
     def status(self, ctx: Any) -> AutomationStatus:
@@ -136,7 +147,7 @@ class CicdDoctorLoop:
         from sqlalchemy import select
         from server.db import db_session
         from server.db.models import CiJob, CiRun, CiTestResult
-        from .cicd.junit import parse_junit_xml
+        from .cicd.junit import JUnitCase, parse_junit_xml
 
         cursor = await self._ctx.get_target_state(f"cursor:{repo}")
         since = cursor.get("last_created_ts")
@@ -160,6 +171,24 @@ class CicdDoctorLoop:
                                  conclusion=j["conclusion"], duration_s=j["duration_s"],
                                  head_sha=r["head_sha"], head_branch=r["head_branch"],
                                  created_ts=r["created_ts"]))
+                # One <testcase> per ATTEMPT: a framework retry repeats the same
+                # (suite, test_id). Keep the LAST attempt — it is the outcome the
+                # run finished with — so ingestion is idempotent against
+                # uq_ci_test_result_run_suite_test. 430,779 rows (3.6% of the
+                # table) were duplicates before this.
+                #
+                # Keyed on (suite, test_id) and hoisted ABOVE the suite loop: if two
+                # artifacts in one run yield the SAME suite string, keying on
+                # test_id alone would let the second artifact's cases overwrite the
+                # dict entry-by-entry but still emit one row per artifact pass,
+                # producing two rows for the same (run_id, suite, test_id) and
+                # violating uq_ci_test_result_run_suite_test on flush. Accumulating
+                # across all suites first and emitting once keeps "last attempt
+                # wins per suite+test" while staying idempotent against the
+                # constraint even when a suite string repeats within one run. The
+                # suite is already the key's first element, so the value only needs
+                # to hold the case; suite is recovered from the key when emitting.
+                last_attempt: dict[tuple[str, str], JUnitCase] = {}
                 for suite, xml in await self._fetch_junit(repo, r["id"]):
                     try:
                         cases = parse_junit_xml(xml)
@@ -168,12 +197,14 @@ class CicdDoctorLoop:
                                     repo, r["id"])
                         continue
                     for c in cases:
-                        db.add(CiTestResult(repo=repo, run_id=r["id"], suite=suite,
-                                            test_id=c.test_id, outcome=c.outcome,
-                                            time_s=c.time_s, message=c.message,
-                                            head_sha=r["head_sha"],
-                                            head_branch=r["head_branch"],
-                                            created_ts=r["created_ts"]))
+                        last_attempt[(suite, c.test_id)] = c
+                for (result_suite, _test_id), c in last_attempt.items():
+                    db.add(CiTestResult(repo=repo, run_id=r["id"], suite=result_suite,
+                                        test_id=c.test_id, outcome=c.outcome,
+                                        time_s=c.time_s, message=c.message,
+                                        head_sha=r["head_sha"],
+                                        head_branch=r["head_branch"],
+                                        created_ts=r["created_ts"]))
             await db.flush()
         await self._ctx.set_target_state(f"cursor:{repo}", {"last_created_ts": max_ts})
 
@@ -197,6 +228,17 @@ class CicdDoctorLoop:
         horizon_days = max(float(config.get("retention_days", 90)),
                            th.retire_days, th.min_window_days, th.demote_window_days)
         since_ts = now - horizon_days * 86400.0
+        # Flakiness is the % of head_shas showing BOTH a pass and a fail over the
+        # test_rows window. _rollup_passed folds/deletes raw passed rows older than
+        # raw_retention_days, so no sha older than that can ever show a pass again
+        # — while old fail-only shas remain. Querying test_rows over the full
+        # horizon_days window would therefore silently under-report flakiness (the
+        # denominator keeps old fail-only shas with no matching pass evidence).
+        # CiTestDaily can't fix this: it drops head_sha, the dimension flakiness is
+        # computed over. Clamp this query ALONE to the window where pass evidence
+        # still exists; job/run queries below keep the wider horizon_days window.
+        raw_retention_days = float(config.get("raw_retention_days", 7))
+        test_since_ts = now - raw_retention_days * 86400.0
         # Select column tuples, not whole ORM entities: the analyzers only read a
         # handful of columns and build detached value objects, so hydrating full
         # mapped instances (identity map, all columns) is pure overhead at 10^5+ rows.
@@ -208,7 +250,8 @@ class CicdDoctorLoop:
             test_rows = (await db.execute(
                 select(CiTestResult.test_id, CiTestResult.head_sha,
                        CiTestResult.outcome, CiTestResult.message)
-                .where(CiTestResult.repo == repo, CiTestResult.created_ts >= since_ts))).all()
+                .where(CiTestResult.repo == repo,
+                       CiTestResult.created_ts >= test_since_ts))).all()
             run_count = (await db.execute(
                 select(func.count()).select_from(CiRun)
                 .where(CiRun.repo == repo, CiRun.created_ts >= since_ts))).scalar_one()
@@ -342,6 +385,56 @@ class CicdDoctorLoop:
 
         return open_n, candidates
 
+    async def _rollup_passed(self, config: dict) -> None:
+        """Fold raw passed/skipped rows older than raw_retention_days into
+        CiTestDaily day-counts, then delete them. Failed AND error rows are never
+        folded — findings quote their message, so they stay raw until
+        retention_days. ("error" is a distinct outcome from "failed" — see
+        junit.py's _OUTCOME_TAGS — but it is still a failure and must be excluded
+        the same way.)
+
+        Day bucketing happens in PYTHON, not SQL: this must behave identically on
+        SQLite today and Postgres after sub-project 1b.
+        """
+        from collections import Counter
+        from datetime import datetime, timezone
+
+        from sqlalchemy import delete, select
+        from server.db import db_session
+        from server.db.models import CiTestDaily, CiTestResult
+
+        raw_days = float(config.get("raw_retention_days", 7))
+        horizon = self._clock() - raw_days * 86400.0
+        async with db_session() as db:
+            rows = (await db.execute(
+                select(CiTestResult.id, CiTestResult.repo, CiTestResult.test_id,
+                       CiTestResult.outcome, CiTestResult.created_ts)
+                .where(CiTestResult.outcome.notin_(("failed", "error")),
+                       CiTestResult.created_ts < horizon)
+                .limit(_ROLLUP_BATCH))).all()
+            if not rows:
+                return
+            counts: Counter = Counter()
+            for _id, repo, test_id, outcome, ts in rows:
+                day = datetime.fromtimestamp(ts or 0.0, timezone.utc).strftime("%Y-%m-%d")
+                counts[(repo, test_id, day, outcome)] += 1
+            for (repo, test_id, day, outcome), n in counts.items():
+                bucket = (await db.execute(select(CiTestDaily).where(
+                    CiTestDaily.repo == repo,
+                    CiTestDaily.test_id == test_id,
+                    CiTestDaily.day == day))).scalar_one_or_none()
+                if bucket is None:
+                    bucket = CiTestDaily(repo=repo, test_id=test_id, day=day,
+                                         passed=0, failed=0, skipped=0)
+                    db.add(bucket)
+                    await db.flush()
+                if outcome == "skipped":
+                    bucket.skipped = (bucket.skipped or 0) + n
+                else:
+                    bucket.passed = (bucket.passed or 0) + n
+            await db.execute(delete(CiTestResult).where(
+                CiTestResult.id.in_([r[0] for r in rows])))
+
     async def _prune(self, config: dict) -> None:
         """Bounded tables: drop history rows older than retention_days, and prune
         long-resolved findings so ci_finding doesn't grow without bound (#448)."""
@@ -351,6 +444,10 @@ class CicdDoctorLoop:
         from server.db import db_session
         from server.db.models import CiFinding, CiJob, CiRun, CiTestResult
         from server.db.models import _utcnow
+
+        # Fold passed/skipped into day-counts BEFORE the age-based deletes, so a row
+        # is always counted before it can be dropped.
+        await self._rollup_passed(config)
 
         retention_days = float(config.get("retention_days", 90))
         horizon = self._clock() - retention_days * 86400.0
