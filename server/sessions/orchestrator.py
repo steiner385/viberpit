@@ -2621,13 +2621,26 @@ class SessionOrchestrator:
         return out
 
     def _autopilot_pr_facts(self, rec) -> "PrFacts":
-        """Verified PR ground-truth for a governed session, from the poller cache
-        only (no new I/O). Mirrors request_pr_fix: check every authored branch plus
-        the scratch branch, dedupe by PR number."""
+        """Verified PR ground-truth for a governed session, from the cache only (no
+        new I/O). Mirrors request_pr_fix: check every authored branch plus the scratch
+        branch, dedupe by PR number. On a per-branch cache miss, falls back to the
+        population cache by head_ref so a just-opened PR the poller hasn't cached yet
+        is still seen — the same merge _autopilot_refresh_pr_facts does, but here on
+        the cheap per-tick path that feeds met_bar and the fleet snapshot."""
         from server.automations.completion_bar import PrFact, PrFacts
         seen: dict[int, PrFact] = {}
         for br in self._session_pr_branches(rec):
-            info = self.pr_for(rec.repo, br) if rec.repo else None
+            if not rec.repo:
+                continue
+            info = self.pr_for(rec.repo, br)
+            # Per-branch poller cache miss (cooldown / high-volume repo / branch not
+            # yet polled) → resolve from the population cache by head_ref. Without this
+            # the snapshot stays prs=[] and met_bar re-fires a spurious "open a PR"
+            # nudge once the PR mention leaves the transcript tail (compaction), since
+            # facts_contradicted's transcript gate is then the ONLY other path that
+            # would trigger the population-cache-aware refresh.
+            if info is None and getattr(self, "_pr_population", None) is not None:
+                info = self._pr_population_pr(rec.repo, br)
             if info is not None and info.number not in seen:
                 seen[info.number] = PrFact(
                     number=info.number, state=info.state, is_draft=info.is_draft,
