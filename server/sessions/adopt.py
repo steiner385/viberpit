@@ -239,6 +239,30 @@ def discover_candidates(
     return out
 
 
+def candidate_to_wire(c: AdoptionCandidate) -> dict:
+    """Serialize an AdoptionCandidate to the dashboard wire format.
+
+    Lives here (not in the API layer) because discovery now runs on the daemon
+    host: the daemon serializes candidates and ships JSON over RPC, so this must
+    be callable server-side. Both the in-process and remote paths return this
+    exact shape, leaving the /adoptable endpoint a passthrough.
+    """
+    from server.time_iso import iso_utc
+
+    return {
+        "pid": c.pid,
+        "account": c.account,
+        "cwd": c.cwd,
+        "claudeSessionId": c.claude_session_id,
+        "name": c.name,
+        "mapped": c.mapped,
+        "tracked": c.tracked,
+        "skipReason": c.skip_reason,
+        "lastActivity": iso_utc(c.last_activity),
+        "pidAlive": c.pid_alive,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Process termination (force-takeover)
 # ---------------------------------------------------------------------------

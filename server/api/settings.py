@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
@@ -39,50 +37,32 @@ class SettingsBody(BaseModel):
     maxActiveSessions: int | None = None
 
 
-async def _migrate_archive_home(db, old_home: str | None, new_home: str | None) -> None:
+async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | None) -> None:
     """Move all archived session directories from old_home to new_home.
 
-    Resolves both paths using the same fallback logic as _effective_archive_home()
-    in the orchestrator (DB value → CCSWITCH_ARCHIVE_HOME env → default).
-    Runs the filesystem moves off the event loop; failures are logged but do not
-    abort the settings update so the DB row is always written.
+    The archived dirs live under the daemon's CCSWITCH_HOME, so the actual moves
+    run on the daemon host via orchestrator.migrate_archive_home — an edge-side
+    shutil.move silently no-ops once daemon and edge are split across hosts
+    (#709 finding 5). The archived-id set is read from the (shared) DB here; only
+    the filesystem move is host-specific. Path defaults and the old==new no-op
+    check resolve daemon-side. Failures are logged there, never raised, so the DB
+    row is always written.
     """
-    from ccswitch.paths import archive_dir
     from server.db.models import Session as DbSession
-
-    old_dir = Path(old_home) if old_home else archive_dir()
-    new_dir = Path(new_home) if new_home else archive_dir()
-    if old_dir == new_dir:
-        return
 
     archived_ids: list[str] = list((await db.execute(
         select(DbSession.id).where(DbSession.status == "archived")
     )).scalars().all())
-
     if not archived_ids:
         return
 
-    def _move_all() -> int:
-        new_dir.mkdir(parents=True, exist_ok=True)
-        failures = 0
-        for sid in archived_ids:
-            src = old_dir / sid
-            if src.exists():
-                dst = new_dir / sid
-                if not dst.exists():
-                    try:
-                        shutil.move(str(src), str(dst))
-                    except Exception:
-                        log.exception("archive_home migrate: %s → %s failed", src, dst)
-                        failures += 1
-        return failures
-
-    failures = await asyncio.to_thread(_move_all)
+    result = await orch.migrate_archive_home(old_home, new_home, archived_ids)
+    moved, failures = result.get("moved", 0), result.get("failures", 0)
     if failures:
         log.warning("archive_home migrate: %d/%d moves failed", failures, len(archived_ids))
     else:
-        log.info("archive_home migrate: moved %d sessions %s → %s",
-                 len(archived_ids), old_dir, new_dir)
+        log.info("archive_home migrate: moved %d/%d sessions %s → %s",
+                 moved, len(archived_ids), old_home, new_home)
 
 
 def _cap_raised(old_cap: int | None, new_cap: int) -> bool:
@@ -146,7 +126,7 @@ async def put_settings_row(
     if body.archiveHome is not None:
         new_home = body.archiveHome.strip() or None
         if new_home != row.archive_home:
-            await _migrate_archive_home(db, row.archive_home, new_home)
+            await _migrate_archive_home(request.app.state.sessions, db, row.archive_home, new_home)
         row.archive_home = new_home
     if body.maxActiveSessions is not None:
         old_cap = row.max_active_sessions

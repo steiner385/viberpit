@@ -102,6 +102,10 @@ class InProcessOrchestratorAdapter:
     # --- git credential-refresh alerts (#670) ---
     async def git_credential_alerts(self, *a, **k): return await _maybe_await(self._orch.git_credential_alerts(*a, **k))
     async def dismiss_git_credential_alert(self, *a, **k): return await _maybe_await(self._orch.dismiss_git_credential_alert(*a, **k))
+    # --- cross-host inspection RPCs (#709): run on the daemon host, never the edge ---
+    async def list_adoptable_candidates(self, *a, **k): return await _maybe_await(self._orch.list_adoptable_candidates(*a, **k))
+    async def migrate_archive_home(self, *a, **k): return await _maybe_await(self._orch.migrate_archive_home(*a, **k))
+    async def cloned_repos(self, *a, **k): return await _maybe_await(self._orch.cloned_repos(*a, **k))
     # --- automation consolidation methods ---
     async def consolidation_candidates(self, *a, **k): return await _maybe_await(self._orch.consolidation_candidates(*a, **k))
     async def automation_consolidate(self, *a, **k): return await _maybe_await(self._orch.automation_consolidate(*a, **k))
