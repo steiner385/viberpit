@@ -49,16 +49,41 @@ async def test_list_adoptable_candidates_serializes_wire_dicts():
 
 
 @pytest.mark.asyncio
-async def test_migrate_archive_home_moves_dirs(tmp_path):
+async def test_migrate_archive_home_moves_dirs_and_restamps_archive_root(tmp_path):
+    """Moving the dirs is only half the job — each moved row must be re-stamped.
+
+    unarchive resolves through Session.archive_root, so a migration that relocates
+    the directories without updating it would silently break exactly the sessions it
+    just moved. s3 has no directory, so it must be neither moved nor re-stamped.
+    """
+    from sqlalchemy import select as sa_select
+
+    from server.db import db_session, init_db
+    from server.db.models import Session as DbSession
+
     old, new = tmp_path / "old", tmp_path / "new"
     (old / "s1").mkdir(parents=True)
     (old / "s1" / "meta.json").write_text("{}")
     (old / "s2").mkdir()
+
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'migrate.db'}")
+    async with db_session() as db:
+        for sid in ("s1", "s2", "s3"):
+            db.add(DbSession(id=sid, name=sid, account_name="a", status="archived",
+                             cwd=str(tmp_path / "wt" / sid), archive_root=str(old)))
+
     # s3 is in the DB list but has no dir on disk — must be skipped, not counted.
     result = await _orch().migrate_archive_home(str(old), str(new), ["s1", "s2", "s3"])
     assert result == {"moved": 2, "failures": 0}
     assert (new / "s1" / "meta.json").read_text() == "{}"
     assert not (old / "s1").exists()
+
+    async with db_session() as db:
+        roots = dict((await db.execute(
+            sa_select(DbSession.id, DbSession.archive_root))).all())
+    assert roots["s1"] == str(new), "moved session must name the new root"
+    assert roots["s2"] == str(new)
+    assert roots["s3"] == str(old), "unmoved session must keep the old root"
 
 
 @pytest.mark.asyncio

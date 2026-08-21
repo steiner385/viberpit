@@ -676,3 +676,50 @@ def test_move_into_archive_skips_when_inodes_low(tmp_path):
 
     assert result == "skipped:nospace"
     assert not dest.exists()  # no partial copy left behind
+
+
+def test_permanent_delete_uses_stored_archive_root_not_current_home(tmp_path):
+    """The purge must delete the directory where the session actually lives.
+
+    permanent_delete used to resolve against the CURRENT archive home. Once that
+    setting moved disks, the rmtree targeted a path under the new root that had
+    never existed — and shutil.rmtree(..., ignore_errors=True) made that silently
+    succeed. The row was deleted and the real directory stranded on the old root
+    forever: one leaked working tree per purged session (150 of them, 28 GB, found
+    2026-08-21). Resolve through archive_root instead.
+    """
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    old_root = tmp_path / "old_disk"
+    new_root = tmp_path / "new_disk"
+
+    async def run():
+        # Current archive home points at new_root; the session lives under old_root.
+        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path),
+                                     "CCSWITCH_ARCHIVE_HOME": str(new_root)}):
+            new_root.mkdir(parents=True)
+            archive_path = old_root / "s21"
+            archive_path.mkdir(parents=True)
+            (archive_path / "file.txt").write_text("must be deleted")
+
+            await init_db(db_url=db_url)
+            await _seed([
+                dict(id="s21", name="Stranded", account_name="acc1",
+                     claude_session_id=None, status="archived",
+                     cwd="/old/cwd/s21", archive_root=str(old_root)),
+            ])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            result = await orch.permanent_delete("s21")
+
+            from sqlalchemy import select as sa_select
+            async with db_session() as db:
+                row = (await db.execute(
+                    sa_select(DbSession).where(DbSession.id == "s21")
+                )).scalars().first()
+            return result, row, archive_path.exists()
+
+    deleted, db_row, folder_exists = asyncio.run(run())
+    assert deleted is True
+    assert db_row is None
+    assert not folder_exists, (
+        "the directory under the STORED archive root must be removed, not a "
+        "nonexistent path under the current archive home")
