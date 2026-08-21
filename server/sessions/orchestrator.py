@@ -166,6 +166,14 @@ class InsufficientStorageError(Exception):
     """Raised when unarchiving cannot proceed due to inode or byte exhaustion."""
 
 
+class ArchiveMissingError(Exception):
+    """Raised when an archived session's directory is absent from its archive root.
+
+    Never fabricate an empty cwd instead: doing so reports success while presenting
+    the user an empty worktree, which is indistinguishable from "the work was lost"
+    and hides a real misconfiguration (e.g. an archive root that moved disks)."""
+
+
 # Session-window utilisation ceiling that triggers rotation (100 = hard ceiling per spec)
 _ROTATION_CEILING: float = 100.0
 
@@ -6350,8 +6358,10 @@ class SessionOrchestrator:
         # Clear in-memory worktree registration (we move the dir, not remove via git).
         self._worktrees.pop(session_id, None)
 
-        # Move the cwd into the archive directory.
-        dest = (await self._effective_archive_home()) / session_id
+        # Move the cwd into the archive directory. Capture the root actually used so
+        # unarchive can resolve through it later — see Session.archive_root.
+        archive_home = await self._effective_archive_home()
+        dest = archive_home / session_id
         cwd_path: Path | None = Path(record.cwd) if (record and record.cwd) else None
 
         # Resolve the shared clone BEFORE the move, while the worktree is still a
@@ -6412,7 +6422,7 @@ class SessionOrchestrator:
                 sa_update(DbSession)
                 .where(DbSession.id == session_id)
                 .values(status="archived", archived_by=archived_by, archive_context=context,
-                        archived_at=datetime.utcnow())
+                        archived_at=datetime.utcnow(), archive_root=str(archive_home))
             )
         prev_status = record.status if record is not None else None
         log_event(log, logging.INFO, "session.terminal",
@@ -6678,7 +6688,12 @@ class SessionOrchestrator:
         if row is None:
             return None
 
-        archive_path = (await self._effective_archive_home()) / session_id
+        # Resolve through the root recorded at archive time. The current archive home is
+        # only a fallback for legacy rows predating archive_root — using it unconditionally
+        # is what silently restored empty trees after the archive root moved disks.
+        stored_root = getattr(row, "archive_root", None)
+        archive_base = Path(stored_root) if stored_root else (await self._effective_archive_home())
+        archive_path = archive_base / session_id
         original_cwd = Path(row.cwd)
 
         def _restore() -> str:
@@ -6688,13 +6703,15 @@ class SessionOrchestrator:
                 # (prune=()): unarchiving restores the worktree, it does not shed deps.
                 return move_into_archive(archive_path, original_cwd, prune=())
             else:
-                # Archive folder missing — recreate an empty cwd so SDK can start.
-                original_cwd.mkdir(parents=True, exist_ok=True)
-                log.warning(
-                    "session.unarchive id=%s archive folder missing, recreating empty cwd",
-                    session_id,
+                # Do NOT fabricate an empty cwd here: that reports success while handing
+                # the user an empty worktree, hiding a real misconfiguration.
+                raise ArchiveMissingError(
+                    f"Archived session {session_id} is not present at {archive_path}. "
+                    f"Its recorded archive root is "
+                    f"{stored_root or '(none — legacy row, used current archive home)'}; "
+                    f"if the archive directory moved, restore it or correct the session's "
+                    f"archive_root before unarchiving."
                 )
-                return "created_empty"
 
         move_result = await asyncio.to_thread(_restore)
         if move_result == "skipped:nospace":

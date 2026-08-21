@@ -73,9 +73,14 @@ def test_unarchive_preserves_autopilot_paused(tmp_path):
 
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'unarchive.db'}")
         cwd = str(tmp_path / "wt")
+        # Archived rows resolve through archive_root — materialize it so unarchive
+        # performs a real restore instead of hitting ArchiveMissingError.
+        archive_root = tmp_path / "archive"
+        (archive_root / "s1").mkdir(parents=True, exist_ok=True)
         async with db_session() as db:
             db.add(DbSession(id="s1", name="n", account_name="a", cwd=cwd,
-                             status="archived", autopilot_paused=True))
+                             status="archived", autopilot_paused=True,
+                             archive_root=str(archive_root)))
 
         orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
         orch._records = {}

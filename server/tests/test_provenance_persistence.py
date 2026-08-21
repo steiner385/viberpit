@@ -23,9 +23,15 @@ def _bare_orch():
 
 
 async def _seed(tmp_path, dbname, **cols):
+    from pathlib import Path
     from server.db import init_db, db_session
     from server.db.models import Session as DbSession
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / dbname}")
+    if cols.get("status") == "archived":
+        # Archived rows resolve through archive_root — seed and materialize it so
+        # unarchive performs a real restore instead of hitting ArchiveMissingError.
+        cols.setdefault("archive_root", str(tmp_path / "archive"))
+        Path(cols["archive_root"], "s1").mkdir(parents=True, exist_ok=True)
     async with db_session() as db:
         db.add(DbSession(id="s1", name="n", account_name="a", cwd=str(tmp_path / "wt"),
                          **cols))

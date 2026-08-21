@@ -29,7 +29,11 @@ from server.sessions.search import parse_terms, session_matches
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import db_session, get_db
-from server.sessions.orchestrator import BranchSwitchError, InsufficientStorageError
+from server.sessions.orchestrator import (
+    ArchiveMissingError,
+    BranchSwitchError,
+    InsufficientStorageError,
+)
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.selection import AllAccountsBusy
 from server.time_iso import iso_utc
@@ -907,11 +911,23 @@ async def unarchive_session(
             status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
             detail={"code": "insufficient_storage", "message": str(exc)},
         )
+    except ArchiveMissingError as exc:
+        # 410: the session row is valid, but the archived bytes are not where the row
+        # says they are. Surfacing this beats silently restoring an empty worktree.
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail={"code": "archive_missing", "message": str(exc)},
+        )
     except DaemonError as exc:
         if exc.err_type == "InsufficientStorageError":
             raise HTTPException(
                 status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
                 detail={"code": "insufficient_storage", "message": exc.message},
+            )
+        if exc.err_type == "ArchiveMissingError":
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail={"code": "archive_missing", "message": exc.message},
             )
         raise
     except DaemonUnavailable:

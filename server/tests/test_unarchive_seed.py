@@ -39,6 +39,12 @@ def _archived_row(**over) -> dict:
     base = dict(id="s1", name="S", account_name="a", claude_session_id="c1",
                 status="archived", cwd="/tmp/does-not-matter")
     base.update(over)
+    # Archived rows resolve their directory through archive_root, so seed one and
+    # materialize it: unarchive then performs a REAL restore. Before archive_root
+    # existed these tests passed only because a missing archive silently produced an
+    # empty cwd — the very bug this column removes.
+    base.setdefault("archive_root", str(Path(str(base["cwd"])).parent / "archive"))
+    Path(str(base["archive_root"]), str(base["id"])).mkdir(parents=True, exist_ok=True)
     return base
 
 
