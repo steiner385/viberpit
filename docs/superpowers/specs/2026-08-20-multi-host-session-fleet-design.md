@@ -95,9 +95,25 @@ session fleets prefer rocky. The dispatcher must know this.
 6. **Repo locality is a first-class dispatch input**, not an afterthought. Sessions work inside
    `<repo_root>/.ccswitch/worktrees/`, and the hosts hold different repos (dobby:
    `/mnt/ssk-ssd/tony/GitHub/…`; rocky: `~/GitHub/…`). A dispatcher blind to this strands sessions.
-7. **Rocky does not join the tailnet.** It is reached over the LAN from dobby only, and never serves
-   user-facing traffic. Tailscale identity auth (`server/auth/middleware.py`) remains the edge's
-   user-facing gate, unchanged; mTLS guards only the second hop.
+7. **Rocky JOINS the tailnet.** *(Supersedes the original "rocky does not join the tailnet"
+   decision — reversed 2026-08-20 during sub-project 2.)* Rocky is a tailnet node
+   (`rocky.tail0dd570.ts.net`, 100.69.70.109). It still never serves user-facing traffic; the
+   tailnet is the transport between hosts, not a public surface.
+
+   **Why the reversal.** The original decision put the dobby↔rocky links on the LAN. That is
+   unsafe for the database hop: the PostgreSQL wire protocol is **cleartext**. `scram-sha-256`
+   protects the *password* via challenge-response but encrypts nothing, so every query and every
+   returned row — session transcripts, prompts, account names — would have crossed the LAN
+   readable. A narrow `pg_hba` `/32` rule limits *who can connect*, not *who can read*. Tailscale
+   provides WireGuard encryption plus device authentication, and removes the hardcoded LAN IPs that
+   would break on a DHCP change.
+
+   **Consequences.** Postgres binds `localhost` + the tailnet address only, with **no LAN listener
+   at all**; `pg_hba` permits exactly `100.69.70.109/32` for one database and one role. The mTLS
+   server certificate's SAN is the tailnet identity (`DNS:rocky.tail0dd570.ts.net,IP:100.69.70.109`)
+   — **not** `rocky.lan`, which resolves via mDNS to a different path and would produce the
+   "certificate does not match the server name" failure the quickstart warns about. `tailscaled` is
+   now a hard dependency of rocky's daemon (`Requires=tailscaled.service`).
 
 ### Why sharing beats copying (rationale for decisions 4-5)
 
