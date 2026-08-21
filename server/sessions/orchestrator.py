@@ -789,11 +789,29 @@ class SessionOrchestrator:
             AllAccountsBusy: when no account has headroom.
             ValueError: when cwd is given but does not exist.
             BranchSwitchError: when branch checkout fails.
+            gitrepos.CloneError / gitrepos.GhError: when repo is given (no cwd)
+                and resolving it into a ccswitch-owned clone fails.
         """
         # Resolve cwd: if given, it MUST be an existing directory
         if cwd is not None:
             if not os.path.isdir(cwd):
                 raise ValueError(f"cwd does not exist: {cwd}")
+        elif repo is not None:
+            # No explicit cwd — resolve the repo (nameWithOwner) into a
+            # ccswitch-owned clone path, cloning on first use.  This MUST run
+            # in this process: gitrepos.ensure_clone owns the on-disk clone
+            # registry, and in a dual-host deployment (edge on one host, this
+            # orchestrator running in the session daemon on another) only the
+            # daemon's filesystem is where the session will actually execute.
+            # The edge used to resolve this itself and hand over a `cwd` —
+            # cross-host that path doesn't exist here. Mirrors the daemon's
+            # other ensure_clone call sites (_backlog_spawn, _pr_doctor_step,
+            # _pr_doctor_consolidate_spawn). The user's real ~/GitHub checkouts
+            # are never touched — all clone + worktree activity lives under
+            # <repo_root>/.ccswitch/.
+            url = f"https://github.com/{repo}.git"
+            cwd = await asyncio.to_thread(
+                gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
 
         session_id = str(uuid.uuid4())
 
