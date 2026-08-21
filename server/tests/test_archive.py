@@ -287,8 +287,18 @@ def test_unarchive_moves_folder_back_and_sets_idle(tmp_path):
     assert not (tmp_path / "archive" / "s10").exists()
 
 
-def test_unarchive_missing_archive_folder_recreates_cwd(tmp_path):
-    """unarchive() with a missing archive folder recreates an empty cwd and still succeeds."""
+def test_unarchive_missing_archive_folder_raises(tmp_path):
+    """unarchive() with a missing archive folder fails loudly and creates no cwd.
+
+    This previously recreated an empty cwd and reported success, which is
+    indistinguishable from "the work was lost" and hid real misconfigurations
+    (most importantly an archive root that had moved disks — see
+    Session.archive_root and test_archive_root_resolution.py).
+    """
+    import pytest
+
+    from server.sessions.orchestrator import ArchiveMissingError
+
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     original_cwd = tmp_path / "regen_cwd"
 
@@ -302,13 +312,11 @@ def test_unarchive_missing_archive_folder_recreates_cwd(tmp_path):
                      cwd=str(original_cwd)),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
-            record = await orch.unarchive("s11")
-            return record
+            return await orch.unarchive("s11")
 
-    record = asyncio.run(run())
-    assert record is not None
-    assert record.status == "idle"
-    assert original_cwd.is_dir()  # empty but recreated
+    with pytest.raises(ArchiveMissingError):
+        asyncio.run(run())
+    assert not original_cwd.exists(), "must not fabricate an empty cwd"
 
 
 def test_unarchive_returns_none_for_unknown_session(tmp_path):

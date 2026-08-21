@@ -139,6 +139,15 @@ class Session(Base):
     # archived before this column existed and for never-archived sessions. Nullable
     # so init_db backfills it on existing rows without a migration.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    # Absolute archive ROOT the cwd was moved into, captured at archive time. unarchive()
+    # must resolve through this and never through the *current* archive home: archive_home
+    # is a placement setting (which disk), while being archived is a lifecycle fact about
+    # the session. Fusing the two meant that moving CCSWITCH_ARCHIVE_HOME to another disk
+    # retroactively pointed every past archive at a path it had never been written to, and
+    # unarchive silently restored an empty tree. NULL = archived before this column existed
+    # (resolve via the legacy fallback) or never archived. Nullable so init_db backfills
+    # without a migration.
+    archive_root: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Snapshot of the decision features at AUTO-archive time ({repo, goal, goal_source,
     # pr_state, reason}); copied into an `archive_reversed` autopilot event on unarchive so
     # the auto-archive algorithm can learn which sessions it wrongly archived. none_as_null

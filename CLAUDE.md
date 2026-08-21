@@ -58,7 +58,11 @@ is the equivalent. Admins may push directly in emergencies.
   env sets a live allowlist). Pin it per-test, or run the full suite with
   `env -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 pytest` (empty allowlist needs `CCSWITCH_DEV=1`).
 - Dev SQLite: `create_all` never ALTERs existing tables; `init_db` backfills missing nullable columns,
-  so add new model columns nullable — a NOT NULL column needs a real migration (Alembic, Postgres/prod).
+  so add new model columns nullable.
+- Prod Postgres: that backfill is **SQLite-gated** (`if url.startswith("sqlite")` in `server/db/__init__.py`),
+  so on Postgres *every* new model column needs an Alembic revision in `server/db/migrations/versions/` —
+  not just NOT NULL ones. Adding a column without one deploys green and then fails at runtime with
+  `UndefinedColumnError`. Copy the newest revision as a template and chain `down_revision`.
 
 ## Working norms
 
