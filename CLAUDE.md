@@ -57,12 +57,15 @@ is the equivalent. Admins may push directly in emergencies.
 - API auth tests 401 unless `CCSWITCH_TAILNET_ALLOWLIST` includes the test identity (the real shell
   env sets a live allowlist). Pin it per-test, or run the full suite with
   `env -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 pytest` (empty allowlist needs `CCSWITCH_DEV=1`).
-- Dev SQLite: `create_all` never ALTERs existing tables; `init_db` backfills missing nullable columns,
-  so add new model columns nullable.
-- Prod Postgres: that backfill is **SQLite-gated** (`if url.startswith("sqlite")` in `server/db/__init__.py`),
-  so on Postgres *every* new model column needs an Alembic revision in `server/db/migrations/versions/` —
-  not just NOT NULL ones. Adding a column without one deploys green and then fails at runtime with
-  `UndefinedColumnError`. Copy the newest revision as a template and chain `down_revision`.
+- `create_all` never ALTERs existing tables, so `init_db` runs `_reconcile_columns` +
+  `_assert_no_schema_drift` on **every** dialect (SQLite and Postgres) to ALTER-ADD missing columns.
+  Add new model columns **nullable** and they are picked up automatically on both.
+- A **NOT NULL** column still needs a real migration unless `_ddl_default_literal` can synthesize its
+  default — reconcile logs and skips it, then the drift assert fails startup loudly.
+- Nothing runs `alembic upgrade` at deploy time (and the prod DB has no `alembic_version` stamp — it was
+  built by `create_all` at cutover). The revisions in `server/db/migrations/versions/` are the reviewable
+  record of schema changes; reconcile is what actually applies them. Add a revision for any schema change
+  anyway, and chain `down_revision` off the newest one.
 
 ## Working norms
 

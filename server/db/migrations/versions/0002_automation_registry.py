@@ -6,7 +6,7 @@ Create Date: 2026-06-30
 
 Adds three tables (automation, automation_event, automation_target_state) and
 two nullable provenance columns (origin, origin_ref) to the sessions table.
-SQLite dev relies on init_db()/create_all + _reconcile_sqlite_columns; this
+SQLite dev relies on init_db()/create_all + _reconcile_columns; this
 migration is the Postgres/prod path for schema changes introduced by the
 automation shell feature.
 """

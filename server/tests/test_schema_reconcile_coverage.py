@@ -1,6 +1,7 @@
-"""Guard: every model column must survive the SQLite reconcile path.
+"""Guard: every model column must survive the reconcile path.
 
-The live deploy runs SQLite + _reconcile_sqlite_columns (no Alembic). Reconcile
+The live deploy runs _reconcile_columns on every dialect (no Alembic at deploy
+time; the revisions in server/db/migrations are the reviewable record). Reconcile
 can ALTER-ADD a NOT NULL column to an existing, populated table ONLY when it can
 synthesize a DEFAULT (see _ddl_default_literal). A NOT NULL column it can't
 synthesize is skipped at runtime → "no such column" against an old DB (the
