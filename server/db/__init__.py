@@ -103,8 +103,8 @@ def _ddl_default_literal(column) -> str | None:
     return None
 
 
-def _reconcile_sqlite_columns(sync_conn) -> None:
-    """Add any mapped column missing from an existing SQLite table.
+def _reconcile_columns(sync_conn) -> None:
+    """Add any mapped column missing from an existing table, on any dialect.
 
     ``create_all`` creates absent *tables* but never adds a column to a table
     that already exists, so a dev DB created before a model gained a column would
@@ -184,7 +184,7 @@ def _assert_no_schema_drift(sync_conn) -> None:
 
 
 async def init_db(db_url: str | None = None) -> None:
-    """Create tables (SQLite dev path) and initialise the session factory."""
+    """Create/reconcile tables on any dialect and initialise the session factory."""
     global _engine, _session_factory
     settings = get_settings()
     url = db_url or settings.db_url
@@ -201,9 +201,19 @@ async def init_db(db_url: str | None = None) -> None:
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Reconcile + drift-assert on EVERY dialect. These were once SQLite-gated,
+        # back when the live deployment was SQLite; the Postgres cutover silently
+        # invalidated that premise and left new model columns with nothing to create
+        # them — a column added to a model then deployed green and failed at runtime
+        # with UndefinedColumnError on every query selecting it. Both helpers are
+        # dialect-generic: reconcile compiles column types against the live dialect and
+        # only ever ADDs a missing column, and the drift assert compares names only.
+        await conn.run_sync(_reconcile_columns)
+        await conn.run_sync(_assert_no_schema_drift)
         if url.startswith("sqlite"):
-            await conn.run_sync(_reconcile_sqlite_columns)
-            await conn.run_sync(_assert_no_schema_drift)
+            # SQLite-only: `pending_rearm = 'null'` compares a json column to text,
+            # which Postgres rejects outright (its json type has no equality operator).
+            # It is also a legacy fix for rows written by the pre-none_as_null SQLite code.
             await conn.run_sync(_normalize_pending_rearm_null)
 
 

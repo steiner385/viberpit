@@ -464,3 +464,42 @@ async def test_deploy_config_put_upsert_on_postgres(pg_engine, pg_url):
         async with Session() as s:            # session-scoped fixture: clean up
             await s.execute(delete(RepoDeployConfig).where(RepoDeployConfig.repo == repo))
             await s.commit()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_reconcile_adds_missing_column_on_postgres(pg_engine, pg_url):
+    """A mapped column absent from an existing Postgres table must be ALTERed in.
+
+    The reconcile used to be SQLite-gated (`if url.startswith("sqlite")` in
+    init_db), which was correct while the live deploy was SQLite. After the
+    Postgres cutover nothing created newly added model columns: the deploy went
+    green and then every query selecting that column failed at runtime with
+    UndefinedColumnError. Reconcile is dialect-generic — it compiles the column
+    type against the live dialect — so it must run here too.
+
+    Self-restoring: drops a nullable column, then reconciles it straight back.
+    """
+    from sqlalchemy import inspect as sa_inspect, text as sa_text
+
+    from server.db import dispose_db, init_db
+
+    col = "archive_root"
+
+    def cols(c):
+        return {x["name"] for x in sa_inspect(c).get_columns("sessions")}
+
+    async with pg_engine.begin() as conn:
+        await conn.execute(sa_text(f'ALTER TABLE sessions DROP COLUMN IF EXISTS "{col}"'))
+    async with pg_engine.connect() as conn:
+        assert col not in await conn.run_sync(cols), "precondition: column should be gone"
+
+    # Drive the REAL startup path, not _reconcile_columns directly: the bug was not
+    # that reconcile failed on Postgres, it was that init_db never called it there.
+    try:
+        await init_db(db_url=pg_url)
+    finally:
+        await dispose_db()
+
+    async with pg_engine.connect() as conn:
+        assert col in await conn.run_sync(cols), (
+            "init_db must reconcile a missing model column on Postgres, not only on SQLite")
