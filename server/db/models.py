@@ -148,6 +148,11 @@ class Session(Base):
     # (resolve via the legacy fallback) or never archived. Nullable so init_db backfills
     # without a migration.
     archive_root: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Fleet host that ran this session, stamped at creation by the dispatcher. NULL
+    # for sessions created before the fleet existed. Never inferred at read time:
+    # the host a session ran on is a fact about that session, not about current
+    # config — the same mistake archive_root exists to prevent.
+    host: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Snapshot of the decision features at AUTO-archive time ({repo, goal, goal_source,
     # pr_state, reason}); copied into an `archive_reversed` autopilot event on unarchive so
     # the auto-archive algorithm can learn which sessions it wrongly archived. none_as_null
@@ -783,3 +788,37 @@ class PermissionProfile(Base):
     __table_args__ = (
         UniqueConstraint("name", name="uq_permission_profiles_name"),
     )
+
+
+class Host(Base):
+    """A session-executing host in the fleet.
+
+    One row per daemon the edge may dispatch to. ``endpoint`` uses the same grammar
+    ``server.ipc.paths.parse_endpoint`` accepts (``unix:///path`` or
+    ``https://host:port``), so a single-host deployment is just a one-row fleet.
+
+    The probe-written columns are all nullable: a host that has never been probed
+    reports UNKNOWN, not false. Ranking treats unknown health as NOT dispatchable —
+    assuming an unprobed host is up is how you dispatch into one that has been down
+    since boot.
+    """
+
+    __tablename__ = "hosts"
+
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    endpoint: Mapped[str] = mapped_column(String, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Operator-set relative preference; multiplies the computed score.
+    weight: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    # Hard cap on concurrent sessions; NULL = uncapped.
+    max_sessions: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+
+    # --- probe-written state (nullable = "not yet known") ---
+    healthy: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    last_probe_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    last_error: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    sha: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    protocol: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    load_avg: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    mem_available_mb: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    active_sessions: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
