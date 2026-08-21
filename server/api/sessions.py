@@ -195,13 +195,31 @@ async def _resolve_repo(record) -> str | None:
 
     Runs git in ``record.cwd`` (off the event loop) so the sessions screen shows
     what's actually checked out — a worktree resolves to its clone's origin, and
-    a scratch dir with no git remote reports None ("Scratch"). Falls back to the
-    stored ``record.repo`` only when the session has no working directory.
+    a scratch dir with no git remote reports None ("Scratch"). The live read is
+    preferred whenever it yields something, since it reflects the working dir's
+    actual current state (e.g. after a branch switch).
+
+    Falls back to the stored ``record.repo`` whenever the live read yields
+    nothing — not only when ``cwd`` is empty, but also when ``cwd`` is set and
+    the live read returns None/empty or raises. This matters because the
+    session daemon can run on a different host from this (edge) process: ``cwd``
+    then points to a real path on the daemon's filesystem that doesn't exist
+    here, the live read silently returns None, and without this fallback every
+    session would render as "Scratch" even though the DB has the correct repo.
+    This is strictly safer on a single host too — there, an unreadable cwd
+    means a deleted or broken worktree, and the stored repo is still better
+    information than "Scratch". A genuine scratch session (a real directory
+    with no git remote) still resolves to None here, because in that case
+    ``record.repo`` is itself None — no sentinel is invented.
     """
     cwd = getattr(record, "cwd", None)
     if not cwd:
         return record.repo
-    return await asyncio.to_thread(gitrepos.repo_at_path, cwd)
+    try:
+        live = await asyncio.to_thread(gitrepos.repo_at_path, cwd)
+    except Exception:
+        return record.repo
+    return live if live else record.repo
 
 
 async def _session_is_archived(orch, session_id: str) -> bool:
