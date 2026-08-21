@@ -2,7 +2,7 @@
 # ccswitch-health-check.sh — watchdog + early-warning for the ccswitch session daemon.
 #
 # Run every ~60s by ccswitch-health.timer (User=tony). Idempotent, no deps beyond
-# curl / df / python3 / systemctl. Two jobs:
+# curl / df / python3 / systemctl / ssh. Two jobs:
 #   1. WATCHDOG: probe the daemon's control-plane socket; if the process is alive but
 #      the socket is unresponsive (the "wedge" — invisible to systemd's Restart= policy
 #      because the process never exits), restart ccswitch-daemon.service. Honors a cooldown
@@ -13,6 +13,32 @@
 # Alerts always go to the journal; if CCSWITCH_ALERT_WEBHOOK is set (e.g. an ntfy topic
 # URL) they are also POSTed there, de-duplicated so a standing condition pings ~every 30m
 # rather than every 60s.
+#
+# --- Remote-daemon mode (cross-host deployments, e.g. dobby edge + rocky daemon) ------
+# Sections 1-4 above only ever look at THIS host (unix socket + local systemd unit), so
+# once the daemon moves to another host over mTLS (CCSWITCH_SESSIOND_ENDPOINT=https://...)
+# they go permanently quiet — "not our job" — and the watchdog is blind to a real outage.
+# When a remote https daemon endpoint is configured (CCSWITCH_DAEMON_ENDPOINT, or reusing
+# the edge's own CCSWITCH_SESSIOND_ENDPOINT — see server/ipc/paths.py), section 5 adds:
+#   5a. Remote daemon reachability — GET /info over mTLS with the edge's client cert/key/CA.
+#       Alerted, never auto-restarted: a restart across SSH is a bigger decision than the
+#       local wedge-restart in section 1, and systemd Restart=always already owns recovery
+#       on the daemon host itself.
+#   5b. Protocol compatibility — /info's "protocol" must match this checkout's
+#       server.ipc.protocol.PROTOCOL_VERSION, or the edge silently refuses the daemon
+#       (looks like a hang, is actually a stale build on one side).
+#   5c. Remote mount health — the daemon host's sshfs mounts (accounts/config store,
+#       archive volume) checked over SSH with a short-timeout read, not just `mountpoint`,
+#       because a stale sshfs mount can pass the mountpoint test while every read hangs.
+#   5d. Remote DB reachability — a TCP-only connect check, run over SSH FROM the daemon
+#       host TO the database host/port, so a DB outage doesn't just look like a wedged
+#       daemon.
+#   5e. Split-brain guard — remote mode configured AND this host's local
+#       ccswitch-daemon.service active is the 2026-06-23 "Ready while working" incident
+#       shape (two orchestrators, one database) and is alerted loudly regardless of any
+#       other check's result.
+# All of 5a-5e are strictly additive and opt-in: with no remote endpoint configured, this
+# script's behavior (including section 1's own systemctl check) is unchanged.
 set -uo pipefail
 
 SOCK="${CCSWITCH_SESSIOND_SOCKET:-/run/ccswitch/sessiond.sock}"
@@ -27,6 +53,37 @@ STARTUP_GRACE="${CCSWITCH_STARTUP_GRACE:-60}"              # don't restart a sti
 DRAIN_WAIT="${CCSWITCH_DRAIN_WAIT:-20}"                    # best-effort graceful-drain budget before a wedge restart
 ALERT_WEBHOOK="${CCSWITCH_ALERT_WEBHOOK:-}"
 STATE_DIR="${CCSWITCH_HEALTH_STATE_DIR:-/var/lib/ccswitch/health}"
+
+# --- Remote-daemon mode config (all opt-in; empty DAEMON_ENDPOINT == section 5 is a no-op) --
+# CCSWITCH_DAEMON_ENDPOINT is health-check-specific; falls back to the edge's own
+# CCSWITCH_SESSIOND_ENDPOINT (server/ipc/paths.py's sessiond_endpoint()) since a cross-host
+# install already sets that for the edge process and EnvironmentFile= sources the same file
+# here. Only an https:// value turns remote mode on — unix:// / unset stays local-only.
+DAEMON_ENDPOINT="${CCSWITCH_DAEMON_ENDPOINT:-${CCSWITCH_SESSIOND_ENDPOINT:-}}"
+DAEMON_SSH_HOST="${CCSWITCH_DAEMON_SSH_HOST:-}"
+CLIENT_CERT="${CCSWITCH_SESSIOND_CLIENT_CERT:-}"
+CLIENT_KEY="${CCSWITCH_SESSIOND_CLIENT_KEY:-}"
+CLIENT_CA="${CCSWITCH_SESSIOND_CLIENT_CA:-}"
+# Space-separated mountpoints the daemon host must have live+readable (default: the rocky
+# sshfs cutover's three mounts — account store, shared ~/.claude, archive volume).
+REMOTE_MOUNTS="${CCSWITCH_HEALTH_REMOTE_MOUNTS:-/home/tony/.claude-accounts /home/tony/.claude /mnt/hdd-storage}"
+# Database host:port as reachable FROM the daemon host — deliberately separate from
+# CCSWITCH_DB_URL, whose host is typically 127.0.0.1 (the edge's own loopback to a
+# same-host Postgres), which is meaningless from a remote daemon host.
+REMOTE_PG_HOST="${CCSWITCH_HEALTH_REMOTE_PG_HOST:-100.102.11.121}"
+REMOTE_PG_PORT="${CCSWITCH_HEALTH_REMOTE_PG_PORT:-5432}"
+SSH_CONNECT_TIMEOUT="${CCSWITCH_SSH_CONNECT_TIMEOUT:-5}"
+SSH_TIMEOUT="${CCSWITCH_SSH_TIMEOUT:-15}"          # overall budget per ssh invocation
+# Local checkout used to read this build's PROTOCOL_VERSION (defaults to this script's repo).
+HEALTH_REPO_ROOT="${CCSWITCH_HEALTH_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
+HEALTH_PYTHON="${CCSWITCH_HEALTH_PYTHON:-}"
+if [ -z "$HEALTH_PYTHON" ]; then
+  if [ -x "$HEALTH_REPO_ROOT/.venv/bin/python3" ]; then
+    HEALTH_PYTHON="$HEALTH_REPO_ROOT/.venv/bin/python3"
+  else
+    HEALTH_PYTHON="python3"
+  fi
+fi
 
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 log() { echo "ccswitch-health: $*"; }   # -> journal via systemd
@@ -85,9 +142,12 @@ for _ in $(seq 1 "$PROBE_RETRIES"); do
   sleep 2
 done
 
+LOCAL_DAEMON_ACTIVE=0
+systemctl is-active --quiet ccswitch-daemon.service && LOCAL_DAEMON_ACTIVE=1
+
 if [ "$healthy" -eq 1 ]; then
   clear_alert daemon-wedged
-elif systemctl is-active --quiet ccswitch-daemon.service; then
+elif [ "$LOCAL_DAEMON_ACTIVE" -eq 1 ]; then
   # Process up but socket dead == wedged. Restart within cooldown.
   rf="$STATE_DIR/last-restart"; last=0; t=$(now)
   [ -f "$rf" ] && last=$(cat "$rf" 2>/dev/null || echo 0)
@@ -142,6 +202,114 @@ if [[ "$mem" =~ ^[0-9]+$ ]] && [ "$mem" -ge "$MEM_WARN_BYTES" ]; then
   alert memory "daemon memory $(( mem / 1024 / 1024 ))MiB near the 12G MemoryMax — OOM-stop risk"
 else
   clear_alert memory
+fi
+
+# --- 5. Remote-daemon mode (cross-host: dobby edge + rocky daemon) --------------
+# No-op (identical to today) unless a remote https endpoint is configured. Every
+# sub-check here alerts on its own failure instead of raising, so a slow/unreachable
+# remote host degrades to "one more alert" rather than aborting sections 1-4 above —
+# those already ran and are unaffected by anything below.
+if [[ "$DAEMON_ENDPOINT" == https://* ]]; then
+
+  # 5e. Split-brain guard — cheap, local-only, checked first regardless of what
+  # follows. Two orchestrators over one database (2026-06-23 "Ready while working").
+  if [ "$LOCAL_DAEMON_ACTIVE" -eq 1 ]; then
+    alert split-brain "SPLIT-BRAIN RISK: remote daemon endpoint ($DAEMON_ENDPOINT) is configured but THIS host's ccswitch-daemon.service is ALSO active — two orchestrators over one database. Stop the local unit immediately (systemctl stop ccswitch-daemon.service) unless a deliberate rollback to local is in progress."
+  else
+    clear_alert split-brain
+  fi
+
+  # 5a/5b. Remote reachability + protocol compatibility, via one mTLS GET /info.
+  remote_probe() {
+    curl -fsS -m "$PROBE_TIMEOUT" --cacert "$CLIENT_CA" --cert "$CLIENT_CERT" --key "$CLIENT_KEY" \
+      "$DAEMON_ENDPOINT/info" 2>/dev/null
+  }
+  remote_info="" remote_healthy=0
+  if [ -n "$CLIENT_CERT" ] && [ -n "$CLIENT_KEY" ] && [ -n "$CLIENT_CA" ]; then
+    for _ in $(seq 1 "$PROBE_RETRIES"); do
+      remote_info=$(remote_probe) && [ -n "$remote_info" ] && { remote_healthy=1; break; }
+      sleep 2
+    done
+  else
+    log "remote daemon endpoint set but CCSWITCH_SESSIOND_CLIENT_CERT/KEY/CA incomplete — cannot probe"
+  fi
+
+  if [ "$remote_healthy" -eq 1 ]; then
+    clear_alert remote-daemon-unreachable
+  else
+    alert remote-daemon-unreachable "remote daemon at $DAEMON_ENDPOINT unreachable after ${PROBE_RETRIES} mTLS probes — NOT auto-restarting (cross-host restart is a bigger decision; systemd Restart=always on the daemon host owns recovery there)"
+  fi
+
+  # Protocol check only runs off a successful probe; a failure to read either side's
+  # version must not itself alert (per design — this is a best-effort cross-check).
+  if [ "$remote_healthy" -eq 1 ]; then
+    remote_protocol=$(printf '%s' "$remote_info" | python3 -c \
+      'import sys,json
+try:
+    print(json.load(sys.stdin).get("protocol",""))
+except Exception:
+    pass' 2>/dev/null)
+    local_protocol=$(cd "$HEALTH_REPO_ROOT" 2>/dev/null && "$HEALTH_PYTHON" -c \
+      'from server.ipc import protocol; print(protocol.PROTOCOL_VERSION)' 2>/dev/null)
+    if [[ "$remote_protocol" =~ ^[0-9]+$ ]] && [[ "$local_protocol" =~ ^[0-9]+$ ]]; then
+      if [ "$remote_protocol" != "$local_protocol" ]; then
+        alert protocol-mismatch "protocol mismatch: remote daemon at $DAEMON_ENDPOINT speaks protocol $remote_protocol, this edge checkout ($HEALTH_REPO_ROOT) speaks $local_protocol — edge will refuse the daemon (looks like a hang, is actually a stale build on one side)"
+      else
+        clear_alert protocol-mismatch
+      fi
+    else
+      log "protocol compatibility check skipped — could not read local (${local_protocol:-<empty>}) and/or remote (${remote_protocol:-<empty>}) protocol version"
+    fi
+  fi
+
+  # 5c/5d. Remote mount health + DB TCP reachability — one SSH round-trip so a slow
+  # network doesn't multiply the every-60s cost. If SSH itself is unreachable, alert
+  # that once and leave the per-mount/per-DB alert states as they were (no data this
+  # cycle to justify flipping them either way).
+  if [ -n "$DAEMON_SSH_HOST" ]; then
+    # shellcheck disable=SC2086  # intentional: REMOTE_MOUNTS is a space-separated list of paths
+    remote_out=$(timeout "$SSH_TIMEOUT" ssh -o BatchMode=yes -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
+      "$DAEMON_SSH_HOST" bash -s -- "$REMOTE_PG_HOST" "$REMOTE_PG_PORT" $REMOTE_MOUNTS <<'REMOTE_SCRIPT' 2>/dev/null
+set -u
+pg_host="$1"; pg_port="$2"; shift 2
+if timeout 5 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$pg_host" "$pg_port" 2>/dev/null; then
+  echo "PG_OK"
+else
+  echo "PG_FAIL"
+fi
+for m in "$@"; do
+  if mountpoint -q "$m" 2>/dev/null && timeout 5 ls "$m" >/dev/null 2>&1; then
+    echo "MOUNT_OK $m"
+  else
+    echo "MOUNT_FAIL $m"
+  fi
+done
+REMOTE_SCRIPT
+)
+    ssh_rc=$?
+    if [ "$ssh_rc" -ne 0 ] || [ -z "$remote_out" ]; then
+      alert remote-ssh-unreachable "cannot reach daemon host ($DAEMON_SSH_HOST) via SSH to check mounts/DB — mount and DB alert states below are stale until this recovers"
+    else
+      clear_alert remote-ssh-unreachable
+
+      if grep -q '^PG_OK$' <<<"$remote_out"; then
+        clear_alert remote-db-unreachable
+      else
+        alert remote-db-unreachable "daemon host ($DAEMON_SSH_HOST) cannot reach Postgres at ${REMOTE_PG_HOST}:${REMOTE_PG_PORT} (TCP connect failed) — daemon may be up but every DB-backed operation is failing"
+      fi
+
+      for m in $REMOTE_MOUNTS; do
+        mount_key="mount-$(printf '%s' "$m" | tr -c 'a-zA-Z0-9' '-' | sed 's/-\{2,\}/-/g;s/^-//;s/-$//')"
+        if grep -qF "MOUNT_OK $m" <<<"$remote_out"; then
+          clear_alert "$mount_key"
+        else
+          alert "$mount_key" "remote mount unhealthy on $DAEMON_SSH_HOST: $m is not a live mount, or a read against it timed out (stale sshfs?) — sessions may run with stale/missing config or fail account/credential reads"
+        fi
+      done
+    fi
+  else
+    log "remote daemon endpoint set but CCSWITCH_DAEMON_SSH_HOST unset — skipping mount + DB TCP checks"
+  fi
 fi
 
 exit 0
