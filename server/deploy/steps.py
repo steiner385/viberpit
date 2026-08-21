@@ -179,6 +179,15 @@ def build_frontend(repo: str, run: Run = subprocess.run) -> None:
         raise DeployError("update", f"frontend build failed: {r.stderr.strip()}")
 
 
+# ssh treats a leading '-' in a positional argument as an OPTION, not a hostname (there is
+# no "--" end-of-options convention that helps: ssh has no way to say "the next arg is
+# definitely the host"). An unvalidated CCSWITCH_DAEMON_SSH_HOST could therefore smuggle
+# arbitrary ssh flags — e.g. "-oProxyCommand=...|sh" — into a sudo-privileged deploy command.
+# Require the optional user and the host to each START with an alphanumeric so a leading
+# '-' (or any other flag-introducing character) is structurally impossible.
+_SSH_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(@[A-Za-z0-9][A-Za-z0-9_.-]*)?$")
+
+
 def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
                   run: Run = subprocess.run) -> list[str]:
     """Restart systemd units in order: daemon first (if changed), then edge.
@@ -199,6 +208,16 @@ def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
     """
     units: list[str] = []
     daemon_host = os.environ.get("CCSWITCH_DAEMON_SSH_HOST")
+    if daemon_host and not _SSH_HOST_RE.match(daemon_host):
+        # Fail loud, before issuing ANY command (including the edge restart below) — a
+        # deploy that cannot safely restart the remote daemon must stop, not silently fall
+        # back to a local restart. Falling back would resurrect the exact silent-no-op
+        # hazard this feature exists to prevent, and would mask a misconfiguration or attack.
+        raise DeployError(
+            "restart",
+            f"CCSWITCH_DAEMON_SSH_HOST={daemon_host!r} is not a valid [user@]host value; "
+            "refusing to build an ssh command from it",
+        )
     # DAEMON FIRST — order is load-bearing (browser reconnect-flush race, #190).
     if daemon_host:
         if daemon_changed:

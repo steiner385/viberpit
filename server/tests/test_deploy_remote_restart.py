@@ -1,4 +1,7 @@
+import pytest
+
 from server.deploy import steps
+from server.deploy.types import DeployError
 
 
 def _recorder(calls):
@@ -45,3 +48,26 @@ def test_no_stray_local_daemon_restart_in_remote_mode(monkeypatch):
     calls: list[list[str]] = []
     steps.restart_units(daemon_changed=True, daemon_enabled=False, run=_recorder(calls))
     assert ["sudo", "systemctl", "restart", "ccswitch-daemon.service"] not in calls
+
+
+def test_malicious_ssh_host_raises_before_any_command_runs(monkeypatch):
+    """A value that ssh would parse as a flag must be rejected, not smuggled through."""
+    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "-oProxyCommand=touch /tmp/pwned")
+    calls: list[list[str]] = []
+    with pytest.raises(DeployError):
+        steps.restart_units(daemon_changed=True, daemon_enabled=False, run=_recorder(calls))
+    # Nothing executed at all — not even the local edge restart — proving the deploy stopped
+    # rather than silently falling back.
+    assert calls == []
+
+
+@pytest.mark.parametrize("host", ["tony@rocky", "rocky", "rocky.tail0dd570.ts.net"])
+def test_legitimate_ssh_hosts_are_accepted(monkeypatch, host):
+    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", host)
+    calls: list[list[str]] = []
+    units = steps.restart_units(daemon_changed=True, daemon_enabled=False,
+                                run=_recorder(calls))
+    joined = [" ".join(c) for c in calls]
+    assert any(c.startswith(f"ssh {host} ") for c in joined), (
+        f"expected an ssh restart for {host!r}, got {joined}")
+    assert "ccswitch-daemon.service" in units
