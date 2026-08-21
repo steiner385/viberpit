@@ -4939,6 +4939,95 @@ class SessionOrchestrator:
     # Adoption — bring an untracked live claude session under management
     # ------------------------------------------------------------------
 
+    def _discover_candidates(self) -> list:
+        """Enumerate live adoption candidates from THIS host's /proc.
+
+        Both entry points — the dashboard's adoptable list and _resolve_candidate
+        for an adopt call — go through here so discovery always runs where the
+        session processes actually live (the daemon host). known/tracked are read
+        from the orchestrator's own account config and record map.
+        """
+        known = [a["name"] for a in ccswitch_accounts.list_accounts()]
+        tracked = {r.claude_session_id for r in self._records.values() if r.claude_session_id}
+        return _adopt.discover_candidates(known, tracked)
+
+    async def list_adoptable_candidates(self) -> list[dict]:
+        """Return all adoption candidates as dashboard wire dicts (daemon RPC).
+
+        Runs /proc discovery on the daemon host — the edge (potentially a
+        different machine) must not scan its own process table, which would leave
+        the Adopt list empty or surface an unrelated claude process (issue #709,
+        finding 4). Serializes here so the edge endpoint is a plain passthrough.
+        """
+        cands = await asyncio.to_thread(self._discover_candidates)
+        return [_adopt.candidate_to_wire(c) for c in cands]
+
+    async def migrate_archive_home(
+        self, old_home: str | None, new_home: str | None, archived_ids: list[str],
+    ) -> dict:
+        """Move archived session dirs old_home→new_home on the DAEMON's filesystem.
+
+        The archive dirs live under the daemon's CCSWITCH_HOME, so the moves must
+        run on the daemon host — on the edge src.exists() is always False and the
+        migration silently no-ops (issue #709, finding 5). archived_ids come from
+        the (shared) DB; only the filesystem move is host-specific. Path defaults
+        (archive_dir()) resolve here so they reflect the daemon's env. Returns
+        {"moved": int, "failures": int}; failures are logged, never raised, so a
+        settings save is never aborted by a stuck move.
+        """
+        import shutil
+        from pathlib import Path
+
+        from ccswitch.paths import archive_dir
+
+        old_dir = Path(old_home) if old_home else archive_dir()
+        new_dir = Path(new_home) if new_home else archive_dir()
+        if old_dir == new_dir or not archived_ids:
+            return {"moved": 0, "failures": 0}
+
+        def _move_all() -> dict:
+            new_dir.mkdir(parents=True, exist_ok=True)
+            moved = failures = 0
+            for sid in archived_ids:
+                src = old_dir / sid
+                if not src.exists():
+                    continue
+                dst = new_dir / sid
+                if dst.exists():
+                    continue
+                try:
+                    shutil.move(str(src), str(dst))
+                    moved += 1
+                except Exception:
+                    log.exception("archive_home migrate: %s → %s failed", src, dst)
+                    failures += 1
+            return {"moved": moved, "failures": failures}
+
+        return await asyncio.to_thread(_move_all)
+
+    async def cloned_repos(self, names: list[str]) -> list[str]:
+        """Return the subset of nameWithOwner values whose clone exists on the DAEMON.
+
+        The repo picker's "cloned" badge checks for <clones_base>/<owner>/<name>/.git;
+        clones live on the daemon host, so an edge-side check is always false and
+        may prompt a redundant clone (issue #709, finding 6). Resolves clones_base
+        from the daemon's own settings.repo_root.
+        """
+        from ccswitch import gitrepos
+        from server.config import get_settings
+
+        base = gitrepos.clones_base(get_settings().repo_root)
+
+        def _present() -> list[str]:
+            out: list[str] = []
+            for nwo in names:
+                owner, _, name = nwo.partition("/")
+                if owner and name and (base / owner / name / ".git").exists():
+                    out.append(nwo)
+            return out
+
+        return await asyncio.to_thread(_present)
+
     def _resolve_candidate(self, claude_session_id: str):
         """Re-run discovery and return the AdoptionCandidate for this sid, or None.
 
@@ -4946,9 +5035,7 @@ class SessionOrchestrator:
         churn fast, so the candidate may have died or changed between the dashboard
         scan and the adopt call. Anchored to the transcript, which persists.
         """
-        known = [a["name"] for a in ccswitch_accounts.list_accounts()]
-        tracked = {r.claude_session_id for r in self._records.values() if r.claude_session_id}
-        for cand in _adopt.discover_candidates(known, tracked):
+        for cand in self._discover_candidates():
             if cand.claude_session_id == claude_session_id:
                 return cand
         return None

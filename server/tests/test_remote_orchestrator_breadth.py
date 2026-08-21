@@ -196,3 +196,58 @@ async def test_transcript_window_replay_error_returns_none():
             assert result is None
         finally:
             await ro.aclose()
+
+
+# --- #709: cross-host inspection RPCs (discovery / archive move / clone check
+#     all run on the daemon host, never the edge process) -------------------
+
+
+@pytest.mark.asyncio
+async def test_list_adoptable_candidates_round_trips():
+    """The /adoptable endpoint calls orch.list_adoptable_candidates; discovery runs
+    on the daemon's /proc and the wire dicts cross the RPC unchanged (#709 finding 4)."""
+    app, orch = _build()
+    wire = [{"pid": 5, "claudeSessionId": "aaa", "skipReason": None, "pidAlive": True}]
+    orch.list_adoptable_candidates = mock.AsyncMock(return_value=wire)
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            assert await ro.list_adoptable_candidates() == wire
+        finally:
+            await ro.aclose()
+    orch.list_adoptable_candidates.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_migrate_archive_home_round_trips():
+    """Settings save delegates the archive-dir moves to the daemon, which owns the
+    filesystem the archives live on (#709 finding 5). Params + result round-trip."""
+    app, orch = _build()
+    orch.migrate_archive_home = mock.AsyncMock(return_value={"moved": 2, "failures": 0})
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            result = await ro.migrate_archive_home(None, "/new/home", ["s1", "s2"])
+            assert result == {"moved": 2, "failures": 0}
+        finally:
+            await ro.aclose()
+    orch.migrate_archive_home.assert_awaited_once_with(
+        old_home=None, new_home="/new/home", archived_ids=["s1", "s2"])
+
+
+@pytest.mark.asyncio
+async def test_cloned_repos_round_trips():
+    """The repo picker's cloned badge asks the daemon which clones exist on its own
+    filesystem (#709 finding 6); the edge never stats a path itself."""
+    app, orch = _build()
+    orch.cloned_repos = mock.AsyncMock(return_value=["o/present"])
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            assert await ro.cloned_repos(["o/present", "o/absent"]) == ["o/present"]
+        finally:
+            await ro.aclose()
+    orch.cloned_repos.assert_awaited_once_with(names=["o/present", "o/absent"])

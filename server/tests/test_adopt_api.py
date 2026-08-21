@@ -41,14 +41,16 @@ def _cand(sid, **kw):
 
 def test_adoptable_requires_identity():
     client, _ = _client()
-    with patch("server.api.sessions._adopt.discover_candidates", return_value=[]):
+    # Discovery now runs inside the orchestrator (on the daemon host); patch the
+    # module function it calls, not the removed API-layer import (#709 finding 4).
+    with patch("server.sessions.adopt.discover_candidates", return_value=[]):
         assert client.get("/api/sessions/adoptable").status_code == 401
 
 
 def test_adoptable_returns_flagged_candidates():
     client, _ = _client()
     cands = [_cand("aaa"), _cand("bbb", mapped=False, account=None, skip_reason="unmapped")]
-    with patch("server.api.sessions._adopt.discover_candidates", return_value=cands):
+    with patch("server.sessions.adopt.discover_candidates", return_value=cands):
         r = client.get("/api/sessions/adoptable", headers=H)
     assert r.status_code == 200
     body = r.json()["candidates"]
