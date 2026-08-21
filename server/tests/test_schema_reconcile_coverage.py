@@ -63,6 +63,12 @@ RECONCILE_EXEMPT: set[str] = {
     # at INSERT (a channel must have a name + destination URL), so no synthesizable default.
     "notification_channel.name",  # required at create; user-chosen channel name
     "notification_channel.url",   # required at create; webhook destination
+    # hosts: a NEW table (create_all builds it fully-formed on dev SQLite; Alembic
+    # 0006_fleet_hosts builds it on prod). endpoint is part of the initial CREATE
+    # TABLE, never ALTER-added to a populated table, and mandatory at INSERT — a
+    # host row without an endpoint is unreachable by definition, so there is no
+    # synthesizable default that would be anything but a lie.
+    "hosts.endpoint",          # required at host registration; no sane default
 }
 
 
