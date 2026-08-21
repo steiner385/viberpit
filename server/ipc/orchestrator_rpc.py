@@ -265,7 +265,8 @@ def register_orchestrator_rpc(app, orch) -> None:
     _SIMPLE = [
         "archive_session", "rename_session", "note_user_interaction", "set_autopilot_paused", "interrupt",
         "set_permission_mode", "cancel_queued", "resolve_permission", "answer_question",
-        "transcript_path", "resolve_transcript_path", "pending_questions", "pop_pending_initial_prompt",
+        "transcript_path", "resolve_transcript_path", "transcript_search_text",
+        "pending_questions", "pop_pending_initial_prompt",
         "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
         "latest_suggestions", "generate_suggestions_now", "seed_idle_suggestions", "latest_summary",
         "begin_drain", "drain_status",
@@ -307,9 +308,26 @@ def register_orchestrator_rpc(app, orch) -> None:
         events = await orch.transcript_events(**params)
         return {"events": [e.to_wire() for e in events]}
 
+    async def transcript_window(params: dict) -> dict | None:
+        # The daemon resolves the transcript path AND replays it in-process — the
+        # edge (now potentially on a different host) never touches the path itself
+        # (see server/api/sessions.py's _search_ids note on the cross-host hazard).
+        window = await orch.transcript_window(**params)
+        if window is None:
+            return None
+        # Events are real ev.* objects here (in-process replay); serialize the same
+        # way transcript_events does. hasattr guards a future where orch.transcript_window
+        # might already hand back wire dicts, matching api/sessions.py's own _wire().
+        return {
+            "events": [e.to_wire() if hasattr(e, "to_wire") else e for e in window.events],
+            "earliestTurn": window.earliest_turn,
+            "totalTurns": window.total_turns,
+        }
+
     register_rpc(app, "unarchive", unarchive)
     register_rpc(app, "adopt_session", adopt_session)
     register_rpc(app, "transcript_events", transcript_events)
+    register_rpc(app, "transcript_window", transcript_window)
 
     async def usage(params: dict) -> dict:
         u = await orch.poller.get(params["name"])

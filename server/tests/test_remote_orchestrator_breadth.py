@@ -143,7 +143,12 @@ async def test_resolve_transcript_path_round_trips():
 
 @pytest.mark.asyncio
 async def test_transcript_window_returns_replay_window():
-    """transcript_window resolves path via daemon RPC then replays locally."""
+    """transcript_window is served end-to-end by the daemon: the transcript_window
+    RPC handler calls the daemon-side orchestrator's transcript_window (which resolves
+    the path AND replays it, both in-process on the daemon's own host), and
+    RemoteOrchestrator only deserializes the already-built response — it never reads
+    the transcript file itself, so this is correct even when the daemon and edge live
+    on different hosts."""
     app, orch = _build()
     orch.transcript_path = mock.MagicMock(return_value="/fake/t.jsonl")
     fake_window = ReplayWindow(events=[{"type": "textDelta", "text": "hi"}], earliest_turn=0, total_turns=1)
