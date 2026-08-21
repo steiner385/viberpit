@@ -180,7 +180,7 @@ def test_init_db_raises_schema_drift_when_reconcile_cannot_fix(tmp_path, monkeyp
     con.commit(); con.close()
 
     # Disable reconcile so the drift is NOT healed → the self-check must catch it.
-    monkeypatch.setattr("server.db._reconcile_sqlite_columns", lambda sync_conn: None)
+    monkeypatch.setattr("server.db._reconcile_columns", lambda sync_conn: None)
 
     with pytest.raises(SchemaDriftError):
         asyncio.run(init_db(db_url=f"sqlite+aiosqlite:///{db_file}"))

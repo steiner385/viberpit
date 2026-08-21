@@ -10,7 +10,7 @@ Adds, for issues #601-#604:
   notification routing (webhook channels + per-event rules).
 * ``app_settings.quiet_hours_start`` / ``quiet_hours_end`` — quiet-hours window.
 
-SQLite dev relies on init_db()/create_all + _reconcile_sqlite_columns; this
+SQLite dev relies on init_db()/create_all + _reconcile_columns; this
 migration is the Postgres/prod path for the same schema changes.
 """
 from __future__ import annotations
