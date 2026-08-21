@@ -43,8 +43,8 @@ def _archived_row(**over) -> dict:
     # materialize it: unarchive then performs a REAL restore. Before archive_root
     # existed these tests passed only because a missing archive silently produced an
     # empty cwd — the very bug this column removes.
-    base.setdefault("archive_root", str(Path(base["cwd"]).parent / "archive"))
-    Path(base["archive_root"], base["id"]).mkdir(parents=True, exist_ok=True)
+    base.setdefault("archive_root", str(Path(str(base["cwd"])).parent / "archive"))
+    Path(str(base["archive_root"]), str(base["id"])).mkdir(parents=True, exist_ok=True)
     return base
 
 
