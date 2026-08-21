@@ -148,8 +148,45 @@ or the sshfs process itself died) rather than just stalled.
 (PR #708) — confirm it's merged into the checkout you're deploying from before relying on it).
 When set, it **bypasses the local `daemon_enabled` guard for the remote restart** — dobby's local
 `ccswitch-daemon.service` is deliberately disabled once the daemon has moved to rocky, so gating on
-that flag would silently restart nothing. `daemon_changed` still gates it (both hosts deploy the
-same commit, so skipping an unneeded restart is still correct).
+that flag would silently restart nothing. `daemon_changed` still gates it.
+
+**The deploy also updates rocky's checkout, not just its unit.** Restarting alone relaunches the
+same stale commit: rocky has its OWN clone at `/home/tony/GitHub/ccswitch`, and until 2026-08-21
+nothing in the deploy fetched or checked out there. Deploying #715 therefore gave dobby's edge the
+`cloned_repos` RPC *caller* while rocky's daemon stayed on `f310aa6` without the *handler*, and
+every repo listing returned `409 {"detail": "cloned_repos"}` — the New Session dropdown showed
+"— could not load repos —". Rocky reported "0 commits behind" the whole time, because its
+`origin/master` ref was itself stale.
+
+`restart_units` now runs, in order:
+
+```
+ssh <host> git -C <repo> fetch --quiet origin
+ssh <host> git -C <repo> merge --ff-only <deployed-sha>
+ssh <host> sudo systemctl restart ccswitch-daemon.service
+```
+
+Fast-forward only — a diverged remote checkout aborts the deploy rather than losing local commits.
+This requires **`CCSWITCH_DAEMON_SSH_REPO`**, the checkout path on the remote host:
+
+```
+CCSWITCH_DAEMON_SSH_REPO=/home/tony/GitHub/ccswitch
+```
+
+If `CCSWITCH_DAEMON_SSH_HOST` is set and this is missing (or is not a safe absolute path), the
+deploy raises `DeployError` **before any command runs**, including the edge restart. That is
+deliberate: a deploy that cannot update the remote daemon must fail loudly rather than restart it
+into staleness, which is the failure this whole section exists to describe.
+
+**Version skew is measured between hosts, not against each host's own upstream.** To check:
+
+```bash
+# edge
+git -C /home/tony/GitHub/cc-account-switcher-deploy rev-parse --short HEAD
+# daemon (authoritative — the RUNNING code, not the checkout)
+curl -s --unix-socket /run/ccswitch/deploy.sock http://localhost/status | jq -r .pending.liveSha
+ssh tony@rocky 'git -C /home/tony/GitHub/ccswitch rev-parse --short HEAD'
+```
 
 ```bash
 run(["ssh", daemon_host, "sudo", "systemctl", "restart", "ccswitch-daemon.service"], ...)

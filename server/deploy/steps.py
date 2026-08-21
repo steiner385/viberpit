@@ -186,9 +186,15 @@ def build_frontend(repo: str, run: Run = subprocess.run) -> None:
 # Require the optional user and the host to each START with an alphanumeric so a leading
 # '-' (or any other flag-introducing character) is structurally impossible.
 _SSH_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(@[A-Za-z0-9][A-Za-z0-9_.-]*)?$")
+# The remote checkout path also lands in an argv position on the far side of ssh.
+# Absolute, and no shell metacharacters, separators or leading '-' (option smuggling).
+_SSH_REPO_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
+# A git rev passed to `git merge --ff-only`. Hex only, never a ref expression.
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
+                  target_sha: str | None = None,
                   run: Run = subprocess.run) -> list[str]:
     """Restart systemd units in order: daemon first (if changed), then edge.
 
@@ -201,8 +207,18 @@ def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
     make every deploy silently restart nothing and leave rocky running stale code (the
     Postgres cutover incident this change exists to prevent). ``daemon_changed`` still gates
     the remote restart: it reflects whether daemon-relevant files changed in this deploy's
-    diff, and both hosts run the same deployed commit, so skipping an unneeded restart is
-    still correct and avoids unnecessary daemon churn.
+    diff, so skipping an unneeded restart avoids unnecessary daemon churn.
+
+    A remote daemon has its OWN checkout, so this also UPDATES that checkout before
+    restarting it. Restarting alone just relaunches the same stale commit: on 2026-08-21,
+    deploying #715 gave dobby's edge the ``cloned_repos`` RPC caller while rocky's daemon
+    stayed on f310aa6 without the handler, and every repo listing returned
+    ``409 {"detail": "cloned_repos"}``. The remote is fast-forwarded (never reset) to
+    *target_sha*, so an operator's local commits abort the deploy instead of being lost.
+
+    Requires ``CCSWITCH_DAEMON_SSH_REPO`` (the checkout path on the remote host) whenever a
+    remote daemon actually needs restarting. Missing or unsafe values raise before any
+    command runs — a deploy that cannot update the remote must fail, not silently restart it.
 
     Returns the ordered list of units restarted.
     """
@@ -218,9 +234,41 @@ def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
             f"CCSWITCH_DAEMON_SSH_HOST={daemon_host!r} is not a valid [user@]host value; "
             "refusing to build an ssh command from it",
         )
+    # Validate everything the remote path needs BEFORE running anything, so a
+    # misconfiguration cannot leave the edge restarted against a stale daemon.
+    daemon_repo = os.environ.get("CCSWITCH_DAEMON_SSH_REPO")
+    if daemon_host and daemon_changed:
+        if not daemon_repo:
+            raise DeployError(
+                "restart",
+                "CCSWITCH_DAEMON_SSH_HOST is set but CCSWITCH_DAEMON_SSH_REPO is not; "
+                "refusing to restart a remote daemon whose code this deploy cannot update "
+                "(a restarted-but-stale daemon serves the previous commit's RPC surface)",
+            )
+        if not _SSH_REPO_RE.match(daemon_repo):
+            raise DeployError(
+                "restart",
+                f"CCSWITCH_DAEMON_SSH_REPO={daemon_repo!r} is not a safe absolute path; "
+                "refusing to build an ssh command from it",
+            )
+        if target_sha is not None and not _SHA_RE.match(target_sha):
+            raise DeployError(
+                "restart",
+                f"target_sha={target_sha!r} is not a hex git sha; "
+                "refusing to build an ssh command from it",
+            )
+
     # DAEMON FIRST — order is load-bearing (browser reconnect-flush race, #190).
     if daemon_host:
         if daemon_changed:
+            assert daemon_repo is not None  # guaranteed by the validation above
+            # Update the remote checkout, then restart. Fast-forward only: a diverged
+            # remote aborts the deploy rather than losing whatever is there.
+            run(["ssh", daemon_host, "git", "-C", daemon_repo, "fetch", "--quiet", "origin"],
+                check=True, capture_output=True)
+            run(["ssh", daemon_host, "git", "-C", daemon_repo, "merge", "--ff-only",
+                 target_sha or "origin/master"],
+                check=True, capture_output=True)
             run(["ssh", daemon_host, "sudo", "systemctl", "restart", "ccswitch-daemon.service"],
                 check=True, capture_output=True)
             units.append("ccswitch-daemon.service")
