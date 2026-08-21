@@ -19,9 +19,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import func, select
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from server.db import db_session
+from server.db import db_session, dialect_insert
 from server.db.models import GroupFailure, GroupRun
 
 # Conclusions (UPPER-normalized) that count a check as cleanly passed.
@@ -112,7 +111,7 @@ async def _record_clean_run(repo: str, checks: list[dict]) -> None:
     duration = int(round(max_completed_secs - min_started))
 
     stmt = (
-        sqlite_insert(GroupRun)
+        dialect_insert(GroupRun)
         .values(repo=repo, duration_secs=duration, completed_at=max_completed_iso)
         .on_conflict_do_nothing(index_elements=["repo", "completed_at"])
     )
@@ -129,7 +128,7 @@ async def _record_failures(
             if not name:
                 continue
             stmt = (
-                sqlite_insert(GroupFailure)
+                dialect_insert(GroupFailure)
                 .values(
                     repo=repo,
                     check_name=name,

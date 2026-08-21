@@ -307,3 +307,160 @@ async def test_last_active_at_and_resolved_at_real_writer_paths_on_postgres(pg_e
         await s.execute(delete(CiFinding).where(CiFinding.id == finding_id))
         await s.execute(delete(Automation).where(Automation.id == automation_id))
         await s.commit()
+
+
+# --------------------------------------------------------------------------- #
+# dialect_insert() — the three ON CONFLICT call sites must work against the
+# LIVE engine's dialect, not a hardcoded sqlite insert() (fix for the
+# production AttributeError: 'OnConflictDoUpdate' object has no attribute
+# 'constraint_target' — a sqlite Insert executed on Postgres).
+# --------------------------------------------------------------------------- #
+
+import contextlib as _contextlib
+from contextlib import asynccontextmanager as _asynccontextmanager
+
+
+@_asynccontextmanager
+async def _pg_module_engine(pg_url):
+    """Point server.db's module-level engine/session-factory at Postgres for
+    the duration of the block, then restore whatever was there before —
+    mirrors test_last_active_at_and_resolved_at_real_writer_paths_on_postgres
+    above. Needed because upsert_merged_pr/record_group_outcome/
+    deploy_config_put call db_session()/dialect_insert() against the module
+    singletons, not an injected engine."""
+    import server.db as db_module
+
+    prev_engine, prev_factory = db_module._engine, db_module._session_factory
+    await db_module.init_db(pg_url)
+    try:
+        yield
+    finally:
+        if db_module._engine is not None:
+            with _contextlib.suppress(Exception):
+                await db_module._engine.dispose()
+        db_module._engine, db_module._session_factory = prev_engine, prev_factory
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_upsert_merged_pr_first_value_wins_round_trip_on_postgres(pg_engine, pg_url):
+    """The bug that's firing in production right now: upsert_merged_pr built
+    its ON CONFLICT statement with sqlalchemy.dialects.sqlite.insert(), which
+    raises AttributeError on a Postgres engine. Round-trip the exact
+    COALESCE(existing, excluded) 'first non-NULL write wins' semantics the
+    store documents, against a real Postgres connection.
+    """
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.db.models import MergedPr
+    from server.pipeline.timeline import upsert_merged_pr
+
+    repo, number = "o/r", 9001
+    async with _pg_module_engine(pg_url):
+        # Insert leaves first_green_at/qa_live_at NULL.
+        await upsert_merged_pr(
+            repo, number, merged_at="2026-07-12T00:00:00Z", title="orig",
+            first_green_at=None,
+        )
+        # Second upsert supplies first_green_at (NULL -> fills) and a
+        # different title (already set -> must be ignored) — this is the
+        # on_conflict_do_update path that raised in production.
+        await upsert_merged_pr(
+            repo, number, merged_at="2026-07-12T09:00:00Z", title="changed",
+            first_green_at="2026-07-11T12:00:00Z",
+        )
+
+        Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+        async with Session() as s:
+            got = await s.get(MergedPr, (repo, number))
+            assert got is not None
+            assert got.title == "orig", "first-set value must win over the later write"
+            assert got.first_green_at == "2026-07-11T12:00:00Z", (
+                "NULL column must adopt the later write")
+            assert got.merged_at == "2026-07-12T00:00:00Z", (
+                "merged_at is a writer-side invariant — never overwritten on conflict")
+
+        async with Session() as s:            # session-scoped fixture: clean up
+            await s.execute(delete(MergedPr).where(
+                MergedPr.repo == repo, MergedPr.number == number))
+            await s.commit()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_record_group_outcome_upsert_and_dedupe_on_postgres(pg_engine, pg_url):
+    """group_history's two on_conflict_do_nothing sites (GroupRun dedup on
+    (repo, completed_at), GroupFailure dedup on (repo, group_sha, check_name))
+    must execute — and actually dedupe — on Postgres."""
+    from sqlalchemy import delete, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.db.models import GroupFailure, GroupRun
+    from server.pipeline.group_history import record_group_outcome
+
+    repo = "o/r"
+    green_checks = [
+        {"name": "build", "conclusion": "SUCCESS",
+         "started_at": "2026-07-12T12:00:00Z", "completed_at": "2026-07-12T12:05:00Z"},
+    ]
+    failing_checks = [
+        {"name": "lint", "conclusion": "FAILURE",
+         "started_at": "2026-07-12T13:00:00Z", "completed_at": "2026-07-12T13:05:00Z"},
+    ]
+
+    async with _pg_module_engine(pg_url):
+        # Record the same clean run twice — the second call must hit
+        # on_conflict_do_nothing rather than raise a unique-constraint error
+        # or the sqlite-dialect AttributeError.
+        await record_group_outcome(repo, "sha-green", green_checks, "2026-07-12T12:10:00Z")
+        await record_group_outcome(repo, "sha-green", green_checks, "2026-07-12T12:10:00Z")
+
+        await record_group_outcome(repo, "sha-fail", failing_checks, "2026-07-12T13:10:00Z")
+        await record_group_outcome(repo, "sha-fail", failing_checks, "2026-07-12T13:10:00Z")
+
+        Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+        async with Session() as s:
+            runs = (await s.execute(
+                select(GroupRun).where(GroupRun.repo == repo))).scalars().all()
+            failures = (await s.execute(
+                select(GroupFailure).where(GroupFailure.repo == repo))).scalars().all()
+            assert len(runs) == 1, "duplicate completed_at must be deduped, not double-inserted"
+            assert len(failures) == 1, (
+                "duplicate (repo, group_sha, check_name) must be deduped")
+
+        async with Session() as s:            # session-scoped fixture: clean up
+            await s.execute(delete(GroupRun).where(GroupRun.repo == repo))
+            await s.execute(delete(GroupFailure).where(GroupFailure.repo == repo))
+            await s.commit()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_deploy_config_put_upsert_on_postgres(pg_engine, pg_url):
+    """orchestrator.deploy_config_put's on_conflict_do_update (overwrite
+    semantics, not COALESCE) must execute on Postgres."""
+    import json
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.db.models import RepoDeployConfig
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    repo = "o/r-deploy-cfg"
+    async with _pg_module_engine(pg_url):
+        # `self` is unused in deploy_config_put's body (it only closes over
+        # the module-level db_session()), so call it unbound like the
+        # _bump_automation_active precedent above.
+        await SessionOrchestrator.deploy_config_put(
+            None, repo, [{"name": "qa", "healthUrl": "https://example.invalid"}], True)
+        # Second call on the SAME repo exercises on_conflict_do_update with
+        # different values — must overwrite, not raise.
+        await SessionOrchestrator.deploy_config_put(
+            None, repo, [{"name": "prod", "healthUrl": "https://example.invalid/p"}], False)
+
+        Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+        async with Session() as s:
+            got = await s.get(RepoDeployConfig, repo)
+            assert got is not None
+            assert json.loads(got.environments) == [
+                {"name": "prod", "healthUrl": "https://example.invalid/p"}]
+            assert got.enabled is False
+
+        async with Session() as s:            # session-scoped fixture: clean up
+            await s.execute(delete(RepoDeployConfig).where(RepoDeployConfig.repo == repo))
+            await s.commit()
