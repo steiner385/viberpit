@@ -25,7 +25,7 @@ def make_steps(*, ci="green", healthy=True, changed=None):
     mod.build_frontend = lambda repo, run=None: None
     mod.classify_change = lambda files: "daemon_changed" if files and any("orchestrator" in f for f in files) else "edge_only"
     mod._changed_files = changed or []
-    def restart(*, daemon_changed, daemon_enabled, run=None):
+    def restart(*, daemon_changed, daemon_enabled, target_sha=None, run=None):
         u = (["ccswitch-daemon.service"] if daemon_changed and daemon_enabled else []) + ["ccswitch.service"]
         calls.restarted = u; return u
     mod.restart_units = restart

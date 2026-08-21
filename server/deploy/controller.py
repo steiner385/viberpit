@@ -124,15 +124,19 @@ class DeployController:
                     self.status.warnings.append(f"drain {result} — restarting anyway")
             if daemon_changed and self.daemon_enabled:
                 log_event(log, logging.INFO, "deploy.daemon.stop", deploy_id=self._deploy_id)
+            # Resolve the target sha BEFORE restarting: a remote daemon has its own
+            # checkout and restart_units fast-forwards it to exactly this commit, so
+            # both hosts land on the same code instead of the edge racing ahead.
+            short = await asyncio.to_thread(self._git.short_sha, self.repo, remote)
             try:
                 await asyncio.to_thread(self._steps.restart_units,
                                         daemon_changed=daemon_changed,
-                                        daemon_enabled=self.daemon_enabled)
+                                        daemon_enabled=self.daemon_enabled,
+                                        target_sha=short)
             except Exception as e:
                 raise DeployError("restart", str(e)) from e
             if daemon_changed and self.daemon_enabled:
                 log_event(log, logging.INFO, "deploy.daemon.start", deploy_id=self._deploy_id)
-            short = await asyncio.to_thread(self._git.short_sha, self.repo, remote)
             if not await asyncio.to_thread(self._steps.wait_healthy, short, url=self.health_url):
                 raise DeployError("restart", "health gate failed")
             log_event(log, logging.INFO, "deploy.edge.cutover", deploy_id=self._deploy_id)
