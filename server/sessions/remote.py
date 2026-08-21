@@ -358,6 +358,26 @@ class RemoteOrchestrator:
         """Clear one repo's stale-credential alert (#670) via the daemon."""
         return await self._client.call("dismiss_git_credential_alert", repo=repo)
 
+    async def list_adoptable_candidates(self) -> list[dict]:
+        """Adoption candidates via the daemon — /proc discovery runs on the daemon
+        host, not this edge process (#709 finding 4)."""
+        r = await self._client.call("list_adoptable_candidates")
+        return r if isinstance(r, list) else []
+
+    async def migrate_archive_home(
+        self, old_home: str | None, new_home: str | None, archived_ids: list[str],
+    ) -> dict:
+        """Move archived session dirs on the daemon's filesystem (#709 finding 5)."""
+        return await self._client.call(
+            "migrate_archive_home", old_home=old_home, new_home=new_home,
+            archived_ids=archived_ids,
+        )
+
+    async def cloned_repos(self, names: list[str]) -> list[str]:
+        """Which repos have a clone present on the daemon host (#709 finding 6)."""
+        r = await self._client.call("cloned_repos", names=names)
+        return r if isinstance(r, list) else []
+
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
         """Inject the branch-aware fix prompt for PR #pr_number via the daemon.
 

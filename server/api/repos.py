@@ -15,7 +15,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
-from server.config import get_settings
 
 router = APIRouter(prefix="/api/github", tags=["github"])
 log = logging.getLogger(__name__)
@@ -40,7 +39,6 @@ async def list_github_repos(
     On a GitHub failure, falls back to the last-good list (within
     ``_REPOS_MAX_STALE_SECONDS``) so a rate-limit blip doesn't 502-storm the UI.
     """
-    settings = get_settings()
     state = request.app.state
     try:
         repos = await asyncio.to_thread(gitrepos.list_accessible_repos)
@@ -55,11 +53,15 @@ async def list_github_repos(
         )
         repos = cache[0]
 
-    base = gitrepos.clones_base(settings.repo_root)
+    # The clone check must run where the clones live — the daemon host — not this
+    # edge process, whose filesystem has no clones once daemon and edge are split
+    # (#709 finding 6). orchestrator.cloned_repos resolves the daemon's own
+    # clones_base and returns the subset present there.
+    orch = request.app.state.sessions
+    names = [repo.get("nameWithOwner") or "" for repo in repos]
+    cloned = set(await orch.cloned_repos(names))
     for repo in repos:
-        name_with_owner = repo.get("nameWithOwner") or ""
-        owner, _, name = name_with_owner.partition("/")
-        repo["cloned"] = bool(owner and name and (base / owner / name / ".git").exists())
+        repo["cloned"] = (repo.get("nameWithOwner") or "") in cloned
     return repos
 
 

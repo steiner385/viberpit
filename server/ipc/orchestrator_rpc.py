@@ -279,6 +279,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
         "session_queue_move", "session_queue_cancel", "session_queue_positions", "maybe_start_queued",
         "git_credential_alerts", "dismiss_git_credential_alert",
+        "list_adoptable_candidates", "migrate_archive_home", "cloned_repos",
     ]
 
     def _make_simple(method_name):

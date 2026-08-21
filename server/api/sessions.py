@@ -25,7 +25,6 @@ from pydantic import BaseModel, Field
 from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
-from server.sessions import adopt as _adopt
 from server.sessions.search import parse_terms, session_matches
 from server.audit import record_audit
 from server.config import get_settings
@@ -175,22 +174,6 @@ def _record_to_dict(
         "interruptedByRestart": getattr(record, "interrupted_by_restart", False),
         "summary": summary or "",
         "queuePosition": queue_position,
-    }
-
-
-def _candidate_to_dict(c) -> dict[str, Any]:
-    """Convert an AdoptionCandidate to the wire-format dict for the dashboard."""
-    return {
-        "pid": c.pid,
-        "account": c.account,
-        "cwd": c.cwd,
-        "claudeSessionId": c.claude_session_id,
-        "name": c.name,
-        "mapped": c.mapped,
-        "tracked": c.tracked,
-        "skipReason": c.skip_reason,
-        "lastActivity": iso_utc(c.last_activity),
-        "pidAlive": c.pid_alive,
     }
 
 
@@ -558,10 +541,9 @@ async def list_adoptable(
     """
     _require_adoption_enabled()
     orch = _get_orchestrator(request)
-    known = [a["name"] for a in _accounts.list_accounts()]
-    tracked = {r.claude_session_id for r in await orch.list_sessions() if r.claude_session_id}
-    cands = await asyncio.to_thread(_adopt.discover_candidates, known, tracked)
-    return {"candidates": [_candidate_to_dict(c) for c in cands]}
+    # Discovery runs on the daemon host (its /proc, its account map), not this edge
+    # process — see orchestrator.list_adoptable_candidates (#709 finding 4).
+    return {"candidates": await orch.list_adoptable_candidates()}
 
 
 @router.post("/adopt", status_code=status.HTTP_201_CREATED)
