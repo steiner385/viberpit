@@ -19,12 +19,13 @@ import { PermissionProfilesSection } from './PermissionProfilesSection'
 import { HooksSection } from './HooksSection'
 import { NotificationsSection } from './NotificationsSection'
 import { SnapshotsSection } from './SnapshotsSection'
+import { FleetSection } from './FleetSection'
 
 export type SettingsSection =
   | 'general' | 'accounts' | 'automation'
   | 'plugins' | 'skills' | 'commands' | 'mcp'
   | 'presets' | 'templates' | 'profiles'
-  | 'hooks' | 'notifications' | 'snapshots'
+  | 'hooks' | 'notifications' | 'snapshots' | 'fleet'
 
 const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'general', label: 'General' },
@@ -40,6 +41,7 @@ const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'templates', label: 'Templates' },
   { id: 'profiles', label: 'Profiles' },
   { id: 'snapshots', label: 'Snapshots' },
+  { id: 'fleet', label: 'Fleet' },
 ]
 
 export function SettingsView() {
@@ -77,6 +79,7 @@ export function SettingsView() {
       {section === 'templates' && <TemplatesSection />}
       {section === 'profiles' && <PermissionProfilesSection />}
       {section === 'snapshots' && <SnapshotsSection />}
+      {section === 'fleet' && <FleetSection />}
     </div>
   )
 }
