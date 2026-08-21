@@ -4982,6 +4982,11 @@ class SessionOrchestrator:
         (archive_dir()) resolve here so they reflect the daemon's env. Returns
         {"moved": int, "failures": int}; failures are logged, never raised, so a
         settings save is never aborted by a stuck move.
+
+        Each successfully moved session has ``archive_root`` re-stamped to the new root.
+        Skipping that would leave every moved row pointing at a directory that is no
+        longer there, and unarchive resolves through archive_root — so the move would
+        silently break exactly the sessions it just relocated.
         """
         import shutil
         from pathlib import Path
@@ -4993,9 +4998,10 @@ class SessionOrchestrator:
         if old_dir == new_dir or not archived_ids:
             return {"moved": 0, "failures": 0}
 
-        def _move_all() -> dict:
+        def _move_all() -> tuple[list[str], int]:
             new_dir.mkdir(parents=True, exist_ok=True)
-            moved = failures = 0
+            moved: list[str] = []
+            failures = 0
             for sid in archived_ids:
                 src = old_dir / sid
                 if not src.exists():
@@ -5005,13 +5011,27 @@ class SessionOrchestrator:
                     continue
                 try:
                     shutil.move(str(src), str(dst))
-                    moved += 1
+                    moved.append(sid)
                 except Exception:
                     log.exception("archive_home migrate: %s → %s failed", src, dst)
                     failures += 1
-            return {"moved": moved, "failures": failures}
+            return moved, failures
 
-        return await asyncio.to_thread(_move_all)
+        moved_ids, failures = await asyncio.to_thread(_move_all)
+
+        # Re-stamp AFTER the move: if this coroutine dies partway, every row still names
+        # the root its directory is actually in, so the operation is resumable rather
+        # than half-corrupt.
+        if moved_ids:
+            from sqlalchemy import update as sa_update
+            async with db_session() as db:
+                await db.execute(
+                    sa_update(DbSession)
+                    .where(DbSession.id.in_(moved_ids))
+                    .values(archive_root=str(new_dir))
+                )
+
+        return {"moved": len(moved_ids), "failures": failures}
 
     async def cloned_repos(self, names: list[str]) -> list[str]:
         """Return the subset of nameWithOwner values whose clone exists on the DAEMON.
@@ -6793,14 +6813,14 @@ class SessionOrchestrator:
         """Permanently delete a session: remove archive folder + DB row.
 
         Returns True if deleted, False if the session was not found in DB.
-        Containment guard: only removes paths that are direct children of archive_dir().
+        Containment guard: only removes paths that are direct children of the resolved
+        archive root.
 
         A *live* session (still in _records/_drivers, or status != 'archived') is
         archived first: archive_session stops the driver and moves the cwd into the
         archive. Deleting a live session directly would otherwise leave a zombie
         driver running and orphan the working directory outside archive_dir().
         """
-        from ccswitch.paths import archive_dir
         from sqlalchemy import select as sa_select
 
         async with db_session() as db:
@@ -6819,8 +6839,17 @@ class SessionOrchestrator:
         ):
             await self.archive_session(session_id)
 
-        # Containment guard: candidate must be a direct child of archive_dir().
-        archive_base = archive_dir().resolve()
+        # Resolve the root the session was ACTUALLY archived into. Re-read the column
+        # rather than reusing `row`: the archive-then-delete above calls archive_session,
+        # which stamps archive_root, so the row loaded earlier predates it.
+        async with db_session() as db:
+            stored_root = (await db.execute(
+                sa_select(DbSession.archive_root).where(DbSession.id == session_id)
+            )).scalar_one_or_none()
+        base = Path(stored_root) if stored_root else await self._effective_archive_home()
+
+        # Containment guard: candidate must be a direct child of the resolved root.
+        archive_base = base.resolve()
         candidate = (archive_base / session_id).resolve()
         try:
             candidate.relative_to(archive_base)
@@ -6831,8 +6860,21 @@ class SessionOrchestrator:
             )
             return False
 
-        await asyncio.to_thread(shutil.rmtree, str(candidate), True)
-        log.info("session.permanent_delete id=%s archive_path=%s", session_id, candidate)
+        if candidate.exists():
+            await asyncio.to_thread(shutil.rmtree, str(candidate), True)
+            log.info("session.permanent_delete id=%s archive_path=%s", session_id, candidate)
+        else:
+            # Never let this pass silently. This used to resolve against the CURRENT
+            # archive home, so once that setting moved disks the rmtree targeted a path
+            # under the new root that had never existed — and `ignore_errors=True` made
+            # it "succeed". The row was deleted and the real directory stranded on the
+            # old root forever: one leaked working tree per purged session (150 of them,
+            # 28 GB, found 2026-08-21). Proceed with the row deletion, but say so.
+            log.warning(
+                "session.permanent_delete id=%s archive dir ABSENT at %s (archive_root=%s)"
+                " — deleting the row anyway; check for a stranded directory under a"
+                " previous archive root", session_id, candidate, stored_root or "<unset>",
+            )
 
         async with db_session() as db:
             from sqlalchemy import delete as sa_delete
