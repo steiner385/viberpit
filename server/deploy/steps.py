@@ -181,14 +181,31 @@ def build_frontend(repo: str, run: Run = subprocess.run) -> None:
 
 def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
                   run: Run = subprocess.run) -> list[str]:
-    """Restart systemd units in order: daemon first (if changed+enabled), then edge.
+    """Restart systemd units in order: daemon first (if changed), then edge.
 
     Order is load-bearing (browser reconnect-flush race, #190).
+
+    The daemon may live on a remote host (see rocky session-host cutover): when
+    ``CCSWITCH_DAEMON_SSH_HOST`` is set, the daemon restart is issued over SSH instead of
+    locally, and the local ``daemon_enabled`` guard is bypassed for it — dobby's local unit
+    is deliberately *disabled* once the daemon has moved to rocky, so gating on it would
+    make every deploy silently restart nothing and leave rocky running stale code (the
+    Postgres cutover incident this change exists to prevent). ``daemon_changed`` still gates
+    the remote restart: it reflects whether daemon-relevant files changed in this deploy's
+    diff, and both hosts run the same deployed commit, so skipping an unneeded restart is
+    still correct and avoids unnecessary daemon churn.
+
     Returns the ordered list of units restarted.
     """
     units: list[str] = []
+    daemon_host = os.environ.get("CCSWITCH_DAEMON_SSH_HOST")
     # DAEMON FIRST — order is load-bearing (browser reconnect-flush race, #190).
-    if daemon_changed and daemon_enabled:
+    if daemon_host:
+        if daemon_changed:
+            run(["ssh", daemon_host, "sudo", "systemctl", "restart", "ccswitch-daemon.service"],
+                check=True, capture_output=True)
+            units.append("ccswitch-daemon.service")
+    elif daemon_changed and daemon_enabled:
         run(["sudo", "systemctl", "restart", "ccswitch-daemon.service"],
             check=True, capture_output=True)
         units.append("ccswitch-daemon.service")
