@@ -20,9 +20,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select, update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from server.db import db_session
+from server.db import db_session, dialect_insert
 from server.db.models import MergedPr
 from server.github.deploy_envs import classify_env
 
@@ -82,7 +81,7 @@ async def upsert_merged_pr(
         "qa_live_at": _z_form(qa_live_at),
         "prod_live_at": _z_form(prod_live_at),
     }
-    stmt = sqlite_insert(MergedPr).values(**values)
+    stmt = dialect_insert(MergedPr).values(**values)
     # COALESCE(existing, excluded): keep the stored value if present, else adopt
     # the new one — so the first non-NULL write wins per column.
     set_ = {

@@ -4267,11 +4267,10 @@ class SessionOrchestrator:
     ) -> None:
         """Upsert one repo's deploy-environment config."""
         import json as _json
-        from sqlalchemy.dialects.sqlite import insert as _sqlite_insert
-        from server.db import db_session as _db_session
+        from server.db import db_session as _db_session, dialect_insert as _dialect_insert
         from server.db.models import RepoDeployConfig as _Cfg
 
-        stmt = _sqlite_insert(_Cfg).values(
+        stmt = _dialect_insert(_Cfg).values(
             repo=repo, environments=_json.dumps(environments), enabled=enabled
         )
         stmt = stmt.on_conflict_do_update(

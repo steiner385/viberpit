@@ -249,3 +249,44 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
+
+
+def dialect_insert(table_or_model):
+    """Return the dialect-appropriate INSERT supporting ON CONFLICT.
+
+    SQLite and PostgreSQL both support ON CONFLICT, but through dialect-specific
+    constructs (``sqlalchemy.dialects.sqlite.insert`` vs.
+    ``sqlalchemy.dialects.postgresql.insert``) that are NOT interchangeable — a
+    sqlite ``Insert`` executed against a Postgres engine raises
+    ``AttributeError: 'OnConflictDoUpdate' object has no attribute
+    'constraint_target'`` inside ``on_conflict_do_update``/``on_conflict_do_nothing``.
+    Both dialect inserts otherwise expose the same call-site API
+    (``on_conflict_do_update(index_elements=..., set_=...)``,
+    ``on_conflict_do_nothing(index_elements=...)``, ``.excluded``), so callers can
+    stay dialect-agnostic by building the statement through this helper instead of
+    importing a specific dialect's ``insert``.
+
+    Dialect is read from the live engine (``engine.dialect.name``, ``"sqlite"`` or
+    ``"postgresql"``) rather than inferred from config, so it always matches the
+    connection the statement will actually run on. This deliberately reads
+    ``_engine`` at CALL time, not import time: the surrounding modules
+    (``server/pipeline/timeline.py`` et al.) import this helper at process startup,
+    before ``init_db()`` has run, so the dialect can't be resolved — or cached —
+    at import time without risking a stale/wrong pick.
+    """
+    if _engine is None:
+        raise RuntimeError(
+            "Database not initialised — call init_db() before building a "
+            "dialect_insert() statement"
+        )
+    dialect_name = _engine.dialect.name
+    if dialect_name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as _insert
+    elif dialect_name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as _insert
+    else:
+        raise RuntimeError(
+            f"dialect_insert(): unsupported dialect {dialect_name!r} — only "
+            "'sqlite' and 'postgresql' are supported"
+        )
+    return _insert(table_or_model)
