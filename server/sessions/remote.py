@@ -422,6 +422,15 @@ class RemoteOrchestrator:
         # limit, resets <date>" message only if it catches AllAccountsBusy by
         # type. Without this re-raise it sees a generic DaemonError → opaque 500 →
         # "Something went wrong." (mirrors run_command's KeyError re-raise.)
+        #
+        # gitrepos.CloneError / GhError get the same treatment: the daemon now
+        # owns repo→clone resolution (ensure_clone), so a clone failure raised
+        # there must still reach the edge's existing
+        # ``except (gitrepos.CloneError, gitrepos.GhError)`` → HTTP 502
+        # clone_failed handling, not degrade to a generic 500. Unlike
+        # AllAccountsBusy these carry no structured ``error_data`` payload —
+        # the message alone is the whole contract — so reconstruction only
+        # needs the type name.
         try:
             r = await self._client.call("create_session", **kwargs)
         except DaemonError as exc:
@@ -430,6 +439,10 @@ class RemoteOrchestrator:
                 reset = data.get("earliest_reset")
                 earliest = datetime.fromisoformat(reset) if reset else None
                 raise AllAccountsBusy(earliest, data.get("kind", "at_ceiling")) from exc
+            if exc.err_type in ("CloneError", "GhError"):
+                from ccswitch import gitrepos
+                exc_cls = gitrepos.CloneError if exc.err_type == "CloneError" else gitrepos.GhError
+                raise exc_cls(exc.message) from exc
             raise
         return SessionRecord.from_dict(r["session"])
 

@@ -411,32 +411,15 @@ async def create_session(
                 },
             )
 
-    # Resolve the repo (nameWithOwner) into a ccswitch-owned clone path, cloning
-    # on first use.  The user's real ~/GitHub checkouts are never touched — all
-    # clone + worktree activity lives under <repo_root>/.ccswitch/.
-    cwd: str | None = None
-    if body.repo:
-        from sqlalchemy import select as sa_select
-        from server.db.models import AppSettings as _AppSettings
-        _rr = (await db.execute(
-            sa_select(_AppSettings.repo_root).where(_AppSettings.id == "singleton")
-        )).scalar_one_or_none()
-        _repo_root = _rr or get_settings().repo_root
-        url = f"https://github.com/{body.repo}.git"
-        try:
-            cwd = await asyncio.to_thread(
-                gitrepos.ensure_clone, _repo_root, body.repo, url
-            )
-        except (gitrepos.CloneError, gitrepos.GhError) as exc:
-            return JSONResponse(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                content={
-                    "error": {
-                        "code": "clone_failed",
-                        "message": str(exc),
-                    },
-                },
-            )
+    # repo (nameWithOwner) is resolved into a ccswitch-owned clone path — cloning
+    # on first use — by the orchestrator itself (server/sessions/orchestrator.py
+    # create_session), NOT here.  gitrepos.ensure_clone owns the on-disk clone
+    # registry, and in a dual-host deployment the orchestrator may be running in
+    # the session daemon on a different host than this edge process: cloning
+    # here would put the checkout on the wrong host's filesystem (a live
+    # production bug — see server/sessions/remote.py and server/api/repos.py for
+    # why ensure_clone is daemon-owned). Passing repo= through and leaving cwd
+    # unset lets create_session resolve it wherever it actually runs.
 
     # Resolve per-account defaults as fallbacks (only when account is explicitly pinned)
     _resolved_permission_mode = body.permissionMode
@@ -455,7 +438,7 @@ async def create_session(
             name=name,
             account=body.account,
             initial_prompt=body.initialPrompt,
-            cwd=cwd,
+            cwd=None,
             branch=body.branch,
             repo=body.repo,
             identity=identity,
@@ -463,6 +446,23 @@ async def create_session(
             attachment_ids=body.attachmentIds,
             name_is_auto=name_is_auto,
             model=_resolved_model,
+        )
+    except (gitrepos.CloneError, gitrepos.GhError) as exc:
+        # repo→clone resolution now happens inside orch.create_session (on
+        # whichever process actually owns the clone registry — the daemon in
+        # dual-host mode). The error contract is unchanged: still a 502 with
+        # code "clone_failed". In-process this is the real exception raised
+        # by gitrepos.ensure_clone; over the daemon RPC boundary it is the
+        # same type, reconstructed by RemoteOrchestrator.create_session from
+        # the DaemonError envelope (see server/sessions/remote.py).
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={
+                "error": {
+                    "code": "clone_failed",
+                    "message": str(exc),
+                },
+            },
         )
     except ValueError as exc:
         return JSONResponse(
