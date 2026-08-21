@@ -140,6 +140,9 @@ def _record_to_dict(
         "name": record.name,
         "accountName": record.account,
         "repo": record.repo if repo is _UNSET else repo,
+        # Fleet host that ran this session. None for pre-fleet sessions and for
+        # deployments whose endpoint is not in an operator-managed registry.
+        "host": getattr(record, "host", None),
         "origin": getattr(record, "origin", None),
         "originRef": getattr(record, "origin_ref", None),
         "assistedBy": getattr(record, "assisted_by", None),
@@ -511,6 +514,23 @@ async def create_session(
                 "earliestReset": reset_iso,
             },
         )
+
+    # Stamp the fleet host that ran this session. app.state.host_name is resolved
+    # at startup from the daemon endpoint; it is None when this deployment's
+    # endpoint is not in an operator-managed registry, in which case we record
+    # nothing rather than guessing — a wrong host stamp is worse than an absent one.
+    _host_name = getattr(request.app.state, "host_name", None)
+    if _host_name:
+        from sqlalchemy import update as _sa_update
+
+        from server.db.models import Session as _HostStampSession
+        await db.execute(_sa_update(_HostStampSession)
+                         .where(_HostStampSession.id == record.id)
+                         .values(host=_host_name))
+        try:
+            record.host = _host_name  # so the 201 body reports it too
+        except Exception:  # pragma: no cover — frozen record types
+            pass
 
     # Audit: session.create
     await record_audit(

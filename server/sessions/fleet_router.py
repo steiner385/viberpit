@@ -96,16 +96,24 @@ class FleetRouter:
         return order
 
 
-async def ensure_default_host(endpoint: str) -> str:
-    """Seed a one-row fleet from a legacy single-endpoint config.
+async def ensure_default_host(endpoint: str) -> str | None:
+    """Resolve which registry host *endpoint* is, seeding a one-row fleet if empty.
 
-    No-ops when ANY host already exists: once an operator manages the registry,
-    startup must not inject rows behind their back.
+    Returns the host name, or None when the registry is operator-managed and does
+    not contain this endpoint — in that case we genuinely do not know which host
+    we are talking to, and a wrong host stamp is worse than an absent one.
+
+    Seeding no-ops when ANY host already exists: once an operator manages the
+    registry, startup must not inject rows behind their back.
     """
     async with db_session() as db:
+        match = (await db.execute(
+            sa_select(Host.name).where(Host.endpoint == endpoint))).scalar_one_or_none()
+        if match:
+            return match
         existing = (await db.execute(
             sa_select(func.count()).select_from(Host))).scalar()
         if existing:
-            return DEFAULT_HOST_NAME
+            return None
         db.add(Host(name=DEFAULT_HOST_NAME, endpoint=endpoint, enabled=True))
     return DEFAULT_HOST_NAME
