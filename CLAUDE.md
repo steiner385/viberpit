@@ -54,6 +54,14 @@ is the equivalent. Admins may push directly in emergencies.
 - A fresh git worktree has no built env (network blocks `uv sync` of the ~70MB claude-agent-sdk).
   Run against the main checkout's prebuilt env (`<main-checkout>/.venv/bin/python -m pytest …`) and
   symlink `web/node_modules` from the main checkout.
+- **The shared `.venv` imports `ccswitch.*` from the DEPLOY worktree, not your checkout.**
+  `site-packages/__editable__.ccswitch-0.1.0.pth` points at
+  `cc-account-switcher-deploy/src`, so edits under your own `src/ccswitch/` are silently ignored
+  by tests — they pass or fail against *production* code. `server/*` is unaffected (pytest's
+  rootdir wins). When touching `src/ccswitch/`, run with
+  `PYTHONPATH=<your-checkout>/src` and confirm with
+  `python -c "import ccswitch.ledger as m; print(m.__file__)"`. CI is unaffected: it installs from
+  the checkout under test.
 - API auth tests 401 unless `CCSWITCH_TAILNET_ALLOWLIST` includes the test identity (the real shell
   env sets a live allowlist). Pin it per-test, or run the full suite with
   `env -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 pytest` (empty allowlist needs `CCSWITCH_DEV=1`).
