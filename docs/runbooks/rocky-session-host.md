@@ -178,6 +178,34 @@ deploy raises `DeployError` **before any command runs**, including the edge rest
 deliberate: a deploy that cannot update the remote daemon must fail loudly rather than restart it
 into staleness, which is the failure this whole section exists to describe.
 
+### A hotfixed remote host cannot fast-forward
+
+If you ever patch rocky directly — a branch, a cherry-pick, a copied file — the next
+deploy will **fail**, and that is correct. This repo squash-merges, so the branch you
+hotfixed with is *not* an ancestor of `master` even after its PR lands, and
+`git merge --ff-only <deployed-sha>` refuses rather than discard what looks like
+unmerged work.
+
+Recovery is deliberate, not automatic. Verify master actually carries the fix **by
+content**, not by trusting that the PR merged:
+
+```bash
+# example: confirm the fix you hotfixed with is really in master
+git show origin/master:server/sessions/orchestrator.py | grep -c 'def project_dir_name'
+git show origin/master:src/ccswitch/ledger.py            | grep -c 'os.replace'
+```
+
+Then reset the host and restart it:
+
+```bash
+ssh tony@rocky 'cd /home/tony/GitHub/ccswitch   && git fetch -q origin && git checkout -q master   && git reset --hard origin/master && git branch -D <hotfix-branch>'
+ssh tony@rocky 'sudo systemctl restart ccswitch-daemon'
+```
+
+Check for local work first (`git log --branches --not --remotes`, `git stash list`) —
+`reset --hard` discards it, and the whole point of `--ff-only` in the deploy is that it
+will not make that decision for you.
+
 **Version skew is measured between hosts, not against each host's own upstream.** To check:
 
 ```bash
