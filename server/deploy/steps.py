@@ -341,6 +341,19 @@ def _default_fetch(url: str) -> str:
         return ""
 
 
+# Health-gate poll windows. wait_healthy returns on the FIRST healthy poll, so a
+# longer ceiling costs nothing when the deploy is fine — it is only spent when
+# something is actually wrong.
+HEALTH_POLL_INTERVAL_S = 2.0
+# Edge-only deploy: nothing slow to wait for, so fail fast as before.
+HEALTH_ATTEMPTS_EDGE_ONLY = 15
+# A remote daemon was restarted. `systemctl restart` over ssh returns when the
+# process STARTS, not when uvicorn is SERVING, and rocky needs ~10-30s more to
+# bind its port. The first real deploy after #726 failed at the 30s ceiling and
+# rolled back with nothing actually wrong — the daemon was still coming up.
+HEALTH_ATTEMPTS_WITH_DAEMON = 75
+
+
 def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: float = 2.0,
                  fetch: Callable[[str], str] | None = None,
                  sleep: Callable[[float], None] = time.sleep) -> bool:

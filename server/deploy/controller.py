@@ -140,7 +140,13 @@ class DeployController:
                 raise DeployError("restart", str(e)) from e
             if daemon_changed and self.daemon_enabled:
                 log_event(log, logging.INFO, "deploy.daemon.start", deploy_id=self._deploy_id)
-            if not await asyncio.to_thread(self._steps.wait_healthy, short, url=self.health_url):
+            # Give the gate a longer window when a daemon was restarted: the
+            # remote restart returns before uvicorn is serving, so the edge can
+            # legitimately report daemon:"unavailable" for tens of seconds.
+            _attempts = (self._steps.HEALTH_ATTEMPTS_WITH_DAEMON if daemon_changed
+                         else self._steps.HEALTH_ATTEMPTS_EDGE_ONLY)
+            if not await asyncio.to_thread(self._steps.wait_healthy, short,
+                                           url=self.health_url, attempts=_attempts):
                 raise DeployError("restart", "health gate failed")
 
             # /healthz proves the process is up and the schema matches; it never
