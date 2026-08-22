@@ -37,6 +37,7 @@ class InProcessOrchestratorAdapter:
     # catch-up cursor with. None here means ws.py's epoch gate never matches → full replay,
     # which is moot anyway since ring_covers is a constant False (#497).
     def daemon_epoch(self): return None
+    def daemon_sha(self): return None
     async def archive_session(self, *a, **k): return await _maybe_await(self._orch.archive_session(*a, **k))
     async def unarchive(self, *a, **k): return await _maybe_await(self._orch.unarchive(*a, **k))
     async def permanent_delete(self, *a, **k): return await _maybe_await(self._orch.permanent_delete(*a, **k))
