@@ -583,8 +583,12 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
             <ReauthBrowserPanel vncSession={reauthStatus.vncSession} />
           </>
         ) : (
+          // Before the virtual display exists there is nothing to render, and the
+          // wait (profile copy, Xvfb spawn, Chrome cold start) is several seconds.
+          // The backend publishes a step label so this window isn't silent — and so
+          // it doesn't claim "on the host screen" while a virtual display is starting.
           <p className="text-xs text-amber-600 dark:text-amber-400">
-            Opening Chrome on the host screen — sign in there…
+            {reauthStatus?.message ?? 'Opening Chrome on the host screen — sign in there…'}
           </p>
         )
       )}

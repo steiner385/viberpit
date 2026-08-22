@@ -707,3 +707,76 @@ def test_scoped_status_passes_through_when_no_active_account():
     """A fresh manager (no reauth started) reports idle to any scoped poll."""
     m = ReauthManager(runner=lambda n: True, key_available=lambda: True, timeout_s=5)
     assert m.status("whoever", scoped=True).state == "idle"
+
+
+# ---------------------------------------------------------------------------
+# Progress feedback: the pre-browser wait must not be silent
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_runner_publishes_progress_for_the_virtual_display(monkeypatch):
+    """The step label is live while capture_login blocks, and names the virtual display.
+
+    Profile copy + Xvfb spawn + Chrome cold start take several seconds, during which
+    the viewer shows only "Reconnecting…". The UI polls status every 1.5s, so the
+    message must be set *before* the blocking call, not after it."""
+    seen = {}
+
+    def fake_capture_login(name, env_extra=None):
+        seen["message"] = mgr._state.message      # sampled mid-run, not after
+        seen["state"] = mgr._state.state
+        return True
+
+    monkeypatch.setattr("ccswitch.auth_login.capture_login", fake_capture_login)
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-p")
+    monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
+
+    mgr = ReauthManager(x11=lambda: _FakeX11(), key_available=lambda: True, timeout_s=30)
+    await mgr.start("primary", "me@example.com")
+    await asyncio.sleep(0.05)
+
+    assert seen["state"] == "running"
+    assert seen["message"], "the wait before the browser appears must not be silent"
+    assert "host screen" not in seen["message"], (
+        f"virtual-display mode must not claim the host screen: {seen['message']!r}"
+    )
+    assert "few seconds" in seen["message"], f"unexpected label: {seen['message']!r}"
+
+
+@pytest.mark.asyncio
+async def test_runner_progress_names_the_host_screen_without_x11(monkeypatch):
+    """Without a virtual display the label must point at the host screen instead."""
+    seen = {}
+    monkeypatch.setattr("ccswitch.auth_login.capture_login",
+                        lambda name, env_extra=None: seen.update(message=mgr._state.message) or True)
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-q")
+    monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
+
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("primary", "me@example.com")
+    await asyncio.sleep(0.05)
+
+    assert "host screen" in (seen.get("message") or ""), (
+        f"host-screen fallback must say so: {seen.get('message')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_progress_does_not_clobber_a_terminal_message(monkeypatch):
+    """A progress label written late must never overwrite a terminal failure message."""
+    monkeypatch.setattr("ccswitch.auth_login.capture_login",
+                        lambda name, env_extra=None: False)          # login fails
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-r")
+    monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
+
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("primary", "me@example.com")
+    await asyncio.sleep(0.05)
+
+    st = mgr.status("primary")
+    assert st.state in ("error", "timeout"), f"expected a terminal state, got {st.state!r}"
+    assert "host screen" not in (st.message or ""), (
+        f"a progress label leaked into the terminal message: {st.message!r}"
+    )

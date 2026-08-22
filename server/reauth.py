@@ -150,6 +150,18 @@ class ReauthManager:
             chrome_profile = settings.chrome_profile
             reauth_display = settings.reauth_display
 
+            def _progress(msg: str) -> None:
+                """Publish a step label so the UI can say what the wait is for.
+
+                Chrome cold-starting on a fresh virtual display takes several
+                seconds, during which the viewer shows only "Reconnecting…" —
+                which reads as a failure rather than as progress. Only overwrite
+                while still running, so a terminal message is never clobbered."""
+                if manager._state.state == "running":
+                    manager._state.message = msg
+
+            _progress("Preparing a temporary browser profile\u2026")
+
             # Locate the launcher script (shipped with the package)
             launcher = (
                 Path(__file__).parent.parent / "scripts" / "ccswitch-reauth-browser"
@@ -162,6 +174,7 @@ class ReauthManager:
             x11 = manager._x11() if manager._x11 else None
             spec = None
             if x11 is not None and getattr(settings, "reauth_virtual_display", True):
+                _progress("Starting the virtual display\u2026")
                 spec = await x11.start_display(REAUTH_DISPLAY_KEY)
             try:
                 env_extra = {
@@ -172,8 +185,10 @@ class ReauthManager:
                     env_extra["DISPLAY"] = f":{spec.lease.display}"
                     env_extra["XAUTHORITY"] = spec.xauthority
                     manager._state.vnc_session = REAUTH_DISPLAY_KEY
+                    _progress("Opening the Claude login \u2014 the browser takes a few seconds to appear\u2026")
                 else:
                     env_extra["DISPLAY"] = reauth_display
+                    _progress("Opening Chrome on the host screen \u2014 sign in there\u2026")
                 ok = await asyncio.to_thread(
                     auth_login.capture_login, name, env_extra=env_extra
                 )
