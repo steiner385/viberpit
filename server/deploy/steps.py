@@ -408,6 +408,75 @@ def _daemon_ok(body: str, expected_sha: str) -> bool:
     return True
 
 
+# Functional endpoints the deploy probes after the health gate. /healthz proves the
+# process is up and the DB schema matches; it never reads the ledger or the session
+# store, so a corrupt ledger left /api/accounts 500ing while /healthz stayed green
+# (2026-08-22). These are the cheapest endpoints that exercise those paths.
+DEFAULT_PROBE_PATHS: tuple[str, ...] = ("/api/sessions", "/api/accounts")
+
+
+def _default_status_fetch(url: str) -> int:
+    """GET *url* and return its status code. Raises on transport failure."""
+    import httpx
+    return httpx.get(url, timeout=10.0).status_code
+
+
+def probe_endpoints(base_url: str, paths, *, attempts: int = 3, sleep_s: float = 2.0,
+                    fetch_status=None, sleep=time.sleep) -> list[str]:
+    """Probe *paths* under *base_url*; return the ones still failing.
+
+    A failure is 5xx or an unreachable endpoint. 4xx is NOT a failure: where the
+    probe is unauthenticated, 401/403 means the app was reached and answered,
+    which is exactly what this checks. Failing on 4xx would turn the safety check
+    into an outage on any authenticating deployment.
+
+    Retries within *attempts* so an app still warming up does not fail a deploy on
+    its first response.
+    """
+    fetch_status = fetch_status or _default_status_fetch
+    failed: list[str] = []
+    for path in paths:
+        url = base_url.rstrip("/") + path
+        ok = False
+        for attempt in range(attempts):
+            try:
+                code = fetch_status(url)
+                if code < 500:
+                    ok = True
+                    break
+                log.warning("deploy probe %s -> %s (attempt %d/%d)",
+                            path, code, attempt + 1, attempts)
+            except Exception as exc:  # noqa: BLE001 — unreachable counts as failing
+                log.warning("deploy probe %s unreachable: %s (attempt %d/%d)",
+                            path, exc, attempt + 1, attempts)
+            if attempt < attempts - 1:
+                sleep(sleep_s)
+        if not ok:
+            failed.append(path)
+    return failed
+
+
+def require_endpoints_healthy(base_url: str, paths=None, **kw) -> None:
+    """probe_endpoints, raising DeployError when anything failed.
+
+    Named `require_` rather than `assert_`: unittest.mock reserves the `assert_`
+    prefix and raises AttributeError for any unrecognised `assert_*` attribute (so
+    typos like `assert_called_once` fail loudly). A Steps method named that way
+    breaks every Mock-based fake in the suite.
+
+    Raises rather than warning: a deploy whose functional endpoints are 500ing has
+    not succeeded, and a warning in a status blob is exactly how the corrupt-ledger
+    outage stayed invisible.
+    """
+    bad = probe_endpoints(base_url, paths or DEFAULT_PROBE_PATHS, **kw)
+    if bad:
+        raise DeployError(
+            "restart",
+            f"post-deploy probe failed for {', '.join(bad)} — the app is running "
+            f"but these endpoints are erroring, so the deploy is not healthy",
+        )
+
+
 def rollback_to(repo: str, sha: str, *, daemon_changed: bool, daemon_enabled: bool,
                 run: Run = subprocess.run) -> None:
     """Reset to a known-good commit, rebuild frontend (best-effort), restart both units together.
