@@ -251,9 +251,37 @@ async def _lifespan(app: FastAPI):
             "startup: attachment orphan sweep failed", exc_info=True
         )
 
+    # --- fleet registry (visibility) ---------------------------------------
+    # Additive only: resolves WHICH registry host this edge talks to and starts
+    # the health/capacity probe. Deliberately does not touch how
+    # app.state.sessions resolves — that path carries the split-brain guard and
+    # changes with the dispatcher, not with visibility.
+    app.state.host_name = None
+    app.state.fleet_probe_task = None
+    _endpoint = getattr(app.state, "daemon_endpoint", None)
+    if _endpoint is not None:
+        try:
+            from server.sessions.fleet_router import ensure_default_host
+            from server.sessions.host_probe import probe_loop
+
+            app.state.host_name = await ensure_default_host(str(_endpoint))
+            app.state.fleet_probe_task = asyncio.create_task(
+                probe_loop(), name="fleet-host-probe")
+            _logging.getLogger("server").info(
+                "fleet: this edge talks to host %r", app.state.host_name)
+        except Exception:
+            # The fleet is observability; it must never block startup.
+            _logging.getLogger("server").warning(
+                "fleet: registry init failed (continuing without it)", exc_info=True)
+
     yield
     # Shutdown
     import contextlib
+    _probe = getattr(app.state, "fleet_probe_task", None)
+    if _probe is not None:
+        _probe.cancel()
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await _probe
     with contextlib.suppress(Exception):
         app.state.auth_failure_auditor.stop()
     if getattr(app.state, "daemon_health", None) is not None:
@@ -491,6 +519,8 @@ def create_app(
     app.include_router(config_router)
     app.include_router(github_router)
     app.include_router(settings_router)
+    from server.api.fleet import router as fleet_router
+    app.include_router(fleet_router)
     app.include_router(api_models.router)
     app.include_router(deploy_router)
     app.include_router(client_logs_router)

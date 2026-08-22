@@ -148,6 +148,10 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     "session_presets": {"name": "dtcheck-preset"},
     "prompt_templates": {"name": "dtcheck-template"},
     "permission_profiles": {"name": "dtcheck-profile"},
+    # hosts.last_probe_at makes this table part of the sweep; name is the PK and
+    # endpoint is NOT NULL, and neither has a synthesizable default (a host row
+    # without an endpoint is unreachable by definition).
+    "hosts": {"name": "dtcheck-host", "endpoint": "unix:///tmp/dtcheck.sock"},
 }
 
 # FK columns that must be filled from a parent row inserted earlier in this

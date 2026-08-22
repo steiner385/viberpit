@@ -6,6 +6,7 @@ import { matchListShortcut } from '@/lib/shortcuts'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
+import { HostBadge } from './HostBadge'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { statusTier } from '@/session/statusTier'
 import { anyChecksFailing, isActionablePrState } from '@/session/prStatus'
@@ -438,6 +439,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
             <span className="truncate">{repoLabel.text}</span>
           </span>
+          <HostBadge host={session.host} />
           <StatusPill
             className="flex-shrink-0"
             status={session.status}

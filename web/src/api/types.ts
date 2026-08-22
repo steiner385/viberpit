@@ -68,6 +68,9 @@ export interface Session {
   accountName: string
   /** GitHub nameWithOwner ("owner/name") this session works on, or null for a scratch session. */
   repo?: string | null
+  /** Fleet host that ran this session. Null for sessions created before the fleet
+   *  existed, and for deployments whose endpoint is not in the host registry. */
+  host?: string | null
   status: SessionStatus
   createdAt: string
   /** Last-activity time. May be null/absent for a session with no recorded

@@ -411,7 +411,10 @@ def create_daemon_app() -> FastAPI:
     @app.get("/info")
     async def info() -> dict:
         from server.version import running_git_sha
-        return {"sha": running_git_sha(), "protocol": proto.PROTOCOL_VERSION, "epoch": _app_epoch}
+        orch = getattr(app.state, "orchestrator", None)
+        active = len(getattr(orch, "_records", {}) or {})
+        return {"sha": running_git_sha(), "protocol": proto.PROTOCOL_VERSION,
+                "epoch": _app_epoch, **_capacity_snapshot(active)}
 
     @app.get("/healthz")
     async def healthz() -> dict:
@@ -429,6 +432,35 @@ def create_daemon_app() -> FastAPI:
 
 async def _ping(params: dict) -> dict:
     return {"pong": True}
+
+
+def _read_mem_available_mb() -> int | None:
+    """MemAvailable from /proc/meminfo, in MiB. None if unreadable.
+
+    MemAvailable (not MemFree) is the kernel's own estimate of what a new
+    workload can actually claim — which is the question dispatch is asking.
+    """
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except Exception:  # pragma: no cover — unreadable /proc must not break /info
+        return None
+    return None
+
+
+def _capacity_snapshot(active_sessions: int) -> dict:
+    """Capacity fields for /info. Every value degrades to None, never raises."""
+    try:
+        load: float | None = float(os.getloadavg()[0])
+    except Exception:  # pragma: no cover
+        load = None
+    return {
+        "loadAvg": load,
+        "memAvailableMb": _read_mem_available_mb(),
+        "activeSessions": active_sessions,
+    }
 
 
 def register_rpc(app: FastAPI, name: str, fn) -> None:
