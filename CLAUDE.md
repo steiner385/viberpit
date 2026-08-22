@@ -62,6 +62,11 @@ is the equivalent. Admins may push directly in emergencies.
   Add new model columns **nullable** and they are picked up automatically on both.
 - A **NOT NULL** column still needs a real migration unless `_ddl_default_literal` can synthesize its
   default — reconcile logs and skips it, then the drift assert fails startup loudly.
+- **Adding a MODEL (not just a column) means re-running the Postgres suite**, which is skipped unless
+  `CCSWITCH_TEST_PG_URL` is set — so it is green locally and red in CI. Two hand-maintained lists in
+  `server/tests/` enumerate every table and must gain an entry: `_REQUIRED_EXTRAS` in
+  `test_postgres_compat.py` (NOT NULL columns the datetime sweep must supply) and, for a NOT NULL
+  column with no synthesizable default, `RECONCILE_EXEMPT` in `test_schema_reconcile_coverage.py`.
 - Nothing runs `alembic upgrade` at deploy time (and the prod DB has no `alembic_version` stamp — it was
   built by `create_all` at cutover). The revisions in `server/db/migrations/versions/` are the reviewable
   record of schema changes; reconcile is what actually applies them. Add a revision for any schema change
