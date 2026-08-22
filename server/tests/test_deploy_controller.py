@@ -29,6 +29,13 @@ def make_steps(*, ci="green", healthy=True, changed=None):
         u = (["ccswitch-daemon.service"] if daemon_changed and daemon_enabled else []) + ["ccswitch.service"]
         calls.restarted = u; return u
     mod.restart_units = restart
+    # The controller cannot restart itself inline (it runs the deploy), so it asks
+    # steps to schedule a deferred refresh when deploy code changed.
+    mod.deploy_code_changed = lambda changed: False
+    def _sched(**k):
+        calls.controller_refresh_scheduled = True
+        return True
+    mod.schedule_controller_restart = _sched
     mod.wait_healthy = lambda sha, **k: healthy
     def rollback(repo, sha, *, daemon_changed, daemon_enabled, run=None):
         calls.rolled_back = True

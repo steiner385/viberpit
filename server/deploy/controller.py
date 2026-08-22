@@ -112,6 +112,9 @@ class DeployController:
             self._set(Phase.REPORT, PhaseState.RUNNING)
             changed = await asyncio.to_thread(self._changed_files, self.repo, local, remote)
             daemon_changed = self._steps.classify_change(changed) == "daemon_changed"
+            # The controller cannot restart itself inline — it is the process running
+            # this deploy — so note it now and schedule a deferred restart at the end.
+            controller_changed = self._steps.deploy_code_changed(changed)
             self._set(Phase.REPORT, PhaseState.DONE)
 
             # --- restart ---
@@ -140,6 +143,22 @@ class DeployController:
             if not await asyncio.to_thread(self._steps.wait_healthy, short, url=self.health_url):
                 raise DeployError("restart", "health gate failed")
             log_event(log, logging.INFO, "deploy.edge.cutover", deploy_id=self._deploy_id)
+
+            # This deploy changed the controller's own code. Hand a restart to
+            # systemd so it lands AFTER this deploy reports, rather than killing it.
+            # Without this the controller keeps executing the code it started with:
+            # on 2026-08-21 that left a stale remote daemon because #719's fix was on
+            # disk but not in the running process.
+            if controller_changed:
+                scheduled = await asyncio.to_thread(
+                    self._steps.schedule_controller_restart)
+                if scheduled:
+                    log_event(log, logging.INFO, "deploy.controller.refresh_scheduled",
+                              deploy_id=self._deploy_id)
+                else:
+                    self.status.warnings.append(
+                        "deploy code changed but the controller restart could not be "
+                        "scheduled — it is still running the previous code")
             self._set(Phase.RESTART, PhaseState.DONE)
 
             # --- resume (eager re-launch; only when the daemon actually restarted) ---
