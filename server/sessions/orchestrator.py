@@ -5665,14 +5665,28 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         if d and d.claude_session_id:
             config_dir, csid = d.config_dir, d.claude_session_id
+            rec0 = self._records.get(session_id)
+            cwd = getattr(rec0, "cwd", None) if rec0 is not None else None
         else:
             rec = self._records.get(session_id)
             if rec is None or not rec.claude_session_id:
                 return None
             config_dir, csid = str(account_cfg_dir(rec.account)), rec.claude_session_id
-        return self._find_transcript(config_dir, csid)
+            cwd = getattr(rec, "cwd", None)
+        return self._find_transcript(config_dir, csid, cwd)
 
-    def _find_transcript(self, config_dir: str, csid: str) -> str | None:
+    @staticmethod
+    def project_dir_name(cwd: str) -> str:
+        """Claude Code's project-directory name for *cwd*: '/', '.' and '_' -> '-'.
+
+        Verified against 12/12 real transcripts on 2026-08-21 by reading the cwd
+        recorded inside each JSONL and comparing it to the containing directory.
+        """
+        import re as _re
+        return _re.sub(r"[/._]", "-", cwd)
+
+    def _find_transcript(self, config_dir: str, csid: str,
+                         cwd: str | None = None) -> str | None:
         """Glob `<root>/projects/*/<csid>.jsonl` in the per-account config dir, then
         the canonical shared base as a backstop against a broken per-account symlink.
         Dedup by resolved path so a healthy symlink isn't globbed twice.
@@ -5684,6 +5698,22 @@ class SessionOrchestrator:
         e.g. one dangling archived row 409'd the entire /sessions/search.
         """
         import glob as _glob
+
+        # FAST PATH: derive the project dir from the cwd and stat ONE candidate.
+        # The glob below is O(project dirs) — 1741 on this deployment — and every
+        # entry is a network round-trip when the account store is a remote mount.
+        # On rocky that made a single lookup take >200s, and _goal_sweep calls it
+        # per session ON THE EVENT LOOP, so the daemon never finished starting
+        # (2026-08-21 outage). One stat replaces the whole scan in the normal case.
+        if cwd:
+            enc = self.project_dir_name(cwd)
+            for root in (Path(config_dir), Path(shared_base())):
+                cand = root / "projects" / enc / f"{csid}.jsonl"
+                try:
+                    if cand.exists():
+                        return str(cand)
+                except OSError:
+                    pass
 
         seen: set[str] = set()
         for root in (Path(config_dir), Path(shared_base())):
@@ -6908,7 +6938,8 @@ class SessionOrchestrator:
                 )).scalars().first()
             if row and row.claude_session_id:
                 path = self._find_transcript(
-                    str(account_cfg_dir(row.account_name)), row.claude_session_id
+                    str(account_cfg_dir(row.account_name)), row.claude_session_id,
+                    getattr(row, "cwd", None),
                 )
         return path
 
