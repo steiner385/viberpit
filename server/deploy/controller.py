@@ -142,6 +142,13 @@ class DeployController:
                 log_event(log, logging.INFO, "deploy.daemon.start", deploy_id=self._deploy_id)
             if not await asyncio.to_thread(self._steps.wait_healthy, short, url=self.health_url):
                 raise DeployError("restart", "health gate failed")
+
+            # /healthz proves the process is up and the schema matches; it never
+            # touches the ledger or the session store. A corrupt ledger left
+            # /api/accounts 500ing while /healthz stayed green (2026-08-22), so
+            # probe the functional endpoints too before calling this a success.
+            base = self.health_url.rsplit("/healthz", 1)[0] or self.health_url
+            await asyncio.to_thread(self._steps.require_endpoints_healthy, base)
             log_event(log, logging.INFO, "deploy.edge.cutover", deploy_id=self._deploy_id)
 
             # This deploy changed the controller's own code. Hand a restart to

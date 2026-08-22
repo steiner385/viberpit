@@ -37,6 +37,8 @@ def make_steps(*, ci="green", healthy=True, changed=None):
         return True
     mod.schedule_controller_restart = _sched
     mod.wait_healthy = lambda sha, **k: healthy
+    # Functional probes run after the health gate; default to healthy in these tests.
+    mod.require_endpoints_healthy = lambda base, paths=None, **k: None
     def rollback(repo, sha, *, daemon_changed, daemon_enabled, run=None):
         calls.rolled_back = True
     mod.rollback_to = rollback
