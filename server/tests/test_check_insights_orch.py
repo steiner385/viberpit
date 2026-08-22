@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+
+import pytest
 from server.sessions.orchestrator import SessionOrchestrator
 from server.pipeline.history import CheckDurationStat, CheckFlakeStat
 
@@ -33,11 +35,12 @@ def _orch_with_store(store):
     return orch
 
 
-def test_check_insights_maps_window_to_cutoff_and_serializes():
+@pytest.mark.asyncio
+async def test_check_insights_maps_window_to_cutoff_and_serializes():
     store = _FakeStore()
     orch = _orch_with_store(store)
     now = datetime(2026, 7, 8, 0, 0, 0, tzinfo=timezone.utc)
-    out = orch.check_insights("o/n", "7d", now=now)
+    out = await orch.check_insights("o/n", "7d", now=now)
     assert out["repo"] == "o/n" and out["window"] == "7d"
     assert out["slowest"][0]["p50"] == 100.0
     assert out["flakiest"][0]["flake_pct"] == 50.0
@@ -45,20 +48,23 @@ def test_check_insights_maps_window_to_cutoff_and_serializes():
     assert store.calls[0][2] == "2026-07-01T00:00:00Z"
 
 
-def test_check_insights_empty_when_no_store():
+@pytest.mark.asyncio
+async def test_check_insights_empty_when_no_store():
     orch = _orch_with_store(None)
-    out = orch.check_insights("o/n", "7d")
+    out = await orch.check_insights("o/n", "7d")
     assert out == {"repo": "o/n", "window": "7d", "slowest": [], "flakiest": [],
                    "regressions": [], "runner_wait_health": []}
 
 
-def test_check_insights_unknown_window_clamps_to_7d():
+@pytest.mark.asyncio
+async def test_check_insights_unknown_window_clamps_to_7d():
     store = _FakeStore()
-    out = _orch_with_store(store).check_insights("o/n", "bogus")
+    out = await _orch_with_store(store).check_insights("o/n", "bogus")
     assert out["window"] == "7d"
 
 
-def test_check_insights_includes_regressions_and_runner_waits():
+@pytest.mark.asyncio
+async def test_check_insights_includes_regressions_and_runner_waits():
     from datetime import datetime, timezone
 
     class _Reg:
@@ -90,7 +96,7 @@ def test_check_insights_includes_regressions_and_runner_waits():
 
     orch = _orch_with_store(_Store())
     now = datetime(2026, 7, 8, tzinfo=timezone.utc)
-    out = orch.check_insights("o/r", "7d", now=now)
+    out = await orch.check_insights("o/r", "7d", now=now)
 
     assert out["regressions"][0]["ratio"] == 4.0
     assert out["runner_wait_health"][0]["event"] == "push"
@@ -100,7 +106,8 @@ def test_check_insights_includes_regressions_and_runner_waits():
     assert seen["reg_repo"] == "o/r"
 
 
-def test_check_insights_empty_payload_has_new_keys():
+@pytest.mark.asyncio
+async def test_check_insights_empty_payload_has_new_keys():
     orch = _orch_with_store(None)  # no store
-    out = orch.check_insights("o/r", "7d")
+    out = await orch.check_insights("o/r", "7d")
     assert out["regressions"] == [] and out["runner_wait_health"] == []

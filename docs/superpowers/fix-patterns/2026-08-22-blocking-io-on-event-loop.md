@@ -57,6 +57,35 @@ runtime version of the same "is the loop actually being scheduled" question the 
 
 ## Method for this sweep
 
+> **Lesson added 2026-08-22 (final-review wave): grep for CALLERS of the API you just fixed, not
+> only for the raw primitive.**
+>
+> The original sweep below searched for offending *primitives* — `sqlite3.connect`, `subprocess.run`,
+> glob literals. `HistoryStore`'s own `sqlite3.connect` matched, was correctly classified
+> "fixed in P1" (it is now opened `check_same_thread=False` and queried via `to_thread` in
+> `pr_population.py`), and the sweep moved on. But **a fixed constructor does not mean its callers
+> are safe**: the store's *other* callers — `orchestrator.check_insights` (4 synchronous queries,
+> one of them 1+N) and `orchestrator.all_repos_stage_models` (`ci_graph` per repo, driven every 10s
+> per connected SSE client) — never appeared in the primitive grep at all, because they contain no
+> `sqlite3` call of their own. They were missed entirely and had to be caught by the branch's final
+> code review.
+>
+> So whenever a fix makes some object safe-only-when-used-a-certain-way, add a second grep pass:
+>
+> ```bash
+> # 1. the primitive (what the original sweep did)
+> grep -rn "sqlite3.connect" server/ src/ --include=*.py
+> # 2. the CALL GRAPH of every site classified "fixed" — the type, its accessor, and each
+> #    public method, then the callers of those callers
+> grep -rn "HistoryStore\|history_store()" server/ src/ --include=*.py
+> grep -rn "slowest_checks\|flakiest_checks\|duration_regressions\|runner_wait_health\|ci_graph" \
+>   server/ src/ --include=*.py
+> ```
+>
+> and for each hit ask the reachability question again from scratch. "Its constructor was fixed" is
+> not a verdict; "every path from a coroutine to this object's blocking methods is offloaded" is.
+> Generalised: **a "fixed" classification must be re-derived per call site, never inherited.**
+
 1. `grep -rn "sqlite3.connect\|psycopg2.connect\|requests\.\(get\|post\|put\|delete\)\|urllib.request.urlopen" server/ src/ --include=*.py` (excluding tests) — 14 hits.
 2. `grep -rn "subprocess.run\|subprocess.check_output\|\.read_text()\|\.write_text()\|os.walk\|\.glob(\|\.rglob(" server/ --include=*.py` (excluding tests) — 55 hits (many are multiple hits in the same function).
 3. For every hit: read the containing function, walk its callers with `grep`, and classify:
@@ -86,6 +115,17 @@ runtime version of the same "is the loop actually being scheduled" question the 
 | `server/sessions/copilot_proxy.py:82` (`_default_ready_check`) | `urllib.request.urlopen(timeout=1.0)` polling proxy readiness | **not reachable** — both call sites (`ProxyManager` lines 178, 182) wrap it in `await asyncio.to_thread(self._ready_check, port)`. |
 | `server/sessions/copilot_proxy.py:92` (`_default_usage_fetch`) | `urllib.request.urlopen(timeout=2.0)` fetching `/usage` from the copilot proxy | **needs its own issue** — see "Copilot usage fetch" below. |
 | `src/ccswitch/oauth.py:175` | `urllib.request.urlopen` — the single choke point for all outbound Anthropic HTTP (refresh/usage) | **not reachable** — `server/` only imports `Usage`/`AuthError` types from this module; the real usage-fetch traffic goes through `ccswitch.accounts.usage_for`, which is only called by `UsagePoller.get()` via `loop.run_in_executor(dedicated_pool, ...)` (see below). |
+
+### Step 1b — callers of `HistoryStore` (added by the final-review wave)
+
+Found by re-walking the call graph of the site classified "fixed in P1" above, per the lesson at the
+top of this section. Neither of these contains a `sqlite3` call of its own, so neither matched the
+primitive grep.
+
+| Site | What it does | Verdict |
+|---|---|---|
+| `server/sessions/orchestrator.py:check_insights` | Four synchronous `HistoryStore` reads per call — `slowest_checks` + `flakiest_checks` (full-window scans) + `duration_regressions` (**1+N queries**, N = distinct check/event pairs) + `runner_wait_health` — called inline from the `async def` RPC handler (`server/ipc/orchestrator_rpc.py:203`) and the `async def` route (`server/api/pipeline.py:269`). Opening the Check Health panel against the production history DB stalled the loop for the whole query set. Made *worse* by P1 Task 1: the loop thread could additionally block waiting on `HistoryStore._lock` while the enrichment worker held it. | **fixed in the P1 final-review wave** — split into `_check_insights_sync` and awaited via `asyncio.to_thread`; `check_insights` is now `async def`. |
+| `server/sessions/orchestrator.py:all_repos_stage_models` (and `all_prs`, which calls it) | `history.ci_graph(repo)` — one synchronous read per watched repo — reached from the `all_repos_stage_models`/`all_prs` RPC handlers, which the edge's `/api/pipeline/events` SSE generator drives every `_EVENTS_INTERVAL_S = 10.0` **per connected client**. Individually small, but periodic blocking SQLite on the loop, contending for the same lock. | **fixed in the P1 final-review wave** — split into `_stage_models_sync` and awaited via `asyncio.to_thread`; both `all_repos_stage_models` and `all_prs` are now `async def` (every caller already routed through `inspect.isawaitable`/`_maybe_await`, so no caller changed). |
 
 ### Step 2 — filesystem / subprocess
 

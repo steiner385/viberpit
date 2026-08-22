@@ -291,9 +291,29 @@ async def _lifespan(app: FastAPI):
             _logging.getLogger("server").warning(
                 "fleet: registry init failed (continuing without it)", exc_info=True)
 
+    # --- event-loop lag watchdog -------------------------------------------
+    # The edge runs the /api/pipeline/events SSE fan-out and, in single-process
+    # mode, the whole orchestrator — so it is exposed to the same RC1 saturation
+    # the daemon is. Deliberately unguarded, exactly as in server/ipc/serve.py:
+    # a watchdog whose own wiring silently fails to start reproduces the failure
+    # mode it exists to catch, so a broken import or a bad refactor here must
+    # crash startup loudly rather than degrade to an unread log line.
+    from server.obs.loop_lag import LoopLagWatchdog
+    from server.obs.tasks import supervise as _supervise
+    app.state.loop_lag = LoopLagWatchdog()
+    app.state.loop_lag_task = _supervise(
+        asyncio.create_task(app.state.loop_lag.run(), name="loop-lag-watchdog"),
+        name="loop-lag-watchdog",
+    )
+
     yield
     # Shutdown
     import contextlib
+    _lag_task = getattr(app.state, "loop_lag_task", None)
+    if _lag_task is not None:
+        _lag_task.cancel()
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await _lag_task
     _probe = getattr(app.state, "fleet_probe_task", None)
     if _probe is not None:
         _probe.cancel()

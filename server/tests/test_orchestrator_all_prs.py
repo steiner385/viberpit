@@ -1,6 +1,8 @@
 """Tests for PipelinePr dataclass and SessionOrchestrator.all_prs()."""
 from unittest import mock
 
+import pytest
+
 from server.github.pr_status import PipelinePr, PullRequestInfo
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import SessionRecord
@@ -34,7 +36,8 @@ def test_pipeline_pr_round_trip_with_and_without_session():
     assert PipelinePr.from_dict(unlinked.to_dict()).session_id is None
 
 
-def test_all_prs_joins_population_to_sessions():
+@pytest.mark.asyncio
+async def test_all_prs_joins_population_to_sessions():
     """all_prs() attaches a session to population PRs that a session authored,
     and leaves unsessioned PRs with session_id=None. Stage order: parked first."""
     orch = _orch()
@@ -51,7 +54,7 @@ def test_all_prs_joins_population_to_sessions():
     _make_record(orch, session_id="s1", name="Fix it", repo="o/n",
                  authored_branches=["feat/x"])
 
-    result = orch.all_prs()
+    result = await orch.all_prs()
     by_num = {p.pr.number: p for p in result}
     assert by_num[1].session_id == "s1" and by_num[1].session_name == "Fix it"
     assert by_num[2].session_id is None
