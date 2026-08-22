@@ -17,7 +17,7 @@ from server.auth.middleware import IdentityMiddleware, current_identity
 from server.bridge.ws import build_ws_router
 from server.db import init_db
 from server.ipc.client import DaemonUnavailable, DaemonError
-from server.reauth import ReauthManager
+from server.reauth import REAUTH_DISPLAY_KEY, ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
 from server.version import running_git_sha
 
@@ -593,10 +593,21 @@ def create_app(
 
     # VNC WebSocket bridge — gated by x11 state at call time
     from server.bridge.vnc_ws import build_vnc_ws_router
+
+    def _local_vnc_x11(session_id: str):
+        """X11Manager for sessions whose display lives on THIS host, else None.
+
+        Reauth runs on the master (it owns the credentials), so its display is
+        local even in remote mode; everything else follows the daemon."""
+        if session_id == REAUTH_DISPLAY_KEY:
+            return getattr(app.state, "reauth_x11", None)
+        return None
+
     app.include_router(build_vnc_ws_router(
         lambda: getattr(app.state, "x11", None),
         lambda: getattr(app.state, "daemon_endpoint", None),
         lambda: getattr(app.state, "daemon_client_ssl", None),
+        _local_vnc_x11,
     ))
 
     @app.get("/api/x11/metrics")

@@ -129,12 +129,19 @@ def build_vnc_ws_router(
     get_x11,
     get_daemon_endpoint=lambda: None,
     get_daemon_ssl=lambda: None,
+    get_local_x11=lambda session_id: None,
 ) -> APIRouter:
     """Return an APIRouter with /ws/vnc.
 
     Remote mode (get_daemon_endpoint() truthy): proxy the browser WS to the daemon's
     /vnc via daemon_ws_connect (unix or wss), propagating a 4xxx daemon close code.
-    In-process mode (default): relay straight to the local x11vnc."""
+    In-process mode (default): relay straight to the local x11vnc.
+
+    ``get_local_x11(session_id)`` lets the caller pin specific sessions to a display
+    on *this* host even in remote mode, by returning an X11Manager for them (None
+    means "not local, route normally"). Reauth uses it: its virtual display runs on
+    the master because the master owns the credentials, so proxying its RFB stream
+    to the worker would reach a host that never spawned the display."""
     router = APIRouter()
 
     @router.websocket("/ws/vnc")
@@ -143,7 +150,9 @@ def build_vnc_ws_router(
         identity: str = Depends(require_ws_identity),
     ) -> None:
         session_id = websocket.query_params.get("session", "")
-        endpoint = get_daemon_endpoint()
+        # A session pinned to a local display never proxies, daemon or not.
+        local_x11 = get_local_x11(session_id)
+        endpoint = None if local_x11 is not None else get_daemon_endpoint()
         if endpoint:
             from websockets.exceptions import ConnectionClosed
             await websocket.accept()
@@ -166,7 +175,7 @@ def build_vnc_ws_router(
                     pass
             return
 
-        x11 = get_x11()
+        x11 = local_x11 if local_x11 is not None else get_x11()
         if x11 is None:
             await websocket.accept()
             await websocket.close(CLOSE_NOT_ENABLED, "xvfb disabled")

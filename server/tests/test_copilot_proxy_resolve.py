@@ -8,9 +8,13 @@ def test_resolve_prefers_env_override(monkeypatch, tmp_path):
     assert cp.resolve_copilot_proxy() == str(b)
 
 
-def test_resolve_none_when_absent(monkeypatch):
+def test_resolve_none_when_absent(monkeypatch, tmp_path):
     monkeypatch.delenv("CCSWITCH_COPILOT_PROXY_BIN", raising=False)
     monkeypatch.setattr(cp.shutil, "which", lambda _: None)
+    # Also neutralise the vendored path: it is a real location under $HOME, so on a
+    # machine where fetch-copilot-proxy.sh has actually run, resolve() returns it and
+    # this test fails locally while passing in CI. Stub all three sources, not two.
+    monkeypatch.setattr(cp, "_VENDORED_PATH", str(tmp_path / "absent" / "copilot2api"))
     assert cp.resolve_copilot_proxy() is None
 
 
