@@ -1,6 +1,8 @@
 """Fleet endpoints expose the registry and let an operator tune it."""
 from __future__ import annotations
 
+import asyncio
+
 
 def test_host_to_wire_shape():
     from datetime import datetime
@@ -53,3 +55,109 @@ def test_none_values_are_ignored_not_written():
     from server.api.fleet import sanitize_patch
 
     assert sanitize_patch({"enabled": None, "weight": None, "maxSessions": None}) == {}
+
+
+def test_create_host_rejects_blank_name():
+    from pydantic import ValidationError
+    from server.api.fleet import HostCreate
+
+    try:
+        HostCreate(name="  ", endpoint="https://rocky:9443")
+        assert False, "expected ValidationError"
+    except ValidationError:
+        pass
+
+
+def test_create_host_rejects_blank_endpoint():
+    from pydantic import ValidationError
+    from server.api.fleet import HostCreate
+
+    try:
+        HostCreate(name="rocky", endpoint="")
+        assert False, "expected ValidationError"
+    except ValidationError:
+        pass
+
+
+def test_create_and_list_host(tmp_path):
+
+    from server.db import init_db
+    from server.api.fleet import create_host, list_hosts, HostCreate
+
+    class _FakeIdentity:
+        pass
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'ch.db'}")
+        await create_host(HostCreate(name="rocky", endpoint="https://rocky:9443"),
+                          _identity=_FakeIdentity())
+        result = await list_hosts(_identity=_FakeIdentity())
+        return result["hosts"]
+
+    hosts = asyncio.run(run())
+    assert len(hosts) == 1
+    assert hosts[0]["name"] == "rocky"
+    assert hosts[0]["endpoint"] == "https://rocky:9443"
+    assert hosts[0]["healthy"] is None
+
+
+def test_create_host_409_on_duplicate(tmp_path):
+    from fastapi import HTTPException
+
+    from server.db import init_db
+    from server.api.fleet import create_host, HostCreate
+
+    class _FakeIdentity:
+        pass
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'dup.db'}")
+        body = HostCreate(name="rocky", endpoint="https://rocky:9443")
+        await create_host(body, _identity=_FakeIdentity())
+        return await create_host(body, _identity=_FakeIdentity())
+
+    try:
+        asyncio.run(run())
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 409
+
+
+def test_delete_host(tmp_path):
+
+    from server.db import init_db
+    from server.api.fleet import create_host, delete_host, list_hosts, HostCreate
+
+    class _FakeIdentity:
+        pass
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'del.db'}")
+        await create_host(HostCreate(name="rocky", endpoint="https://rocky:9443"),
+                          _identity=_FakeIdentity())
+        await delete_host("rocky", _identity=_FakeIdentity())
+        result = await list_hosts(_identity=_FakeIdentity())
+        return result["hosts"]
+
+    hosts = asyncio.run(run())
+    assert hosts == []
+
+
+def test_delete_host_404_unknown(tmp_path):
+    from fastapi import HTTPException
+
+    from server.db import init_db
+    from server.api.fleet import delete_host
+
+    class _FakeIdentity:
+        pass
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'del2.db'}")
+        return await delete_host("ghost", _identity=_FakeIdentity())
+
+    try:
+        asyncio.run(run())
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 404

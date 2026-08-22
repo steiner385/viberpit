@@ -163,6 +163,23 @@ async def _lifespan(app: FastAPI):
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
 
+    # Seed fleet hosts declared in CCSWITCH_FLEET_HOSTS (insert-if-absent by name).
+    # Runs before ensure_default_host so a declared fleet is already present when
+    # ensure_default_host checks whether the table is operator-managed.
+    _fleet_map = _s.fleet_hosts_map
+    if _fleet_map:
+        from server.db import db_session as _dbs
+        from server.db.models import Host as _Host
+        from sqlalchemy import select as _ssel
+        async with _dbs() as _db:
+            for _name, _ep in _fleet_map.items():
+                _exists = (await _db.execute(
+                    _ssel(_Host.name).where(_Host.name == _name))).scalar_one_or_none()
+                if _exists is None:
+                    _db.add(_Host(name=_name, endpoint=_ep, enabled=True))
+        _logging.getLogger("server").info(
+            "fleet: seeded %d host(s) from CCSWITCH_FLEET_HOSTS", len(_fleet_map))
+
     from server.automations.registry import registry as _automation_registry
     try:
         await _automation_registry.ensure_rows()
