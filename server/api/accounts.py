@@ -69,13 +69,47 @@ def _validate_env_overrides(overrides: dict | None) -> None:
 USAGE_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_USAGE_FETCH_TIMEOUT", "3.0"))
 
 
+def _local_cached_usage(name: str):
+    """Usage from the SHARED ledger, read locally. None when stale or absent.
+
+    Usage is cached poller output that lives in ledger.json. On the master host
+    that file is local, so this is a file read; asking the daemon for it instead
+    is an RPC into a process whose account store may be a network mount. Measured
+    2026-08-22: that RPC took 1.03-3.68s per account against a 3.0s ceiling, so
+    every account intermittently degraded to "unavailable" in the UI.
+
+    Returns None (never raises) when the entry is missing or older than
+    usage_cache_ttl_sec, so the caller falls back to the daemon and correctness
+    is preserved — this is a latency optimisation, not a new source of truth.
+    """
+    from datetime import datetime, timezone
+
+    from ccswitch import ledger
+    from ccswitch.config import load_config
+
+    with ledger.locked_ledger() as led:
+        # Returns a ccswitch.oauth.Usage (or None) — the SAME type orch.usage()
+        # yields. _safe_usage's callers convert with _usage_to_dict downstream, so
+        # returning a dict here would 500 the accounts page on `.session_pct`.
+        return ledger.cached_usage(led, name, load_config(), datetime.now(timezone.utc))
+
+
 async def _safe_usage(orch, name: str, timeout: float):
     """Fetch one account's usage, degrading to None on timeout or any error.
 
-    Isolates a single slow/failing account so it can neither stall the other
-    accounts' fetches nor turn GET /api/accounts into a 500. ``usage=None`` is
-    already the wire contract for "unknown/failed fetch" (_usage_to_dict).
+    Tries the local shared ledger first (cheap), then the daemon RPC. Isolates a
+    single slow/failing account so it can neither stall the other accounts'
+    fetches nor turn GET /api/accounts into a 500. ``usage=None`` is already the
+    wire contract for "unknown/failed fetch" (_usage_to_dict).
     """
+    try:
+        local = _local_cached_usage(name)
+        if local is not None:
+            return local
+    except Exception:  # noqa: BLE001 — a bad ledger must fall back, never 500
+        log.warning("local usage read for %s failed — falling back to the daemon",
+                    name, exc_info=True)
+
     try:
         return await asyncio.wait_for(orch.usage(name), timeout)
     except asyncio.TimeoutError:
