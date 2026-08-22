@@ -1,12 +1,15 @@
 from __future__ import annotations
 import json
 import os
+import logging
 import re
 import subprocess
 import time
 from typing import Callable
 
 from server.deploy.types import DeployError
+
+log = logging.getLogger(__name__)
 
 Run = Callable[..., subprocess.CompletedProcess]
 _OK_CONCLUSIONS = {"success", "neutral", "skipped"}
@@ -71,6 +74,54 @@ _EDGE_ONLY = re.compile(
     r"^(web/|server/api/|server/app\.py|server/bridge/|server/spa\.py|"
     r"server/tests/|docs/|deploy/|\.github/|.*\.md$)"
 )
+
+
+# Code the deploy controller itself executes. restart_units restarts the edge and
+# the daemon, but the controller is the process RUNNING the deploy — it cannot
+# restart itself inline without killing that deploy, so it never did. The result
+# was a controller executing whatever code it started with: on 2026-08-21 #719's
+# remote-daemon update landed on disk at 18:18 and the controller kept running its
+# 16:56 code, so the next deploy left rocky on a stale commit — exactly the failure
+# #719 exists to prevent.
+_DEPLOY_CODE = re.compile(r"^server/deploy/")
+
+
+def deploy_code_changed(changed_files: list[str] | None) -> bool:
+    """True when this deploy modifies the controller's own code.
+
+    Note the explicit empty/None handling: ``all([])`` is True, which is how
+    classify_change silently reads an empty diff as edge-only. An empty diff
+    changes nothing, so it cannot have changed deploy code.
+    """
+    if not changed_files:
+        return False
+    return any(_DEPLOY_CODE.match(f) for f in changed_files)
+
+
+def schedule_controller_restart(*, run: Run = subprocess.run, delay_s: int = 10) -> bool:
+    """Schedule a DEFERRED restart of ccswitch-deploy-controller.service.
+
+    Deferred on purpose: the controller is the process performing the deploy, so
+    an inline restart would kill the deploy that asked for it. systemd-run
+    --on-active hands the restart to systemd and returns immediately, letting the
+    current deploy finish and report before the process is replaced.
+
+    Returns True when the restart was scheduled. Never raises: the deploy has
+    already succeeded by this point and must not be failed by bookkeeping — but a
+    False return means the controller is still running old code, so the caller
+    surfaces it as a warning rather than assuming it worked.
+    """
+    try:
+        run(["sudo", "systemd-run", f"--on-active={delay_s}s",
+             "--unit=ccswitch-controller-refresh",
+             "systemctl", "restart", "ccswitch-deploy-controller.service"],
+            check=True, capture_output=True)
+        return True
+    except Exception:
+        log.warning("deploy: could not schedule controller restart — it will keep "
+                    "running the previous deploy code until restarted manually",
+                    exc_info=True)
+        return False
 
 
 def classify_change(changed_files: list[str] | None) -> str:
