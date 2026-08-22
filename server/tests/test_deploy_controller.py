@@ -37,6 +37,10 @@ def make_steps(*, ci="green", healthy=True, changed=None):
         return True
     mod.schedule_controller_restart = _sched
     mod.wait_healthy = lambda sha, **k: healthy
+    # The controller selects a poll window by daemon_changed (a remote daemon
+    # restart outlasts the edge-only window).
+    mod.HEALTH_ATTEMPTS_EDGE_ONLY = 15
+    mod.HEALTH_ATTEMPTS_WITH_DAEMON = 75
     # Functional probes run after the health gate; default to healthy in these tests.
     mod.require_endpoints_healthy = lambda base, paths=None, **k: None
     def rollback(repo, sha, *, daemon_changed, daemon_enabled, run=None):
