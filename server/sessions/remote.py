@@ -470,6 +470,13 @@ class RemoteOrchestrator:
         r = await self._client.call("send_prompt", session_id=session_id, text=text, images=images)
         return (r or {}).get("status")
 
+    def daemon_sha(self) -> str | None:
+        """The daemon's running git sha, or None before first /info contact.
+
+        Sync cached-field read (no RPC), mirroring daemon_epoch. /healthz reports it
+        so the deploy gate can reject an edge/daemon version skew."""
+        return self._client.sha
+
     def daemon_epoch(self) -> str | None:
         """The daemon's current process epoch, or ``None`` if the edge hasn't reached
         ``/info`` yet. Sync (a cached-field read via DaemonClient.epoch — no RPC). ws.py's

@@ -123,6 +123,7 @@ class DaemonClient:
         self._last_seq: dict[str, int] = {}               # stream -> highest delivered seq
         self._baseline: dict[str, int | None] = {}        # stream -> initial `since` for first subscribe
         self._epoch: str | None = None                    # daemon PROC_EPOCH; change ⇒ restart
+        self._sha: str | None = None                      # daemon's running git sha (from /info)
         self._started = False
 
     async def call(self, method: str, *, timeout: float | None = None, **params) -> dict:
@@ -166,6 +167,16 @@ class DaemonClient:
         high cursor must force a full replay, never a catch-up against the fresh low ring.
         Prefer this public accessor over reaching into ``_epoch``."""
         return self._epoch
+
+    @property
+    def sha(self) -> str | None:
+        """The daemon's running git sha (from ``/info``), or ``None`` before first contact.
+
+        Cached from the same ``/info`` call that tracks the epoch. The deploy gate
+        compares it against the deployed sha: an edge on a new commit talking to a
+        daemon on an old one is the #719 failure (a new RPC caller whose handler
+        does not exist yet), and it is otherwise invisible — the edge stays healthy."""
+        return self._sha
 
     def _add_subscriber(self, stream: str, maxsize: int = _BASE_Q_SIZE) -> asyncio.Queue:
         """Register a new local subscriber queue for *stream* and return it."""
@@ -218,9 +229,14 @@ class DaemonClient:
         Best-effort: if `/info` is unreachable, keep prior watermarks and retry next loop.
         """
         try:
-            epoch = (await self.info()).get("epoch")
+            info = await self.info()
         except Exception:  # noqa: BLE001 — /info momentarily unavailable mid-restart
             return
+        # Same response already carries the daemon's running sha; cache it so the
+        # edge can report it on /healthz and the deploy gate can catch edge/daemon
+        # version skew without a second round-trip.
+        self._sha = info.get("sha") or self._sha
+        epoch = info.get("epoch")
         if epoch is None:
             return
         if self._epoch is not None and epoch != self._epoch:

@@ -354,19 +354,58 @@ def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: fl
         fetch: Callable(url) -> str; defaults to httpx.get().text (empty string on error).
         sleep: Callable(seconds); defaults to time.sleep.
 
+    Also gates on the DAEMON, not just the edge. In remote mode /healthz degrades
+    gracefully when the daemon is unreachable — active=0, daemon="unavailable" —
+    and still returns status ok with the right sha, so an edge-only gate passes a
+    deploy whose daemon is dead. Every production failure on 2026-08-21/22 passed
+    this gate: a stale rocky daemon 409ing every repo listing, a daemon hung in
+    startup that never bound its port, and a corrupt ledger.
+
+    Two extra conditions, both read from the SAME response (no new round-trip):
+      * daemon "unavailable" is unhealthy — the flag was already there, ignored.
+      * daemonSha, when reported, must equal expected_sha. That is the #719 skew
+        class: an edge deployed with a new RPC caller while the daemon still
+        lacks the handler.
+
+    Both degrade open when absent: a single-host deploy reports no daemon key, and
+    a daemon too old to report its sha must not brick deploys.
+
     Returns:
-        True if both "status":"ok" and "sha":"<expected_sha>" are found in response body.
-        False if attempts exhausted without both conditions met.
+        True if the edge is ok at expected_sha AND the daemon is not unavailable
+        AND any reported daemonSha matches.
+        False if attempts exhausted without all conditions met.
     """
     fetch = fetch or _default_fetch
     needle_status = '"status":"ok"'
     needle_sha = f'"sha":"{expected_sha}"'
     for _ in range(attempts):
         body = fetch(url)
-        if needle_status in body and needle_sha in body:
+        if needle_status in body and needle_sha in body and _daemon_ok(body, expected_sha):
             return True
         sleep(sleep_s)
     return False
+
+
+def _daemon_ok(body: str, expected_sha: str) -> bool:
+    """True unless the body positively reports an unhealthy or skewed daemon.
+
+    Parsed, not substring-matched: `"daemonSha":"<sha>"` contains `"sha":"<sha>"`
+    as a substring, so naive matching would let the edge's own sha check pass off
+    the daemon's value (or vice versa). Unparseable bodies fall through to the
+    caller's other needles rather than failing here.
+    """
+    try:
+        doc = json.loads(body)
+    except Exception:
+        return True
+    if not isinstance(doc, dict):
+        return True
+    if doc.get("daemon") == "unavailable":
+        return False
+    daemon_sha = doc.get("daemonSha")
+    if daemon_sha and daemon_sha != expected_sha:
+        return False
+    return True
 
 
 def rollback_to(repo: str, sha: str, *, daemon_changed: bool, daemon_enabled: bool,

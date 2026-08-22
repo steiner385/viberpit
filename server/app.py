@@ -506,6 +506,16 @@ def create_app(
             }
             if daemon_state is not None:
                 payload["daemon"] = daemon_state
+                # The daemon's RUNNING sha, so the deploy gate can reject a skew
+                # between edge and daemon. Absent before first /info contact, and
+                # the gate degrades open on a missing field.
+                _dsha = None
+                try:
+                    _dsha = app.state.sessions.daemon_sha()
+                except Exception:  # noqa: BLE001 — health must never fail on this
+                    _dsha = None
+                if _dsha:
+                    payload["daemonSha"] = _dsha
             return JSONResponse(payload)
         except Exception as exc:  # noqa: BLE001 — any DB/schema failure is unhealthy
             logging.getLogger("server").warning("healthz schema check failed", exc_info=exc)
