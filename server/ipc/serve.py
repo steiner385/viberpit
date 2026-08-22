@@ -106,19 +106,18 @@ async def daemon_lifespan(app, orchestrator):
     await orchestrator.start()
     # RC1 (blocking sqlite3 on the loop) ran for hours before it was noticed, and only
     # via an external py-spy dump — this makes the same class of saturation
-    # self-reporting instead of requiring an audit. Guarded like the other optional
-    # app.state startup steps below: an observability watchdog must never block the
-    # daemon from starting.
-    try:
-        from server.obs.loop_lag import LoopLagWatchdog
-        from server.obs.tasks import supervise
-        app.state.loop_lag = LoopLagWatchdog()
-        app.state.loop_lag_task = supervise(
-            asyncio.create_task(app.state.loop_lag.run(), name="loop-lag-watchdog"),
-            name="loop-lag-watchdog",
-        )
-    except Exception:
-        log.warning("daemon startup: failed to start loop-lag watchdog", exc_info=True)
+    # self-reporting instead of requiring an audit. Deliberately unguarded: a watchdog
+    # whose own wiring silently fails to start reproduces the exact failure mode it
+    # exists to catch. `app.state` is guaranteed by build_daemon(); a broken import or
+    # a bad refactor here should crash startup loudly, the same as orchestrator.start()
+    # above, so deploy/health checks catch it.
+    from server.obs.loop_lag import LoopLagWatchdog
+    from server.obs.tasks import supervise
+    app.state.loop_lag = LoopLagWatchdog()
+    app.state.loop_lag_task = supervise(
+        asyncio.create_task(app.state.loop_lag.run(), name="loop-lag-watchdog"),
+        name="loop-lag-watchdog",
+    )
     # Sweep stale X lock/socket files AND reap orphaned Xvfb/x11vnc/chrome left by a
     # prior SIGKILLed run (issue #206, startup half). The daemon owns the displays in
     # remote mode yet swept nothing at boot, so orphans accumulated across restarts.

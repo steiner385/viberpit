@@ -2,6 +2,8 @@
 """Issue #206 (daemon half): the session daemon must tear down virtual displays on
 shutdown. orchestrator.stop() only cancels background tasks, so without an explicit
 sweep the daemon-owned Xvfb/x11vnc/chrome leak on every restart."""
+import types
+
 import pytest
 
 from server.ipc.serve import daemon_lifespan
@@ -27,8 +29,10 @@ class _Orch:
     async def stop(self): self.stopped = True
 
 
-class _App:  # minimal stand-in; daemon_lifespan only needs an object to pass through
-    pass
+class _App:  # minimal stand-in for the daemon's FastAPI/Starlette app; real apps always
+             # have a `.state` namespace, so this fixture carries one too.
+    def __init__(self):
+        self.state = types.SimpleNamespace()
 
 
 @pytest.mark.asyncio
