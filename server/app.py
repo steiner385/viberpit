@@ -330,6 +330,15 @@ async def _lifespan(app: FastAPI):
             except Exception:
                 log.warning("shutdown: x11 sweep incomplete", exc_info=True)
 
+        # The master builds its own display manager for reauth in remote mode; it
+        # is not app.state.x11, so the sweep above never touches it.
+        _rx = getattr(app.state, "reauth_x11", None)
+        if _rx is not None and _rx is not app.state.x11:
+            try:
+                await asyncio.wait_for(_rx.stop_all(), timeout=_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except Exception:
+                log.warning("shutdown: reauth x11 sweep incomplete", exc_info=True)
+
         await app.state.orchestrator.stop()
 
     # Dispose the DB engine LAST — after every DB user (auditor, orchestrator,
@@ -339,6 +348,34 @@ async def _lifespan(app: FastAPI):
     from server.db import dispose_db
     with contextlib.suppress(Exception):
         await dispose_db()
+
+
+def _build_reauth_facade(*, remote_mode: bool, x11_getter, timeout_s: float,
+                         reauth_manager=None):
+    """Build the reauth facade. Always in-process — reauth runs on the MASTER.
+
+    dobby is the master: ccswitch core, configuration and operations live there;
+    workers execute sessions. Reauth is an OPERATION — it mints a credential — so
+    it belongs on the master even though it needs a browser on a display.
+
+    This used to proxy to the daemon in remote mode "because the daemon owns the
+    X11 displays". That conflated "needs a display" with "belongs on the worker",
+    and it broke in production: the worker had no `claude` on its service PATH, so
+    every reauth failed with "[Errno 2] No such file or directory: 'claude'".
+
+    Running it on the master is also strictly better:
+      * the credential dir is LOCAL there, not an sshfs mount — and flock does not
+        work across that mount (proven 2026-08-22, when the ledger corrupted)
+      * the master always has the binary and the X11 stack; a worker may not
+      * adding a second worker cannot change how reauth behaves
+
+    ``remote_mode`` is accepted so the rule is explicit at the call site rather
+    than implied by the absence of a branch.
+    """
+    from server.reauth_remote import InProcessReauthAdapter
+
+    mgr = reauth_manager or ReauthManager(timeout_s=timeout_s, x11=x11_getter)
+    return InProcessReauthAdapter(mgr)
 
 
 def create_app(
@@ -425,19 +462,22 @@ def create_app(
             lambda name: orchestrator._copilot.usage(name) if orchestrator._copilot else None
         )
 
-    # Attach the reauth facade. Remote mode proxies to the daemon's manager (which owns
-    # the X11 displays); in-process wraps a real manager behind the same async facade.
-    from server.reauth_remote import InProcessReauthAdapter, RemoteReauthManager
-    if getattr(app.state, "remote_mode", False):
-        from server.ipc.client import DaemonClient
-        app.state.reauth = RemoteReauthManager(DaemonClient(app.state.daemon_endpoint))
+    # Reauth ALWAYS runs here, on the master — never proxied to a worker daemon.
+    # See _build_reauth_facade for why.
+    from server.config import get_settings as _reauth_gs
+    from server.sessions.x11manager import build_x11_manager as _build_x11
+    if getattr(app.state, "remote_mode", False) and app.state.x11 is None:
+        # Session displays live on the worker (app.state.x11 stays None so session
+        # metrics keep proxying over IPC), but reauth needs a display HERE.
+        app.state.reauth_x11 = _build_x11(_reauth_gs())
     else:
-        from server.config import get_settings
-        mgr = reauth_manager or ReauthManager(
-            timeout_s=get_settings().reauth_timeout_s,
-            x11=lambda: app.state.x11,
-        )
-        app.state.reauth = InProcessReauthAdapter(mgr)
+        app.state.reauth_x11 = app.state.x11
+    app.state.reauth = _build_reauth_facade(
+        remote_mode=getattr(app.state, "remote_mode", False),
+        x11_getter=lambda: app.state.reauth_x11,
+        timeout_s=_reauth_gs().reauth_timeout_s,
+        reauth_manager=reauth_manager,
+    )
 
     # Middleware stack (Starlette runs last-added outermost): RequestContextMiddleware
     # wraps IdentityMiddleware wraps the routes, so request_id is set before identity.
