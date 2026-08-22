@@ -28,6 +28,22 @@ class Endpoint:
     def is_tcp(self) -> bool:
         return self.scheme == "https"
 
+    def __str__(self) -> str:
+        """The endpoint as a URL — the exact inverse of parse_endpoint.
+
+        Without this, str() falls through to the dataclass repr
+        ("Endpoint(scheme='https', ...)"), which parse_endpoint rejects. That is
+        not hypothetical: ensure_default_host stored str(endpoint) as the fleet
+        host's endpoint, so the registry's only host was permanently unhealthy
+        with "ValueError: unsupported daemon endpoint" (production, 2026-08-22).
+
+        Defined here rather than fixed at the call site so the mistake cannot
+        recur anywhere else that stringifies an Endpoint.
+        """
+        if self.is_unix:
+            return f"unix://{self.path}"
+        return f"https://{self.host}:{self.port}"
+
 
 def parse_endpoint(raw: str) -> Endpoint:
     """Parse a daemon endpoint string. A bare path is treated as a unix socket."""

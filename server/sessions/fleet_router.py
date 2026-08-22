@@ -106,11 +106,30 @@ async def ensure_default_host(endpoint: str) -> str | None:
     Seeding no-ops when ANY host already exists: once an operator manages the
     registry, startup must not inject rows behind their back.
     """
+    from server.ipc.paths import parse_endpoint
+
     async with db_session() as db:
         match = (await db.execute(
             sa_select(Host.name).where(Host.endpoint == endpoint))).scalar_one_or_none()
         if match:
             return match
+
+        # Repair the AUTO-SEEDED row when its endpoint cannot be parsed. #720
+        # seeded it with str(endpoint) before Endpoint had a __str__, storing the
+        # dataclass repr, and nothing could fix it afterwards: this function
+        # no-ops once any host exists and the API refuses to set endpoint.
+        # Scoped deliberately — only our own row, only when unusable, so an
+        # operator's deliberate endpoint is never rewritten behind their back.
+        seeded = (await db.execute(
+            sa_select(Host).where(Host.name == DEFAULT_HOST_NAME))).scalars().first()
+        if seeded is not None:
+            try:
+                parse_endpoint(seeded.endpoint)
+            except Exception:
+                log.warning("fleet: repairing unparseable auto-seeded endpoint %r -> %r",
+                            seeded.endpoint, endpoint)
+                seeded.endpoint = endpoint
+            return DEFAULT_HOST_NAME
         existing = (await db.execute(
             sa_select(func.count()).select_from(Host))).scalar()
         if existing:
