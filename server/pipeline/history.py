@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -120,16 +121,24 @@ def _parse_iso_ms(iso: str) -> float:
 
 class HistoryStore:
     def __init__(self, db_path: str) -> None:
-        self._conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        # check_same_thread=False + an explicit lock: the store is read from a
+        # worker thread by pr_population's ETA enrichment so the event loop is
+        # not blocked (RC1). sqlite3 connections are not safe for *concurrent*
+        # use, so every query serialises on _lock.
+        self._conn = sqlite3.connect(
+            f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
+        )
         self._conn.row_factory = sqlite3.Row
+        self._lock = threading.Lock()
 
     def recent_durations(self, repo: str, name: str, event: str) -> list[float]:
-        rows = self._conn.execute(
-            "SELECT duration_secs, completed_at FROM check_durations "
-            "WHERE repo=? AND check_name=? AND event=? AND conclusion='SUCCESS' "
-            "ORDER BY completed_at DESC LIMIT 20",
-            (repo, name, event),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT duration_secs, completed_at FROM check_durations "
+                "WHERE repo=? AND check_name=? AND event=? AND conclusion='SUCCESS' "
+                "ORDER BY completed_at DESC LIMIT 20",
+                (repo, name, event),
+            ).fetchall()
         if not rows:
             return []
         cutoff = _parse_iso_ms(rows[0]["completed_at"]) - DURATION_FRESH_DAYS * 86400_000
@@ -149,11 +158,12 @@ class HistoryStore:
 
     def expected_set(self, repo: str, event: str, now: datetime, window_days: int = 14) -> list[str]:
         cutoff = (now - timedelta(days=window_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        rows = self._conn.execute(
-            "SELECT DISTINCT check_name FROM check_durations "
-            "WHERE repo=? AND event=? AND conclusion='SUCCESS' AND completed_at >= ?",
-            (repo, event, cutoff),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT check_name FROM check_durations "
+                "WHERE repo=? AND event=? AND conclusion='SUCCESS' AND completed_at >= ?",
+                (repo, event, cutoff),
+            ).fetchall()
         return [r["check_name"] for r in rows]
 
     def slowest_checks(
@@ -165,8 +175,10 @@ class HistoryStore:
         if event is not None:
             q += " AND event=?"
             args.append(event)
+        with self._lock:
+            fetched = self._conn.execute(q, args).fetchall()
         groups: dict[tuple[str, str], list[float]] = {}
-        for r in self._conn.execute(q, args).fetchall():
+        for r in fetched:
             if r["duration_secs"] is None:
                 continue
             groups.setdefault((r["check_name"], r["event"] or ""), []).append(
@@ -194,7 +206,9 @@ class HistoryStore:
         # (check, event) -> head_sha -> {"pass": bool, "fail": bool}
         by_check: dict[tuple[str, str], dict[str, dict[str, bool]]] = {}
         totals: dict[tuple[str, str], int] = {}
-        for r in self._conn.execute(q, args).fetchall():
+        with self._lock:
+            fetched = self._conn.execute(q, args).fetchall()
+        for r in fetched:
             key = (r["check_name"], r["event"] or "")
             totals[key] = totals.get(key, 0) + 1
             c = (r["conclusion"] or "").lower()
@@ -220,18 +234,20 @@ class HistoryStore:
     def duration_regressions(self, repo: str) -> list[CheckRegressionStat]:
         """Checks whose rolling-median SUCCESS duration stepped up (Plotroom
         measureDurationStep). Window-independent: last 10 vs prior 20 samples."""
-        pairs = self._conn.execute(
-            "SELECT DISTINCT check_name, event FROM check_durations WHERE repo=?",
-            (repo,),
-        ).fetchall()
+        with self._lock:
+            pairs = self._conn.execute(
+                "SELECT DISTINCT check_name, event FROM check_durations WHERE repo=?",
+                (repo,),
+            ).fetchall()
         out: list[CheckRegressionStat] = []
         for p in pairs:
-            rows = self._conn.execute(
-                "SELECT duration_secs, completed_at FROM check_durations "
-                "WHERE repo=? AND check_name=? AND event=? AND conclusion='SUCCESS' "
-                "ORDER BY completed_at DESC LIMIT ?",
-                (repo, p["check_name"], p["event"], _REG_MIN),
-            ).fetchall()
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT duration_secs, completed_at FROM check_durations "
+                    "WHERE repo=? AND check_name=? AND event=? AND conclusion='SUCCESS' "
+                    "ORDER BY completed_at DESC LIMIT ?",
+                    (repo, p["check_name"], p["event"], _REG_MIN),
+                ).fetchall()
             if len(rows) < _REG_MIN:
                 continue
             durs = [float(r["duration_secs"]) for r in rows]
@@ -261,11 +277,12 @@ class HistoryStore:
         """Per-event runner pickup wait p50/p90 over the current window, with the
         prior equal-length window's p50 for a delta. Rows at exactly since_iso are
         current."""
-        rows = self._conn.execute(
-            "SELECT event, wait_secs, started_at FROM runner_waits "
-            "WHERE repo=? AND started_at >= ?",
-            (repo, prev_since_iso),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT event, wait_secs, started_at FROM runner_waits "
+                "WHERE repo=? AND started_at >= ?",
+                (repo, prev_since_iso),
+            ).fetchall()
         cur: dict[str, list[float]] = {}
         prev: dict[str, list[float]] = {}
         for r in rows:
@@ -288,11 +305,12 @@ class HistoryStore:
         return out
 
     def expected_runner_wait(self, repo: str, name: str, event: str) -> float | None:
-        rows = self._conn.execute(
-            "SELECT wait_secs FROM runner_waits WHERE repo=? AND check_name=? AND event=? "
-            "ORDER BY started_at DESC LIMIT 20",
-            (repo, name, event),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT wait_secs FROM runner_waits WHERE repo=? AND check_name=? AND event=? "
+                "ORDER BY started_at DESC LIMIT 20",
+                (repo, name, event),
+            ).fetchall()
         vals = [float(r["wait_secs"]) for r in rows]
         return median(vals) if vals else None
 
@@ -305,10 +323,11 @@ class HistoryStore:
         Returns None when the meta table is absent or has no entry for this repo.
         """
         try:
-            row = self._conn.execute(
-                "SELECT value FROM meta WHERE key=?",
-                (f"ciGraph:{repo}",),
-            ).fetchone()
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT value FROM meta WHERE key=?",
+                    (f"ciGraph:{repo}",),
+                ).fetchone()
         except Exception:
             return None
         return json.loads(row["value"]) if row else None

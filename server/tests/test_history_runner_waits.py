@@ -1,4 +1,6 @@
 import sqlite3
+import threading
+
 from server.pipeline.history import HistoryStore
 
 
@@ -14,6 +16,7 @@ def _store(rows):
     conn.commit()
     st = HistoryStore.__new__(HistoryStore)
     st._conn = conn
+    st._lock = threading.Lock()
     return st
 
 
