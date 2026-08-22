@@ -79,6 +79,10 @@ try:
         # Defaults to $CCSWITCH_HOME/archive. Set to a path on a larger/slower
         # drive to keep live session data and archives on separate filesystems.
         archive_home: str | None = Field(default=None, alias="CCSWITCH_ARCHIVE_HOME")
+        # Comma-separated name=endpoint pairs seeded into the host registry on startup.
+        # Example: CCSWITCH_FLEET_HOSTS=rocky=https://rocky:9443,dobby=https://dobby:9443
+        # Existing rows (matched by name) are never overwritten — operator changes survive restarts.
+        fleet_hosts: str = Field(default="", alias="CCSWITCH_FLEET_HOSTS")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -86,6 +90,25 @@ try:
         def tailnet_allowlist_items(self) -> list[str]:
             """Return the tailnet allowlist as a list of non-empty strings."""
             return [item.strip() for item in self.tailnet_allowlist.split(",") if item.strip()]
+
+        @property
+        def fleet_hosts_map(self) -> dict[str, str]:
+            """Return {name: endpoint} parsed from CCSWITCH_FLEET_HOSTS.
+
+            Splits on the first '=' only so endpoints containing '=' (query strings,
+            base64) are preserved correctly.
+            """
+            result: dict[str, str] = {}
+            for item in self.fleet_hosts.split(","):
+                item = item.strip()
+                if "=" not in item:
+                    continue
+                name, _, endpoint = item.partition("=")
+                name = name.strip()
+                endpoint = endpoint.strip()
+                if name and endpoint:
+                    result[name] = endpoint
+            return result
 
     def get_settings() -> Settings:
         return Settings()
@@ -204,10 +227,27 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         archive_home: str | None = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ARCHIVE_HOME")
         )
+        fleet_hosts: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_FLEET_HOSTS", "")
+        )
 
         @property
         def tailnet_allowlist_items(self) -> list[str]:
             return [item.strip() for item in self.tailnet_allowlist.split(",") if item.strip()]
+
+        @property
+        def fleet_hosts_map(self) -> dict[str, str]:
+            result: dict[str, str] = {}
+            for item in self.fleet_hosts.split(","):
+                item = item.strip()
+                if "=" not in item:
+                    continue
+                name, _, endpoint = item.partition("=")
+                name = name.strip()
+                endpoint = endpoint.strip()
+                if name and endpoint:
+                    result[name] = endpoint
+            return result
 
     def get_settings() -> Settings:  # type: ignore[misc]
         return Settings()

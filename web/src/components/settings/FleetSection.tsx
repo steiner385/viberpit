@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '@/api/client'
@@ -47,9 +48,31 @@ export function FleetSection() {
     refetchInterval: 15_000,
   })
 
+  const [draft, setDraft] = useState({ name: '', endpoint: '' })
+  const [addError, setAddError] = useState<string | null>(null)
+
   const patch = useMutation({
     mutationFn: ({ name, body }: { name: string; body: Partial<FleetHost> }) =>
       api.put<FleetHost>(`/fleet/hosts/${encodeURIComponent(name)}`, body),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] }),
+  })
+
+  const add = useMutation({
+    mutationFn: (body: { name: string; endpoint: string }) =>
+      api.post<FleetHost>('/fleet/hosts', body),
+    onSuccess: () => {
+      setDraft({ name: '', endpoint: '' })
+      setAddError(null)
+      void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] })
+    },
+    onError: (err: unknown) => {
+      const body = (err as { body?: { detail?: { message?: string } } })?.body
+      setAddError(body?.detail?.message ?? 'Failed to add host')
+    },
+  })
+
+  const remove = useMutation({
+    mutationFn: (name: string) => api.del(`/fleet/hosts/${encodeURIComponent(name)}`),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] }),
   })
 
@@ -87,7 +110,8 @@ export function FleetSection() {
                 <th className="pr-2">Free mem</th>
                 <th className="pr-2">Version</th>
                 <th className="pr-2">Weight</th>
-                <th>Enabled</th>
+                <th className="pr-2">Enabled</th>
+                <th />
               </tr>
             </thead>
             <tbody>
@@ -125,7 +149,7 @@ export function FleetSection() {
                       }}
                     />
                   </td>
-                  <td>
+                  <td className="pr-2">
                     <input
                       type="checkbox"
                       checked={h.enabled}
@@ -135,12 +159,68 @@ export function FleetSection() {
                       }
                     />
                   </td>
+                  <td>
+                    <button
+                      type="button"
+                      aria-label={`remove ${h.name}`}
+                      title="Remove host"
+                      disabled={remove.isPending}
+                      onClick={() => remove.mutate(h.name)}
+                      className="text-xs text-gray-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40"
+                    >
+                      ✕
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      <form
+        className="flex flex-wrap items-end gap-2 pt-1"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (!draft.name.trim() || !draft.endpoint.trim()) return
+          add.mutate({ name: draft.name.trim(), endpoint: draft.endpoint.trim() })
+        }}
+      >
+        <div className="flex flex-col gap-0.5">
+          <label className="text-xs text-gray-500 dark:text-gray-400" htmlFor="fleet-add-name">
+            Name
+          </label>
+          <input
+            id="fleet-add-name"
+            value={draft.name}
+            onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+            placeholder="rocky"
+            className="w-28 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-2 py-1 text-sm"
+          />
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <label className="text-xs text-gray-500 dark:text-gray-400" htmlFor="fleet-add-endpoint">
+            Endpoint
+          </label>
+          <input
+            id="fleet-add-endpoint"
+            value={draft.endpoint}
+            onChange={(e) => setDraft((d) => ({ ...d, endpoint: e.target.value }))}
+            placeholder="https://rocky:9443"
+            className="w-56 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-2 py-1 text-sm"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={add.isPending || !draft.name.trim() || !draft.endpoint.trim()}
+          className="rounded bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-700 disabled:opacity-40"
+        >
+          {add.isPending ? 'Adding…' : 'Add host'}
+        </button>
+        {addError && (
+          <p className="w-full text-xs text-red-600 dark:text-red-400">{addError}</p>
+        )}
+      </form>
     </section>
   )
 }
