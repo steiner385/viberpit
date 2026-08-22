@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
-import pytest
 
 from server.api import accounts as acct_api
 
@@ -85,7 +84,6 @@ def test_real_local_read_returns_a_usage_object(tmp_path, monkeypatch):
     "'dict' object has no attribute 'session_pct'", because the mocks asserted
     the wrong contract. Exercise the real path so the type is actually checked.
     """
-    from datetime import datetime, timezone
 
     from ccswitch import ledger
 
