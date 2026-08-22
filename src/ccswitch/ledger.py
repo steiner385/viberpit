@@ -2,33 +2,119 @@
 import contextlib
 import fcntl
 import json
+import logging
+import os
+import tempfile
 from datetime import datetime
 
 from . import paths
 from .oauth import Usage
 
+log = logging.getLogger(__name__)
+
+
+def _decode_documents(raw: str) -> list[dict]:
+    """Decode every JSON document concatenated in *raw*.
+
+    A healthy ledger holds exactly one. More than one means an interleaved write
+    got through (see locked_ledger); raises for input that is not a sequence of
+    JSON documents at all.
+    """
+    dec = json.JSONDecoder()
+    docs: list[dict] = []
+    i, n = 0, len(raw)
+    while i < n:
+        while i < n and raw[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        obj, i = dec.raw_decode(raw, i)
+        docs.append(obj)
+    return docs
+
+
+def _load(raw: str) -> dict:
+    """Parse ledger content, recovering from a concatenated (corrupted) file.
+
+    Recovery keeps the document with the MOST accounts. The loser of an
+    interleaved write is the near-empty one, never the intended state, and
+    raising instead would take down account selection, usage tracking,
+    reservations and enable/disable on every host at once.
+
+    Content that is not JSON at all still raises: replacing it with an empty
+    ledger would silently erase every account's state.
+    """
+    raw = raw.strip()
+    if not raw:
+        return {"accounts": {}}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        docs = [d for d in _decode_documents(raw) if isinstance(d, dict)]
+        if not docs:
+            raise
+        best = max(docs, key=lambda d: len(d.get("accounts", {})))
+        log.error(
+            "ledger.json held %d concatenated documents — recovering the one with "
+            "%d accounts and rewriting it atomically. This is the signature of an "
+            "interleaved write; flock does not exclude across a network mount.",
+            len(docs), len(best.get("accounts", {})),
+        )
+        return best
+
 
 @contextlib.contextmanager
 def locked_ledger():
-    """Open ledger.json under an exclusive flock; persist the dict on exit."""
-    paths.ensure_root()
+    """Read ledger.json under an exclusive flock; write it back ATOMICALLY.
+
+    The lock is held on a dedicated ``ledger.json.lock`` whose inode is stable —
+    locking the data file itself would be pointless once the write replaces it.
+
+    The write is temp-file + ``os.replace``, never an in-place truncate. The
+    previous implementation opened the data file ``"a+"``, which sets O_APPEND,
+    and under O_APPEND every write lands at EOF regardless of ``seek(0)``. A
+    second writer that read the file mid-truncate therefore appended its own
+    near-empty document after the good one, leaving two concatenated JSON
+    documents and breaking every ledger read (observed in production
+    2026-08-22).
+
+    NOTE: flock does NOT exclude across hosts when the store is a network mount —
+    verified on 2026-08-22, where rocky acquired the lock while dobby held it. An
+    atomic write makes the failure mode a LOST UPDATE rather than a corrupt file;
+    genuine cross-host exclusion needs a shared lock (e.g. a Postgres advisory
+    lock) and is tracked separately.
+    """
+    root = paths.ensure_root()
     path = paths.ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    f = open(path, "a+", encoding="utf-8")
+
+    lock_path = path.with_name(path.name + ".lock")
+    lf = open(lock_path, "a+", encoding="utf-8")
     try:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        f.seek(0)
-        raw = f.read().strip()
-        data = json.loads(raw) if raw else {"accounts": {}}
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            raw = ""
+        data = _load(raw)
         data.setdefault("accounts", {})
         yield data
-        f.seek(0)
-        f.truncate()
-        f.write(json.dumps(data, indent=2))
-        f.flush()
+
+        fd, tmp = tempfile.mkstemp(dir=str(root), prefix=".ledger-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
     finally:
-        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        f.close()
+        fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+        lf.close()
 
 
 def _acct(led: dict, name: str) -> dict:
