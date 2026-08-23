@@ -307,12 +307,19 @@ class DaemonClient:
           the old object, so its pool would never be closed — the leak simply moves.
 
         THE COST, ACCEPTED DELIBERATELY: closing the pool errors requests that are still
-        in flight. At a *changed epoch* that is the correct behaviour, not a regression —
-        those requests are talking to a process that no longer exists and can only end in
-        a timeout. They surface as ``httpx.TransportError`` → ``DaemonUnavailable``, the
-        typed failure every RPC call site already degrades on (``_enrich_one`` maps it to
-        empty fields through ``gather(return_exceptions=True)``), so callers see a fast
-        empty field instead of a 30s hang. Failing them now is strictly better.
+        in flight. Most of them were already doomed — opened before the restart, they point
+        at a process that no longer exists and can only end in a timeout. But NOT all of
+        them, and the difference matters: the reader learns of a restart only on its next
+        reconnect (`_reader`'s backoff caps at 2s), so an RPC that opened a FRESH, HEALTHY
+        connection to the NEW daemon inside that window is killed as collateral. Concretely:
+        a deploy restarts the daemon; 0.5s after it is back an ``automation_*`` RPC (90s
+        deadline) connects successfully to the new process; the reconcile that follows tears
+        it down. The tradeoff is still right — the window is bounded by the reconnect
+        backoff, so the blast radius is a handful of requests, and they DEGRADE rather than
+        500: every killed request surfaces as ``httpx.TransportError`` →
+        ``DaemonUnavailable``, the typed failure every RPC call site already handles
+        (``_enrich_one`` maps it to empty fields through ``gather(return_exceptions=True)``),
+        so a caller sees a fast empty field instead of a 30s hang.
 
         Never raises: a client that cannot recycle must still be a working client.
         """

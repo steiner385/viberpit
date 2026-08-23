@@ -17,8 +17,10 @@ fix, so an implementation that only closes idle connections cannot pass them.
 An ACTIVE connection is produced here by a genuinely in-flight RPC against a daemon that
 does not answer. That is the same pool state a stranded connection has — the pool cannot
 tell them apart, which is precisely why it can never reap one — and it also exercises the
-hard part of the design: at a changed epoch the recycle *does* error requests that are
-still in flight, because they are talking to a process that no longer exists.
+hard part of the design: the recycle *does* error requests that are still in flight. Most
+were opened before the restart and were already doomed; a few, opened to the new daemon
+before the reader noticed the restart, are healthy collateral. Either way they must fail
+TYPED and fast, which is what these tests pin.
 """
 from __future__ import annotations
 
@@ -168,8 +170,9 @@ async def test_epoch_change_reclaims_active_connections(daemon, mtls_certs, monk
             assert c not in pooled, f"{c!r} kept its pool slot across the restart"
             assert c.is_closed(), f"{c!r} lost its slot but kept its socket"
 
-        # The requests riding those connections fail fast and typed, rather than
-        # hanging until their read deadline against a process that no longer exists.
+        # The requests riding those connections fail fast and TYPED, rather than hanging
+        # until their read deadline. Typed is the load-bearing half: a caller degrades on
+        # DaemonUnavailable, so even a healthy request killed as collateral cannot 500.
         for result in await asyncio.gather(*inflight, return_exceptions=True):
             assert isinstance(result, DaemonUnavailable), result
     finally:
@@ -212,8 +215,10 @@ async def test_a_wedged_pool_recovers_after_the_epoch_changes(daemon, mtls_certs
         client._epoch, client.info = "E-old", _restarted   # type: ignore[assignment]
         await client._reconcile_epoch()
 
-        # In-flight RPCs are errored, not left hanging — at a changed epoch they were
-        # already doomed. Callers degrade on DaemonUnavailable (gather/return_exceptions).
+        # In-flight RPCs are errored, not left hanging. Whether an individual one was
+        # doomed anyway (opened pre-restart) or is healthy collateral (opened to the new
+        # daemon inside the reconnect window), it must fail as a typed DaemonUnavailable —
+        # the failure every call site degrades on via gather(return_exceptions=True).
         done, pending = await asyncio.wait(inflight, timeout=_SETTLE)
         assert not pending, "an in-flight RPC survived the recycle and is still hanging"
         for t in done:
