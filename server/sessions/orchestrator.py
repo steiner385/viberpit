@@ -41,7 +41,7 @@ from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
 from server.audit import record_audit
 from server.db import db_session
-from server.db.models import AUTO_ARCHIVE_PROVENANCE, INACTIVE_SESSION_STATUSES, NON_ACTIVE_SESSION_STATUSES, Session as DbSession
+from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
 from server.sessions import adopt as _adopt
 from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions.archive_move import mountpoint, move_into_archive
@@ -877,8 +877,9 @@ class SessionOrchestrator:
             origin=origin, origin_ref=origin_ref, model=model)
 
     def _active_session_count(self) -> int:
+        """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES)."""
         return sum(1 for r in self._records.values()
-                   if r.status not in NON_ACTIVE_SESSION_STATUSES)
+                   if r.status not in CAPACITY_EXEMPT_STATUSES)
 
     async def _max_active_sessions(self) -> int:
         from sqlalchemy import select as sa_select
@@ -930,7 +931,7 @@ class SessionOrchestrator:
         ``needs_attention``).  Rationale: a failed-to-start session holds no
         process; leaving it ``needs_attention`` would consume a cap slot forever
         and starve the rest of the queue.  ``ended`` puts the session in
-        NON_ACTIVE_SESSION_STATUSES so the capacity gate re-opens for the next
+        CAPACITY_EXEMPT_STATUSES so the capacity gate re-opens for the next
         iteration without any bypass.  Existing end-of-life machinery (UI ended
         state, backlog-runner claim release) handles the rest.
 

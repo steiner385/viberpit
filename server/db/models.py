@@ -33,10 +33,28 @@ class Base(DeclarativeBase):
 # Single source of truth: import this instead of re-inlining the string set.
 INACTIVE_SESSION_STATUSES: frozenset[str] = frozenset({"ended", "archived"})
 
-# Statuses that do NOT consume an active-session slot. "queued" rows are real
+# Statuses that answer "is this session reviewable/inactive" — used for review
+# queues and similar UI, NOT for runtime capacity. "queued" rows are real
 # sessions waiting for capacity — neither reviewable (inactive) nor running.
-# EVERY cap/slot count derives from this set; no inline status math elsewhere.
+# Capacity accounting derives from CAPACITY_EXEMPT_STATUSES below, not this set;
+# _ACTIVE_STATUSES in orchestrator.py is a separate allow-list counter with its
+# own consumers (/info, deploy drain) and is intentionally not unified with either.
 NON_ACTIVE_SESSION_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"queued"}
+
+# Statuses that consume no RUNTIME capacity slot. Distinct from
+# NON_ACTIVE_SESSION_STATUSES, which answers "is this session reviewable/inactive"
+# and has other consumers.
+#
+# `complete` and `done` are here because the work is finished — the completion
+# marker was emitted and no turn is running. Counting them against the cap made
+# finished work starve queued work: on 2026-08-23 seven finished sessions held a
+# cap of seven while ZERO sessions were mid-turn, and 15 queued jobs could never
+# start. Six of the seven were permanently exempt from auto-archive
+# (`manual-unarchive`), so the deadlock could not self-heal — an archive opt-out
+# had silently become a permanent capacity leak.
+#
+# `idle` is deliberately NOT here: an idle session is alive and awaiting input.
+CAPACITY_EXEMPT_STATUSES: frozenset[str] = NON_ACTIVE_SESSION_STATUSES | {"complete", "done"}
 
 # Session.archived_by values written by an AUTOMATIC archive (vs a manual "user"
 # archive). Only these are eligible for auto-unarchive by the Archive Audit — a human's
