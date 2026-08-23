@@ -161,10 +161,35 @@ answers #734 directly, and it removes rocky's need to reach Postgres CI tables, 
 filesystem. Reached in two phases — non-blocking first (P1), relocation second (P5) — because the
 migration is large and the app is unusable now.
 
-**D2 — Narrow the transcript glob to the session's own project directory.** `main.parent` already
-identifies it, collapsing ~1,696 round trips to 1. Since zero `subagents/` directories exist in any
-account, this cannot change behaviour today. Paired with a standing rule: a transcript read must
-never perform unbounded cross-project traversal, and must degrade on timeout rather than hang.
+**D2 (AMENDED 2026-08-22) — Bound the transcript glob; do NOT narrow it to one project directory.**
+
+*Original decision, now withdrawn:* narrow the glob to `main.parent`, collapsing ~1,696 round trips
+to 1, on the grounds that zero `subagents/` directories exist in any account today.
+
+*Why it was wrong:* `_subagent_events`' own docstring states that the main transcript and the
+`subagents/` directory **can live under different encoded-cwd directories** (main checkout vs.
+worktree), which is precisely why it globs across all of them and dedupes by `toolUseId`. ccswitch
+is worktree-heavy — one live session's transcript sits under
+`-home-tony-GitHub--ccswitch-worktrees-ccswitch-521e7ca0` — so the cross-cwd case is real for this
+project. Narrowing would pass today only because the feature is unexercised (zero `subagents/`
+dirs), then silently drop sub-agent rendering the first time a sub-agent runs in a worktree. The
+original spec flagged this decision as needing sanity-checking by someone who knew the layout; the
+code is that authority and it refutes the decision.
+
+*Amended decision:* keep cross-cwd lookup, remove the unbounded cost.
+1. **Fast path** — probe `main.parent / sid / "subagents"` directly (one filesystem op). This is the
+   overwhelmingly common case: the sub-agent ran in the same cwd as its parent.
+2. **Bounded cross-cwd scan** — only when the fast path misses. Iterate `os.scandir(projects_root)`
+   under a hard wall-clock budget instead of materialising `sorted(glob(...))` over every project.
+3. **Never hang** — on budget exhaustion, return what was found, log once, and mark the result
+   partial. Sub-agent reconstruction is an enhancement to the Task card; opening a session is not
+   optional. Degrading it beats a 30s 503.
+4. **Memoize** the resolved directories per `(projects_root, sid)` so re-opening a session does not
+   re-pay the scan.
+
+The standing rule survives unchanged: a transcript read must never perform unbounded traversal, and
+must degrade on timeout rather than hang. Note this bounds the symptom; the architectural fix is
+P5 (session data should not be read across an sshfs mount from the runner at all).
 
 **D3 — Fix causes, then sweep for siblings.** RC1, RC4 and RC5 are each a *pattern* (sync I/O on the
 loop; parallel "now" implementations; unguarded pools) with more than one instance already
