@@ -195,6 +195,12 @@ _ARCHIVE_LIMIT_SWEEP_INTERVAL: float = 300.0
 # its due time; the persisted last_fired_at watermark makes the fire idempotent.
 _RECURRING_TICK_INTERVAL: float = 30.0
 
+# Opening a session must not hang. Replay work that exceeds this degrades to "no
+# transcript" rather than burning the caller's 30s RPC timeout (RC2). Generous enough
+# that a legitimately large transcript still renders.
+_TRANSCRIPT_WINDOW_CEILING_S = float(
+    os.environ.get("CCSWITCH_TRANSCRIPT_WINDOW_CEILING_S", "10"))
+
 
 class SessionOrchestrator:
     """Orchestrates session lifecycle: creation, rotation, termination.
@@ -7023,7 +7029,14 @@ class SessionOrchestrator:
         if not path:
             return None
         try:
-            return await replay_window(path, before=before, limit=limit)
+            return await asyncio.wait_for(
+                replay_window(path, before=before, limit=limit),
+                timeout=_TRANSCRIPT_WINDOW_CEILING_S,
+            )
+        except asyncio.TimeoutError:
+            log.warning("session.transcript_window id=%s exceeded %.0fs — returning empty",
+                        session_id, _TRANSCRIPT_WINDOW_CEILING_S)
+            return None
         except Exception:
             log.warning("session.transcript_window id=%s replay failed", session_id, exc_info=True)
             return None
