@@ -4193,12 +4193,17 @@ class SessionOrchestrator:
             log.warning("orchestrator.pr_repos_db_query_failed", exc_info=True)
         return sorted(repos)
 
-    def all_repos_stage_models(self) -> "dict[str, StageModel]":
-        """Per-repo StageModel for every watched repo (derived from CI/CD facts)."""
+    @staticmethod
+    def _stage_models_sync(pop: dict, history) -> "dict[str, StageModel]":
+        """The blocking half of ``all_repos_stage_models``: one ``ci_graph``
+        SQLite read per repo plus pure compute.
+
+        Runs on a worker thread (RC1) — it must not touch the event loop,
+        awaitables, or any asyncio primitive. ``pop`` is the already-snapshotted
+        PR population, so nothing here reads mutable orchestrator state.
+        """
         from server.pipeline.track import build_stage_model, order_deploy_envs
         models: dict = {}
-        pop = self._pr_population.all()
-        history = self._pr_population.history_store()
         for repo in list(pop.keys()):
             prs = pop.get(repo, ())
             has_queue = any(p.stage == "queue" for p in prs)
@@ -4211,6 +4216,19 @@ class SessionOrchestrator:
                 deploy_envs=order_deploy_envs(repo_envs),
             )
         return models
+
+    async def all_repos_stage_models(self) -> "dict[str, StageModel]":
+        """Per-repo StageModel for every watched repo (derived from CI/CD facts).
+
+        The edge's /api/pipeline/events SSE generator drives this every 10s *per
+        connected client*, and each repo costs a synchronous ``HistoryStore``
+        read, so the whole build runs on a worker thread (RC1). Callers already
+        route through ``inspect.isawaitable``/``_maybe_await``; the payload is
+        unchanged.
+        """
+        pop = self._pr_population.all()
+        history = self._pr_population.history_store()
+        return await asyncio.to_thread(self._stage_models_sync, pop, history)
 
     async def all_merge_trains(self) -> "dict[str, MergeTrainState]":
         """Merge-train state for every watched repo, derived from the 24-hour
@@ -4329,23 +4347,15 @@ class SessionOrchestrator:
         failed fetch re-adds the entry. Returns whether an entry was present."""
         return {"cleared": gitrepos.clear_stale_credentials(repo)}
 
-    def check_insights(self, repo: str, window: str, now=None) -> dict:
-        """Per-repo Check Health: slowest + flakiest checks, duration regressions,
-        and runner-wait health over a time window.
-        Reads the read-only HistoryStore; returns a JSON-safe payload. Empty lists
-        when history is unavailable or the repo has no rows (never raises)."""
-        from datetime import datetime, timedelta, timezone
-        _WINDOWS = {"24h": timedelta(hours=24), "7d": timedelta(days=7),
-                    "14d": timedelta(days=14), "30d": timedelta(days=30)}
-        win = window if window in _WINDOWS else "7d"
-        store = self._pr_population.history_store()
-        empty = {"repo": repo, "window": win, "slowest": [], "flakiest": [],
-                 "regressions": [], "runner_wait_health": []}
-        if store is None or not repo:
-            return empty
-        now = now or datetime.now(timezone.utc)
-        since_iso = (now - _WINDOWS[win]).strftime("%Y-%m-%dT%H:%M:%SZ")
-        prev_since_iso = (now - 2 * _WINDOWS[win]).strftime("%Y-%m-%dT%H:%M:%SZ")
+    @staticmethod
+    def _check_insights_sync(store, repo: str, win: str, empty: dict,
+                             since_iso: str, prev_since_iso: str) -> dict:
+        """The blocking half of ``check_insights``: four synchronous
+        ``HistoryStore`` queries (one of them 1+N) plus JSON serialization.
+
+        Runs on a worker thread (RC1) — it must not touch the event loop,
+        awaitables, or any asyncio primitive.
+        """
         try:
             slowest = store.slowest_checks(repo, since_iso)
             flakiest = store.flakiest_checks(repo, since_iso)
@@ -4360,6 +4370,34 @@ class SessionOrchestrator:
             "regressions": [r.to_dict() for r in regressions],
             "runner_wait_health": [w.to_dict() for w in runner_wait],
         }
+
+    async def check_insights(self, repo: str, window: str, now=None) -> dict:
+        """Per-repo Check Health: slowest + flakiest checks, duration regressions,
+        and runner-wait health over a time window.
+        Reads the read-only HistoryStore; returns a JSON-safe payload. Empty lists
+        when history is unavailable or the repo has no rows (never raises).
+
+        The four queries are synchronous SQLite over the full window (and
+        ``duration_regressions`` is 1+N), so they run on a worker thread (RC1) —
+        opening the Check Health panel must not stall the daemon's event loop.
+        Callers already route through ``inspect.isawaitable``/``_maybe_await``;
+        the payload is unchanged."""
+        from datetime import datetime, timedelta, timezone
+        _WINDOWS = {"24h": timedelta(hours=24), "7d": timedelta(days=7),
+                    "14d": timedelta(days=14), "30d": timedelta(days=30)}
+        win = window if window in _WINDOWS else "7d"
+        store = self._pr_population.history_store()
+        empty = {"repo": repo, "window": win, "slowest": [], "flakiest": [],
+                 "regressions": [], "runner_wait_health": []}
+        if store is None or not repo:
+            return empty
+        now = now or datetime.now(timezone.utc)
+        since_iso = (now - _WINDOWS[win]).strftime("%Y-%m-%dT%H:%M:%SZ")
+        prev_since_iso = (now - 2 * _WINDOWS[win]).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return await asyncio.to_thread(
+            self._check_insights_sync, store, repo, win, empty,
+            since_iso, prev_since_iso,
+        )
 
     @staticmethod
     def _deploy_backlog(prs) -> "tuple[int, int]":
@@ -4378,12 +4416,17 @@ class SessionOrchestrator:
         awaiting_qa = sum(1 for p in prs if p.merged and not p.deployed_envs)
         return awaiting_qa, awaiting_prod
 
-    def all_prs(self) -> "list[PipelinePr]":
+    async def all_prs(self) -> "list[PipelinePr]":
         """Full PR population (all watched repos) joined to authoring sessions.
 
         Session join reuses ``prs_for`` (the session-branch poller's knowledge),
         so a PR is linked iff some session authored its branch. Sorted by stage
         urgency (parked→ci→ready→queue→merged), then PR number ascending.
+
+        Async because the stage models it places PRs on are built off the loop
+        (RC1 — see ``all_repos_stage_models``); the payload is unchanged and
+        every caller already routes through ``inspect.isawaitable``/
+        ``_maybe_await``.
         """
         from server.github.pr_status import PipelinePr
         from server.pipeline.track import place_pr_on_track
@@ -4394,7 +4437,7 @@ class SessionOrchestrator:
             for info in self.prs_for(rec.id):
                 sess_by_pr.setdefault((rec.repo, info.number), (rec.id, rec.name))
         order = {"parked": 0, "ci": 1, "ready": 2, "queue": 3, "merged": 4}
-        models = self.all_repos_stage_models()
+        models = await self.all_repos_stage_models()
         out: list[PipelinePr] = []
         for repo, prs in self._pr_population.all().items():
             model = models.get(repo)

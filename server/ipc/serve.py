@@ -104,6 +104,20 @@ async def daemon_lifespan(app, orchestrator):
     except Exception:
         log.error("daemon rearm_background_tasks() failed", exc_info=True)
     await orchestrator.start()
+    # RC1 (blocking sqlite3 on the loop) ran for hours before it was noticed, and only
+    # via an external py-spy dump — this makes the same class of saturation
+    # self-reporting instead of requiring an audit. Deliberately unguarded: a watchdog
+    # whose own wiring silently fails to start reproduces the exact failure mode it
+    # exists to catch. `app.state` is guaranteed by build_daemon(); a broken import or
+    # a bad refactor here should crash startup loudly, the same as orchestrator.start()
+    # above, so deploy/health checks catch it.
+    from server.obs.loop_lag import LoopLagWatchdog
+    from server.obs.tasks import supervise
+    app.state.loop_lag = LoopLagWatchdog()
+    app.state.loop_lag_task = supervise(
+        asyncio.create_task(app.state.loop_lag.run(), name="loop-lag-watchdog"),
+        name="loop-lag-watchdog",
+    )
     # Sweep stale X lock/socket files AND reap orphaned Xvfb/x11vnc/chrome left by a
     # prior SIGKILLed run (issue #206, startup half). The daemon owns the displays in
     # remote mode yet swept nothing at boot, so orphans accumulated across restarts.
@@ -143,6 +157,16 @@ async def daemon_lifespan(app, orchestrator):
             await app.state.reauth.shutdown()
         except Exception:
             log.warning("daemon shutdown: reauth shutdown failed", exc_info=True)
+        try:
+            loop_lag_task = getattr(app.state, "loop_lag_task", None)
+        except Exception:
+            loop_lag_task = None
+        if loop_lag_task is not None:
+            loop_lag_task.cancel()
+            try:
+                await loop_lag_task
+            except asyncio.CancelledError:
+                pass
         await orchestrator.stop()
 
 

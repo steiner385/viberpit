@@ -141,6 +141,70 @@ def _default_merge_queue_query(repos: list[str]) -> dict:
     return {"data": merged}
 
 
+def _enrich_sync(
+    prs_by_repo: dict[str, tuple[PullRequestInfo, ...]],
+    checks_by_pr: dict[tuple[str, int], list],
+    merge_by_pr: dict[tuple[str, int], dict],
+    store,
+    compute_pr_eta,
+    build_check_groups,
+    now: datetime,
+    now_iso: str,
+    eta_cache: dict[tuple[str, int], dict],
+) -> dict[str, tuple[PullRequestInfo, ...]]:
+    """The blocking half of ETA enrichment: SQLite reads + pure compute.
+
+    Runs on a worker thread (RC1) — it must not touch the event loop, awaitables,
+    or any asyncio primitive. ``eta_cache`` is mutated in place (same dict the
+    caller holds as ``self._eta_cache``), so cache behaviour is unchanged.
+    """
+    result: dict[str, tuple[PullRequestInfo, ...]] = {}
+    for repo, prs in prs_by_repo.items():
+        enriched = []
+        for pr in prs:
+            if pr.state in ("open", "draft"):
+                key = (repo, pr.number)
+                checks = checks_by_pr.get(key, [])
+                try:
+                    # check_groups always (rows/durations/cost need no history);
+                    # ETA/overdue only when a history store is present.
+                    groups = build_check_groups(
+                        checks, merge_by_pr.get(key, {}), store, repo, now,
+                    )
+                    fields: dict = {"check_groups": groups}
+                    if compute_pr_eta is not None:
+                        eta_s, eta_low, eta_high, eta_pct, eta_over = compute_pr_eta(
+                            store, repo, checks, now
+                        )
+                        fields["eta_seconds"] = eta_s
+                        fields["eta_low_seconds"] = eta_low
+                        fields["eta_high_seconds"] = eta_high
+                        fields["eta_percent"] = eta_pct
+                        fields["eta_overdue"] = eta_over
+                        # Fresh value — clear the stale flag and stamp the
+                        # compute time (issue #671).
+                        fields["eta_stale"] = False
+                        fields["eta_updated_at"] = now_iso
+                        if eta_s is not None:
+                            eta_cache[key] = {
+                                "eta_seconds": eta_s,
+                                "eta_low_seconds": eta_low,
+                                "eta_high_seconds": eta_high,
+                                "eta_percent": eta_pct,
+                                "eta_overdue": eta_over,
+                                "eta_updated_at": now_iso,
+                            }
+                    pr = dataclasses.replace(pr, **fields)
+                except Exception:
+                    log.debug(
+                        "pr_population.eta_compute_failed repo=%s pr=%s",
+                        repo, pr.number, exc_info=True,
+                    )
+            enriched.append(pr)
+        result[repo] = tuple(enriched)
+    return result
+
+
 def _try_load_store(db_path: str | None):  # type: ignore[return]
     """Return a HistoryStore for db_path, or None if unavailable (file absent/error)."""
     if db_path is None:
@@ -324,8 +388,10 @@ class PrPopulationPoller:
         """Batch-fetch ETA check timing for all open PRs and replace() the fields.
 
         Returns prs_by_repo unchanged (same objects) on any error so the board
-        always shows data (just without ETA).  The SQLite HistoryStore is used
-        on the event-loop thread; only the network call is offloaded to a thread.
+        always shows data (just without ETA). The network fetch and
+        ``_record_group_history`` stay on the event loop (they are genuinely
+        async); the SQLite HistoryStore reads and pure compute run on a worker
+        thread (RC1 — see ``_enrich_sync``).
         """
         # `store` (pipeline-history DB) may be None — ETA/overdue need it, but the
         # per-check drill-down (check_groups) does not. Do NOT bail on a missing store,
@@ -387,51 +453,13 @@ class PrPopulationPoller:
             except Exception:
                 log.warning("pr_population.eta_import_failed", exc_info=True)
 
-        # SQLite reads + compute run on the event-loop thread (store is not thread-safe).
-        result: dict[str, tuple[PullRequestInfo, ...]] = {}
-        for repo, prs in prs_by_repo.items():
-            enriched = []
-            for pr in prs:
-                if pr.state in ("open", "draft"):
-                    key = (repo, pr.number)
-                    checks = checks_by_pr.get(key, [])
-                    try:
-                        # check_groups always (rows/durations/cost need no history);
-                        # ETA/overdue only when a history store is present.
-                        groups = build_check_groups(
-                            checks, merge_by_pr.get(key, {}), store, repo, now,
-                        )
-                        fields: dict = {"check_groups": groups}
-                        if compute_pr_eta is not None:
-                            eta_s, eta_low, eta_high, eta_pct, eta_over = compute_pr_eta(
-                                store, repo, checks, now
-                            )
-                            fields["eta_seconds"] = eta_s
-                            fields["eta_low_seconds"] = eta_low
-                            fields["eta_high_seconds"] = eta_high
-                            fields["eta_percent"] = eta_pct
-                            fields["eta_overdue"] = eta_over
-                            # Fresh value — clear the stale flag and stamp the
-                            # compute time (issue #671).
-                            fields["eta_stale"] = False
-                            fields["eta_updated_at"] = now_iso
-                            if eta_s is not None:
-                                self._eta_cache[key] = {
-                                    "eta_seconds": eta_s,
-                                    "eta_low_seconds": eta_low,
-                                    "eta_high_seconds": eta_high,
-                                    "eta_percent": eta_pct,
-                                    "eta_overdue": eta_over,
-                                    "eta_updated_at": now_iso,
-                                }
-                        pr = dataclasses.replace(pr, **fields)
-                    except Exception:
-                        log.debug(
-                            "pr_population.eta_compute_failed repo=%s pr=%s",
-                            repo, pr.number, exc_info=True,
-                        )
-                enriched.append(pr)
-            result[repo] = tuple(enriched)
+        # SQLite reads + compute are blocking; run them on a worker thread so the
+        # daemon's event loop keeps scheduling (RC1). HistoryStore is thread-safe
+        # as of P1 Task 1.
+        result = await asyncio.to_thread(
+            _enrich_sync, prs_by_repo, checks_by_pr, merge_by_pr, store,
+            compute_pr_eta, build_check_groups, now, now_iso, self._eta_cache,
+        )
         return result
 
     async def _record_group_history(
