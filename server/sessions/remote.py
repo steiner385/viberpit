@@ -483,6 +483,17 @@ class RemoteOrchestrator:
         so the deploy gate can reject an edge/daemon version skew."""
         return self._client.sha
 
+    def daemon_pool_stats(self) -> dict | None:
+        """The RPC connection pool's occupancy, or None if the client cannot report it.
+
+        Sync cached-field read (no RPC), mirroring daemon_sha/daemon_epoch — deliberately,
+        because the condition it reports is precisely the one in which an RPC cannot
+        complete. ``/api/daemon/health`` renders it so a wedged pool is visible in the
+        journal and the dashboard instead of needing `ss -tn state close-wait` on the box
+        (issue #734)."""
+        stats = getattr(self._client, "pool_stats", None)
+        return stats() if stats is not None else None
+
     def daemon_epoch(self) -> str | None:
         """The daemon's current process epoch, or ``None`` if the edge hasn't reached
         ``/info`` yet. Sync (a cached-field read via DaemonClient.epoch — no RPC). ws.py's

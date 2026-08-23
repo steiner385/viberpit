@@ -189,9 +189,9 @@ async def test_a_wedged_pool_recovers_after_the_epoch_changes(daemon, mtls_certs
     the process). Same shape here: saturate, confirm the wedge, change the epoch, confirm
     RPCs flow again.
 
-    ``info`` is stubbed for the restart signal because a *saturated* pool has no slot
-    left for ``/info`` either — see the note on that limitation in ``_reconcile_epoch``.
-    The unstubbed path is covered by the test above.
+    ``info`` is stubbed here so this test isolates the *recycle* half of the heal. The
+    unstubbed path — a saturated pool that still reaches ``/info`` over its reserved
+    channel — is ``test_a_saturated_pool_still_sees_the_restart_signal`` below.
     """
     client = _client(daemon, mtls_certs, max_connections=2, monkeypatch=monkeypatch)
     try:
@@ -228,6 +228,82 @@ async def test_a_wedged_pool_recovers_after_the_epoch_changes(daemon, mtls_certs
         t0 = time.monotonic()
         assert await client.call("echo", stream="s", text="healed") == {"ok": True}
         assert time.monotonic() - t0 < _SETTLE, "the healed RPC queued for a slot"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_saturated_pool_still_sees_the_restart_signal(daemon, mtls_certs,
+                                                              monkeypatch):
+    """The self-heal must survive the state it exists to fix: a FULL pool.
+
+    This is the gap the epoch recycle could not close on its own. ``/info`` used to ride
+    the same pool as every RPC, so once all ``max_connections`` slots were pinned ACTIVE
+    it raised ``PoolTimeout`` after the 2s pool leg, ``_reconcile_epoch`` swallowed it in
+    its ``except Exception: return``, and the recycle never fired. The WS reader calls
+    ``_reconcile_epoch`` once per reconnect, so a pool already saturated at restart-time
+    stayed wedged for the life of the process — exactly the state both production outages
+    reached, each cleared only by ``systemctl restart ccswitch.service``.
+
+    Nothing is stubbed: the restart signal comes from the REAL ``/info``, over a pool with
+    zero free slots. That is the whole assertion.
+    """
+    client = _client(daemon, mtls_certs, max_connections=2, monkeypatch=monkeypatch)
+    try:
+        pinned, inflight = await _pin_active(client, daemon, 2)
+        _assert_pinned_active(pinned)
+
+        # The wedge fingerprint: the daemon is healthy, but the RPC pool has nothing left
+        # to give. Any caller sharing this pool — /info included, before the fix — waits
+        # the pool leg and fails.
+        seen = daemon.started
+        with pytest.raises(DaemonTimeout):
+            await client.call("echo", stream="s", text="wedged")
+        assert daemon.started == seen, "the request reached the daemon — pool not saturated"
+
+        # The daemon answering now reports an epoch this client has never seen, i.e. the
+        # process it was talking to is gone. The signal must get through anyway.
+        client._epoch = "epoch-of-the-dead-process"
+        await client._reconcile_epoch()
+        assert client._epoch != "epoch-of-the-dead-process", (
+            "/info could not reach the daemon through a saturated pool — the restart "
+            "signal is still starved by the RPC pool")
+
+        # ...and having got through, it healed the pool.
+        pooled = _pool(client).connections
+        for c in pinned:
+            assert c not in pooled, f"{c!r} kept its pool slot across the restart"
+            assert c.is_closed(), f"{c!r} lost its slot but kept its socket"
+        for result in await asyncio.gather(*inflight, return_exceptions=True):
+            assert isinstance(result, DaemonUnavailable), result
+
+        # The edge is serving RPCs again with no process restart.
+        t0 = time.monotonic()
+        assert await client.call("echo", stream="s", text="healed") == {"ok": True}
+        assert time.monotonic() - t0 < _SETTLE, "the healed RPC queued for a slot"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_health_channel_never_competes_with_rpcs_for_a_slot(daemon, mtls_certs,
+                                                                      monkeypatch):
+    """``/info`` must not consume an RPC pool slot, in either direction.
+
+    The reserved channel is only reserved if it is genuinely separate: a ``/info`` call
+    must leave the RPC pool's occupancy untouched, and an RPC must not be able to occupy
+    the health channel.
+    """
+    client = _client(daemon, mtls_certs, max_connections=2, monkeypatch=monkeypatch)
+    try:
+        pinned, inflight = await _pin_active(client, daemon, 2)
+
+        assert await client.info(), "/info returned nothing through a saturated pool"
+
+        assert _pool(client).connections == pinned, (
+            "/info disturbed the RPC pool — it is not on a channel of its own")
+        for t in inflight:
+            assert not t.done(), "an in-flight RPC was collateral of the /info call"
     finally:
         await client.aclose()
 

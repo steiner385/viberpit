@@ -105,6 +105,10 @@ class InProcessOrchestratorAdapter:
     # which is moot anyway since ring_covers is a constant False (#497).
     def daemon_epoch(self): return None
     def daemon_sha(self): return None
+    # In-process mode makes no HTTP calls to a daemon, so there is no RPC pool that could
+    # wedge. None (not an empty snapshot) so the health surface says "not applicable"
+    # rather than reporting a permanently-idle pool that does not exist.
+    def daemon_pool_stats(self): return None
     async def archive_session(self, *a, **k): return await _maybe_await(self._orch.archive_session(*a, **k))
     async def unarchive(self, *a, **k): return await _maybe_await(self._orch.unarchive(*a, **k))
     async def permanent_delete(self, *a, **k): return await _maybe_await(self._orch.permanent_delete(*a, **k))

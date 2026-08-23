@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any
 
 import httpx
@@ -34,6 +35,36 @@ log = logging.getLogger("server.ipc.client")
 #   connection to a daemon that has since restarted must be discarded, not handed out.
 _LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=32,
                        keepalive_expiry=5.0)
+
+# The RESERVED HEALTH CHANNEL — a pool of exactly one connection, used by `/info` and
+# nothing else.
+#
+# `/info` carries the daemon's process epoch, and a changed epoch is the ONLY signal that
+# triggers `_recycle_transport`. While `/info` shared the RPC pool that signal could be
+# starved by the very condition it exists to clear: with all `_LIMITS.max_connections`
+# slots pinned ACTIVE, `/info` raised `PoolTimeout` after the 2s pool leg,
+# `_reconcile_epoch` swallowed it, and the recycle never fired. The WS reader calls
+# `_reconcile_epoch` once per reconnect, so a pool that was already saturated when the
+# daemon restarted stayed wedged for the life of the edge process — the state both
+# production outages reached, each cleared only by `systemctl restart ccswitch.service`.
+#
+# One extra socket buys a channel the RPC pool can never starve, which makes the wedge
+# self-healing. `max_connections=1` is deliberate rather than incidental: `/info` has one
+# low-frequency caller on this client (`_reconcile_epoch`, once per WS reconnect) plus the
+# daemon-health poller's own separate client, so a second concurrent `/info` may queue —
+# and queueing behind another *health probe* is not the failure mode this guards against.
+#
+# Note this is NOT "recycle on PoolTimeout". That was considered and rejected: a
+# legitimate fan-out saturating the pool under a slow daemon would kill ~100 healthy
+# in-flight requests. Isolating `/info` gets the signal through without ever making
+# pool pressure itself the trigger.
+_INFO_LIMITS = httpx.Limits(max_connections=1, max_keepalive_connections=1,
+                            keepalive_expiry=5.0)
+
+# Minimum gap between pool-exhaustion warnings within one streak (see _note_pool_timeout).
+# 30s is short enough that a wedge is visible within one journal screen and long enough
+# that a polling dashboard cannot turn the wedge into the log flood that hides it.
+_POOL_WARN_INTERVAL_S = 30.0
 
 # pool: the short leg. Healthy RPCs take ~200ms, so waiting 2s for a slot means ~10
 #   RPC-lifetimes of starvation — the pool is not recovering for this request, and
@@ -151,14 +182,31 @@ class DaemonClient:
         if endpoint.is_unix:
             self._ssl = None
             self._transport = httpx.AsyncHTTPTransport(uds=endpoint.path, limits=_LIMITS)
+            self._info_transport = httpx.AsyncHTTPTransport(uds=endpoint.path,
+                                                           limits=_INFO_LIMITS)
             base_url = "http://daemon"
         else:
             from server.ipc.tls import client_ssl_context, client_tls_files
             self._ssl = client_ssl_context(client_tls or client_tls_files())
             self._transport = httpx.AsyncHTTPTransport(verify=self._ssl, limits=_LIMITS)
+            self._info_transport = httpx.AsyncHTTPTransport(verify=self._ssl,
+                                                            limits=_INFO_LIMITS)
             base_url = f"https://{endpoint.host}:{endpoint.port}"
         self._http = httpx.AsyncClient(transport=self._transport, base_url=base_url,
                                        timeout=_TIMEOUT)
+        # Same bounds, own pool (see _INFO_LIMITS). A separate AsyncClient is required,
+        # not just a separate transport: httpx picks the transport per client, and the
+        # RPC client must keep _transport as its one and only route so `call` can never
+        # borrow the reserved socket.
+        self._info_http = httpx.AsyncClient(transport=self._info_transport,
+                                            base_url=base_url, timeout=_TIMEOUT)
+        # Wedge telemetry. A pool timeout means "every slot is taken and none freed within
+        # the pool leg" — the fingerprint of the strand, and the thing both outages needed
+        # `ss -tn state close-wait` to see. Counted here so it is readable from
+        # `pool_stats()` and loud in the journal without a socket dump.
+        self._pool_timeouts = 0                           # cumulative, process lifetime
+        self._consecutive_pool_timeouts = 0               # reset by any RPC that completes
+        self._last_pool_warn_at = 0.0                     # monotonic; throttles the warning
         self._ws: Any = None
         self._reader_task: asyncio.Task | None = None
         # stream -> set of subscriber queues. A stream may have MORE THAN ONE local
@@ -205,22 +253,110 @@ class DaemonClient:
         post_kwargs = {} if timeout is None else {"timeout": _call_timeout(timeout)}
         try:
             resp = await self._http.post(f"/rpc/{method}", json=params, **post_kwargs)
+        except httpx.PoolTimeout as exc:
+            # Distinguished from every other timeout because it means something different:
+            # the daemon was never asked. The pool had no slot to give within the pool leg,
+            # so this RPC failed on OUR side of the wire. That is the wedge, and it is what
+            # both incidents spent their diagnosis budget on.
+            self._note_pool_timeout(method)
+            raise DaemonTimeout(f"{method} timed out: {exc}") from exc
         except httpx.TimeoutException as exc:
+            self._consecutive_pool_timeouts = 0
             raise DaemonTimeout(f"{method} timed out: {exc}") from exc
         except httpx.TransportError as exc:
             # Covers ConnectError, ReadError, WriteError, CloseError — any transport-level
-            # failure that means the daemon is unreachable or reset mid-response.
+            # failure that means the daemon is unreachable or reset mid-response. The
+            # daemon WAS reached (or at least dialled), so the pool is not the problem.
+            self._consecutive_pool_timeouts = 0
             raise DaemonUnavailable(str(exc)) from exc
+        self._consecutive_pool_timeouts = 0
         body = resp.json()
         if "error" in body:
             err = body["error"]
             raise DaemonError(err.get("type", "Error"), err.get("message", ""), err.get("data"))
         return body["result"]
 
-    async def info(self) -> dict:
+    def _note_pool_timeout(self, method: str) -> None:
+        """Record a pool timeout and make the wedge legible in the journal.
+
+        WARNING, not ERROR-once: the count is the diagnostic. One pool timeout is a
+        transient fan-out; a rising *consecutive* count against a healthy daemon is the
+        strand, and it is what an operator needs to see without shelling in to run
+        ``ss -tn state close-wait``.
+
+        THROTTLED, because during a real wedge EVERY RPC ends here — a dashboard polling
+        several routes would otherwise write a warning per failed request per poll and
+        bury the very line it is meant to surface. The first timeout of a streak always
+        logs (that is the transition an operator wants timestamped); after that, at most
+        one line per ``_POOL_WARN_INTERVAL_S``, each carrying the running counts, so a
+        standing wedge reads as a steady heartbeat rather than a flood. The counters
+        themselves are never throttled — ``pool_stats()`` stays exact.
+        """
+        self._pool_timeouts += 1
+        self._consecutive_pool_timeouts += 1
+        now = time.monotonic()
+        first_of_streak = self._consecutive_pool_timeouts == 1
+        if not first_of_streak and now - self._last_pool_warn_at < _POOL_WARN_INTERVAL_S:
+            return
+        self._last_pool_warn_at = now
+        stats = self.pool_stats()
+        log.warning(
+            "ipc: RPC %s could not get a connection slot (%d consecutive pool timeout(s), "
+            "%d total) — pool %d/%d connections, %d in use, %d idle, %d request(s) queued. "
+            "The daemon was never asked; this is edge-side pool exhaustion.",
+            method, self._consecutive_pool_timeouts, self._pool_timeouts,
+            stats["connections"], stats["maxConnections"], stats["inUse"], stats["idle"],
+            stats["queued"])
+
+    def pool_stats(self) -> dict:
+        """A JSON-safe snapshot of the RPC connection pool.
+
+        Counts come from httpcore's private ``_pool``, so every field degrades to ``-1``
+        rather than raising — this is telemetry and must never be able to fail a health
+        route. (Same guard, and the same private accessor, as ``_recycle_transport``;
+        there is deliberately only one way into the pool internals in this module.)
+
+        ``inUse`` is the load-bearing number: a connection that is not *available* is
+        holding one of ``maxConnections`` slots, and httpcore can only ever evict a
+        connection that is closed, expired, or surplus-IDLE — so ``inUse == maxConnections``
+        against a healthy daemon is the wedge, not a busy moment.
+        """
+        stats = {
+            "maxConnections": _LIMITS.max_connections,
+            "connections": -1, "inUse": -1, "idle": -1, "queued": -1,
+            "poolTimeouts": self._pool_timeouts,
+            "consecutivePoolTimeouts": self._consecutive_pool_timeouts,
+            "saturated": False,
+        }
         try:
-            resp = await self._http.get("/info")
-        except httpx.ConnectError as exc:
+            pool = self._transport._pool
+            conns = list(pool.connections)
+            stats["connections"] = len(conns)
+            stats["inUse"] = sum(1 for c in conns if not c.is_available())
+            stats["idle"] = sum(1 for c in conns if c.is_idle())
+            stats["queued"] = sum(1 for r in pool._requests if r.is_queued())
+            stats["saturated"] = bool(
+                _LIMITS.max_connections is not None
+                and stats["inUse"] >= _LIMITS.max_connections)
+        except Exception:  # noqa: BLE001 — telemetry only; never fail a health route
+            pass
+        return stats
+
+    async def info(self) -> dict:
+        """GET ``/info`` over the RESERVED health channel (see ``_INFO_LIMITS``).
+
+        Deliberately NOT on ``self._http``: this is the call that carries the restart
+        signal, and it must still get through when every RPC slot is pinned ACTIVE.
+        Failures are mapped to the module's own typed exceptions — a raw
+        ``httpx.ReadTimeout`` used to escape ``except DaemonUnavailable`` handlers here
+        (``automations/archive_audit.py``'s pre-flight is one) because only
+        ``ConnectError`` was caught.
+        """
+        try:
+            resp = await self._info_http.get("/info")
+        except httpx.TimeoutException as exc:
+            raise DaemonTimeout(f"/info timed out: {exc}") from exc
+        except httpx.TransportError as exc:
             raise DaemonUnavailable(str(exc)) from exc
         return resp.json()
 
@@ -327,12 +463,21 @@ class DaemonClient:
         # significant, and both wedges were diagnosed by hand with `ss` because the
         # journal said nothing about the pool. The count comes from a private httpcore
         # attribute, so it degrades to -1 rather than ever pre-empting the recycle.
-        try:
-            pooled = len(self._transport._pool.connections)
-        except Exception:  # noqa: BLE001 — telemetry only
-            pooled = -1
+        stats = self.pool_stats()
         log.warning("ipc: daemon restarted (epoch %s → %s) — recycling %d pooled "
-                    "connection(s) to the old process", was, now, pooled)
+                    "connection(s) to the old process (%d in use, %d idle, %d queued, "
+                    "%d pool timeout(s) since start)", was, now, stats["connections"],
+                    stats["inUse"], stats["idle"], stats["queued"], stats["poolTimeouts"])
+        # The wedge is over as far as the counter is concerned: the slots are about to be
+        # returned, so a stale consecutive count must not keep reading as an active wedge.
+        self._consecutive_pool_timeouts = 0
+        # The reserved health channel's own connection also points at the dead process.
+        # Recycled separately and first, so a failure here can never skip the RPC pool
+        # recycle — that is the one that clears the outage.
+        try:
+            await self._info_transport.aclose()
+        except Exception as exc:  # noqa: BLE001 — the health channel self-heals next poll
+            log.warning("ipc: health-channel recycle failed (%s)", exc)
         try:
             await self._transport.aclose()
         except Exception as exc:  # noqa: BLE001 — a failed recycle must not brick the client
@@ -358,14 +503,14 @@ class DaemonClient:
         DEPLOYING a fix break the app: the deploy restarts the daemon, which is the very
         event that wedged the edge.
 
-        LIMITATION worth knowing: the restart signal comes from `/info`, which itself
-        needs a pool slot. If the pool is *already* saturated when the daemon restarts,
-        `/info` cannot get through and this self-heal cannot fire. Task 2 stops new
-        strands at the source, so the pool should not reach saturation to begin with;
-        surfacing an already-wedged pool is issue #734's task 4. Recycling on a pool
-        timeout was considered and rejected: a legitimate fan-out that saturates the pool
-        under a slow daemon would then kill 100 healthy in-flight requests, which is a
-        self-inflicted outage rather than a self-heal.
+        The restart signal comes from `/info`, which rides its OWN one-connection pool
+        (`_INFO_LIMITS`) precisely so this can still fire when the RPC pool is already
+        saturated — the state both outages ended in, where the recycle was needed most and
+        was previously starved out. Recycling on a pool timeout instead was considered and
+        rejected: a legitimate fan-out that saturates the pool under a slow daemon would
+        then kill 100 healthy in-flight requests, a self-inflicted outage rather than a
+        self-heal. Isolating `/info` gets the signal through without making pool pressure
+        itself the trigger.
         """
         try:
             info = await self.info()
@@ -523,3 +668,10 @@ class DaemonClient:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         await self._http.aclose()
+        # The reserved health channel is a second AsyncClient, so it needs its own close
+        # or its socket outlives the client (short-lived callers like host_probe build one
+        # DaemonClient per probe). Guarded: shutdown must not fail on the health channel.
+        try:
+            await self._info_http.aclose()
+        except Exception:  # noqa: BLE001 — best-effort teardown
+            pass
