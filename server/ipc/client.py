@@ -322,6 +322,9 @@ class DaemonClient:
         against a healthy daemon is the wedge, not a busy moment.
         """
         stats = {
+            # The CONFIGURED ceiling (module-level `_LIMITS`), not a read of the
+            # transport's own limit. They cannot diverge in production — `_LIMITS` is a
+            # constant — but this is the number to change if limits ever go per-client.
             "maxConnections": _LIMITS.max_connections,
             "connections": -1, "inUse": -1, "idle": -1, "queued": -1,
             "poolTimeouts": self._pool_timeouts,
@@ -351,14 +354,47 @@ class DaemonClient:
         ``httpx.ReadTimeout`` used to escape ``except DaemonUnavailable`` handlers here
         (``automations/archive_audit.py``'s pre-flight is one) because only
         ``ConnectError`` was caught.
+
+        A ``PoolTimeout`` here recycles the channel and retries ONCE. The reserved pool
+        holds a single connection, so one stranded connection wedges it permanently — and
+        that failure is circular and silent: ``/info`` times out, ``_reconcile_epoch``
+        swallows it, ``_recycle_transport`` never runs, and the only thing that could
+        clear the strand is a *successful* ``/info``. ``pool_stats()`` reports the RPC
+        pool, so nothing would show it either.
+
+        This is not the "recycle on PoolTimeout" trigger that was rejected for the RPC
+        pool, and the objection to that one does not transfer: this pool has exactly ONE
+        serial caller, so contention is impossible by construction and a pool timeout on
+        it is unambiguously a strand. The blast radius is one health socket, not ~100
+        in-flight RPCs. It is defence in depth — no cancellation vector reaches this
+        channel today — but it is the last path on which the self-heal could fail closed
+        and stay failed.
         """
-        try:
-            resp = await self._info_http.get("/info")
-        except httpx.TimeoutException as exc:
-            raise DaemonTimeout(f"/info timed out: {exc}") from exc
-        except httpx.TransportError as exc:
-            raise DaemonUnavailable(str(exc)) from exc
-        return resp.json()
+        for attempt in (1, 2):
+            try:
+                resp = await self._info_http.get("/info")
+            except httpx.PoolTimeout as exc:
+                if attempt == 2:
+                    raise DaemonTimeout(f"/info timed out: {exc}") from exc
+                log.warning(
+                    "ipc: the reserved /info channel could not get its connection slot — "
+                    "recycling it and retrying once. A single-connection pool that is "
+                    "starved is a stranded socket, not contention: this channel has one "
+                    "serial caller.")
+                try:
+                    await self._info_transport.aclose()
+                except Exception as exc2:  # noqa: BLE001 — retry anyway; a fresh
+                    # connection may still be obtainable, and raising here would restore
+                    # exactly the permanent-wedge shape this recycle exists to prevent.
+                    log.warning("ipc: /info channel recycle failed (%s) — retrying anyway",
+                                exc2)
+            except httpx.TimeoutException as exc:
+                raise DaemonTimeout(f"/info timed out: {exc}") from exc
+            except httpx.TransportError as exc:
+                raise DaemonUnavailable(str(exc)) from exc
+            else:
+                return resp.json()
+        raise AssertionError("unreachable")          # pragma: no cover
 
     @property
     def epoch(self) -> str | None:
@@ -511,6 +547,15 @@ class DaemonClient:
         then kill 100 healthy in-flight requests, a self-inflicted outage rather than a
         self-heal. Isolating `/info` gets the signal through without making pool pressure
         itself the trigger.
+
+        THE BOUND ON THAT GUARANTEE: this runs from the events reader, and the reader task
+        is created only on the first `subscribe()`. On an edge with NO live WS subscriber
+        it therefore never runs at all — enrichment RPCs still flow, but no restart is
+        ever reconciled and no pool is ever recycled. The reserved channel removes the
+        *starvation*; it does not make the recycle unconditional. That is tolerable only
+        because the strand source itself was removed (RPCs are no longer cancelled), so a
+        subscriber-less edge should not be accumulating strands to begin with. Do not
+        build anything on an assumption that this fires periodically — it does not.
         """
         try:
             info = await self.info()
@@ -667,11 +712,13 @@ class DaemonClient:
                 await self._reader_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-        await self._http.aclose()
         # The reserved health channel is a second AsyncClient, so it needs its own close
         # or its socket outlives the client (short-lived callers like host_probe build one
-        # DaemonClient per probe). Guarded: shutdown must not fail on the health channel.
-        try:
-            await self._info_http.aclose()
-        except Exception:  # noqa: BLE001 — best-effort teardown
-            pass
+        # DaemonClient per probe). Closed FIRST and each close guarded independently: with
+        # the RPC close first and unguarded, a raise there skipped the health-channel close
+        # entirely and leaked the very socket this channel added.
+        for closer in (self._info_http.aclose, self._http.aclose):
+            try:
+                await closer()
+            except Exception:  # noqa: BLE001 — best-effort teardown; close them both
+                log.debug("ipc: client teardown failed on one channel", exc_info=True)

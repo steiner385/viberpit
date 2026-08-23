@@ -255,7 +255,129 @@ async def test_a_standing_wedge_does_not_flood_the_journal(daemon, mtls_certs, m
 
 
 # --------------------------------------------------------------------------- #
-# 3. It reaches an operator — through the surface that already exists
+# 3. The reserved health channel must be able to heal ITSELF
+# --------------------------------------------------------------------------- #
+
+
+def _info_pool(client: DaemonClient):
+    """The one-connection pool behind the reserved /info channel."""
+    return client._info_transport._pool
+
+
+async def _strand_the_health_channel(client: DaemonClient, daemon):
+    """Pin the health channel's single connection ACTIVE.
+
+    Done exactly the way a cancelled RPC used to strand an RPC connection: a genuinely
+    in-flight request that never answers. The pool cannot tell that apart from a strand —
+    which is the whole reason nothing could ever reclaim one.
+    """
+    task = asyncio.create_task(client._info_http.post("/rpc/hang", json={}))
+    deadline = time.monotonic() + _SETTLE
+    while time.monotonic() < deadline and daemon.started < 1:
+        await asyncio.sleep(0.02)
+    assert daemon.started == 1, "the strand request never reached the daemon"
+    conns = list(_info_pool(client).connections)
+    assert len(conns) == 1, f"expected the channel's one connection, got {len(conns)}"
+    assert not conns[0].is_available(), "the connection is not holding the only slot"
+    assert not task.done(), "the daemon answered — nothing is stranded"
+    return conns[0], task
+
+
+@pytest.mark.asyncio
+async def test_a_stranded_health_channel_recovers(daemon, mtls_certs, monkeypatch):
+    """One stranded connection must not wedge the health channel for the process lifetime.
+
+    The reserved pool holds a SINGLE connection, so a single strand saturates it — and the
+    resulting failure is circular and silent: ``/info`` PoolTimeouts, ``_reconcile_epoch``
+    swallows it, ``_recycle_transport`` never runs, and the only thing that could clear the
+    strand is a *successful* ``/info``. ``pool_stats()`` reports the RPC pool, so nothing
+    surfaces it either. That is the last path on which the whole self-heal fails closed and
+    stays failed, so ``info()`` recycles the channel and retries once.
+
+    Safe here in a way it is not for the RPC pool: this pool has exactly ONE serial caller,
+    so a pool timeout on it cannot be contention — it is unambiguously a strand.
+    """
+    client = _client(daemon, mtls_certs, max_connections=4, monkeypatch=monkeypatch)
+    strand = None
+    try:
+        pinned, strand = await _strand_the_health_channel(client, daemon)
+
+        # Before the recycle-and-retry this raised DaemonTimeout, and kept raising it.
+        info = await client.info()
+        assert info.get("epoch"), f"/info returned no epoch: {info}"
+
+        assert pinned.is_closed(), "the stranded connection kept its socket"
+        assert pinned not in _info_pool(client).connections, (
+            "the stranded connection still holds the channel's only slot")
+
+        # ...and the channel is healthy from here on, not merely unstuck once.
+        assert (await client.info()).get("epoch")
+    finally:
+        if strand is not None:
+            strand.cancel()
+            await asyncio.gather(strand, return_exceptions=True)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_health_channel_retry_is_bounded(daemon, mtls_certs, monkeypatch):
+    """The retry is ONE retry. A channel that stays starved must surface a typed failure,
+    not spin — ``_reconcile_epoch`` runs on the reader's reconnect path and cannot block."""
+    client = _client(daemon, mtls_certs, max_connections=4, monkeypatch=monkeypatch)
+    strand = None
+    try:
+        _pinned, strand = await _strand_the_health_channel(client, daemon)
+
+        # The recycle cannot free the slot (simulating a close that does not land), so the
+        # retry hits the same PoolTimeout.
+        attempts = 0
+
+        async def _noop_recycle():
+            nonlocal attempts
+            attempts += 1
+
+        monkeypatch.setattr(client._info_transport, "aclose", _noop_recycle)
+
+        t0 = time.monotonic()
+        with pytest.raises(DaemonTimeout):
+            await client.info()
+        assert attempts == 1, f"expected exactly one recycle+retry, got {attempts}"
+        assert time.monotonic() - t0 < 3 * _SETTLE, "the bounded retry is not bounded"
+    finally:
+        if strand is not None:
+            strand.cancel()
+            await asyncio.gather(strand, return_exceptions=True)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_both_channels_even_if_one_raises(daemon, mtls_certs,
+                                                              monkeypatch):
+    """Teardown must not leak a channel because the other one failed to close.
+
+    With the RPC close first and unguarded, a raise there skipped the health-channel close
+    entirely — leaking the very socket the reserved channel added, once per short-lived
+    ``DaemonClient`` (``sessions/host_probe.py`` builds one per probe).
+    """
+    for victim in ("_http", "_info_http"):
+        client = _client(daemon, mtls_certs, max_connections=2, monkeypatch=monkeypatch)
+        await client.call("echo", stream="s", text="warm")
+
+        async def _explode():
+            raise RuntimeError("close blew up")
+
+        monkeypatch.setattr(getattr(client, victim), "aclose", _explode)
+
+        await client.aclose()                        # must not raise
+
+        survivor = "_info_http" if victim == "_http" else "_http"
+        assert getattr(client, survivor).is_closed, (
+            f"{survivor} was leaked because {victim}.aclose() raised")
+        monkeypatch.undo()
+
+
+# --------------------------------------------------------------------------- #
+# 4. It reaches an operator — through the surface that already exists
 # --------------------------------------------------------------------------- #
 
 
