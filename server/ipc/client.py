@@ -141,24 +141,24 @@ class DaemonClient:
         if isinstance(endpoint, str):
             endpoint = parse_endpoint(endpoint if "://" in endpoint else f"unix://{endpoint}")
         self.endpoint = endpoint
+        # Both branches build the transport EXPLICITLY, for two reasons. The explicit
+        # transport owns the pool, so `limits` belongs on it — AsyncClient(limits=…) is
+        # ignored whenever a transport is supplied. And `_recycle_transport` needs a
+        # handle on the pool it has to discard; owning the object beats reaching into
+        # httpx's private `_transport`/`_mounts`. (Passing a transport also means an
+        # ambient HTTPS_PROXY can no longer intercept the daemon link — the daemon is a
+        # direct unix/tailnet peer and must never be proxied.)
         if endpoint.is_unix:
             self._ssl = None
-            self._http = httpx.AsyncClient(
-                # The explicit transport owns the pool, so `limits` belongs on it —
-                # AsyncClient(limits=…) is ignored whenever a transport is supplied.
-                transport=httpx.AsyncHTTPTransport(uds=endpoint.path, limits=_LIMITS),
-                base_url="http://daemon",
-                timeout=_TIMEOUT,
-            )
+            self._transport = httpx.AsyncHTTPTransport(uds=endpoint.path, limits=_LIMITS)
+            base_url = "http://daemon"
         else:
             from server.ipc.tls import client_ssl_context, client_tls_files
             self._ssl = client_ssl_context(client_tls or client_tls_files())
-            self._http = httpx.AsyncClient(
-                base_url=f"https://{endpoint.host}:{endpoint.port}",
-                verify=self._ssl,
-                limits=_LIMITS,
-                timeout=_TIMEOUT,
-            )
+            self._transport = httpx.AsyncHTTPTransport(verify=self._ssl, limits=_LIMITS)
+            base_url = f"https://{endpoint.host}:{endpoint.port}"
+        self._http = httpx.AsyncClient(transport=self._transport, base_url=base_url,
+                                       timeout=_TIMEOUT)
         self._ws: Any = None
         self._reader_task: asyncio.Task | None = None
         # stream -> set of subscriber queues. A stream may have MORE THAN ONE local
@@ -287,14 +287,78 @@ class DaemonClient:
             return self._last_seq[stream]
         return self._baseline.get(stream)
 
+    async def _recycle_transport(self, was: str, now: str) -> None:
+        """Discard every pooled connection. Called ONLY when the daemon has restarted.
+
+        WHAT THIS DOES: closes the httpcore pool (``AsyncHTTPTransport.aclose()`` →
+        ``AsyncConnectionPool.aclose()``), which drops every connection — including ones
+        pinned ACTIVE — and leaves the pool ready to build fresh ones. httpcore 1.0.9's
+        pool has no "closed" flag; ``aclose`` clears ``_connections`` and nothing else, so
+        the very next request reconnects.
+
+        WHY NOT the alternatives:
+        - *Sweep idle connections.* Useless here. The stranded connections are pinned
+          ACTIVE, and httpcore only ever evicts closed, expired, or surplus-IDLE ones —
+          which is exactly why nothing reclaimed them for the life of the process. A
+          close-idle implementation would pass a naive test and fix nothing.
+        - *``self._http.aclose()``.* httpx flips the client to CLOSED permanently; every
+          later request raises ``RuntimeError``. That turns a wedge into a hard outage.
+        - *Build a new AsyncClient and swap it in.* Callers already inside ``call`` hold
+          the old object, so its pool would never be closed — the leak simply moves.
+
+        THE COST, ACCEPTED DELIBERATELY: closing the pool errors requests that are still
+        in flight. At a *changed epoch* that is the correct behaviour, not a regression —
+        those requests are talking to a process that no longer exists and can only end in
+        a timeout. They surface as ``httpx.TransportError`` → ``DaemonUnavailable``, the
+        typed failure every RPC call site already degrades on (``_enrich_one`` maps it to
+        empty fields through ``gather(return_exceptions=True)``), so callers see a fast
+        empty field instead of a 30s hang. Failing them now is strictly better.
+
+        Never raises: a client that cannot recycle must still be a working client.
+        """
+        # Logged at WARNING on purpose: a daemon restart is rare and operationally
+        # significant, and both wedges were diagnosed by hand with `ss` because the
+        # journal said nothing about the pool. The count comes from a private httpcore
+        # attribute, so it degrades to -1 rather than ever pre-empting the recycle.
+        try:
+            pooled = len(self._transport._pool.connections)
+        except Exception:  # noqa: BLE001 — telemetry only
+            pooled = -1
+        log.warning("ipc: daemon restarted (epoch %s → %s) — recycling %d pooled "
+                    "connection(s) to the old process", was, now, pooled)
+        try:
+            await self._transport.aclose()
+        except Exception as exc:  # noqa: BLE001 — a failed recycle must not brick the client
+            # aclose() empties `_connections` before closing them, so even a partial
+            # failure leaves the pool usable — just with a socket or two still held.
+            log.warning("ipc: pool recycle after daemon restart failed (%s) — "
+                        "connections to the old process may linger", exc)
+
     async def _reconcile_epoch(self) -> None:
-        """Detect a daemon restart and drop stale per-stream watermarks.
+        """Detect a daemon restart, recycle the HTTP pool, and drop stale watermarks.
 
         The daemon's seq space is per-process: a restart resets seq→0. Carrying the
         old high `since` into the new daemon makes its `seq > since` replay filter drop
         every restart-window event. On a changed epoch, clear `_last_seq` and reset each
         baseline to None so the next subscribe is `since=None` (full-ring replay).
         Best-effort: if `/info` is unreachable, keep prior watermarks and retry next loop.
+
+        A changed epoch means every pooled HTTP connection is dead BY DEFINITION — they
+        point at a process that no longer exists — so this is also where the transport is
+        recycled (issue #734). Without it, connections stranded ACTIVE by a build that
+        still cancelled RPCs are never reclaimed, the pool fills to `max_connections`, and
+        every RPC-backed route 503s until someone restarts the edge by hand. That made
+        DEPLOYING a fix break the app: the deploy restarts the daemon, which is the very
+        event that wedged the edge.
+
+        LIMITATION worth knowing: the restart signal comes from `/info`, which itself
+        needs a pool slot. If the pool is *already* saturated when the daemon restarts,
+        `/info` cannot get through and this self-heal cannot fire. Task 2 stops new
+        strands at the source, so the pool should not reach saturation to begin with;
+        surfacing an already-wedged pool is issue #734's task 4. Recycling on a pool
+        timeout was considered and rejected: a legitimate fan-out that saturates the pool
+        under a slow daemon would then kill 100 healthy in-flight requests, which is a
+        self-inflicted outage rather than a self-heal.
         """
         try:
             info = await self.info()
@@ -308,6 +372,7 @@ class DaemonClient:
         if epoch is None:
             return
         if self._epoch is not None and epoch != self._epoch:
+            await self._recycle_transport(self._epoch, epoch)
             self._last_seq.clear()
             for stream in self._baseline:
                 self._baseline[stream] = None
