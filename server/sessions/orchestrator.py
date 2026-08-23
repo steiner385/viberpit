@@ -75,6 +75,18 @@ from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_promp
 log = logging.getLogger(__name__)
 
 
+def _env_float(name: str, default: float) -> float:
+    """Parse a float tuning knob from the environment, tolerating a bad value.
+
+    A typo'd override must not crash daemon startup — fall back to the default
+    and let the rest of the process boot with a sane (if not custom) ceiling.
+    """
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 # Statuses that mean a session is mid-turn or awaiting user input — restarting now
 # would lose in-flight work. All other statuses (idle / ready_review / done /
 # limited / ended / archived) are restart-safe: resume + transcript replay recover them.
@@ -198,8 +210,16 @@ _RECURRING_TICK_INTERVAL: float = 30.0
 # Opening a session must not hang. Replay work that exceeds this degrades to "no
 # transcript" rather than burning the caller's 30s RPC timeout (RC2). Generous enough
 # that a legitimately large transcript still renders.
-_TRANSCRIPT_WINDOW_CEILING_S = float(
-    os.environ.get("CCSWITCH_TRANSCRIPT_WINDOW_CEILING_S", "10"))
+#
+# Scope: this ceiling bounds ONLY the replay_window() call — sub-agent sidecar
+# discovery and everything else that happens inside it. It does NOT cover
+# resolve_transcript_path(), which runs before this wait_for and can itself
+# block the event loop via _find_transcript's unbounded glob.glob() fallback
+# (that fallback runs synchronously on the loop, so wrapping it in wait_for
+# would not help — wait_for can cancel a coroutine, not interrupt synchronous
+# work already running). Bounding transcript-path resolution is tracked as a
+# separate task.
+_TRANSCRIPT_WINDOW_CEILING_S = _env_float("CCSWITCH_TRANSCRIPT_WINDOW_CEILING_S", 10.0)
 
 
 class SessionOrchestrator:
@@ -7029,6 +7049,16 @@ class SessionOrchestrator:
         if not path:
             return None
         try:
+            # Limitation: wait_for cancels the replay_window() coroutine, but if the
+            # sub-agent scan inside it is blocked on a real asyncio.to_thread() worker
+            # (e.g. a syscall wedged on a dead sshfs mount), CPython cannot stop that
+            # underlying thread. The thread and its open fd leak, consuming a slot in
+            # the daemon's shared default executor — the same pool every other
+            # to_thread() call in the process draws from. Repeated timeouts against a
+            # genuinely wedged mount can exhaust that pool and reintroduce hangs
+            # elsewhere, not just here. There is no clean fix (a dedicated executor is
+            # out of scope) — this comment exists so the next person debugging executor
+            # starvation finds the explanation instead of rediscovering it.
             return await asyncio.wait_for(
                 replay_window(path, before=before, limit=limit),
                 timeout=_TRANSCRIPT_WINDOW_CEILING_S,

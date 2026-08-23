@@ -37,7 +37,14 @@ async def test_slow_replay_returns_instead_of_hanging(monkeypatch):
 
     loop = asyncio.get_running_loop()
     started = loop.time()
-    out = await orch.transcript_window("sess-1")
+    # Safety net independent of any external `timeout` wrapper: if the bound in
+    # transcript_window regresses, fail fast here instead of hanging for the
+    # stub's full 3600s. 5s is generous headroom over the 2s assertion below.
+    try:
+        out = await asyncio.wait_for(orch.transcript_window("sess-1"), timeout=5.0)
+    except asyncio.TimeoutError:
+        pytest.fail("transcript_window did not return within 5s — the internal "
+                    "ceiling regressed and this test's own safety timeout fired")
     elapsed = loop.time() - started
 
     assert out is None, "a timed-out replay must degrade to None, not raise"

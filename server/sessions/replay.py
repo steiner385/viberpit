@@ -7,16 +7,29 @@ from . import events as ev
 
 log = logging.getLogger("server.sessions.replay")
 
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a float tuning knob from the environment, tolerating a bad value.
+
+    A typo'd override must not crash daemon startup — fall back to the default
+    and let the rest of the process boot with a sane (if not custom) ceiling.
+    """
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 # Wall-clock ceiling for the cross-cwd sidecar scan. The live fleet has ~1,696
 # project dirs on an sshfs mount at ~54ms RTT, so an unbounded scan hangs the
 # transcript RPC for 30s+ (RC2). Sub-agent reconstruction is an enhancement to
 # the Task card; opening the session is not optional — so we cap the search and
 # return what we found.
-_SUBAGENT_SCAN_BUDGET_S = float(os.environ.get("CCSWITCH_SUBAGENT_SCAN_BUDGET_S", "1.0"))
+_SUBAGENT_SCAN_BUDGET_S = _env_float("CCSWITCH_SUBAGENT_SCAN_BUDGET_S", 1.0)
 
 # Sub-agent sidecar locations change only when a sub-agent starts or finishes, so a
 # short TTL removes the repeat cost of reattach / scrollback paging without going stale.
-_SUBAGENT_CACHE_TTL_S = float(os.environ.get("CCSWITCH_SUBAGENT_CACHE_TTL_S", "30"))
+_SUBAGENT_CACHE_TTL_S = _env_float("CCSWITCH_SUBAGENT_CACHE_TTL_S", 30.0)
 _subagent_cache: dict[tuple[str, str], tuple[float, list[Path]]] = {}
 
 
