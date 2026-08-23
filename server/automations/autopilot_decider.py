@@ -16,6 +16,36 @@ log = logging.getLogger(__name__)
 _GUIDANCE = (Path(__file__).parent / "autopilot_guidance.md").read_text(encoding="utf-8")
 _VALID_ACTIONS = {"approve", "deny", "answer", "nudge", "complete", "escalate"}
 
+# Consecutive decider-call failures (model unreachable / erroring — the
+# `outcome.error is not None` branch below) before a transient blip is treated
+# as a persistent outage. 5 is ~45 minutes at the observed ~9-minute autopilot
+# cadence: on 2026-08-22/23 autopilot failed every call for over a day and the
+# only trace anywhere was a per-call log.warning nobody was reading. Module-level
+# because the outage this tracks is infra-wide (the decider's model connection),
+# not per-session — reset to 0 on the next call that gets a real reply.
+_ESCALATE_FAILURE_THRESHOLD = 5
+_consecutive_decide_failures = 0
+
+
+def _note_decide_failure(error: BaseException) -> None:
+    """Count one decider-call failure and log louder once it looks persistent."""
+    global _consecutive_decide_failures
+    _consecutive_decide_failures += 1
+    if _consecutive_decide_failures >= _ESCALATE_FAILURE_THRESHOLD:
+        log.error(
+            "autopilot.decide PERSISTENT FAILURE: %d consecutive decider failures "
+            "(threshold=%d) — likely an outage, not a blip: %s",
+            _consecutive_decide_failures, _ESCALATE_FAILURE_THRESHOLD, error)
+    else:
+        log.warning("autopilot.decide failed (%d consecutive): %s",
+                    _consecutive_decide_failures, error)
+
+
+def _note_decide_success() -> None:
+    """Reset the consecutive-failure counter — the decider is reachable again."""
+    global _consecutive_decide_failures
+    _consecutive_decide_failures = 0
+
 
 def _default_sdk_query_fn():
     from claude_agent_sdk import query  # lazy — not available in tests
@@ -107,9 +137,10 @@ async def decide(ctx: DecisionContext, *, _query_fn=None, _config_dir=None, _cwd
         # to a human rather than fire a call certain to fail — the safe default.
         return Decision(action="escalate", reason="decider-skipped:circuit-open")
     if outcome.error is not None:  # model down / parse error
-        log.warning("autopilot.decide failed: %s", outcome.error)
+        _note_decide_failure(outcome.error)
         return Decision(action="escalate",
                         reason=f"decider-failed:{type(outcome.error).__name__}")
+    _note_decide_success()
     parts: list[str] = []
     for msg in outcome.messages:
         content = getattr(msg, "content", None)

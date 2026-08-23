@@ -106,6 +106,60 @@ def test_build_prompt_includes_pr_facts():
     assert "pr_facts" in prompt and "\"number\": 7" in prompt and "has_repo" in prompt
 
 
+# ---------------------------------------------------------------------------
+# Consecutive-failure escalation (2026-08-22/23: autopilot failed every call
+# for over a day with nothing louder than a per-call log.warning).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_persistent_failure_escalates_log_level(caplog):
+    import logging
+    from server.automations import autopilot_decider as decider_mod
+
+    async def boom(*, prompt, options):
+        raise RuntimeError("model down")
+        yield  # pragma: no cover
+
+    decider_mod._consecutive_decide_failures = 0
+    try:
+        with caplog.at_level(logging.WARNING, logger="server.automations.autopilot_decider"):
+            for _ in range(decider_mod._ESCALATE_FAILURE_THRESHOLD - 1):
+                d = await decide(_ctx(), _query_fn=boom, _config_dir="", _cwd="/tmp")
+                assert d.action == "escalate"
+            # Below threshold: only WARNING-level records so far.
+            assert all(r.levelno == logging.WARNING for r in caplog.records)
+
+            d = await decide(_ctx(), _query_fn=boom, _config_dir="", _cwd="/tmp")
+            assert d.action == "escalate"
+        # The threshold-crossing call logs at ERROR, distinct from the blips before it.
+        assert any(r.levelno == logging.ERROR for r in caplog.records)
+    finally:
+        decider_mod._consecutive_decide_failures = 0
+
+
+@pytest.mark.asyncio
+async def test_success_resets_consecutive_failure_counter():
+    from server.automations import autopilot_decider as decider_mod
+
+    async def boom(*, prompt, options):
+        raise RuntimeError("model down")
+        yield  # pragma: no cover
+
+    decider_mod._consecutive_decide_failures = 0
+    try:
+        await decide(_ctx(), _query_fn=boom, _config_dir="", _cwd="/tmp")
+        await decide(_ctx(), _query_fn=boom, _config_dir="", _cwd="/tmp")
+        assert decider_mod._consecutive_decide_failures == 2
+
+        fn = _fake_query('{"action": "approve", "reason": "back up"}')
+        d = await decide(_ctx(), _query_fn=fn, _config_dir="", _cwd="/tmp")
+        assert d.action == "approve"
+        assert decider_mod._consecutive_decide_failures == 0
+    finally:
+        decider_mod._consecutive_decide_failures = 0
+
+
 def test_build_prompt_includes_fleet_context():
     ctx = DecisionContext(
         session_id="s1", status="idle", account="a", repo="o/r", branch="feat/x",
