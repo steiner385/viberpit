@@ -1156,6 +1156,7 @@ async def export_session_markdown(
     """Download session transcript as a human-readable Markdown file."""
     from server.audit import redact_event
     from server.sessions.export import transcript_markdown, safe_filename
+    from server.sessions.orchestrator import TRANSCRIPT_EXPORT_CEILING_S
     orch = _get_orchestrator(request)
     path = await orch.transcript_path(session_id)
     if not path:
@@ -1165,8 +1166,20 @@ async def export_session_markdown(
     title = (getattr(record, "name", None) or getattr(record, "title", None) or session_id) if record else session_id
     # Full windowed replay (limit=None): the export must never be silently
     # truncated to a trailing slice of the session (B1).
-    window = await orch.transcript_window(session_id)
-    events = window.events if window is not None else []
+    #
+    # A download is not the session-open critical path, so it gets the larger export
+    # ceiling instead of the interactive one. And because transcript_path() above
+    # already proved a transcript EXISTS, a None here can only mean the replay timed
+    # out or failed — surface that as 504 rather than a 200 with an empty document,
+    # which would look to the user like a successful export of an empty session.
+    window = await orch.transcript_window(session_id, timeout_s=TRANSCRIPT_EXPORT_CEILING_S)
+    if window is None:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail={"code": "transcript_timeout",
+                    "message": "Transcript replay timed out; export not generated"},
+        )
+    events = window.events
     # In-process orchestrator yields event objects (.to_wire()); the remote/daemon
     # orchestrator returns already-serialised wire dicts. Handle both (#172).
     md = transcript_markdown(

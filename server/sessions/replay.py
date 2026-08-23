@@ -1,9 +1,50 @@
 from __future__ import annotations
-import json, asyncio
+import json, asyncio, logging, os, time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from server.config import env_float
 from . import events as ev
+
+log = logging.getLogger("server.sessions.replay")
+
+
+# Wall-clock ceiling for the cross-cwd sidecar scan. The live fleet has ~1,696
+# project dirs on an sshfs mount at ~54ms RTT, so an unbounded scan hangs the
+# transcript RPC for 30s+ (RC2). Sub-agent reconstruction is an enhancement to
+# the Task card; opening the session is not optional — so we cap the search and
+# return what we found.
+#
+# Bound at IMPORT time: an env override must be set before this module is imported.
+# In-process (tests) the only way to change it is to patch the constant, or pass
+# ``budget_s=`` to _find_subagent_meta_files.
+_SUBAGENT_SCAN_BUDGET_S = env_float("CCSWITCH_SUBAGENT_SCAN_BUDGET_S", 1.0, minimum=0.001)
+
+# Sub-agent sidecar locations change only when a sub-agent starts or finishes, so a
+# short TTL removes the repeat cost of reattach / scrollback paging without going stale.
+_SUBAGENT_CACHE_TTL_S = env_float("CCSWITCH_SUBAGENT_CACHE_TTL_S", 30.0, minimum=0.0)
+
+# INVARIANT — the cache key is (projects_root, sid) and deliberately OMITS `preferred`.
+# That is only sound because a result is cached ONLY when the scan ran to completion
+# (`complete is True`), and a complete scan has visited EVERY directory under
+# projects_root — so its result is identical for any `preferred`, i.e. preferred-
+# independent. If partial/truncated results are ever cached, `preferred` MUST become
+# part of the key (a truncated scan seeded from a different preferred dir returns a
+# different subset) — otherwise one caller's short answer is served to all the others.
+#
+# THREADING: this dict is read and written from asyncio.to_thread() worker threads
+# with no lock. That is safe: dict __getitem__/__setitem__/get are individually
+# atomic under the GIL and the only mutations here are a whole-value get and a
+# whole-value set (never a read-modify-write of one entry). A racing double-scan
+# just writes the same value twice. Don't "fix" this with a lock, and don't turn
+# the set into a compound update (e.g. mutating the cached list in place) — that
+# would break the atomicity this relies on.
+_subagent_cache: dict[tuple[str, str], tuple[float, list[Path]]] = {}
+
+
+def _subagent_cache_clear() -> None:
+    """Drop the discovery cache (tests, and any explicit invalidation)."""
+    _subagent_cache.clear()
 
 
 def _ts_ms(o: dict) -> float | None:
@@ -227,6 +268,113 @@ def _build_events(path: str) -> tuple[list, object | None]:
     return _collapse_recovery_resend_dupes(out), meta_event
 
 
+def _find_subagent_meta_files(projects_root: Path, sid: str, preferred: Path | None = None,
+                              *, budget_s: float | None = None) -> tuple[list[Path], bool]:
+    """Locate `<projects>/<any-cwd>/<sid>/subagents/*.meta.json`, bounded.
+
+    Returns (sorted meta paths, complete). ``complete`` is False when the scan
+    ran out of budget, so the caller knows the list may be short.
+
+    The sidecar usually sits under the SAME encoded-cwd as the main transcript,
+    so `preferred` is probed first and costs one filesystem op. The remaining
+    directories are still scanned — the sidecar can live under a different cwd
+    (main checkout vs. worktree) and that join is load-bearing — but under a
+    wall-clock budget so a slow mount degrades instead of hanging.
+    """
+    budget = _SUBAGENT_SCAN_BUDGET_S if budget_s is None else budget_s
+    deadline = time.monotonic() + budget
+    found: list[Path] = []
+    seen_dirs: set[str] = set()
+    complete = True
+
+    key = (str(projects_root), sid)
+    hit = _subagent_cache.get(key)
+    if hit is not None and time.monotonic() < hit[0]:
+        return list(hit[1]), True
+
+    def _collect(cwd_dir: Path) -> bool:
+        """Probe one <cwd>/<sid>/subagents dir. Returns False on OSError so the
+        caller can mark the overall result incomplete — an error here must not be
+        silently reported as if the directory had been fully scanned (that false
+        completeness would otherwise get cached and become a permanent wrong answer)."""
+        sub = cwd_dir / sid / "subagents"
+        try:
+            if not sub.is_dir():
+                return True
+            found.extend(p for p in sub.iterdir() if p.name.endswith(".meta.json"))
+            return True
+        except OSError:
+            return False
+
+    if preferred is not None:
+        seen_dirs.add(preferred.name)
+        if not _collect(preferred):
+            complete = False
+
+    try:
+        it = os.scandir(projects_root)
+    except OSError:
+        # Couldn't even open the root — we scanned nothing beyond the fast path.
+        return sorted(found), False
+
+    try:
+        with it:
+            while True:
+                if time.monotonic() >= deadline:
+                    complete = False
+                    break
+                try:
+                    entry = next(it)
+                except StopIteration:
+                    break
+                except OSError:
+                    # A flaky/stale handle on one entry (plausible on sshfs)
+                    # must not abort the sweep, but it does mean the sweep
+                    # can no longer be trusted as exhaustive.
+                    complete = False
+                    continue
+                try:
+                    if entry.name in seen_dirs or not entry.is_dir():
+                        continue
+                    seen_dirs.add(entry.name)
+                    if not _collect(Path(entry.path)):
+                        complete = False
+                except OSError:
+                    complete = False
+                    continue
+    except OSError:
+        complete = False
+
+    if not complete:
+        # The scan truncates on essentially every open on the live fleet (1,696 dirs
+        # against a 1.0s default budget), so an unconditional warning floods the log on
+        # every session open. Severity therefore keys off whether we have any EVIDENCE
+        # that sub-agent data exists:
+        #   found + truncated  → WARNING. Sidecars demonstrably exist for this session,
+        #     so the directories we never reached may hold more of them under a
+        #     different encoded cwd (main checkout vs. worktree). Actionable: the Task
+        #     card can render an incomplete set of sub-agent threads.
+        #   nothing found + truncated → DEBUG. We have no evidence sub-agents exist at
+        #     all, and on this fleet (zero `subagents/` dirs across all 8 accounts)
+        #     that is the normal steady state on every single request.
+        if found:
+            log.warning(
+                "subagent scan budget exhausted after %.2fs (projects_root=%s sid=%s) — "
+                "found %d sidecar(s); sub-agent threads may be incomplete",
+                budget, projects_root, sid, len(found),
+            )
+        else:
+            log.debug(
+                "subagent scan budget exhausted after %.2fs (projects_root=%s sid=%s) — "
+                "no sidecars found; no evidence this session has sub-agents",
+                budget, projects_root, sid,
+            )
+    result = sorted(found)
+    if complete:
+        _subagent_cache[key] = (time.monotonic() + _SUBAGENT_CACHE_TTL_S, list(result))
+    return result, complete
+
+
 def _subagent_events(main_path: str, task_ids: set[str]) -> list:
     """Reconstruct each sub-agent's own thread (Layout B) for the Task tool-use ids
     in ``task_ids``, emitting its internal turns tagged with the spawning Task's
@@ -255,10 +403,7 @@ def _subagent_events(main_path: str, task_ids: set[str]) -> list:
         return []
     events: list = []
     seen: set[str] = set()
-    try:
-        metas = sorted(projects_root.glob(f"*/{sid}/subagents/*.meta.json"))
-    except OSError:
-        return []
+    metas, _complete = _find_subagent_meta_files(projects_root, sid, preferred=main.parent)
     for meta_path in metas:
         try:
             meta = json.loads(meta_path.read_text(errors="ignore"))

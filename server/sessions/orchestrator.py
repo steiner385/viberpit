@@ -67,6 +67,7 @@ from server.obs.context import log_event
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
+from server.config import env_float
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
 from server.github.pr_status import PullRequestInfo
@@ -194,6 +195,30 @@ _ARCHIVE_LIMIT_SWEEP_INTERVAL: float = 300.0
 # scheduled Automation rows. Sub-minute so a cron minute fires within a tick of
 # its due time; the persisted last_fired_at watermark makes the fire idempotent.
 _RECURRING_TICK_INTERVAL: float = 30.0
+
+# Opening a session must not hang. Replay work that exceeds this degrades to "no
+# transcript" rather than burning the caller's 30s RPC timeout (RC2). Generous enough
+# that a legitimately large transcript still renders.
+#
+# Scope: this ceiling bounds ONLY the replay_window() call — sub-agent sidecar
+# discovery and everything else that happens inside it. It does NOT cover
+# resolve_transcript_path(), which runs before this wait_for and can itself
+# block the event loop via _find_transcript's unbounded glob.glob() fallback
+# (that fallback runs synchronously on the loop, so wrapping it in wait_for
+# would not help — wait_for can cancel a coroutine, not interrupt synchronous
+# work already running). Bounding transcript-path resolution is tracked as a
+# separate task.
+#
+# minimum=0.1: a 0 (or negative) override would make wait_for fire immediately and
+# turn EVERY transcript into an empty one — fall back to the default instead.
+_TRANSCRIPT_WINDOW_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_WINDOW_CEILING_S", 10.0, minimum=0.1)
+
+# The export path (/export.md) replays the FULL transcript with limit=None, so a
+# legitimately huge session can exceed the interactive ceiling above. Exporting is a
+# deliberate, user-initiated download — the user is already waiting on a file — so it
+# gets its own, larger ceiling. Blowing even this is surfaced as a 504 by the caller,
+# never as a successful empty document (a silent empty export is worse than a slow one).
+TRANSCRIPT_EXPORT_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_EXPORT_CEILING_S", 120.0, minimum=0.1)
 
 
 class SessionOrchestrator:
@@ -7009,21 +7034,45 @@ class SessionOrchestrator:
             return []
 
     async def transcript_window(self, session_id: str, *, before: int | None = None,
-                                limit: int | None = None):
+                                limit: int | None = None, timeout_s: float | None = None):
         """Windowed transcript replay. Returns a ReplayWindow, or None if no transcript.
 
         Use before/limit for lazy scrollback paging: returns up to `limit` turns
         ending before turn-ordinal `before` (or the last `limit` turns if before
         is None), plus earliest_turn/total_turns for pagination metadata.
         limit=None (the default) returns the FULL transcript — no silent cap.
+
+        ``timeout_s`` overrides the interactive replay ceiling for callers that are
+        legitimately slower and are not on the session-open critical path (the export
+        download passes TRANSCRIPT_EXPORT_CEILING_S). Returns None on timeout — a caller
+        that has already established the transcript EXISTS must treat that None as an
+        error (504), not as an empty transcript.
         """
         from server.sessions.replay import replay_window
 
+        ceiling = _TRANSCRIPT_WINDOW_CEILING_S if timeout_s is None else timeout_s
         path = await self.resolve_transcript_path(session_id)
         if not path:
             return None
         try:
-            return await replay_window(path, before=before, limit=limit)
+            # Limitation: wait_for cancels the replay_window() coroutine, but if the
+            # sub-agent scan inside it is blocked on a real asyncio.to_thread() worker
+            # (e.g. a syscall wedged on a dead sshfs mount), CPython cannot stop that
+            # underlying thread. The thread and its open fd leak, consuming a slot in
+            # the daemon's shared default executor — the same pool every other
+            # to_thread() call in the process draws from. Repeated timeouts against a
+            # genuinely wedged mount can exhaust that pool and reintroduce hangs
+            # elsewhere, not just here. There is no clean fix (a dedicated executor is
+            # out of scope) — this comment exists so the next person debugging executor
+            # starvation finds the explanation instead of rediscovering it.
+            return await asyncio.wait_for(
+                replay_window(path, before=before, limit=limit),
+                timeout=ceiling,
+            )
+        except asyncio.TimeoutError:
+            log.warning("session.transcript_window id=%s exceeded %.0fs — returning empty",
+                        session_id, ceiling)
+            return None
         except Exception:
             log.warning("session.transcript_window id=%s replay failed", session_id, exc_info=True)
             return None

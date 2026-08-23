@@ -192,8 +192,24 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
     try:
         path = await orchestrator.transcript_path(session_id)
         if path:
-            window = await replay_window(path, drop_incomplete_turn=drop_incomplete,
-                                         turn_started_at=turn_started_at)
+            # Same ceiling as orchestrator.transcript_window (imported, never
+            # re-declared) — this is THE session-open path, so an unbounded replay
+            # here hangs the attach exactly like it hung the transcript RPC. We
+            # can't just call orch.transcript_window: only replay_window takes
+            # drop_incomplete_turn / turn_started_at, which the live attach needs
+            # to hand the in-progress turn off to the live stream. So the wait_for
+            # treatment is applied here identically, and degrades identically —
+            # no history replayed, replayComplete still sent below so the client's
+            # spinner clears and the live stream takes over.
+            #
+            # Read through the module (not `from … import`) so a test patching the
+            # orchestrator's constant bounds this path too.
+            from server.sessions import orchestrator as _orch_mod
+            window = await asyncio.wait_for(
+                replay_window(path, drop_incomplete_turn=drop_incomplete,
+                              turn_started_at=turn_started_at),
+                timeout=_orch_mod._TRANSCRIPT_WINDOW_CEILING_S,
+            )
             events = window.events
             earliest_turn = window.earliest_turn
             total_turns = window.total_turns
@@ -218,6 +234,9 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
             enqueue({"type": "replayReset", "sessionId": session_id})
             for e in events:
                 enqueue({**e.to_wire(), "sessionId": session_id})
+    except asyncio.TimeoutError:
+        log.warning("ws.attach: transcript replay for %s exceeded the replay ceiling — "
+                    "attaching with no history", session_id)
     except Exception:
         log.warning("ws.attach: transcript replay failed for %s", session_id, exc_info=True)
     # Stamp the daemon epoch (#497) so the browser remembers which epoch minted the cursor
