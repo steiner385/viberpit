@@ -133,7 +133,133 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 2: Bound the httpx client properly
+### Task 2 (REWRITTEN after the Task 1 spike): Stop cancelling RPCs mid-flight
+
+**The spike (commit `c78008b8`) changed this task.** The original text said to add `httpx.Limits` and
+granular timeouts. That is still worth doing (see Step 6) but it is **not** the leak.
+
+The actual mechanism: `asyncio.wait_for` around a daemon RPC **cancels** it rather than timing it
+out. `CancelledError` is a `BaseException`, so httpcore's `except Exception` in
+`AnyIOStream.start_tls` never closes the TCP stream, and the `AsyncHTTP11Connection` is stranded
+permanently ACTIVE — never evicted, holding one of the 100 `max_connections` slots. At 100, every
+RPC `PoolTimeout`s at exactly 30 s.
+
+The spike's control is decisive: the same requests killed by **httpx's own** connect timeout leaked
+**zero** connections. Cancellation is the sole variable.
+
+**The trigger is `server/api/sessions.py:280-282`:**
+
+```python
+asyncio.wait_for(orch.latest_suggestions(record.id), timeout),
+asyncio.wait_for(_resolve_prs(orch, record), timeout),
+asyncio.wait_for(_resolve_summary(orch, record, viewing), timeout),
+```
+
+Three cancellable RPCs *per session*, gathered concurrently — 63 of them for 21 sessions, each over a
+~204 ms relayed link. That is also the N+1 in #742: the two defects share a code path and compound.
+
+**The fix already exists in the codebase.** `DaemonClient.call` accepts `timeout=`:
+
+```python
+async def call(self, method: str, *, timeout: float | None = None, **params) -> dict:
+    """Invoke an RPC. ``timeout`` overrides the client default for this call."""
+```
+
+Push the deadline **into** the RPC instead of racing it from outside, so httpx enforces it natively
+and closes its own connection on expiry.
+
+**Files:**
+- Modify: `server/api/sessions.py:280-282` and any sibling `wait_for`-around-an-RPC site
+- Modify: `server/sessions/remote.py` if a proxy needs to forward the timeout
+- Test: `server/tests/test_ipc_cancel_does_not_strand.py` (create)
+
+**Interfaces:**
+- Consumes: Task 1's verdict.
+- Produces: no edge path cancels an in-flight daemon RPC. Task 3's epoch recycle becomes a safety
+  net rather than the primary defence.
+
+- [ ] **Step 1: Find every wait_for-around-an-RPC site**
+
+```bash
+grep -rn "wait_for" server/api/ server/bridge/ server/sessions/remote.py | grep -v "/tests/"
+```
+
+For each hit, determine whether the awaited coroutine reaches `DaemonClient.call`. Some do not —
+`ws.py:208` wraps `replay_window`, which reads dobby's local filesystem, not an RPC; leave those
+alone. Name every site and its verdict in your report.
+
+- [ ] **Step 2: Write the failing test**
+
+Reproduce the strand: issue RPCs against a slow endpoint, cancel them via `wait_for`, and assert the
+pool does not retain the connections. The spike's repro in
+`docs/superpowers/spikes/2026-08-23-edge-socket-leak.md` is a working recipe — read it and adapt it
+rather than rediscovering the shape.
+
+The test must **fail against the current code** (cancelled RPCs strand) and pass once the deadline is
+pushed into the client. Prove that, do not assume it.
+
+- [ ] **Step 3: Run test to verify it fails**
+
+- [ ] **Step 4: Implement**
+
+Replace `asyncio.wait_for(<rpc coroutine>, timeout)` with the RPC's own `timeout=` parameter at each
+site Step 1 identified. Where a `RemoteOrchestrator` proxy sits in between, thread the timeout
+through rather than wrapping.
+
+Preserve existing behaviour on expiry: callers currently treat a timeout as a degraded-but-OK result
+(the field goes empty, the page still renders). A native httpx timeout raises a different exception
+type than `asyncio.TimeoutError`, so **check what each caller catches** and keep the degradation
+identical. Silently turning a degraded field into a 500 would be a worse bug than the leak.
+
+- [ ] **Step 5: Run test to verify it passes**
+
+- [ ] **Step 6: Bound the client as defence in depth**
+
+Also apply the original hardening, because a scalar `timeout=30.0` setting *pool acquisition* to 30 s
+is why one wedged pool produced 30 s 503s on every route rather than fast failures:
+
+- explicit `httpx.Limits(max_connections=…, max_keepalive_connections=…, keepalive_expiry=…)`
+- granular `httpx.Timeout(connect=…, read=…, write=…, pool=…)` with a **short pool budget**
+- identical settings on both the unix and TLS branches, defined once as module constants so they
+  cannot drift
+
+- [ ] **Step 7: Run the IPC and API suites**
+
+```bash
+timeout 600 env -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 .venv/bin/python -m pytest \
+  $(ls server/tests/test_ipc*.py | tr '\n' ' ') server/tests/test_queue_stall_reason.py -v 2>&1 | tail -25
+```
+
+Add the API test files covering `/api/sessions`; find them with
+`grep -rl "api/sessions\|list_sessions" server/tests/ | head` and name what you ran.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add -A server/ && git commit -m "fix(ipc): stop stranding daemon connections by cancelling RPCs
+
+asyncio.wait_for around an RPC CANCELS it rather than timing it out.
+CancelledError is a BaseException, so httpcore's `except Exception` in
+start_tls never closes the stream and the connection is stranded permanently
+ACTIVE — never evicted, holding one of the 100 pool slots. At 100 every RPC
+PoolTimeouts at exactly 30s, which is the edge wedge that took the app down
+twice in two days and needed a manual restart each time.
+
+The trigger was api/sessions.py:280-282 — three cancellable RPCs per session,
+63 per page load over a ~204ms relayed link (the same N+1 as #742).
+
+DaemonClient.call already takes timeout=; push the deadline into the RPC so
+httpx enforces it natively and closes its own connection. A control in the
+spike confirmed httpx's own timeout leaks zero connections.
+
+Refs #734
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 2b (was Task 2): Bound the httpx client properly
 
 Regardless of Task 1's verdict, the current client is under-specified: `timeout=30.0` is a scalar
 that sets connect, read, write **and pool** alike, and there are no `httpx.Limits` at all. A pool
