@@ -82,12 +82,17 @@ _WEDGE_QUIET_S = 30.0
 # cannot get a slot still fails long before the browser gives up.
 _POOL_ACQUIRE_S = 6.0
 
-# connect: bounded but generous enough for a TLS handshake over the relayed tailnet
-#   link (~200ms round trips today).
+# Bounded but generous enough for a TLS handshake over the relayed tailnet link
+# (~200ms round trips today). Named rather than inlined because `_call_timeout` caps
+# each caller's connect leg against it, and reading it back off `_TIMEOUT` would both
+# duplicate the source of truth and widen the type to `float | None` (httpx stores an
+# unset leg as None), which is not what this value is.
+_CONNECT_S = 5.0
+
 # read: kept at 30s — some RPCs legitimately take seconds (transcript_events was
 #   measured at 4.3s); longer ones (automation_*) pass their own per-call timeout.
 # write: matched to read; request bodies are small, but a stalled write must not hang.
-_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=_POOL_ACQUIRE_S)
+_TIMEOUT = httpx.Timeout(connect=_CONNECT_S, read=30.0, write=30.0, pool=_POOL_ACQUIRE_S)
 
 
 def _call_timeout(timeout: float) -> httpx.Timeout:
@@ -105,7 +110,7 @@ def _call_timeout(timeout: float) -> httpx.Timeout:
     whole budget waiting for a slot if it has to, and never more than that (waiting past
     your own deadline is work nobody is going to read). connect is capped the same way.
     """
-    return httpx.Timeout(connect=min(timeout, _TIMEOUT.connect), read=timeout,
+    return httpx.Timeout(connect=min(timeout, _CONNECT_S), read=timeout,
                          write=timeout, pool=min(timeout, _POOL_ACQUIRE_S))
 
 # Base subscriber queue size. Scales up automatically with active stream count;
