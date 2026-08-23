@@ -346,6 +346,10 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ### Task 3: Recycle the pool when the daemon restarts
 
+> **Scope note (added after review):** this task reclaims stranded connections *before* they
+> saturate the pool. It does **not** recover an already-saturated pool — `/info` cannot get a slot
+> to detect the epoch change. Task 4 Part A closes that gap with a reserved health channel.
+
 This is the task that breaks the deploy→wedge loop. `_reconcile_epoch` (`client.py:222`) **already
 detects a daemon restart** — it fetches `/info`, compares the epoch, and clears per-stream
 watermarks because the daemon's seq space reset. At that exact moment every pooled HTTP connection
@@ -429,7 +433,41 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 4: Make a wedged pool visible
+### Task 4 (AMENDED after the Task 3 review): Reserve a health channel, then make a wedged pool visible
+
+**Why this task grew.** Task 3's review established that its stated goal was overstated. `info()`
+issues `self._http.get("/info")` on the **same pool** with no reserved slot. On a saturated pool that
+raises `PoolTimeout` after `pool=2.0`, escapes to `_reconcile_epoch`'s `except Exception: return`,
+and the recycle never fires. The WS reader reconnects fine (it is on `websockets`, not httpx) but
+calls `_reconcile_epoch` only **once per reconnect** — so once the WS stabilises there is no retry.
+
+**A pool already saturated when the daemon restarts therefore stays wedged permanently** — which is
+exactly the end state both production outages reached. Task 3 prevents the march to saturation; it
+does not recover from it.
+
+**Part A — a reserved health channel (this closes the crux).**
+
+Give `/info` its own `httpx.AsyncHTTPTransport(max_connections=1)` — a dedicated socket that the RPC
+pool can never starve, so the restart signal always gets through and the recycle always fires.
+
+The earlier rejection of a `PoolTimeout`-triggered recycle argued against a strawman: the signal is
+not "any caller PoolTimeout'd" (a legitimate fan-out would trip that and could loop), it is
+"**`/info`** PoolTimeout'd", and `/info` is called from exactly one low-frequency site on this client.
+The reviewer verified the other two `.info()` callers — `automations/archive_audit.py:453` and
+`sessions/host_probe.py:34` — use their own short-lived clients and are unaffected.
+
+Cost: one extra socket. Benefit: the wedge becomes self-healing rather than needing
+`systemctl restart ccswitch.service`.
+
+Add a test that a **saturated** pool still detects an epoch change and recycles — that is the case
+Task 3 cannot currently handle, and it must fail before this change.
+
+**Part B — make a wedged pool visible** (the original Task 4).
+
+Both outages were diagnosed by hand with `ss -tn state close-wait`. The system knew every RPC route
+was failing and surfaced nothing actionable.
+
+
 
 Both outages were diagnosed by hand with `ss -tn state close-wait`. The system knew it was failing —
 every RPC route was 503ing — and said nothing an operator could act on.
