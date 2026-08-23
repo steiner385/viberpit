@@ -297,6 +297,15 @@ class SessionOrchestrator:
         self._title_fn: Callable = title_fn or self._default_title_fn
         self._registry = PermissionRegistry()
         self._drivers: dict[str, SessionDriver] = {}
+        # In-flight completion-driver-release tasks (see _persist_status), keyed by
+        # session_id. The driver is already out of `_drivers` by the time an entry
+        # lands here — a fast reopen (ensure_driver) must await this before building
+        # a replacement driver against the same claude_session_id/cwd, otherwise the
+        # old process can still be flushing its session file while the new one reads
+        # it (the SDK's own subprocess_cli.py warns this can lose the last assistant
+        # message). Cleared on completion, success or failure, so a stuck release can
+        # never make a session permanently unopenable.
+        self._releasing: dict[str, asyncio.Task] = {}
         # Sessions that failed to re-launch after a daemon-affecting deploy:
         # session_id -> attempts so far. Seeded by restore_deploy, drained by the
         # daemon's recovery pass (_recover_resume_failures_once). Deploy-scoped and
@@ -1440,10 +1449,20 @@ class SessionOrchestrator:
         if status in ("done", "complete"):
             live_driver = self._drivers.pop(session_id, None)
             if live_driver is not None:
-                async def _release(d=live_driver):
-                    with contextlib.suppress(Exception):
-                        await d.aclose()
-                self._spawn(_release(), name="completion-driver-release")
+                async def _release(d=live_driver, sid=session_id):
+                    try:
+                        with contextlib.suppress(Exception):
+                            await d.aclose()
+                    finally:
+                        # Clear only our own entry — never a newer release that
+                        # (defensively) replaced this one for the same session_id.
+                        # Runs on both success and failure so a stuck/erroring
+                        # release can never make the session permanently unopenable
+                        # (ensure_driver awaits this entry before rebuilding).
+                        if self._releasing.get(sid) is asyncio.current_task():
+                            self._releasing.pop(sid, None)
+                self._releasing[session_id] = self._spawn(
+                    _release(), name="completion-driver-release")
         self._maybe_autoarchive_completed(session_id, status, rec)
         # Nudge autopilot when a session enters an actionable state so a stuck session
         # is advanced immediately, not only on the next interval tick. Best-effort; the
@@ -4945,6 +4964,20 @@ class SessionOrchestrator:
             if existing is not None:
                 _rethread_identity(existing, identity)
                 return existing
+
+            # A completion-driver-release may still be in flight for this session
+            # (see _persist_status): its driver is already out of `_drivers`, but
+            # the old `claude` process may still be shutting down / flushing its
+            # session file to disk. Building a replacement driver with the same
+            # resume=claude_session_id against the same cwd while that write is
+            # still in flight races it — the SDK's own subprocess_cli.py warns this
+            # can lose the last assistant message. Wait for the release to finish
+            # first; it always clears its own `_releasing` entry (success or
+            # failure), so this cannot hang forever or leave the session stuck.
+            release_task = self._releasing.get(session_id)
+            if release_task is not None:
+                with contextlib.suppress(Exception):
+                    await release_task
 
             # Build and start a new driver resuming from the stored claude_session_id
             resume = rec.claude_session_id or None

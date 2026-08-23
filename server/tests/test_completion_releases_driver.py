@@ -22,6 +22,7 @@ after `_persist_status` to let that spawned task run before asserting on it.
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 from server.db import db_session, init_db
 from server.db.models import Session as DbSession
@@ -50,10 +51,13 @@ class _FakeDriver:
             raise RuntimeError("teardown blew up")
 
 
-async def _drain():
-    # Let the spawned driver-release task (see module docstring) run to completion.
-    for _ in range(4):
-        await asyncio.sleep(0)
+async def _drain(orch):
+    """Let every spawned background task — the driver-release task in particular
+    (see module docstring) — run to completion. Deterministic (gather on the
+    orchestrator's own tracked-task set) rather than a fixed sleep(0) count."""
+    tasks = [t for t in orch._bg_tasks if not t.done()]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _build_orch(tmp_path, **row):
@@ -82,7 +86,7 @@ def test_complete_status_pops_and_closes_driver(tmp_path):
         orch._drivers["s1"] = driver
         await orch._persist_status("s1", "complete")
         assert "s1" not in orch._drivers  # pop is synchronous
-        await _drain()
+        await _drain(orch)
         return orch, driver
     orch, driver = asyncio.run(run())
     assert driver.closed is True
@@ -114,7 +118,7 @@ def test_done_status_pops_and_closes_driver(tmp_path):
         orch._drivers["s1"] = driver
         await orch._persist_status("s1", "done")
         assert "s1" not in orch._drivers  # pop is synchronous
-        await _drain()
+        await _drain(orch)
         return driver
     driver = asyncio.run(run())
     assert driver.closed is True
@@ -147,7 +151,106 @@ def test_teardown_failure_still_removes_driver_from_registry(tmp_path):
         # close_session/stop() teardown idiom.
         await orch._persist_status("s1", "complete")
         assert "s1" not in orch._drivers  # pop is synchronous — happens either way
-        await _drain()
+        await _drain(orch)
         return driver
     driver = asyncio.run(run())
     assert driver.closed is True
+
+
+# --- Review findings (Fix 1 + Fix 2) ---------------------------------------------
+#
+# Fix 1: a fast reopen must not race the old process's teardown. ensure_driver now
+# awaits any in-flight completion-driver-release (tracked in orch._releasing) before
+# building a replacement driver against the same claude_session_id/cwd — this race
+# was unreachable before this task (a `complete` session always had a live driver),
+# so it is a regression introduced by deferring aclose(), not a pre-existing gap.
+#
+# Fix 2: the five tests above all use a _FakeDriver.aclose() with no pump, so they
+# pass identically whether _persist_status awaits aclose() inline or defers it via
+# self._spawn(...) — they cannot catch a revert of that deferral. The tests below
+# use a driver whose aclose() blocks forever (an Event that is never set) to prove
+# _persist_status does NOT wait on it.
+
+
+class _GatedCloseDriver(_FakeDriver):
+    """aclose() blocks on ``self.gate`` until the test sets it — a stand-in for a
+    real driver whose pump task is still shutting down."""
+
+    def __init__(self, *, raise_on_close: bool = False):
+        super().__init__(raise_on_close=raise_on_close)
+        self.gate = asyncio.Event()
+
+    async def aclose(self):
+        await self.gate.wait()
+        await super().aclose()
+
+
+def test_persist_status_does_not_block_on_a_slow_aclose(tmp_path):
+    """Regression guard for Fix 2: with aclose() correctly deferred to its own
+    spawned task, _persist_status returns promptly even though this driver's
+    aclose() never completes on its own. Verified this actually catches a revert:
+    temporarily inlining `await live_driver.aclose()` in _persist_status (undoing
+    the self._spawn(...) deferral) makes this test hit the 1s wait_for timeout and
+    fail with asyncio.TimeoutError."""
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch.record("s1").auto_archive_opt_out_reason = "manual-unarchive"
+        driver = _GatedCloseDriver()
+        orch._drivers["s1"] = driver
+        # 1s is generous: the fix returns in well under a millisecond, since it
+        # never awaits this driver's aclose() at all — only a broken (inline-await)
+        # version would ever approach this timeout.
+        await asyncio.wait_for(orch._persist_status("s1", "complete"), timeout=1)
+        assert "s1" not in orch._drivers   # popped synchronously regardless
+        assert driver.closed is False      # release is still blocked on the gate
+        assert "s1" in orch._releasing     # Fix 1 bookkeeping: tracked in flight
+        # Clean up: unblock the stuck release so nothing leaks past this test.
+        driver.gate.set()
+        await _drain(orch)
+        return driver
+    driver = asyncio.run(run())
+    assert driver.closed is True
+
+
+def test_ensure_driver_awaits_in_flight_release_before_rebuilding(tmp_path):
+    """Fix 1: a fast reopen must not build a replacement driver while the prior
+    process may still be flushing its session file to disk (the SDK's own
+    subprocess_cli.py warns this can lose the last assistant message)."""
+    async def run():
+        cwd = str(tmp_path / "repo")
+        orch = await _build_orch(tmp_path, cwd=cwd)
+        # Opt out of auto-archive so it can't independently pop the record/driver
+        # (see test_complete_status_pops_and_closes_driver) and contaminate this
+        # test's isolation of the release-vs-reopen race.
+        orch.record("s1").auto_archive_opt_out_reason = "manual-unarchive"
+        driver = _GatedCloseDriver()
+        orch._drivers["s1"] = driver
+        await orch._persist_status("s1", "complete")
+        assert "s1" not in orch._drivers
+        assert "s1" in orch._releasing   # release in flight, gated
+
+        with patch("server.sessions.orchestrator.compose", return_value=tmp_path / "cfg"), \
+             patch("server.sessions.orchestrator.configdir.trust_project"):
+            ensure_task = asyncio.create_task(orch.ensure_driver("s1"))
+            # A real (if small) wall-clock bound, not a fixed scheduling-turn count:
+            # the fake SDK's driver.start() has nothing else to block on, so if
+            # ensure_driver were NOT awaiting the release, it would clear this in
+            # well under 200ms regardless of how many turns that takes. Only the
+            # gate (never set here) can make it still be pending.
+            try:
+                await asyncio.wait_for(asyncio.shield(ensure_task), timeout=0.2)
+            except asyncio.TimeoutError:
+                pass  # expected: still blocked on the in-flight release
+            else:
+                raise AssertionError(
+                    "ensure_driver must wait for the in-flight release, but it "
+                    "returned before the release's gate was ever set")
+            assert driver.closed is False   # old process hasn't finished tearing down
+            driver.gate.set()               # let the old release finish
+            new_driver = await asyncio.wait_for(ensure_task, timeout=5)
+        return driver, new_driver, orch
+    driver, new_driver, orch = asyncio.run(run())
+    assert driver.closed is True
+    assert new_driver is not None
+    assert new_driver is not driver
+    assert "s1" not in orch._releasing   # cleared once the release completed
