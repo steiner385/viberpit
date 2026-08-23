@@ -22,6 +22,28 @@ def default_daemon_factory(daemon_enabled: bool) -> "Callable[[], Any] | None":
     return lambda: DaemonClient(sessiond_socket())
 
 
+async def _aclose_quietly(client: Any) -> None:
+    """Release a per-deploy ``DaemonClient``.
+
+    ``default_daemon_factory`` builds a NEW client per call site, and each one owns two
+    ``httpx.AsyncClient``s, two transports and — on the TLS branch — two certifi-loaded SSL
+    contexts. Left unclosed they survive until GC, holding their sockets: exactly the
+    "short-lived caller leaks the reserved health socket" shape ``DaemonClient.aclose``
+    exists to prevent.
+
+    Tolerant by design. The factory is an injection point and test doubles are plain
+    objects with only ``call``; a deploy must never fail because teardown found no
+    ``aclose``. Best-effort, logged at debug.
+    """
+    closer = getattr(client, "aclose", None)
+    if closer is None:
+        return
+    try:
+        await closer()
+    except Exception:  # noqa: BLE001 — teardown must never fail a deploy
+        log.debug("deploy: daemon client teardown failed", exc_info=True)
+
+
 def _default_changed_files(repo: str, a: str, b: str) -> list[str] | None:
     try:
         r = subprocess.run(["git", "-C", repo, "diff", "--name-only", a, b],
@@ -93,10 +115,13 @@ class DeployController:
             # --- save (snapshot live sessions; best-effort) ---
             self._set(Phase.SAVE, PhaseState.RUNNING)
             if self._client_factory is not None:
+                client = self._client_factory()
                 try:
-                    await self._client_factory().call("snapshot_deploy")
+                    await client.call("snapshot_deploy")
                 except Exception:
                     self.status.warnings.append("session snapshot failed (continuing)")
+                finally:
+                    await _aclose_quietly(client)
             self._set(Phase.SAVE, PhaseState.DONE)
 
             # --- update ---
@@ -122,7 +147,10 @@ class DeployController:
             if daemon_changed and self._client_factory is not None:
                 client = self._client_factory()
                 log_event(log, logging.INFO, "deploy.drain.start", deploy_id=self._deploy_id)
-                result = await self._drain.drain_and_wait(client)
+                try:
+                    result = await self._drain.drain_and_wait(client)
+                finally:
+                    await _aclose_quietly(client)
                 if result != "ready":
                     self.status.warnings.append(f"drain {result} — restarting anyway")
             if daemon_changed and self.daemon_enabled:
@@ -177,8 +205,9 @@ class DeployController:
             # --- resume (eager re-launch; only when the daemon actually restarted) ---
             if daemon_changed and self._client_factory is not None:
                 self._set(Phase.RESUME, PhaseState.RUNNING)
+                client = self._client_factory()
                 try:
-                    self.status.restore = await self._client_factory().call("restore_deploy")
+                    self.status.restore = await client.call("restore_deploy")
                     failed = self.status.restore.get("failed", [])
                     recovered = len(self.status.restore.get("restored", []))
                     lost = len(failed)
@@ -188,6 +217,8 @@ class DeployController:
                         self.status.warnings.append(f"resume failed for {len(failed)} session(s): {', '.join(failed)}")
                 except Exception:
                     self.status.warnings.append("session restore call failed")
+                finally:
+                    await _aclose_quietly(client)
                 self._set(Phase.RESUME, PhaseState.DONE)
             else:
                 # Edge-only deploy: the daemon never restarted, so no sessions were dropped

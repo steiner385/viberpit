@@ -1,12 +1,34 @@
 """No edge path may CANCEL an in-flight daemon RPC (incident 2026-08-23, issue #734).
 
-``asyncio.wait_for`` does not time an HTTP request out — it **cancels** it. A
-``CancelledError`` is a ``BaseException``, so httpcore's ``except Exception`` in
-``AnyIOStream.start_tls`` never closes the already-connected TCP stream: the socket is
-orphaned for the life of the process and the pool slot is stranded permanently ACTIVE.
-At ``max_connections`` every later RPC ``PoolTimeout``s and every daemon-backed route
-503s — the edge wedge that needed a manual ``systemctl restart`` twice in two days.
+``asyncio.wait_for`` does not time an HTTP request out — it **cancels** it, throwing a
+``CancelledError`` (a ``BaseException``) into httpcore. Measured consequence: the socket is
+orphaned for the life of the process and its pool slot is never reclaimed. At
+``max_connections`` every later RPC ``PoolTimeout``s and every daemon-backed route 503s —
+the edge wedge that needed a manual ``systemctl restart`` twice in two days.
 See ``docs/superpowers/spikes/2026-08-23-edge-socket-leak.md``.
+
+WHAT IS AND IS NOT ESTABLISHED. The spike's controlled experiment — same server, same
+client, same stall, varying only cancel-vs-timeout — is solid: cancellation leaked, httpx's
+own timeout leaked zero. WHERE inside httpcore the cancel does this is NOT established. Its
+first explanation (``AnyIOStream.start_tls``'s ``except Exception``) does not survive a read
+of httpcore 1.0.9: a cancel inside ``_connect`` is caught by
+``AsyncHTTPConnection.handle_async_request``'s ``except BaseException`` → ``_connect_failed
+= True`` → ``is_closed()`` True → evictable. The shape that DOES survive is a pooled
+connection object created but never dispatched on (``_connection is None`` and
+``_connect_failed`` False, so nothing reports it closed, expired, idle or available).
+
+That correction has teeth here: the refuted explanation implied the unix-socket branch
+could not strand, because it runs no TLS handshake. The surviving shape needs no handshake
+at all, so that inference is unsupported. The ``blackhole`` fixture is therefore
+PARAMETERISED over a TCP/TLS endpoint and a unix-socket one, and every call-site test runs
+on both — the ban on cancelling an RPC is a property of the code, not of the transport, and
+nothing here may encode "unix is exempt".
+
+The one test that is TLS-only is ``test_cancelling_an_rpc_orphans_the_socket``, which pins
+the HAZARD rather than the fix. It is TLS-only because that is where the leak reproduces:
+measured over unix, a cancel in the same window cleans up (see the spike's amendment table).
+That asymmetry is a fact about what has been reproduced, NOT a claim that the unix branch
+cannot strand.
 
 The fix is to push the deadline INTO the RPC (``DaemonClient.call(timeout=…)``) so httpx
 enforces it natively and closes its own connection.
@@ -38,9 +60,9 @@ _DEADLINE = 0.3
 class _Blackhole:
     """A TCP endpoint that accepts, never speaks TLS, and never answers.
 
-    Every RPC therefore stalls inside the TLS handshake — the exact window in which a
-    cancellation orphans the socket (spike "Leak 1"). ``accepted``/``closed`` count what
-    the *server* saw, so a leak is observable without touching httpx internals.
+    Every RPC therefore stalls inside the TLS handshake — the window in which a
+    cancellation is known to orphan the socket. ``accepted``/``closed`` count what the
+    *server* saw, so a leak is observable without touching httpx internals.
     """
 
     def __init__(self) -> None:
@@ -93,6 +115,38 @@ class _Blackhole:
         )
 
 
+class _UnixBlackhole(_Blackhole):
+    """The same endpoint over a unix socket — no TLS anywhere in the path.
+
+    Exists so every call-site test below runs on BOTH transports. The refuted
+    ``start_tls`` mechanism would make this variant vacuous ("no handshake, no leak");
+    the shape that survives source reading is pool bookkeeping and is transport-agnostic,
+    so the unix branch gets the same coverage rather than an exemption.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self.path = path
+
+    async def start(self) -> None:
+        async def handle(reader: asyncio.StreamReader, writer) -> None:
+            self.accepted += 1
+            self._writers.add(writer)
+            try:
+                while await reader.read(65536):   # never respond; loop until EOF
+                    pass
+                self.closed += 1
+            except (ConnectionError, asyncio.CancelledError):
+                pass
+            finally:
+                self._writers.discard(writer)
+
+        self._server = await asyncio.start_unix_server(handle, self.path)
+
+    def client(self, tls: ClientTLSFiles) -> DaemonClient:
+        return DaemonClient(parse_endpoint(f"unix://{self.path}"))
+
+
 @pytest.fixture
 def blackhole_tls(mtls_certs):
     return ClientTLSFiles(cert=mtls_certs.client_cert, key=mtls_certs.client_key,
@@ -100,8 +154,20 @@ def blackhole_tls(mtls_certs):
 
 
 @pytest_asyncio.fixture
-async def blackhole():
+async def tls_blackhole():
+    """TLS-only, for the HAZARD control — the one place the leak reproduces."""
     bh = _Blackhole()
+    await bh.start()
+    try:
+        yield bh
+    finally:
+        await bh.stop()
+
+
+@pytest_asyncio.fixture(params=["tls", "unix"])
+async def blackhole(request, tmp_path):
+    bh = (_Blackhole() if request.param == "tls"
+          else _UnixBlackhole(str(tmp_path / "bh.sock")))
     await bh.start()
     try:
         yield bh
@@ -119,9 +185,16 @@ def _record(session_id: str = "s1"):
 
 
 @pytest.mark.asyncio
-async def test_cancelling_an_rpc_orphans_the_socket(blackhole, blackhole_tls):
-    """The hazard itself, pinned. If this ever fails, httpcore fixed the BaseException
-    hole in start_tls and the ban below can be relaxed — investigate, don't delete."""
+async def test_cancelling_an_rpc_orphans_the_socket(tls_blackhole, blackhole_tls):
+    """The hazard itself, pinned — over TLS, where it reproduces.
+
+    If this ever fails, httpcore closed whatever hole this rides on and the ban below can
+    be relaxed — investigate, don't delete. Deliberately NOT parameterised over unix:
+    measured over a unix socket, a cancel in this window cleans up. That is a fact about
+    what reproduces, not a licence to cancel RPCs on the unix branch — see the module
+    docstring and the spike's "Where inside httpcore" amendment.
+    """
+    blackhole = tls_blackhole
     client = blackhole.client(blackhole_tls)
     try:
         with pytest.raises(asyncio.TimeoutError):

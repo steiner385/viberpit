@@ -2,14 +2,18 @@
 
 Both edge outages had the same diagnostic shape: every daemon-backed route 503'd after
 exactly the pool timeout, the journal said only that individual RPCs failed, and the
-actual cause — all `max_connections` slots pinned ACTIVE by stranded connections — was
-found by hand with a socket dump. The system knew; it just never said.
+actual cause — all `max_connections` slots held by connections the pool could not evict —
+was found by hand with a socket dump. The system knew; it just never said.
 
-These tests pin the two things that fix that:
+These tests pin the three things that fix that:
   1. ``DaemonClient.pool_stats()`` reports the occupancy that distinguishes "the daemon is
      down" from "we cannot reach a healthy daemon because our own pool is full".
   2. A pool timeout is counted and logged at WARNING with that occupancy attached, so the
      wedge is legible in the journal as it happens.
+  3. That verdict fires ONLY on a wedge. Occupancy alone cannot tell a strand from a busy
+     fan-out — both saturate the pool and queue requests behind it — so a diagnostic keyed
+     on occupancy would cry wedge during ordinary concurrent use, and an operator who has
+     seen it do that will not believe it when it matters.
 and that the numbers reach an operator through the existing ``/api/daemon/health``
 surface rather than a new endpoint.
 """
@@ -39,6 +43,12 @@ from server.tests.ipc_harness import serve_daemon_tls
 _SETTLE = 5.0
 _IDENT = {"Tailscale-User-Login": "health@example.com"}
 
+# The budget a deliberately-starved test call declares. The module's pool leg outlasts the
+# slowest real RPC (`_POOL_ACQUIRE_S`) so a fan-out queue is served rather than shed, and
+# `_call_timeout` gives a caller its WHOLE budget on the slot — so a test that wants a fast
+# PoolTimeout has to ask for a short budget rather than rely on the shared leg being short.
+_STARVE_BUDGET = 0.3
+
 
 # --------------------------------------------------------------------------- #
 # Harness — a real daemon with an RPC that never answers, so connections pin ACTIVE.
@@ -58,7 +68,16 @@ async def daemon(mtls_certs):
             pass
         return {"released": True}
 
+    async def _slow(params: dict) -> dict:
+        """A healthy-but-slow RPC. transcript_events was measured at 4.3s in production,
+        so a pool slot legitimately being held for a while is normal load, not a strand."""
+        state.slow_started += 1
+        await asyncio.sleep(float(params.get("secs", 0.5)))
+        return {"slow": True}
+
+    state.slow_started = 0
     register_rpc(app, "hang", _hang)
+    register_rpc(app, "slow", _slow)
     async with serve_daemon_tls(app, mtls_certs) as endpoint:
         state.endpoint = endpoint
         try:
@@ -120,8 +139,12 @@ async def test_pool_stats_reports_the_wedge(daemon, mtls_certs, monkeypatch):
 
     ``inUse`` is what separates this from "the daemon is down" — the distinction that cost
     both outages their diagnosis time. httpcore can only evict a connection that is closed,
-    expired, or surplus-IDLE, so ``inUse == maxConnections`` is not a busy moment; it is a
-    pool that cannot recover on its own.
+    expired, or surplus-IDLE, so a pool at ``inUse == maxConnections`` cannot recover on
+    its own *if nothing in it will ever complete*.
+
+    That caveat is why ``saturated`` is a shape, not a verdict: a busy fan-out reaches the
+    same occupancy and recovers (see ``test_a_fan_out_burst_is_not_reported_as_exhaustion``).
+    ``exhausted`` is the verdict, and it needs turnover to have stopped as well.
     """
     client = _client(daemon, mtls_certs, max_connections=2, monkeypatch=monkeypatch)
     try:
@@ -133,7 +156,8 @@ async def test_pool_stats_reports_the_wedge(daemon, mtls_certs, monkeypatch):
         assert stats["saturated"] is True
 
         # A caller arriving now is queued behind a pool that will not free a slot.
-        queued = asyncio.create_task(client.call("echo", stream="s", text="wedged"))
+        queued = asyncio.create_task(
+            client.call("echo", stream="s", text="wedged", timeout=_STARVE_BUDGET))
         await asyncio.sleep(0.2)
         assert client.pool_stats()["queued"] >= 1, "a starved request is invisible"
         with pytest.raises(DaemonTimeout):
@@ -186,13 +210,108 @@ async def test_a_pool_timeout_is_counted_and_logged(daemon, mtls_certs, monkeypa
 
         with caplog.at_level(logging.WARNING, logger="server.ipc.client"):
             with pytest.raises(DaemonTimeout):
-                await client.call("echo", stream="s", text="starved")
+                await client.call("echo", stream="s", text="starved", timeout=_STARVE_BUDGET)
 
         assert client.pool_stats()["poolTimeouts"] == 1
         assert client.pool_stats()["consecutivePoolTimeouts"] == 1
         warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert any("connection slot" in m and "pool timeout" in m for m in warned), warned
         assert any("echo" in m for m in warned), "the starved RPC is not named"
+
+        for t in inflight:
+            t.cancel()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_fan_out_queue_is_served_not_shed(daemon, mtls_certs, monkeypatch):
+    """Queueing behind a SLOW BUT HEALTHY RPC must end in a result, not a DaemonTimeout.
+
+    This is the shape production actually runs. GET /api/sessions fans out ~63 RPCs, and
+    with `max_connections` slots two concurrent dashboard loads leave a tail of requests
+    queued behind slots that are legitimately held for seconds — `transcript_events` was
+    measured at 4.3s. A pool leg shorter than that fails the whole tail with empty
+    enrichment fields against a daemon that is doing nothing wrong, and raises the
+    pool-exhaustion diagnostic while doing it.
+
+    Scaled down: 2 slots, 4 concurrent 2.2s RPCs, so half the burst queues for longer than
+    the old 2s leg allowed. Every one of them must still get an answer.
+    """
+    client = _client(daemon, mtls_certs, max_connections=2, monkeypatch=monkeypatch)
+    try:
+        results = await asyncio.gather(
+            *(client.call("slow", secs=2.2) for _ in range(4)),
+            return_exceptions=True)
+
+        failed = [r for r in results if isinstance(r, Exception)]
+        assert not failed, (
+            f"{len(failed)}/4 queued-but-servable requests were shed by the pool leg: "
+            + "; ".join(f"{type(r).__name__}: {r}" for r in failed))
+        assert client.pool_stats()["poolTimeouts"] == 0, (
+            "ordinary fan-out load was counted as a pool timeout")
+        assert daemon.slow_started == 4, "the burst never reached the daemon"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_brief_starvation_is_not_yet_called_exhaustion(daemon, mtls_certs,
+                                                               monkeypatch, caplog):
+    """A pool timeout on its own is NOT evidence of a wedge, and must not be reported as one.
+
+    A saturated pool with queued requests is what a fan-out burst and a permanent strand
+    both look like, so occupancy cannot tell them apart. Turnover can: seconds after the
+    pool last served somebody, the honest answer is "queued", not "exhausted". Claiming
+    exhaustion this early is how the one diagnostic this branch asks an operator to trust
+    ends up firing during ordinary concurrent use — and being ignored when it matters.
+    """
+    client = _client(daemon, mtls_certs, max_connections=1, monkeypatch=monkeypatch)
+    try:
+        inflight = await _saturate(client, daemon, 1)
+
+        with caplog.at_level(logging.WARNING, logger="server.ipc.client"):
+            with pytest.raises(DaemonTimeout):
+                await client.call("echo", stream="s", text="starved",
+                                  timeout=_STARVE_BUDGET)
+
+        warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warned, "a starved request must still be visible in the journal"
+        assert not any("pool exhaustion" in m for m in warned), (
+            "a pool that was serving callers a moment ago was declared exhausted:\n"
+            + "\n".join(warned))
+        assert any("queueing under load" in m for m in warned), warned
+        assert client.pool_stats()["exhausted"] is False
+
+        for t in inflight:
+            t.cancel()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_pool_that_serves_nobody_is_reported_as_exhaustion(daemon, mtls_certs,
+                                                                   monkeypatch, caplog):
+    """The other half: the verdict must still fire when it IS the wedge.
+
+    Gating the wording is only correct if a genuine strand — every slot held by a
+    connection nothing will ever reclaim, no caller served at all — still says so. The
+    distinguishing signal is turnover, so the test drives it directly: saturate, then let
+    the quiet window elapse with nothing completing.
+    """
+    monkeypatch.setattr(ipc_client, "_WEDGE_QUIET_S", 0.3)
+    client = _client(daemon, mtls_certs, max_connections=1, monkeypatch=monkeypatch)
+    try:
+        inflight = await _saturate(client, daemon, 1)
+        await asyncio.sleep(0.35)                    # no slot served for the whole window
+
+        with caplog.at_level(logging.WARNING, logger="server.ipc.client"):
+            with pytest.raises(DaemonTimeout):
+                await client.call("echo", stream="s", text="starved", timeout=_STARVE_BUDGET)
+
+        warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("pool exhaustion" in m for m in warned), warned
+        assert client.pool_stats()["exhausted"] is True
 
         for t in inflight:
             t.cancel()
@@ -210,7 +329,7 @@ async def test_a_completed_rpc_clears_the_consecutive_count(daemon, mtls_certs,
     try:
         inflight = await _saturate(client, daemon, 1)
         with pytest.raises(DaemonTimeout):
-            await client.call("echo", stream="s", text="starved")
+            await client.call("echo", stream="s", text="starved", timeout=_STARVE_BUDGET)
         assert client.pool_stats()["consecutivePoolTimeouts"] == 1
 
         daemon.release.set()                          # the pool drains
@@ -239,7 +358,7 @@ async def test_a_standing_wedge_does_not_flood_the_journal(daemon, mtls_certs, m
         with caplog.at_level(logging.WARNING, logger="server.ipc.client"):
             for _ in range(4):
                 with pytest.raises(DaemonTimeout):
-                    await client.call("echo", stream="s", text="starved")
+                    await client.call("echo", stream="s", text="starved", timeout=_STARVE_BUDGET)
 
         slot_warnings = [r for r in caplog.records if "connection slot" in r.getMessage()]
         assert len(slot_warnings) == 1, (

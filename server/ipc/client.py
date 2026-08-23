@@ -42,9 +42,9 @@ _LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=32,
 # `/info` carries the daemon's process epoch, and a changed epoch is the ONLY signal that
 # triggers `_recycle_transport`. While `/info` shared the RPC pool that signal could be
 # starved by the very condition it exists to clear: with all `_LIMITS.max_connections`
-# slots pinned ACTIVE, `/info` raised `PoolTimeout` after the 2s pool leg,
-# `_reconcile_epoch` swallowed it, and the recycle never fired. The WS reader calls
-# `_reconcile_epoch` once per reconnect, so a pool that was already saturated when the
+# slots held by connections the pool cannot evict, `/info` raised `PoolTimeout` after the
+# pool leg, `_reconcile_epoch` swallowed it, and the recycle never fired. The WS reader
+# calls `_reconcile_epoch` once per reconnect, so a pool that was already saturated when the
 # daemon restarted stayed wedged for the life of the edge process — the state both
 # production outages reached, each cleared only by `systemctl restart ccswitch.service`.
 #
@@ -61,33 +61,52 @@ _LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=32,
 _INFO_LIMITS = httpx.Limits(max_connections=1, max_keepalive_connections=1,
                             keepalive_expiry=5.0)
 
-# Minimum gap between pool-exhaustion warnings within one streak (see _note_pool_timeout).
+# Minimum gap between pool warnings within one streak (see _note_pool_timeout).
 # 30s is short enough that a wedge is visible within one journal screen and long enough
 # that a polling dashboard cannot turn the wedge into the log flood that hides it.
 _POOL_WARN_INTERVAL_S = 30.0
 
-# pool: the short leg. Healthy RPCs take ~200ms, so waiting 2s for a slot means ~10
-#   RPC-lifetimes of starvation — the pool is not recovering for this request, and
-#   failing fast beats tying up an edge worker (and the browser) for 30s.
+# How long the pool may go without handing ANY caller a slot before a pool timeout is
+# called exhaustion rather than queueing (see _note_pool_timeout). Under load the pool
+# turns over continuously — every completed, timed-out or reset RPC returns its slot — so
+# a gap this long against a pool that is still refusing slots is not a busy moment.
+_WEDGE_QUIET_S = 30.0
+
+# The pool-acquisition ceiling. It MUST outlast the slowest expected RPC: a caller queued
+# behind a full pool is waiting for one in-flight RPC to return its slot, and
+# `transcript_events` was measured at 4.3s, so a leg below that sheds load the pool would
+# have served. That is not hypothetical — at max_connections=100 and ~63 RPCs per page
+# fan-out, two concurrent dashboard loads leave ~26 RPCs queued, and the old 2s leg failed
+# every one of them with empty enrichment fields while the daemon was perfectly healthy.
+# 6s is 4.3s plus headroom and still 5x cheaper than the read leg, so a caller that really
+# cannot get a slot still fails long before the browser gives up.
+_POOL_ACQUIRE_S = 6.0
+
 # connect: bounded but generous enough for a TLS handshake over the relayed tailnet
 #   link (~200ms round trips today).
 # read: kept at 30s — some RPCs legitimately take seconds (transcript_events was
 #   measured at 4.3s); longer ones (automation_*) pass their own per-call timeout.
 # write: matched to read; request bodies are small, but a stalled write must not hang.
-_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=2.0)
+_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=_POOL_ACQUIRE_S)
 
 
 def _call_timeout(timeout: float) -> httpx.Timeout:
-    """Expand a per-call deadline WITHOUT letting it stretch the pool leg.
+    """Expand a per-call deadline into per-leg budgets, bounding the pool leg BOTH ways.
 
     httpx turns a scalar ``timeout=`` into connect = read = write = **pool**, so a
     long per-call deadline (automation_* passes 90s) would also let a starved caller
-    wait 90s for a connection slot — the very shape this module bounds. The caller's
-    deadline governs the RPC; pool acquisition keeps the client's short shared budget,
-    and connect never exceeds it either.
+    wait 90s for a connection slot — the very shape this module bounds. Hence the
+    ``_POOL_ACQUIRE_S`` ceiling.
+
+    The ``min`` is the other half, and it is the one that was wrong: the pool leg must
+    also never be SHORTER than the caller's own budget. With a fixed 2s leg, an
+    enrichment RPC that had declared a 3s budget was still shed at 2s — the queue was
+    abandoned a second before the caller would have given up. Now a caller spends its
+    whole budget waiting for a slot if it has to, and never more than that (waiting past
+    your own deadline is work nobody is going to read). connect is capped the same way.
     """
     return httpx.Timeout(connect=min(timeout, _TIMEOUT.connect), read=timeout,
-                         write=timeout, pool=_TIMEOUT.pool)
+                         write=timeout, pool=min(timeout, _POOL_ACQUIRE_S))
 
 # Base subscriber queue size. Scales up automatically with active stream count;
 # override with CCSWITCH_IPC_QUEUE_SIZE to tune without code changes.
@@ -201,12 +220,19 @@ class DaemonClient:
         self._info_http = httpx.AsyncClient(transport=self._info_transport,
                                             base_url=base_url, timeout=_TIMEOUT)
         # Wedge telemetry. A pool timeout means "every slot is taken and none freed within
-        # the pool leg" — the fingerprint of the strand, and the thing both outages needed
-        # `ss -tn state close-wait` to see. Counted here so it is readable from
-        # `pool_stats()` and loud in the journal without a socket dump.
+        # the pool leg" — a shape a busy fan-out also reaches, which is why the strand
+        # verdict needs `_pool_is_exhausted` on top of it (see `_note_pool_timeout`).
+        # Counted here so both outages' `ss -tn state close-wait` dump is readable from
+        # `pool_stats()` and loud in the journal without shelling in.
         self._pool_timeouts = 0                           # cumulative, process lifetime
         self._consecutive_pool_timeouts = 0               # reset by any RPC that completes
         self._last_pool_warn_at = 0.0                     # monotonic; throttles the warning
+        # Monotonic time of the last request that got PAST the pool — answered, timed out
+        # on the wire, or reset. All three prove the pool handed out a slot, which is the
+        # signal that separates "queued behind a fan-out" from "nothing is ever freed"
+        # (see _note_pool_timeout). Seeded at construction so a brand-new client that
+        # immediately queues is never mistaken for a wedge.
+        self._last_slot_at = time.monotonic()
         self._ws: Any = None
         self._reader_task: asyncio.Task | None = None
         # stream -> set of subscriber queues. A stream may have MORE THAN ONE local
@@ -243,10 +269,20 @@ class DaemonClient:
         short timeout so one wedged daemon can't tie up the edge for the full 30s.
 
         ALWAYS bound a call with this parameter, NEVER with ``asyncio.wait_for`` around
-        it: wait_for CANCELS the request rather than timing it out, and CancelledError is
-        a BaseException that httpcore's ``except Exception`` in ``AnyIOStream.start_tls``
-        does not catch — the socket is orphaned and its pool slot stranded ACTIVE forever
-        (incident 2026-08-23, spike docs/superpowers/spikes/2026-08-23-edge-socket-leak.md).
+        it. wait_for CANCELS the request rather than timing it out, and a cancelled RPC
+        both orphans its socket and strands its pool slot: the spike's controlled
+        experiment held everything else fixed and showed httpx's OWN timeout leaked zero
+        connections while cancellation leaked one per request, until the pool was full and
+        every RPC ``PoolTimeout``d against a healthy daemon (incident 2026-08-23, spike
+        docs/superpowers/spikes/2026-08-23-edge-socket-leak.md).
+
+        THAT experiment is the load-bearing evidence; the place inside httpcore where a
+        cancel does this is NOT established — see the spike's "Where inside httpcore"
+        section. Do not treat it as a TLS-only hazard: the only shape that survives source
+        reading (a pooled connection created but never dispatched on) needs no handshake and
+        is identical on `uds=`. A bounded attempt failed to reproduce a strand over unix,
+        which is not an exemption — so the ban below applies to BOTH branches.
+
         ``server.sessions.facade.call_with_deadline`` is the helper for call sites that
         must work against both orchestrator implementations.
         """
@@ -261,28 +297,64 @@ class DaemonClient:
             self._note_pool_timeout(method)
             raise DaemonTimeout(f"{method} timed out: {exc}") from exc
         except httpx.TimeoutException as exc:
-            self._consecutive_pool_timeouts = 0
+            self._note_slot_served()
             raise DaemonTimeout(f"{method} timed out: {exc}") from exc
         except httpx.TransportError as exc:
             # Covers ConnectError, ReadError, WriteError, CloseError — any transport-level
             # failure that means the daemon is unreachable or reset mid-response. The
             # daemon WAS reached (or at least dialled), so the pool is not the problem.
-            self._consecutive_pool_timeouts = 0
+            self._note_slot_served()
             raise DaemonUnavailable(str(exc)) from exc
-        self._consecutive_pool_timeouts = 0
+        self._note_slot_served()
         body = resp.json()
         if "error" in body:
             err = body["error"]
             raise DaemonError(err.get("type", "Error"), err.get("message", ""), err.get("data"))
         return body["result"]
 
-    def _note_pool_timeout(self, method: str) -> None:
-        """Record a pool timeout and make the wedge legible in the journal.
+    def _note_slot_served(self) -> None:
+        """Record that a request got past the pool, and end any pool-timeout streak.
 
-        WARNING, not ERROR-once: the count is the diagnostic. One pool timeout is a
-        transient fan-out; a rising *consecutive* count against a healthy daemon is the
-        strand, and it is what an operator needs to see without shelling in to run
-        ``ss -tn state close-wait``.
+        Called on EVERY outcome that proves a slot was handed out — a completed RPC, a
+        read/write timeout on the wire, a transport reset. All three mean the pool is
+        turning over, which is the fact ``_note_pool_timeout`` needs and the counters
+        must not contradict.
+        """
+        self._consecutive_pool_timeouts = 0
+        self._last_slot_at = time.monotonic()
+
+    def _pool_is_exhausted(self) -> bool:
+        """True when a pool timeout means "nothing is ever freed", not "we are busy".
+
+        The two look IDENTICAL in occupancy — a saturated pool with queued requests is
+        what a fan-out burst and a permanent strand both produce — so occupancy cannot
+        tell them apart, and reporting on occupancy alone is how ordinary concurrent use
+        gets called a wedge. What separates them is turnover: under load the pool hands
+        out slots continuously (``_note_slot_served`` fires on every completed, timed-out
+        or reset RPC), whereas a pool holding unevictable connections hands out none, ever.
+        So: no slot served for ``_WEDGE_QUIET_S`` while we are still failing to get one.
+
+        The reserved ``/info`` channel was the other candidate signal and was NOT used:
+        ``_reconcile_epoch`` polls it only once per WS reconnect, so its last result can be
+        minutes stale — it is a restart signal, not a liveness feed. Turnover is measured
+        by this pool, about this pool, at the moment of the timeout.
+        """
+        return time.monotonic() - self._last_slot_at >= _WEDGE_QUIET_S
+
+    def _note_pool_timeout(self, method: str) -> None:
+        """Record a pool timeout and, when it IS a wedge, make it legible in the journal.
+
+        WARNING, not ERROR-once: the counts are the diagnostic, and an operator needs them
+        without shelling in to run ``ss -tn state close-wait``.
+
+        The verdict is gated, deliberately. A pool timeout alone does not mean the pool is
+        broken: with ``max_connections`` slots, a ~63-RPC page fan-out and RPCs that can
+        legitimately run seconds, concurrent dashboard loads queue behind a *working* pool,
+        and calling that "edge-side pool exhaustion" would make the one diagnostic this
+        branch asks an operator to trust fire on ordinary use. So the line says what is
+        observed (this RPC could not get a slot, here is the occupancy) and only names
+        exhaustion when ``_pool_is_exhausted`` — no slot served to anyone for
+        ``_WEDGE_QUIET_S`` — actually holds.
 
         THROTTLED, because during a real wedge EVERY RPC ends here — a dashboard polling
         several routes would otherwise write a warning per failed request per poll and
@@ -300,13 +372,20 @@ class DaemonClient:
             return
         self._last_pool_warn_at = now
         stats = self.pool_stats()
+        verdict = (
+            "No connection has been served to any caller for %.0fs, so this is edge-side "
+            "pool exhaustion — the daemon was never asked." % stats["secondsSinceSlot"]
+            if stats["exhausted"] else
+            "The pool served a caller %.1fs ago, so it is still turning over: this is "
+            "queueing under load, not exhaustion." % stats["secondsSinceSlot"]
+        )
         log.warning(
             "ipc: RPC %s could not get a connection slot (%d consecutive pool timeout(s), "
             "%d total) — pool %d/%d connections, %d in use, %d idle, %d request(s) queued. "
-            "The daemon was never asked; this is edge-side pool exhaustion.",
+            "%s",
             method, self._consecutive_pool_timeouts, self._pool_timeouts,
             stats["connections"], stats["maxConnections"], stats["inUse"], stats["idle"],
-            stats["queued"])
+            stats["queued"], verdict)
 
     def pool_stats(self) -> dict:
         """A JSON-safe snapshot of the RPC connection pool.
@@ -318,9 +397,15 @@ class DaemonClient:
 
         ``inUse`` is the load-bearing number: a connection that is not *available* is
         holding one of ``maxConnections`` slots, and httpcore can only ever evict a
-        connection that is closed, expired, or surplus-IDLE — so ``inUse == maxConnections``
-        against a healthy daemon is the wedge, not a busy moment.
+        connection that is closed, expired, or surplus-IDLE.
+
+        ``saturated`` (``inUse == maxConnections``) is a SHAPE, not a verdict — a busy
+        fan-out reaches it and recovers. ``exhausted`` is the verdict: saturated *and*
+        the pool has served nobody for ``_WEDGE_QUIET_S`` (``secondsSinceSlot``), which
+        is what a strand looks like and a burst never does. Read ``exhausted``, not
+        ``saturated``, before concluding the edge is wedged.
         """
+        since_slot = time.monotonic() - self._last_slot_at
         stats = {
             # The CONFIGURED ceiling (module-level `_LIMITS`), not a read of the
             # transport's own limit. They cannot diverge in production — `_LIMITS` is a
@@ -329,7 +414,9 @@ class DaemonClient:
             "connections": -1, "inUse": -1, "idle": -1, "queued": -1,
             "poolTimeouts": self._pool_timeouts,
             "consecutivePoolTimeouts": self._consecutive_pool_timeouts,
+            "secondsSinceSlot": round(since_slot, 3),
             "saturated": False,
+            "exhausted": False,
         }
         try:
             pool = self._transport._pool
@@ -341,6 +428,9 @@ class DaemonClient:
             stats["saturated"] = bool(
                 _LIMITS.max_connections is not None
                 and stats["inUse"] >= _LIMITS.max_connections)
+            # Both conditions, deliberately: a saturated pool that is still handing out
+            # slots is load, and a quiet pool with free slots is just an idle edge.
+            stats["exhausted"] = bool(stats["saturated"] and self._pool_is_exhausted())
         except Exception:  # noqa: BLE001 — telemetry only; never fail a health route
             pass
         return stats
@@ -469,10 +559,13 @@ class DaemonClient:
         the very next request reconnects.
 
         WHY NOT the alternatives:
-        - *Sweep idle connections.* Useless here. The stranded connections are pinned
-          ACTIVE, and httpcore only ever evicts closed, expired, or surplus-IDLE ones —
-          which is exactly why nothing reclaimed them for the life of the process. A
-          close-idle implementation would pass a naive test and fix nothing.
+        - *Sweep idle connections.* Useless here, for EITHER strand shape. httpcore only
+          evicts connections that are closed, expired, or surplus-IDLE; a connection stuck
+          ACTIVE reports none of those, and neither does one the pool created but never
+          dispatched on (``_connection is None``, ``_connect_failed`` False → is_closed,
+          has_expired, is_idle and is_available are all False). That is exactly why nothing
+          reclaimed them for the life of the process, and why a close-idle implementation
+          would pass a naive test and fix nothing.
         - *``self._http.aclose()``.* httpx flips the client to CLOSED permanently; every
           later request raises ``RuntimeError``. That turns a wedge into a hard outage.
         - *Build a new AsyncClient and swap it in.* Callers already inside ``call`` hold
@@ -533,7 +626,7 @@ class DaemonClient:
 
         A changed epoch means every pooled HTTP connection is dead BY DEFINITION — they
         point at a process that no longer exists — so this is also where the transport is
-        recycled (issue #734). Without it, connections stranded ACTIVE by a build that
+        recycled (issue #734). Without it, connections stranded by a build that
         still cancelled RPCs are never reclaimed, the pool fills to `max_connections`, and
         every RPC-backed route 503s until someone restarts the edge by hand. That made
         DEPLOYING a fix break the app: the deploy restarts the daemon, which is the very

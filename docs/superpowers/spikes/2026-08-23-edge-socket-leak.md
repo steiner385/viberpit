@@ -3,6 +3,9 @@
 **Date:** 2026-08-23
 **Branch:** `fix/p3-pool-resilience`
 **Status:** resolved — verdict below is backed by a full reproduction of the field failure.
+**Amended 2026-08-23 (review of `fix/p3-pool-resilience`):** the *verdict* stands unchanged; the
+*explanation* of where inside httpcore the leak happens was overstated and has been downgraded. See
+[Where inside httpcore — NOT established](#where-inside-httpcore--not-established).
 
 ---
 
@@ -11,6 +14,13 @@
 **httpx.** The `httpx.AsyncClient` pool in `DaemonClient` leaks both sockets *and* pool slots
 whenever an in-flight RPC is **cancelled** (not merely timed out). The websockets reconnect in
 `_reader` is **exonerated** — websockets 16.0 leaks nothing in any of the three failure modes tested.
+
+This is an *observational* verdict, and that is the level of confidence to carry forward. The
+controlled experiment (§3) held server, client and stall identical and varied only cancel-vs-timeout:
+cancellation leaked, httpx's own timeout leaked nothing. What the spike did **not** establish is the
+code path inside httpcore that produces the leak — the first version of this document named one, and
+that claim does not survive a read of httpcore 1.0.9. Anything downstream that reasons *forward* from
+a specific httpcore line (e.g. "so the unix branch is safe") is unsupported.
 
 Task 2 (fix the pool) is the real work. Task 3 (restart recovery) should not assume the WS reconnect
 holds sockets; it does not.
@@ -53,9 +63,16 @@ results = await asyncio.gather(*(_safe_usage(orch, n, timeout) for n in names))
 ```
 
 `asyncio.wait_for` does not "time out" the HTTP request — it **cancels** it. A `CancelledError` is
-thrown into httpcore mid-request. Two distinct leaks follow, depending on where the cancel lands.
+thrown into httpcore mid-request. Two distinct *observed outcomes* follow: leaked file descriptors,
+and pool slots that are never reclaimed. They are separate effects with separate wire fingerprints
+(§1), and — per the amendment — separate levels of confidence about their cause.
 
 ### Leak 1 — cancel during the TLS handshake: the raw socket is orphaned
+
+**Status: fd leak observed and reproduced (§1 group B, §3 case A); the `start_tls` attribution below
+is a plausible candidate, not a proven one.** It does explain an orphaned *descriptor*: nothing in
+that path closes the already-connected TCP stream on a `BaseException`. It does **not** explain a
+stranded *pool slot* — see Leak 2.
 
 `httpcore/_backends/anyio.py::AnyIOStream.start_tls`:
 
@@ -88,19 +105,68 @@ Note this is specifically the *cancellation* path. httpx's own connect timeout r
 
 ### Leak 2 — cancel during the request/response: the pool slot is stranded too
 
-If the cancel lands after the connection is established and in the pool, the `AsyncHTTP11Connection`
-is left permanently in the `ACTIVE` state. `AsyncConnectionPool._assign_requests_to_connections`
-only evicts connections that are `is_closed()`, `has_expired()`, or surplus-idle. A stuck-ACTIVE
-connection is none of those:
+**Status: the end state is reproduced and is what the fix targets; the *route* to it is a candidate.**
+
+The reproduced end state (§2) is a pooled connection that is unusable and unevictable:
 
 ```
-conn=AsyncHTTP11Connection connect_failed=False is_closed=False
-                           has_expired=False is_idle=False is_available=False
+connect_failed=False is_closed=False has_expired=False is_idle=False is_available=False
 ```
 
-`has_expired()` reads `self._expire_at`, which is only set when a connection goes IDLE — it is
-`None` here, forever. So the connection is **never evicted and never closed**. It holds one socket
-and one of the 100 `max_connections` slots for the life of the process.
+`AsyncConnectionPool._assign_requests_to_connections` only evicts connections that are `is_closed()`,
+`has_expired()`, or surplus-idle, so a connection in that state is **never evicted and never closed**.
+It holds one socket and one of the `max_connections` slots for the life of the process. That is the
+fact a fix has to address, and `_recycle_transport` addresses it regardless of how the connection
+got there.
+
+### Where inside httpcore — NOT established
+
+The original text asserted that the stranded slot is an `AsyncHTTP11Connection` left "permanently
+ACTIVE" by a cancel landing mid-request, and traced it to the `except Exception` in `start_tls`.
+**Neither claim survives a read of httpcore 1.0.9**, and the review of `fix/p3-pool-resilience`
+caught it:
+
+- A cancel *anywhere inside `_connect`* is caught by `AsyncHTTPConnection.handle_async_request`'s
+  `except BaseException: self._connect_failed = True` (`_async/connection.py:98`). With
+  `_connect_failed` set and `self._connection is None`, `is_closed()`, `has_expired()` and
+  `is_idle()` all return **True** (`connection.py:189-201`) — the connection is evictable on the
+  next `_assign_requests_to_connections`. Verified on the installed version:
+
+  ```
+  never-dispatched: closed False expired False idle False available False
+  connect_failed:   closed True  expired True  idle True  available False
+  ```
+
+- So `start_tls` cannot be the pool-slot story. It can still be the *descriptor* story: the fd is
+  orphaned even though the pool has already given up on the connection object. That is consistent
+  with §1, where the 81 sockets far exceeded anything the pool was holding.
+
+The one shape that **does** survive source reading is a connection object the pool created but
+**never dispatched on**: `_connection is None` *and* `_connect_failed is False`, so `is_closed()`,
+`has_expired()`, `is_idle()` and `is_available()` are all False — permanently occupying a slot and
+counted `inUse` by `pool_stats()`. The pool's own
+`except BaseException:` handler (`connection_pool.py:246-254`) removes the cancelled *request* from
+`_requests` and re-assigns, but leaves that connection object in `_connections`, where nothing will
+ever evict it. The window is between `_assign_requests_to_connections` creating it and
+`connection.handle_async_request` being entered.
+
+**The consequence that matters for the fix.** The `start_tls` story implies the unix-socket branch
+cannot strand, because there is no TLS handshake on it. **That does not follow.** The
+never-dispatched shape involves no handshake at all — it is a pool bookkeeping state, identical on
+`uds=` and on TLS. Nothing in the code or the tests may assume the unix branch is exempt.
+
+Two measurements taken during the amendment, over `uds=` with no TLS anywhere
+(httpx 0.28.1 / httpcore 1.0.9):
+
+| probe | result |
+|---|---|
+| 3 requests cancelled mid-request against a never-answering unix server | server read EOF on all 3; `pool._connections == 0` — **no leak** |
+| 8 waves × 60 concurrent `wait_for(post, ~0.05–0.3 s)` against a 0.3 s unix server, pool 20 | `never-dispatched == 0` in every wave — **not reproduced** |
+
+Read these correctly. The first is *further evidence against* the "cancel mid-request leaves the
+`AsyncHTTP11Connection` ACTIVE" story — over unix that path cleans up. Neither is evidence that the
+unix branch is exempt: the second probe simply failed to hit the window, and absence of a
+reproduction in a bounded attempt is not an exemption. The rule stands for both branches.
 
 ### The wedge
 
@@ -186,8 +252,12 @@ An earlier variant confirmed the "fresh connection works" half: while the poison
 | A — 10 requests **cancelled** mid-TLS-handshake | `CancelledError` into httpcore | **10 still ESTABLISHED — leaked** |
 | A2 — 10 requests killed by **httpx's own** connect timeout | `TimeoutError` → `except Exception` fires | **0 — all closed cleanly** |
 
-Same server, same client, same stall. The only difference is `BaseException` vs `Exception`. This
-is the `AnyIOStream.start_tls` handler, isolated.
+Same server, same client, same stall. The only variable is cancel-vs-timeout. **This is the
+load-bearing experiment in the whole spike**, and it is what the fix rests on: it establishes *that*
+cancelling an in-flight RPC leaks and that handing the deadline to httpx does not. It does not
+identify the handler responsible — the original text called it "the `AnyIOStream.start_tls` handler,
+isolated", which reads more than the experiment supports (the case was run over TLS, so a
+TLS-independent path would produce the same table).
 
 ### 4. websockets 16.0 control — clean in every mode (`/tmp/leakspike/wscontrol.py`)
 
@@ -224,10 +294,13 @@ Two corrections to the assumptions in the brief, both checked against the instal
 
 ## What this does *not* establish
 
-- The exact micro-window inside httpcore/httpx where Leak 2's cancel lands (between
-  `_receive_response_headers` and httpx's `response.aread()` shield) was not pinned down; the
-  observable end state (`AsyncHTTP11Connection` stuck ACTIVE, never evicted) is reproducible and is
-  what a fix has to address.
+- **The code path inside httpcore that strands a pool slot.** Not the micro-window, the path itself.
+  The original attribution (`start_tls`'s `except Exception`) is refuted above; the never-dispatched
+  connection is a candidate that survives source reading but was never instrumented in the repro.
+  The observable end state — a connection that reports neither closed, expired, idle nor available,
+  and is therefore never evicted — is reproducible and is what a fix has to address.
+- **That the leak is TLS-specific.** It is not known to be, and one candidate mechanism is
+  transport-agnostic. Treat the unix-socket branch as equally exposed until someone shows otherwise.
 - I did not restart production to sample, so the two historical incidents (17 and 59 sockets) were
   not re-measured directly — but 17 and 59 sit on the same accumulation curve as today's 81, and
   the mechanism predicts the wedge fires when total pooled connections reach `max_connections`.
@@ -241,13 +314,15 @@ Two corrections to the assumptions in the brief, both checked against the instal
 1. **Pass explicit `httpx.Limits`.** `max_connections=100` is far more than one daemon needs, and
    the scalar `timeout=30.0` silently makes the pool-wait leg 30 s — which is the "503 after exactly
    30 s". Use an explicit `httpx.Timeout(connect=…, read=…, write=…, pool=…)` so the pool leg is
-   short and distinguishable.
+   short and distinguishable. *(Amended: "short" must still mean **longer than the slowest expected
+   RPC** — `transcript_events` was measured at 4.3 s here. A pool leg below that sheds queued
+   requests the pool would have served, and makes ordinary fan-out look like a wedge.)*
 2. **Stop cancelling in-flight RPCs.** `asyncio.wait_for` around `orch.*` is the trigger. Pass the
    deadline to httpx instead (`DaemonClient.call` already accepts `timeout=`), so the failure is an
    `httpx.TimeoutException` — the path httpcore actually cleans up — rather than a `CancelledError`.
    Call sites: `server/api/sessions.py:279-282`, `server/api/accounts.py:114`.
-3. **Make recovery possible without a restart.** Even with 1 and 2, a stranded ACTIVE connection is
-   unreclaimable from inside the pool. The edge needs a way to rebuild the transport when the pool
+3. **Make recovery possible without a restart.** Even with 1 and 2, a stranded connection is
+   unreclaimable from inside the pool, in either shape. The edge needs a way to rebuild the transport when the pool
    stops yielding connections (and, per Task 3, on a detected daemon epoch change).
 
 The websockets reconnect needs no leak fix.

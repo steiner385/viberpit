@@ -46,6 +46,10 @@ from server.tests.ipc_harness import serve_daemon_tls
 # correctness assertion into a flake.
 _SETTLE = 5.0
 
+# The budget a deliberately-starved test call declares. The shared pool leg now outlasts
+# the slowest real RPC, so a test that wants a prompt PoolTimeout asks for one.
+_STARVE_BUDGET = 0.3
+
 
 # --------------------------------------------------------------------------- #
 # Harness
@@ -205,7 +209,7 @@ async def test_a_wedged_pool_recovers_after_the_epoch_changes(daemon, mtls_certs
         seen = daemon.started
         t0 = time.monotonic()
         with pytest.raises(DaemonTimeout):
-            await client.call("echo", stream="s", text="wedged")
+            await client.call("echo", stream="s", text="wedged", timeout=_STARVE_BUDGET)
         assert daemon.started == seen, "the request reached the daemon — pool not saturated"
         assert time.monotonic() - t0 < _SETTLE, "the pool wait must stay bounded (task 2)"
 
@@ -258,7 +262,7 @@ async def test_a_saturated_pool_still_sees_the_restart_signal(daemon, mtls_certs
         # the pool leg and fails.
         seen = daemon.started
         with pytest.raises(DaemonTimeout):
-            await client.call("echo", stream="s", text="wedged")
+            await client.call("echo", stream="s", text="wedged", timeout=_STARVE_BUDGET)
         assert daemon.started == seen, "the request reached the daemon — pool not saturated"
 
         # The daemon answering now reports an epoch this client has never seen, i.e. the

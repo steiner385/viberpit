@@ -57,19 +57,24 @@ def _supports_native_deadline(fn) -> bool:
 async def call_with_deadline(fn, *args, timeout: float, **kwargs):
     """Await ``fn(*args, **kwargs)`` under *timeout*, never cancelling a daemon RPC.
 
-    ``asyncio.wait_for`` does not time an HTTP request out — it **cancels** it, and
-    ``CancelledError`` is a ``BaseException``, so httpcore's ``except Exception`` in
-    ``AnyIOStream.start_tls`` never closes the TCP stream. The socket is orphaned for
-    the life of the process and its pool slot stranded permanently ACTIVE; once
-    ``max_connections`` are stranded, every daemon-backed route 503s after exactly the
+    ``asyncio.wait_for`` does not time an HTTP request out — it **cancels** it, throwing a
+    ``CancelledError`` (a ``BaseException``) into httpcore. Measured consequence: the
+    socket is orphaned for the life of the process and its pool slot is never reclaimed;
+    once ``max_connections`` are stranded, every daemon-backed route 503s after exactly the
     pool timeout. That is the edge wedge of 2026-08-23 (issue #734); see
-    ``docs/superpowers/spikes/2026-08-23-edge-socket-leak.md``, whose control showed
-    that the same requests killed by httpx's OWN timeout leaked zero connections.
+    ``docs/superpowers/spikes/2026-08-23-edge-socket-leak.md``, whose control showed that
+    the same requests killed by httpx's OWN timeout leaked zero connections.
+
+    The spike established THAT cancellation does this, not WHERE inside httpcore — its
+    original ``AnyIOStream.start_tls`` explanation does not survive source reading, and the
+    only shape that does (a pooled connection created but never dispatched on) involves no
+    TLS at all. So do not reason from a TLS-specific mechanism to "the unix-socket branch is
+    safe": that inference is unsupported, and this ban applies to both branches.
 
     So when the callee is marked :func:`rpc_deadline` — every ``RemoteOrchestrator`` RPC
     reached from here is, and it forwards the deadline to ``DaemonClient.call`` — hand the
-    deadline to it and let httpx enforce it: httpx raises a plain ``Exception`` that
-    httpcore's handlers DO catch, so it closes its own connection. Expiry then surfaces as
+    deadline to it and let httpx enforce it: httpx raises a plain ``Exception``, which is
+    the path the spike's control showed cleans up. Expiry then surfaces as
     :class:`~server.ipc.client.DaemonTimeout` (a ``DaemonUnavailable``) rather than
     ``asyncio.TimeoutError``.
 

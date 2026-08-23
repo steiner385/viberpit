@@ -53,9 +53,38 @@ def test_pool_acquisition_fails_fast(client):
     """Starved of a connection, a caller must fail fast rather than tie up a request
     for the whole read budget."""
     timeout = client._http.timeout
-    assert timeout.pool <= 5.0, f"pool wait of {timeout.pool}s is not fail-fast"
+    assert timeout.pool <= 10.0, f"pool wait of {timeout.pool}s is not fail-fast"
     assert timeout.pool < timeout.read, (
         "waiting for a slot must be cheaper than waiting for a slow-but-healthy RPC")
+
+
+def test_pool_acquisition_outlasts_the_slowest_rpc(client):
+    """...but "fail fast" must not mean "shed load the pool would have served".
+
+    A queued caller is waiting for ONE in-flight RPC to return its slot, and
+    ``transcript_events`` was measured at 4.3s. With the leg below that, two concurrent
+    dashboard loads (~63 RPCs each against 100 slots) failed ~26 RPCs with empty
+    enrichment fields against a perfectly healthy daemon — and raised the pool-exhaustion
+    diagnostic while doing it.
+    """
+    assert client._http.timeout.pool > 4.3, (
+        "the pool leg is shorter than the slowest known RPC — a fan-out queue is shed "
+        "rather than served")
+
+
+def test_a_per_call_deadline_spends_its_whole_budget_on_a_slot():
+    """A caller's own deadline is the floor for the pool leg, not just the ceiling.
+
+    An enrichment RPC declares a 3s budget; with a fixed 2s leg it was abandoned in the
+    queue a full second before the caller would have given up. Waiting longer than the
+    caller's budget is pointless, but waiting LESS throws away a request the caller was
+    still willing to wait for.
+    """
+    from server.ipc.client import _call_timeout
+
+    assert _call_timeout(3.0).pool == 3.0
+    # ...and the ceiling still applies to a long deadline.
+    assert _call_timeout(90.0).pool == _TIMEOUT.pool
 
 
 def test_read_budget_stays_generous(client):
