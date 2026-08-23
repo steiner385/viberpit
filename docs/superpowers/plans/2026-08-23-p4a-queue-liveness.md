@@ -133,9 +133,119 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 2: Stop finished sessions from consuming capacity
+### Task 2: Release the driver when a session completes
 
-**Do not start until Task 1 confirms finished sessions hold no live driver.**
+Task 1's spike (`docs/superpowers/spikes/2026-08-23-finished-session-drivers.md`, commit `d67f9797`)
+proved the premise of the original plan wrong: `complete`/`done`/`idle` sessions **never** have their
+driver popped. Only `close_session`, `archive_session`, and daemon `stop()` do. So a finished session
+genuinely holds a live `claude` process, and the capacity gate counting it is *correct*.
+
+The real defect is that **auto-archive is the only path that releases those resources**, and it has
+two independent failure modes (autopilot broken; six sessions permanently opted out). This task
+removes that dependency: completion itself releases the process.
+
+Nothing is archived. The session, its DB row and its transcript all stay. The user's
+`manual-unarchive` choice keeps its exact meaning.
+
+**Files:**
+- Modify: `server/sessions/orchestrator.py` — the completion transition (see Step 1)
+- Test: `server/tests/test_completion_releases_driver.py` (create)
+
+**Interfaces:**
+- Consumes: Task 1's finding.
+- Produces: reaching `complete` or `done` pops the session's driver and closes it. Task 3 depends on
+  this: only once the process is released is exempting those statuses from capacity correct.
+
+- [ ] **Step 1: Find the completion transition and the teardown idiom**
+
+Read `server/sessions/orchestrator.py` around **line 1343** (`completed_turn = status == "done"`) and
+**1372/1388/1448** (`status == "complete"` handling) to locate where a session settles into
+`complete`/`done`. Then read the teardown idiom at **lines 783-791** (`close_session`/`stop()`):
+
+```python
+driver = self._drivers.pop(sid, None)
+if driver is not None:
+    with contextlib.suppress(Exception):
+        await driver.aclose()
+```
+
+Reuse that idiom — do not invent a second teardown path. If a helper already wraps it, call the
+helper.
+
+- [ ] **Step 2: Confirm reopening still works**
+
+Read `orchestrator.py:~4890` (the lazy re-attach). It already handles "no live driver": it builds a
+fresh driver resuming from `rec.claude_session_id` and recreates a missing cwd. **Confirm by reading
+that this path is reachable for a `complete`/`done` session** — note it explicitly refuses only
+`queued` sessions.
+
+If it turns out `complete`/`done` are *also* refused there, stop and report: releasing the driver
+would make those sessions unopenable, which is worse than the bug we are fixing.
+
+- [ ] **Step 3: Write the failing test**
+
+Create `server/tests/test_completion_releases_driver.py`. Cover:
+
+1. a session transitioning to `complete` has its driver popped and `aclose()` awaited;
+2. same for `done`;
+3. a session going `idle` **keeps** its driver — idle is alive and awaiting input;
+4. teardown failure does not break the transition (the `contextlib.suppress` behaviour) — a driver
+   whose `aclose()` raises must still be removed from `_drivers`.
+
+Build the orchestrator as `SessionOrchestrator(sdk_factory=mock.MagicMock())` and inject a fake
+driver exposing an awaitable `aclose()`; that is the pattern the existing orchestrator tests use.
+Read `server/tests/test_orchestrator_drain.py` for the closest existing example.
+
+- [ ] **Step 4: Run test to verify it fails**
+
+Run: `timeout 300 env -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 .venv/bin/python -m pytest server/tests/test_completion_releases_driver.py -v`
+
+Expected: FAIL — the driver is still in `_drivers` after the transition.
+
+- [ ] **Step 5: Implement**
+
+Pop and close the driver on the `complete`/`done` transition, using the Step 1 idiom. Keep it
+**deterministic** — no model call, no dependency on autopilot. That is the point: capacity must be
+freed by completion itself so a broken autopilot can never deadlock the queue again.
+
+Do not touch the `idle` path.
+
+- [ ] **Step 6: Run test to verify it passes, and check the neighbours**
+
+```bash
+timeout 600 env -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 .venv/bin/python -m pytest \
+  server/tests/test_completion_releases_driver.py \
+  server/tests/test_orchestrator_drain.py \
+  server/tests/test_autopilot_opt_out.py \
+  server/tests/test_adopt_session.py -v 2>&1 | tail -25
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add server/sessions/orchestrator.py server/tests/test_completion_releases_driver.py
+git commit -m "fix(sessions): release the driver when a session completes
+
+A finished session kept its claude process alive until something archived it,
+and auto-archive was the ONLY path that freed capacity — with two independent
+failure modes (autopilot failing every ~9 min; six sessions permanently opted
+out via manual-unarchive). The cap filled and nothing could reclaim it.
+
+Completion now releases the process itself: deterministic, no model call, no
+autopilot dependency. The session, its row and its transcript all stay, and
+reopening takes the existing lazy re-attach path that resumes from
+claude_session_id. Nothing is archived behind the user's back.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 3: Stop finished sessions from consuming capacity
+
+**Do not start until Task 2 has landed.** Task 1's spike proved finished sessions DO hold a live
+driver, so this exemption is only safe once Task 2 tears that driver down. Doing it first would
+oversubscribe the host.
 
 This is the change that unblocks the queue. It also defuses the `manual-unarchive` leak without
 overriding user intent: the opt-out keeps meaning "do not auto-archive me", and stops meaning
@@ -146,7 +256,7 @@ overriding user intent: the opt-out keeps meaning "do not auto-archive me", and 
 - Test: `server/tests/test_queue_capacity.py` (create)
 
 **Interfaces:**
-- Consumes: Task 1's finding.
+- Consumes: Task 2 — drivers are released on completion, which is what makes this exemption safe.
 - Produces: a new frozenset `CAPACITY_EXEMPT_STATUSES` exported from `server/db/models.py`,
   used by `orchestrator._active_session_count()`. `NON_ACTIVE_SESSION_STATUSES` keeps its current
   meaning and members for every other consumer — do not repurpose it.
@@ -299,7 +409,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 3: Reconcile queued rows that are not in the queue
+### Task 4: Reconcile queued rows that are not in the queue
 
 One session sits at `status='queued'` with **no matching `session_queue` row**, so the drain loop
 can never pick it up and nothing cleans it up. It has been stranded since 01:03 on 2026-08-22 and it
@@ -375,7 +485,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 4: Make a stuck queue say why
+### Task 5: Make a stuck queue say why
 
 The deadlock was silent. The UI showed 15 queued sessions and no explanation; it took a database
 query and a source read to find the cause. Autopilot has been failing every ~9 minutes for over a

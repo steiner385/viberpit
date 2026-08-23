@@ -232,6 +232,36 @@ P5 (session data should not be read across an sshfs mount from the runner at all
 loop; parallel "now" implementations; unguarded pools) with more than one instance already
 confirmed. Each work item ends with an audit for siblings, per `capturing-fix-patterns`.
 
+**D4 (added 2026-08-23) — Finished sessions release their process; capacity follows resources, not status.**
+
+*What the spec previously implied:* "finished sessions must stop holding capacity slots", as though
+the capacity accounting were simply wrong. A spike (`docs/superpowers/spikes/2026-08-23-finished-session-drivers.md`)
+refuted that: `complete`/`done`/`idle` sessions **never** have their driver popped — only
+`close_session`, `archive_session`, and daemon `stop()` do. A finished session genuinely holds a
+live `claude` process, so the cap counting it is *correct*. (The live daemon briefly appeared to
+show zero drivers; that was a restart artifact from the P1 deploy wiping in-memory `_drivers`.)
+
+*The actual defect:* **auto-archive is the only path that frees capacity**, and it has two
+independent failure modes — autopilot has failed every ~9 min for over a day, and six of the seven
+cap-holding sessions carry a permanent `manual-unarchive` opt-out. So the cap fills and nothing can
+reclaim it.
+
+*Decision:* tear the driver down when a session **completes**, keeping the session itself. The
+process is released immediately, the DB record and transcript stay, and reopening the session takes
+the existing lazy re-attach path (`orchestrator.py:~4890`), which builds a fresh driver resuming
+from `claude_session_id` and recreates a missing cwd. Nothing is archived behind the user's back and
+the `manual-unarchive` opt-out keeps its exact meaning.
+
+Only *after* teardown is the status-based capacity exemption correct — order matters, and doing the
+exemption first would oversubscribe the host.
+
+*Corollary:* the reclaim path must be **deterministic** — plain code, no model call. Capacity is now
+freed by completion itself, so a broken autopilot can no longer deadlock the queue. Autopilot keeps
+its judgement work; it stops being load-bearing for liveness.
+
+*Cost accepted:* reopening a finished session re-launches `claude` and replays the transcript rather
+than resuming a warm process.
+
 ## Plan of record
 
 Sequenced by blast radius, then structural. Each phase makes the next measurable.
