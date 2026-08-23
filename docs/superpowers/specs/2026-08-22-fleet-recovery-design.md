@@ -141,6 +141,12 @@ worst offenders are in the right-hand column: `pr-population` (RC1) and `cicd-do
 query). This is the structural answer to #734's question — *why does rocky query the CI tables at
 all?* It should not.
 
+**Severity raised 2026-08-22.** This was originally filed as a placement problem. It is worse than
+that: there is **no leader election, no host-identity gate, and no advisory lock** in `server/`, and
+every fleet host runs `orchestrator.start()` unconditionally. So the right-hand column is not merely
+running in the wrong place — it would run **once per session host**. dobby is a supported session
+host (`config.py:110`, #721), so this blocks fleet growth, not just tidiness. See D1 (AMENDED).
+
 ### Amplifier — the fleet link is relayed, not direct
 
 dobby and rocky are **0.55 ms apart on 192.168.243.0/24**, but Tailscale never hole-punched: both
@@ -155,11 +161,42 @@ daemon binds only to the tailscale interface and its cert carries only
 
 ## Decisions
 
-**D1 — The runner owns sessions only.** Target state: the session daemon owns PTYs and session
-lifecycle; the ten non-session loops move to dobby. This is the documented master/runner model, it
-answers #734 directly, and it removes rocky's need to reach Postgres CI tables, `gh`, and dobby's
-filesystem. Reached in two phases — non-blocking first (P1), relocation second (P5) — because the
-migration is large and the app is unusable now.
+**D1 (AMENDED 2026-08-22) — Singleton background work runs exactly once per fleet; session hosts
+run session work only.**
+
+*Original framing, now withdrawn:* "the runner owns sessions only; the ten non-session loops move to
+dobby." That wording assumed a clean master/runner split in which dobby is not a session host.
+
+*Why it was wrong:* dobby can host sessions too. `server/config.py:110` documents it —
+`CCSWITCH_FLEET_HOSTS=rocky=https://rocky:9443,dobby=https://dobby:9443` — and #721 added the
+registration path for exactly this. dobby is the master **and** a legitimate session host, so
+"move it to the master" is not a placement rule that survives a second host.
+
+*The real invariant:* `orchestrator.start()` spawns all 17 background loops, and there is **no
+leader election, no host-identity gate, and no advisory lock** anywhere in `server/`. Every fleet
+host runs `python -m server.ipc` → `serve.py` → `orchestrator.start()`. So a second session host
+does not merely run the loops in the wrong place — it runs a **second copy of every singleton**
+against the shared Postgres: two autopilots, two archive-audits, two backlog-runners, two
+cicd-doctors, two deploy-watchers.
+
+That is the failure mode the production systemd drop-in already documents from 2026-06-23: two
+orchestrators over one database "both rehydrate and resume the same sessions, double-spawning
+claude + MCP fleets", with the edge serving stale records.
+
+*Amended decision:*
+1. Split the loops into **per-host** work (stall-watchdog, stuck-session-sweep, titling,
+   goal-inference, rotation, token-refresh — these legitimately run on every session host) and
+   **fleet-singleton** work (autopilot, backlog-runner, archive-audit, cicd-doctor, pr-population,
+   pr-poller, pr-branch-monitor, deploy-watcher, worktree-janitor, archive-limit-sweep).
+2. Gate the singletons so they run exactly once fleet-wide — a Postgres advisory lock is the
+   natural mechanism given every host already shares that database, and it degrades correctly if
+   the holder dies.
+3. Session hosts keep only per-host work. Whether a given host is *also* the master is then
+   irrelevant to placement, which is what makes the rule survive adding dobby.
+
+**This is a precondition for adding any second session host, dobby included.** Until it lands, the
+fleet must stay at one session host, and the current single-host configuration is load-bearing
+rather than incidental.
 
 **D2 (AMENDED 2026-08-22) — Bound the transcript glob; do NOT narrow it to one project directory.**
 
