@@ -5,6 +5,7 @@ project directory — 1,696 of them on the live fleet, over an sshfs mount at
 ~54ms RTT — which hung transcript_window for 30s+ and made sessions
 un-openable. Discovery must degrade to a partial result instead of hanging.
 """
+import os
 import time
 from pathlib import Path
 
@@ -78,3 +79,32 @@ def test_slow_filesystem_degrades_instead_of_hanging(tmp_path, monkeypatch):
     assert complete is False, "a truncated scan must report itself incomplete"
     # The fast path still delivered the sidecar that actually matters.
     assert [p.name for p in metas] == ["agent-1.meta.json"]
+
+
+def test_flaky_entry_during_scan_does_not_abort_and_reports_incomplete(tmp_path, monkeypatch):
+    """A per-entry OSError mid-scan (a stale/flaky sshfs handle on exactly one of
+    the 1,696 project dirs is the plausible real-world trigger) must not abort the
+    sweep, and the scan must NOT be reported as complete=True — a falsely-True
+    complete flag would defeat the Task 2 memoization guard (never cache a
+    partial result)."""
+    projects = _layout(
+        tmp_path, "s4",
+        cwd_dirs=["-cwd-flaky", "-cwd-other"],
+        sub_in="-cwd-main",
+    )
+
+    real_is_dir = os.DirEntry.is_dir
+
+    def flaky_is_dir(self):
+        if self.name == "-cwd-flaky":
+            raise OSError("stale sshfs handle")
+        return real_is_dir(self)
+
+    monkeypatch.setattr(os.DirEntry, "is_dir", flaky_is_dir)
+
+    metas, complete = _find_subagent_meta_files(projects, "s4", preferred=projects / "-cwd-main")
+
+    # The fast path (preferred dir) still delivered the sidecar.
+    assert [p.name for p in metas] == ["agent-1.meta.json"]
+    # But the sweep hit an error on one entry, so it cannot be trusted as exhaustive.
+    assert complete is False

@@ -270,17 +270,37 @@ def _find_subagent_meta_files(projects_root: Path, sid: str, preferred: Path | N
 
     complete = True
     try:
-        with os.scandir(projects_root) as it:
-            for entry in it:
+        it = os.scandir(projects_root)
+    except OSError:
+        # Couldn't even open the root — we scanned nothing beyond the fast path.
+        return sorted(found), False
+
+    try:
+        with it:
+            while True:
                 if time.monotonic() >= deadline:
                     complete = False
                     break
-                if entry.name in seen_dirs or not entry.is_dir():
+                try:
+                    entry = next(it)
+                except StopIteration:
+                    break
+                except OSError:
+                    # A flaky/stale handle on one entry (plausible on sshfs)
+                    # must not abort the sweep, but it does mean the sweep
+                    # can no longer be trusted as exhaustive.
+                    complete = False
                     continue
-                seen_dirs.add(entry.name)
-                _collect(Path(entry.path))
+                try:
+                    if entry.name in seen_dirs or not entry.is_dir():
+                        continue
+                    seen_dirs.add(entry.name)
+                    _collect(Path(entry.path))
+                except OSError:
+                    complete = False
+                    continue
     except OSError:
-        return sorted(found), complete
+        complete = False
 
     if not complete:
         # The scan truncates on essentially every open on the live fleet (1,696
