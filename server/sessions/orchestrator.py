@@ -1416,6 +1416,34 @@ class SessionOrchestrator:
         await self._maybe_push(session_id, status)
         if completed_turn:
             await self._maybe_apply_auto_name(session_id)
+        # A `complete`/`done` session still holds a live `claude` process until
+        # something releases it — historically only auto-archive did, which has two
+        # independent failure modes (autopilot outages; the sticky manual-unarchive
+        # opt-out), so a stuck autopilot or an opted-out session could pin capacity
+        # forever. Release the process deterministically here instead: completion
+        # itself frees the driver/capacity slot, no model call and no autopilot
+        # dependency required. Nothing is archived — the row and transcript stay;
+        # reopening lazily rebuilds the driver via ensure_driver (resume=
+        # claude_session_id). `idle` (never ran) and the parked overlays
+        # (waiting_external/waiting_question, computed above) are deliberately left
+        # alone — those sessions are still alive and awaiting input or an event, not
+        # finished. Placed after the live-driver side effects above (dashboard Title
+        # push) so an attached client still sees them before the process goes away.
+        # Same pop+suppress+aclose idiom as close_session/stop() — but the pop is
+        # synchronous (so capacity accounting sees it the instant this call returns)
+        # while the aclose() is deferred to its own task, NOT awaited inline: this
+        # callback runs as the driver's own on_status hook, i.e. from inside its pump
+        # task, and aclose() awaits that same pump task to finish — awaiting it here
+        # would be the task waiting on itself. (Identical reasoning to why
+        # _maybe_autoarchive_completed schedules the archive instead of awaiting it
+        # inline.)
+        if status in ("done", "complete"):
+            live_driver = self._drivers.pop(session_id, None)
+            if live_driver is not None:
+                async def _release(d=live_driver):
+                    with contextlib.suppress(Exception):
+                        await d.aclose()
+                self._spawn(_release(), name="completion-driver-release")
         self._maybe_autoarchive_completed(session_id, status, rec)
         # Nudge autopilot when a session enters an actionable state so a stuck session
         # is advanced immediately, not only on the next interval tick. Best-effort; the
@@ -1441,10 +1469,13 @@ class SessionOrchestrator:
         pr-doctor, … — that reaches ``complete`` is auto-archived once the completion bar
         confirms the goal is genuinely met: a single universal rule, independent of the
         autopilot mode. A ``complete`` session is not terminal, so without this its
-        driver/worktree linger and its slot stays occupied forever. Scheduled (not
-        awaited) because archive stops THIS driver from inside its ``on_status`` callback;
-        idempotent via ``_auto_archiving``. The manual-unarchive opt-out is sticky and
-        always wins over the completion signal."""
+        worktree lingers and it never leaves the dashboard's active list — the driver
+        itself is already released deterministically by ``_persist_status`` regardless
+        of archiving (see the block just above this method). Scheduled (not awaited)
+        because archive may try to pop this session's driver from inside its
+        ``on_status`` callback (a harmless no-op if ``_persist_status`` already popped
+        it); idempotent via ``_auto_archiving``. The manual-unarchive opt-out is sticky
+        and always wins over the completion signal."""
         if status != "complete":
             return
         if rec is None:
