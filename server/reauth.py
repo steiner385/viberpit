@@ -314,11 +314,20 @@ class ReauthManager:
             except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
 
+        # Drive cleanup from the state machine rather than relying solely on the
+        # runner's finally block: asyncio.to_thread cannot be interrupted, so the
+        # runner thread may still be alive when we reach this point, meaning its
+        # finally has not yet executed.  Clearing _temp_profile here (under the
+        # lock) makes the runner's later cleanup a safe no-op.
+        temp = None
         async with self._lock:
             if self._state.state == "cancelling":
+                temp = self._state._temp_profile
+                self._state._temp_profile = None
                 self._state.state = "idle"
                 self._state.message = "cancelled"
 
+        self._cleanup_temp_profile(temp)
         return self.status(name)
 
     def sweep_stale(self) -> None:
@@ -375,20 +384,28 @@ class ReauthManager:
                 except Exception:
                     log.warning("reauth.success_audit_failed account=%s", name, exc_info=True)
         except asyncio.TimeoutError:
+            temp = None
             async with self._lock:
                 if self._state.state in ("running", "awaiting_code"):
                     self._state.state = "timeout"
                     self._state.message = f"timed out after {self._timeout_s}s"
+                    temp = self._state._temp_profile
+                    self._state._temp_profile = None
             self._kill_launcher()
+            self._cleanup_temp_profile(temp)
             log.warning("reauth timed out for %r after %.0fs", name, self._timeout_s)
         except asyncio.CancelledError:
-            # cancel() handles the state transition
+            # cancel() handles both the state transition and the temp-profile cleanup.
             raise
         except Exception as exc:
+            temp = None
             async with self._lock:
                 if self._state.state in ("running", "awaiting_code"):
                     self._state.state = "error"
                     self._state.message = str(exc)
+                    temp = self._state._temp_profile
+                    self._state._temp_profile = None
+            self._cleanup_temp_profile(temp)
             log.exception("reauth error for %r: %s", name, exc)
 
     async def submit_code(self, name: str, code: str) -> ReauthState:
@@ -441,6 +458,22 @@ class ReauthManager:
         async with self._lock:
             self._state.state = "error"
             self._state.message = msg
+
+    def _cleanup_temp_profile(self, temp: str | None) -> None:
+        """Remove a temp reauth profile directory.
+
+        Idempotent: safe to call even if the runner's finally already cleaned it
+        up (shutil.rmtree with ignore_errors, and _under_reauth_tmp's strict=True
+        returns False for a missing path rather than raising).
+        """
+        if temp is None:
+            return
+        try:
+            from ccswitch import auth_login
+            auth_login.cleanup_reauth_profile(temp)
+            log.info("reauth: removed temp profile %s", temp)
+        except Exception:
+            log.warning("reauth: failed to remove temp profile %s", temp, exc_info=True)
 
     def _kill_launcher(self) -> None:
         """Signal any tracked Chrome launcher process to terminate.

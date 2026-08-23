@@ -780,3 +780,81 @@ async def test_progress_does_not_clobber_a_terminal_message(monkeypatch):
     assert "host screen" not in (st.message or ""), (
         f"a progress label leaked into the terminal message: {st.message!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix #735: cancelled/timed-out reauth must clean up the temp Chrome profile
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancel_cleans_up_temp_profile(tmp_path, monkeypatch):
+    """cancel() must remove the temp profile directory even when the runner thread is still live.
+
+    The runner's finally block cannot fire while asyncio.to_thread is blocked,
+    so the state machine's terminal transition must drive the cleanup.
+    """
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+
+    from ccswitch.paths import reauth_tmp_dir
+    rtd = reauth_tmp_dir()
+    rtd.mkdir(parents=True, exist_ok=True)
+
+    temp_profile = rtd / "reauth-abc123"
+    temp_profile.mkdir(mode=0o700)
+
+    runner_ready = asyncio.Event()
+
+    async def fake_runner(name: str) -> bool:
+        m._state._temp_profile = str(temp_profile)
+        runner_ready.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            pass
+        return False
+
+    m = ReauthManager(runner=fake_runner, key_available=lambda: True, timeout_s=60)
+    await m.start("primary", "fake@example.com")
+    await runner_ready.wait()
+
+    assert temp_profile.exists(), "profile dir must exist before cancel"
+    await m.cancel("primary")
+
+    assert not temp_profile.exists(), "cancel() must remove the temp profile directory"
+    assert m._state._temp_profile is None, "_temp_profile pointer must be cleared"
+    assert m.status("primary").state == "idle"
+
+
+@pytest.mark.asyncio
+async def test_timeout_cleans_up_temp_profile(tmp_path, monkeypatch):
+    """_run() timeout must remove the temp profile directory."""
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+
+    from ccswitch.paths import reauth_tmp_dir
+    rtd = reauth_tmp_dir()
+    rtd.mkdir(parents=True, exist_ok=True)
+
+    temp_profile = rtd / "reauth-def456"
+    temp_profile.mkdir(mode=0o700)
+
+    runner_started = asyncio.Event()
+
+    async def fake_runner(name: str) -> bool:
+        m._state._temp_profile = str(temp_profile)
+        runner_started.set()
+        await asyncio.sleep(60)  # will be cut short by the 50ms timeout
+        return False
+
+    m = ReauthManager(runner=fake_runner, key_available=lambda: True, timeout_s=0.05)
+    await m.start("primary", "fake@example.com")
+    await runner_started.wait()
+
+    for _ in range(100):
+        if m.status("primary").state in ("timeout", "error"):
+            break
+        await asyncio.sleep(0.01)
+
+    assert m.status("primary").state == "timeout"
+    assert not temp_profile.exists(), "timeout must remove the temp profile directory"
+    assert m._state._temp_profile is None
