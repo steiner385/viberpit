@@ -51,6 +51,10 @@ is the equivalent. Admins may push directly in emergencies.
 ## Dev / testing
 
 - Tests: server → `pytest server/tests/`; web (run in `web/`) → `vitest run`, `tsc --noEmit`, `eslint`.
+- The `lint-and-test` gate is **four** steps, not one: `ruff check src/ server/`, `mypy server/
+  --ignore-missing-imports`, `pytest tests/` (core), `pytest server/tests/`. A green `server/tests/`
+  run is not a green gate — mypy in particular catches what no test does (e.g. a `min()` over an
+  httpx `Timeout` leg, which is typed `float | None`). Run all four before pushing.
 - A fresh git worktree has no built env (network blocks `uv sync` of the ~70MB claude-agent-sdk).
   Run against the main checkout's prebuilt env (`<main-checkout>/.venv/bin/python -m pytest …`) and
   symlink `web/node_modules` from the main checkout.
