@@ -156,3 +156,71 @@ class TestExportEndpoints:
                 headers=_IDENT,
             )
         assert r.status_code == 404
+
+
+class TestExportReplayCeiling:
+    """Review Fix 2: a too-slow export must NOT come back as an empty 200.
+
+    transcript_window gained a 10s ceiling and returns None when it fires. The
+    export path calls it with limit=None (the full transcript by design), so a
+    genuinely large export used to degrade to `events = []` → HTTP 200 with an
+    empty Markdown document. A silent empty export is worse than a slow one:
+    the user cannot tell it from a genuinely empty session.
+    """
+
+    def _slow_replay(self, seconds):
+        async def _fn(*a, **k):
+            import asyncio
+            await asyncio.sleep(seconds)
+            raise AssertionError("unreachable: the ceiling should have fired")
+        return _fn
+
+    def test_export_replay_timeout_returns_504_not_empty_200(self, tmp_path, monkeypatch):
+        from server.sessions import orchestrator as orch_mod
+        from server.sessions import replay as replay_mod
+
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+        app, sid, _ = _make_app(tmp_path, 3, db_url)
+        # transcript_window resolves replay_window on the replay module at call time.
+        monkeypatch.setattr(replay_mod, "replay_window", self._slow_replay(3600))
+        monkeypatch.setattr(orch_mod, "TRANSCRIPT_EXPORT_CEILING_S", 0.2)
+
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+             TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get(f"/api/sessions/{sid}/export.md", headers=_IDENT)
+
+        assert r.status_code == 504, (
+            f"a timed-out export must surface an error, got {r.status_code}: {r.text[:200]!r}")
+        assert "timed out" in r.text
+
+    def test_export_uses_its_own_larger_ceiling(self, tmp_path, monkeypatch):
+        """A download is not the session-open critical path, so it gets a larger
+        ceiling than the interactive one — a replay that is slower than the
+        interactive ceiling must still produce a real document, not a 504."""
+        import asyncio
+
+        from server.sessions import orchestrator as orch_mod
+        from server.sessions import replay as replay_mod
+        from server.sessions.replay import ReplayWindow
+
+        class _Ev:
+            def to_wire(self):
+                return {"type": "user", "turnId": "u0", "text": "slow-but-real", "images": []}
+
+        async def slower_than_the_interactive_ceiling(*a, **k):
+            await asyncio.sleep(0.5)
+            return ReplayWindow(events=[_Ev()], earliest_turn=0, total_turns=1)
+
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+        app, sid, _ = _make_app(tmp_path, 3, db_url)
+        monkeypatch.setattr(replay_mod, "replay_window", slower_than_the_interactive_ceiling)
+        monkeypatch.setattr(orch_mod, "_TRANSCRIPT_WINDOW_CEILING_S", 0.1)
+        monkeypatch.setattr(orch_mod, "TRANSCRIPT_EXPORT_CEILING_S", 30.0)
+
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url}), \
+             TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get(f"/api/sessions/{sid}/export.md", headers=_IDENT)
+
+        assert r.status_code == 200, (
+            f"the export must use its own larger ceiling, got {r.status_code}: {r.text[:200]!r}")
+        assert "slow-but-real" in r.text, "the export must contain the real transcript"

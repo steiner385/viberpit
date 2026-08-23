@@ -635,7 +635,7 @@ class RemoteOrchestrator:
         resolve too. Search and transcript replay both depend on that."""
         return await self._client.call("resolve_transcript_path", session_id=session_id)
 
-    async def transcript_window(self, session_id, *, before=None, limit=None):
+    async def transcript_window(self, session_id, *, before=None, limit=None, timeout_s=None):
         """Windowed transcript replay via the daemon's transcript_window RPC.
 
         The daemon resolves the path AND replays it in-process, sharing the
@@ -643,10 +643,17 @@ class RemoteOrchestrator:
         RPC handler builds — the edge never reads the transcript file itself, so this
         is correct even when the daemon lives on a different host than the edge.
         limit=None → full transcript. Returns None when no transcript is found.
+
+        ``timeout_s`` (the export path's larger replay ceiling) is forwarded to the
+        daemon ONLY when set, so the RPC shape is unchanged for every other caller.
+        The client-side RPC deadline is widened past it — otherwise the edge would
+        give up before the daemon's own ceiling ever fires.
         """
         from server.sessions.replay import ReplayWindow
+        extra = {} if timeout_s is None else {"timeout_s": timeout_s,
+                                              "timeout": timeout_s + 10.0}
         r = await self._client.call("transcript_window", session_id=session_id,
-                                    before=before, limit=limit)
+                                    before=before, limit=limit, **extra)
         if r is None:
             return None
         return ReplayWindow(events=r["events"], earliest_turn=r["earliestTurn"],

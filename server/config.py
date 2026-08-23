@@ -5,6 +5,33 @@ Reads settings from environment variables. Copy .env.example → .env and fill i
 import os
 from pathlib import Path
 
+
+def env_float(name: str, default: float, *, minimum: float | None = None) -> float:
+    """Parse a float tuning knob from the environment, tolerating a bad value.
+
+    THE single parser for float env knobs — every caller routes through here so the
+    fallback/clamp rules cannot drift between modules (constitution VI).
+
+    A typo'd override must not crash daemon startup, and a syntactically valid but
+    nonsensical one must not be honoured: a non-numeric, NaN/inf, or below-``minimum``
+    value falls back to *default*. That clamp is load-bearing for timeouts —
+    ``CCSWITCH_TRANSCRIPT_WINDOW_CEILING_S=0`` would otherwise make the ceiling fire
+    instantly and turn every transcript into an empty one.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if value != value or value in (float("inf"), float("-inf")):  # NaN / ±inf
+        return default
+    if minimum is not None and value < minimum:
+        return default
+    return value
+
+
 try:
     from pydantic_settings import BaseSettings
     from pydantic import Field

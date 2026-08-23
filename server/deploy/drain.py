@@ -1,16 +1,9 @@
 from __future__ import annotations
 import asyncio
-import os
 import time
 from typing import Callable
+from server.config import env_float
 from server.ipc.client import DaemonError, DaemonUnavailable
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, str(default)))
-    except ValueError:
-        return default
 
 
 async def drain_and_wait(client, *, turn_cap_s: float | None = None,
@@ -25,8 +18,8 @@ async def drain_and_wait(client, *, turn_cap_s: float | None = None,
     capped at ``turn_cap_s``. Returns 'ready' (safe), 'cap' (gave up — restart
     anyway), or 'unavailable' (daemon unreachable).
     """
-    turn_cap_s = turn_cap_s if turn_cap_s is not None else _env_float("CCSWITCH_DRAIN_TURN_CAP_SEC", 180.0)
-    condense_cap_s = condense_cap_s if condense_cap_s is not None else _env_float("CCSWITCH_DRAIN_CONDENSE_CAP_SEC", 570.0)
+    turn_cap_s = turn_cap_s if turn_cap_s is not None else env_float("CCSWITCH_DRAIN_TURN_CAP_SEC", 180.0, minimum=0.0)
+    condense_cap_s = condense_cap_s if condense_cap_s is not None else env_float("CCSWITCH_DRAIN_CONDENSE_CAP_SEC", 570.0, minimum=0.0)
     try:
         await client.call("begin_drain")
     except (DaemonUnavailable, DaemonError):

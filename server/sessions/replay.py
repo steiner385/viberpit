@@ -3,21 +3,10 @@ import json, asyncio, logging, os, time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from server.config import env_float
 from . import events as ev
 
 log = logging.getLogger("server.sessions.replay")
-
-
-def _env_float(name: str, default: float) -> float:
-    """Parse a float tuning knob from the environment, tolerating a bad value.
-
-    A typo'd override must not crash daemon startup — fall back to the default
-    and let the rest of the process boot with a sane (if not custom) ceiling.
-    """
-    try:
-        return float(os.environ.get(name, str(default)))
-    except (TypeError, ValueError):
-        return default
 
 
 # Wall-clock ceiling for the cross-cwd sidecar scan. The live fleet has ~1,696
@@ -25,11 +14,31 @@ def _env_float(name: str, default: float) -> float:
 # transcript RPC for 30s+ (RC2). Sub-agent reconstruction is an enhancement to
 # the Task card; opening the session is not optional — so we cap the search and
 # return what we found.
-_SUBAGENT_SCAN_BUDGET_S = _env_float("CCSWITCH_SUBAGENT_SCAN_BUDGET_S", 1.0)
+#
+# Bound at IMPORT time: an env override must be set before this module is imported.
+# In-process (tests) the only way to change it is to patch the constant, or pass
+# ``budget_s=`` to _find_subagent_meta_files.
+_SUBAGENT_SCAN_BUDGET_S = env_float("CCSWITCH_SUBAGENT_SCAN_BUDGET_S", 1.0, minimum=0.001)
 
 # Sub-agent sidecar locations change only when a sub-agent starts or finishes, so a
 # short TTL removes the repeat cost of reattach / scrollback paging without going stale.
-_SUBAGENT_CACHE_TTL_S = _env_float("CCSWITCH_SUBAGENT_CACHE_TTL_S", 30.0)
+_SUBAGENT_CACHE_TTL_S = env_float("CCSWITCH_SUBAGENT_CACHE_TTL_S", 30.0, minimum=0.0)
+
+# INVARIANT — the cache key is (projects_root, sid) and deliberately OMITS `preferred`.
+# That is only sound because a result is cached ONLY when the scan ran to completion
+# (`complete is True`), and a complete scan has visited EVERY directory under
+# projects_root — so its result is identical for any `preferred`, i.e. preferred-
+# independent. If partial/truncated results are ever cached, `preferred` MUST become
+# part of the key (a truncated scan seeded from a different preferred dir returns a
+# different subset) — otherwise one caller's short answer is served to all the others.
+#
+# THREADING: this dict is read and written from asyncio.to_thread() worker threads
+# with no lock. That is safe: dict __getitem__/__setitem__/get are individually
+# atomic under the GIL and the only mutations here are a whole-value get and a
+# whole-value set (never a read-modify-write of one entry). A racing double-scan
+# just writes the same value twice. Don't "fix" this with a lock, and don't turn
+# the set into a compound update (e.g. mutating the cached list in place) — that
+# would break the atomicity this relies on.
 _subagent_cache: dict[tuple[str, str], tuple[float, list[Path]]] = {}
 
 
@@ -301,7 +310,6 @@ def _find_subagent_meta_files(projects_root: Path, sid: str, preferred: Path | N
         seen_dirs.add(preferred.name)
         if not _collect(preferred):
             complete = False
-    fast_path_found = bool(found)
 
     try:
         it = os.scandir(projects_root)
@@ -338,21 +346,28 @@ def _find_subagent_meta_files(projects_root: Path, sid: str, preferred: Path | N
         complete = False
 
     if not complete:
-        # The scan truncates on essentially every open on the live fleet (1,696
-        # dirs against a 1.0s default budget), so logging at warning unconditionally
-        # would flood the log on every session open. Only warn when the fast path
-        # (the session's own encoded-cwd) also came up empty — that's the case
-        # where we may genuinely be missing sub-agent data. When the fast path
-        # already found sidecars, truncation of the cross-cwd sweep is harmless.
-        if fast_path_found:
-            log.debug(
-                "subagent scan budget exhausted after %.2fs (projects_root=%s sid=%s) — "
-                "fast path already found sidecars, truncation is harmless", budget, projects_root, sid,
-            )
-        else:
+        # The scan truncates on essentially every open on the live fleet (1,696 dirs
+        # against a 1.0s default budget), so an unconditional warning floods the log on
+        # every session open. Severity therefore keys off whether we have any EVIDENCE
+        # that sub-agent data exists:
+        #   found + truncated  → WARNING. Sidecars demonstrably exist for this session,
+        #     so the directories we never reached may hold more of them under a
+        #     different encoded cwd (main checkout vs. worktree). Actionable: the Task
+        #     card can render an incomplete set of sub-agent threads.
+        #   nothing found + truncated → DEBUG. We have no evidence sub-agents exist at
+        #     all, and on this fleet (zero `subagents/` dirs across all 8 accounts)
+        #     that is the normal steady state on every single request.
+        if found:
             log.warning(
                 "subagent scan budget exhausted after %.2fs (projects_root=%s sid=%s) — "
-                "sub-agent threads may be incomplete", budget, projects_root, sid,
+                "found %d sidecar(s); sub-agent threads may be incomplete",
+                budget, projects_root, sid, len(found),
+            )
+        else:
+            log.debug(
+                "subagent scan budget exhausted after %.2fs (projects_root=%s sid=%s) — "
+                "no sidecars found; no evidence this session has sub-agents",
+                budget, projects_root, sid,
             )
     result = sorted(found)
     if complete:

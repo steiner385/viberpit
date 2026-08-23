@@ -9,8 +9,6 @@ import os
 import time
 from pathlib import Path
 
-import pytest
-
 from server.sessions.replay import _find_subagent_meta_files
 
 
@@ -196,3 +194,78 @@ def test_partial_results_are_not_cached(tmp_path, monkeypatch):
 
     assert calls["n"] >= 1, "a partial result must not have been cached"
     assert complete2 is True
+
+
+# ---------------------------------------------------------------------------
+# Truncation logging severity (review Fix 1)
+#
+# The severity must key off EVIDENCE that sub-agents exist, not off the fast
+# path coming up empty. The original condition was inverted: on the live fleet
+# zero `subagents/` dirs exist, so `found` is empty on essentially every call —
+# warning-on-empty flooded the log on every single transcript request, which is
+# the exact flood the branch was written to prevent.
+# ---------------------------------------------------------------------------
+
+
+def _slow_scan(tmp_path, monkeypatch, sid, *, with_sidecar: bool):
+    """Force a budget-truncated scan, with or without a discoverable sidecar."""
+    from server.sessions import replay
+
+    replay._subagent_cache_clear()
+    projects = tmp_path / "projects"
+    for i in range(60):
+        (projects / f"-cwd-{i}").mkdir(parents=True, exist_ok=True)
+    (projects / "-cwd-main").mkdir(parents=True, exist_ok=True)
+    if with_sidecar:
+        sub = projects / "-cwd-main" / sid / "subagents"
+        sub.mkdir(parents=True, exist_ok=True)
+        (sub / "agent-1.meta.json").write_text('{"toolUseId": "toolu_task"}')
+
+    real_is_dir = Path.is_dir
+
+    def slow_is_dir(self):
+        time.sleep(0.05)
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", slow_is_dir)
+    return projects
+
+
+def test_truncated_scan_with_no_sidecars_does_not_warn(tmp_path, monkeypatch, caplog):
+    """The steady state on the live fleet: nothing found, scan truncated.
+
+    No evidence sub-agents exist at all → debug, NOT warning. A warning here
+    fires on every session open and every scrollback page — a pure log flood.
+    """
+    import logging
+
+    projects = _slow_scan(tmp_path, monkeypatch, "s-quiet", with_sidecar=False)
+    caplog.set_level(logging.DEBUG, logger="server.sessions.replay")
+
+    metas, complete = _find_subagent_meta_files(
+        projects, "s-quiet", preferred=projects / "-cwd-main", budget_s=0.2)
+
+    assert metas == []
+    assert complete is False, "the scan must actually have truncated for this test to mean anything"
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not warnings, f"truncation with no sidecars must not warn, got: {[r.getMessage() for r in warnings]}"
+    assert any(r.levelno == logging.DEBUG and "budget exhausted" in r.getMessage()
+               for r in caplog.records), "it should still be visible at debug"
+
+
+def test_truncated_scan_with_sidecars_found_warns(tmp_path, monkeypatch, caplog):
+    """Sidecars demonstrably exist AND the sweep was cut short — the cross-cwd
+    directories we never reached may hold more. That IS actionable, so warn."""
+    import logging
+
+    projects = _slow_scan(tmp_path, monkeypatch, "s-loud", with_sidecar=True)
+    caplog.set_level(logging.DEBUG, logger="server.sessions.replay")
+
+    metas, complete = _find_subagent_meta_files(
+        projects, "s-loud", preferred=projects / "-cwd-main", budget_s=0.2)
+
+    assert [p.name for p in metas] == ["agent-1.meta.json"]
+    assert complete is False
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1, "a truncated scan that DID find sidecars must warn exactly once"
+    assert "may be incomplete" in warnings[0].getMessage()
