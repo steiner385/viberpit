@@ -53,12 +53,32 @@ def test_negative_allowed_when_no_minimum_given(monkeypatch):
     assert env_float("CCSWITCH_TEST_FLOAT", 10.0) == -5.0
 
 
-def test_no_module_keeps_a_private_copy():
-    """The anti-pattern this fix removed must not come back."""
+def test_no_production_module_keeps_a_private_copy():
+    """The anti-pattern this fix removed must not come back.
+
+    Scoped to PRODUCTION code (`:!server/tests`): a private copy would be a real
+    module keeping its own parser, and the exclusion also stops this guard from
+    matching the pattern string in its own source — which it did, silently, the
+    moment this file became tracked (`git grep` only searches tracked files).
+    The pattern is anchored at start-of-line as a second belt: an occurrence
+    inside a string literal is not a definition.
+
+    `cwd` is pinned to the repo root so an unexpected working directory cannot
+    make the pathspec match nothing and pass the test vacuously.
+    """
     import subprocess
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    assert (repo_root / ".git").exists(), f"repo root not found at {repo_root}"
 
     out = subprocess.run(
-        ["git", "grep", "-n", "def _env_float", "--", "server", "src"],
-        capture_output=True, text=True,
+        ["git", "grep", "-n", "-E", r"^[[:space:]]*def _env_float",
+         "--", "server", "src", ":!server/tests"],
+        cwd=repo_root, capture_output=True, text=True,
     )
+    # git grep: 0 = matched, 1 = no match. Anything else (not a repo, git
+    # missing) must fail loudly rather than look like "no copies found".
+    assert out.returncode in (0, 1), (
+        f"git grep failed (rc={out.returncode}): {out.stderr.strip()}")
     assert out.stdout.strip() == "", f"a local _env_float copy is back:\n{out.stdout}"
