@@ -1,9 +1,18 @@
 from __future__ import annotations
-import json, asyncio
+import json, asyncio, logging, os, time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from . import events as ev
+
+log = logging.getLogger("server.sessions.replay")
+
+# Wall-clock ceiling for the cross-cwd sidecar scan. The live fleet has ~1,696
+# project dirs on an sshfs mount at ~54ms RTT, so an unbounded scan hangs the
+# transcript RPC for 30s+ (RC2). Sub-agent reconstruction is an enhancement to
+# the Task card; opening the session is not optional — so we cap the search and
+# return what we found.
+_SUBAGENT_SCAN_BUDGET_S = float(os.environ.get("CCSWITCH_SUBAGENT_SCAN_BUDGET_S", "1.0"))
 
 
 def _ts_ms(o: dict) -> float | None:
@@ -227,6 +236,72 @@ def _build_events(path: str) -> tuple[list, object | None]:
     return _collapse_recovery_resend_dupes(out), meta_event
 
 
+def _find_subagent_meta_files(projects_root: Path, sid: str, preferred: Path | None = None,
+                              *, budget_s: float | None = None) -> tuple[list[Path], bool]:
+    """Locate `<projects>/<any-cwd>/<sid>/subagents/*.meta.json`, bounded.
+
+    Returns (sorted meta paths, complete). ``complete`` is False when the scan
+    ran out of budget, so the caller knows the list may be short.
+
+    The sidecar usually sits under the SAME encoded-cwd as the main transcript,
+    so `preferred` is probed first and costs one filesystem op. The remaining
+    directories are still scanned — the sidecar can live under a different cwd
+    (main checkout vs. worktree) and that join is load-bearing — but under a
+    wall-clock budget so a slow mount degrades instead of hanging.
+    """
+    budget = _SUBAGENT_SCAN_BUDGET_S if budget_s is None else budget_s
+    deadline = time.monotonic() + budget
+    found: list[Path] = []
+    seen_dirs: set[str] = set()
+
+    def _collect(cwd_dir: Path) -> None:
+        sub = cwd_dir / sid / "subagents"
+        try:
+            if not sub.is_dir():
+                return
+            found.extend(p for p in sub.iterdir() if p.name.endswith(".meta.json"))
+        except OSError:
+            return
+
+    if preferred is not None:
+        seen_dirs.add(preferred.name)
+        _collect(preferred)
+    fast_path_found = bool(found)
+
+    complete = True
+    try:
+        with os.scandir(projects_root) as it:
+            for entry in it:
+                if time.monotonic() >= deadline:
+                    complete = False
+                    break
+                if entry.name in seen_dirs or not entry.is_dir():
+                    continue
+                seen_dirs.add(entry.name)
+                _collect(Path(entry.path))
+    except OSError:
+        return sorted(found), complete
+
+    if not complete:
+        # The scan truncates on essentially every open on the live fleet (1,696
+        # dirs against a 1.0s default budget), so logging at warning unconditionally
+        # would flood the log on every session open. Only warn when the fast path
+        # (the session's own encoded-cwd) also came up empty — that's the case
+        # where we may genuinely be missing sub-agent data. When the fast path
+        # already found sidecars, truncation of the cross-cwd sweep is harmless.
+        if fast_path_found:
+            log.debug(
+                "subagent scan budget exhausted after %.2fs (projects_root=%s sid=%s) — "
+                "fast path already found sidecars, truncation is harmless", budget, projects_root, sid,
+            )
+        else:
+            log.warning(
+                "subagent scan budget exhausted after %.2fs (projects_root=%s sid=%s) — "
+                "sub-agent threads may be incomplete", budget, projects_root, sid,
+            )
+    return sorted(found), complete
+
+
 def _subagent_events(main_path: str, task_ids: set[str]) -> list:
     """Reconstruct each sub-agent's own thread (Layout B) for the Task tool-use ids
     in ``task_ids``, emitting its internal turns tagged with the spawning Task's
@@ -255,10 +330,7 @@ def _subagent_events(main_path: str, task_ids: set[str]) -> list:
         return []
     events: list = []
     seen: set[str] = set()
-    try:
-        metas = sorted(projects_root.glob(f"*/{sid}/subagents/*.meta.json"))
-    except OSError:
-        return []
+    metas, _complete = _find_subagent_meta_files(projects_root, sid, preferred=main.parent)
     for meta_path in metas:
         try:
             meta = json.loads(meta_path.read_text(errors="ignore"))
